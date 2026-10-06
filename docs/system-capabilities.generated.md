@@ -18,7 +18,7 @@ Read the identity facts the current Self API actually exposes.
 - Adapter: `GET /api/self`
 - Credential: `header x-fleet-self-token`
 - Role condition: any current session with cwd
-- Returns: `slot`, `position`, `label`, `cwd`, `mission`, `awaiting`, `lane`, `idleMs`, `observed`, `autos`, `watches`, `events`, `lineage`
+- Returns: `slot`, `position`, `label`, `cwd`, `mission`, `awaiting`, `lane`, `idleMs`, `observed`, `autos`, `watches`, `events`, `lineage`, `standingHandover`
 - Probe (http): With the current session's self token, the adapter returns HTTP 200 and every declared field.
 
 Gaps:
@@ -60,7 +60,7 @@ The safe raw Self GET a foreign MAIN can use before deeper discovery.
 - Adapter: `GET /api/self`
 - Credential: `header x-fleet-self-token`
 - Role condition: any current session with cwd
-- Returns: `slot`, `position`, `label`, `cwd`, `mission`, `awaiting`, `lane`, `idleMs`, `observed`, `autos`, `watches`, `events`, `lineage`
+- Returns: `slot`, `position`, `label`, `cwd`, `mission`, `awaiting`, `lane`, `idleMs`, `observed`, `autos`, `watches`, `events`, `lineage`, `standingHandover`
 - Probe (http): With the current session's self token, the adapter returns HTTP 200 and every declared field.
 
 Gaps:

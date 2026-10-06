@@ -4,7 +4,8 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv } from "./harness";
+import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { MERGE_IDLE_MS } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 // the same table the runner reads, so this family measures the advice AND the closure it implies
@@ -1534,12 +1535,170 @@ export async function run(ctx: Ctx): Promise<void> {
     rmSync(sr, { recursive: true, force: true });
   }
 
+  await ownerSuccessionDoor(lnTok.slot, selfTok);
+
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.
   ctx.restartSelfTok = selfTok;
   ctx.restartSelfSlot = lnTok.slot;
 
   await memoryDoor();
+}
+
+// --- THE OWNER'S SUCCESSION DOOR (POST /api/slots/:id/succeed, server.ts#handleOwnerSucceed) ------
+// Owner 2026-10-06: a fresh session „[Zitat entfernt]“. Four claims,
+// each with the mutation that turns it red:
+//   rests   — a pane printing output is refused 409 `busy` and keeps its occupant (drop ownerSucceedBusy).
+//   no turn — the predecessor's pane runs a byte recorder (`cat` in non-canonical mode), so ANY paste
+//             into it lands in a file; the file stays empty and the prompt log holds no row for the
+//             predecessor's occupation (route the door through the self rail's nudge, or sendText it).
+//   same    — the successor is a new occupation of the SAME slot on the SAME cwd (open a free slot).
+//   handed  — its line record carries the standing intent, and its founding brief names the
+//             handover's write time and age plus the transcript rest AFTER that write: typed text in,
+//             tool calls, tool output and everything before the write out (drop the `since` cut, or
+//             keep tool blocks).
+async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<void> {
+  const repo = `${ROOT}/owner-succession-repo`;
+  const rec = `${ROOT}/owner-succession-recorder`;
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(rec, { force: true });
+  mkdirSync(repo, { recursive: true });
+  spawnSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+  spawnSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+  spawnSync("git", ["-C", repo, "config", "user.name", "t"]);
+  writeFileSync(`${repo}/README.md`, "owner succession fixture\n");
+  spawnSync("git", ["-C", repo, "add", "README.md"]);
+  spawnSync("git", ["-C", repo, "commit", "-qm", "init"]);
+  type Row = { id: number; cwd: string | null; openedAt?: number; lastOutput: number; standingHandover?: { at: number } };
+  const sessions = async (): Promise<{ now: number; slots: Row[] }> =>
+    (await (await get("/api/sessions")).json()) as { now: number; slots: Row[] };
+  const selfPost = (tok: string, path: string, body: unknown): Promise<Response> => fetch(`${BASE}${path}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+  type Preview = { ready?: boolean; refusal?: { reason?: string } | null; standingHandover?: { at?: number; ageMs?: number } | null;
+    tail?: { state?: string; entries?: number } | null };
+  const preview = async (slot: number): Promise<Preview> => (await (await get(`/api/slots/${slot}/succeed`)).json()) as Preview;
+
+  // the rails this cut leaves alone answer by name, and the lane's own credential cannot write a
+  // standing handover no door would ever read
+  const laneDoor = await post(`/api/slots/${laneSlot}/succeed`, {});
+  const laneDoorBody = (await laneDoor.json()) as { reason?: string };
+  const laneWrite = await selfPost(laneTok, "/api/self/handover", { intent: "a lane has its own handoff report" });
+  const laneWriteBody = (await laneWrite.json()) as { reason?: string };
+  check("owner succession door: a lane is refused 409 `lane` at the owner door AND at /api/self/handover",
+    laneDoor.status === 409 && laneDoorBody.reason === "lane" && laneWrite.status === 409 && laneWriteBody.reason === "lane",
+    `${laneDoor.status} ${JSON.stringify(laneDoorBody)} | ${laneWrite.status} ${JSON.stringify(laneWriteBody)}`);
+
+  const free = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const opened = free ? await post(`/api/slots/${free}/open`, { cwd: repo, label: "owner-succession" }) : null;
+  const tok = free ? await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "" : "";
+  const oldOpenedAt = (await sessions()).slots.find((x) => x.id === free)?.openedAt ?? 0;
+  check("owner succession setup: a plain session is open on a private checkout and carries its own token",
+    !!opened?.ok && /^[0-9a-f]{32}$/.test(tok) && oldOpenedAt > 0, `${free}:${opened?.status} openedAt=${oldOpenedAt}`);
+  if (!free || !opened?.ok) return;
+
+  // the conversation on disk: FLEET_CMD=true pins no session, so the slot's reader takes the newest
+  // file in its project dir that names this cwd (server.ts#transcriptFile) — exactly what is planted
+  const proj = `${process.env.HOME}/.claude/projects/${repo.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const file = `${proj}/${crypto.randomUUID()}.jsonl`;
+  mkdirSync(proj, { recursive: true });
+  const line = (type: string, ts: number, content: unknown): string =>
+    `${JSON.stringify({ type, cwd: repo, timestamp: new Date(ts).toISOString(), message: { role: type, content } })}\n`;
+  const past = Date.now() - 60_000;
+  writeFileSync(file, line("user", past, "OWNER-BEFORE-MARK what was asked long ago")
+    + line("assistant", past + 1, [{ type: "text", text: "SESSION-BEFORE-MARK answered long ago" }]));
+
+  const empty = await selfPost(tok, "/api/self/handover", {});
+  const INTENT = "Absicht: erst die Welle landen, dann den Audit lesen. Korrektur: Slot 3 ist NICHT frei.";
+  const wrote = await selfPost(tok, "/api/self/handover", { intent: INTENT });
+  const wroteBody = (await wrote.json()) as { standingHandover?: { at?: number; intent?: string } };
+  const at = wroteBody.standingHandover?.at ?? 0;
+  const selfView = (await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": tok } })).json()) as
+    { standingHandover?: { at?: number; intent?: string } | null };
+  const row = (await sessions()).slots.find((x) => x.id === free);
+  check("POST /api/self/handover: an empty body is 400; an intent is stored for this occupant and read back at GET /api/self and on the sessions row",
+    empty.status === 400 && wrote.ok && at > 0 && selfView.standingHandover?.intent === INTENT
+      && selfView.standingHandover.at === at && row?.standingHandover?.at === at,
+    `${empty.status} ${wrote.status} ${JSON.stringify(selfView.standingHandover)} row=${JSON.stringify(row?.standingHandover)}`);
+  appendFileSync(file, line("user", at + 1, "OWNER-AFTER-MARK bitte noch den Report")
+    + line("assistant", at + 2, [{ type: "text", text: "SESSION-AFTER-MARK mache ich" },
+      { type: "tool_use", id: "toolu_owner_succ", name: "Bash", input: { command: "echo TOOL-CALL-MARK" } }])
+    + line("user", at + 3, [{ type: "tool_result", tool_use_id: "toolu_owner_succ", content: "TOOL-OUTPUT-MARK" }]));
+
+  // RESTS: a pane printing is refused by name, and nothing ends. The busy state is OBSERVED on the
+  // non-mutating preview first — a POST into a pane that happened to pause would hand over for real.
+  await tmuxOut("send-keys", "-t", `=s${free}:`, "for i in $(seq 1 60); do echo owner-succ-busy $i; sleep 0.1; done", "Enter");
+  let busyPreview: Preview = {};
+  for (let i = 0; i < 60 && busyPreview.refusal?.reason !== "busy"; i++) {
+    await Bun.sleep(100);
+    busyPreview = await preview(free);
+  }
+  const busy = busyPreview.refusal?.reason === "busy" ? await post(`/api/slots/${free}/succeed`, {}) : null;
+  const busyBody = busy ? (await busy.json()) as { reason?: string; error?: string } : {};
+  check("owner succession door: a pane mid-turn is refused 409 `busy` by name, and the occupant stays",
+    busyPreview.ready === false && busy?.status === 409 && busyBody.reason === "busy"
+      && (await sessions()).slots.find((x) => x.id === free)?.openedAt === oldOpenedAt,
+    `preview=${JSON.stringify(busyPreview)} post=${busy?.status} ${JSON.stringify(busyBody)}`);
+
+  // NO TURN: the loop ends, then a byte recorder takes the pane's stdin. Non-canonical, so a paste
+  // without Enter reaches the file too; the pane is then left to rest past the owner-act idle gate.
+  for (let i = 0; i < 100; i++) {
+    const cap = await tmuxOut("capture-pane", "-t", `=s${free}:`, "-p", "-J");
+    if (cap.out.includes("owner-succ-busy 60")) break;
+    await Bun.sleep(100);
+  }
+  await tmuxOut("send-keys", "-t", `=s${free}:`, `stty -icanon -echo; cat > '${rec}'`, "Enter");
+  let resting = false;
+  for (let i = 0; i < 100 && !resting; i++) {
+    await Bun.sleep(100);
+    const sx = await sessions();
+    const r = sx.slots.find((x) => x.id === free);
+    resting = existsSync(rec) && !!r && sx.now - r.lastOutput > MERGE_IDLE_MS + 300;
+  }
+  const readyPreview = await preview(free);
+  check("owner succession setup: the recorder holds the pane and the preview says it rests, with the handover's age and a read tail",
+    resting && readyPreview.ready === true && readyPreview.standingHandover?.at === at
+      && (readyPreview.standingHandover.ageMs ?? -1) >= 0 && readyPreview.tail?.state === "read" && readyPreview.tail.entries === 2,
+    `resting=${resting} preview=${JSON.stringify(readyPreview)}`);
+  const promptsOfOld = async (): Promise<number> =>
+    (await plogRead()).filter((e) => e.slot === free && e.openedAt === oldOpenedAt).length;
+  const oldPromptsBefore = await promptsOfOld();
+
+  const pressed = await post(`/api/slots/${free}/succeed`, {});
+  const pressedBody = (await pressed.json()) as { ok?: boolean; slot?: number; briefBytes?: number; lineage?: { lineageId?: string } };
+  const successor = (await sessions()).slots.find((x) => x.id === free);
+  check("owner succession door: a resting session is succeeded on the SAME slot and cwd as a new occupation",
+    pressed.ok && pressedBody.ok === true && pressedBody.slot === free && successor?.cwd === repo
+      && (successor.openedAt ?? 0) > oldOpenedAt && typeof pressedBody.briefBytes === "number",
+    `${pressed.status} ${JSON.stringify(pressedBody)} row=${JSON.stringify(successor)}`);
+  const recorded = existsSync(rec) ? readFileSync(rec, "utf8") : null;
+  check("owner succession door: the predecessor got NO turn — its byte recorder stayed empty and the prompt log holds no row for its occupation",
+    recorded === "" && (await promptsOfOld()) === oldPromptsBefore,
+    `recorder=${JSON.stringify(recorded?.slice(0, 200))} prompts ${oldPromptsBefore} → ${await promptsOfOld()}`);
+
+  let brief = "";
+  for (let i = 0; i < 100 && !brief; i++) {
+    brief = (await plogRead()).findLast((e) => e.slot === free && e.openedAt === successor?.openedAt
+      && e.text.startsWith("[fleet succession]"))?.text ?? "";
+    if (!brief) await Bun.sleep(100);
+  }
+  check("owner succession door: the successor's brief names the standing handover's write time and age, then the transcript rest after it — typed text only",
+    brief.includes("VOM OWNER AUSGELÖST") && brief.includes(`geschrieben ${new Date(at).toISOString()} — Alter `)
+      && brief.includes("OWNER-AFTER-MARK") && brief.includes("SESSION-AFTER-MARK")
+      && !brief.includes("BEFORE-MARK") && !brief.includes("TOOL-CALL-MARK") && !brief.includes("TOOL-OUTPUT-MARK")
+      && Buffer.byteLength(brief) === pressedBody.briefBytes,
+    brief.slice(0, 1500));
+  const heirTok = await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "";
+  const heir = (await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": heirTok } })).json()) as
+    { lineage?: { record?: { intent?: string | null; from?: { openedAt?: number } } } | null; standingHandover?: unknown };
+  check("owner succession door: the successor reads the standing intent in its line record, and inherits no standing handover of its own",
+    heir.lineage?.record?.intent === INTENT && heir.lineage.record.from?.openedAt === oldOpenedAt && heir.standingHandover === null
+      && heirTok !== tok,
+    JSON.stringify({ lineage: heir.lineage, standingHandover: heir.standingHandover }));
+
+  await post(`/api/slots/${free}/kill`, {});
+  rmSync(proj, { recursive: true, force: true });
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(rec, { force: true });
 }
 
 // --- THE PROJECT MEMORY DOOR (GET /api/self/memory, server.ts#memoryScopeFor) -----------------

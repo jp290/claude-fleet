@@ -697,6 +697,47 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   schreiben wäre ein Phantom-Contender vor jeder Suite dieser Maschine.
 
 
+## handover — die stehende Übergabe und die Owner-Nachfolge (seit 2026-10-07)
+
+Owner 2026-10-06: „[Zitat entfernt]“
+
+
+feststeht." `POST /api/self/succeed` kostet die Vorgängerin einen letzten Turn, der ihren ganzen Kontext
+neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließen die Lücke:
+
+- **`POST /api/self/handover`** (self-token) — `{"intent": "…"}` ODER `{"pointer": "pfad.md#anker"}`,
+  geprüft wie der `succeed`-Body (`server.ts#lineageChannelOf`: `intent` ≤ 2000 Zeichen, `pointer`
+  datiert, getrackt und sauber, sonst 400/409; leerer Body = 400). Überschreibt die vorige; die
+  Session hält sie in ohnehin laufenden Turns aktuell. Gespeichert als `Slot.standingHandover
+  {at, openedAt, intent, pointer}` (`server/types.ts#StandingHandover`), persistiert, an die Belegung
+  gebunden: eine neue Belegung erbt keine. Lane, Program-MAIN, Game-Maker und Steward: 409 mit `reason`
+  (dieselben Gründe wie unten) — niemand pflegt eine Übergabe, die keine Tür liest.
+  Lesen: `GET /api/self` → `standingHandover` (`null` = keine geschrieben).
+- **`POST /api/slots/:id/succeed`** (Owner-Credential, `server.ts#handleOwnerSucceed`) — beendet die
+  RUHENDE Session und öffnet auf demselben Slot und cwd eine frische auf der ungebundenen Schiene
+  (`server.ts#succeedGeneric`, geteilt mit `succeed`). In die Pane der Vorgängerin wird nichts getippt
+  (Prompt-Log und e2e-Rekorder belegen es). Die stehende Übergabe wird der Kanal des Linien-Records
+  (`lineage.record.intent`/`pointer`); der Brief bekommt hinter dem üblichen Ritual einen Abschnitt mit
+  Schreibzeit und Alter der Übergabe und dem **Transkript-Rest** seit `at`
+  (`server.ts#freshTranscriptTail`: Eingänge und Antworttexte, keine Werkzeugaufrufe, -ausgaben,
+  Thinking oder Harness-Meta; jeder Eintrag in der Mitte auf 1500 Zeichen gekürzt, neueste zuerst unter
+  24 000 Zeichen). Ohne stehende Übergabe läuft die Tür trotzdem und sagt es: der Rest ist dann das Ende
+  der Unterhaltung. Gelesen wird über den Konversationsleser des Slots — harness-neutral, bewiesen ist
+  Claude; ohne lesbares Transkript steht `TRANSKRIPT-REST: unbekannt (<Grund>)`.
+  Antwort wie `succeed` plus `briefBytes`. Verweigerungen, je `{error, reason}`: `not-active` (400),
+  `busy` (409, Pane-Ausgabe binnen `MERGE_IDLE_MS` — dasselbe Prädikat wie `sleep`; vor dem Kill
+  erneut gefragt), `asleep`, `slot-changing`, `steward`, `lane`, `program-main`, `game-maker`,
+  `in-flight`, `pointer-uncommitted` (alle 409). Audit `main_succession` mit `owner-triggered`.
+- **`GET /api/slots/:id/succeed`** (Owner) — die Lese-Tür für den Knopf, ohne Wirkung: `{ready,
+  refusal: {reason, error} | null, idleMs, observed, idleThresholdMs, standingHandover: {at, ageMs,
+  channel, pointer} | null, tail: {state, reason, entries, omitted, chars}}`. Sie liest das Transkript,
+  ist also kein 2-s-Poll; dafür trägt die Zeile in `GET /api/sessions` `standingHandover: {at}` (fehlt,
+  wenn keine steht) neben dem vorhandenen `lastOutput` und `now`.
+
+Gemessen 2026-10-07 an einem echten Claude-Transkript (dieser Lane, 628 Zeilen, 1,79 MB jsonl) auf einer
+Scratch-Instanz: Übergabe 8 min alt, Rest 9 Einträge / 1227 Zeichen, Brief **2242 Bytes**; ohne
+stehende Übergabe 17 Einträge / 3899 Zeichen. Obergrenze: Ritual (~0,7 KB) + 24 000 Zeichen Rest.
+
 ## Bindung — eine MAIN, n Programs (seit 2026-10-06)
 
 Owner 2026-10-06 abends: „[Zitat entfernt]“ — je Projekt (Repo) genau eine dauerhafte MAIN mit

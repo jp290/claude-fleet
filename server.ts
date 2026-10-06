@@ -150,7 +150,7 @@ import {
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
-  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep,
+  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -2505,6 +2505,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   codexRecoveryState: null,
   codexDisconnectSeenAt: null,
   sleeping: null,
+  standingHandover: null,
   history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
@@ -5714,11 +5715,11 @@ function stateSnapshot(): string {
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
-    browser?: true; webSearch?: true; context?: SlotContext; sleeping?: SlotSleep }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; sleeping?: SlotSleep; standingHandover?: StandingHandover }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -8720,6 +8721,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexDisconnectSeenAt = null;
   s.codexFirstTurn = null;
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
+  s.standingHandover = null; // ...and has written no handover of its own yet
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
@@ -8932,6 +8934,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexDisconnectSeenAt = null;
   s.codexFirstTurn = null;
   s.sleeping = null;
+  s.standingHandover = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
   s.inputChain = Promise.resolve();
@@ -12168,7 +12171,6 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       model: body?.model !== undefined ? mo.model : s.model,
       effort: body?.effort !== undefined ? eo.effort : s.effort,
     };
-    const predecessor = { cwd: predecessorIdentity.cwd, token: identity };
     const parsedChannel = lineageChannelOf(body, carry);
     if (!parsedChannel.ok) return json({ error: parsedChannel.error }, parsedChannel.status);
     const channel = parsedChannel.channel;
@@ -12240,108 +12242,309 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       if (checkpoint) return json({ error: checkpoint }, 409);
       return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity, bound.slice(1));
     }
-    // THE LINE and what dies with the predecessor, captured while it is still whole and judged by the
-    // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
-    // `from` names the leaving conversation too (LineageSeat), read here while the occupant is
-    // still the one the preflight just re-proved — it is what makes the band's past session readable
-    const draft = lineageDraft("generic", s.lineageId ?? randomBytes(12).toString("hex"),
-      { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt,
-        sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
-      captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
-    if (typeof draft === "string") return json({ error: draft }, 409);
-    // THE READ GRANT rides the generic line whole or narrowed, judged BEFORE anything ends
-    const grantCarry = memoryGrantCarry(s, body?.memoryGrant);
-    if (!grantCarry.ok) return json({ refusal: grantCarry.refusal, error: grantCarry.error }, grantCarry.status);
-    // …and the report delegation beside it, whole — read while the predecessor still holds it
-    const delegateCarry = effectiveDelegate(s);
-
-    // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
-    // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
-    // nobody; the same read after the kill would be a handover built on a slot already emptied.
-    const lineageFacts: LineageBriefFacts = { lineageId: draft.lineageId,
-      obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer };
-    // THE ORCHESTRATOR TWIN of this founding: same rail, same gate, same record — one extra text
-    // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
-    // verbatim inheritance unless the body renamed the role, and an owner who renames it at
-    // succeed time has renamed it. The record stays the ONE handover channel (the card's own
-    // UEBERGABE block says so), so nothing here is a second one.
-    const orchestrator = isOrchestratorLabel(label);
-    const harness = s.harness;
-    const orchCtx = orchestrator
-      ? await orchestratorFoundingContext(predecessor.cwd, harness) : null;
-    const brief = orchestrator
-      ? buildOrchestratorSuccessionBrief(harness, await successionInitSteps(predecessor.cwd), carry,
-        lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
-      : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
-    const box: BoxPin = { container: s.container, containerContext: s.containerContext };
-    laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
-    try {
-      const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
-        { brief, path: "succession", draft, label },
-        { cwd: predecessor.cwd, model: spawn.model, harness },
-        (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
-          null, false, null, false, false, preObservedSupport, onCandidate),
-        async () => {});
-      if (!respawned.ok) return respawned.response;
-      // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
-      // would leave the successor's GET /api/self without its handover on every delivery failure.
-      const openedAt = s.openedAt;
-      const record = writeLineageHandover(draft, s, Date.now());
-      if (grantCarry.carry) transferMemoryGrant(s, grantCarry.carry, predecessorIdentity);
-      if (delegateCarry) transferReportDelegate(s, delegateCarry, predecessorIdentity);
-      try {
-        await saveStateNow();
-      } catch (e) {
-        // the record in memory is the truth — the predecessor is gone and the successor stands
-        audit("main_succession", s.id, `generic record persistence failed: ${e instanceof Error ? e.message : e}`);
-      }
-
-      // THE SAME THREE FOUNDING STEPS every founding paste runs (boot grace, delivery gate, bounded
-      // readiness) — the four live `composer still holds N chars` failures of 2026-09-03 (note
-      // 8b7c18c9) were all a brief typed into a pane whose agent was not drawn yet. NO CLEANUP KILL,
-      // for the lane baton's reason: the successor IS the line now, and killing it over a delivery
-      // failure would turn a missing brief into an empty slot. It stands, the audit row says why.
-      const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
-      const failed = async (reason: string): Promise<Response> => {
-        audit("main_succession", s.id, `generic brief-undelivered: ${reason}`);
-        const debt = recordSuccessionDebt(s, "generic", predecessorIdentity, openedAt, reason,
-          { brief, path: "succession", draft: null, label: s.label });
-        await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
-        return json({ error: `successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
-          + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
-        slot: s.id, delivered: false, debt: debt.id }, 500);
-      };
-      await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
-      if (!stillCurrent()) return await failed("successor slot changed during boot");
-      const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
-        killSwitch: false, quietHours: false, harness: false });
-      if (!gate.ok) return await failed(`delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})`);
-      const readiness = await waitForFoundingReadiness(s, stillCurrent);
-      if (!readiness.ok) return await failed(readiness.reason);
-      if (!stillCurrent()) return await failed("successor slot changed before founding delivery");
-      try {
-        await sendText(s, brief, true, { path: "succession" });
-      } catch (e) {
-        return await failed(`brief failed: ${e instanceof Error ? e.message : e}`);
-      }
-      const now = Date.now();
-      s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, brief, "auto", now);
-      if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
-      await saveStateNow();
-      return json({ ok: true, slot: s.id, label: s.label,
-        ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
-        lineage: { lineageId: record.lineageId, obligations: record.obligations.length },
-        ...(orchestrator ? { roleCard: orchCtx?.ok
-          ? { delivered: true, receipt: true }
-          : { delivered: true, receipt: false, contextPlan: `unknown: ${orchCtx?.error ?? "not planned"}` } } : {}) });
-    } finally {
-      laneSpawn.delete(s.id);
-    }
+    return await succeedGeneric(s, { label, carry, channel, spawn, predecessorIdentity,
+      memoryGrant: body?.memoryGrant, appendix: null });
   } finally {
     successionInflight.delete(identity);
   }
+}
+
+// THE GENERIC RAIL, shared by the two doors that may take it: the session's own
+// POST /api/self/succeed (handleSelfSucceed, after its rail classification) and the owner's
+// POST /api/slots/:id/succeed (handleOwnerSucceed), which hands over WITHOUT a turn of the
+// predecessor. Everything up to respawnInPlace is still read while the predecessor stands.
+interface GenericSuccession {
+  label: string | null; carry: string | null; channel: LineageChannel; spawn: SuccessionSpawn;
+  predecessorIdentity: SuccessionPredecessorIdentity; memoryGrant: unknown;
+  // the owner door's standing-handover age and transcript rest; null on the self door
+  appendix: string | null;
+}
+async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Response> {
+  const { label, carry, channel, spawn, predecessorIdentity } = opts;
+  const predecessor = { cwd: predecessorIdentity.cwd, token: predecessorIdentity.selfToken };
+  // THE LINE and what dies with the predecessor, captured while it is still whole and judged by the
+  // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
+  // `from` names the leaving conversation too (LineageSeat), read here while the occupant is
+  // still the one the preflight just re-proved — it is what makes the band's past session readable
+  const draft = lineageDraft("generic", s.lineageId ?? randomBytes(12).toString("hex"),
+    { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt,
+      sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
+    captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
+  if (typeof draft === "string") return json({ error: draft }, 409);
+  // THE READ GRANT rides the generic line whole or narrowed, judged BEFORE anything ends
+  const grantCarry = memoryGrantCarry(s, opts.memoryGrant);
+  if (!grantCarry.ok) return json({ refusal: grantCarry.refusal, error: grantCarry.error }, grantCarry.status);
+  // …and the report delegation beside it, whole — read while the predecessor still holds it
+  const delegateCarry = effectiveDelegate(s);
+
+  // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
+  // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
+  // nobody; the same read after the kill would be a handover built on a slot already emptied.
+  const lineageFacts: LineageBriefFacts = { lineageId: draft.lineageId,
+    obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer };
+  // THE ORCHESTRATOR TWIN of this founding: same rail, same gate, same record — one extra text
+  // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
+  // verbatim inheritance unless the body renamed the role, and an owner who renames it at
+  // succeed time has renamed it. The record stays the ONE handover channel (the card's own
+  // UEBERGABE block says so), so nothing here is a second one.
+  const orchestrator = isOrchestratorLabel(label);
+  const harness = s.harness;
+  const orchCtx = orchestrator
+    ? await orchestratorFoundingContext(predecessor.cwd, harness) : null;
+  const ritual = orchestrator
+    ? buildOrchestratorSuccessionBrief(harness, await successionInitSteps(predecessor.cwd), carry,
+      lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
+    : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
+  // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
+  // the self door's brief stays byte for byte what it was
+  const brief = opts.appendix === null ? ritual : `${ritual}\n\n${opts.appendix}`;
+  const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
+  try {
+    const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
+      { brief, path: "succession", draft, label },
+      { cwd: predecessor.cwd, model: spawn.model, harness },
+      (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
+        null, false, null, false, false, preObservedSupport, onCandidate),
+      async () => {});
+    if (!respawned.ok) return respawned.response;
+    // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
+    // would leave the successor's GET /api/self without its handover on every delivery failure.
+    const openedAt = s.openedAt;
+    const record = writeLineageHandover(draft, s, Date.now());
+    if (grantCarry.carry) transferMemoryGrant(s, grantCarry.carry, predecessorIdentity);
+    if (delegateCarry) transferReportDelegate(s, delegateCarry, predecessorIdentity);
+    try {
+      await saveStateNow();
+    } catch (e) {
+      // the record in memory is the truth — the predecessor is gone and the successor stands
+      audit("main_succession", s.id, `generic record persistence failed: ${e instanceof Error ? e.message : e}`);
+    }
+
+    // THE SAME THREE FOUNDING STEPS every founding paste runs (boot grace, delivery gate, bounded
+    // readiness) — the four live `composer still holds N chars` failures of 2026-09-03 (note
+    // 8b7c18c9) were all a brief typed into a pane whose agent was not drawn yet. NO CLEANUP KILL,
+    // for the lane baton's reason: the successor IS the line now, and killing it over a delivery
+    // failure would turn a missing brief into an empty slot. It stands, the audit row says why.
+    const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
+    const failed = async (reason: string): Promise<Response> => {
+      audit("main_succession", s.id, `generic brief-undelivered: ${reason}`);
+      const debt = recordSuccessionDebt(s, "generic", predecessorIdentity, openedAt, reason,
+        { brief, path: "succession", draft: null, label: s.label });
+      await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
+      return json({ error: `successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
+        + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
+      slot: s.id, delivered: false, debt: debt.id }, 500);
+    };
+    await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+    if (!stillCurrent()) return await failed("successor slot changed during boot");
+    const gate = await canDeliver(s, { now: Date.now(), idleMs: 0,
+      killSwitch: false, quietHours: false, harness: false });
+    if (!gate.ok) return await failed(`delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})`);
+    const readiness = await waitForFoundingReadiness(s, stillCurrent);
+    if (!readiness.ok) return await failed(readiness.reason);
+    if (!stillCurrent()) return await failed("successor slot changed before founding delivery");
+    try {
+      await sendText(s, brief, true, { path: "succession" });
+    } catch (e) {
+      return await failed(`brief failed: ${e instanceof Error ? e.message : e}`);
+    }
+    const now = Date.now();
+    s.history = [...s.history, { text: brief, ts: now, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(s);
+    logPrompt(s, brief, "auto", now);
+    if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
+    await saveStateNow();
+    return json({ ok: true, slot: s.id, label: s.label,
+      ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
+      lineage: { lineageId: record.lineageId, obligations: record.obligations.length },
+      ...(opts.appendix !== null ? { briefBytes: Buffer.byteLength(brief) } : {}),
+      ...(orchestrator ? { roleCard: orchCtx?.ok
+        ? { delivered: true, receipt: true }
+        : { delivered: true, receipt: false, contextPlan: `unknown: ${orchCtx?.error ?? "not planned"}` } } : {}) });
+  } finally {
+    laneSpawn.delete(s.id);
+  }
+}
+
+// --- THE OWNER'S SUCCESSION DOOR (owner 2026-10-06: „[Zitat entfernt]“
+// ). The self door
+// costs the predecessor one last turn that re-reads its whole context, and ↻ restart continues the
+// same conversation. This door does neither: the owner ends a RESTING session and opens a fresh one
+// on the same slot and cwd, on the generic rail, and the predecessor is typed nothing at all.
+// What it knew reaches the successor through two things it already had: the standing handover it
+// wrote in earlier turns (POST /api/self/handover → the line record's intent/pointer) and its
+// transcript on disk since that write, cut to typed text (freshTranscriptTail).
+// THIS CUT TAKES THE GENERIC RAIL ONLY (an unbound MAIN, the orchestrator). Every other rail keeps
+// its own gate and is refused by name: a lane hands over by its own `handoff` report, a Program-MAIN
+// through its Program record, a game-maker MAIN through a checkpoint only it can commit.
+type OwnerSucceedRefusal = "not-active" | "asleep" | "slot-changing" | "steward" | "lane" | "program-main"
+  | "game-maker" | "in-flight" | "busy" | "pointer-uncommitted";
+type OwnerSucceedNo = { code: number; reason: OwnerSucceedRefusal; error: string };
+const ownerSucceedNo = (code: number, reason: OwnerSucceedRefusal, error: string): OwnerSucceedNo => ({ code, reason, error });
+function ownerSucceedRailRefusal(s: Slot): OwnerSucceedNo | null {
+  if (!s.cwd) return ownerSucceedNo(400, "not-active", "slot not active");
+  if (s.sleeping || slotWakeInflight.has(s.id))
+    return ownerSucceedNo(409, "asleep", "slot is asleep — POST /api/slots/:id/wake brings it back first; nothing was handed over");
+  if (slotTeardownInflight.has(s.id) || restarting.has(s.id) || slotSpawnInflight.has(s.id) || laneSpawn.has(s.id)
+    || mergeInflight.has(s.id))
+    return ownerSucceedNo(409, "slot-changing", "slot is stopping, restarting or spawning — nothing was handed over");
+  if (s.label === STEWARD_LABEL) return ownerSucceedNo(409, "steward", "the ⚙ steward is a standing role — it does not migrate");
+  if (s.worktree)
+    return ownerSucceedNo(409, "lane", "a lane hands over by its own `handoff` fleet-report and POST /api/self/succeed — that report is written in a turn of the lane itself");
+  const bound = boundProgramsForMain(s);
+  if (bound.some((p) => isGameMaker(p)))
+    return ownerSucceedNo(409, "game-maker", "a game-maker Program-MAIN hands over a committed checkpoint only it can write — POST /api/self/succeed from the session");
+  if (bound.length)
+    return ownerSucceedNo(409, "program-main", `this session is Program-MAIN of ${bound.map((p) => p.id).join(", ")} — that rail keeps its own gate in this cut: POST /api/self/succeed from the session`);
+  if (successionStarted.get(s.id) === s.selfToken || successionInflight.has(s.selfToken))
+    return ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight");
+  return null;
+}
+// "RESTS" is the busy predicate every owner act on a pane already uses (sleepSlot, the land path),
+// not a second one: no pane output within MERGE_IDLE_MS
+async function ownerSucceedBusy(s: Slot): Promise<OwnerSucceedNo | null> {
+  const idle = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
+    quietHours: false, idleMs: MERGE_IDLE_MS });
+  return idle.ok ? null : ownerSucceedNo(409, "busy",
+    `pane is mid-turn (output within ${MERGE_IDLE_MS}ms) — no successor opened, the running session keeps its turn`);
+}
+const liveStandingHandover = (s: Slot): StandingHandover | null =>
+  s.cwd && s.standingHandover?.openedAt === s.openedAt ? s.standingHandover : null;
+
+// THE TRANSCRIPT REST: what the predecessor heard and said AFTER its standing handover, read off the
+// conversation the slot's own reader serves (transcriptPayload — Claude's jsonl, or a harness's own
+// conversation reader), so the door is harness-neutral and the proof is Claude's. Typed text only:
+// inbound turns and answer text, no tool calls, tool output, thinking or harness meta — the
+// orchestrator's hand measurement of 2026-10-06 (62 000 chars for a whole 372k-token session) is
+// the scale it is cut for. Newest first under the cap; each entry trimmed in the middle.
+const FRESH_TAIL_MAX = 24_000;
+const FRESH_TAIL_ENTRY_MAX = 1_500;
+interface FreshTail { state: "read" | "none"; reason: string | null; source: string | null;
+  entries: number; omitted: number; chars: number; text: string }
+async function freshTranscriptTail(s: Slot, since: number | null): Promise<FreshTail> {
+  const none = (reason: string): FreshTail => ({ state: "none", reason, source: null, entries: 0, omitted: 0, chars: 0, text: "" });
+  let read: Awaited<ReturnType<typeof transcriptPayload>>;
+  try { read = await transcriptPayload(s, 0); } catch (e) {
+    return none(`transcript unreadable: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+  }
+  if (!read.source) return none(harnessOf(s.harness).supports.transcript || harnessOf(s.harness).conversation
+    ? "no transcript on disk for this session" : `harness ${harnessOf(s.harness).id} keeps no conversation Fleet reads`);
+  const all: string[] = [];
+  for (const e of read.entries) {
+    if (e.meta) continue;
+    const text = e.blocks.filter((b) => b.t === "text").map((b) => b.text).join("\n").trim();
+    // a user line opening with "<" is harness plumbing (slash-command echo, local stdout), not a message
+    if (!text || (e.role === "user" && text.startsWith("<"))) continue;
+    if (since !== null && !(e.ts !== null && Date.parse(e.ts) > since)) continue;
+    const half = FRESH_TAIL_ENTRY_MAX / 2;
+    const body = text.length <= FRESH_TAIL_ENTRY_MAX ? text
+      : `${text.slice(0, half)}\n[… ${text.length - FRESH_TAIL_ENTRY_MAX} Zeichen gekürzt …]\n${text.slice(-half)}`;
+    all.push(`=== ${e.role === "user" ? "EINGANG" : "ANTWORT"} ${e.ts?.slice(0, 16) ?? "(ohne Zeit)"}\n${body}`);
+  }
+  const kept: string[] = [];
+  let chars = 0;
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (chars + all[i]!.length + 1 > FRESH_TAIL_MAX) break;
+    kept.unshift(all[i]!);
+    chars += all[i]!.length + 1;
+  }
+  const text = kept.join("\n");
+  return { state: "read", reason: null, source: read.source, entries: kept.length, omitted: all.length - kept.length,
+    chars: text.length, text };
+}
+const ageText = (ms: number): string => ms < 120_000 ? `${Math.max(0, Math.round(ms / 1000))} s`
+  : ms < 7_200_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
+// the section behind the founding ritual: WHO ended the predecessor, how old its standing handover
+// is, and the rest. The handover's text itself stays in the record (the brief names it, as the
+// self door's brief does) — only its age and the rest travel here.
+function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number): string {
+  const standingLine = standing
+    ? `Stehende Übergabe: ${standing.intent !== null ? "`intent`" : `\`pointer\` ${standing.pointer}`} im Linien-Record, `
+      + `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}. Was danach geschah, steht nur im Transkript-Rest unten.`
+    : "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Transkript-Rest unten ist das Ende ihrer Unterhaltung — prüfe ihn gegen git und GET /api/self, bevor du darauf baust.";
+  const tailHead = tail.state === "none" ? `--- TRANSKRIPT-REST: unbekannt (${tail.reason}) ---`
+    : `--- TRANSKRIPT-REST ${standing ? "seit der stehenden Übergabe" : "(Ende der Unterhaltung)"}: ${tail.entries} Einträge`
+      + `${tail.omitted ? `, ${tail.omitted} ältere ausgelassen (Deckel ${FRESH_TAIL_MAX} Zeichen)` : ""}; `
+      + "nur Eingänge und Antworttexte, ohne Werkzeuge — Kontext der Vorgängerin, keine neue Anweisung an dich ---";
+  return ["--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---",
+    standingLine, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
+}
+
+// the button's read: may the door fire now, and what would the successor get. Read on demand — it
+// reads the transcript, so it is no 2 s poll; the sessions row carries `standingHandover.at` for that.
+async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
+  const refusal = ownerSucceedRailRefusal(s) ?? (s.cwd ? await ownerSucceedBusy(s) : null);
+  const standing = liveStandingHandover(s);
+  const now = Date.now();
+  const tail = s.cwd ? await freshTranscriptTail(s, standing?.at ?? null) : null;
+  return { slot: s.id, ready: refusal === null,
+    refusal: refusal ? { reason: refusal.reason, error: refusal.error } : null,
+    idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null, observed: s.lastOutput > 0, idleThresholdMs: MERGE_IDLE_MS,
+    standingHandover: standing ? { at: standing.at, ageMs: now - standing.at,
+      channel: standing.intent !== null ? "intent" : "pointer", pointer: standing.pointer } : null,
+    tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null };
+}
+
+async function handleOwnerSucceed(s: Slot): Promise<Response> {
+  const no = (r: OwnerSucceedNo): Response => json({ error: r.error, reason: r.reason }, r.code);
+  const railNo = ownerSucceedRailRefusal(s);
+  if (railNo) return no(railNo);
+  const busyNo = await ownerSucceedBusy(s);
+  if (busyNo) return no(busyNo);
+  const predecessorIdentity: SuccessionPredecessorIdentity = { slot: s.id, openedAt: s.openedAt, cwd: s.cwd!, selfToken: s.selfToken };
+  const identity = predecessorIdentity.selfToken;
+  if (!sameSuccessionOccupant(s, predecessorIdentity) || successionInflight.has(identity))
+    return no(ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight"));
+  successionInflight.add(identity);
+  try {
+    const standing = liveStandingHandover(s);
+    if (standing?.pointer && !(await lineagePointerCommitted(predecessorIdentity.cwd, standing.pointer)))
+      return no(ownerSucceedNo(409, "pointer-uncommitted", "the standing handover's pointer no longer names a committed, clean file — the session writes it again; nothing was handed over"));
+    const tail = await freshTranscriptTail(s, standing?.at ?? null);
+    // the reads above were awaits: the occupant, its standing handover and its rest are asked again
+    // right before respawnInPlace ends it — a turn that started meanwhile keeps the pane
+    if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
+      return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
+    const lateRail = ownerSucceedRailRefusal(s);
+    if (lateRail && lateRail.reason !== "in-flight") return no(lateRail);
+    const lateBusy = await ownerSucceedBusy(s);
+    if (lateBusy) return no(lateBusy);
+    const now = Date.now();
+    audit("main_succession", s.id, `generic owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
+      + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
+    return await succeedGeneric(s, { label: s.label, carry: null,
+      channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
+      spawn: { model: s.model, effort: s.effort }, predecessorIdentity, memoryGrant: undefined,
+      appendix: freshSuccessionAppendix(standing, tail, now) });
+  } finally {
+    successionInflight.delete(identity);
+  }
+}
+
+// THE SESSION'S HALF: write (or overwrite) the standing handover, in a turn it runs anyway. Same
+// channel and the same checks as the generic succeed body (lineageChannelOf, lineagePointerCommitted),
+// exactly one of intent/pointer; the rails the owner door refuses refuse it here too, so nobody
+// keeps a handover current that no door will ever read.
+async function handleSelfHandover(s: Slot, req: Request): Promise<Response> {
+  const railNo = ownerSucceedRailRefusal(s);
+  if (railNo && (railNo.reason === "steward" || railNo.reason === "lane" || railNo.reason === "program-main"
+    || railNo.reason === "game-maker"))
+    return json({ error: railNo.error, reason: railNo.reason }, railNo.code);
+  const openedAt = s.openedAt, cwd = s.cwd!, token = s.selfToken;
+  const body = await readJson(req);
+  const parsed = lineageChannelOf(body, null);
+  if (!parsed.ok) return json({ error: parsed.error }, parsed.status);
+  const { intent, pointer } = parsed.channel;
+  if (intent === null && pointer === null)
+    return json({ error: `a standing handover names exactly one of \`intent\` (at most ${LINEAGE_INTENT_MAX} characters) or \`pointer\` (a committed, dated section)` }, 400);
+  if (pointer !== null && !(await lineagePointerCommitted(cwd, pointer)))
+    return json({ error: "pointer must name a tracked file that is committed and clean in this checkout — a pointer at uncommitted prose is a handover the successor cannot read" }, 409);
+  if (s.cwd !== cwd || s.openedAt !== openedAt || s.selfToken !== token)
+    return json({ refusal: "occupant-changed", error: "the occupant changed during this write" }, 409);
+  s.standingHandover = { at: Date.now(), openedAt, intent, pointer };
+  await saveStateNow();
+  return json({ ok: true, standingHandover: s.standingHandover });
 }
 
 async function handleSelfRetire(s: Slot): Promise<Response> {
@@ -23401,7 +23604,12 @@ function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
       + `(2) ${succeed}, ohne \`carry\` — der Checkpoint ist der eine Übergabekanal.`;
   return opening
     + "(1) offene Pflichten als Watches, Autos und Reports stehen lassen — sie gehen per ID in den Linien-Record, ein HANDOFF-Commit ist kein Gate mehr; "
-    + `(2) ${succeed}, optional mit \`intent\` (höchstens ${LINEAGE_INTENT_MAX} Zeichen: Absicht, Korrekturen, Reihenfolge) ODER \`pointer\` (ein committeter, datierter Abschnitt), nie beides.`;
+    + `(2) ${succeed}, optional mit \`intent\` (höchstens ${LINEAGE_INTENT_MAX} Zeichen: Absicht, Korrekturen, Reihenfolge) ODER \`pointer\` (ein committeter, datierter Abschnitt), nie beides. `
+    // THE STANDING HANDOVER (handleSelfHandover): the same channel written ahead, so the owner's door
+    // (handleOwnerSucceed) can hand over later without a turn of this session
+    + "Läuft gerade Arbeit, die du nicht abbrechen willst: schreib dieselbe Absicht stattdessen als stehende Übergabe "
+    + "(POST /api/self/handover, `intent` ODER `pointer`) und halte sie in deinen weiteren Turns aktuell — dann kann der Owner "
+    + "die Nachfolge jederzeit auslösen, ohne dir dafür einen Turn zu schicken.";
 }
 
 // THE LANE'S VERSION OF THE SAME EXIT, and the three steps differ because a lane's handover
@@ -38767,6 +38975,8 @@ if (existsSync(STATE_FILE)) {
           && s.sessionId !== null && (psl2 as { sessionId?: unknown }).sessionId === s.sessionId)
           s.sleeping = { at: (psl2 as { at: number }).at, sessionId: s.sessionId,
             transcript: (psl2 as { transcript: string }).transcript };
+        // the standing handover comes back only for the occupation that wrote it (standingHandoverFrom)
+        s.standingHandover = standingHandoverFrom((v as { standingHandover?: unknown }).standingHandover, s.openedAt);
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
         if (typeof psr === "object" && psr !== null
           && typeof (psr as { at?: unknown }).at === "number" && Number.isFinite((psr as { at: number }).at)
@@ -42490,6 +42700,8 @@ Bun.serve<WSData>({
         events: fleetEvents.filter((e) => fleetEventReceiverIs(e, s)),
         // the role-lineage handover addressed to THIS occupant (null = this session holds no line)
         lineage: lineageSelfView(s),
+        // the handover THIS occupant wrote ahead for the owner's door (null = none written)
+        standingHandover: s.standingHandover?.openedAt === s.openedAt ? s.standingHandover : null,
       });
     }
 
@@ -43243,6 +43455,13 @@ Bun.serve<WSData>({
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfSucceed(s, req);
+    }
+    // the standing handover the owner's succession door reads (handleSelfHandover)
+    if (url.pathname === "/api/self/handover" && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return handleSelfHandover(s, req);
     }
     if (url.pathname === "/api/self/retire" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
@@ -44197,6 +44416,8 @@ Bun.serve<WSData>({
             ...(s.context ? { context: s.context } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
             ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
+            // when this occupant last wrote its standing handover (handleSelfHandover); omitted when none
+            ...(liveStandingHandover(s) ? { standingHandover: { at: s.standingHandover!.at } } : {}),
             // Codex binds its rollout lazily after the first prompt. This typed advisory is the
             // owner's whole v1 control surface: ambiguity/loss are visible but never automated,
             // and a rendered disconnect while the TUI is alive remains Codex's own retry problem.
@@ -44792,6 +45013,13 @@ Bun.serve<WSData>({
       const s = slotFrom(chainMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return json(successionChain(s));
+    }
+    // the owner succession door's read: may it fire now, and what would the successor get
+    const ownerSucceedMatch = /^\/api\/slots\/(\d+)\/succeed$/.exec(url.pathname);
+    if (req.method === "GET" && ownerSucceedMatch) {
+      const s = slotFrom(ownerSucceedMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      return json(await ownerSucceedPreview(s));
     }
     const pastMatch = /^\/api\/slots\/(\d+)\/succession\/(\d+)\/transcript$/.exec(url.pathname);
     if (req.method === "GET" && pastMatch) {
@@ -46962,7 +47190,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake|succeed)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -47214,6 +47442,8 @@ Bun.serve<WSData>({
         if (!r.ok) return json({ error: r.error, reason: r.reason }, r.code);
         return json({ ok: true, sleeping: r.sleeping, composer: r.composer });
       }
+      // ⏭ a fresh session on the same slot and cwd WITHOUT a turn of the resting one (handleOwnerSucceed)
+      if (slotMatch[2] === "succeed") return await handleOwnerSucceed(s);
       if (slotMatch[2] === "wake") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         if (!s.sleeping && !slotWakeInflight.has(s.id)) return json({ error: "slot is not asleep", reason: "awake" }, 409);

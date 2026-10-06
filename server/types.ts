@@ -1937,6 +1937,22 @@ type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
 // `sessionId` and `transcript` are the resume evidence the door checked BEFORE it tore the pane down —
 // kept so a wake can say which conversation it was meant to bring back.
 interface SlotSleep { at: number; sessionId: string; transcript: string }
+// THE STANDING HANDOVER (owner 2026-10-06: „[Zitat entfernt]“
+// ). Written by
+// the occupant itself in turns it runs anyway (POST /api/self/handover), read by the owner's
+// succession door (POST /api/slots/:id/succeed) without a turn of the predecessor. Exactly the generic
+// rail's channel — `intent` OR `pointer` — and `at` is where the transcript rest starts. Bound to
+// the occupation that wrote it: a new occupant never inherits it (openedAt, cleared on open/close).
+interface StandingHandover { at: number; openedAt: number; intent: string | null; pointer: string | null }
+const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown, max: number): boolean => v === null || (typeof v === "string" && v !== "" && v.length <= max);
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0 || r.openedAt !== openedAt
+    || !str(r.intent, LINEAGE_INTENT_MAX) || !str(r.pointer, LINEAGE_POINTER_MAX)
+    || (r.intent === null) === (r.pointer === null)) return null;
+  return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null };
+};
 
 interface Slot {
   id: number;
@@ -2064,6 +2080,8 @@ interface Slot {
   // delivery path wakes it first (server.ts#wakeSlot). Cleared by wake, open and teardown. Persisted,
   // so a restart does not silently wake every sleeper.
   sleeping: SlotSleep | null;
+  // the occupant's own pre-written handover (StandingHandover above); null = none written
+  standingHandover: StandingHandover | null;
   history: { text: string; ts: number; source?: "owner" | "fleet" }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
@@ -3451,7 +3469,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
-  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, Slot,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3492,7 +3510,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss,
+  loadLineageHandover, loadLineageHandoverLoss, standingHandoverFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

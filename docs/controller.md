@@ -204,6 +204,23 @@ abgewiesen. Nach jedem externen Await wird die exakte
 Occupant-Identität erneut geprüft. Keine Aussage hier behauptet, alle Reports, Watches oder offenen
 Fragen würden automatisch übertragen.
 
+**Owner-Nachfolge ohne Turn der Vorgängerin** (Owner 2026-10-06: „[Zitat entfernt]“
+;
+`server.ts#handleOwnerSucceed`). `POST /api/slots/:id/succeed` (Owner-Credential) beendet eine
+RUHENDE Session und öffnet auf demselben Slot und cwd eine frische auf der ungebundenen Schiene
+(`server.ts#succeedGeneric`, dieselbe wie oben); in die Pane der Vorgängerin wird nichts getippt.
+Die Übergabe besteht aus zwei Dingen, die schon da sind: der **stehenden Übergabe**, die die Session
+selbst in ohnehin laufenden Turns schreibt (`POST /api/self/handover`, `intent` ODER `pointer`, landet
+als Kanal im Linien-Record), und dem **Transkript-Rest** seit deren Zeitstempel
+(`server.ts#freshTranscriptTail`: nur Eingänge und Antworttexte, ohne Werkzeuge, neueste zuerst unter
+24 000 Zeichen). Der Brief nennt Schreibzeit und Alter der Übergabe und hängt den Rest an. „Ruht"
+ist dasselbe Prädikat wie bei `sleep` (keine Pane-Ausgabe binnen `MERGE_IDLE_MS`); eine laufende Pane
+wird mit 409 `busy` abgewiesen. In diesem Schnitt nur ungebundene Sessions und die Orchestratorin:
+Lane, Program-MAIN, Game-Maker und Steward antworten mit benanntem 409 (`reason`) und behalten ihre
+eigene Schiene. Der Schwellen-Hinweis der ungebundenen Schiene nennt die stehende Übergabe als
+Alternative, wenn gerade Arbeit läuft. Lese-Tür für den Knopf: `GET /api/slots/:id/succeed`
+(`docs/self-api.md` §handover).
+
 **Harness-Wechsel geht NICHT über `succeed`** (`server.ts#handleSelfSucceed`: „that harness is not
 overridable here" — nur Modell/Effort innerhalb des geerbten Harness). Der Weg, gegangen am 2026-09-23
 für die Orchestratorin von claude/Opus 5.5 auf codex/gpt-6-sol (Owner: „[Zitat entfernt]“

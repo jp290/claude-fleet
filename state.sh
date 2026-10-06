@@ -148,9 +148,27 @@ def card_goal(text):
     if start < 0: return None
     stop = next((i for i, line in enumerate(rest) if i > start and not line.strip()), len(rest))
     return ' '.join(rest[start:stop]).strip()
-def row_title(text):
+def card_suspect(text):
+    # A header run that reaches end-of-text is a truncation cut, not the half header that stays
+    # prose: the program-execution projection clips row text (~200 bytes), so the tail keys
+    # (VERIFY, DONE) may be gone. Prose after the run keeps the first-line reading.
+    lines = text.split('\n')
+    at = 0
+    while at < len(lines) and not lines[at].strip(): at += 1
+    if at < len(lines) and lines[at].lstrip().startswith('[') and not CARD_LINE.match(lines[at]): at += 1
+    seen = 0
+    while at < len(lines) and CARD_LINE.match(lines[at]):
+        seen += 1
+        at += 1
+    return seen > 0 and not any(line.strip() for line in lines[at:])
+def row_title(text, task_id=None):
     if not text: return 'unknown'
-    return card_goal(text) or text.splitlines()[0]
+    goal = card_goal(text)
+    if goal is None and task_id and card_suspect(text):
+        full = read(f'/api/self/tasks/{task_id}')  # full row text; the projection clips at ~200 bytes
+        if isinstance(full, dict) and isinstance(full.get('task'), dict):
+            goal = card_goal(full['task'].get('text') or '')
+    return goal or text.splitlines()[0]
 def after(value):
     if not isinstance(value, list): return 'unknown'
     return compact(value[:3]) + (f'+{len(value)-3}' if len(value) > 3 else '')
@@ -245,7 +263,7 @@ def execution(view, self):
         emit('unknown handover reason=unreadable-record')
     group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution', limit=2)
     group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
-          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(row_title(r.get('text')))} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
+          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(row_title(r.get('text'), r.get('id')))} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
     group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
 try:
     if not os.environ.get('FLEET_SELF_TOKEN'):

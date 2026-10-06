@@ -22,9 +22,9 @@ Vorlieben, keine Regeln — die Kartenform selbst (Kopfzeilen, DONE, VERIFY) ble
   macht klein.
 - **Spielraum ausdrücklich geben.** Sag, was sie selbst entscheiden darf, etwa eine nötige
   Nachbarfläche mitnehmen und im Report nennen. Ohne diesen Satz fragt eine gute Lane, statt zu bauen.
-- **Für den Empfänger schreiben.** Ein schwächeres oder fremdes Modell braucht mehr Lage und Material,
+- **Für das Modell schreiben, das die Karte bekommt.** Ein schwächeres oder fremdes Modell braucht mehr Lage und Material,
   nicht mehr Verbote; dieselbe Schärfe, ein kleinerer Umfang.
-- **Nach der Karte fragen.** Bitte am Ende um einen Satz, was an der Karte fehlte oder störte: so lernt
+- **Um Rückmeldung zur Karte bitten.** Bitte in der Karte darum, dass die Lane am Ende in einem Satz sagt, was ihr an der Karte fehlte oder sie störte: so lernt
   die nächste Karte von der letzten.
 
 ### Ein Muster

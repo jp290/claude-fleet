@@ -671,8 +671,8 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
   const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
-  check("task catalog: an ordinary code task gets exactly the core and proof seeds",
-    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet", JSON.stringify(code));
+  check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the repo's always pack",
+    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker", JSON.stringify(code));
   check("task catalog: a measurement task adds only the measurement index",
     measurement.selected.join(",") === `${code.selected.join(",")},messnotiz-index`, JSON.stringify(measurement));
   check("task catalog: a rulebook edit adds only the generator guidance",
@@ -994,10 +994,11 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect", "task-queue-read",
       "harness-adapter-read", "private-overlay-read", "deploy-observe"] as ContextPackCapability[],
   };
-  const lanePlan = planRepoContext({ manifest, repo, facts: { ...bootstrapFacts,
+  const laneFacts = { ...bootstrapFacts,
     triggers: ["always", "verification", "jev-use"] as const,
     capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
-      "harness-adapter-read", "private-overlay-read"] as ContextPackCapability[] } });
+      "harness-adapter-read", "private-overlay-read"] as ContextPackCapability[] };
+  const lanePlan = planRepoContext({ manifest, repo, facts: laneFacts });
   const orchestrationPackIds = ["orchestrator-eigenarten", "haltung-auftraggeber"];
   check("orchestration trigger: the lane/dispatch plan does NOT carry orchestrator-eigenarten or haltung-auftraggeber",
     orchestrationPackIds.every((id) => !lanePlan.selected.some((pack) => pack.id === id)
@@ -1008,6 +1009,22 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
   check("orchestration trigger: the bootstrap plan of a MAIN or Orchestratorin founding carries orchestrator-eigenarten and haltung-auftraggeber",
     orchestrationPackIds.every((id) => mainPlan.selected.some((pack) => pack.id === id)),
     `${manifest.kind} ${JSON.stringify(mainPlan.selected.map((pack) => pack.id))}`);
+  // THE WORKER HALTUNG (owner decision 2026-10-06): the repo pack with trigger `always` rides every
+  // start — a lane's dispatch facts and a MAIN's bootstrap facts alike select it from the REAL
+  // manifest, and the pointer is exact so a moved heading turns red here, not in a delivered brief.
+  check("haltung-worker: a lane dispatch plan and a MAIN founding plan both carry the always repo pack",
+    lanePlan.selected.some((pack) => pack.id === "haltung-worker")
+      && mainPlan.selected.some((pack) => pack.id === "haltung-worker"),
+    JSON.stringify({ lane: lanePlan.selected.map((pack) => pack.id), main: mainPlan.selected.map((pack) => pack.id) }));
+  const workerPack = mainPlan.selected.find((pack) => pack.id === "haltung-worker");
+  check("haltung-worker: the pointer is exactly docs/haltung-worker.md, ## Was wir bevorzugen, und warum",
+    !!workerPack && JSON.stringify(workerPack.sources)
+      === JSON.stringify([{ path: "docs/haltung-worker.md", anchor: "## Was wir bevorzugen, und warum" }]),
+    JSON.stringify(workerPack ?? null));
+  check("haltung-worker: every harness of the closed vocabulary selects the pack on the lane dispatch facts",
+    CONTEXT_PACK_HARNESSES.every((harness) =>
+      planRepoContext({ manifest, repo, facts: { ...laneFacts, harness } }).selected.some((pack) => pack.id === "haltung-worker")),
+    JSON.stringify(CONTEXT_PACK_HARNESSES));
   const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
     triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });
   check("orchestration trigger: the bootstrap plan does NOT select the seed pack task-queue — the pack is absent",

@@ -1,5 +1,23 @@
 [
   {
+    "id": "haltung-worker",
+    "useWhen": "Beim Start einer Lane: deine Arbeitshaltung — Ziel hinter der Karte, ganzes Ergebnis, Wirkung selbst sehen.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["always"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "docs/haltung-worker.md", "anchor": "## Was wir bevorzugen, und warum" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1810,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "rulebook-generat",
     "useWhen": "Bevor du das Regelbuch (CLAUDE.md) aenderst: es ist ein Generat — Fragment editieren und rendern.",
     "scope": "repo-contract",

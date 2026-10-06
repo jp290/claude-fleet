@@ -998,14 +998,15 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     triggers: ["always", "verification", "jev-use"] as const,
     capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
       "harness-adapter-read", "private-overlay-read"] as ContextPackCapability[] } });
-  check("orchestration trigger: the lane/dispatch plan does NOT carry orchestrator-eigenarten",
-    !lanePlan.selected.some((pack) => pack.id === "orchestrator-eigenarten")
-      && lanePlan.omitted.some((pack) => pack.id === "orchestrator-eigenarten" && pack.why === "trigger-not-matched"),
+  const orchestrationPackIds = ["orchestrator-eigenarten", "haltung-auftraggeber"];
+  check("orchestration trigger: the lane/dispatch plan does NOT carry orchestrator-eigenarten or haltung-auftraggeber",
+    orchestrationPackIds.every((id) => !lanePlan.selected.some((pack) => pack.id === id)
+      && lanePlan.omitted.some((pack) => pack.id === id && pack.why === "trigger-not-matched")),
     JSON.stringify({ selected: lanePlan.selected.map((pack) => pack.id),
-      why: lanePlan.omitted.find((pack) => pack.id === "orchestrator-eigenarten") }));
+      why: orchestrationPackIds.map((id) => lanePlan.omitted.find((pack) => pack.id === id)) }));
   const mainPlan = planRepoContext({ manifest, repo, facts: bootstrapFacts });
-  check("orchestration trigger: the bootstrap plan of a MAIN or Orchestratorin founding carries orchestrator-eigenarten",
-    mainPlan.selected.some((pack) => pack.id === "orchestrator-eigenarten"),
+  check("orchestration trigger: the bootstrap plan of a MAIN or Orchestratorin founding carries orchestrator-eigenarten and haltung-auftraggeber",
+    orchestrationPackIds.every((id) => mainPlan.selected.some((pack) => pack.id === id)),
     `${manifest.kind} ${JSON.stringify(mainPlan.selected.map((pack) => pack.id))}`);
   const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
     triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });

@@ -70,5 +70,23 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "haltung-auftraggeber",
+    "useWhen": "Bevor du als MAIN oder Orchestratorin eine Karte schreibst: wie eine Karte die beste Besetzung hervorholt.",
+    "scope": "repo-contract",
+    "audience": "maintainer",
+    "triggers": ["orchestration"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "docs/haltung-auftraggeber.md", "anchor": "## Wie wir Karten schreiben, und warum" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2500,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

@@ -1610,6 +1610,9 @@ export async function run(): Promise<void> {
         }
         const mainGate = await gateOf(m.token);
         const nonMainGate = await gateOf(n.token);
+        // the expected closure is computed, not literal, so the next fixture edge added to
+        // suite-modules.ts cannot rot this check the way the tasks→share edge did
+        const tasksClosure = modulePlanFor(["tasks"]).run;
         check("(LP.api main) main-bound preview defaults to the full offer",
           mainGate.localProof?.preview?.target.state === "known" && mainGate.localProof.preview.target.branch === "main"
             && mainGate.localProof.preview.default === "full" && mainGate.localProof.modules === undefined
@@ -1617,8 +1620,8 @@ export async function run(): Promise<void> {
         check("(LP.api target) the same committed diff on a non-main target defaults to its fixture closure",
           nonMainGate.localProof?.preview?.target.state === "known" && nonMainGate.localProof.preview.target.branch === "overhaul"
             && nonMainGate.localProof.preview.default === "modules"
-            && JSON.stringify(nonMainGate.localProof.modules) === '["self-token","outcomes","tasks"]'
-            && JSON.stringify(nonMainGate.localProof.offerBody) === '{"modules":["self-token","outcomes","tasks"]}'
+            && JSON.stringify(nonMainGate.localProof.modules) === JSON.stringify(tasksClosure)
+            && JSON.stringify(nonMainGate.localProof.offerBody) === JSON.stringify({ modules: tasksClosure })
             && mainGate.localProof?.preview?.diff?.treeSha === nonMainGate.localProof.preview.diff?.treeSha,
           JSON.stringify(nonMainGate.localProof));
         for (const [token, proof] of [[m.token, mainGate.localProof], [n.token, nonMainGate.localProof]] as const) {
@@ -1655,7 +1658,7 @@ export async function run(): Promise<void> {
         check("(LP.api symbol) a real server diff is mapped by its source and executable check anchors",
           symbol.localProof?.preview?.coverage.state === "covered"
             && symbol.localProof.preview.coverage.anchors.some((a) => a.source === "server.ts#laneSuiteView")
-            && JSON.stringify(symbol.localProof.modules) === '["self-token","lane-suite","outcomes","tasks"]',
+            && JSON.stringify(symbol.localProof.modules) === JSON.stringify(modulePlanFor(["tasks", "lane-suite"]).run),
           JSON.stringify(symbol.localProof));
         writeFileSync(`${n.lane.cwd}/server.ts`, source.replace("return 1", "return 2"));
         commit(n.lane.cwd);

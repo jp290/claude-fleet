@@ -247,7 +247,7 @@ async function snapshotTruthChecks(): Promise<void> {
   check("snapshot script MUTATION: the old strip (exception removed, drop without parent) loses every binding",
     !keepsBinding(code.replace(/if\(k==='sessionId'&&parent==='main'\)return \[\[k,null\]\];/, ""))
     && !keepsBinding(code.replace(/\[k,null\]/, "[k,'gone']")));
-  const snapshotCat = (t: string) => /snapshot\] then/.test(t) && /TI_AGENT_CMD='cat'/.test(t)
+  const snapshotCat = (t: string) => /= snapshot \]; then/.test(t) && /TI_AGENT_CMD='cat'/.test(t)
     && /TI_AGENT_CMD='true'/.test(t) && t.indexOf("TI_AGENT_CMD='cat'") < t.indexOf("TI_AGENT_CMD='true'");
   check("snapshot script: snapshot panes run the cat stand-in, mixed keeps true (its painters type shell loops)",
     snapshotCat(code), "");
@@ -263,7 +263,7 @@ async function snapshotTruthChecks(): Promise<void> {
   check("snapshot board: the machine group paints the Testinstanz row and the helper placeholder only from instance.source",
     wired(boardCode), "");
   check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
-    !wired(boardCode.replace("instanceSource && !helpers.size", "false && instanceSource && !helpers.size")));
+    !wired(boardCode.replace(/instanceSource && !helpers\.size/, "false")));
 
   // DOM — three pages per width: carried binding, unreadable binding, live fleet
   try {

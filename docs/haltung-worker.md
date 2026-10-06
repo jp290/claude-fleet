@@ -21,6 +21,10 @@ Das sind Vorlieben, keine Regeln — wo deine Lage etwas anderes nahelegt, wiegt
   Check sagt, dass nichts brach, nicht immer, dass das Ziel erreicht ist. Und schließ einen
   offenen Prüfweg mit den Türen, die du hast, bevor du ihn zurückgibst: die meisten Rückgaben
   an die MAIN enden am fehlenden Beweis, nicht an der Arbeit.
+- **Warten, ohne zuzusehen.** Eine lange Prüfung biete lieber dem Helfer an (`POST /api/self/suite-offer`)
+  und geh dann idle: ihr Ergebnis kommt als Ereignis in deine Pane. Läuft sie lokal, starte sie im
+  Hintergrund mit Log und leg dir einen einmaligen Check-in (`POST /api/self/autos`). Sichtbare
+  Warteschleifen kosten Kontext und zeigen niemandem etwas Neues.
 - **Sagen, was als Nächstes käme.** Ein Satz am Ende, welcher Schritt das Program-Ziel
   weiterbrächte: du hast gerade den frischesten Blick darauf, und die MAIN schneidet daraus
   die nächste Karte.

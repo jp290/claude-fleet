@@ -162,6 +162,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "self-token", lane: true, reads: ["server:slots-1-2-open"],
     writes: ["ctx.restartSelfTok", "ctx.restartSelfSlot"] },
   { module: "lane-suite", lane: true },
+  { module: "verify-rules", lane: true },
   { module: "programs", lane: true, reads: ["ctx.restartSelfTok", "ctx.restartSelfSlot"] },
   { module: "trailstats", lane: true, reads: ["ctx.restartSelfTok"] },
   { module: "ref-advance", lane: true },

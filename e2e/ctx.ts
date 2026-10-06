@@ -108,6 +108,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "ctl", seconds: 16, modules: ["ctl"] },
   { unit: "concurrency", seconds: 13, modules: ["concurrency"] },
   { unit: "lane-suite", seconds: 5, modules: ["lane-suite"] },
+  { unit: "verify-rules", seconds: 5, modules: ["verify-rules"] },
   { unit: "ref-advance", seconds: 5, modules: ["ref-advance"] },
   { unit: "land-durability", seconds: 98, modules: ["land-durability"] },
   { unit: "sweep", seconds: 1, modules: ["sweep"] },

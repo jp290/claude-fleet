@@ -10193,16 +10193,18 @@ export async function run(ctx: Ctx): Promise<void> {
       && citedOnly.body.verify === "bun e2e/pins.ts"
       && citedOnly.gaps.some((g) => g.includes("e2e/pins.ts") && g.includes("only as proof")),
       JSON.stringify(citedOnly));
-    // VERIFY ALIASES (validator 4): the filing format's own "volle Kette" and a bare "e2e-isolated"
-    // are proofs, written back as the step names; prose that only sounds like a proof stays a gap.
+    // VERIFY ALIASES: chain aliases are proofs; an isolated preview needs an obligation condition.
     const verifyOf = (value: string) => {
       const v = validateCard({ verify: value }, cardCtx);
-      return { verify: v.body.verify, gap: v.gaps.some((g) => g.startsWith("verify")) };
+      return { verify: v.body.verify, gap: v.gaps.some((g) => g.startsWith("verify")),
+        previewGap: v.gaps.some((g) => g.startsWith("verify: preview not owed")) };
     };
     const fullSteps = LOCAL_PROOF_STEPS.join(", ");
     const aliasAccepted = {
       full: verifyOf("volle Kette"),
       fullEn: verifyOf("full chain"),
+    };
+    const previewRefused = {
       fullOffer: verifyOf("volle Kette; e2e-isolated per Suite-Offer"),
       isoSh: verifyOf("e2e-isolated.sh"),
       isoDot: verifyOf("./e2e-isolated.sh."),
@@ -10213,16 +10215,17 @@ export async function run(ctx: Ctx): Promise<void> {
       testsDe: verifyOf("Tests laufen lassen"),
       lookalike: verifyOf("e2e-isolated-prep anschauen"),
     };
-    check("(v4) card verify: \"volle Kette\" and \"e2e-isolated\" are proofs written as chain step names; \"run the tests\" stays a gap",
+    check("(v4) card verify: chain aliases stay accepted; unconditional isolated aliases have a preview not owed gap; proof-like prose stays refused",
       Object.values(aliasAccepted).every((a) => !a.gap)
       && aliasAccepted.full.verify === fullSteps && aliasAccepted.fullEn.verify === fullSteps
-      && aliasAccepted.fullOffer.verify === `${fullSteps}, isolated`
-      && aliasAccepted.isoSh.verify === "isolated" && aliasAccepted.isoDot.verify === "isolated"
-      && aliasAccepted.isoMixed.verify === "isolated — ./e2e-isolated.sh und bun e2e/pins.ts"
+      && Object.values(previewRefused).every((a) => a.gap && a.previewGap)
+      && previewRefused.fullOffer.verify === `${fullSteps}, isolated`
+      && previewRefused.isoSh.verify === "isolated" && previewRefused.isoDot.verify === "isolated"
+      && previewRefused.isoMixed.verify === "isolated — ./e2e-isolated.sh und bun e2e/pins.ts"
       && Object.values(aliasRefused).every((r) => r.gap)
       && aliasRefused.tests.verify === "run the tests" && aliasRefused.testsDe.verify === "Tests laufen lassen"
       && CARD_VALIDATOR_VERSION >= 4,
-      JSON.stringify({ aliasAccepted, aliasRefused, CARD_VALIDATOR_VERSION }));
+      JSON.stringify({ aliasAccepted, previewRefused, aliasRefused, CARD_VALIDATOR_VERSION }));
     // CLARIFY CLOSE (validator 6, queue row f3ca2e05's refusal): a clarify lane builds nothing, its
     // brief ends in POST /api/self/criterion — that route is its proof. An invented step, and every
     // near-miss of the route, keeps the one verify gap line an unknown step has always had.

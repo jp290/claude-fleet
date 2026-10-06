@@ -274,6 +274,8 @@ const steps: Step[] = [
   // and remains before programs.run(); it opens and kills its own lanes and leaves no offer behind.
   { unit: "lane-suite", lane: true, module: "lane-suite", run: async () => {
     await laneSuite.run();
+  } },
+  { unit: "verify-rules", lane: true, module: "verify-rules", run: async () => {
     await verifyRules.run();
   } },
   // Programs are planning-session artifacts above lanes. They use both the plain session and the

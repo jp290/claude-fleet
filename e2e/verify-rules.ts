@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, ROOT, REPO, check, get, post, until } from "./harness";
 import { validateCard, type CardValidationContext } from "../card-extract";
 import type { LocalProof } from "../verify-proportion";
 
@@ -21,7 +20,7 @@ const bodyOf = async <T>(response: Response): Promise<T> => {
   catch { throw new Error(`verify-rules: non-JSON response (${response.status})`); }
 };
 
-export function runCardRules(): void {
+export function runCardRules(check: (name: string, ok: boolean, detail?: string) => void): void {
   const unconditional = [
     "install, pins, tsc, build (AGENTS.md §Verify woertlich), dann Suite-Offer (./e2e-isolated.sh-Vorschau ueber POST /api/self/suite-offer)",
     "AGENTS.md §Verify: volle install→pins→Strict-tsc→build→clean-review→security→claude-gate-Kette unten wortgetreu; danach volle ./e2e-isolated.sh-Preview über suite-offer {} auf exakt demselben Freeze.",
@@ -52,7 +51,8 @@ export function runCardRules(): void {
 }
 
 export async function run(): Promise<void> {
-  runCardRules();
+  const { BASE, ROOT, REPO, check, get, post, until } = await import("./harness");
+  runCardRules(check);
   if (!REPO) return;
   const repo = `${ROOT}/verify-rules-repo`;
   mkdirSync(`${repo}/docs`, { recursive: true });

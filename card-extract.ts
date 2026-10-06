@@ -58,9 +58,8 @@ export const CARD_KEY = "card";
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
 //  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
 //  11 — WEB: search is an optional, explicitly checked research declaration
-//  12 — an isolated preview in VERIFY needs an explicit obligation condition
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 12;
+export const CARD_VALIDATOR_VERSION = 11;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,

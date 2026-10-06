@@ -203,7 +203,7 @@ macht sie nicht geschuldet. Bei `"self-assess"` benennt `owedReason` einen der v
 offers it (`POST /api/self/suite-offer`) instead of taking this machine's suite mutex. The body is
 served ready as `localProof.offerBody` (present unless `isolatedPreview` is `false`): `{}` is the
 full run, `{"modules":[…]}` the narrowed run of `localProof.modules`, which needs
-`helper.takesModules`.
+`helper.takesModules`. Bei `"self-assess"` wird der benannte `owedReason` zum Body hinzugefuegt.
 
 ```bash
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \

@@ -21,6 +21,7 @@
 #   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
 #   ./testinstanz.sh status                 is it up, where, rest of its ttl, and who holds the mutex
+#   ./testinstanz.sh source                 what `up` would record as the shown stand, measured now
 #   ./testinstanz.sh list                   every test instance of this machine, from state files
 #   ./testinstanz.sh down                   stop the server, kill ITS tmux by socket, remove the dir
 #
@@ -86,6 +87,34 @@ fi
 [ "$PORT" = "8790" ] && { echo "refused: 8790 is the live port" >&2; exit 2; }
 [ "$SOCK" = "claudefleet" ] && { echo "refused: claudefleet is the live tmux socket" >&2; exit 2; }
 case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside the checkout" >&2; exit 2;; esac
+
+# WHAT THE INSTANCE SHOWS, measured on the SOURCE before anything is copied (ranke-notiz R11): head,
+# branch, porcelain line count, and — against the TARGET the work wants to land on — how many of
+# head's commits are not on it yet. `--cherry-pick --right-only` drops commits whose change the
+# target already carries, so a lane landed by rebase reads 0 rather than its old count.
+# The target is never guessed: FLEET_TI_TARGET (the server passes the lane's recorded base), else
+# the lane's own `base` from GET /api/self when this runs in a lane pane (FLEET_SELF_URL + token,
+# read in-process so the token never reaches a command line), else none — and the band says
+# "Ziel unbekannt". The JSON is stored as sourceBefore= and handed verbatim to the instance as
+# FLEET_INSTANCE_SOURCE (src/protocol.ts#instanceSourceFrom folds anything unreadable to null).
+ti_measure() {
+  TI_GIT_SRC="$SRC" GIT_OPTIONAL_LOCKS=0 bun -e '
+const run=(...a)=>{const p=Bun.spawnSync(["git","-C",process.env.TI_GIT_SRC,...a],{env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}});return p.exitCode===0?p.stdout.toString().trim():null;};
+const head=run("rev-parse","HEAD"),branch=run("symbolic-ref","--short","HEAD"),status=run("status","--porcelain");
+const measuredAt=Date.now();
+let name=process.env.FLEET_TI_TARGET||null;
+if(!name&&process.env.FLEET_SELF_TOKEN&&process.env.FLEET_SELF_URL){
+  try{const r=await fetch(process.env.FLEET_SELF_URL+"/api/self",{headers:{"x-fleet-self-token":process.env.FLEET_SELF_TOKEN},signal:AbortSignal.timeout(2000)});
+    const base=r.ok?(await r.json())?.lane?.base:null;if(typeof base==="string"&&base)name=base;}catch{}
+}
+let target=null;
+if(name&&run("check-ref-format","--branch",name)!==null){
+  const th=run("rev-parse","--verify","--quiet","refs/heads/"+name+"^{commit}");
+  const n=th&&head?run("rev-list","--count","--cherry-pick","--right-only",th+"..."+head):null;
+  target={branch:name,head:th,ahead:n!==null&&/^\d+$/.test(n)?Number(n):null};
+}
+console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt,target}));'
+}
 
 # The address the owner opens. Derived at RUN time, never written into this file: a tracked file
 # that names this machine's address fails `leak-pin: tracked files contain no configured deploy
@@ -154,7 +183,7 @@ ti_serve() {
   # whitelist it cannot fire — but the invariant is CHECKED, not assumed.
   : > "$DIR/env-names"
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
-              FLEET_LANE_SUCCEED_MAX FLEET_TOKEN FLEET_KONZEPT_ROOT; do
+              FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_TOKEN FLEET_KONZEPT_ROOT; do
     echo "$TI_V" >> "$DIR/env-names"
   done
   if grep -Eq '^(FLEET_HUB_REMOTE|FLEET_HELPER_|FLEET_SHARE_)' "$DIR/env-names"; then
@@ -177,10 +206,15 @@ ti_serve() {
   # view has a root and `down` removes it with the rest; FLEET_TI_KONZEPT_ROOT points it at a fixture
   TI_KONZ="${FLEET_TI_KONZEPT_ROOT:-$DIR/konzepte}"
   mkdir -p "$TI_KONZ"
+  # the band at the top of the instance: the stand recorded BEFORE the copy (ti_measure). Always set
+  # here — this is a test instance by construction — and "{}" when no record exists, which the
+  # instance reads as "Stand unbekannt" instead of showing no band at all.
+  TI_SHOWN=$(sed -n 's/^sourceBefore=//p' "$STATE" 2>/dev/null | head -1)
+  [ -n "$TI_SHOWN" ] || TI_SHOWN='{}'
   ( cd "$DIR" && exec env -i HOME="$DIR/home" PATH="$DIR/bin:$PATH" TMPDIR="${TMPDIR:-/tmp}" \
       LANG=en_US.UTF-8 \
       FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD=true \
-      FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_LANE_SUCCEED_MAX=5 \
+      FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_INSTANCE_SOURCE="$TI_SHOWN" FLEET_LANE_SUCCEED_MAX=5 \
       FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
@@ -252,10 +286,7 @@ up)
     ti_owned || { echo 'refused: instance identity is unknown' >&2; exit 2; }
     echo "already up — ./testinstanz.sh status"; exit 0
   fi
-  TI_SOURCE_BEFORE=$(TI_GIT_SRC="$SRC" GIT_OPTIONAL_LOCKS=0 bun -e '
-const run=(...a)=>{const p=Bun.spawnSync(["git","-C",process.env.TI_GIT_SRC,...a],{env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}});return p.exitCode===0?p.stdout.toString().trim():null;};
-const head=run("rev-parse","HEAD"),branch=run("symbolic-ref","--short","HEAD"),status=run("status","--porcelain");
-console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt:Date.now()}));')
+  TI_SOURCE_BEFORE=$(ti_measure)
   TI_COPY_STARTED=$(date +%s)
   if [ -f "$STATE" ]; then
     [ "$(sed -n 's/^src=//p' "$STATE")" = "$SRC" ] && [ "$(sed -n 's/^dir=//p' "$STATE")" = "$DIR" ] && [ "$(sed -n 's/^sock=//p' "$STATE")" = "$SOCK" ] || { echo 'refused: foreign instance state' >&2; exit 2; }
@@ -360,6 +391,10 @@ states)
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
   ti_plant states
   ;;
+source)
+  # Plants nothing, starts nothing: the JSON `up` would record as sourceBefore, measured now.
+  ti_measure
+  ;;
 status)
   if [ "${2:-}" = --json ]; then
     TI_STATUS_SRC="$SRC" TI_STATUS_DIR="$DIR" TI_STATUS_HOST="$(ti_addr)" bun - <<'JS'
@@ -461,5 +496,5 @@ down)
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | list | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | source | list | down" >&2; exit 2;;
 esac

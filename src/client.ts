@@ -52,6 +52,7 @@ import type { WaitRow } from "../waits";
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
+  instanceSourceFrom, instanceBandText, type InstanceSource,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
   type DispositionWorker, type DispositionVerdict, type SuiteOfferRow, type SubscriptionUsage, type SubscriptionWindow,
 } from "./protocol";
@@ -179,6 +180,34 @@ function hostSign(name: IconName, text: string): HTMLElement[] {
   const ic = el("span", "tricon");
   ic.appendChild(icon(name));
   return [ic, el("span", "devname", text)];
+}
+
+// THE TESTINSTANZ BAND (ranke-notiz R11, grammatik G2.3): one quiet line above everything, on a
+// TEST INSTANCE only — which branch and stand this copy shows and what of it is not on its target
+// yet. Fed by `instance.source` of the existing sessions poll, which only an instance started by
+// testinstanz.sh carries (server.ts#INSTANCE_SOURCE); the live fleet never sends it, so there the
+// element stays hidden and <html> never gets the class that makes room for it. The wire value is
+// re-folded through the server's own parser at this boundary, and the words come from one pure
+// function (src/protocol.ts#instanceBandText) that e2e/lanes-lifecycle.ts runs without a browser.
+const tiBand = $("tiband");
+let tiBandRendered = "";
+function renderInstanceBand(source: InstanceSource | null) {
+  const key = source ? JSON.stringify(source) : "";
+  if (key === tiBandRendered) return;
+  tiBandRendered = key;
+  document.documentElement.classList.toggle("tiband", !!source);
+  tiBand.hidden = !source;
+  if (!source) { tiBand.replaceChildren(); tiBand.removeAttribute("title"); return; }
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const parts: Node[] = [icon("ranke")];
+  band.segments.forEach((seg, i) => {
+    if (i > 0) parts.push(el("span", "tisep", " · "));
+    const span = el("span", "tiseg");
+    for (const run of seg) span.append(run.mono ? el("span", "timono", run.t) : document.createTextNode(run.t));
+    parts.push(span);
+  });
+  tiBand.replaceChildren(...parts);
+  tiBand.title = band.title;
 }
 
 function renderInstanceHead() {
@@ -7196,7 +7225,7 @@ export async function refresh() {
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
-      instance?: { name?: string | null };
+      instance?: { name?: string | null; source?: InstanceSource };
       // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
       lands?: boolean;
       // omitted by the server when nothing is configured — absent and empty are the same answer
@@ -7248,6 +7277,7 @@ export async function refresh() {
       typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
       && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
     renderInstanceHead();
+    renderInstanceBand(data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source)));
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;

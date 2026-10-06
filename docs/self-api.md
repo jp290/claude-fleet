@@ -50,6 +50,10 @@ ist es die eindeutig gelabelte lebende Orchestratorin. Ohne eindeutig auflösbar
 steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane-Slot;
 die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
 `harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
+`lane` ist `{repo,branch,base}` oder `null`; `base` ist die beim Lane-Start aufgezeichnete Basis
+(`Slot.worktree.base`, das Landziel), `null` wenn keine aufgezeichnet ist — nie abgeleitet.
+`testinstanz.sh#ti_measure` liest sie als Ziel des Testinstanz-Bands, wenn es von Hand in einer
+Lane-Pane läuft.
 
 `waitingOnMe` enthält offene Einträge `{kind,id,slot}` für ungelesene eingehende Nachrichten,
 fremde bewaffnete Watches auf die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
@@ -3351,6 +3355,36 @@ Autos aus und bereinigt historische Slot-/Task-/Program-/Report-/Attentiondaten.
 Patch signalisieren nur den eigenen gespeicherten PID mit passender Prozessgeburt (Locale C)
 und belegtem Portbesitz. Führende/nachlaufende Format-Leerzeichen werden bei beiden Geburtswerten entfernt; der Zeitwert wird exakt verglichen. Fremder/al­ter State oder unbekannter Socketbesitz wird verweigert.
 Keine Live-Bindings, Helper-/Job-/Watch-Übertragung, Merge/Land/Deploy/Undo oder neuen Grants.
+
+### Das Band in der Testinstanz (ranke-notiz R11)
+
+Eine mit `testinstanz.sh up` gestartete Instanz zeigt oben eine ruhige Zeile: Zweig, Stand beim
+Start (kurze Sha) und was davon noch nicht im Ziel ist — „3 Commits noch nicht auf overhaul“,
+„1 Commit und 2 Dateien ohne Commit noch nicht auf overhaul“, „alles schon auf overhaul“; fehlt
+eine Angabe, steht „unbekannt“ („Stand unbekannt“, „Ziel unbekannt“). Die Live-Instanz zeigt kein
+Band.
+
+- **Messung vor dem Kopieren:** `testinstanz.sh#ti_measure` liefert
+  `{head,branch,dirty,measuredAt,target:{branch,head,ahead}|null}` und wird unverändert als
+  `sourceBefore=` gespeichert (die vier bisherigen Felder bleiben, `status --json` und
+  `recordedSource.before` lesen weiter nur diese). `./testinstanz.sh source` druckt dieselbe
+  Messung, ohne etwas zu starten. `ahead` zählt Commits von `head`, deren Änderung nicht auf dem
+  Ziel liegt (`git rev-list --count --cherry-pick --right-only ziel...head`): eine per Rebase
+  gelandete Lane zählt 0. `dirty` ist die Zahl der Porcelain-Zeilen.
+- **Ziel, nie geraten:** `FLEET_TI_TARGET`; der Server setzt es bei `up` auf die aufgezeichnete
+  Basis des Slots, der den Arbeitsort belegt (`Slot.worktree.base`), ein Arbeitsort ohne Session
+  bekommt keins. Von Hand in einer Lane-Pane liest das Script `lane.base` aus `GET /api/self`
+  (Token nur im Prozess, nie auf einer Kommandozeile). Sonst `target:null` → „Ziel unbekannt“.
+- **An die Instanz:** `ti_serve` übergibt die gespeicherte Zeile als `FLEET_INSTANCE_SOURCE`
+  (fehlt sie, `{}`). Der Server faltet sie mit `src/protocol.ts#instanceSourceFrom` und trägt sie
+  als `instance.source` in `GET /api/sessions` — **nur wenn gesetzt**; ungesetzt oder leer (live)
+  fehlt das Feld. Gesetzt, aber unlesbar: alle Felder null, das Band sagt „Stand unbekannt“.
+- **Stand beim Start:** gemessen wird einmal bei `up`; spätere Commits im Worktree ändern das Band
+  nicht, der Tooltip sagt das. Kein neuer Poll — der Client liest das Feld aus dem bestehenden
+  Sessions-Poll (`src/client.ts#renderInstanceBand`), die Wörter kommen aus
+  `src/protocol.ts#instanceBandText`.
+
+Claims samt Mutationsprobe: `e2e/lanes-lifecycle.ts#instanceBandChecks`.
 
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`, `POST /api/self/jobs/:id/withdraw`
 

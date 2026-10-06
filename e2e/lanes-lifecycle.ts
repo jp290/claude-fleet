@@ -1,6 +1,6 @@
 import { loadConfig, reposOf } from "../helper-daemon/daemon";
 import { helperReposFrom } from "../server/types";
-import { HELPER_REPO_COMMITS_MAX, type HelperReposReading, instanceNameFrom, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
+import { HELPER_REPO_COMMITS_MAX, type HelperReposReading, instanceNameFrom, instanceSourceFrom, instanceBandText, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
@@ -16,6 +16,138 @@ import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastRevi
 import type { LaneCtx } from "./ctx";
 import { repoGraph, roleOf } from "../server/deploy-classify";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+
+// THE TESTINSTANZ BAND (ranke-notiz R11): a test instance says which branch and stand it shows and
+// what of it is not on its target yet; the live fleet says nothing. One claim per statement, each
+// with the mutation that must turn it red, stated next to it and RUN:
+//   words   — the three DONE sentences come out of src/protocol.ts#instanceBandText; mutation: a
+//             missing count reads "alles schon" → the "never guessed" row is red; a process word
+//             planted in a text → the vocabulary row is red.
+//   measure — testinstanz.sh `source` (the very function `up` records as sourceBefore) against a
+//             real git fixture; mutation: the change of one lane commit put on the target by
+//             cherry-pick must leave the count (a plain rev-list would not drop it).
+//   order   — `up` measures BEFORE rsync and hands that record to the instance; mutation: the same
+//             predicate over a copy with the two lines swapped / the env name removed is false.
+//   wire    — the suite server (no FLEET_INSTANCE_SOURCE, like the live fleet) carries no
+//             `instance.source`; restarted WITH it, it does — and the "no band" predicate, run
+//             over that answer, is false (the mutation is the real server with the variable set).
+//   client  — the band paints only from `instance.source`, hidden otherwise; mutation: the same
+//             anchors over a copy without the hidden line are false.
+async function instanceBandChecks(): Promise<void> {
+  const clock = () => "12:00";
+  const H = "a".repeat(40), T = "b".repeat(40);
+  const words = (o: unknown) => { const src = instanceSourceFrom(JSON.stringify(o)); return src ? instanceBandText(src, clock) : null; };
+  const lane = (ahead: number | null, dirty: number | null) =>
+    ({ head: H, branch: "fleet/r11-fixture", dirty, measuredAt: 1, target: { branch: "overhaul", head: T, ahead } });
+  const three = words(lane(3, 0)), all = words(lane(0, 0)), none = words({});
+  check("band words: branch, stand at start and '3 Commits noch nicht auf overhaul'",
+    three?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul", three?.text);
+  check("band words: both counts measured zero read 'alles schon auf overhaul'",
+    all?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · alles schon auf overhaul", all?.text);
+  check("band words: an instance without a readable record reads 'Stand unbekannt', set-but-garbage likewise",
+    none?.text === "Zweig unbekannt · Stand unbekannt"
+      && instanceBandText(instanceSourceFrom("not json")!, clock).text === "Zweig unbekannt · Stand unbekannt", none?.text);
+  const guessed = [words(lane(null, 0)), words(lane(0, null)), words({ ...lane(0, 0), target: null })];
+  const neverGuessed = (b: ReturnType<typeof words>) => !!b && !b.text.includes("alles schon") && b.text.includes("unbekannt");
+  check("band words: a missing count or target is 'unbekannt', never 'alles schon'",
+    guessed.every(neverGuessed), JSON.stringify(guessed.map((b) => b?.text)));
+  check("band words MUTATION: the never-guessed predicate is red on a text that claims 'alles schon' without a count",
+    !neverGuessed({ segments: [], title: "", text: "Zweig x · Stand beim Start aaaaaaa · alles schon auf overhaul" }));
+  const PROCESS = /\b(baton|audit|gate|suite|deploy)\b/i;
+  const every = [three, all, none, ...guessed, words(lane(1, 2)), words(lane(0, 1))];
+  check("band words: no process word in any band text or tooltip (G0.5)",
+    every.every((b) => !!b && !PROCESS.test(b.text) && !PROCESS.test(b.title)), JSON.stringify(every.map((b) => b?.text)));
+  check("band words MUTATION: the vocabulary predicate is red on a planted process word", PROCESS.test(`${three?.text} · gate`));
+  check("band words: the source is folded to null when unset or empty — no band on an instance without the variable",
+    instanceSourceFrom(undefined) === null && instanceSourceFrom("") === null);
+
+  // measure — a real repository: overhaul + a lane branch three commits ahead
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const fx = mkdtempSync(`${ROOT}/ti-band-`);
+  const git = (...a: string[]) => spawnSync("git", ["-C", fx, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...a], { encoding: "utf8" });
+  const measure = (target?: string) => {
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "/tmp" };
+    if (target !== undefined) env.FLEET_TI_TARGET = target;
+    const r = spawnSync("sh", [`${fx}/testinstanz.sh`, "source"], { env, encoding: "utf8" });
+    try { return { code: r.status, json: JSON.parse(r.stdout) as Record<string, unknown> & { target?: { branch?: string; head?: string | null; ahead?: number | null } | null }, raw: r.stdout }; }
+    catch { return { code: r.status, json: null, raw: r.stdout + r.stderr }; }
+  };
+  try {
+    writeFileSync(`${fx}/testinstanz.sh`, readFileSync(`${src}/testinstanz.sh`));
+    chmodSync(`${fx}/testinstanz.sh`, 0o700);
+    const setup = [git("init", "-q", "-b", "overhaul"), git("add", "-A"), git("commit", "-qm", "base"), git("checkout", "-qb", "fleet/r11-fixture")];
+    for (const f of ["one", "two", "three"]) { writeFileSync(`${fx}/${f}.txt`, `${f}\n`); setup.push(git("add", "-A"), git("commit", "-qm", f)); }
+    check("band measure SETUP: fixture repository with overhaul and a lane three commits ahead", setup.every((r) => r.status === 0),
+      setup.map((r) => r.stderr).join("").slice(0, 200));
+    const head = git("rev-parse", "HEAD").stdout.trim(), overhaul = git("rev-parse", "overhaul").stdout.trim();
+    const m3 = measure("overhaul");
+    check("band measure: source reports head, branch, clean tree and 3 commits not on overhaul",
+      m3.code === 0 && m3.json?.head === head && m3.json.branch === "fleet/r11-fixture" && m3.json.dirty === 0
+        && m3.json.target?.branch === "overhaul" && m3.json.target.head === overhaul && m3.json.target.ahead === 3
+        && instanceBandText(instanceSourceFrom(m3.raw.trim())!, clock).text.endsWith("3 Commits noch nicht auf overhaul"), m3.raw);
+    const first = git("rev-list", "--reverse", "overhaul..HEAD").stdout.split("\n")[0];
+    const picked = [git("checkout", "-q", "overhaul"), git("cherry-pick", first), git("checkout", "-q", "fleet/r11-fixture")];
+    writeFileSync(`${fx}/scratch.txt`, "uncommitted\n");
+    const m2 = measure("overhaul");
+    check("band measure MUTATION: a lane change already on the target (cherry-picked) leaves the count, an uncommitted file joins it",
+      picked.every((r) => r.status === 0) && m2.json?.target?.ahead === 2 && m2.json.dirty === 1
+        && instanceBandText(instanceSourceFrom(m2.raw.trim())!, clock).text.endsWith("2 Commits und 1 Datei ohne Commit noch nicht auf overhaul"), m2.raw);
+    rmSync(`${fx}/scratch.txt`);
+    const ff = git("branch", "-f", "overhaul", "fleet/r11-fixture"), m0 = measure("overhaul");
+    check("band measure: a lane fully on overhaul with a clean tree reads 'alles schon auf overhaul'",
+      ff.status === 0 && m0.json?.target?.ahead === 0 && m0.json.dirty === 0
+        && instanceBandText(instanceSourceFrom(m0.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"), m0.raw);
+    const unset = measure(), bogus = measure("no-such-branch");
+    check("band measure: no target given is target null (never a guessed branch), an unknown branch has no count",
+      unset.code === 0 && unset.json?.target === null && bogus.json?.target?.branch === "no-such-branch"
+        && bogus.json.target.head === null && bogus.json.target.ahead === null, `${unset.raw} | ${bogus.raw}`);
+  } finally { rmSync(fx, { recursive: true, force: true }); }
+
+  // order — measured before the copy, handed to the instance (comment lines stripped first)
+  const code = (text: string) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  const ordered = (script: string) => {
+    const c = code(script), measured = c.indexOf("TI_SOURCE_BEFORE=$(ti_measure)"), copied = c.indexOf("rsync -a ");
+    return measured >= 0 && copied > measured && /FLEET_INSTANCE_SOURCE="\$TI_SHOWN"/.test(c)
+      && /TI_SHOWN=\$\(sed -n 's\/\^sourceBefore=\/\/p' "\$STATE"/.test(c) && /\bFLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX\b/.test(c);
+  };
+  const tiScript = readFileSync(`${src}/testinstanz.sh`, "utf8");
+  check("band order: up measures the source before rsync and launches the instance with that record (env name listed)", ordered(tiScript));
+  const measuredAfterCopy = tiScript.replace("  TI_SOURCE_BEFORE=$(ti_measure)\n", "")
+    .replace(/(  rsync -a [^\n]*\n)/, "$1  TI_SOURCE_BEFORE=$(ti_measure)\n");
+  check("band order MUTATION: measuring after the copy, or launching without the variable, is red",
+    !ordered(measuredAfterCopy) && !ordered(tiScript.replace('FLEET_INSTANCE_SOURCE="$TI_SHOWN" ', "")));
+
+  // wire — the suite server runs like the live fleet: no FLEET_INSTANCE_SOURCE
+  type SessionsInstance = { instance?: { name?: string | null; source?: unknown } };
+  const sessions = async () => await (await get("/api/sessions")).json() as SessionsInstance;
+  const noBand = (b: SessionsInstance) => !!b.instance && !("source" in b.instance);
+  const plain = await sessions();
+  check("band wire: a server without FLEET_INSTANCE_SOURCE (the live fleet) sends no instance.source", noBand(plain), JSON.stringify(plain.instance));
+  const sample = lane(3, 0);
+  try {
+    await restartSrv({ FLEET_INSTANCE_SOURCE: JSON.stringify(sample) });
+    const shown = await sessions();
+    check("band wire: a test instance carries its recorded stand as instance.source, folded by the shared parser",
+      JSON.stringify(shown.instance?.source) === JSON.stringify(instanceSourceFrom(JSON.stringify(sample))), JSON.stringify(shown.instance));
+    check("band wire MUTATION: the no-band predicate is red on the answer of a server started WITH the variable", !noBand(shown));
+    await restartSrv({ FLEET_INSTANCE_SOURCE: "{not json" });
+    const garbled = await sessions();
+    const garbledText = garbled.instance?.source ? instanceBandText(instanceSourceFrom(JSON.stringify(garbled.instance.source))!, clock).text : null;
+    check("band wire: an unreadable record still marks the test instance and reads 'Stand unbekannt'",
+      garbledText === "Zweig unbekannt · Stand unbekannt", JSON.stringify(garbled.instance));
+  } finally { await restartSrv(); }
+  check("band wire: back on the plain server, no instance.source again", noBand(await sessions()));
+
+  // client — painted only from instance.source
+  const client = readFileSync(`${src}/src/client.ts`, "utf8").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const html = readFileSync(`${src}/public/index.html`, "utf8");
+  const wired = (c: string, h: string) => c.includes("renderInstanceBand(data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source)));")
+    && c.includes('document.documentElement.classList.toggle("tiband", !!source);') && c.includes("tiBand.hidden = !source;")
+    && c.includes("instanceBandText(source,") && h.includes('<div id="tiband" hidden></div>') && h.includes("#tiband[hidden] { display: none; }");
+  check("band client: the band paints only from instance.source and is hidden (no html.tiband) without it", wired(client, html));
+  check("band client MUTATION: the wiring predicate is red without the hidden toggle",
+    !wired(client.replace("tiBand.hidden = !source;", ""), html) && !wired(client, html.replace('<div id="tiband" hidden></div>', '<div id="tiband"></div>')));
+}
 
 async function testinstanzWorktreeChecks(slot: number): Promise<void> {
   const repo = realpathSync(REPO), dir = mkdtempSync(`${ROOT}/ti-api-`);
@@ -36,6 +168,7 @@ async function testinstanzWorktreeChecks(slot: number): Promise<void> {
 case "$1" in
 up)
   printf 'up\n' >> '${trace}'
+  printf '%s' "\${FLEET_TI_TARGET-unset}" > '${state}.target'
   if [ -f '${hold}' ]; then : > '${started}'; while [ -f '${hold}' ]; do sleep 0.05; done; fi
   printf '%s' '${data}' > '${state}' ;;
 down) printf 'down\n' >> '${trace}'; rm -f '${state}' ;;
@@ -86,6 +219,9 @@ esac
     const upB = await post(route(b), { action: "up", mode: "snapshot" });
     check("testinstanz starts known main and two slotless targets separately", main.status === 200 && upA.status === 200 && upB.status === 200
       && [...states.values()].every(exists), `HTTP ${main.status}/${upA.status}/${upB.status}`);
+    const handed = [a, b].map((p) => { const f = `${states.get(p)}.target`; return exists(f) ? readFileSync(f, "utf8") : "missing"; });
+    check("testinstanz up of a worktree without a session hands no target — the band says 'Ziel unbekannt' instead of a guess",
+      handed.every((t) => t === "unset"), handed.join(","));
     const mainRead = await read(repo), readA = await read(a), readB = await read(b);
     check("testinstanz reports measured main/worktree identity and distinct HEAD/dirty", mainRead.body.mainCheckout === true && readA.body.mainCheckout === false
       && readB.body.mainCheckout === false && readA.body.source?.head !== readB.body.source?.head
@@ -905,6 +1041,7 @@ async function workplacesChecks(): Promise<void> {
 export async function run(lc: LaneCtx): Promise<void> {
   await helperRepoChecks();
   await workplacesChecks();
+  await instanceBandChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
   {
@@ -1063,8 +1200,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     writeFileSync(script, [
       "#!/bin/sh",
       "case $1 in",
-      "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args ;;",
-      "  down) rm -f ti-cwd ti-args ;;",
+      "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args; printf '%s' \"${FLEET_TI_TARGET-unset}\" > ti-target ;;",
+      "  down) rm -f ti-cwd ti-args ti-target ;;",
       "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://127.0.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
       "esac",
       "",
@@ -1083,6 +1220,17 @@ export async function run(lc: LaneCtx): Promise<void> {
       && readFileSync(`${emptyBranch.cwd}/ti-args`, "utf8") === "up mixed --ttl 45"
       && upBody.url === undefined && upBody.port === 8912
       && upBody.expiresAt === 2_000_000_000_000, `HTTP ${up.status}; metadata credential-free=${!upBody.url}`);
+    // the band's target (ranke-notiz R11): the lane's RECORDED base reaches the script, and the lane
+    // reads the same value as its own `lane.base` — the fallback testinstanz.sh#ti_measure uses by hand
+    const recordedBase = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { worktree?: { base?: string }; selfToken?: string }> }).slots?.[String(emptyBranch.slot)];
+    const laneSelf = await (await fetch(BASE + "/api/self", { headers: { "x-fleet-self-token": recordedBase?.selfToken ?? "" } }))
+      .json().catch(() => ({})) as { lane?: { base?: string | null } | null };
+    check("testinstanz up hands the lane's recorded base to the script as FLEET_TI_TARGET, and /api/self names it as lane.base",
+      !!recordedBase?.worktree?.base && exists(`${emptyBranch.cwd}/ti-target`)
+        && readFileSync(`${emptyBranch.cwd}/ti-target`, "utf8") === recordedBase.worktree.base
+        && laneSelf.lane?.base === recordedBase.worktree.base,
+      `recorded=${recordedBase?.worktree?.base} handed=${exists(`${emptyBranch.cwd}/ti-target`) ? readFileSync(`${emptyBranch.cwd}/ti-target`, "utf8") : "-"} self=${laneSelf.lane?.base}`);
     const opened = await post(route, { action: "open" });
     const openedBody = await opened.json() as { url?: string };
     check("testinstanz opening needs its own explicit owner gesture", opened.status === 200

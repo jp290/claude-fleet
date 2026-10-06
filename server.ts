@@ -101,7 +101,7 @@ import {
   type HelperReposReading, HELPER_REPOS_BYTES_MAX,
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, instanceSourceFrom,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
@@ -1267,7 +1267,12 @@ const CONTAINER_CONTEXT = (() => {
 // real, checkable answers about a docker daemon on THIS box, while an invented instance name would
 // be a false identity claim on the one field a second instance is supposed to be told apart by.
 const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
-const INSTANCE: InstanceIdentity = { name: INSTANCE_NAME };
+// …AND, ON A TEST INSTANCE ONLY, WHICH BRANCH AND STAND IT SHOWS (ranke-notiz R11): measured by
+// testinstanz.sh before it copied the worktree and handed over as FLEET_INSTANCE_SOURCE. Unset on
+// the live fleet, so the wire carries no `source` there and the board paints no band
+// (src/protocol.ts#instanceSourceFrom carries the fold rules).
+const INSTANCE_SOURCE = instanceSourceFrom(process.env.FLEET_INSTANCE_SOURCE);
+const INSTANCE: InstanceIdentity = INSTANCE_SOURCE ? { name: INSTANCE_NAME, source: INSTANCE_SOURCE } : { name: INSTANCE_NAME };
 
 // …AND WHICH OTHER FLEETS THE BOARD MAY OFFER A LINK TO (dual-host S3). Read here, beside the name,
 // because "which fleet am I" and "which fleets exist" are one operator decision written in one env
@@ -4421,12 +4426,16 @@ async function testinstanzTarget(repo: string, path: string): Promise<Testinstan
   } catch { return null; }
 }
 
-async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
+// `target` is the lane's RECORDED base (Slot.worktree.base), handed to `up` as FLEET_TI_TARGET so the
+// instance's band can say what is not on it yet. Never a guess: no recorded base, no variable, and
+// the band says "Ziel unbekannt".
+async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number, target?: string): Promise<{ code: number; out: string }> {
   const env: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"]) {
     const value = process.env[key];
     if (value) env[key] = value;
   }
+  if (target) env.FLEET_TI_TARGET = target;
   const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
@@ -4555,7 +4564,8 @@ async function serveTestinstanz(req: Request, repo: string, path: string, s?: Sl
     if (!await ready()) return changed();
     if (action === "up" || action === "down") {
       const args = action === "up" ? ["up", mode, "--ttl", String(ttlMin)] : ["down"];
-      const run = await testinstanzCommand(target.path, args, action === "up" ? 240_000 : 30_000);
+      const run = await testinstanzCommand(target.path, args, action === "up" ? 240_000 : 30_000,
+        action === "up" ? (s ?? workplaceSession(target.path))?.worktree?.base : undefined);
       if (!await ready()) return changed();
       if (run.code !== 0) return json({ error: `testinstanz ${action} failed`, refusal: "script-failed", state: "unknown" }, 409);
       if (action === "down") return json({ ok: true, state: "not-running", worktree: target.path });
@@ -42319,7 +42329,7 @@ Bun.serve<WSData>({
         cwd: s.cwd,
         mission: s.mission,
         awaiting: s.awaiting,
-        lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch } : null,
+        lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch, base: s.worktree.base ?? null } : null,
         // idleMs and `observed` carry the same honesty rule laneSignalView states: lastOutput 0
         // means this pane's output was never observed, NOT that it has been idle since the epoch.
         // Serving idleMs alone would hand a fresh session a ~1.79e12 and read as "long idle".

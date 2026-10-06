@@ -130,9 +130,74 @@ export interface FleetReportEventPayload {
 // response. They never substitute for each other, and this one is deliberately not per slot — see
 // the payload budget probe in e2e/tasks.ts.
 export const INSTANCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
-export interface InstanceIdentity { name: string | null }
+export interface InstanceIdentity { name: string | null; source?: InstanceSource }
 export function instanceNameFrom(value: unknown): string | null {
   return typeof value === "string" && INSTANCE_NAME_RE.test(value) ? value : null;
+}
+
+// --- what a test instance shows (ranke-notiz R11) ------------------------------------------------
+// WHICH BRANCH AND WHICH STAND THIS COPY IS, and what of it is not in its target yet. Measured by
+// testinstanz.sh BEFORE it copies (git of the source worktree; the copy itself has no .git) and
+// handed to the instance as FLEET_INSTANCE_SOURCE. It is the stand AT START: a later commit in the
+// worktree changes nothing here, which is why the band says "beim Start".
+//
+// PRESENCE IS THE TEST-INSTANCE MARK. Unset or empty → null → no `source` on the wire and no band:
+// the live fleet never sets it. Set but unreadable → every field null, never dropped: an instance
+// that was meant to say its stand and cannot says "unbekannt", it does not fall silent.
+// `target.ahead` counts commits of `head` whose change is not on `target` (git rev-list
+// --cherry-pick --right-only, so a lane already landed by rebase reads 0, not its old count).
+export interface InstanceSource {
+  branch: string | null; head: string | null; dirty: number | null; measuredAt: number | null;
+  target: { branch: string; head: string | null; ahead: number | null } | null;
+}
+const INSTANCE_BRANCH_RE = /^(?!-)[A-Za-z0-9._/-]{1,200}$/;
+const instanceBranch = (v: unknown): string | null => typeof v === "string" && INSTANCE_BRANCH_RE.test(v) ? v : null;
+const instanceCount = (v: unknown): number | null => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+const instanceSha = (v: unknown): string | null => typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? v : null;
+export function instanceSourceFrom(value: unknown): InstanceSource | null {
+  if (typeof value !== "string" || value === "") return null;
+  let v: Record<string, unknown> = {};
+  try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) v = parsed; }
+  catch { /* unreadable: every field below folds to null */ }
+  const t = v.target && typeof v.target === "object" && !Array.isArray(v.target) ? v.target as Record<string, unknown> : null;
+  const targetBranch = instanceBranch(t?.branch);
+  const measuredAt = instanceCount(v.measuredAt);
+  return { branch: instanceBranch(v.branch), head: instanceSha(v.head), dirty: instanceCount(v.dirty),
+    measuredAt: measuredAt && measuredAt > 0 ? measuredAt : null,
+    target: targetBranch ? { branch: targetBranch, head: instanceSha(t?.head), ahead: instanceCount(t?.ahead) } : null };
+}
+
+// THE BAND'S WORDS, one pure function so the claim is checkable without a browser. A run marked
+// `mono` is a branch or a sha (G0.3). Nothing is guessed: a missing value is the word "unbekannt",
+// and "alles schon auf ‹ziel›" needs BOTH counts measured as zero.
+export interface InstanceBandRun { t: string; mono?: boolean }
+export interface InstanceBandText { segments: InstanceBandRun[][]; text: string; title: string }
+export function instanceBandText(s: InstanceSource, clock: (ms: number) => string): InstanceBandText {
+  const segments: InstanceBandRun[][] = [];
+  segments.push(s.branch ? [{ t: "Zweig " }, { t: s.branch, mono: true }] : [{ t: "Zweig unbekannt" }]);
+  if (!s.head) segments.push([{ t: "Stand unbekannt" }]);
+  else {
+    segments.push([{ t: "Stand beim Start " }, { t: s.head.slice(0, 7), mono: true }]);
+    const target = s.target;
+    if (!target) segments.push([{ t: "Ziel unbekannt" }]);
+    else {
+      const on = { t: target.branch, mono: true };
+      const commits = target.ahead === null ? null : target.ahead === 1 ? "1 Commit" : `${target.ahead} Commits`;
+      const files = s.dirty === null ? null : s.dirty === 1 ? "1 Datei ohne Commit" : `${s.dirty} Dateien ohne Commit`;
+      if (target.ahead === null) segments.push([{ t: "was noch nicht auf " }, on, { t: " ist: unbekannt" }]);
+      else if (target.ahead === 0 && s.dirty === 0) segments.push([{ t: "alles schon auf " }, on]);
+      else if (s.dirty === null) segments.push([{ t: target.ahead === 0 ? "alle Commits schon auf " : `${commits} noch nicht auf ` }, on, { t: ", Dateien ohne Commit: unbekannt" }]);
+      else segments.push([{ t: `${[target.ahead ? commits : null, s.dirty ? files : null].filter(Boolean).join(" und ")} noch nicht auf ` }, on]);
+    }
+  }
+  const text = segments.map((seg) => seg.map((r) => r.t).join("")).join(" · ");
+  const when = s.measuredAt ? clock(s.measuredAt) : "unbekannt";
+  const title = s.head
+    ? `Diese Testinstanz zeigt ${s.branch ?? "einen unbekannten Zweig"} so, wie er beim Start war (${when}, Commit ${s.head}). `
+      + "Was danach im Worktree geändert wurde, ist hier nicht enthalten."
+      + (s.target ? ` Verglichen mit ${s.target.branch}${s.target.head ? ` (${s.target.head.slice(0, 7)})` : ""} zum selben Zeitpunkt.` : "")
+    : "Diese Testinstanz konnte beim Start nicht messen, welchen Stand sie zeigt.";
+  return { segments, text, title };
 }
 
 // --- the instance switcher's list ----------------------------------------------------------------

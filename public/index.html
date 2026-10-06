@@ -52,6 +52,24 @@
      edge. Red = the suite failed on the integration tip; amber = nothing was measured. Green
      never renders, and the “seen” receipt is the same card at its quietest. */
   #plaudit { display: none; }
+  /* THE TESTINSTANZ BAND (ranke-notiz R11, grammatik G2.3): which branch and stand a test instance
+     shows and what of it is not on its target yet. One quiet line IN FLOW above everything — it
+     pushes the app down, never covers it. Material G0.1 (void ground, soft lower edge, mute ink,
+     shas and branches in mono); no signal colour, because nothing here is wrong or waiting (G0.2).
+     Only a test instance ever shows it: src/client.ts#renderInstanceBand sets html.tiband from
+     instance.source, which the live fleet never sends. */
+  #tiband { display: flex; align-items: center; min-height: 24px; padding: 3px 12px; box-sizing: border-box;
+    background: var(--chat-void); border-bottom: 1px solid var(--chat-edge-soft); color: var(--chat-mute);
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 400; line-height: 1.4;
+    white-space: nowrap; overflow: hidden; }
+  #tiband[hidden] { display: none; }
+  #tiband svg { width: 12px; height: 12px; flex: none; margin-right: 8px; color: var(--chat-faint); }
+  #tiband .tiseg { flex: none; }
+  #tiband .tiseg:first-of-type { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #tiband .timono { font-family: var(--chat-mono); color: var(--chat-prose); }
+  #tiband .tisep { flex: none; white-space: pre; color: var(--chat-faint); }
+  html.tiband body { display: flex; flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+  html.tiband #app { flex: 1 1 auto; min-height: 0; height: auto; }
   .plasec { display: block;
     padding: 10px 12px; border-radius: var(--r2); color: var(--chat-ink); line-height: 1.45;
     background: color-mix(in srgb, var(--danger) 13%, var(--chat-void));
@@ -3458,6 +3476,9 @@
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #app { flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+    /* the test-instance band on a phone breaks into lines instead of cutting its words (G2 Mobil) */
+    #tiband { flex-wrap: wrap; white-space: normal; padding: 6px 12px; row-gap: 2px; }
+    #tiband .tiseg:first-of-type { overflow: visible; overflow-wrap: anywhere; }
 
     /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
        instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */
@@ -4097,6 +4118,7 @@
 </head>
 <body>
 <div id="plaudit" class="plaudit"></div>
+<div id="tiband" hidden></div>
 <div id="app">
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>

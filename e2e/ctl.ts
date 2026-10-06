@@ -267,7 +267,7 @@ globalThis.fetch = async (url, opts) => {
   const log = process.env.START_LOG;
   const previous = readFileSync(log, 'utf8');
   appendFileSync(log, path + '\\n');
-  const fixtures = JSON.parse(process.env.START_FIXTURES);
+  const fixtures = JSON.parse(readFileSync(process.env.START_FIXTURES, 'utf8'));
   if (path.startsWith('/api/self') && opts.headers['x-fleet-self-token'] !== 'SELF_MARKER') throw Error('bad self credential');
   if (path === '/api/operational-view' && opts.headers.authorization !== 'Bearer OWNER_MARKER') throw Error('bad owner credential');
   if (process.env.START_MODE === 'denied' && path === '/api/operational-view') return new Response('{}', {status:403});
@@ -280,13 +280,14 @@ await import(pathToFileURL(process.argv[2]).href);
 `);
       spawnSync("chmod", ["+x", `${dir}/bun`]);
       const log = `${dir}/requests`;
+      const fixturePath = `${dir}/view.json`;
       const own = {slot: 1, position: {role: "orchestrator", programId: null as string | null, taskId: null,
         openedAt: 1, sessionId: "session1", receiver: null,
         waitingOnMe: [1, 2, 3].map((i) => ({kind: "message", id: `m${i}`})),
         messages: {unread: 3, droppedFleetWide: 0, unknown: [] as string[]}, attention: [{id: "attention1", status: "open"}]},
         lineage: {lineageId: "line1", state: "present", losses: 0, handoverLost: null,
           record: {intent: "Continue bounded act", pointer: null, obligations: [{id: "watch1", kind: "watch"}]}},
-        watches: [], autos: [], events: []};
+        watches: [] as {id: string}[], autos: [] as {id: string}[], events: [] as {id: string}[]};
       const operational = {schema: "fleet.operational-view/v1", scope: "owner-metadata", freshness: "fresh", bootEpoch: 1,
         revision: "r1", observedRevision: "r1", computedAt: 2, pending: false, inflight: false, failed: null,
         sources: {queue: {state: "fresh", revision: "r1", computedRevision: "r1", basis: "tasks"}}, unknown: [],
@@ -294,13 +295,15 @@ await import(pathToFileURL(process.argv[2]).href);
           state: "bound", slot: 2, openedAt: 1, sessionId: "main1", slotLabel: "MAIN", slotLabelBasis: "exact-occupant"}],
           rows: [{id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", status: "queued", programId: "program1", held: true, after: []}],
           exceptions: [{kind: "start", id: "task1", title: "Task title", titleBasis: "tasks:task1.card.ziel", reason: "collision", related: [{id: "task2", title: "Blocking title", titleBasis: "tasks:task2.text:first-line"}]}],
-          messages: [], audits: [], startable: [], snapshot: {lanes: []}}};
+          messages: [] as {id: string; unread: boolean; state: string; holder: null}[],
+          audits: [] as {taskId: string; state: string; result: string}[], startable: [] as {id: string; by: string}[],
+          snapshot: {lanes: [] as {id: string; slot: number; phase: string}[]}}};
       const program = {program: {id: "program1", title: "Program title", profile: null},
         authority: {sessionIdMatch: "exact", boundSlot: 1, boundOpenedAt: 1, boundSessionId: "session1"},
         status: {inbox: {unread: 1}, messages: {unread: 3}, attention: {open: 1}},
         inbox: {lost: null as {error: string} | null, dropped: 0, unread: [{id: "inbox1", kind: "audit-red", ref: "audit1"}]},
         handover: {from: {slot: 1, openedAt: 0}, to: {slot: 1, openedAt: 1}, obligations: [{id: "watch1"}], lost: [], dropped: 0},
-        unknown: [] as string[], clarifications: [],
+        unknown: [] as string[], clarifications: [] as {id: string; status: string}[],
         tasks: {rows: [{id: "task1", text: "Task title", status: "queued", phase: "OWNER_GATE", phaseBasis: "owner question", note: "collision", nextAction: "owner answers"}]}};
       const fixtures = {"/api/self": own, "/api/operational-view": operational,
         "/api/self/program-execution": {session: {slot: 1, openedAt: 1, sessionId: "session1"}, programs: [program]},
@@ -308,11 +311,12 @@ await import(pathToFileURL(process.argv[2]).href);
         "/api/self/messages": {unread: 3, entries: [1, 2, 3].map((i) => ({id: `m${i}`, payload: {text: `Full own message ${i}`}})), unknown: []}};
       const run = (args: string[], mode = "fresh", owner = true, mutant: string | null = null) => {
         writeFileSync(log, "");
+        writeFileSync(fixturePath, JSON.stringify(fixtures));
         if (mutant !== null) writeFileSync(`${dir}/state.sh`, mutant);
         const result = spawnSync("sh", args, {cwd: dir, encoding: "utf8", timeout: 30_000,
           env: {...process.env, PATH: `${dir}:${process.env.PATH}`, FLEET_CTL_HOME: dir, FLEET_CTL_URL: "http://fixture:8765",
             FLEET_SELF_TOKEN: "SELF_MARKER", FLEET_CTL_TOKEN: owner ? "OWNER_MARKER" : "", FLEET_TOKEN: "",
-            START_LOG: log, START_FIXTURES: JSON.stringify(fixtures), START_MODE: mode}});
+            START_LOG: log, START_FIXTURES: fixturePath, START_MODE: mode}});
         return {...result, requests: readFileSync(log, "utf8").trim().split("\n").filter(Boolean)};
       };
       const fresh = run(["state.sh", "--brief"]);
@@ -385,8 +389,8 @@ await import(pathToFileURL(process.argv[2]).href);
       operational.data.exceptions.push(...Array.from({length: 40}, (_, i) => ({...operational.data.exceptions[0]!, id: `overflow${i}`})));
       operational.data.exceptions[40]!.reason = "DECISIVE_LAST_BOUNDARY";
       const overflow = run(["state.sh", "--brief"]);
-      check("start overflow keeps the decisive last boundary and a named detail door",
-        overflow.stdout.includes("overflow boundary count=41") && overflow.stdout.includes("DECISIVE_LAST_BOUNDARY") && overflow.stdout.includes("GET /api/operational-view"));
+      check("start overflow keeps the newest decisive boundary and counts the rest with a detail door",
+        overflow.stdout.includes("boundary count=41 omitted=40") && overflow.stdout.includes("DECISIVE_LAST_BOUNDARY") && overflow.stdout.includes("GET /api/operational-view"));
       operational.data.exceptions.length = 1;
       own.position.role = "program-main"; own.position.programId = "program1";
       const main = run(["state.sh", "--brief"]);
@@ -409,6 +413,89 @@ await import(pathToFileURL(process.argv[2]).href);
           modern: (s) => s.includes("source /api/self/program-execution fetchedAt=") && s.includes("execution-unknown count=0"), oldAt: 3},
       ];
       measure("MAIN", mainOld, [{...main, name: "./state.sh --brief"}, {...messages, name: "GET /api/self/messages"}], mainQuestions);
+      const small = structuredClone(fixtures);
+      const repeat = <T extends object>(row: T, count: number, label: string): (T & {id: string; at: number})[] =>
+        Array.from({length: count}, (_, i) => ({...row, id: `${label}${i}`, at: i + 1}));
+      const data = operational.data;
+      const task = data.rows[0]!, boundary = data.exceptions[0]!, binding = data.bindings[0]!;
+      data.rows = [...repeat({...task, status: "done"}, 180, "done"),
+        ...repeat(task, 26, "row"), {...task, ...{at: 1000}}];
+      data.bindings = [...repeat({...binding, status: "complete"}, 68, "complete").map((r) => ({...r, programId: r.id})),
+        ...repeat(binding, 13, "program").map((r) => ({...r, programId: r.id})), {...binding, ...{at: 1000}}];
+      data.exceptions = [...repeat(boundary, 48, "boundary"), {...boundary, ...{at: 1000}}];
+      data.messages = repeat({id: "message", unread: false, state: "addressed", holder: null}, 201, "message")
+        .map((r, i) => ({...r, unread: i >= 190}));
+      data.audits = repeat({taskId: "audit", state: "terminal", result: "green"}, 89, "audit");
+      data.startable = repeat({id: "start", by: "release"}, 8, "start");
+      data.snapshot.lanes = repeat({id: "lane", slot: 3, phase: "running"}, 8, "lane");
+      program.tasks.rows = [...repeat({...program.tasks.rows[0]!, status: "done"}, 44, "done"),
+        ...repeat(program.tasks.rows[0]!, 7, "task"), {...program.tasks.rows[0]!, ...{at: 1000}}];
+      own.position.waitingOnMe = [...repeat({kind: "message", id: "older"}, 5, "older"),
+        ...own.position.waitingOnMe.map((r, i) => ({...r, at: 1000+i}))];
+      own.position.attention = repeat({id: "attention", status: "open"}, 8, "attention");
+      for (const key of ["watches", "autos", "events"] as const) own[key] = repeat({id: key}, 8, key);
+      own.lineage.record.obligations = [...repeat({id: "watch", kind: "watch"}, 7, "watch"), {id: "watch1", kind: "watch", ...{at: 1000}}];
+      program.handover.obligations = repeat({id: "old-watch"}, 8, "old-watch");
+      program.inbox.unread = repeat({id: "inbox", kind: "audit-red", ref: "audit1"}, 8, "inbox");
+      program.clarifications = repeat({id: "clarification", status: "open"}, 8, "clarification");
+      const stats = (s: string) => ({lines: s.trimEnd().split("\n").length, bytes: Buffer.byteLength(s)});
+      const budget = (s: string) => stats(s).lines <= 80 && stats(s).bytes <= 10_000;
+      const readRole = (role: string) => {
+        own.position.role = role; own.position.programId = role === "program-main" ? "program1" : null;
+        return run(["state.sh", "--brief"]);
+      };
+      const bigOrch = readRole("orchestrator"), bigMain = readRole("program-main");
+      for (const [role, result, qs] of [["Orchestrator", bigOrch, questions], ["MAIN", bigMain, mainQuestions]] as const) {
+        check(`start live-size ${role}: at most 80 lines and 10000 UTF-8 bytes`, result.status === 0 && budget(result.stdout), JSON.stringify(stats(result.stdout)));
+        check(`start live-size ${role}: all six questions answered in one tool with three GETs`,
+          qs.every((q) => q.modern(result.stdout)) && result.requests.length === 3, qs.filter((q) => !q.modern(result.stdout)).map((q) => q.name).join(","));
+      }
+      check("start live-size categories expose omitted, terminal and read counts with their detail doors",
+        ["row count=207 omitted=26 terminal=180", "program count=82 omitted=13 terminal=68", "boundary count=49 omitted=48",
+          "message count=201 omitted=10 filtered=190", "audit count=89 terminal=89"].every((v) => bigOrch.stdout.includes(v))
+        && bigMain.stdout.includes("task count=52 omitted=7 terminal=44")
+        && !/^(row done|program complete|audit \{|message .*"unread":false|task done)/m.test(bigOrch.stdout + bigMain.stdout));
+      const normalize = (s: string) => s.replace(/fetchedAt=\d+/g, "fetchedAt=CLOCK")
+        .replace(/count=\d+|omitted=\d+|terminal=\d+|filtered=\d+/g, "COUNT");
+      const growOlder = <T extends object>(rows: T[]) => { if (rows.length >= 2) rows.unshift({...rows[0]!, ...{at: -1}}); };
+      const categories = [data.rows, data.bindings, data.exceptions, data.messages, data.audits, data.startable, data.snapshot.lanes,
+        program.tasks.rows, program.inbox.unread, program.handover.obligations, program.clarifications,
+        own.position.waitingOnMe, own.position.attention, own.watches, own.autos, own.events, own.lineage.record.obligations];
+      // Prepending an older entry tests stable selection; the same byte widths remain in every count.
+      categories.forEach((rows) => growOlder<object>(rows));
+      const moreOrch = readRole("orchestrator"), moreMain = readRole("program-main");
+      for (const [role, before, after] of [["Orchestrator", bigOrch, moreOrch], ["MAIN", bigMain, moreMain]] as const)
+        check(`start live-size ${role}: one older row per saturated category changes only counts, no output growth`,
+          budget(after.stdout) && stats(before.stdout).lines === stats(after.stdout).lines
+          && stats(before.stdout).bytes === stats(after.stdout).bytes && normalize(before.stdout) === normalize(after.stdout));
+      // These controls grow lines and UTF-8 bytes independently; both must be rejected.
+      check("start budget predicate rejects 81 lines and a single 10001-byte UTF-8 line",
+        !budget("x\n".repeat(81)) && !budget("ä".repeat(5000) + "x"));
+      own.position.role = "orchestrator"; own.position.programId = null;
+      const mutation = run(["state.sh", "--brief"], "fresh", true,
+        prefix(state).replace("MAX_LINES, MAX_BYTES = 80, 10000", "MAX_LINES, MAX_BYTES = 10000, 1000000")
+          .replace("newest(eligible)[:limit]", "newest(eligible)"));
+      check("start live-size unbounded-renderer mutation is rejected by the byte pin", mutation.status === 0 && stats(mutation.stdout).bytes > 10_000 && !budget(mutation.stdout));
+      writeFileSync(`${dir}/state.sh`, prefix(state));
+      const wide = structuredClone(fixtures);
+      const long = "ä界".repeat(2000);
+      own.lineage.record.intent += long;
+      for (const row of data.bindings) row.title += long;
+      for (const row of data.rows) row.title += long;
+      for (const row of data.exceptions) row.title += long;
+      for (const row of program.tasks.rows) row.text += long;
+      for (const role of ["orchestrator", "program-main"]) {
+        const result = readRole(role);
+        check(`start ${role}: long UTF-8 fields stay within both budgets with a visible shortening door`,
+          result.status === 0 && budget(result.stdout) && result.stdout.includes("[shortened; GET /")
+          && result.stdout.includes(role === "orchestrator" ? "binding=bound slot=2 openedAt=1 sessionId=main1" : "phase=OWNER_GATE door=owner answers"), JSON.stringify(stats(result.stdout)));
+      }
+      for (const key of Object.keys(fixtures) as (keyof typeof fixtures)[]) Object.assign(fixtures[key], wide[key]);
+      console.log(`START_LIVE_ORCHESTRATOR ${JSON.stringify(stats(bigOrch.stdout))}\n${bigOrch.stdout}START_LIVE_MAIN ${JSON.stringify(stats(bigMain.stdout))}`);
+      for (const key of Object.keys(fixtures) as (keyof typeof fixtures)[]) Object.assign(fixtures[key], small[key]);
+      Object.assign(program, small["/api/self/program-execution"].programs[0]!);
+      fixtures["/api/self/program-execution"].programs = [program];
+      own.position.role = "program-main"; own.position.programId = "program1";
       program.authority.sessionIdMatch = "unknown";
       program.unknown = ["inbox record unreadable; earlier pointers gone", "handover record unreadable; obligations lost"];
       program.inbox.lost = {error: "unreadable inbox"};

@@ -3083,8 +3083,29 @@ await import(pathToFileURL(process.argv[2]).href);
           exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
         pin(`${name} --brief preserves its boundary budget contract with explicit overflow`,
           many.status === 0 && (name === "state.sh"
-            ? many.stdout.includes("overflow boundary count=100") && /boundary audit row99 .*reason=unknown/.test(many.stdout)
+            ? many.stdout.includes("boundary count=100 omitted=99") && /boundary audit row99 .*reason=unknown/.test(many.stdout)
+              && many.stdout.trimEnd().split("\n").length <= 80 && Buffer.byteLength(many.stdout) <= 10_000
             : many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted=")));
+        if (name === "state.sh") {
+          const large = {...fixture, data: {...fixture.data,
+            rows: Array.from({length: 207}, (_, i) => ({id: `row${i}`, status: "queued", programId: "program1", held: false, after: []})),
+            bindings: Array.from({length: 82}, (_, i) => ({programId: `program${i}`, status: i < 68 ? "complete" : "active", state: "unknown"})),
+            messages: Array.from({length: 201}, (_, i) => ({id: `message${i}`, unread: true})),
+            audits: Array.from({length: 89}, (_, i) => ({taskId: `audit${i}`, state: "unknown"})),
+            exceptions: Array.from({length: 49}, (_, i) => ({kind: "audit", id: `boundary${i}`, reason: "unknown"}))}};
+          const bytesWithinBudget = (text: string) => Buffer.byteLength(text) <= 10_000;
+          const measured = run(script, "--brief", "fresh", large);
+          pin("state.sh live-size start has at most 80 lines and 10000 UTF-8 bytes",
+            measured.status === 0 && measured.stdout.trimEnd().split("\n").length <= 80 && bytesWithinBudget(measured.stdout),
+            `${measured.stdout.trimEnd().split("\n").length} lines; ${Buffer.byteLength(measured.stdout)} bytes`);
+          writeFileSync(script, prefix.replace("MAX_LINES, MAX_BYTES = 80, 10000", "MAX_LINES, MAX_BYTES = 10000, 1000000")
+            .replace("newest(eligible)[:limit]", "newest(eligible)"));
+          const unbounded = run(script, "--brief", "fresh", large);
+          pin("state.sh byte pin rejects an executed unbounded-renderer mutation and multibyte overflow",
+            unbounded.status === 0 && !bytesWithinBudget(unbounded.stdout) && !bytesWithinBudget("ä".repeat(5000) + "x"),
+            `${Buffer.byteLength(unbounded.stdout)} mutated bytes; ceiling=10000`);
+          writeFileSync(script, prefix + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
+        }
         const full = run(script, "--full"), invalid = run(script, "--not-a-flag");
         pin(`${name} --full selects diagnosis, unknown flag rejects before either producer`,
           full.calls.join(",") === "full" && full.stdout.includes("__FULL_PATH__") && invalid.status === 2 && invalid.calls.length === 0);

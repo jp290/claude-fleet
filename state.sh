@@ -69,15 +69,21 @@ def newest(rows):
         at = next((row[k] for k in ('at', 'createdAt', 'openedAt', 'reportedAt') if isinstance(row.get(k), (int, float))), 0)
         return (at, i)
     return [row for _, row in sorted(enumerate(rows), key=clock, reverse=True)]
-def group(name, rows, door, render=compact, limit=1, accept=lambda r: True):
+def ended(row, name):
+    if not isinstance(row, dict): return False
+    if name == 'audit': return row.get('state') == 'terminal' and row.get('result') == 'green'
+    return row.get('status', row.get('state')) in terminal
+def group(name, rows, door, render=compact, limit=5, accept=lambda r: True):
     if not isinstance(rows, list):
         emit(f'unknown {name} reason=missing-or-unreadable; detail: {door}')
         return
-    ended = sum(isinstance(r, dict) and r.get('status', r.get('state')) in terminal for r in rows)
-    eligible = [r for r in rows if not (isinstance(r, dict) and r.get('status', r.get('state')) in terminal) and accept(r)]
-    lines.append({'name': name, 'count': len(rows), 'terminal': ended,
-                  'filtered': len(rows)-ended-len(eligible), 'open': len(eligible), 'door': door,
-                  'rows': [short(f'{name} {render(r)}', 280, door) for r in newest(eligible)[:limit]]})
+    terminal_count = sum(ended(r, name) for r in rows)
+    eligible = [r for r in rows if not ended(r, name) and accept(r)]
+    ordered = newest(eligible)
+    if name == 'audit': ordered.sort(key=lambda r: r.get('result') != 'red')
+    lines.append({'name': name, 'count': len(rows), 'terminal': terminal_count,
+                  'filtered': len(rows)-terminal_count-len(eligible), 'open': len(eligible), 'door': door,
+                  'rows': [short(f'{name} {render(r)}', 280, door) for r in ordered[:limit]]})
 def output():
     header = [f'start-output HTTP={http if http is not None else "unknown"} observations=separate; GET-only; no ack/re-arm'] + reads
     def summary(g, shown):
@@ -88,23 +94,31 @@ def output():
     fixed = header + [summary(g, 0) if isinstance(g, dict) else g for g in lines]
     remaining_lines = MAX_LINES - len(fixed)
     remaining_bytes = MAX_BYTES - len(('\n'.join(fixed)+'\n').encode('utf-8'))
-    result = header[:]
-    for g in lines:
-        if not isinstance(g, dict):
-            result.append(g)
-            continue
-        shown = []
-        for row in g['rows']:
+    groups = [g for g in lines if isinstance(g, dict)]
+    for g in groups: g['shown'] = []
+    # Give every category its newest relevant entry before spending the remaining budget.
+    for index in range(max((len(g['rows']) for g in groups), default=0)):
+        for g in groups:
+            if index >= len(g['rows']) or len(g['shown']) != index: continue
+            row = g['rows'][index]
             cost = len((row+'\n').encode('utf-8'))
-            if remaining_lines <= 0 or cost > remaining_bytes: break
-            shown.append(row)
+            if remaining_lines <= 0 or cost > remaining_bytes: continue
+            g['shown'].append(row)
             remaining_lines -= 1
             remaining_bytes -= cost
-        result.append(summary(g, len(shown)))
-        result.extend(shown)
+    result = header[:]
+    for g in lines:
+        if isinstance(g, dict):
+            result.append(summary(g, len(g['shown'])))
+            result.extend(g['shown'])
+        else:
+            result.append(g)
     print('\n'.join(result))
 def named(row):
     return f"{row.get('id', row.get('programId', 'unknown'))} title={compact(row.get('title', 'unknown'))} basis={row.get('titleBasis', 'unknown: missing-title-source')}"
+def boundary_door(row):
+    if row.get('kind') in ('start', 'audit'): return f"./ctl.sh task {row.get('id')}"
+    return 'GET /api/operational-view'
 def operational(view):
     if view is None: return
     if view.get('schema') != schema or view.get('scope') != 'owner-metadata':
@@ -124,7 +138,7 @@ def operational(view):
     group('program', data.get('bindings'), 'GET /api/operational-view', lambda r:
           f"{r.get('programId')} status={r.get('status', 'unknown')} binding={r.get('state', 'unknown')} slot={r.get('slot')} openedAt={r.get('openedAt')} sessionId={r.get('sessionId')} title={compact(r.get('title', 'unknown'))} basis={r.get('titleBasis', 'unknown')}", accept=lambda r: r.get('status', 'unknown') in ('active', 'unknown'))
     group('boundary', data.get('exceptions'), 'GET /api/operational-view', lambda r:
-          f"{r.get('kind')} {r.get('id')} phase={r.get('phase', 'unknown')} door=./ctl.sh task {r.get('id')} reason={r.get('reason', 'unknown')} title={compact(r.get('title', 'unknown'))} related={compact(r.get('related', r.get('relatedIds', [])))} basis={r.get('titleBasis', 'unknown')}")
+          f"{r.get('kind')} {r.get('id')} phase={r.get('phase', 'unknown')} door={boundary_door(r)} reason={r.get('reason', 'unknown')} title={compact(r.get('title', 'unknown'))} related={compact(r.get('related', r.get('relatedIds', [])))} basis={r.get('titleBasis', 'unknown')}")
     group('row', data.get('rows'), 'GET /api/operational-view', lambda r:
           f"{named(r)} status={r.get('status', 'unknown')} program={r.get('programId')} held={r.get('held')} after={compact(r.get('after'))} door=./ctl.sh task {r.get('id')}")
     group('startable', data.get('startable'), 'GET /api/operational-view', lambda r:
@@ -155,7 +169,7 @@ def own(self):
             group('historical-obligation', record.get('obligations'), 'GET /api/self')
         else:
             emit('unknown lineage record reason=lost-or-unreadable; detail: GET /api/self')
-    group('waiting', position.get('waitingOnMe'), 'GET /api/self', limit=3)
+    group('waiting', position.get('waitingOnMe'), 'GET /api/self')
     messages = position.get('messages')
     if isinstance(messages, dict):
         unread = messages.get('unread', 'unknown') if not messages.get('unknown') else f"unknown (retainedUnread={messages.get('unread', 'unknown')})"

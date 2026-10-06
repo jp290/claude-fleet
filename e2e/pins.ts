@@ -3083,7 +3083,7 @@ await import(pathToFileURL(process.argv[2]).href);
           exceptions: Array.from({length: 100}, (_, i) => ({kind: "audit", id: `row${i}`, reason: "unknown"}))}});
         pin(`${name} --brief preserves its boundary budget contract with explicit overflow`,
           many.status === 0 && (name === "state.sh"
-            ? many.stdout.includes("boundary count=100 omitted=99") && /boundary audit row99 .*reason=unknown/.test(many.stdout)
+            ? many.stdout.includes("boundary count=100 omitted=95") && /boundary audit row99 .*reason=unknown/.test(many.stdout)
               && many.stdout.trimEnd().split("\n").length <= 80 && Buffer.byteLength(many.stdout) <= 10_000
             : many.stdout.trim().split("\n").length === 40 && many.stdout.includes("omitted=")));
         if (name === "state.sh") {
@@ -3099,7 +3099,7 @@ await import(pathToFileURL(process.argv[2]).href);
             measured.status === 0 && measured.stdout.trimEnd().split("\n").length <= 80 && bytesWithinBudget(measured.stdout),
             `${measured.stdout.trimEnd().split("\n").length} lines; ${Buffer.byteLength(measured.stdout)} bytes`);
           writeFileSync(script, prefix.replace("MAX_LINES, MAX_BYTES = 80, 10000", "MAX_LINES, MAX_BYTES = 10000, 1000000")
-            .replace("newest(eligible)[:limit]", "newest(eligible)"));
+            .replace("ordered[:limit]", "ordered"));
           const unbounded = run(script, "--brief", "fresh", large);
           pin("state.sh byte pin rejects an executed unbounded-renderer mutation and multibyte overflow",
             unbounded.status === 0 && !bytesWithinBudget(unbounded.stdout) && !bytesWithinBudget("ä".repeat(5000) + "x"),

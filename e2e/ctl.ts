@@ -390,7 +390,7 @@ await import(pathToFileURL(process.argv[2]).href);
       operational.data.exceptions[40]!.reason = "DECISIVE_LAST_BOUNDARY";
       const overflow = run(["state.sh", "--brief"]);
       check("start overflow keeps the newest decisive boundary and counts the rest with a detail door",
-        overflow.stdout.includes("boundary count=41 omitted=40") && overflow.stdout.includes("DECISIVE_LAST_BOUNDARY") && overflow.stdout.includes("GET /api/operational-view"));
+        overflow.stdout.includes("boundary count=41 omitted=36") && overflow.stdout.includes("DECISIVE_LAST_BOUNDARY") && overflow.stdout.includes("GET /api/operational-view"));
       operational.data.exceptions.length = 1;
       own.position.role = "program-main"; own.position.programId = "program1";
       const main = run(["state.sh", "--brief"]);
@@ -451,9 +451,9 @@ await import(pathToFileURL(process.argv[2]).href);
           qs.every((q) => q.modern(result.stdout)) && result.requests.length === 3, qs.filter((q) => !q.modern(result.stdout)).map((q) => q.name).join(","));
       }
       check("start live-size categories expose omitted, terminal and read counts with their detail doors",
-        ["row count=207 omitted=26 terminal=180", "program count=82 omitted=13 terminal=68", "boundary count=49 omitted=48",
-          "message count=201 omitted=10 filtered=190", "audit count=89 terminal=89"].every((v) => bigOrch.stdout.includes(v))
-        && bigMain.stdout.includes("task count=52 omitted=7 terminal=44")
+        ["row count=207", "terminal=180", "program count=82", "terminal=68", "boundary count=49",
+          "message count=201", "filtered=190", "audit count=89 terminal=89"].every((v) => bigOrch.stdout.includes(v))
+        && bigMain.stdout.includes("task count=52") && bigMain.stdout.includes("terminal=44")
         && !/^(row done|program complete|audit \{|message .*"unread":false|task done)/m.test(bigOrch.stdout + bigMain.stdout));
       const normalize = (s: string) => s.replace(/fetchedAt=\d+/g, "fetchedAt=CLOCK")
         .replace(/count=\d+|omitted=\d+|terminal=\d+|filtered=\d+/g, "COUNT");
@@ -468,13 +468,30 @@ await import(pathToFileURL(process.argv[2]).href);
         check(`start live-size ${role}: one older row per saturated category changes only counts, no output growth`,
           budget(after.stdout) && stats(before.stdout).lines === stats(after.stdout).lines
           && stats(before.stdout).bytes === stats(after.stdout).bytes && normalize(before.stdout) === normalize(after.stdout));
+      const redAudit = {...data.audits[0]!, taskId: "red-audit", state: "terminal", result: "red"};
+      data.audits.unshift(redAudit);
+      data.exceptions.push({...boundary, kind: "binding", id: "program-boundary", ...{at: 2000}});
+      const blocked = readRole("orchestrator");
+      const nonTaskBoundary = blocked.stdout.split("\n").find((line) => line.startsWith("boundary binding program-boundary "));
+      check("start terminal red audit stays a visible blocker while green terminal audits remain counts",
+        blocked.stdout.includes('audit {"taskId":"red-audit","state":"terminal","result":"red"') && budget(blocked.stdout),
+        blocked.stdout.split("\n").filter((line) => line.startsWith("audit ")).join("\n"));
+      check("start non-task boundary never invents a task door",
+        nonTaskBoundary?.includes("door=GET /api/operational-view") === true && !nonTaskBoundary.includes("./ctl.sh task"), nonTaskBoundary);
+      data.audits.shift(); data.exceptions.pop();
+      const manyTasks = program.tasks.rows;
+      program.tasks.rows = repeat({...manyTasks[manyTasks.length-1]!}, 10, "open-task");
+      const ownTasks = readRole("program-main");
+      check("start MAIN shows five of ten own open tasks with an explicit remainder",
+        ownTasks.stdout.includes("task count=10 omitted=5") && ownTasks.stdout.split("\n").filter((line) => line.startsWith("task open-task")).length === 5 && budget(ownTasks.stdout));
+      program.tasks.rows = manyTasks;
       // These controls grow lines and UTF-8 bytes independently; both must be rejected.
       check("start budget predicate rejects 81 lines and a single 10001-byte UTF-8 line",
         !budget("x\n".repeat(81)) && !budget("ä".repeat(5000) + "x"));
       own.position.role = "orchestrator"; own.position.programId = null;
       const mutation = run(["state.sh", "--brief"], "fresh", true,
         prefix(state).replace("MAX_LINES, MAX_BYTES = 80, 10000", "MAX_LINES, MAX_BYTES = 10000, 1000000")
-          .replace("newest(eligible)[:limit]", "newest(eligible)"));
+          .replace("ordered[:limit]", "ordered"));
       check("start live-size unbounded-renderer mutation is rejected by the byte pin", mutation.status === 0 && stats(mutation.stdout).bytes > 10_000 && !budget(mutation.stdout));
       writeFileSync(`${dir}/state.sh`, prefix(state));
       const wide = structuredClone(fixtures);

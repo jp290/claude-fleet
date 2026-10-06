@@ -195,6 +195,9 @@ apply the existing merge-/land-path self-assessment in the rule below.
 the `e2e/` lifecycle, a suite wrapper, the merge/land path, or a statement some check asserts
 (`supports.*`, `effortLevels`, a contract default) — a brief line demanding it does not widen this
 rule, and a docs-only lane never owes it.
+Eine nicht geschuldete Vorschau wird weder angeboten noch lokal gefahren; eine Karten-VERIFY-Zeile
+macht sie nicht geschuldet. Bei `"self-assess"` benennt `owedReason` einen der vier Faelle:
+`e2e-lifecycle`, `suite-wrapper`, `merge-land-path`, `asserted-contract`.
 
 **Offer before you run.** When the preview is owed and the gate's `helper.online` is `true`, a lane
 offers it (`POST /api/self/suite-offer`) instead of taking this machine's suite mutex. The body is

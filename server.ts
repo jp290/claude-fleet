@@ -28245,15 +28245,17 @@ function laneSuiteShardsView(run: LaneSuiteShardRun): Record<string, unknown>[] 
 // one the lane caused. `by` is null on the lane's own door (its trail line stays as it was) and
 // names the proxy otherwise, for the trail only: the job carries no field for it, because the job
 // is the lane's and answers to the lane.
+const PREVIEW_OWED_REASONS = ["e2e-lifecycle", "suite-wrapper", "merge-land-path", "asserted-contract"] as const;
+
 async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, req: Request,
   by: string | null): Promise<Response> {
   expireHelperClaims();
-  const existing = laneSuiteOfferOf(s);
   // THE READ HALF: state, and on a settled offer the verdict WITH provenance. `waitPolicy` and
   // `suiteLock` travel with it because they decide how long waiting is worth (§5.2).
   if (req.method === "GET") {
     // a settled offer is still readable by the lane that made it — the verdict outlives the
     // offer, or a lane that asked one second too late could never learn its own answer
+    const existing = laneSuiteOfferOf(s);
     const last = existing ?? [...laneSuiteJobs.values()]
       .filter((j) => j.slot === s.id && j.slotOpenedAt === s.openedAt)
       .sort((a, b) => b.offeredAt - a.offeredAt)[0] ?? null;
@@ -28264,13 +28266,26 @@ async function laneSuiteOfferDoor(s: Slot, wt: NonNullable<Slot["worktree"]>, re
       helper: helperPresence(), // …and WHO could take it, same reading as /api/self/gate's
     });
   }
-  // THE ONE BODY FIELD: `modules`, the narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
+  // `modules` selects the narrowed preview; `owedReason` names a self-assessed obligation.
+  // The narrowed preview (`FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`
   // — what /api/self/gate's localProof.modules recommends). Validated FIRST, before the existing
   // branch and before a row can exist, through the runner's own decision
   // (suite-modules.ts#moduleListFrom): known module names only, so nothing but a list of words
   // from that table can ever reach the helper's env. Absent — including a POST with no JSON body
   // at all, which is every caller from before this field — is the full run, unchanged.
+  const occupant = { openedAt: s.openedAt, selfToken: s.selfToken, cwd: s.cwd, worktree: s.worktree };
   const offerBody = await readJson(req);
+  const proof = by === null ? await laneLocalProof(s) : null;
+  if (slots.find((slot) => slot.id === s.id) !== s || s.openedAt !== occupant.openedAt || s.selfToken !== occupant.selfToken
+    || s.cwd !== occupant.cwd || s.worktree !== occupant.worktree)
+    return json({ error: "lane occupation changed while reading preview obligation" }, 409);
+  if (by === null && !proof) return json({ error: "preview obligation unknown — read localProof before offering or running locally" }, 409);
+  if (proof?.isolatedPreview === false)
+    return json({ error: "preview not owed — do not offer it or run it locally; a card VERIFY cannot make it owed" }, 409);
+  if (proof?.isolatedPreview === "self-assess"
+    && !PREVIEW_OWED_REASONS.some((reason) => reason === offerBody?.owedReason))
+    return json({ error: `self-assess preview requires owedReason: ${PREVIEW_OWED_REASONS.join(", ")}` }, 400);
+  const existing = laneSuiteOfferOf(s);
   let modules: string[] | undefined;
   if (offerBody?.modules !== undefined) {
     const m = moduleListFrom(offerBody.modules);

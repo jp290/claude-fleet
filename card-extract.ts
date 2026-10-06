@@ -58,8 +58,9 @@ export const CARD_KEY = "card";
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
 //  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
 //  11 — WEB: search is an optional, explicitly checked research declaration
+//  12 — an isolated preview in VERIFY needs an explicit obligation condition
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 11;
+export const CARD_VALIDATOR_VERSION = 12;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -227,7 +228,8 @@ function verifyAliased(verify: string): { verify: string; aliased: boolean } {
   if (!full && !isolated) return { verify, aliased: false };
   const steps = [...(full ? LOCAL_PROOF_STEPS : []), ...(isolated ? [ISOLATED_STEP] : [])].join(", ");
   const rest = verify.replace(FULL_CHAIN_ALIAS, "").replace(ISOLATED_ALIAS, "");
-  return { verify: namesChainStep(rest) ? `${steps} — ${verify}` : steps, aliased: true };
+  return { verify: namesChainStep(rest) || (isolated && /localProof|isolatedPreview|geschuldet|owed|wenn.*verlangt/i.test(verify))
+    ? `${steps} — ${verify}` : steps, aliased: true };
 }
 
 /**
@@ -253,8 +255,12 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   // and the cut copy never equals it — every card of that repo was refused. The match keeps the
   // whole command, so the brief shows what the gate runs; any other value is cut as before.
   const fullVerify = typeof raw.verify === "string" ? collapse(raw.verify) : "";
+  const previewNamed = fullVerify.search(ISOLATED_ALIAS) >= 0 || /suite-offer|volle\s+vorschau|full\s+preview/i.test(fullVerify);
+  const previewConditional = /localProof|isolatedPreview|geschuldet|owed|wenn.*verlangt/i.test(fullVerify);
+  if (previewNamed && !previewConditional)
+    gaps.push("verify: preview not owed by a card — Vorschau nur wenn localProof.isolatedPreview es verlangt; eine VERIFY-Zeile erweitert die Regel nicht");
   const verbatim = typeof repoCommand === "string" && !!fullVerify && fullVerify === collapse(repoCommand);
-  const rawVerify = verbatim ? fullVerify : text1(raw.verify);
+  const rawVerify = verbatim || (previewNamed && previewConditional) ? fullVerify : text1(raw.verify);
   const { verify, aliased } = typeof repoCommand === "string"
     ? { verify: rawVerify, aliased: false } : verifyAliased(rawVerify);
   // A foreign repo WITHOUT its own entry keeps the chain rule it had before v7 — refusing all of

@@ -474,7 +474,8 @@ export async function run(): Promise<void> {
     fetch(BASE + path, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token !== undefined ? { "x-fleet-self-token": token } : {}) },
-      body: JSON.stringify(body),
+      body: JSON.stringify(path === "/api/self/suite-offer"
+        ? { owedReason: "asserted-contract", ...body as Record<string, unknown> } : body),
     });
   const selfGet = (path: string, token: string): Promise<Response> =>
     fetch(BASE + path, { headers: { "x-fleet-self-token": token } });

@@ -57,6 +57,7 @@ import * as ctl from "./e2e/ctl";
 import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
 import * as laneSuite from "./e2e/lane-suite";
+import * as verifyRules from "./e2e/verify-rules";
 import * as programs from "./e2e/programs";
 import * as refAdvance from "./e2e/ref-advance";
 import * as outcomes from "./e2e/outcomes";
@@ -273,6 +274,7 @@ const steps: Step[] = [
   // and remains before programs.run(); it opens and kills its own lanes and leaves no offer behind.
   { unit: "lane-suite", lane: true, module: "lane-suite", run: async () => {
     await laneSuite.run();
+    await verifyRules.run();
   } },
   // Programs are planning-session artifacts above lanes. They use both the plain session and the
   // surviving lane self-token established immediately above, and restart the scratch server once.

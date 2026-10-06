@@ -3044,10 +3044,25 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   -d '{}' http://<fleet-host>:<port>/api/self/suite-offer/withdraw
 ```
 
-**Der Body des Angebots ist geschlossen bis auf eine Liste** — dieselbe Bauart wie
+**Der Body des Angebots liest `modules` und `owedReason`** — dieselbe Bauart wie
 `POST /api/self/tasks/:id/release`: Repo, Branch, cwd und Slot kommen aus der Token-Zeile, das
 Kommando ist `./e2e-isolated.sh` fest. Kein Feld kann nominieren, WELCHER Baum gebündelt wird.
 `withdraw` liest genau ein Feld, `abandon`.
+
+**Nur eine geschuldete Vorschau wird angeboten.** `server.ts#laneSuiteOfferDoor` liest vor
+jedem eigenen Lane-POST `server.ts#laneLocalProof` (committed Diff, `verify-proportion.ts#localProofFor`).
+`localProof.isolatedPreview:false` antwortet **409** mit `error: "preview not owed — do not offer
+it or run it locally; a card VERIFY cannot make it owed"`. Kein `offer:null`, keine lokale
+Ausweich-Erlaubnis. Bei `"self-assess"` muss der Body `owedReason` aus der geschlossenen Liste
+`server.ts#PREVIEW_OWED_REASONS` tragen: `e2e-lifecycle` (e2e/-Lebenszyklus), `suite-wrapper`
+(Suite-Wrapper), `merge-land-path` (Merge-/Land-Pfad), `asserted-contract` (Aussage, die ein Check
+behauptet). Ohne passenden Grund: **400** mit `error: "self-assess preview requires owedReason:
+e2e-lifecycle, suite-wrapper, merge-land-path, asserted-contract"`. Bei `true` braucht es keinen
+Grund; Angebot, Modulfilter und Helfer-Fallback bleiben gleich. Ein unbekannter localProof
+antwortet **409** `preview obligation unknown — read localProof before offering or running locally`.
+GET/withdraw lesen bestehende Angebote weiterhin; Stellvertreter-Tueren und MAIN-Command-Jobs
+sind davon unberuehrt.
+`card-extract.ts#validateCard` verweigert VERIFY-Zeilen, die eine Vorschau ohne Bedingung verlangen.
 
 **`modules` (optional, seit 2026-09-28) — die EINGEENGTE Vorschau.** Genau das, was
 `/api/self/gate` als `localProof.modules` empfiehlt: `FLEET_E2E_MODULES=<m> ./e2e-isolated.sh`,

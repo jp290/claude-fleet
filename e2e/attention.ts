@@ -153,7 +153,8 @@ export async function run(): Promise<void> {
       && new Set([tokA, tokB, tokC, laneTok]).size === 4);
 
   // The binding is a SERVER fact, so it is planted as one: two active programs, each bound to the
-  // exact occupant triple of its own MAIN. Nothing the routes below send can nominate a program.
+  // exact occupant triple of its own MAIN. Nothing the routes below send can nominate a program
+  // outside the caller's own bound set.
   await stopSrv();
   const planted = JSON.parse(readFileSync(statePath, "utf8")) as {
     slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
@@ -200,23 +201,40 @@ export async function run(): Promise<void> {
     JSON.stringify(readRows()));
 
   // --- 1. who may raise, and what the server derives rather than believes -----------------------
-  // BREAKS IF: the route stops deriving programId from the binding and reads it from the body, or
-  // the kind union is widened, or the non-lane/binding gates are dropped.
+  // BREAKS IF: a body programId outside the MAIN's own bound Programs is believed (one MAIN, n
+  // Programs, owner 2026-10-06: a body field may only CHOOSE among its own), the one binding stops
+  // deriving the Program when nothing is chosen, the kind union is widened, or the non-lane/binding
+  // gates are dropped.
   const candidateSha = "b".repeat(40);
+  const raiseUnder = (programId: string): Promise<Response> => selfRaise(tokA, {
+    kind: "decision", text: "Ship cut 2 now or after the audit?", programId,
+    taskId: "task-declared-by-main", originId: "origin-declared-by-main",
+    branch: "fleet/result-rail", candidateSha,
+  });
+  const foreign = await raiseUnder(programC);
+  const foreignText = await foreign.text();
+  const spoofed = await raiseUnder("spoofed");
+  const spoofedText = await spoofed.text();
+  check("attention: a body programId is only a choice among the MAIN's own — another MAIN's Program is a 409 naming the own one, a malformed id a 400, and neither raises anything",
+    foreign.status === 409 && foreignText.includes(`program ${programC} is not one of the programs this session is bound MAIN of`)
+      && foreignText.includes(programA)
+      && spoofed.status === 400 && spoofedText.includes("programId must name one of the programs this session is bound MAIN of")
+      && readRows().length === 0,
+    `${foreign.status} ${foreignText} · ${spoofed.status} ${spoofedText} rows=${readRows().length}`);
   const decision = await raised(await selfRaise(tokA, {
-    kind: "decision", text: "Ship cut 2 now or after the audit?", programId: "spoofed",
+    kind: "decision", text: "Ship cut 2 now or after the audit?",
     taskId: "task-declared-by-main", originId: "origin-declared-by-main",
     branch: "fleet/result-rail", candidateSha,
   }));
   const blocked = await raised(await selfRaise(tokA, { kind: "blocked", text: "The land gate needs an owner token I do not hold." }));
   const reviewReady = await raised(await selfRaise(tokA, { kind: "review-ready", text: "The inbox slice is ready for your eyes." }));
-  check("attention: a bound MAIN raises all three kinds and programId is server-derived, never body-supplied",
+  check("attention: a bound MAIN raises all three kinds and its one binding derives programId when none is chosen",
     decision?.kind === "decision" && blocked?.kind === "blocked" && reviewReady?.kind === "review-ready"
       && [decision, blocked, reviewReady].every((a) => a?.programId === programA && a.status === "open"
         && a.answer === null && a.closedAt === null)
       && readRows().length === 3,
     JSON.stringify({ decision, rows: readRows().length }));
-  check("attention object provenance: task, branch and candidate are fields while programId stays server-derived",
+  check("attention object provenance: task, branch and candidate are fields while programId comes from the binding",
     decision?.provenance?.taskId === "task-declared-by-main"
       && decision.provenance.originId === "origin-declared-by-main"
       && decision.provenance.branch === "fleet/result-rail"

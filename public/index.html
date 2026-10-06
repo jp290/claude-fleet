@@ -112,7 +112,14 @@
   /* in the board the card stands OUTSIDE the bsec section system (whose #board rule strips
      borders and padding by id specificity) — it carries its own material, plus the same
      first-section rhythm the sections get */
-  #board .plasec { margin-top: 16px; }
+  #board .plasec { margin-top: 8px; }
+  /* the draft's alarm (rechter-tab-notiz.md §4a `alarm`): headline, one sentence, Ansehen · Gesehen */
+  .plasec .plat { font-weight: 500; font-size: 12px; }
+  .plasec .plad { margin-top: 2px; font-size: var(--chat-ui-fs); color: var(--chat-prose); }
+  .plasec .plaacts { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .plasec .plaacts .plaack { margin-top: 0; }
+  .plasec .plaack.quiet { border-color: transparent; background: transparent; color: var(--chat-mute); }
+  .plasec .plaack.quiet:hover { color: var(--chat-ink); background: var(--c-hover); }
   #malarm { display: none; flex: none; width: 40px; height: 40px; padding: 0; border: 0; background: none; cursor: pointer; }
   #malarm::after { content: ""; display: block; width: 7px; height: 7px; margin: auto; border-radius: 50%; background: var(--danger); }
   #malarm.unknown::after { background: var(--amber); }
@@ -2808,12 +2815,19 @@
   #board #boardclose { border: 0; background: none; color: var(--b-ink3); flex: none; width: 24px; height: 24px;
     font-size: 13px; display: flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; }
   #board #boardclose:hover { color: var(--b-ink); background: var(--b-hover); }
-  #board #boardbody { padding: 0 16px 28px; font-size: 12.5px; line-height: 1.45; }
+  #board #boardbody { padding: 0 12px 20px; font-size: 12.5px; line-height: 1.45; }
 
   /* sections */
-  #board .bsec { padding: 22px 0 0; border: 0; }
-  #board .bsec:first-child { padding-top: 16px; }
-  #board .bsec h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--b-ink); }
+  /* THE THIRD VERSION'S RHYTHM (rechter-tab-notiz.md §3b): air between GROUPS, not between rows —
+     12 px over a 1-px hairline and 8 px under it between sections, 4 px from a head to its first
+     row, 8 px between groups inside a section; the rows themselves stay dense (24 px). */
+  #board { --b-row: 24px; --b-sec-a: 12px; --b-sec-b: 8px; --b-head: 4px; --b-grp: 8px; --b-fold: 28px; --b-hit: 24px; }
+  #board .bsec { padding: 0; border: 0; }
+  #board .bsec:first-child { padding-top: 8px; }
+  #board .bsec + .bsec, #board .plasec + .bsec, #board .balert + .bsec { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b);
+    border-top: 1px solid var(--chat-edge-soft); }
+  #board .bsec h3 { display: flex; align-items: center; gap: 6px; min-height: var(--b-hit); margin: 0 0 var(--b-head);
+    font-size: var(--chat-ui-fs); font-weight: 600; letter-spacing: .02em; text-transform: none; color: var(--chat-prose); }
   #board .bsec > h3 + .bsubhead { margin-top: 0; }
   #board .bsubhead { margin: 12px 0 4px; font-size: 11.5px; letter-spacing: 0; text-transform: none; color: var(--b-ink3); }
   #board .bsubstat { margin-left: 8px; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
@@ -2839,10 +2853,13 @@
   #board .ranke { --rk-row: 24px; --rk-sub: 20px; --rk-grp: 8px; --rk-lvl: 10px; --rk-rail: 28px;
     --rk-cols: var(--rk-rail) 22px minmax(0, 1fr) 30px 42px 14px; }
   #board .ranke h3 { display: flex; align-items: center; gap: 6px; min-height: 24px; margin-bottom: 4px; }
-  #board .rkseg { margin-left: auto; display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
-  #board .rkseg button { border: 0; border-radius: 0; min-height: 20px; padding: 0 6px; background: transparent;
+  #board .ranke h3 { flex-wrap: wrap; row-gap: 2px; }
+  #board .ranke h3 .act { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: 500; letter-spacing: 0; min-width: 0; }
+  #board .rkseg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
+  #board .rkseg button { display: inline-grid; place-items: center; width: 20px; border: 0; border-radius: 0; min-height: 20px; padding: 0; background: transparent;
     color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; transition: color var(--t), background-color var(--t); }
   #board .rkseg button.on { background: var(--c-hover); color: var(--chat-ink); }
+  #board .rkseg button .ico { width: 12px; height: 12px; }
   #board .ranke .grp + .grp { margin-top: var(--rk-grp); }
   #board .ranke .rk { position: relative; }
   #board .ranke .rk > svg { position: absolute; left: 0; top: 0; width: var(--rk-rail); height: 100%; pointer-events: none; overflow: visible; }
@@ -2990,35 +3007,163 @@
     #board .zd.ti > .tx { flex-basis: 100%; }
     #board .zd.ti > .r { margin-left: 0; }
     #board .rk-btn.ib { width: 40px; padding: 0; justify-content: center; }
+    #board .rkseg button { width: 40px; padding: 0; }
   }
 
   /* machine alarms — only drawn when something is due */
   #board .balert { margin-top: 14px; padding: 9px 11px; border-radius: 8px; background: rgba(224,175,104,.07); }
+  #board .berrs .errrow { display: flex; align-items: center; gap: 7px; min-height: var(--b-row); font-size: var(--chat-ui-fs); color: var(--chat-prose); }
+  #board .berrs .errrow .chev { width: 12px; height: 12px; margin-left: auto; color: var(--chat-faint); transform: rotate(-90deg); }
+  #board .berrs .errrow[aria-expanded="true"] .chev { transform: none; }
+  #board .berrs .bidmeta { padding-left: 14px; }
+  #board .dot.bad { background: var(--danger); }
+  #board .zr.stand.due .nm b { color: var(--q-wait); }
   #board .balert .bstate { color: var(--amber); font-size: 11.5px; }
-  #board .balert + .bsec.bhead { padding-top: 18px; }
 
-  /* head */
-  #board .bhead { padding-top: 16px; }
-  #board .bheadtop { display: flex; align-items: flex-start; gap: 8px; position: relative; }
-  #board .bheadname { flex: 1; min-width: 0; font-size: 16px; font-weight: 650; letter-spacing: -.012em; line-height: 1.25;
-    color: #f4f4f4; overflow-wrap: anywhere; }
-  #board .bheadmenu { flex: none; width: 26px; height: 24px; margin: -2px -6px 0 0; border: 0; border-radius: 6px;
-    background: none; color: var(--b-ink3); font-size: 15px; line-height: 1; cursor: pointer; }
-  #board .bheadmenu:hover, #board .bheadmenu.on { color: var(--b-ink); background: var(--b-hover); }
-  #board .bheadmeta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 11.5px; color: var(--b-ink3); }
-  #board .bdot { width: 6px; height: 6px; border-radius: 50%; background: var(--chat-edge); }
-  #board .bdot.on { background: var(--add); box-shadow: 0 0 6px rgba(158,206,106,.6); }
-  #board .bwait { display: inline-block; margin-top: 10px; padding: 3px 8px; border-radius: 5px; font-size: 11.5px; font-weight: 600; }
-  #board .bwait.owner { color: var(--amber); background: rgba(224,175,104,.1); }
-  #board .bwait.main { color: var(--accent); background: rgba(122,162,247,.1); }
-  #board .bmission { margin-top: 10px; color: var(--chat-prose); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-  #board .bchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
-  #board .bchip { max-width: 100%; padding: 2px 6px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
-    font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink2); cursor: pointer;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #board .bchip:hover { color: var(--b-ink); border-color: var(--chat-edge); }
-  #board .bchip.link { color: var(--accent); }
-  #board .brefusal { margin-top: 8px; font-size: 11.5px; color: var(--b-ink3); border-left: 2px solid var(--chat-edge); padding-left: 8px; }
+  /* THIS SESSION (Variante 3A): the name with three glyph buttons and ⋯, the state, the waiting
+     sentences only when true, the order in two lines — then, one group gap below, the values as
+     label/value rows (Branch, Landet in, Check, Kontext, Gehört zu) */
+  #board .bheadtop { display: flex; align-items: center; gap: 2px; min-height: var(--b-hit); position: relative; }
+  #board .bheadname { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--chat-ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bib { flex: none; width: var(--b-hit); height: var(--b-hit); padding: 0; border: 0; border-radius: var(--r1);
+    display: inline-grid; place-items: center; background: transparent; color: var(--chat-mute); cursor: pointer;
+    transition: color var(--t), background-color var(--t); }
+  #board .bib .ico { width: 14px; height: 14px; }
+  #board .bib:hover:not(:disabled), #board .bib.on { color: var(--chat-ink); background: var(--c-hover); }
+  #board .bib.on { box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  #board .bib.shared, #board .bib.done { color: var(--chat-ink); }
+  #board .bib:disabled { color: var(--chat-faint); cursor: default; }
+  #board .bheadmeta { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .bheadmeta .ref { font: 500 10.5px/1 var(--chat-mono); color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l)); }
+  #board .bdot { width: 7px; height: 7px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.25px var(--chat-mute); }
+  #board .bdot.on { background: var(--q-live); box-shadow: none; }
+  #board .bwait { display: inline-block; margin-top: 4px; font-size: var(--chat-ui-fs); font-weight: 500; }
+  #board .bwait.owner { color: var(--q-wait); }
+  #board .bwait.main { color: var(--chat-prose); }
+  #board .bmission { margin-top: 4px; color: var(--chat-prose); font-size: 12px; line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #board .brefusal { margin-top: 6px; font-size: var(--chat-ui-fs); color: var(--b-ink3); border-left: 2px solid var(--chat-edge); padding-left: 8px; }
+  #board .bkvs { margin-top: var(--b-grp); }
+  #board .bkv { display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; align-items: center;
+    min-height: var(--b-row); font-size: 12px; position: relative; }
+  #board .bkv > .k { color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  #board .bkv > .v { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--chat-prose); overflow: hidden; white-space: nowrap; }
+  #board .bkv .s1 { color: var(--chat-faint); font-size: var(--chat-ui-fs); overflow: hidden; text-overflow: ellipsis; }
+  #board .bkv .mono { font: 10.5px var(--chat-mono); color: var(--chat-prose); }
+  #board .bkv .mono.br { direction: rtl; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; } /* cut from the front */
+  #board .bkv .bib { width: 20px; height: 20px; }
+  #board .bkv .bib .ico { width: 12px; height: 12px; }
+  #board .bkv .ck { display: inline-grid; place-items: center; width: 12px; height: 12px; flex: none; color: var(--chat-mute); }
+  #board .bkv .ck .ico { width: 12px; height: 12px; }
+  #board .bkv .ck.bad { color: var(--danger); }
+  #board .bkv .ck.run { width: 7px; height: 7px; border-radius: 50%; background: var(--q-live); }
+  #board .bkv .ck.queue { width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1.25px var(--q-live); }
+  #board .bkv .ck.none, #board .bkv .ck.skip { width: 7px; height: 1px; background: var(--chat-faint); }
+  #board .bkv.lks > .v { flex-wrap: wrap; row-gap: 0; column-gap: 10px; white-space: normal; padding: 3px 0; }
+  #board .lk { border: 0; background: transparent; padding: 0; min-height: 0; font: 400 var(--chat-ui-fs) var(--chat-sans); color: var(--chat-prose);
+    text-decoration: underline; text-decoration-color: var(--chat-edge); text-underline-offset: 3px; cursor: pointer; }
+  #board .lk:hover:not(:disabled) { color: var(--chat-ink); text-decoration-color: var(--chat-mute); }
+  #board .lk:disabled { color: var(--chat-faint); cursor: default; }
+  #board .optsw { display: inline-flex; align-items: center; gap: 2px; height: auto; max-width: none; min-height: 20px; padding: 0 3px; border: 0; border-radius: var(--r1);
+    background: transparent; color: var(--chat-ink); font: 400 12px var(--chat-sans); cursor: pointer; }
+  #board .optsw .ico { width: 12px; height: 12px; color: var(--chat-mute); }
+  #board .optsw:hover, #board .optsw.on { background: var(--c-hover); }
+  #board .steps { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: var(--chat-ui-fs); }
+  #board .steps .st { display: inline-flex; align-items: center; gap: 3px; color: var(--chat-faint); }
+  #board .steps .st.done { color: var(--chat-mute); } #board .steps .st.now { color: var(--chat-ink); }
+  #board .steps .ico { width: 11px; height: 11px; }
+  #board .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+  #board .dot.live { background: var(--q-live); }
+
+  /* THE COLUMN'S POPOVERS (G4.1): at the button that opens them on the desktop, a sheet from the
+     bottom on the phone. One material: raised surface, one edge, a shadow; danger last in red. */
+  #board .bpop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 210px; padding: 4px;
+    background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: var(--r2);
+    box-shadow: 0 14px 34px color-mix(in srgb, var(--chat-void) 70%, transparent); white-space: normal; }
+  #board .bpopscrim { display: none; }
+  #board .bpop .bmenuitem { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 3px 8px; border: 0;
+    border-radius: var(--r1); background: none; color: var(--chat-prose); font: 400 12px var(--chat-sans); text-align: left; cursor: pointer; }
+  #board .bpop .bmenuitem:hover:not(:disabled), #board .bpop .bmenuitem:focus-visible { background: var(--c-hover); color: var(--chat-ink); }
+  #board .bpop .bmenuitem .kk { margin-left: auto; font-size: var(--chat-ui-fs); color: var(--chat-mute); font-family: var(--chat-mono); }
+  #board .bpop .bmenuitem.danger { color: var(--danger); }
+  #board .bpop .sep { height: 1px; margin: 4px 2px; background: var(--chat-edge); }
+  #board .bpop.ubpop { left: 0; right: auto; width: 276px; padding: 8px 10px 6px; }
+  #board .ubpop .pr { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 1px 8px; align-items: center; padding: 4px 0;
+    font-size: 12px; color: var(--chat-prose); }
+  #board .ubpop .pr > .k { align-self: start; padding-top: 2px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .ubpop .pr > .pv { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  #board .ubpop .pr > .pv b { font-weight: 500; color: var(--chat-ink); }
+  #board .ubpop .pr > .h { grid-column: 2; font-size: 10.5px; line-height: 1.35; color: var(--chat-faint); }
+  #board .ubpop .perr { margin-top: 4px; font-size: var(--chat-ui-fs); color: var(--danger); }
+  #board .stepper { display: inline-flex; align-items: center; border: 1px solid var(--chat-edge); border-radius: var(--r1); }
+  #board .stepper button { width: 22px; min-height: 20px; padding: 0; border: 0; background: transparent; color: var(--chat-mute); cursor: pointer; font: 500 12px var(--chat-sans); }
+  #board .stepper button:hover:not(:disabled) { color: var(--chat-ink); }
+  #board .stepper button:disabled { color: var(--chat-faint); cursor: default; }
+  #board .stepper .val { min-width: 42px; text-align: center; font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
+  #board .seg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
+  #board .seg button { min-height: 20px; padding: 0 9px; border: 0; border-radius: 0; background: transparent; color: var(--chat-mute);
+    font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; }
+  #board .seg button.on { background: var(--c-hover); color: var(--chat-ink); }
+  #board .seg button:disabled { color: var(--chat-faint); cursor: default; }
+
+  /* CHANGES: the state, the files (24 px rows), one button row — Commit, Land lane, ⋯, Rebase */
+  #board .bchangeacts { position: relative; margin-top: var(--b-grp); }
+  #board .bchangeacts .bib { width: 26px; height: 26px; }
+  #board .landnote { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  /* the notepad: two lines while empty, growing with the text; its foot only when it says something */
+  #board .bnoteta { display: block; width: 100%; box-sizing: border-box; min-height: 48px; resize: vertical; padding: 6px 8px;
+    background: var(--chat-surface); color: var(--chat-prose); border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    font: 12px/1.45 var(--chat-sans); }
+  #board .bnoteta:focus { outline: none; border-color: var(--chat-mute); }
+  #board .bnotefoot { display: flex; align-items: center; gap: 6px; min-height: 22px; margin-top: 2px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #board .bnotefoot .bnotesave { margin-left: auto; padding: 1px 7px; }
+  #board .bnotefoot[hidden], #board .bnotesave[hidden] { display: none; }
+  /* history: three commits and the one button for the rest */
+  #board .bmorebtn { margin-top: 2px; padding: 2px 6px; margin-left: -6px; color: var(--chat-mute); background: transparent; border-color: transparent; }
+  #board .bmorebtn:hover { color: var(--chat-ink); background: var(--c-hover); }
+  /* MORE ABOUT THIS SESSION: four tabs of one line each, the summary right, open the former block */
+  #board .btabhd { display: flex; align-items: center; min-height: var(--b-fold); }
+  #board .btabbtn { flex: 1; min-width: 0; display: grid; grid-template-columns: 12px auto minmax(0, 1fr); gap: 5px; align-items: center;
+    min-height: var(--b-fold); padding: 0 2px; border: 0; border-radius: 4px; background: transparent; color: var(--chat-prose);
+    font: 400 12px var(--chat-sans); text-align: left; cursor: pointer; }
+  #board .btabbtn:hover { background: var(--c-hover); color: var(--chat-ink); }
+  #board .btabbtn .chev { width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }
+  #board .btab.open .btabbtn .chev { transform: none; }
+  #board .btabbtn .sum { justify-self: end; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #board .btabx { margin-left: 2px; }
+  #board .btabbody { padding: 2px 2px 8px 22px; }
+  #board .btabbody .brights { padding: 0; }
+  #board .btabbody .bsrow .bskey { width: 86px; }
+  #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
+  #board .bnopane { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b); border-top: 1px solid var(--chat-edge-soft); }
+  @media (prefers-reduced-motion: reduce) { #board .bib, #board .meterbtn, #board .meterbtn .chev, #board .btabbtn .chev { transition: none; } }
+  /* the phone: after the column's base rules on purpose — the same specificity wins by order */
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    /* the rest of the column at the phone's floor: a target 40 px, a reading row 32 px (§3b) */
+    #board { --b-row: 40px; --b-hit: 40px; --b-fold: 40px; --b-grp: 12px; }
+    #board .bsec h3 { font-size: 12px; min-height: 28px; }
+    #board .ranke h3 { min-height: 40px; }
+    #board .meterbtn { min-height: 40px; padding: 0 8px; }
+    #board .bkv { min-height: 32px; font-size: 13px; }
+    #board .bkv > .k { font-size: 12px; }
+    #board .bkv .optsw { min-height: 40px; margin: -4px 0; }
+    #board .bkv .bib { width: 40px; height: 40px; margin: -4px 0; }
+    #board .lk { min-height: 32px; }
+    #board .bchangeacts .bib { width: 40px; height: 40px; }
+    #board .bchangeacts .bbtn { min-height: 40px; }
+    #board .bmorebtn, #board .bnotesave, #board .bnotefoot .bbtn { min-height: 40px; }
+    #board .btabbtn, #board .brow, #board .bfile, #board .buncf, #board .bprompt { font-size: 12.5px; }
+    #board .bpop { position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: auto; min-width: 0; max-height: 76%; overflow: auto;
+      border-radius: var(--r3) var(--r3) 0 0; padding: 8px 10px 22px; z-index: 31; }
+    #board .bpop.ubpop { left: 0; right: 0; width: auto; }
+    #board .bpopscrim { display: block; position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--chat-void) 55%, transparent); }
+    #board .bpop .bmenuitem { min-height: 44px; font-size: 14px; }
+    #board .ubpop .pr { grid-template-columns: 110px minmax(0, 1fr); font-size: 13px; }
+    #board .stepper button { width: 44px; min-height: 40px; }
+    #board .seg button { min-height: 40px; padding: 0 14px; }
+  }
 
   /* WHOSE FACT: one quiet word per section head — session · repo · machine · fleet. Quiet by
      construction (uppercase, small, --b-ink3): it must be readable when looked for and invisible
@@ -3033,8 +3178,6 @@
   #board .bsec .bskey { flex: none; width: 66px; font-size: 11.5px; color: var(--b-ink3); }
   #board .bsec .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
     overflow-wrap: anywhere; }
-  /* the succession group sits in the head, one gap above it and none inside */
-  #board .bhead .bsucctop { margin-top: 12px; }
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-size: 10.5px; color: var(--b-ink2); }
@@ -3129,9 +3272,6 @@
   #shell-packs .cpkanchor { margin-top: 3px; font-size: 11.5px; color: var(--chat-mute); overflow-wrap: anywhere; }
 
   /* the session menu hangs at its ⋯ button (G4.1 Zuhause) instead of shoving the column down */
-  #board .bmenu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; min-width: 220px; padding: 4px; }
-  #board .bmenuitem { display: block; width: 100%; padding: 6px 8px; border: 0; background: none;
-    color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
 
   /* buttons: bordered = an action, quiet = a lesser one, primary = THE action (one at a time) */
   #board .bbtnrow, #board .blandacts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
@@ -3142,12 +3282,10 @@
      word buttons' text so the two sizes read as one row */
   #board .bbtn.quiet .ico { width: 14px; height: 14px; }
   #board .bmergedetail { color: var(--b-ink3); font-size: 11.5px; }
-  /* the head's three visible session actions: quiet word buttons, their words on the head's left edge */
-  #board .bheadacts { margin-left: -7px; }
 
   /* rows: every clickable line is a real button, full width, one hover */
   #board .brow, #board .bfile, #board .buncf, #board .bprompt {
-    display: flex; align-items: baseline; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px;
+    display: flex; align-items: center; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 0 6px; min-height: var(--b-row);
     border: 0; border-radius: 5px; background: none; color: #c9c9c9; font-size: 12px; text-align: left; cursor: pointer; }
   #board .brow:hover, #board .bfile:hover, #board .buncf:hover, #board .bprompt:hover { background: var(--b-hover); color: var(--chat-ink); }
   #board .brow .bhash { flex: none; font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
@@ -3158,18 +3296,8 @@
   #board .bunc { margin-top: 6px; }
   #board .bprompt .bn { flex: none; min-width: 16px; font-family: var(--b-mono); font-size: 10.5px; font-weight: 400; color: var(--b-ink3); text-align: right; }
 
-  /* checks — this session's suites */
-  #board .bcheck { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-  #board .bcheckwhat { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--chat-prose);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #board .bcheckstate { font-size: 11.5px; color: var(--b-ink2); }
-  #board .bcheckage { font-family: var(--b-mono); font-size: 10.5px; color: var(--b-ink3); }
-  #board .bcheck.tone-ok .bcheckstate { color: var(--add); }
-  #board .bcheck.tone-red .bcheckstate { color: var(--del); }
-  #board .bcheck.tone-unknown .bcheckstate, #board .bcheck.tone-warn .bcheckstate { color: var(--amber); }
 
   /* folds — the tools you reach for rather than read */
-  #board .btools { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--b-rule); }
   #board .bfold + .bfold { border-top: 1px solid var(--chat-raised); }
   #board .bfoldhd { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 0; border: 0; background: none;
     color: #c9c9c9; font-size: 12.5px; text-align: left; cursor: pointer; }
@@ -3186,54 +3314,27 @@
   #board .bwtact:hover:not(:disabled) { color: var(--b-ink); background: var(--b-hover); }
   #board .bwtact:disabled { color: var(--b-ink3); }
 
-  /* --- the suite meter: a glass thermometer pinned under the board head. White balls ride the line
-     through the tube and gather at four stations — waiting, running, on a helper, done — and every
-     ball is named on a line below. The balls are keyed DOM (renderSuiteMeter), so a change of
-     station is a glide along the glass, not a jump. The bulb holds the mercury: it fills while the
-     suite mutex is held, turns amber when the hold is overdue. */
-  #boardsuites { flex: none; padding: 6px 16px 14px; border-bottom: 1px solid var(--b-rule); font-size: 11.5px; }
-  .smhead { display: flex; align-items: center; gap: 10px; height: 22px; }
-  .smtog { display: flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; color: var(--b-ink2); cursor: pointer; }
-  .smtitle { font-size: 12.5px; font-weight: 600; color: var(--b-ink); }
-  .smtog:hover .smtitle { color: #fff; }
-  .smlock { flex: 1; min-width: 0; color: var(--b-ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-  #boardsuites.lock-held .smlock { color: var(--b-ink2); }
-  #boardsuites.lock-overdue .smlock, #boardsuites.lock-unknown .smlock { color: var(--amber); }
-  .smdev { flex: none; padding: 0; border: 0; background: none; color: var(--b-ink3); font-size: 11px; cursor: pointer; }
-  .smdev:hover { color: var(--b-ink); }
-  .smtube { position: relative; height: 18px; margin: 12px 0 5px; }
-  .smbulb { position: absolute; left: 0; top: 2px; width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
-    border: 1px solid #2e2e2e; background: radial-gradient(circle at 35% 30%, #262626, #050505 70%);
-    transition: background .5s, border-color .5s, box-shadow .5s; }
-  #boardsuites.lock-held .smbulb { border-color: var(--chat-prose); background: radial-gradient(circle at 35% 30%, var(--chat-ink), var(--chat-mute) 75%);
-    box-shadow: 0 0 10px rgba(255,255,255,.22); }
-  #boardsuites.lock-overdue .smbulb, #boardsuites.lock-unknown .smbulb { border-color: var(--amber);
-    background: radial-gradient(circle at 35% 30%, #f6d9a8, #b98537 75%); box-shadow: 0 0 10px rgba(224,175,104,.3); }
-  #boardsuites.lock-parked .smbulb { border-color: var(--chat-faint); }
-  .smglass { position: absolute; left: 11px; right: 0; top: 5px; height: 8px; box-sizing: border-box; border-radius: 0 5px 5px 0;
-    border: 1px solid #262626; border-left: 0; background: linear-gradient(to bottom, rgba(255,255,255,.06), rgba(255,255,255,0) 55%); }
-  .smline { position: absolute; left: 13px; right: 4px; top: 8.5px; height: 1px;
-    background: linear-gradient(to right, rgba(255,255,255,.55), rgba(255,255,255,.12)); }
-  #boardsuites.lock-free .smline, #boardsuites.lock-stale .smline { background: linear-gradient(to right, rgba(255,255,255,.22), rgba(255,255,255,.06)); }
-  .smtick { position: absolute; top: 3px; width: 1px; height: 12px; margin-left: -.5px; background: #222; }
-  .smball { position: absolute; top: 5.5px; width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%;
-    background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.55);
-    transition: left .9s cubic-bezier(.45,0,.2,1), opacity .4s, transform .4s; }
-  /* the streak: each ball trails a short fading line along the glass */
-  .smball::before { content: ""; position: absolute; right: 5px; top: 3px; width: 16px; height: 1px;
-    background: linear-gradient(to right, rgba(255,255,255,0), rgba(255,255,255,.9)); }
-  .smball.tail::before { display: none; }
-  .smball.entering { opacity: 0; transform: scale(.3); }
-  .smball.tone-ok { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--add); }
-  .smball.tone-red { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--del), 0 0 8px rgba(247,118,142,.6); }
-  .smball.tone-unknown, .smball.tone-warn { box-shadow: 0 0 0 1.5px #000, 0 0 0 2.5px var(--amber); }
-  .smball.mine { transform: scale(1.35); }
-  .smcols { display: grid; grid-template-columns: 11px repeat(4, minmax(0, 1fr)); }
-  .smst { min-width: 0; padding: 0; border: 0; background: none; font-size: 10.5px; color: #474747; cursor: pointer; white-space: nowrap; }
-  .smst.on { color: var(--b-ink2); }
-  .smst:hover { color: var(--b-ink); }
-  .smstn { margin-left: 4px; font-family: var(--b-mono); font-size: 10px; color: var(--b-ink); }
-  .smrows:not(:empty) { margin-top: 10px; }
+  /* --- THE CHECKS STRIP (card R4): the machine's suites as one word button in the Arbeitsorte's head,
+     opening every run below it — rows (name · what · where, the state on the dot), one counting line,
+     who holds the machine's one-at-a-time lock and the helpers. No tube, no gliding balls: motion is
+     colour only (G0.4, rechter-tab-notiz.md §3a). */
+  #board .meterbtn { display: inline-flex; align-items: center; gap: 2px; min-height: 24px; padding: 0 2px 0 5px; border: 0;
+    border-radius: var(--r1); background: transparent; color: var(--chat-mute); font: 500 var(--chat-ui-fs) var(--chat-sans);
+    white-space: nowrap; cursor: pointer; transition: color var(--t), background-color var(--t); }
+  #board .meterbtn:hover, #board .meterbtn.open { color: var(--chat-ink); background: var(--c-hover); }
+  #board .meterbtn.tone-run .mw { color: var(--chat-prose); }
+  #board .meterbtn.tone-wait .mw { color: var(--q-wait); }
+  #board .meterbtn .chev { width: 11px; height: 11px; transform: rotate(-90deg); transition: transform var(--t); }
+  #board .meterbtn.open .chev { transform: none; }
+  #board .rkmeter { margin: 0 0 var(--rk-grp); padding: 4px 0; border-top: 1px solid var(--chat-edge-soft);
+    border-bottom: 1px solid var(--chat-edge-soft); font-size: var(--chat-ui-fs); }
+  #board .rkmeter .smsectiontitle { margin: 2px 0 2px; }
+  #board .rkmeter .cnt { min-height: var(--rk-sub); display: flex; align-items: center; flex-wrap: wrap; gap: 0 4px;
+    color: var(--chat-faint); line-height: 1.4; }
+  #board .rkmeter .cnt b { color: var(--chat-ink); font-weight: 500; }
+  #board .rkmeter .cnt.wait { color: var(--q-wait); }
+  #board .rkmeter .cnt .lk { color: var(--chat-mute); }
+  #board .rkmeter .smrow { min-height: var(--rk-row); width: 100%; margin: 0; padding: 0 2px; }
   .smrow { display: flex; align-items: center; gap: 8px; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px;
     border: 0; border-radius: 5px; background: none; color: var(--b-ink); font-size: 12px; text-align: left; cursor: pointer; }
   .smrow:not(:disabled):hover { background: var(--b-hover); }
@@ -4251,9 +4352,8 @@
     </div>
   </div>
   <div id="board">
-    <div id="boardhead"><span id="boardtitle">Session brief</span>
-      <button id="boardclose" title="close brief">›</button></div>
-    <div id="boardsuites"></div>
+    <div id="boardhead"><span id="boardtitle">Info</span>
+      <button id="boardclose" title="Info schließen" aria-label="Info schließen">›</button></div>
     <div id="boardbody"></div>
   </div>
 </div>

@@ -1,6 +1,6 @@
 import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
-import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool } from "./prefs";
+import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
@@ -10,9 +10,9 @@ import { projectHue } from "./marks";
 import { METER_STATIONS, MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, meterLine, meterRuns, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { porcelainPath } from "./gitpath";
-import { icon } from "./icons";
+import { icon, type IconName } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
-import { serverClock } from "./composer";
+import { compTray, serverClock } from "./composer";
 import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
 
@@ -61,6 +61,10 @@ export interface BriefSuccession {
   thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | null;
   nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
   session: number; taken: number | null; cap: number | null;
+  // the owner's per-session setting (server.ts#patchHandover): the rail's env value, whether the
+  // threshold above is this session's own, and whether the hint is on. An older server sends none of
+  // the three — successionOf reads them as the fleet's values then.
+  defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
 }
 export interface BriefSetup { profile: "standard" | "game-maker" | null;
   repo: string | null; head: string | null;
@@ -186,26 +190,23 @@ export async function doRebase(slot: number): Promise<void> {
     void renderBoard();
   }
 }
-// the head's ⋯ session menu — module state for the same reason: the 3s repaint must not shut it.
-// Bound to the SLOT it was opened on: it used to stay open across a focus change, offering one
-// session's share/export/rename under another session's name.
-export let boardMenuOpen = false;
-export let boardMenuSlot: number | null = null;
-// The board and Explorer action menus cannot be open on the same visible surface. They therefore
+// The board's popovers (the session's ⋯, the ⋯ beside Land lane, the handover settings — boardPop
+// below) and the Explorer's action menu cannot be open on the same visible surface. They therefore
 // share this K5 registration instead of adding another document-level outside-click listener.
 // Both rebuild their rows, so panel, trigger and rows are read at event time.
 popover({
-  panel: () => fxMenu?.panel ?? boardBody.querySelector<HTMLElement>(".bmenu"),
-  trigger: () => fxMenu?.trigger ?? boardBody.querySelector<HTMLElement>(".bheadmenu.on"),
-  isOpen: () => fxMenu !== null || boardMenuOpen,
+  panel: () => fxMenu?.panel ?? boardBody.querySelector<HTMLElement>(".bpop"),
+  trigger: () => fxMenu?.trigger ?? boardBody.querySelector<HTMLElement>("[data-pop].on:not(.bpop)"),
+  isOpen: () => fxMenu !== null || boardPop !== null,
   close: (refocus) => {
     if (fxMenu) { closeFxMenu(refocus); return; }
-    boardMenuOpen = false;
+    const kind = boardPop?.kind ?? null;
+    boardPop = null;
+    if (refocus) popFocus = kind;
     void renderBoard();
-    if (refocus) requestAnimationFrame(() => boardBody.querySelector<HTMLElement>(".bheadmenu")?.focus());
   },
   rows: () => fxMenu ? [...fxMenu.panel.querySelectorAll<HTMLButtonElement>(".fxmenuitem")]
-    : [...boardBody.querySelectorAll<HTMLButtonElement>(".bmenu .bmenuitem")],
+    : [...boardBody.querySelectorAll<HTMLButtonElement>(".bpop .bmenuitem, .bpop .pr button")],
 });
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 export const outline = new Map<number, { total: number; source: string | null; prompts: string[]; err: string | null }>();
@@ -716,6 +717,15 @@ export function openBoardWindow(): void {
   } });
   boardShell.root.classList.add("boardwin");
   boardShell.detail.appendChild(board);
+  // the window's Escape runs in the capture phase: an open sheet (the session's ⋯, the ⋯ beside Land
+  // lane, the handover settings) closes first, the window with the next one (G4.1)
+  boardShell.setCloseGuard(() => {
+    if (!boardPop) return false;
+    popFocus = boardPop.kind;
+    boardPop = null;
+    void renderBoard();
+    return true;
+  });
 }
 
 export function applyBoard() {
@@ -921,25 +931,16 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   return head;
 }
 
-// --- the suite meter: the board's always-on thermometer over every suite in flight ---------------
-// A slim tube pinned under the board head (public/index.html, #boardsuites), outside the scrolling
-// body and drawn whether or not a session is focused. Each suite is a white ball riding the line
-// through the tube, gathered at the station its run is at (src/suitemeter.ts says which rows land
-// where); below the tube each ball is NAMED on a line of its own, and a name opens its lane. The station labels
-// fold out the full gate reading (lock, running audit, reports) — the rows the meter summarises.
-//
-// The DOM is built once and updated in place, balls keyed by run: a ball that changes station keeps
-// its element, so the CSS transition carries it along the tube instead of it blinking across.
-export const meterEl = document.getElementById("boardsuites")!;
-export const meterBalls = new Map<string, HTMLElement>();
+// --- THE CHECKS STRIP (card R4, rechter-tab-notiz.md §3 item 3 and §3a): every suite on this machine
+// as ONE word button in the Arbeitsorte's head — "Prüfungen · frei", "· 1 läuft", "· steckt 12 Min." —
+// that opens the runs below it: one row per run (name · what · where, a name opens its lane), the
+// stations as one counting line, who holds the machine's one-at-a-time lock, the helpers that can
+// take work, a running check after the land. The glass tube with its gliding balls is gone (§3a:
+// "keine Bewegung außer Farbe", G0.4); the model below is unchanged (src/suitemeter.ts).
 export let meterSuites: SuiteOfferRow[] = [];
 export let meterOpen = prefBool("fleet.meter.open");
-export const METER_WORD: Record<MeterStation, string> = { wait: "waiting", run: "running", helper: "on helper", done: "done" };
+export const METER_WORD: Record<MeterStation, string> = { wait: "wartet", run: "läuft", helper: "auf Helfer", done: "fertig" };
 // a finished ball says HOW it finished — the station alone would call a red run "done"
-// WHAT IT IS DOING, which is not the same question as WHERE (the row's place column). A ball at
-// `helper` is RUNNING — on the machine the place already names — so spelling "on helper" here said
-// the place a second time in the narrowest column on the board. Four states, one of each kind:
-// waiting, running, and the two ways a run can be over.
 export const meterState = (b: MeterBall): string =>
   b.station === "wait" ? "waiting" : b.station !== "done" ? "running"
   : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
@@ -959,131 +960,67 @@ export const METER_TITLE: Record<MeterStation, string> = {
   helper: "Läuft auf einem Helfer-Gerät — ein Check, den diese Maschine abgegeben hat (intern: suite offer).",
   done: "In den letzten Minuten beendet — grün, rot oder ohne Messung.",
 };
-export const METER_ROWS_MAX = 6;
-export const meterTube = el("div", "smtube");
-export const meterCols = el("div", "smcols");
-export const meterRows = el("div", "smrows");
-meterRows.id = "meter-runs";
-export const meterHead = el("div", "smhead");
-export const meterDetail = el("div", "smdetail");
-{
-  meterTube.append(el("div", "smbulb"), el("div", "smglass"), el("div", "smline"));
-  METER_STATIONS.forEach((_, i) => {
-    const t = el("div", "smtick");
-    t.style.left = meterX(i, 0);
-    meterTube.appendChild(t);
-  });
-  meterEl.append(meterHead, meterTube, meterCols, meterRows, meterDetail);
-}
-// the bulb is 14px; the four stations sit at the middles of four equal columns of the rest, the
-// same grid .smcols lays the names out on — so a name stands under its own ball
-export function meterX(i: number, offsetPx: number): string {
-  return `calc(14px + (100% - 14px) * ${(i + 0.5) / METER_STATIONS.length} + ${offsetPx}px)`;
-}
-export function helperSummary(): string | null {
-  if (!helperDevicesInfo.length || deviceOnlineMs === null) return null;
-  const online = helperDevicesInfo.filter((d) => Date.now() - d.lastSeen < deviceOnlineMs!);
-  if (!online.length) return "helpers offline";
-  const free = online.reduce((n, d) => n + Math.max(0, (d.maxParallelSuites ?? 0) - (d.running ?? 0)), 0);
-  const known = online.every((d) => d.maxParallelSuites !== undefined);
-  return known ? `${free} helper slot${free === 1 ? "" : "s"} free` : `${online.length} helper${online.length === 1 ? "" : "s"} online`;
-}
-export function renderSuiteMeter() {
-  if (!boardOpen) return; // mobile too: the meter renders into #boardsuites, which travels with #board
-  perfRebuild("renderSuiteMeter");
-  const m = meterModel();
-  const focusSlot = panes[focused]?.slot ?? null;
-  meterEl.className = `lock-${m.lock ?? "none"}`;
-
-  // head: one line — the title opens the full gate reading; then what the mutex is doing and for
-  // how long; then what the helpers could still take
+// the word on the button: what the machine's checks are doing, in one or two words (G0.5)
+function meterWord(m: ReturnType<typeof meterModel>, noPane: boolean): { text: string; tone: string; title: string } {
   const lk = gateInfo?.lock ?? null;
-  const held = lk ? ` ${gateAge(lk.ageMs ?? lk.heldMs)}` : "";
-  const lockWord = m.lock === null ? "not reported" : m.lock === "free" || m.lock === "stale" ? "idle"
-    : m.lock === "overdue" ? `stuck${held}` : m.lock === "parked" ? `parked${held}` : m.lock === "unknown" ? `unknown holder${held}` : `busy${held}`;
-  const lockEl = el("span", "smlock", lockWord);
-  lockEl.title = m.lock === null ? "Dieser Server schickt keine Sperr-Lesung — hier hat nichts gemessen (intern: gate reading)."
-    : m.lock === "overdue" ? "Der Lauf hält die Sperre länger als jeder Check hier braucht — er steckt vermutlich fest (intern: suite mutex)."
-    : "Die maschinenweite Sperre — nur ein Check läuft gleichzeitig auf dieser Kiste (intern: suite mutex, e2e-stage.sh).";
-  const hs = helperSummary();
-  const devEl = hs ? el("button", "smdev", hs) as HTMLButtonElement : null;
-  if (devEl) { devEl.title = "Helfer-Geräte — das Register öffnen"; devEl.onclick = () => devbtn.click(); }
-  // …and the named end of that reach, drawn only when another instance exists to be confused with.
-  // Owner words (G0.5, owner 2026-09-22): the badge is just the instance name; the German tooltip
-  // says what it narrows — the numbers count this machine only, the other fleet is not in them.
-  const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
-  const scopeTag = el("span", "bscope", "fleet");
-  scopeTag.title = "Diese Fleet: ihre maschinenweite Sperre, die Lanes auf dieser Kiste und die Helfer-Geräte, an die sie Arbeit verleiht (intern: suite mutex).";
-  const scope = elsewhere.length ? el("span", "smscope", `${instanceName ?? "this machine"}`) : null;
-  if (scope) scope.title = `${elsewhere.map((l) => l.name).join(", ")} `
-    + `${elsewhere.length === 1 ? "ist eine eigene Fleet" : "sind eigene Fleets"} mit eigener Suite-Warteschlange. `
-    + "Die Umschaltung kann sie öffnen, aber von hier aus wird keiner ihrer Läufe mitgezählt — eine leere Station hier sagt nichts über sie. "
-    + "(intern: FLEET_INSTANCES ist eine Linkliste, kein Verbund).";
-  const tog = el("button", `smtog${meterOpen ? " open" : ""}`) as HTMLButtonElement;
-  tog.append(el("span", "bchev"), el("span", "smtitle", "Checks"));
-  tog.setAttribute("aria-expanded", String(meterOpen));
-  tog.setAttribute("aria-controls", "meter-runs");
-  tog.title = meterOpen ? "Lesung zuklappen" : "Lesung aufklappen — Sperre, laufende Checks, jede Meldung (intern: gate reading)";
-  tog.onclick = () => {
+  const held = lk ? agoDe(lk.ageMs ?? lk.heldMs).replace(/^vor /, "") : "";
+  const running = meterRuns(m.balls, "run") + meterRuns(m.balls, "helper");
+  const waiting = meterRuns(m.balls, "wait");
+  let text: string, tone = "";
+  if (m.lock === "overdue") { text = `steckt ${held}`; tone = "wait"; }
+  else if (running) { text = `${running} ${running === 1 ? "läuft" : "laufen"}`; tone = "run"; }
+  else if (waiting) text = `${waiting} ${waiting === 1 ? "wartet" : "warten"}`;
+  else if (m.lock === "parked") text = "von Hand gesperrt";
+  else if (m.lock === "unknown") text = "Halter unbekannt";
+  else if (m.lock === null && !m.balls.length) text = "nicht gemeldet";
+  else text = "frei";
+  // without a session in the pane the strip is the column's whole machine fact: it names the helpers too
+  const helpers = onlineHelpers();
+  if (noPane && helpers.length) text += ` · ${helpers.length} Helfer`;
+  const title = m.lock === null && !m.balls.length
+    ? "Dieser Server schickt keine Lesung seiner Prüfungen — hier hat nichts gemessen. Klick klappt auf."
+    : m.lock === "overdue" ? "Ein Lauf hält diesen Rechner länger als jeder Lauf hier braucht — er steckt vermutlich. Klick zeigt, welcher."
+    : "Prüfungen auf diesem Rechner — klappt alle Läufe, die Sperre und die Helfer auf.";
+  return { text: `Prüfungen · ${text}`, tone, title };
+}
+const onlineHelpers = () => deviceOnlineMs === null ? []
+  : helperDevicesInfo.filter((d) => Date.now() - d.lastSeen < deviceOnlineMs!);
+export function meterButton(noPane: boolean): HTMLButtonElement {
+  const m = meterModel();
+  const w = meterWord(m, noPane);
+  const b = el("button", `meterbtn${meterOpen ? " open" : ""}${w.tone ? ` tone-${w.tone}` : ""}`) as HTMLButtonElement;
+  b.type = "button";
+  b.append(el("span", "mw", w.text));
+  const chev = icon("chevron");
+  chev.classList.add("chev");
+  b.appendChild(chev);
+  b.title = w.title;
+  b.setAttribute("aria-expanded", String(meterOpen));
+  b.setAttribute("aria-controls", "meter-runs");
+  b.dataset.noPane = noPane ? "1" : "";
+  b.onclick = () => {
     meterOpen = !meterOpen;
     prefSetBool("fleet.meter.open", meterOpen);
-    renderSuiteMeter();
+    void renderBoard();
   };
-  meterHead.replaceChildren(tog, scopeTag, lockEl, ...(scope ? [scope] : []), ...(devEl ? [devEl] : []));
-
-  // balls: keyed, so one run keeps its element while it moves from station to station
-  const seen = new Set<string>();
-  METER_STATIONS.forEach((st, i) => {
-    const here = m.balls.filter((b) => b.station === st).sort((a, b) => a.at - b.at);
-    here.forEach((b, j) => {
-      seen.add(b.key);
-      let ball = meterBalls.get(b.key);
-      if (!ball) {
-        ball = el("div", "smball entering");
-        meterBalls.set(b.key, ball);
-        meterTube.appendChild(ball);
-        const born = ball;
-        requestAnimationFrame(() => born.classList.remove("entering"));
-      }
-      // a crowd gathers: balls stack a few pixels apart, centred on the station
-      ball.style.left = meterX(i, (j - (here.length - 1) / 2) * 9);
-      // only the leading ball of a crowd trails a streak — the rest would draw theirs across it
-      ball.className = `smball tone-${b.tone}${b.slot !== null && b.slot === focusSlot ? " mine" : ""}${j > 0 ? " tail" : ""}`;
-      ball.title = `${b.name} — ${b.title ? `${b.title} · ${b.branch ? laneTail(b.branch) : "Branch unbekannt"} · ` : ""}${meterLine(b, serverClock()).join(" · ")}`;
-    });
-  });
-  for (const [key, ball] of meterBalls) if (!seen.has(key)) { ball.remove(); meterBalls.delete(key); }
-
-  // stations: the four labels, each under its tick, with a count
-  meterCols.replaceChildren(el("div", "smcol0"), ...METER_STATIONS.map((st) => {
-    // RUNS, not balls: a sharded audit is one ball and several runs, and the helper station must say
-    // the number the devices themselves report as running (src/suitemeter.ts#meterRuns)
-    const n = meterRuns(m.balls, st);
-    const lab = el("button", `smst${n ? " on" : ""}`, METER_WORD[st]) as HTMLButtonElement;
-    if (n) lab.appendChild(el("span", "smstn", String(n)));
-    lab.title = METER_TITLE[st];
-    lab.onclick = () => tog.click();
-    return lab;
-  }));
-  // names: one full line per ball, in station order — a lane is NAMED, never cut to three letters
-  // by a column a quarter of the board wide. A name opens its lane.
-  const order = [...m.balls].sort((a, b) =>
-    METER_STATIONS.indexOf(a.station) - METER_STATIONS.indexOf(b.station) || a.at - b.at);
-  meterRows.replaceChildren(...(meterOpen ? [el("h3", "smsectiontitle", "Alle Prüfläufe")] : []),
-    ...order.slice(0, meterOpen ? undefined : METER_ROWS_MAX).map((b) => {
+  return b;
+}
+export const METER_ROWS_MAX = 6;
+export function meterPanel(): HTMLElement {
+  const m = meterModel();
+  const focusSlot = panes[focused]?.slot ?? null;
+  const box = el("div", "grp rkmeter");
+  box.id = "meter-runs";
+  box.appendChild(el("h3", "smsectiontitle", "Alle Prüfläufe"));
+  // ONE ROW PER RUN — what runs first, then what waits, then what finished (§4a `land`) — NAME ·
+  // WHAT · WHERE, the state on the dot (hollow waits, filled runs, the ring says how a finished one
+  // ended); a lane is NAMED, never cut to three letters
+  const rank: Record<MeterStation, number> = { run: 0, helper: 1, wait: 2, done: 3 };
+  const order = [...m.balls].sort((a, b) => rank[a.station] - rank[b.station] || a.at - b.at);
+  for (const b of order.slice(0, meterOpen ? undefined : METER_ROWS_MAX)) {
     const mine = b.slot !== null && b.slot === focusSlot;
     const row = el("button", `smrow tone-${b.tone} st-${b.station}${mine ? " mine" : ""}`) as HTMLButtonElement;
-    // NAME · WHAT · WHERE, and the row is CLASSED by its station. The state used to be a fourth
-    // column, and it was the one thing this surface already said twice: the ball sits at its
-    // station in the tube above, and the station label under it carries the count. Four columns in
-    // ~267 px meant the LANE NAME was what got cut ("2 · ⎇ demo …"), which is the one thing the
-    // rows exist for — "a lane is NAMED, never cut to three letters". So the state moved onto the
-    // dot (hollow = waiting, filled = running, ringed = how it ended) and into the row's title,
-    // and the place — the half a truncated row used to lose — took its column. (2026-09-20)
-    // The middle column says BRANCH → STATE → CLOCK → KIND in one ellipsised span (src/suitemeter.ts#
-    // meterLine), so a narrow board keeps the owner and wait relationship. The clock is
-    // recomputed on this repaint (the /api/sessions poll), no timer of its own, on serverClock()
-    // because `at` is the server's stamp.
+    // the clock is recomputed on this repaint, on serverClock() because `at` is the server's stamp
     const line = meterLine(b, serverClock(), true).join(" · ");
     const name = b.kind === "post-land check" && b.slot === null ? "Fleet" : b.name;
     row.append(el("span", "smdot"), el("span", "smname", name), el("span", "smwhat", line),
@@ -1091,16 +1028,74 @@ export function renderSuiteMeter() {
     // the full title and the branch (with its four hex) live HERE, not in the row
     row.title = `${name} — ${b.title ? `${b.title} · ` : ""}${b.branch ?? "Branch unbekannt"} · ${line} · ${b.where} · ${meterState(b)} · ${meterKind(b.kind).title}`
       + (b.expect ? ` · „~“ ist der Median früherer Läufe dieser Art (n=${b.expect.n}), „länger als üblich“ heißt: über ihrem 90. Perzentil` : "")
-      + (b.kind === "land check" ? " · Die Uhr zählt das Warten auf die maschinenweite Sperre mit (intern: suite mutex)" : "")
       + (b.slot !== null ? " · Klick öffnet die Lane" : "");
     const slot = b.slot;
     if (slot !== null && fleet[slot - 1]?.cwd) row.onclick = () => showSlot(slot);
     else row.disabled = true;
-    return row;
-  }), ...(!meterOpen && order.length > METER_ROWS_MAX ? [el("div", "smmore", `+${order.length - METER_ROWS_MAX} weitere — Checks öffnen`)] : []));
-
-  const g = meterOpen ? gateSection() : null;
-  meterDetail.replaceChildren(...(g ? [g] : meterOpen ? [el("div", "bempty", "Keine Lesung der Prüfsperre vorhanden")] : []));
+    box.appendChild(row);
+  }
+  if (!order.length) box.appendChild(el("div", "cnt", "Kein Lauf in den letzten Minuten."));
+  // the stations as one counting line — RUNS, not balls (a sharded check is one ball, several runs)
+  const cnt = el("div", "cnt smcount");
+  METER_STATIONS.forEach((st, i) => {
+    if (i) cnt.appendChild(document.createTextNode(" · "));
+    const part = el("span", "", `${METER_WORD[st]} `);
+    part.appendChild(el("b", "", String(meterRuns(m.balls, st))));
+    part.title = METER_TITLE[st];
+    cnt.appendChild(part);
+  });
+  box.appendChild(cnt);
+  // WHO HOLDS THE MACHINE: one check at a time on this box — the holder by name, the full reading
+  // (pid, identity, why, what next) in the line's hover
+  const lk = gateInfo?.lock ?? null;
+  const lockHead = gateInfo ? gateLockHead(lk) : null;
+  const state = !gateInfo ? null : lk ? lk.state ?? (lk.alive === null ? "parked" : lk.alive ? "held" : "stale") : "free";
+  const ownerSlot = lk?.owner?.slot ?? null;
+  const ownerName = ownerSlot ? laneDisplayName(laneBandNames(stacksOf()).get(ownerSlot) ?? `Slot ${ownerSlot}`,
+    fleet[ownerSlot - 1]?.worktree ? fleet[ownerSlot - 1]?.taskTitle ?? null : null) : "Fleet";
+  const age = lk ? mmss(lk.ageMs ?? lk.heldMs) : "";
+  const lockText = state === null ? "Die Sperre dieses Rechners ist nicht gemeldet"
+    : state === "held" ? `Ein Lauf zur Zeit auf diesem Rechner · ${ownerName} seit ${age}`
+    : state === "overdue" ? `${ownerName} hält diesen Rechner seit ${age} — länger als jeder Lauf hier`
+    : state === "parked" ? `Von Hand gesperrt seit ${age}`
+    : state === "unknown" ? `Halter unbekannt · seit ${age}`
+    : "Ein Lauf zur Zeit auf diesem Rechner · frei";
+  const lockRow = el("div", `cnt smlockrow${state === "overdue" ? " wait" : ""}`);
+  const lockSpan = el("span", "", lockText);
+  lockSpan.title = lockHead ? `${lockHead.textContent ?? ""} — ${lockHead.title}` : "Kein Server-Bericht über die Sperre";
+  lockRow.appendChild(lockSpan);
+  // …and the helpers that can take work, a click opens their register
+  const helpers = onlineHelpers();
+  if (helperDevicesInfo.length) {
+    lockRow.appendChild(document.createTextNode(" · "));
+    const hb = el("button", "lk", helpers.length ? `Helfer ${helpers.map((d) => d.name).join(", ")} bereit` : "Helfer offline") as HTMLButtonElement;
+    hb.type = "button";
+    hb.title = "Helfer-Geräte — das Register öffnen";
+    hb.onclick = () => devbtn.click();
+    lockRow.appendChild(hb);
+  }
+  box.appendChild(lockRow);
+  // the named end of that reach, only when another instance exists to be confused with: its runs
+  // are not counted here (FLEET_INSTANCES is a link list, kein Verbund)
+  const elsewhere = instanceLinks.filter((l) => l.name !== instanceName);
+  if (elsewhere.length) {
+    const sc = el("div", "cnt smscope", `Nur ${instanceName ?? "dieser Rechner"} — ${elsewhere.map((l) => l.name).join(", ")} zählt hier nicht`);
+    sc.title = `${elsewhere.map((l) => l.name).join(", ")} ${elsewhere.length === 1 ? "ist eine eigene Fleet" : "sind eigene Fleets"} mit eigener Warteschlange. `
+      + "Keiner ihrer Läufe wird hier mitgezählt — eine leere Zählung hier sagt nichts über sie (FLEET_INSTANCES ist eine Linkliste, kein Verbund).";
+    box.appendChild(sc);
+  }
+  // a running check after the land, and the lands waiting for theirs
+  for (const r of auditLiveRows()) { r.classList.add("cnt"); box.appendChild(r); }
+  return box;
+}
+// the polls call this: the strip and its panel are repainted in place, the rest of the column stays
+export function renderSuiteMeter() {
+  if (!boardOpen) return;
+  perfRebuild("renderSuiteMeter");
+  const btn = boardBody.querySelector<HTMLButtonElement>(".ranke .meterbtn");
+  if (btn) btn.replaceWith(meterButton(btn.dataset.noPane === "1"));
+  const panel = boardBody.querySelector<HTMLElement>(".ranke .rkmeter");
+  if (panel && meterOpen) panel.replaceWith(meterPanel());
 }
 
 // --- is a deploy due? ------------------------------------------------------------------------
@@ -1161,20 +1156,24 @@ export let errorsOpen = false;
 export function errorsSection(): HTMLElement | null {
   const e = errorsInfo;
   if (!e) return null;
-  const sec = el("div", "bsec balert");
-  sec.appendChild(scopeTag("machine"));
+  // a line in the flow (G2.1, §4a `alarm`): a red dot, how many since when, the last one under it;
+  // a click lists every row (fetched on the click, never from the repaint)
+  const sec = el("div", "bsec berrs");
   const many = e.total !== e.distinct;
   // a BUTTON, not a clickable div: the error line is one of the column's actions (D-4 rest).
   // Inline rather than a new class: the stylesheet lives in public/index.html, which the demo repo
   // derives its own page from (CLAUDE.md) — and a lane cannot build that repo to check it. One
   // property here has no reach outside this file; a rule there has one nothing available can test.
-  const head = el("button", "bstate",
-    `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
-    + ` · since ${fmtTs(e.since)}`) as HTMLButtonElement;
+  const head = el("button", "bstate errrow") as HTMLButtonElement;
+  head.append(el("span", "dot bad"), el("span", "t", `${e.total} Serverfehler${many ? ` · ${e.distinct} verschiedene` : ""} seit ${fmtTs(e.since)}`));
+  const chev = icon("chevron");
+  chev.classList.add("chev");
+  head.appendChild(chev);
+  head.setAttribute("aria-expanded", String(errorsOpen));
   head.style.cssText =
     "background:none;border:0;padding:0;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;";
-  head.title = "Thrown by the server since it booted. Held in memory only — a restart clears this list,"
-    + " and server.log keeps the history. Click for the rows.";
+  head.title = "Seit dem Start dieses Servers geworfen. Nur im Speicher — ein Neustart leert die Liste,"
+    + " die Geschichte bleibt in server.log. Klick zeigt jede Zeile.";
   head.onclick = () => {
     errorsOpen = !errorsOpen;
     // one fetch per (boot, total): reopening after nothing new happened costs no request
@@ -1195,7 +1194,7 @@ export function errorsSection(): HTMLElement | null {
   sec.appendChild(head);
   const last = e.last;
   sec.appendChild(el("div", "bidmeta",
-    `last · ${last.where} · ${last.msg}${last.n > 1 ? ` ×${last.n}` : ""} · ${fmtTs(last.at)}`));
+    `zuletzt · ${last.where} · ${last.msg}${last.n > 1 ? ` ×${last.n}` : ""} · ${fmtTs(last.at)}`));
   if (errorsOpen) {
     // rows one poll behind the COUNTER are still drawn — a row that arrived a second ago is a true
     // thing that happened, and blanking the list mid-fetch would hide it. Rows from a previous BOOT
@@ -1303,29 +1302,36 @@ export function fileTreeSection(slot: number, cwd: string): HTMLElement {
 export const WORKTREE_NOTE_MAX = 20_000; // the server's cap (server.ts#WORKTREE_NOTE_MAX), restated for the live counter
 export const notepadDraft = new Map<string, string>(); // path → unsent text — survives every board re-render
 export function notepadBlock(repo: string, w: WtRow): HTMLElement {
+  // COMPACT (R2, §3 item 6): two lines high while empty, growing while one writes; "Notiz sichern"
+  // only while there is an unsaved change, the counter only from 80 % of the server's cap
   const saved = w.notepad ?? "";
   const box = el("div", "bnote");
   const ta = document.createElement("textarea") as HTMLTextAreaElement;
+  ta.className = "bnoteta";
   ta.value = notepadDraft.get(w.path) ?? saved;
-  ta.rows = 4;
+  ta.rows = 2;
   ta.placeholder = "Notiz zu diesem Worktree — wandert beim Parken und Weiterarbeiten mit";
-  ta.style.cssText = "width:100%;box-sizing:border-box;resize:vertical;background:#101010;color:#c8c8c8;"
-    + "border:1px solid var(--sel);border-radius:7px;padding:10px 12px;"
-    + "font:12px ui-monospace,Menlo,Consolas,monospace;line-height:1.5;margin-top:6px;";
-  const meta = el("div", "bstate");
+  const foot = el("div", "bnotefoot");
+  const meta = el("span", "m");
   const err = el("div", "brefusal");
-  const save = el("button", "bwtact", "Notiz sichern") as HTMLButtonElement;
+  const save = el("button", "bbtn quiet bnotesave", "Notiz sichern") as HTMLButtonElement;
+  save.type = "button";
+  const grow = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight + 2, 320)}px`; };
   const sync = () => {
     const t = ta.value;
     notepadDraft.set(w.path, t);
     const over = t.length > WORKTREE_NOTE_MAX;
-    meta.textContent = over
-      ? `${t.length} / ${WORKTREE_NOTE_MAX} — über dem Deckel, kürzen (der Server nimmt nicht mehr an)`
-      : `${t.length} / ${WORKTREE_NOTE_MAX}${t === saved ? " · gesichert" : " · ungesichert"}`;
-    save.disabled = over || t === saved;
+    const dirty = t !== saved;
+    const count = t.length >= WORKTREE_NOTE_MAX * 0.8 ? `${t.length} / ${WORKTREE_NOTE_MAX}` : "";
+    meta.textContent = over ? `${count} — über dem Deckel, kürzen (der Server nimmt nicht mehr an)`
+      : [dirty ? "ungesichert" : saved ? "gesichert" : "", count].filter(Boolean).join(" · ");
+    save.hidden = !dirty;
+    save.disabled = over;
+    foot.hidden = !meta.textContent && save.hidden;
+    grow();
   };
   ta.addEventListener("input", sync);
-  save.title = `sichert den Text an diesem Worktree-Pfad — er bleibt beim Parken, Wiederaufnehmen und über Neustarts erhalten`;
+  save.title = "sichert den Text an diesem Worktree-Pfad — er bleibt beim Parken, Wiederaufnehmen und über Neustarts erhalten";
   save.onclick = async () => {
     save.disabled = true;
     save.textContent = "sichere…";
@@ -1343,8 +1349,11 @@ export function notepadBlock(repo: string, w: WtRow): HTMLElement {
       save.textContent = "Notiz sichern";
     }
   };
-  box.append(ta, meta, save, err);
+  foot.append(meta, save);
+  box.append(ta, foot, err);
   sync();
+  // the height is measured once the textarea is in the document
+  requestAnimationFrame(grow);
   return box;
 }
 
@@ -1367,21 +1376,17 @@ export async function renderBoard() {
     const slot = panes[focused]?.slot;
     const s = slot ? fleet[slot - 1] : undefined;
     if (!slot || !s?.cwd) {
-      // the deploy and error lines are about the MACHINE, not the focused lane — they must not
-      // disappear just because the pane under the cursor is empty (the gate lives in the meter).
-      const dp = deploySection();
+      // the alarms are about the MACHINE, not the focused lane — they must not disappear just
+      // because the pane under the cursor is empty; the Arbeitsorte and their checks strip neither
+      // (rechter-tab-notiz.md §4a `leer`). The helper devices are counted in that strip.
       const er = errorsSection();
-      // ...and so is the device register: which machines can take work is a fact about the room,
-      // not about the empty pane.
-      const dv = devicesSection();
-      // the check alarm is about the MACHINE too — it shows even with no lane focused
       const pla0 = plaBoardCard();
-      // the same scroll rescue the main path has: these three sections can be taller than the
-      // column, and without it the machine zone jumped back to the top on every tick
+      // the same scroll rescue the main path has, or the column jumped to the top on every tick
       const y0 = boardBody.scrollTop;
+      boardPop = null;
       perfRebuild("renderBoard");
-      boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(dp ? [dp] : []), ...(er ? [er] : []),
-        arbeitsorteSection(null, null), ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
+      boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(er ? [er] : []),
+        arbeitsorteSection(null, null), el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen."));
       boardBody.scrollTop = y0;
       drawRankeLines(boardBody);
       return;
@@ -1411,376 +1416,38 @@ export async function renderBoard() {
       : ((await wtRes.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${wtRes.status}`;
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
+    if (boardPop && boardPop.slot !== slot) boardPop = null; // it was another session's menu
     const nodes: HTMLElement[] = [];
-    const tools: HTMLElement[] = [];
-    // the right board tells ONE story, top to bottom (owner, 2026-09-18/19): the MACHINE zone (the
-    // suite meter above this body, then only alarms that are due) → the HEAD (who this session is,
-    // what it is for, whom it waits on) → CHANGES (the one place with buttons) → CHECKS (this lane's
-    // suites) → HISTORY → folded TOOLS. Every function of the old flat list is kept, only regrouped;
-    // the context fill left because the sidebar row already carries it.
-
-    // 0 — MACHINE: drawn only when due — the check alarm first (something failed ON MAIN, so it
-    // outranks every question about the pane), then "is what you are looking at even the code that
-    // is running", then "has that code been throwing". The gate lives in the meter; the helper
-    // register behind the meter's device count and the 💻 dialog.
+    // THE COLUMN TELLS ONE STORY, top to bottom (docs/design/rechter-tab-notiz.md §3–§3d, Variante 3A,
+    // owner-Ja 2026-10-05: „[Zitat entfernt]“): alarms only when due → ARBEITSORTE
+    // (every worktree, the checks strip in its head, a due restart in its Live row) → THIS SESSION
+    // (name, state, its lane's values, the handover line) → CHANGES with Land lane as the one primary
+    // action → the NOTEPAD → HISTORY (three commits, the rest behind one button) → MORE (Setup, Rechte,
+    // Files, Your prompts as tabs). Every function of the former column has a place (§3d's table).
+    // 0 — ALARMS, only when due: the check after the land (something failed ON MAIN), then what the
+    // server has been throwing. The due restart moved into the Arbeitsorte's Live row (§3, I3).
     const pla0 = plaBoardCard();
     if (pla0) nodes.push(pla0);
-    const dsec0 = deploySection();
-    if (dsec0) nodes.push(dsec0);
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
-    // 0b — ARBEITSORTE: every worktree of every repo this server reads, on the machines it knows,
-    // above the session (rechter-tab-notiz.md §3b, owner 2026-10-05). It absorbed the former
-    // „[Zitat entfernt]“ list and the test-instance card, every action of both included.
+    // 1 — ARBEITSORTE: every worktree of every repo this server reads, on the machines it knows
+    // (cards e66909b1, abe74821); the former lane list and test-instance card live in it
     const ranke = arbeitsorteSection(slot, wts);
     nodes.push(ranke);
-
-    // 1 — HEAD: the session's name, its state, what it is for, and its identifiers as chips. Rename,
-    // Share and Export are VISIBLE at the head's foot as quiet word buttons (row 11e541e0; owner
-    // 2026-09-22: „[Zitat entfernt]“
-    // ) — quiet, not bordered, because four bordered buttons outweighed
-    // everything the head is for. The rarer two (copy the worktree path, bring the session back)
-    // stay behind ⋯. The phone reaches this head through ℹ, and its drawer row through ⋯.
-    const idsec = el("div", "bsec bhead");
-    const top = el("div", "bheadtop");
-    // a task lane is "<Lane-Referenz> · <Kurztitel>"; the full title and the branch on hover
-    const headRef = s.worktree && s.taskTitle ? laneBandNames(stacksOf()).get(s.id) : undefined;
-    const headName = el("div", "bheadname", headRef ? laneDisplayName(headRef, s.taskTitle) : laneLabel(s));
-    if (headRef && s.worktree) headName.title = `${s.taskTitle} — ${s.worktree.branch}`;
-    top.appendChild(headName);
-    top.appendChild(scopeTag("session"));
-    const mbtn = el("button", `bheadmenu${boardMenuOpen ? " on" : ""}`, "⋯") as HTMLButtonElement;
-    mbtn.title = "Weitere Aktionen — Worktree-Pfad kopieren, die Session zurückholen";
-    mbtn.setAttribute("aria-expanded", String(boardMenuOpen));
-    mbtn.onclick = () => { boardMenuOpen = !boardMenuOpen; boardMenuSlot = slot; void renderBoard(); };
-    top.appendChild(mbtn);
-    idsec.appendChild(top);
-    {
-      const working = sessionActive(slot);
-      const meta = el("div", "bheadmeta");
-      meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
-      // no context fill and no model here: the sidebar row carries both for every session at once,
-      // and in the board they read as a second copy (owner, 2026-09-19 — „[Zitat entfernt]“
-      // ). What the head adds is the one thing the row cannot: how long the
-      // session has been quiet.
-      const bits = [`${working ? "Working" : "Idle"} · ${brief?.worktree ? "lane" : noGit ? "folder session" : brief ? "repo session" : "session"} in slot ${slot}`];
-      if (!working && s.lastOutput > 0) bits.push(`quiet ${gateAge(Date.now() - s.lastOutput)}`);
-      meta.appendChild(document.createTextNode(bits.join(" · ")));
-      const since = facts?.sessionStart ?? s.openedAt ?? null;
-      if (since) meta.title = `session since ${new Date(since).toLocaleString()}`;
-      idsec.appendChild(meta);
-    }
-    // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE. Each is a sentence the owner would otherwise
-    // have to go looking for; none of them costs a line on a healthy session.
-    if (s.agent === "no-agent") {
-      const a = el("div", "bwait owner", "No agent behind this pane");
-      a.title = "the pane is alive and takes keystrokes, but nothing is running in it — typing here reaches no agent";
-      idsec.appendChild(a);
-    }
-    if (s.stalled) {
-      const st = el("div", "bwait main",
-        s.stalledSince ? `Stalled for ${gateAge(Date.now() - s.stalledSince)}` : "Stalled");
-      st.title = "no output, nothing waiting on an answer — the lane is standing still";
-      idsec.appendChild(st);
-    }
-    if (s.autoCloseRefusal) {
-      const r = el("div", "brefusal", s.autoCloseRefusal);
-      r.title = "why the autoclose tick is leaving this lane open";
-      idsec.appendChild(r);
-    }
-    if (s.awaiting) {
-      const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Waiting on you" : "Waiting on its MAIN");
-      w.title = s.awaiting === "owner"
-        ? "This session has stopped until the owner answers — its latest message or an open attention says what it needs."
-        : "This session has stopped until the MAIN that runs it answers.";
-      idsec.appendChild(w);
-    }
-    if (s.mission) {
-      const mi = el("div", "bmission", s.mission);
-      mi.title = s.mission;
-      idsec.appendChild(mi);
-    }
-    // THE SUCCESSION NUMBERS (owner, 2026-09-20: they belong in the identity block he signed off).
-    // Four bare facts in the same label/value row form the setup block uses — no tile, no bar, no
-    // second box: how full this session is, what happens at which percentage and whether it has
-    // already been said, which exit the rail would name, and which session of this line holds the
-    // pane. All four come from the BRIEF (server.ts#successionFacts), never from the poll row: the
-    // row's ctx chip is the sidebar's job and a second copy of it is what the owner cut on
-    // 2026-09-19. Here the fill is the number the threshold is compared against, and it is never
-    // drawn without it.
-    if (facts?.succession) {
-      const sc = facts.succession;
-      let nth = 0;
-      const srow = (label: string, value: string, title: string) => {
-        const r = el("div", `bsrow bsucc${nth++ === 0 ? " bsucctop" : ""}`);
-        r.appendChild(el("span", "bskey", label));
-        r.appendChild(el("span", "bsval", value));
-        r.title = title;
-        idsec.appendChild(r);
-      };
-      const tok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`
-        : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
-      const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      // an unmeasurable window is NEVER drawn as 0 % — a session Fleet cannot read and an empty one
-      // are not the same session, and the whole rail hangs off this number
-      srow("Fill", sc.fill
-        ? `${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)} · ${Math.round(sc.fill.pct)} %`
-        : "not measurable",
-        sc.fill
-          ? `${sc.fill.usedTokens} von ${sc.fill.windowTokens} Tokens im Fenster — gegen diese Zahl misst der Server, wann die Session weitergeben soll (intern: succession fill · threshold).`
-          : "Fleet kann diesen Kontext nicht messen: keine gepinnte Konversation, noch kein Nutzungsrecord, kein benennbares Fenster — das ist kein leerer Kontext (intern: succession fill).");
-      // threshold AND nudge on ONE line, because the second is only ever news about the first
-      const offWhy: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
-        fleet: "migration is not armed on this fleet",
-        rail: "this kind's own threshold is 0",
-        harness: `${s.harness ?? "this harness"} is not on the handover band`,
-        steward: "the planning pane is not nudged",
-        waiting: "this session waits on the owner",
-        unpinned: "no pinned conversation to measure",
-      };
-      // the count and the budget live on the hover: the owner's form for this line is a bare fact
-      // („[Zitat entfernt]“), and a second bracket made it wrap
-      const nudge = sc.gaveUp ? `gave up after ${sc.nudges}`
-        : sc.nudges === 0 ? "not nudged"
-        : `nudged ${sc.nudgedAt ? clock(sc.nudgedAt) : "at an unrecorded time"}`;
-      srow("Handover", sc.thresholdPct !== null ? `at ${sc.thresholdPct} % — ${nudge}`
-        : `off — ${offWhy[sc.thresholdOff ?? "rail"]}`,
-        sc.thresholdPct !== null
-          ? `Bei ${sc.thresholdPct} % tippt der Server dieser Konversation selbstständig einen Weitergabe-Hinweis hinein — bisher ${sc.nudges} von höchstens ${sc.maxNudges}. Der Zähler lebt nur im Speicher des Servers: ein Neustart vergisst ihn (intern: succession nudge).`
-          : "Nichts in diesem Server würde diese Session zum Weitergeben auffordern — von Hand geht es weiterhin (intern: succession routes).");
-      // "Kind" — the MAIN-derived label (Slot 13, abgeleitet aus audit→check, Owner-Sichtung
-      // offen): the row says WHICH kind of handover route this session has, so the values below
-      // stay exactly as they are. "rail" itself must not be visible (G0.5).
-      const railWhy: Record<BriefSuccession["rail"], string> = {
-        lane: "Die Nachfolge ist eine frische Session auf DIESEM Worktree, gleichem Branch und Slot — committen, Handoff-Report filen, dann POST /api/self/succeed (intern: rail).",
-        "standard-main": "Ein gebundener Program-MAIN gibt über den Programm-Eintrag weiter, den der Server ohnehin führt — kein Handoff-Commit nötig (intern: rail=standard-main).",
-        "game-maker-main": "Der committete Abschnitt `## Current game checkpoint` in HANDOFF.md ist der einzige Weitergabe-Kanal (intern: rail=game-maker-main).",
-        handoff: "Watches, Autos und Reports ziehen per Id mit; das Succeed nimmt einen Intent ODER einen committeten Zeiger, nie beides (intern: rail=handoff).",
-      };
-      srow("Kind", sc.rail, railWhy[sc.rail]);
-      // the lid is keyed by the QUEUE ROW (originId), so a hand-opened lane has none to spend
-      // owner words (G0.5, owner 2026-09-22): baton → handoff; action words stay English, only
-      // the tooltip explains in German
-      srow("Handoff", sc.cap !== null ? `Session ${sc.session} · ${sc.taken ?? 0} of ${sc.cap}`
-        : sc.taken !== null ? `Session ${sc.session} · ${sc.taken} taken, no cap`
-        : `Session ${sc.session} · no cap`,
-        sc.cap !== null
-          ? `Wie oft diese Aufgabe per Handoff in eine frische Session weiterlaufen darf: ${sc.cap}mal. Danach verweigert der Server das Weiterschicken und verlangt stattdessen einen Report (intern: FLEET_LANE_SUCCEED_MAX). Die Zählung hängt an der Aufgaben-Zeile — neu einreihen setzt sie nicht zurück.`
-          : sc.rail === "lane"
-            ? "Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Handoff-Limit."
-            : "Diese Session läuft auf einer Hauptroute ohne Handoff-Limit — nur Lanes mit Aufgaben-Zeile haben eins.");
-    }
-    // identifiers: machine strings in mono, each a chip — hover says what it is, a click does the one
-    // thing it is for (copy a sha or a branch; open the queue on a task or a program)
-    const chips = el("div", "bchips");
-    const copyChip = (label: string, value: string, what: string) => {
-      const c = el("button", "bchip", label) as HTMLButtonElement;
-      c.title = `${what} — click to copy`;
-      c.onclick = () => { copyText(value); c.textContent = "copied"; setTimeout(() => { c.textContent = label; }, 1100); };
-      return c;
-    };
-    if (brief?.branch) chips.appendChild(copyChip(brief.branch, brief.branch, "branch"));
-    if (brief?.head) chips.appendChild(copyChip(brief.head, brief.head, "HEAD commit"));
-    if (s.taskId) {
-      const c = el("button", "bchip link", `task ${s.taskId}`) as HTMLButtonElement;
-      c.title = `${s.taskHead || "the order this session was started from"} — click to open the queue`;
-      c.onclick = () => openQueue();
-      chips.appendChild(c);
-    }
-    if (s.programId) {
-      const p = programsPoll.find((x) => x.id === s.programId);
-      const c = el("button", "bchip link", `program ${p?.title ? p.title.slice(0, 28) : s.programId.slice(0, 8)}`) as HTMLButtonElement;
-      c.title = `${p?.title ?? s.programId} — click to open the queue`;
-      c.onclick = () => openQueue();
-      chips.appendChild(c);
-    }
-    if (brief?.worktree) {
-      const branch = brief.worktree.branch;
-      const c = el("button", "bchip link", "Akte") as HTMLButtonElement;
-      c.title = "this lane end to end — its order, its prompts, its commits, its land";
-      c.onclick = () => void openAkte(branch);
-      chips.appendChild(c);
-    }
-    if (chips.childElementCount) idsec.appendChild(chips);
-    {
-      const sessName = s.label ?? baseName(s.cwd);
-      const acts = el("div", "bbtnrow bheadacts");
-      const act = (label: string, title: string, run: () => void) => {
-        const b = el("button", "bbtn quiet", label) as HTMLButtonElement;
-        b.title = title;
-        b.onclick = run;
-        acts.appendChild(b);
-      };
-      act("Rename", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
-        const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
-        if (row instanceof HTMLElement) startRename(row, s);
-      });
-      act(s.share ? "Shared — view only…" : "Share…", "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(slot));
-      act("Export…", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.",
-        () => { void openExportDlg(slot, sessName); });
-      idsec.appendChild(acts);
-    }
-    if (boardMenuOpen && boardMenuSlot !== slot) boardMenuOpen = false; // it was another session's menu
-    if (boardMenuOpen) {
-      const menu = el("div", "bmenu");
-      const item = (label: string, title: string, run: (b: HTMLButtonElement) => void) => {
-        const b = el("button", "bmenuitem", label) as HTMLButtonElement;
-        b.title = title;
-        b.onclick = () => run(b);
-        menu.appendChild(b);
-      };
-      if (brief?.worktree && s.cwd) {
-        const cwd = s.cwd;
-        item("Copy worktree path", cwd, (b) => { copyText(cwd); b.textContent = "Copied"; });
-      }
-      // bring session back — the repair for a pane that switched conversations on you. Claude Code
-      // can change session IN-PROCESS: the pane keeps the argv it was spawned with, so nothing on
-      // the outside can tell, and Escape does not undo it. A respawn does, because the slot still
-      // holds the pinned sessionId and the server restarts the pane with --resume. There is no
-      // deterministic signal for "this pane wandered off", so the owner decides, not a detector.
-      item("Bring session back", "restart this pane and resume the pinned conversation — the slot keeps its lane, "
-        + "label, model, shares and scheduled prompts. Whatever the session is doing RIGHT NOW is lost.", async (b) => {
-        if (!(await askRisk({
-          title: `Restart slot ${slot}'s pane and resume the pinned conversation?`,
-          body: [el("div", "bmidrun",
-            "Nothing about the slot is thrown away. But claude is killed, so anything it is doing "
-            + "right now — a running tool call, unsent output — is lost.")],
-          buttons: [
-            { label: "cancel", value: false },
-            { label: "restart", danger: true, value: true },
-          ],
-        }))) return;
-        b.disabled = true;
-        b.textContent = "Restarting…";
-        const r = await post(`/api/slots/${slot}/restart`, {});
-        const j = await r.json().catch(() => null) as { resumed?: boolean; error?: string } | null;
-        if (!r.ok) { alert(j?.error ?? "restart failed"); b.disabled = false; b.textContent = "Bring session back"; return; }
-        // "restarted fresh" means the pinned conversation could NOT be resumed (no pin, or its
-        // transcript is gone) — the one outcome the owner must not mistake for success
-        b.textContent = j?.resumed ? "Session back" : "Restarted fresh — the conversation could not be resumed";
-        await refresh();
-      });
-      top.appendChild(menu); // the menu hangs at its ⋯ button (G4.1), not in the section's flow
-    }
+    // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane session, vs
+    // the upstream (from the sessions-poll gitInfo)
+    const ahead = brief ? (brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0)) : 0;
+    const behind = brief ? (brief.laneScoped ? brief.behind : (s.git?.behind ?? 0)) : 0;
+    const c: BoardCtx = { s, slot, brief, noGit, facts, mg, wts, ahead, behind,
+      own: ownWorkplace(s), prompts, outlineErr };
+    // 2 — THIS SESSION
+    const idsec = sessionSection(c);
     nodes.push(idsec);
-
-    // 1b — SETUP: what this session is MADE of, as opposed to what it has done (owner, 2026-09-19:
-    // "das gewählte profil einer session anzeigen + ctxPacks … den aufbau der aktuellen session
-    // ersichtlich machen"). Every row here was chosen when the session was founded and does not
-    // move while it runs — which is exactly why the one number that DOES move (context fill) lives
-    // in the head above and not here. Rows whose absence is the normal case (container, browser)
-    // appear only when they are true; the founding four are always written, "—" included, so the
-    // block reads the same on every session.
-    {
-      const su = el("div", "bsec bsetup");
-      su.appendChild(boardHead("Setup", "session"));
-      const row = (label: string, value: string, title?: string) => {
-        const r = el("div", "bsrow");
-        r.appendChild(el("span", "bskey", label));
-        r.appendChild(el("span", "bsval", value));
-        if (title) r.title = title;
-        su.appendChild(r);
-      };
-      const setup = facts?.setup;
-      // WHAT KIND OF SESSION THIS IS. The owner's seat for the session kinds still to come
-      // (2026-09-19: „[Zitat entfernt]“
-      // ). Until they exist, this row says only what is
-      // actually true today and invents no kind: lane or repo session, plus a granted profile.
-      // PROFILE — its own row, always written, because the owner reads it as a fact of the
-      // session and not as a decoration of another line. It was invisible in every real session
-      // until 2026-09-20: it was a suffix that only appeared for "game-maker", and the server
-      // resolves it through `slot.programId`, which none of the ten live sessions carried.
-      // Absence of a program bracket IS standard (server/types.ts: "Abwesenheit = Standard-MAIN"),
-      // so absence is written as the answer it is, with the reason on hover.
-      // "Program type" since the founding window (F4, owner 2026-09-24): „[Zitat entfernt]“ is now the
-      // founding choice (harness/model/effort) in the Gründungsfenster's step 2, and the machine
-      // profile of the PROGRAM needed a name that cannot be read as that choice.
-      row("Program type", setup?.profile ?? "standard",
-        setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
-          : setup?.profile === "standard" ? "this session's program runs on the standard profile"
-          : "standard by default — this session has no program bracket to grant another profile");
-      // THE KIND OF SESSION IS NOT REPEATED HERE. The head's own state line already reads
-      // "lane in slot 2" / "repo session in slot 1", four rows further up the same column, and the
-      // space cut of 2026-09-20 removed the second copy rather than a fact. The session kinds still
-      // to come (fleetWorker, a session's own config) belong on that line too when they exist.
-      // model, effort and the context budget are NOT repeated here: they are on the sidebar row
-      // for every session at once, and the owner called them redundant in the board (2026-09-19).
-      if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
-      if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,
-        "the box and docker context this session's agent runs in");
-      // THE PACKS, and where they come from. A receipt is what this pane actually received; the
-      // program's declaration is the weaker answer and says so rather than passing for delivery.
-      const packs = setup?.packs ?? [];
-      if (packs.length) {
-        const r = el("div", "bsrow bspacks");
-        r.appendChild(el("span", "bskey", "Packs"));
-        const list = el("span", "bsval");
-        // every chip OPENS the pack — its pointers in full, and from there the source file itself
-        // (owner, 2026-09-19: „[Zitat entfernt]“)
-        for (const p of packs) {
-          const chip = el("button", "bspack", p.id) as HTMLButtonElement;
-          chip.title = [p.useWhen, p.privateSourceId ? "a private pack — its source is outside this repo"
-            : `${(p.sources ?? []).length} source${(p.sources ?? []).length === 1 ? "" : "s"} — click to open them`]
-            .filter(Boolean).join(" — ");
-          if (setup) chip.onclick = () => openPacks(setup, p.id);
-          list.appendChild(chip);
-        }
-        r.appendChild(list);
-        su.appendChild(r);
-        const from = setup?.packsFrom === "receipt"
-          ? `delivered with the founding brief${setup.deliveredAt ? ` ${gateAge(Date.now() - setup.deliveredAt)} ago` : ""}`
-            + `${setup.deliveredBytes ? `, ${Math.round(setup.deliveredBytes / 1024)} KB` : ""}`
-          : "declared by this session's program — not proof that this pane received them";
-        const note = el("div", "bsnote", from);
-        if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
-        if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
-        su.appendChild(note);
-        // E34 (docs/design/datenrechte-notiz.md): a pack is a pointer, never a right — the rights
-        // block right below says what the session may read
-        su.appendChild(el("div", "bsnote", "Packs zeigen ihr, wo sie nachlesen soll. Ein Recht geben sie nicht."));
-      }
-      // no row for "no packs": a session without them is the ordinary case, and a row saying `none`
-      // cost a line on every session to answer a question only a packed one raises. The hover on
-      // the section's own head still says what the block is. (space cut, 2026-09-20)
-      const since = facts?.sessionStart ?? s.openedAt ?? null;
-      const foot: string[] = [];
-      if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
-      if (s.inbound) foot.push(`${s.inbound.sends} send${s.inbound.sends === 1 ? "" : "s"} today`);
-      const mine = autosList.filter((a) => a.slot === slot && a.enabled).length;
-      if (mine) foot.push(`${mine} check-in${mine === 1 ? "" : "s"} armed`);
-      if (foot.length) {
-        const f = el("div", "bsnote", foot.join(" · "));
-        f.title = "how long this occupant has held the slot, what Fleet typed into it today, and its own scheduled prompts";
-        su.appendChild(f);
-      }
-      nodes.push(su);
-    }
-
-    // 1c — RECHTE (G6.5: after the context, before the checks; owner 2026-10-02 „[Zitat entfernt]“
-    // ): what this session may read — its own work, the project views the owner
-    // assigns over the memory-grant door, and the owner's own view. src/rights.ts holds the block
-    // and its state per occupant; the column only hangs it in.
-    const rsec = rightsSection(s);
-    nodes.push(rsec);
-
-    // THE NOTEPAD — the owner's free text on THIS lane's worktree, directly above the suite area
-    // (owner 2026-09-23: „[Zitat entfernt]“). Drawn from the lanes read alone, so it
-    // stands even when the brief failed; a repo session (the primary checkout is no board row) and
-    // a failed lanes read draw none.
-    {
-      const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
-      if (ownWt && wts) {
-        const noteSec = el("div", "bsec");
-        noteSec.appendChild(boardHead("Notizblock", "repo"));
-        noteSec.appendChild(notepadBlock(wts.repo, ownWt));
-        nodes.push(noteSec);
-      }
-    }
     if (noGit) {
       // NOT-APPLICABLE, drawn once and quietly: no fail styling, no "keeps trying" — nothing is
       // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
       const ng = el("div", "bsec");
-      ng.appendChild(boardHead("Changes", "session"));
+      ng.appendChild(sectionHead("Changes", "session"));
       const e = el("div", "bempty", "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.");
       e.title = `${s.cwd} ist ein einfacher Ordner; Sitzung, Prompts und Setup werden wie gewohnt gelesen`;
       ng.appendChild(e);
@@ -1788,441 +1455,47 @@ export async function renderBoard() {
     }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
-      fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
+      fail.appendChild(sectionHead("Changes, history and lanes are missing", "session"));
       fail.appendChild(el("div", "bstate", `Der Session-Brief konnte nicht gelesen werden — ${briefErr}.`));
       // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
       // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
       fail.appendChild(el("div", "bempty", "Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung. Die Spalte versucht es weiter."));
       nodes.push(fail);
     }
+    // 3 — CHANGES: the uncommitted tree, Commit, and on a lane Land lane with ⋯ beside it
     if (brief) {
-      // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane
-      // session, vs the upstream (from the sessions-poll gitInfo)
-      const ahead = brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0);
-      const behind = brief.laneScoped ? brief.behind : (s.git?.behind ?? 0);
-
-      // 2 — TO LAND: everything between "written" and "in main" — the uncommitted tree, the SAVE
-      // button, and (on a lane) the land action itself. Split out of the old WORK section on the
-      // owner's order (§F4, briefs/ui-next-level-2026-08-06.md): what is still PENDING comes
-      // before the history of what is already done, and commits/files below are that history.
-      const work = el("div", "bsec");
-      work.appendChild(boardHead("Changes", "session"));
-      // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges
-      // commit + land here — surface it as an explicit, fixable state, not a silent refusal
-      if (brief.gitOp) {
-        const warn = el("div", "bgitop",
-          "⚠ a git merge/rebase is in progress — finish or abort it in this session's terminal (git rebase --abort / git merge --abort), then retry. Commit & land are blocked until then.");
-        work.appendChild(warn);
-      }
-      if (brief.uncommitted) {
-        const wl = el("div", "bstate");
-        wl.appendChild(el("span", "editing",
-          `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
-        if (ahead) wl.appendChild(document.createTextNode(` · ${ahead} commit${ahead === 1 ? "" : "s"} ready`));
-        work.appendChild(wl);
-        // the concrete uncommitted work — exactly what git status shows, with its codes
-        if (brief.uncommittedFiles.length) {
-          const uf = el("div", "bunc");
-          // every uncommitted file, not the first 40: the owner reads this list to decide what
-          // to commit, and a silent cut is the one thing it must not do (2026-09-19). The server
-          // caps the status read at 200 lines and says so below when it hit that cap.
-          for (const f of brief.uncommittedFiles) {
-            // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
-            const x = f[0] ?? " ", y = f[1] ?? " ";
-            const row = el("button", "buncf");
-            // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
-            const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
-            const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
-            // untracked FIRST: porcelain sets both columns to '?', so every x/y test below
-            // matches it — asking them first labelled a new file "staged + unstaged changes"
-            badge.title = f.startsWith("??") ? "untracked"
-              : x !== " " && y !== " " ? "staged + unstaged changes"
-              : x !== " " ? "staged" : "unstaged changes";
-            row.appendChild(badge);
-            row.appendChild(document.createTextNode(f.slice(3)));
-            // as with the committed list below: every row here opened the WHOLE working diff,
-            // whichever row you clicked. Now it opens the review window on this file — and an
-            // UNTRACKED file has no diff to open on, so it goes straight to the file itself.
-            const upath = porcelainPath(f);
-            const untracked = f.startsWith("??");
-            row.title = untracked ? `${f} — click to read it (untracked: there is no diff yet)`
-              : `${f} — click to see what changed in this file`;
-            row.onclick = () => void openReview(slot, "working",
-              untracked ? { k: "untracked", path: upath } : { k: "file", path: upath });
-            uf.appendChild(row);
-          }
-          // the list is complete unless the SERVER's own 200-line status cap cut it — say which
-          // one it is, because "everything you changed" and "the first 200" are different claims
-          if (brief.uncommitted > brief.uncommittedFiles.length)
-            uf.appendChild(el("div", "bempty",
-              `… ${brief.uncommitted - brief.uncommittedFiles.length} more — the server reads at most 200 status lines`));
-          work.appendChild(uf);
-        }
-        // the SAVE — lanes only. land/merge refuse a dirty tree; this commits so a kill can't
-        // lose the work. quick = deterministic wip; agent = an agent writes the message.
-        if (brief.worktree) {
-          const busy = commitBusy.get(slot);
-          const crow = el("div", "bbtnrow");
-          // ONE commit here — the safety net: instant wip commit so a kill can't lose the
-          // work (saved locally, never pushed/landed, reversible with git reset). The
-          // agent-written-message path moved to land time — ⏏ land now commits-if-dirty
-          // with an agent message — so there's no separate "✎ message" affordance on a lane.
-          const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
-          q.disabled = !!busy; // also disabled mid-land, while doLand's commit-if-dirty runs (busy === "agent")
-          q.title = "commit all uncommitted work now so a kill can't lose it — saved locally, never pushed or landed (undo with git reset)";
-          q.onclick = () => void doCommit(slot, "quick");
-          crow.append(q);
-          work.appendChild(crow);
-        } else {
-          // main (non-lane) session: commit TRACKED changes (add -u) with a staging preview,
-          // so the owner sees exactly what lands on a branch they ship and that untracked
-          // files are left alone. Reversible (git reset); the server never pushes.
-          const busy = commitBusy.get(slot);
-          const files = brief.uncommittedFiles;
-          const crow = el("div", "bbtnrow");
-          // same one-action-plus-refinement as a lane. On a MAIN checkout the preview shows
-          // that only tracked changes (git add -u) are staged — untracked files are left
-          // alone. No separate diff button here: the file rows above are already click-to-diff.
-          const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
-          q.disabled = !!busy;
-          q.title = "stage & commit tracked changes only (git add -u); untracked files left alone — undo with git reset. Shows a preview first.";
-          q.onclick = () => void doCommitMain(slot, "quick", files);
-          const a = el("button", "bbtn quiet", busy === "agent" ? "Writing message…" : "Commit with written message") as HTMLButtonElement;
-          a.disabled = !!busy;
-          a.title = "same commit, but a short-lived agent writes a conventional-commit message from the staged diff first";
-          a.onclick = () => void doCommitMain(slot, "agent", files);
-          crow.append(q, a);
-          work.appendChild(crow);
-        }
-      } else if (ahead) {
-        work.appendChild(el("div", "hint bnote ready",
-          `${ahead} commit${ahead === 1 ? "" : "s"} ready to ${brief.worktree ? "land" : "push"}`));
-      } else {
-        work.appendChild(el("div", "hint bnote", "Nothing uncommitted, nothing ahead."));
-        if (!brief.worktree) {
-          const db = el("button", "bbtn quiet", "View diff") as HTMLButtonElement;
-          db.onclick = () => void openDiff(slot);
-          work.appendChild(db);
-        }
-      }
-      // BEHIND — and, on a lane, the one action that fixes it. The button carries the number, so
-      // there is never a count without a way to act on it and never an action without its reason;
-      // at behind 0 there is no button at all, only the state (owner, 2026-09-20).
-      const baseName_ = brief.laneBase ?? "main";
-      // BEHIND, and on a lane the one action that fixes it. The button carries the count, so there
-      // is never a number without a way to act on it and never an action without its reason; at
-      // behind 0 there is no button at all. It is built here (where the count is) and placed with
-      // the other lane verbs below (owner, 2026-09-20: „[Zitat entfernt]“).
-      let rebaseBtn: HTMLButtonElement | null = null;
-      if (behind && brief.laneScoped) {
-        if (brief.worktree) {
-          rebaseBtn = el("button", "bbtn quiet",
-            rebaseBusy.has(slot) ? "Rebasing…" : `Rebase — ${behind} behind ${baseName_}`) as HTMLButtonElement;
-          rebaseBtn.disabled = rebaseBusy.has(slot);
-          rebaseBtn.title = `replay this lane's commits on top of ${baseName_}. It ONLY rebases: it does not verify `
-            + "and it does not land, and on a conflict it aborts and leaves the lane exactly as it is.";
-          rebaseBtn.onclick = () => void doRebase(slot);
-        } else {
-          work.appendChild(el("div", "hint bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${baseName_}`));
-        }
-      }
-      // …and what the last rebase did, which outlives the count it removed: a rebase that WORKED
-      // deletes the very number that explained the button, so without this line the column would
-      // look as if nothing had happened.
-      const rbNote = ((): HTMLElement | null => {
-        const note = rebaseNote.get(slot);
-        if (!note) return null;
-        if (Date.now() - note.at > REBASE_NOTE_MS) { rebaseNote.delete(slot); return null; }
-        const n = el("div", note.ok ? "hint bnote ready" : "bstate rbfail", note.text);
-        if (note.files?.length) {
-          const list = el("div", "bunc");
-          for (const f of note.files) list.appendChild(el("div", "bfile", f));
-          n.appendChild(list);
-        }
-        return n;
-      })();
-      if (rbNote && !brief.worktree) work.appendChild(rbNote);
-      // the lane's endgame, in the same section because it is the same subject: ONE land action
-      // whose label carries the auto-vs-review-needed distinction as text. doLand tries the direct
-      // /land path, then falls back to the /merge agent — the UI is collapsed to one control.
-      if (brief.worktree) {
-        const land = el("div", "blandacts");
-        const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
-        // an INTERRUPTED run that had already handed the conflicts to the agent needs the same
-        // eye as a settled "resolved" verdict: the resolutions may be committed in the lane and
-        // nobody — not even the server — ever saw a verdict for them (server.ts, needsMergeReview)
-        const awaitingReview = l?.status === "resolved"
-          || (l?.status === "interrupted" && (l.conflicted?.length ?? 0) > 0);
-        // no standalone "± view diff" here: it opened the same working diff (openDiff) already
-        // reachable by clicking a file row in WORK — a second button for an identical source.
-        // The working diff lives on the file rows (one consistent affordance); the resolved
-        // main..HEAD diff lives on the review note's "± review diff" below. Two sources, not
-        // three competing buttons — so each land state shows one obvious review control.
-        // one land verb on screen at a time. Normally this IS the land. In the review state
-        // the note owns "⏏ land", so this becomes the distinct "re-run" action (only needed
-        // if main moved) — never a second, competing land button. Green = "ready to land".
-        // …unless this fleet does not land at all (FLEET_LANDS=0). Then the verb is not disabled
-        // but ABSENT: a greyed-out control still says "this is the thing you would do here", and on
-        // a follower instance it is not. ⇲ shelve stays — setting a lane aside is local, and it is
-        // the exit that remains when landing is somebody else's host. Visibility only: the server's
-        // 409 is the guarantee, this is the board declining to offer a gesture it knows is refused.
-        if (landsEnabled) {
-          const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " primary" : ""),
-            mg?.running ? "Landing…" : awaitingReview ? "Re-run merge" : "Land lane") as HTMLButtonElement;
-          lb.disabled = !!mg?.running;
-          lb.title = awaitingReview
-            ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
-            : "already-merged lanes land immediately; otherwise this rebases onto main and lands "
-              + "automatically — on conflicts a background agent resolves them and pauses for your review "
-              + "before anything reaches main";
-          lb.onclick = () => void doLand(slot);
-          land.appendChild(lb);
-        } else {
-          land.appendChild(el("div", "bmergedetail",
-            "this fleet follows a canonical main and does not land — land this branch on the canonical host"));
-        }
-        // ⇲ shelve — the safe third exit beside land: set aside WITH a note, keep the worktree.
-        const shb = el("button", "bbtn quiet", "Shelve") as HTMLButtonElement;
-        shb.disabled = !!mg?.running;
-        shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
-        shb.onclick = () => void doShelve(slot);
-        land.appendChild(shb);
-        const pkb = el("button", "bbtn quiet", "Park for review") as HTMLButtonElement;
-        pkb.disabled = !!mg?.running;
-        pkb.title = "park this finished lane for a later review — frees the slot, keeps worktree, task ids, head, base and the accepted report; the tasks do not start again, reopening binds them back (verify then counts as stale)";
-        pkb.onclick = () => void doShelve(slot, true);
-        land.appendChild(pkb);
-        // ↻ rebase sits with the other lane verbs, because it is one: it moves this lane, and the
-        // reader decides between "land it" and "bring it up to date" in one place.
-        if (rebaseBtn) land.appendChild(rebaseBtn);
-        // ↩ undo last land — only when the server still holds an undoable land for THIS repo
-        // (main not moved since, not pushed). Reverses the one action that mutates main.
-        if (mg?.undoable && brief.worktree.repo) {
-          const ub = el("button", "bbtn quiet", `Undo last land (${laneNameOfBranch(mg.undoable.branch)})`) as HTMLButtonElement;
-          ub.disabled = !!mg?.running;
-          ub.title = "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way";
-          const repo = brief.worktree.repo;
-          const landedBranch = mg.undoable.branch;
-          ub.onclick = () => void doUndoLand(repo, landedBranch);
-          land.appendChild(ub);
-        }
-        if (awaitingReview && l) {
-          // the agent resolved conflicts and the server verified the rebase — the owner
-          // reviews the diff and lands. This is the one place a human eye is required.
-          const n = l.conflicted?.length ?? 0;
-          const note = el("div", "bmergenote review");
-          const hd = el("div", "bmergehd", l.status === "interrupted"
-            ? `merge INTERRUPTED while resolving${n ? ` ${n} file${n === 1 ? "" : "s"}` : ""} — no verdict was ever recorded; review, then land `
-            : `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land `);
-          hd.appendChild(verifyBadge(l.verify));
-          note.appendChild(hd);
-          if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
-          note.appendChild(el("div", "bmergedetail", l.detail));
-          const acts = el("div", "bmergeacts");
-          const rev = el("button", "bmergereview", "Review diff") as HTMLButtonElement;
-          rev.onclick = () => void openMergeDiff(slot);
-          acts.append(rev);
-          // reviewing a carried-over verdict stays available on a follower; confirming it does not.
-          if (landsEnabled) {
-            const landb = el("button", "bmergeland", "Land") as HTMLButtonElement;
-            landb.onclick = () => void doMergeLand(slot);
-            acts.append(landb);
-          }
-          note.appendChild(acts);
-          land.appendChild(note);
-        } else if (l && failedLandVerdict(l)) {
-          const note = el("details", `bmergenote ${l.status === "blocked" ? "warn" : "err"} landalarm`);
-          const alarmKey = `${l.branch}:${l.at}`;
-          (note as HTMLDetailsElement).open = landAlarmOpens.has(alarmKey);
-          note.addEventListener("toggle", () => {
-            if ((note as HTMLDetailsElement).open) landAlarmOpens.add(alarmKey);
-            else landAlarmOpens.delete(alarmKey);
-          });
-          const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
-          note.appendChild(el("summary", "", `${kind} · ${laneNameOfBranch(l.branch)}`));
-          note.appendChild(el("div", "bmergedetail", l.detail));
-          note.appendChild(verifyBadge(l.verify));
-          land.appendChild(note);
-        } else if (l) {
-          // "awaiting-author" is a WAIT, not a failure: the lane's own session is resolving its own
-          // conflict right now. Rendering it in the error style (the fall-through default for every
-          // non-merged/non-blocked status) would read as "the merge broke" on the one path that is
-          // working exactly as designed.
-          const cls = (l.status === "merged" && l.landed) || l.status === "awaiting-author" ? "ok"
-            : l.status === "blocked" ? "warn" : "err";
-          const vn = el("div", `bmergenote ${cls}`,
-            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed")
-              : l.status === "awaiting-author" ? "the lane's own session is resolving this conflict" : l.status}: ${l.detail} `);
-          vn.appendChild(verifyBadge(l.verify));
-          land.appendChild(vn);
-        }
-        work.appendChild(land);
-        if (rbNote) work.appendChild(rbNote);
-      }
+      const work = changesSection(c, brief);
       nodes.push(work);
-
-      // CHECKS: this session's own suites, read off the same model the meter draws — every ball whose
-      // slot is this one. The land's own verify verdict stays with the land above, where it decides.
-      {
-        const mine = meterModel().balls.filter((b) => b.slot === slot);
-        // NO SUITE, NO SECTION (space cut, 2026-09-20). The sentence this used to draw — "No suite
-        // reported in the last few minutes" — cost a headed section on every session that is not
-        // running one, which is most of them most of the time, and the meter above is the always-on
-        // answer to the same question for the WHOLE fleet. What is kept is the half the meter cannot
-        // guarantee: the meter is capped at six rows, so this section is where THIS session's own
-        // runs are certain to be readable.
-        const ck = el("div", "bsec");
-        ck.appendChild(boardHead("Checks", "session"));
-        for (const b of mine) {
-          const row = el("div", `bcheck tone-${b.tone}`);
-          // a land still before its first suite has no stage yet — its kind word stands in
-          row.append(el("span", "smdot"), el("span", "bcheckwhat", b.what || b.kind), el("span", "bcheckstate", meterState(b)));
-          // serverClock(), not Date.now(): `b.at` is the SERVER's stamp, and this pane's clock
-          // may sit minutes away from it — the same correction every other age here uses
-          if (b.at > 0) row.appendChild(el("span", "bcheckage", gateAge(serverClock() - b.at)));
-          row.title = `${b.what || b.kind} — ${meterState(b)}`;
-          ck.appendChild(row);
-        }
-        if (mine.length) nodes.push(ck);
+    }
+    // 4 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn
+    // from the lanes read alone, so it stands even when the brief failed; a repo session (the primary
+    // checkout is no board row) and a failed lanes read draw none.
+    {
+      const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
+      if (ownWt && wts) {
+        const noteSec = el("div", "bsec bnotesec");
+        noteSec.appendChild(sectionHead("Notizblock", "repo"));
+        noteSec.appendChild(notepadBlock(wts.repo, ownWt));
+        nodes.push(noteSec);
       }
-
-      // 3 — COMMITS: the history, and deliberately TWO lists ("[Zitat entfernt]", owner §F4) — what
-      // this lane/session added, and what the project got around it. The second list is empty
-      // whenever it would merely repeat the first (server: repoRecentCommits).
-      //
-      // Both lists are CLICKABLE, and each opens the lens whose route can actually serve it — the
-      // two are not interchangeable, which is why this takes a `where` instead of guessing.
-      // Measured 2026-08-20 against a live server, real requests, real status codes:
-      //   · a lane commit  → GET /api/slots/:id/commit-diff?hash=…            → 200 + diff + files
-      //   · a REPO commit  → the same route                                   → 404 "not a commit
-      //     of this slot", and rightly so: that route recomputes slotCommits (base..HEAD) and
-      //     checks membership, and the second list is `git log <base>` — disjoint by construction.
-      //     GET /api/commit-diff?repo=<worktree.repo>&hash=… serves it 200, and every hash in
-      //     the second list was in that route's own list. So: the Commits lens, opened on it.
-      // A `<button>` rather than a div with an onclick: Enter/Space, tab focus and the focus ring
-      // come with the element, and criterion "no double-click or hover requirement" is then a
-      // property of the tag, not of a handler someone has to remember to keep.
-      const commitRow = (cm: BriefCommit, where: "session" | "repo") => {
-        const row = el("button", "brow") as HTMLButtonElement;
-        row.appendChild(el("span", "bhash", cm.hash));
-        const sub = el("span", "bsub", cm.subject);
-        sub.title = cm.subject; // the row is one line wide; a long subject is only readable on hover
-        row.appendChild(sub);
-        row.title = where === "session"
-          ? `${cm.hash} — open this commit's diff and file list`
-          : `${cm.hash} — open this commit in the repo's Commits lens (it is not this session's own commit)`;
-        row.onclick = where === "session"
-          ? () => void openReview(slot, "working", { k: "commit", hash: cm.hash })
-          : () => void openActivity("commits", { repo: repoOfSlot(s, brief), hash: cm.hash });
-        return row;
-      };
-      // HISTORY is one section: the commits this lane/session added, then the files they touched.
-      // The project's own commits around it are folded — context, not this session's story.
-      const csec = el("div", "bsec");
-      csec.appendChild(boardHead("History", "repo"));
-      const base = brief.laneBase ?? "main";
-      if (brief.commits.length) csec.appendChild(el("div", "bsubhead", brief.laneScoped ? `Commits on this lane`
-        : brief.sessionStart ? "Commits this session" : "Recent commits"));
-      else csec.appendChild(el("div", "bempty",
-        brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
-      for (const cm of brief.commits) csec.appendChild(commitRow(cm, "session"));
-      // …and when the SERVER's cap cut the list, say so rather than let 50 rows read as "all of
-      // them" — the lane's own ahead-count is the honest total to compare against
-      // a list that stops at its cap must say so — for a lane the true total is `ahead`, and a
-      // time-scoped session has no total, so there the cap itself is the honest sentence
-      if (brief.laneScoped && ahead > brief.commits.length)
-        csec.appendChild(el("div", "bempty",
-          `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest ${brief.commitsCap}`));
-      else if (!brief.laneScoped && brief.commits.length >= brief.commitsCap)
-        csec.appendChild(el("div", "bempty", `the newest ${brief.commitsCap} — this session may have made more`));
-
-      // 4 — FILES: the committed footprint — what this lane/session changes vs its base.
-      if (brief.files.length) {
-        const fsec = csec;
-        const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${base}` : "Changed files");
-        if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
-        fsec.appendChild(fh);
-        // the whole committed footprint, uncut — same rule as the uncommitted list above
-        for (const f of brief.files) {
-          const row = el("button", "bfile");
-          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
-          row.appendChild(document.createTextNode(f.slice(3)));
-          // every row here used to open the WHOLE working diff, whichever row you clicked — the
-          // card listed thirty files and answered the same way for all of them. It now opens the
-          // review window ON the file you clicked. `f` is porcelain ("M  path"), so the path
-          // starts at column 3.
-          const path = porcelainPath(f);
-          row.title = `${f} — click to see what changed in this file`;
-          row.onclick = () => void openReview(slot, "working", { k: "file", path });
-          fsec.appendChild(row);
-        }
-        // the list above draws every file the brief carries; the only thing left to say is
-        // whether the SERVER capped it, and that is a comparison against its own true total
-        if (brief.filesTotal > brief.files.length)
-          fsec.appendChild(el("div", "bempty",
-            `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
-      }
-      if (brief.repoCommits.length)
-        csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
-          String(brief.repoCommits.length), (box) => { for (const cm of brief.repoCommits) box.appendChild(commitRow(cm, "repo")); }));
+    }
+    // 5 — HISTORY: the three newest commits, the full list behind one button
+    if (brief) {
+      const csec = historySection(c, brief);
       nodes.push(csec);
-
-      // 5 — EXPLORER: the repo's whole file tree, not just what changed. The card above answers
-      // "what did this session touch"; this one answers "what is in here", which is the question
-      // you have when you are reading rather than reviewing. Same destination either way — one
-      // click opens the file view both cards already use.
-      // Drawn only where there is a branch: the tree is `git ls-files`, so a session opened on a
-      // plain directory would get a card whose only content is "not a git repo" on every repaint.
-      // A detached HEAD loses the card too — the honest cost of reading git-ness off the one field
-      // the brief already carries, rather than adding a probe to the 3s render for an edge case.
-      // OPEN, not folded (owner, 2026-09-20: „[Zitat entfernt]“). The
-      // tree keeps its own scroll box (public/index.html .fxtree), so a repo with 4000 files does
-      // not push Lanes and the rest of the column off the screen.
-      if (brief.branch) {
-        const known = fxTree.get(s.cwd);
-        fxGit.set(s.cwd, { lines: brief.uncommittedFiles, total: brief.uncommitted, branch: brief.branch });
-        const fx = fileTreeSection(slot, s.cwd);
-        const fhd = boardHead("Files", "repo");
-        if (known && !("error" in known)) fhd.appendChild(el("span", "bsubstat", String(known.total)));
-        fx.insertBefore(fhd, fx.firstChild);
-        nodes.push(fx);
-      }
-
-      // 6 — LANES: the repo's lane map moved into the Arbeitsorte at the top (0b) — every open
-      // worktree, who holds it, and the orphans' reopen/close/discard. What stays here is the one
-      // sentence when the focused repo's lane list could not be read, since the close controls of
-      // its orphans hang on that list.
+      // the repo's lane map lives in the Arbeitsorte; what stays here is the one sentence when the
+      // focused repo's lane list could not be read, since the close controls of its orphans hang on it
       if (wtErr) {
         const lfail = el("div", "bsec bfail");
-        lfail.appendChild(boardHead("Lanes", "repo"));
+        lfail.appendChild(sectionHead("Lanes", "repo"));
         lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
         nodes.push(lfail);
       }
     }
-    // The advisory agents (✨ summarize · 🔍 review) LEFT this column on 2026-09-20: the owner
-    // called the setup behind those two buttons outdated. The server routes stay — the ③
-    // auto-review writes the outcome ledger through them — only the board no longer offers them.
-
-    // 9 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
-    tools.push(boardFold("prompts", "Your prompts", outlineErr ? "—" : String(prompts.length), (psec) => {
-    if (outlineErr) psec.appendChild(el("div", "bstate", `The transcript could not be read — ${outlineErr}.`));
-    else if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
-    prompts.forEach((p, i) => {
-      const row = el("button", "bprompt");
-      row.appendChild(el("span", "bn", String(i + 1)));
-      const t = el("span", "bt", p);
-      t.title = p;
-      row.appendChild(t);
-      row.onclick = () => panes[focused]?.showPromptAt(i);
-      psec.appendChild(row);
-    });
-    }));
-    // TOOLS: everything you reach for rather than read — folded, each fold remembered
-    if (tools.length) {
-      const tsec = el("div", "bsec btools");
-      tsec.append(...tools);
-      nodes.push(tsec);
-    }
+    // 6 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
+    // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts)
+    const msec = moreSection(c);
+    nodes.push(msec);
     // the focus moved to another pane while we were fetching — this render describes
     // the wrong slot; drop it (the re-run below paints the right one)
     if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
@@ -2242,6 +1515,9 @@ export async function renderBoard() {
     // the worktree field asked to be shown: bring its row into view once, then leave the scroll alone
     const flashed = rankeScroll ? boardBody.querySelector<HTMLElement>(".zr.flash") : null;
     if (flashed) { rankeScroll = false; flashed.scrollIntoView({ block: "nearest" }); }
+    const opened = popScroll && !isMobile() ? boardBody.querySelector<HTMLElement>(".bpop") : null;
+    if (opened) { popScroll = false; opened.scrollIntoView({ block: "nearest" }); }
+    if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
     if (focusKey) {
       for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
         if (`${cand.tagName}\u0000${cand.className}\u0000${(cand.textContent ?? "").slice(0, 40)}` !== focusKey) continue;
@@ -2258,6 +1534,929 @@ export async function renderBoard() {
       boardAgain = false;
       void renderBoard();
     }
+  }
+}
+
+// --- THE INFO COLUMN BELOW THE ARBEITSORTE (docs/design/rechter-tab-notiz.md §3, §3b, §4; cards R1–R3,
+// Variante 3A). One context per repaint, built once in renderBoard, handed to each section.
+interface BoardCtx {
+  s: SlotInfo; slot: number;
+  brief: BriefInfo | null; noGit: BriefNoGit | null;
+  facts: Pick<BriefInfo, "sessionStart" | "setup" | "succession"> | null;
+  mg: MergeState | null; wts: WtInfo | null;
+  ahead: number; behind: number;
+  // the focused lane's own row of the last Arbeitsorte read — its checks and its target
+  own: WorkplaceRow | null;
+  prompts: string[]; outlineErr: string | null;
+}
+// a section head: the title, and WHOSE fact it is as the head's hover (G0.5: no reach word in the
+// visible text; the closed vocabulary of SCOPE_TITLE stays the sentence)
+export function sectionHead(title: string, scope: BoardScope): HTMLElement {
+  const h = el("h3", "", title);
+  h.dataset.scope = scope;
+  h.title = SCOPE_TITLE[scope];
+  return h;
+}
+function ownWorkplace(s: SlotInfo): WorkplaceRow | null {
+  if (!s.worktree || !workplaces) return null;
+  for (const R of workplaces.repos) for (const w of R.worktrees ?? []) if (w.path === s.cwd) return w;
+  return null;
+}
+// a label/value row (the draft's .kv): the label quiet on the left, the value on the right
+function kvRow(label: string, value: (Node | string)[], cls = ""): HTMLElement {
+  const r = el("div", `bkv${cls ? ` ${cls}` : ""}`);
+  r.appendChild(el("span", "k", label));
+  const v = el("span", "v");
+  v.append(...value);
+  r.appendChild(v);
+  return r;
+}
+// a glyph button with its sentence on hover AND as its accessible name (G1.1)
+function glyphBtn(name: IconName, label: string, title: string, run: () => void): HTMLButtonElement {
+  const b = el("button", "bib") as HTMLButtonElement;
+  b.type = "button";
+  b.appendChild(icon(name));
+  b.title = title;
+  b.setAttribute("aria-label", label);
+  b.onclick = run;
+  return b;
+}
+
+// --- THE COLUMN'S THREE POPOVERS (G4.1): the session's ⋯, the ⋯ beside Land lane, and the handover
+// settings at their switch. ONE state, bound to the slot it was opened on (a focus change must not
+// hang one session's actions under another's name), registered with the board's one popover().
+type BoardPopKind = "kopf" | "land" | "ueb";
+export let boardPop: { kind: BoardPopKind; slot: number } | null = null;
+// a popover just opened: bring it into the column's view once (the draft scrolls to its anchor);
+// one just closed by Escape: its button takes the focus back once the column is repainted
+let popScroll = false;
+let popFocus: BoardPopKind | null = null;
+function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement): HTMLButtonElement {
+  const open = boardPop?.kind === kind && boardPop.slot === slot;
+  btn.dataset.pop = kind;
+  btn.classList.toggle("on", open);
+  btn.setAttribute("aria-haspopup", kind === "ueb" ? "dialog" : "menu");
+  btn.setAttribute("aria-expanded", String(open));
+  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; void renderBoard(); };
+  return btn;
+}
+// the panel: a menu at its button on the desktop, a sheet from the bottom on the phone (G4.1 mobil)
+function popPanel(kind: BoardPopKind, rows: HTMLElement[], cls = ""): HTMLElement[] {
+  const p = el("div", `bpop${cls ? ` ${cls}` : ""}`);
+  p.dataset.pop = kind;
+  p.setAttribute("role", kind === "ueb" ? "dialog" : "menu");
+  if (kind === "ueb") p.setAttribute("aria-label", "Übergabe-Einstellungen");
+  p.append(...rows);
+  const scrim = el("div", "bpopscrim");
+  return [scrim, p];
+}
+function popItem(label: string, title: string, run: (b: HTMLButtonElement) => void, note = "", danger = false): HTMLButtonElement {
+  const b = el("button", `bmenuitem${danger ? " danger" : ""}`) as HTMLButtonElement;
+  b.type = "button";
+  b.setAttribute("role", "menuitem");
+  b.append(el("span", "t", label));
+  if (note) b.append(el("span", "kk", note));
+  b.title = title;
+  b.onclick = () => run(b);
+  return b;
+}
+
+// --- 2 THIS SESSION (Variante A): the name with three glyph buttons and ⋯, the state, the waiting
+// sentences only when true, the order — then the lane's own values (Branch, Landet in, Check or
+// during a land its four steps), the handover line and what it belongs to.
+function sessionSection(c: BoardCtx): HTMLElement {
+  const { s, slot, brief, noGit, facts } = c;
+  const idsec = el("div", "bsec bhead");
+  const top = el("div", "bheadtop");
+  // a task lane is "<Lane-Referenz> · <Kurztitel>"; the full title and the branch on hover
+  const bands = laneBandNames(stacksOf());
+  const headRef = s.worktree && s.taskTitle ? bands.get(s.id) : undefined;
+  const headName = el("div", "bheadname", headRef ? laneDisplayName(headRef, s.taskTitle) : laneLabel(s));
+  if (headRef && s.worktree) headName.title = `${s.taskTitle} — ${s.worktree.branch}`;
+  top.appendChild(headName);
+  // Rename, Share and Export stay VISIBLE at ONE place per session (row 11e541e0) — as glyphs with
+  // their sentence on hover now (R1, G1.1); the rarer copies and the restart stay behind ⋯
+  const sessName = s.label ?? baseName(s.cwd ?? "");
+  top.append(
+    glyphBtn("pencil", "Umbenennen", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
+      const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
+      if (row instanceof HTMLElement) startRename(row, s);
+    }),
+    glyphBtn("share", s.share ? "Geteilt" : "Teilen", s.share ? "Diese Session ist nur lesend geteilt — Link und Passwort verwalten."
+      : "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(slot)),
+    glyphBtn("export", "Exportieren", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.",
+      () => { void openExportDlg(slot, sessName); }),
+  );
+  if (s.share) top.lastElementChild?.previousElementSibling?.classList.add("shared");
+  const mbtn = el("button", "bib bheadmenu") as HTMLButtonElement;
+  mbtn.appendChild(icon("dots"));
+  mbtn.title = "Weitere Aktionen — kopieren, die Session zurückholen";
+  mbtn.setAttribute("aria-label", "Weitere Aktionen");
+  top.appendChild(popTrigger("kopf", slot, mbtn));
+  if (boardPop?.kind === "kopf" && boardPop.slot === slot) top.append(...popPanel("kopf", kopfItems(c)));
+  idsec.appendChild(top);
+  {
+    const working = sessionActive(slot);
+    const meta = el("div", "bheadmeta");
+    meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
+    // no context fill and no model here: the sidebar row carries both for every session at once
+    // (owner 2026-09-19). What the head adds is the one thing the row cannot: how long it is quiet.
+    const word = working ? "Arbeitet" : s.lastOutput > 0 ? `Still seit ${agoDe(Date.now() - s.lastOutput).replace(/^vor /, "")}` : "Still";
+    const kind = brief?.worktree ? "Lane" : noGit ? "Ordner-Session" : brief ? "Repo-Session" : "Session";
+    meta.appendChild(document.createTextNode(`${word} · ${kind} in Slot ${slot}`));
+    const ref = s.worktree ? bands.get(s.id) : undefined;
+    if (ref) {
+      meta.appendChild(document.createTextNode(" · "));
+      const r = el("span", "ref", ref);
+      r.style.setProperty("--proj-h", String(projectHue(s.worktree?.repo ?? s.repo ?? s.cwd ?? "")));
+      r.title = "Dieselbe Adresse wie in der Leiste und am Zweig der Arbeitsorte";
+      meta.appendChild(r);
+    }
+    const since = facts?.sessionStart ?? s.openedAt ?? null;
+    if (since) meta.title = `Session seit ${new Date(since).toLocaleString()}`;
+    idsec.appendChild(meta);
+  }
+  // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE — none of them costs a line on a healthy session
+  if (s.agent === "no-agent") {
+    const a = el("div", "bwait owner", "Kein Agent in dieser Pane");
+    a.title = "Die Pane lebt und nimmt Tasten an, aber darin läuft nichts — Tippen erreicht keinen Agenten.";
+    idsec.appendChild(a);
+  }
+  if (s.stalled) {
+    const st = el("div", "bwait main", s.stalledSince ? `Steht still seit ${gateAge(Date.now() - s.stalledSince)}` : "Steht still");
+    st.title = "Keine Ausgabe, nichts wartet auf eine Antwort — die Lane steht.";
+    idsec.appendChild(st);
+  }
+  if (s.autoCloseRefusal) {
+    const r = el("div", "brefusal", s.autoCloseRefusal);
+    r.title = "Warum das automatische Schließen diese Lane offen lässt";
+    idsec.appendChild(r);
+  }
+  if (s.awaiting) {
+    const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Wartet auf dich" : "Wartet auf ihre MAIN");
+    w.title = s.awaiting === "owner"
+      ? "Diese Session hält an, bis du antwortest — ihre letzte Nachricht oder eine offene Rückfrage sagt, was sie braucht."
+      : "Diese Session hält an, bis die MAIN antwortet, die sie führt.";
+    idsec.appendChild(w);
+  }
+  if (s.mission) {
+    const mi = el("div", "bmission", s.mission);
+    mi.title = s.mission;
+    idsec.appendChild(mi);
+  }
+  // THE VALUES, apart from the name by one group gap (§3b: "freistehender")
+  const kv = el("div", "bkvs");
+  if (brief?.worktree) {
+    const branch = brief.worktree.branch;
+    const bv = el("span", "mono br", branch);
+    bv.title = branch;
+    const cp = glyphBtn("copy", "Branch kopieren", "Branch kopieren", () => { copyText(branch); cp.classList.add("done"); setTimeout(() => cp.classList.remove("done"), 1100); });
+    kv.appendChild(kvRow("Branch", [bv, cp]));
+    const base = brief.laneBase ?? c.own?.target.branch ?? "main";
+    const running = !!c.mg?.running;
+    const bm = el("span", "mono", base);
+    const n = c.ahead;
+    const far = running ? `${n} ${n === 1 ? "Commit wird" : "Commits werden"} gelandet`
+      : `${n} ${n === 1 ? "Commit" : "Commits"} voraus${c.behind ? ` · ${c.behind} hinter` : ""}`;
+    const landsIn = kvRow("Landet in", [bm, el("span", "s1", far)]);
+    landsIn.title = `Diese Lane landet in ${base} — ${far}`;
+    kv.appendChild(landsIn);
+    kv.appendChild(running ? landStepsRow(slot) : checkRow(c.own));
+  }
+  kv.appendChild(contextRow(c));
+  const links = belongsLinks(c);
+  if (links.length) kv.appendChild(kvRow("Gehört zu", links, "lks"));
+  idsec.appendChild(kv);
+  return idsec;
+}
+
+// the ⋯ of the session: the copies (Branch and Commit live here since they left the chips) and
+// bringing the session back, last because it is the one with a loss
+function kopfItems(c: BoardCtx): HTMLElement[] {
+  const { s, slot, brief } = c;
+  const items: HTMLElement[] = [];
+  const copyItem = (label: string, value: string, note: string) =>
+    popItem(label, `${value} — kopieren`, (b) => { copyText(value); const t = b.querySelector(".t"); if (t) t.textContent = "Kopiert"; }, note);
+  if (brief?.branch) items.push(copyItem("Branch kopieren", brief.branch, `…${brief.branch.slice(-14)}`));
+  if (brief?.head) items.push(copyItem("Commit kopieren", brief.head, brief.head.slice(0, 7)));
+  if (brief?.worktree && s.cwd) items.push(copyItem("Worktree-Pfad kopieren", s.cwd, ""));
+  if (items.length) items.push(el("div", "sep"));
+  // bring session back — the repair for a pane that switched conversations on you. Claude Code
+  // can change session IN-PROCESS: the pane keeps the argv it was spawned with, so nothing on
+  // the outside can tell, and Escape does not undo it. A respawn does, because the slot still
+  // holds the pinned sessionId and the server restarts the pane with --resume. There is no
+  // deterministic signal for "this pane wandered off", so the owner decides, not a detector.
+  items.push(popItem("Session zurückholen", "Die Pane neu starten und das festgehaltene Gespräch fortsetzen — der Slot behält Lane, "
+    + "Name, Modell, Freigaben und geplante Prompts. Was die Session GERADE tut, geht verloren.", async (b) => {
+    if (!(await askRisk({
+      title: `Die Pane von Slot ${slot} neu starten und das festgehaltene Gespräch fortsetzen?`,
+      body: [el("div", "bmidrun",
+        "Nichts am Slot wird weggeworfen. Aber der Agent wird beendet — was er gerade tut, "
+        + "ein laufender Werkzeugaufruf oder ungesendete Ausgabe, geht verloren.")],
+      buttons: [
+        { label: "Abbrechen", value: false },
+        { label: "Neu starten", danger: true, value: true },
+      ],
+    }))) return;
+    const t = b.querySelector(".t");
+    b.disabled = true;
+    if (t) t.textContent = "Startet neu…";
+    const r = await post(`/api/slots/${slot}/restart`, {});
+    const j = await r.json().catch(() => null) as { resumed?: boolean; error?: string } | null;
+    if (!r.ok) { alert(j?.error ?? "Neustart fehlgeschlagen"); b.disabled = false; if (t) t.textContent = "Session zurückholen"; return; }
+    // "fresh" means the pinned conversation could NOT be resumed (no pin, or its transcript is
+    // gone) — the one outcome the owner must not mistake for success
+    if (t) t.textContent = j?.resumed ? "Session ist zurück" : "Frisch gestartet — das Gespräch ließ sich nicht fortsetzen";
+    await refresh();
+  }, "", true));
+  return items;
+}
+
+// CHECK — the lane's newest check from its Arbeitsorte row: the furthest stage that has a record
+// (land check, then preview, then local proofs), its word and its age; every stage on hover
+const CHECK_ORDER: (keyof WorkplaceChecks)[] = ["gate", "preview", "local"];
+function checkRow(w: WorkplaceRow | null): HTMLElement {
+  const v: (Node | string)[] = [];
+  let title = "";
+  if (!w) {
+    v.push(el("span", "s1", workplaces ? "nicht gelesen" : "wird gelesen…"));
+    title = "Die Arbeitsorte haben diese Lane (noch) nicht gelesen — kein Check behauptet";
+  } else {
+    const stage = CHECK_ORDER.find((k) => w.checks?.[k]);
+    const ck = stage ? w.checks?.[stage] ?? null : null;
+    const word = CHECK_STAGES.find((x) => x.stage === stage)?.word ?? "";
+    const mark = el("span", `ck ${ck ? CHECK_CLASS[ck.state] : "none"}`);
+    if (ck?.state === "green") mark.appendChild(icon("check"));
+    else if (ck?.state === "red") mark.appendChild(icon("x"));
+    v.push(mark);
+    v.push(ck ? `${CHECK_WORD[ck.state]}${ck.at ? ` · ${agoDe(Date.now() - ck.at)}` : ""}` : "noch keiner");
+    if (ck && stage !== "gate") v.push(el("span", "s1", word));
+    title = CHECK_STAGES.map(({ stage: k, word: wd }) => {
+      const x = w.checks?.[k];
+      return `${wd}: ${x ? `${CHECK_WORD[x.state]}${x.at ? ` · ${agoDe(Date.now() - x.at)}` : ""}` : "noch keiner"}`;
+    }).join("\n");
+  }
+  const r = kvRow("Check", v);
+  r.title = title;
+  return r;
+}
+// LAND — while a land runs, its four steps in the order they happen (§4a `land`): it waits for the
+// check, the check runs, it lands, the check after the land. Read off the meter's land-check ball
+// for this slot; without one the land is still before its check.
+const LAND_STEPS = ["wartet", "wird geprüft", "gelandet", "danach"];
+const LAND_STEP_TITLE = ["wartet auf die Prüfung", "wird geprüft", "gelandet", "der Check nach dem Land"];
+function landStep(slot: number): { at: number; ball: MeterBall | null } {
+  const ball = meterModel().balls.find((b) => b.slot === slot && b.kind === "land check") ?? null;
+  return { at: ball && (ball.station === "run" || ball.station === "helper") ? 1 : 0, ball };
+}
+function landStepsRow(slot: number): HTMLElement {
+  const { at } = landStep(slot);
+  const steps = el("span", "steps");
+  LAND_STEPS.forEach((word, i) => {
+    const st = el("span", `st${i < at ? " done" : i === at ? " now" : ""}`);
+    if (i < at) st.appendChild(icon("check"));
+    else if (i === at) st.appendChild(el("span", "dot live"));
+    st.appendChild(document.createTextNode(word));
+    steps.appendChild(st);
+  });
+  const r = kvRow("Land", [steps]);
+  r.title = `Land läuft: ${LAND_STEP_TITLE.map((w, i) => `${i < at ? "✓ " : i === at ? "● " : ""}${w}`).join(" → ")}`;
+  return r;
+}
+
+// KONTEXT — one line instead of four (§4): the fill, and the switch that opens the handover settings
+// with the threshold on its face. Whether the hint was given shows only when it was (§3a); the hint
+// switched off is a state of its own and says so.
+const tok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
+  fleet: "auf dieser Fleet nicht eingeschaltet",
+  rail: "für diese Art Session auf 0 gestellt",
+  harness: "dieser Agent hat kein Übergabeband",
+  steward: "die Planungs-Session wird nicht erinnert",
+  waiting: "sie wartet auf dich",
+  unpinned: "kein festgehaltenes Gespräch zum Messen",
+};
+// the answer of the last write, shown at once while the brief is read again
+const succNow = new Map<number, { openedAt: number | undefined; sc: BriefSuccession; at: number }>();
+function successionOf(c: BoardCtx): BriefSuccession | null {
+  const fresh = succNow.get(c.slot);
+  if (fresh && fresh.openedAt === c.s.openedAt && Date.now() - fresh.at < 15_000) return fresh.sc;
+  const raw = c.facts?.succession;
+  if (!raw) return null;
+  return { ...raw, pctFrom: raw.pctFrom ?? "fleet", nudgeOn: raw.nudgeOn ?? true, defaultPct: raw.defaultPct ?? raw.thresholdPct ?? 0 };
+}
+function contextRow(c: BoardCtx): HTMLElement {
+  const sc = successionOf(c);
+  if (!sc) return kvRow("Kontext", [el("span", "s1", "nicht gemeldet")]);
+  const fill = sc.fill ? `${Math.round(sc.fill.pct)} %` : "nicht messbar";
+  const sw = el("button", "optsw") as HTMLButtonElement;
+  sw.type = "button";
+  sw.append(document.createTextNode(sc.thresholdPct !== null ? `Übergabe bei ${sc.thresholdPct} %` : "Übergabe aus"), icon("chevron"));
+  sw.title = `Übergabe-Einstellungen dieser Session — ${sc.thresholdPct === null ? `aus: ${OFF_WHY[sc.thresholdOff ?? "rail"]}`
+    : sc.pctFrom === "session" ? `eigene Schwelle dieser Session (Fleet: ${sc.defaultPct} %)` : "die Schwelle der Fleet"}`
+    + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`;
+  popTrigger("ueb", c.slot, sw);
+  const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
+  if (!sc.nudgeOn) v.push(el("span", "s1", "Hinweis aus"));
+  else if (sc.gaveUp) v.push(el("span", "s1", `nach ${sc.nudges} Hinweisen aufgehört`));
+  else if (sc.nudges) v.push(el("span", "s1", `Hinweis ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "gegeben"}`));
+  const r = kvRow("Kontext", v, "ctx");
+  const fillEl = r.querySelector<HTMLElement>(".fill");
+  if (fillEl) fillEl.title = sc.fill
+    ? `${sc.fill.usedTokens} von ${sc.fill.windowTokens} Tokens im Fenster (${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)}) — gegen diese Zahl misst der Server, wann die Session weitergeben soll.`
+    : "Fleet kann diesen Kontext nicht messen: kein festgehaltenes Gespräch, noch kein Nutzungsrecord oder kein benennbares Fenster — das ist kein leerer Kontext.";
+  if (boardPop?.kind === "ueb" && boardPop.slot === c.slot) r.append(...popPanel("ueb", handoverRows(c, sc), "ubpop"));
+  return r;
+}
+// THE HANDOVER SETTINGS (§4): readable words for every fact of the former four rows, and the owner's
+// two controls — the threshold in 5-steps and the hint on/off — written per session over
+// PATCH /api/slots/:id/handover (server.ts#patchHandover). The env value stays the default.
+const ubErr = new Map<number, string>();
+const ubBusy = new Set<number>();
+async function writeHandover(c: BoardCtx, body: { thresholdPct?: number | null; nudge?: boolean }): Promise<void> {
+  if (ubBusy.has(c.slot)) return;
+  ubBusy.add(c.slot);
+  ubErr.delete(c.slot);
+  void renderBoard();
+  try {
+    const r = await api(`/api/slots/${c.slot}/handover`, { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedOpenedAt: c.s.openedAt, ...body }) });
+    const j = (await r.json().catch(() => ({}))) as { error?: string; succession?: BriefSuccession | null };
+    if (!r.ok || !j.succession) throw new Error(j.error ?? `HTTP ${r.status}`);
+    succNow.set(c.slot, { openedAt: c.s.openedAt, sc: j.succession, at: Date.now() });
+  } catch (error) {
+    ubErr.set(c.slot, error instanceof Error ? error.message : String(error));
+  } finally {
+    ubBusy.delete(c.slot);
+    void renderBoard();
+  }
+}
+const RAIL_WAY: Record<BriefSuccession["rail"], [string, string]> = {
+  lane: ["neue Session im selben Worktree", "Gleicher Branch, gleicher Slot; sie committet und schreibt einen Übergabebericht."],
+  "standard-main": ["über das Program", "Die gebundene Program-MAIN gibt über ihren Program-Eintrag weiter — kein Übergabe-Commit nötig."],
+  "game-maker-main": ["über den Spielstand in HANDOFF.md", "Der committete Abschnitt „Current game checkpoint“ ist der einzige Weg."],
+  handoff: ["mit Übergabebericht", "Watches, geplante Prompts und Berichte ziehen mit; die Nachfolgerin bekommt eine Absicht oder einen Zeiger."],
+};
+function handoverRows(c: BoardCtx, sc: BriefSuccession): HTMLElement[] {
+  const row = (k: string, v: (Node | string)[], h = ""): HTMLElement => {
+    const r = el("div", "pr");
+    r.appendChild(el("span", "k", k));
+    const vv = el("span", "pv");
+    vv.append(...v);
+    r.appendChild(vv);
+    if (h) r.appendChild(el("span", "h", h));
+    return r;
+  };
+  const busy = ubBusy.has(c.slot);
+  // a gate that cannot fire takes no setting: the band is claude's, and without the fleet's master
+  // switch no tick runs at all — the reason says which, the controls stay visible but quiet
+  const locked = sc.thresholdOff === "fleet" || sc.thresholdOff === "harness" || sc.thresholdOff === "steward";
+  const rows: HTMLElement[] = [];
+  rows.push(row("Kontext", [sc.fill ? `${tok(sc.fill.usedTokens)} von ${tok(sc.fill.windowTokens)} · ` : "nicht messbar",
+    ...(sc.fill ? [el("b", "", `${Math.round(sc.fill.pct)} %`)] : [])]));
+  const pct = sc.thresholdPct ?? (sc.pctFrom === "session" ? null : sc.defaultPct);
+  const cur = pct ?? sc.defaultPct;
+  const step = el("span", "stepper");
+  const minus = el("button", "", "−") as HTMLButtonElement;
+  minus.type = "button";
+  minus.setAttribute("aria-label", "Schwelle senken");
+  minus.title = `Auf ${cur - 5} % senken — nur diese Session`;
+  minus.disabled = busy || locked || cur - 5 < 5;
+  minus.onclick = () => void writeHandover(c, { thresholdPct: cur - 5 });
+  // a gate that cannot fire has no number to step: it says "aus" instead of a 0 % nobody set
+  const val = el("span", "val", locked || cur <= 0 ? "aus" : `${cur} %`);
+  const plus = el("button", "", "+") as HTMLButtonElement;
+  plus.type = "button";
+  plus.setAttribute("aria-label", "Schwelle heben");
+  plus.title = `Auf ${cur + 5} % heben — nur diese Session`;
+  plus.disabled = busy || locked || cur + 5 > 95;
+  plus.onclick = () => void writeHandover(c, { thresholdPct: cur + 5 });
+  if (locked) minus.title = plus.title = "Hier wirkt keine Schwelle — der Grund steht darunter";
+  step.append(minus, val, plus);
+  const thV: (Node | string)[] = [step];
+  if (sc.pctFrom === "session" && !locked) {
+    const back = el("button", "lk", `zurück auf ${sc.defaultPct} %`) as HTMLButtonElement;
+    back.type = "button";
+    back.title = "Die Schwelle der Fleet für diese Session wieder übernehmen";
+    back.disabled = busy;
+    back.onclick = () => void writeHandover(c, { thresholdPct: null });
+    thV.push(back);
+  }
+  rows.push(row("Übergabe bei", thV, sc.thresholdOff && sc.thresholdOff !== "rail"
+    ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
+    : sc.pctFrom === "session" ? `Ab hier soll sie an eine frische Session weitergeben. Nur für diese Session — die Fleet steht auf ${sc.defaultPct} %.`
+    : `Ab hier soll sie an eine frische Session weitergeben. Die Fleet-Schwelle für ${sc.rail === "lane" ? "alle Lanes" : "alle Sessions dieser Art"} — hier nur für diese änderbar.`));
+  const seg = el("span", "seg");
+  for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
+    const b = el("button", sc.nudgeOn === on ? "on" : "", word) as HTMLButtonElement;
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(sc.nudgeOn === on));
+    b.disabled = busy || locked;
+    b.title = on ? "Fleet schreibt dieser Session bei der Schwelle einen Hinweis" : "Fleet schreibt dieser Session keinen Hinweis — sie gibt nur weiter, wenn sie selbst entscheidet";
+    b.onclick = () => { if (sc.nudgeOn !== on) void writeHandover(c, { nudge: on }); };
+    seg.appendChild(b);
+  }
+  const given = sc.gaveUp ? `Aufgehört nach ${sc.nudges}.` : sc.nudges ? `Bisher ${sc.nudges}, zuletzt ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "zu unbekannter Zeit"}.` : "Bisher keiner.";
+  rows.push(row("Hinweis", [seg], `Fleet schreibt der Session bei der Schwelle einen Hinweis, höchstens ${sc.maxNudges}-mal. ${given}`));
+  const [way, wayH] = RAIL_WAY[sc.rail];
+  rows.push(row("Weg", [way], wayH));
+  rows.push(row("Diese Session", [sc.rail === "lane" ? `die ${sc.session}. dieser Lane` : `die ${sc.session}. dieser Linie`],
+    sc.cap !== null ? `${sc.taken ?? 0} von ${sc.cap} Übergaben genutzt — danach verlangt Fleet einen Bericht statt einer weiteren.`
+      : sc.taken !== null ? `${sc.taken} Übergaben genutzt, ohne Deckel.`
+      : sc.rail === "lane" ? "Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Deckel." : "Ohne Deckel — nur Lanes mit Aufgaben-Zeile haben einen."));
+  const err = ubErr.get(c.slot);
+  if (err) rows.push(el("div", "perr", `Nicht gespeichert — ${err}`));
+  return rows;
+}
+// GEHÖRT ZU — the order, the Program and the lane's file as links (they were chips with a frame)
+function belongsLinks(c: BoardCtx): HTMLElement[] {
+  const { s, brief } = c;
+  const out: HTMLElement[] = [];
+  const link = (label: string, title: string, run: () => void) => {
+    const b = el("button", "lk", label) as HTMLButtonElement;
+    b.type = "button";
+    b.title = title;
+    b.onclick = run;
+    out.push(b);
+  };
+  if (s.taskId) link(`Auftrag ${s.taskId.slice(0, 8)}`, `${s.taskHead || "der Auftrag, aus dem diese Session gestartet wurde"} — öffnet die Aufgabenansicht`, () => openQueue());
+  if (s.programId) {
+    const p = programsPoll.find((x) => x.id === s.programId);
+    link(`Program ${p?.title ? p.title.slice(0, 28) : s.programId.slice(0, 8)}`, `${p?.title ?? s.programId} — öffnet die Aufgabenansicht`, () => openQueue());
+  }
+  if (brief?.worktree) {
+    const branch = brief.worktree.branch;
+    link("Akte", "Diese Lane von Anfang bis Ende — ihr Auftrag, ihre Prompts, ihre Commits, ihr Land", () => void openAkte(branch));
+  }
+  return out;
+}
+
+// --- 3 CHANGES: the uncommitted tree, Commit, Land lane as THE action, Rebase only when behind, and
+// Shelve · Park for review · Undo last land behind the ⋯ beside it (G4.2, danger last)
+function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
+  const { s, slot, mg, ahead, behind } = c;
+  const work = el("div", "bsec bchanges");
+  work.appendChild(sectionHead("Changes", "session"));
+  // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges commit + land
+  // here — surface it as an explicit, fixable state, not a silent refusal
+  if (brief.gitOp) {
+    work.appendChild(el("div", "bgitop",
+      "⚠ a git merge/rebase is in progress — finish or abort it in this session's terminal (git rebase --abort / git merge --abort), then retry. Commit & land are blocked until then."));
+  }
+  const running = !!mg?.running;
+  const crow = el("div", "bbtnrow bchangeacts");
+  if (brief.uncommitted) {
+    const wl = el("div", "bstate");
+    wl.appendChild(el("span", "editing", `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
+    if (ahead) wl.appendChild(document.createTextNode(` · ${ahead} commit${ahead === 1 ? "" : "s"} ready`));
+    work.appendChild(wl);
+    // the concrete uncommitted work — exactly what git status shows, with its codes, every file
+    // (the server caps the status read at 200 lines and says so below when it hit that cap)
+    if (brief.uncommittedFiles.length) {
+      const uf = el("div", "bunc");
+      for (const f of brief.uncommittedFiles) {
+        // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
+        const x = f[0] ?? " ", y = f[1] ?? " ";
+        const row = el("button", "buncf");
+        const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
+        const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
+        // untracked FIRST: porcelain sets both columns to '?', so every x/y test below matches it
+        badge.title = f.startsWith("??") ? "untracked"
+          : x !== " " && y !== " " ? "staged + unstaged changes"
+          : x !== " " ? "staged" : "unstaged changes";
+        row.appendChild(badge);
+        row.appendChild(el("span", "p", f.slice(3)));
+        // a row opens the review window ON its file; an UNTRACKED file has no diff, so the file itself
+        const upath = porcelainPath(f);
+        const untracked = f.startsWith("??");
+        row.title = untracked ? `${f} — click to read it (untracked: there is no diff yet)`
+          : `${f} — click to see what changed in this file`;
+        row.onclick = () => void openReview(slot, "working",
+          untracked ? { k: "untracked", path: upath } : { k: "file", path: upath });
+        uf.appendChild(row);
+      }
+      // "everything you changed" and "the first 200" are different claims
+      if (brief.uncommitted > brief.uncommittedFiles.length)
+        uf.appendChild(el("div", "bempty",
+          `… ${brief.uncommitted - brief.uncommittedFiles.length} more — the server reads at most 200 status lines`));
+      work.appendChild(uf);
+    }
+    const busy = commitBusy.get(slot);
+    if (brief.worktree) {
+      // ONE commit here — the safety net: an instant wip commit so a kill can't lose the work (saved
+      // locally, never pushed or landed, reversible with git reset); land commits-if-dirty itself
+      const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
+      q.disabled = !!busy; // also disabled mid-land, while doLand's commit-if-dirty runs (busy === "agent")
+      q.title = "commit all uncommitted work now so a kill can't lose it — saved locally, never pushed or landed (undo with git reset)";
+      q.onclick = () => void doCommit(slot, "quick");
+      crow.append(q);
+    } else {
+      // main (non-lane) session: commit TRACKED changes (add -u) with a staging preview, so the owner
+      // sees exactly what lands on a branch they ship and that untracked files are left alone
+      const files = brief.uncommittedFiles;
+      const q = el("button", "bbtn", busy === "quick" ? "Committing…" : "Commit") as HTMLButtonElement;
+      q.disabled = !!busy;
+      q.title = "stage & commit tracked changes only (git add -u); untracked files left alone — undo with git reset. Shows a preview first.";
+      q.onclick = () => void doCommitMain(slot, "quick", files);
+      const a = el("button", "bbtn quiet", busy === "agent" ? "Writing message…" : "Commit with written message") as HTMLButtonElement;
+      a.disabled = !!busy;
+      a.title = "same commit, but a short-lived agent writes a conventional-commit message from the staged diff first";
+      a.onclick = () => void doCommitMain(slot, "agent", files);
+      crow.append(q, a);
+    }
+  } else if (running && brief.worktree) {
+    work.appendChild(el("div", "bstate", `Nichts ungesichert · ${ahead} commit${ahead === 1 ? "" : "s"} werden gelandet`));
+  } else if (ahead) {
+    work.appendChild(el("div", "bstate", `Nichts ungesichert · ${ahead} commit${ahead === 1 ? "" : "s"} ready${brief.worktree ? "" : " to push"}`));
+  } else {
+    work.appendChild(el("div", "hint bnote", "Nothing uncommitted, nothing ahead."));
+    if (!brief.worktree) {
+      const db = el("button", "bbtn quiet", "View diff") as HTMLButtonElement;
+      db.onclick = () => void openDiff(slot);
+      crow.appendChild(db);
+    }
+  }
+  // BEHIND — and, on a lane, the one action that fixes it. The button carries the number, so there is
+  // never a count without a way to act on it and never an action without its reason (owner 2026-09-20)
+  const baseName_ = brief.laneBase ?? "main";
+  let rebaseBtn: HTMLButtonElement | null = null;
+  if (behind && brief.laneScoped) {
+    if (brief.worktree) {
+      rebaseBtn = el("button", "bbtn quiet", rebaseBusy.has(slot) ? "Rebasing…" : `Rebase — ${behind} behind ${baseName_}`) as HTMLButtonElement;
+      rebaseBtn.disabled = rebaseBusy.has(slot);
+      rebaseBtn.title = `replay this lane's commits on top of ${baseName_}. It ONLY rebases: it does not verify `
+        + "and it does not land, and on a conflict it aborts and leaves the lane exactly as it is.";
+      rebaseBtn.onclick = () => void doRebase(slot);
+    } else {
+      work.appendChild(el("div", "hint bnote", `${behind} commit${behind === 1 ? "" : "s"} behind ${baseName_}`));
+    }
+  }
+  // …and what the last rebase did, which outlives the count it removed
+  const rbNote = ((): HTMLElement | null => {
+    const note = rebaseNote.get(slot);
+    if (!note) return null;
+    if (Date.now() - note.at > REBASE_NOTE_MS) { rebaseNote.delete(slot); return null; }
+    const n = el("div", note.ok ? "hint bnote ready" : "bstate rbfail", note.text);
+    if (note.files?.length) {
+      const list = el("div", "bunc");
+      for (const f of note.files) list.appendChild(el("div", "bfile", f));
+      n.appendChild(list);
+    }
+    return n;
+  })();
+  if (!brief.worktree) {
+    if (crow.childElementCount) work.appendChild(crow);
+    if (rbNote) work.appendChild(rbNote);
+    return work;
+  }
+  // THE LANE'S ENDGAME: one land verb on screen at a time. Normally it IS the land; in the review
+  // state the note owns "Land", so this becomes "Re-run merge" — never a second competing land
+  // button. On a follower fleet (FLEET_LANDS=0) the verb is ABSENT, not greyed: the server's 409 is
+  // the guarantee, this is the board declining to offer a gesture it knows is refused.
+  const l = !running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
+  // an INTERRUPTED run that had already handed the conflicts to the agent needs the same eye as a
+  // settled "resolved" verdict (server.ts, needsMergeReview)
+  const awaitingReview = l?.status === "resolved" || (l?.status === "interrupted" && (l.conflicted?.length ?? 0) > 0);
+  if (landsEnabled) {
+    const lb = el("button", "bbtn" + (ahead && !running && !awaitingReview ? " primary" : ""),
+      running ? "Landing…" : awaitingReview ? "Re-run merge" : "Land lane") as HTMLButtonElement;
+    lb.disabled = running;
+    lb.title = awaitingReview
+      ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
+      : `Die Lane auf ${baseName_} landen — vorher wird sie geprüft. Bereits gemergte Lanes landen sofort; bei Konflikten löst ein Agent im Hintergrund und wartet auf dein Review, bevor etwas ${baseName_} erreicht.`;
+    lb.onclick = () => void doLand(slot);
+    crow.appendChild(lb);
+  }
+  // ⋯ — the rarer exits of a lane: set aside with a note, park for a later review, and undo the
+  // repo's last land (danger, last). Shelve stays reachable on a follower fleet too.
+  const more = el("button", "bib bland") as HTMLButtonElement;
+  more.appendChild(icon("dots"));
+  more.title = "Weitere Lane-Aktionen — zurückstellen, zur Prüfung parken, letztes Land zurücknehmen";
+  more.setAttribute("aria-label", "Weitere Lane-Aktionen");
+  more.disabled = running;
+  crow.appendChild(popTrigger("land", slot, more));
+  if (rebaseBtn) crow.appendChild(rebaseBtn);
+  if (!landsEnabled) crow.appendChild(el("div", "bmergedetail",
+    "this fleet follows a canonical main and does not land — land this branch on the canonical host"));
+  if (!running && boardPop?.kind === "land" && boardPop.slot === slot) {
+    const items: HTMLElement[] = [
+      popItem("Shelve", "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed",
+        () => { boardPop = null; void doShelve(slot); }, "mit Notiz beiseite"),
+      popItem("Park for review", "park this finished lane for a later review — frees the slot, keeps worktree, task ids, head, base and the accepted report; the tasks do not start again, reopening binds them back (verify then counts as stale)",
+        () => { boardPop = null; void doShelve(slot, true); }, "Slot frei, später prüfen"),
+    ];
+    // undo — only when the server still holds an undoable land for THIS repo (main not moved since,
+    // not pushed). Reverses the one action that mutates main.
+    if (mg?.undoable && brief.worktree.repo) {
+      const repo = brief.worktree.repo;
+      const landedBranch = mg.undoable.branch;
+      items.push(el("div", "sep"), popItem(`Undo last land (${laneNameOfBranch(landedBranch)})`,
+        "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way",
+        () => { boardPop = null; void doUndoLand(repo, landedBranch); }, "", true));
+    }
+    crow.append(...popPanel("land", items));
+  }
+  work.appendChild(crow);
+  if (running) {
+    // while it lands: how far, against the usual duration of this kind of check where one exists
+    const { ball } = landStep(slot);
+    const note = el("div", "landnote");
+    note.appendChild(el("span", "dot live"));
+    const since = ball && ball.at > 0 ? mmss(serverClock() - ball.at) : null;
+    note.appendChild(document.createTextNode(!ball ? "Land läuft — die Prüfung hat noch nicht begonnen"
+      : ball.station === "wait" ? `wartet auf die Prüfung${since ? ` · ${since}` : ""}`
+      : `wird geprüft${since ? ` · ${since}` : ""}${ball.expect ? ` von üblich ${mmss(ball.expect.p50)}` : ""}`));
+    work.appendChild(note);
+  }
+  if (awaitingReview && l) {
+    // the agent resolved conflicts and the server verified the rebase — the owner reviews the diff
+    // and lands. This is the one place a human eye is required.
+    const n = l.conflicted?.length ?? 0;
+    const note = el("div", "bmergenote review");
+    const hd = el("div", "bmergehd", l.status === "interrupted"
+      ? `merge INTERRUPTED while resolving${n ? ` ${n} file${n === 1 ? "" : "s"}` : ""} — no verdict was ever recorded; review, then land `
+      : `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land `);
+    hd.appendChild(verifyBadge(l.verify));
+    note.appendChild(hd);
+    if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
+    note.appendChild(el("div", "bmergedetail", l.detail));
+    const acts = el("div", "bmergeacts");
+    const rev = el("button", "bmergereview", "Review diff") as HTMLButtonElement;
+    rev.onclick = () => void openMergeDiff(slot);
+    acts.append(rev);
+    // reviewing a carried-over verdict stays available on a follower; confirming it does not
+    if (landsEnabled) {
+      const landb = el("button", "bmergeland", "Land") as HTMLButtonElement;
+      landb.onclick = () => void doMergeLand(slot);
+      acts.append(landb);
+    }
+    note.appendChild(acts);
+    work.appendChild(note);
+  } else if (l && failedLandVerdict(l)) {
+    const note = el("details", `bmergenote ${l.status === "blocked" ? "warn" : "err"} landalarm`);
+    const alarmKey = `${l.branch}:${l.at}`;
+    (note as HTMLDetailsElement).open = landAlarmOpens.has(alarmKey);
+    note.addEventListener("toggle", () => {
+      if ((note as HTMLDetailsElement).open) landAlarmOpens.add(alarmKey);
+      else landAlarmOpens.delete(alarmKey);
+    });
+    const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
+    note.appendChild(el("summary", "", `${kind} · ${laneNameOfBranch(l.branch)}`));
+    note.appendChild(el("div", "bmergedetail", l.detail));
+    note.appendChild(verifyBadge(l.verify));
+    work.appendChild(note);
+  } else if (l) {
+    // "awaiting-author" is a WAIT, not a failure: the lane's own session is resolving its own conflict
+    const cls = (l.status === "merged" && l.landed) || l.status === "awaiting-author" ? "ok"
+      : l.status === "blocked" ? "warn" : "err";
+    const vn = el("div", `bmergenote ${cls}`,
+      `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed")
+        : l.status === "awaiting-author" ? "the lane's own session is resolving this conflict" : l.status}: ${l.detail} `);
+    vn.appendChild(verifyBadge(l.verify));
+    work.appendChild(vn);
+  }
+  if (rbNote) work.appendChild(rbNote);
+  return work;
+}
+
+// --- 5 HISTORY: the three newest commits; one button opens the full list as before — every commit
+// the brief carries, the files they touched, and the base's own history folded (R2)
+export const HISTORY_SHOWN = 3;
+function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
+  const { s, slot, ahead } = c;
+  // Both lists are CLICKABLE, and each opens the lens whose route can serve it: a lane commit the
+  // slot's own commit-diff, a REPO commit the Commits lens (measured 2026-08-20: the slot route
+  // answers 404 for a commit outside base..HEAD). A <button>, so Enter/Space and focus come with it.
+  const commitRow = (cm: BriefCommit, where: "session" | "repo") => {
+    const row = el("button", "brow") as HTMLButtonElement;
+    row.appendChild(el("span", "bhash", cm.hash));
+    const sub = el("span", "bsub", cm.subject);
+    sub.title = cm.subject; // the row is one line wide; a long subject is only readable on hover
+    row.appendChild(sub);
+    row.title = where === "session"
+      ? `${cm.hash} — open this commit's diff and file list`
+      : `${cm.hash} — open this commit in the repo's Commits lens (it is not this session's own commit)`;
+    row.onclick = where === "session"
+      ? () => void openReview(slot, "working", { k: "commit", hash: cm.hash })
+      : () => void openActivity("commits", { repo: repoOfSlot(s, brief), hash: cm.hash });
+    return row;
+  };
+  const csec = el("div", "bsec bhist");
+  csec.appendChild(sectionHead("History", "repo"));
+  const base = brief.laneBase ?? "main";
+  const all = boardFolds.has("history");
+  if (!brief.commits.length) csec.appendChild(el("div", "bempty",
+    brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
+  for (const cm of all ? brief.commits : brief.commits.slice(0, HISTORY_SHOWN)) csec.appendChild(commitRow(cm, "session"));
+  const total = brief.laneScoped ? Math.max(ahead, brief.commits.length) : brief.commits.length;
+  const more = total > HISTORY_SHOWN || brief.files.length > 0 || brief.repoCommits.length > 0;
+  if (all) {
+    // a list that stops at its cap must say so — for a lane the true total is `ahead`, and a
+    // time-scoped session has no total, so there the cap itself is the honest sentence
+    if (brief.laneScoped && ahead > brief.commits.length)
+      csec.appendChild(el("div", "bempty",
+        `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest ${brief.commitsCap}`));
+    else if (!brief.laneScoped && brief.commits.length >= brief.commitsCap)
+      csec.appendChild(el("div", "bempty", `the newest ${brief.commitsCap} — this session may have made more`));
+    // FILES: the committed footprint — what this lane/session changes vs its base, uncut
+    if (brief.files.length) {
+      const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${base}` : "Changed files");
+      if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
+      csec.appendChild(fh);
+      for (const f of brief.files) {
+        const row = el("button", "bfile");
+        row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
+        row.appendChild(document.createTextNode(f.slice(3)));
+        const path = porcelainPath(f);
+        row.title = `${f} — click to see what changed in this file`;
+        row.onclick = () => void openReview(slot, "working", { k: "file", path });
+        csec.appendChild(row);
+      }
+      if (brief.filesTotal > brief.files.length)
+        csec.appendChild(el("div", "bempty", `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
+    }
+    if (brief.repoCommits.length)
+      csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
+        String(brief.repoCommits.length), (box) => { for (const cm of brief.repoCommits) box.appendChild(commitRow(cm, "repo")); }));
+  }
+  if (more || all) {
+    const files = brief.filesTotal || brief.files.length;
+    const label = all ? "Weniger zeigen"
+      : [`Alle ${total} ${total === 1 ? "Commit" : "Commits"}`, files ? `${files} ${files === 1 ? "Datei" : "Dateien"}`
+        : brief.repoCommits.length ? (brief.laneScoped ? `Already in ${base}` : "Earlier in this repo") : ""].filter(Boolean).join(" · ");
+    const b = el("button", "bbtn quiet bmorebtn", label) as HTMLButtonElement;
+    b.type = "button";
+    b.setAttribute("aria-expanded", String(all));
+    b.title = all ? "Zurück auf die drei neuesten Commits" : "Die ganze History: jeder Commit, die geänderten Dateien und was schon in der Basis liegt";
+    b.onclick = () => { toggleFold("history"); void renderBoard(); };
+    csec.appendChild(b);
+  }
+  return csec;
+}
+function toggleFold(key: string): void {
+  if (boardFolds.has(key)) boardFolds.delete(key); else boardFolds.add(key);
+  prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
+}
+
+// --- 6 MORE ABOUT THIS SESSION: four tabs, closed, each a line with its summary (G3.2); open shows the
+// former block unchanged. Which is open is a device preference (fleet.board.folds, src/prefs.ts).
+function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElement) => void, extra?: HTMLElement): HTMLElement {
+  const open = boardFolds.has(key);
+  const box = el("div", `btab${open ? " open" : ""}`);
+  box.dataset.tab = key;
+  const hd = el("div", "btabhd");
+  const b = el("button", "btabbtn") as HTMLButtonElement;
+  b.type = "button";
+  b.setAttribute("aria-expanded", String(open));
+  const chev = icon("chevron");
+  chev.classList.add("chev");
+  b.append(chev, el("span", "tt", title), el("span", "sum", sum));
+  b.title = `${title} — ${open ? "zuklappen" : "aufklappen"}`;
+  b.onclick = () => { toggleFold(key); void renderBoard(); };
+  hd.appendChild(b);
+  if (extra) hd.appendChild(extra);
+  box.appendChild(hd);
+  // a closed tab builds nothing: its body is only filled (and its data only fetched) when open
+  if (open) {
+    const body = el("div", "btabbody");
+    fill(body);
+    box.appendChild(body);
+  }
+  return box;
+}
+// the rights summary needs the grant, which only the rights block reads; this asks the same owner
+// route at most every 15 s per occupant, riding the repaint (no loop), and says "unbekannt" when it
+// could not read — never "keine" (G6.5)
+const grantSum = new Map<number, { openedAt: number | undefined; at: number; text: string }>();
+const grantBusy = new Set<number>();
+function grantSummary(s: SlotInfo): string {
+  const g = grantSum.get(s.id);
+  const fresh = g && g.openedAt === s.openedAt;
+  if ((!fresh || Date.now() - g.at > 15_000) && !grantBusy.has(s.id)) {
+    grantBusy.add(s.id);
+    const openedAt = s.openedAt;
+    void api(`/api/slots/${s.id}/memory-grant`).then(async (r) => {
+      const j = (await r.json().catch(() => null)) as { grant?: { projectKeys?: unknown[] } | null; inForce?: boolean } | null;
+      const n = r.ok && j?.inForce && Array.isArray(j.grant?.projectKeys) ? j.grant.projectKeys.length : 0;
+      grantSum.set(s.id, { openedAt, at: Date.now(), text: !r.ok || !j ? "Projektsichten unbekannt"
+        : n ? `${n} ${n === 1 ? "Projektsicht" : "Projektsichten"}` : "keine Projektsichten" });
+    }).catch(() => { grantSum.set(s.id, { openedAt, at: Date.now(), text: "Projektsichten unbekannt" }); })
+      .finally(() => { grantBusy.delete(s.id); if (!fresh) void renderBoard(); });
+  }
+  return fresh ? g.text : "Projektsichten …";
+}
+function rightsSummary(s: SlotInfo): string {
+  const program = s.programId ? programsPoll.find((x) => x.id === s.programId) : undefined;
+  const own = s.worktree ? (s.taskId ? "eigener Auftrag" : "kein Auftrag")
+    : s.programId ? `Program ${program?.title ? program.title.slice(0, 20) : s.programId.slice(0, 8)}` : "keine eigene Arbeit";
+  return `${own} · ${s.worktree ? "keine Projektsichten" : grantSummary(s)}`;
+}
+function moreSection(c: BoardCtx): HTMLElement {
+  const { s, slot, brief, facts, prompts, outlineErr } = c;
+  const sec = el("div", "bsec bmoresec");
+  sec.appendChild(sectionHead("Mehr zu dieser Session", "session"));
+  const setup = facts?.setup;
+  const packs = setup?.packs ?? [];
+  const setupSum = [setup?.profile ?? "standard", packs.length ? `${packs.length} ${packs.length === 1 ? "Pack" : "Packs"}` : "",
+    s.browser ? "Browser" : "", s.container ? "Container" : ""].filter(Boolean).join(" · ");
+  sec.appendChild(boardTab("setup", "Setup", setupSum, (body) => setupBody(c, body)));
+  sec.appendChild(boardTab("rechte", "Rechte", rightsSummary(s), (body) => {
+    // the rights block unchanged (src/rights.ts#rightsSection) — its own head is this tab's
+    const r = rightsSection(s);
+    r.querySelector(":scope > h3")?.remove();
+    body.appendChild(r);
+  }));
+  // FILES: drawn where there is a branch (the tree is `git ls-files`). The explorer opens from the
+  // tab's glyph without opening the tab; the tree loads once per working directory (the latch).
+  if (brief?.branch) {
+    fxGit.set(s.cwd!, { lines: brief.uncommittedFiles, total: brief.uncommitted, branch: brief.branch });
+    const cwd = s.cwd!;
+    const known = fxTree.get(cwd);
+    if (!known && !fxAsked.has(cwd)) { fxAsked.add(cwd); void loadTree(slot, cwd); }
+    const ex = glyphBtn("folder", "Explorer öffnen", "Den Explorer öffnen — ohne Aufklappen", () => openExplorer(slot, cwd));
+    ex.classList.add("btabx");
+    const sum = !known ? "wird gelesen…" : "error" in known ? "nicht lesbar" : `${known.total} ${known.total === 1 ? "Datei" : "Dateien"}`;
+    sec.appendChild(boardTab("files", "Files", sum, (body) => {
+      const fx = fileTreeSection(slot, cwd);
+      body.append(...fx.childNodes);
+    }, ex));
+  }
+  sec.appendChild(boardTab("prompts", "Your prompts", outlineErr ? "nicht lesbar" : String(prompts.length), (psec) => {
+    if (outlineErr) psec.appendChild(el("div", "bstate", `The transcript could not be read — ${outlineErr}.`));
+    else if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
+    prompts.forEach((p, i) => {
+      const row = el("button", "bprompt");
+      row.appendChild(el("span", "bn", String(i + 1)));
+      const t = el("span", "bt", p);
+      t.title = p;
+      row.appendChild(t);
+      row.onclick = () => panes[focused]?.showPromptAt(i);
+      psec.appendChild(row);
+    });
+  }));
+  return sec;
+}
+// SETUP, unchanged inside its tab: what this session is MADE of (owner 2026-09-19: „[Zitat entfernt]“
+// )
+function setupBody(c: BoardCtx, su: HTMLElement): void {
+  const { s, slot, facts } = c;
+  su.classList.add("bsetup");
+  const row = (label: string, value: string, title?: string) => {
+    const r = el("div", "bsrow");
+    r.appendChild(el("span", "bskey", label));
+    r.appendChild(el("span", "bsval", value));
+    if (title) r.title = title;
+    su.appendChild(r);
+  };
+  const setup = facts?.setup;
+  // "Program type" since the founding window (F4): "Profile" is the founding choice there, the
+  // machine profile of the PROGRAM needed a name that cannot be read as it. Absence IS standard.
+  row("Program type", setup?.profile ?? "standard",
+    setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
+      : setup?.profile === "standard" ? "this session's program runs on the standard profile"
+      : "standard by default — this session has no program bracket to grant another profile");
+  if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
+  if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,
+    "the box and docker context this session's agent runs in");
+  // THE PACKS, and where they come from: a receipt is what this pane actually received; the
+  // program's declaration is the weaker answer and says so rather than passing for delivery
+  const packs = setup?.packs ?? [];
+  if (packs.length) {
+    const r = el("div", "bsrow bspacks");
+    r.appendChild(el("span", "bskey", "Packs"));
+    const list = el("span", "bsval");
+    // every chip OPENS the pack — its pointers in full, and from there the source file itself
+    for (const p of packs) {
+      const chip = el("button", "bspack", p.id) as HTMLButtonElement;
+      chip.title = [p.useWhen, p.privateSourceId ? "a private pack — its source is outside this repo"
+        : `${(p.sources ?? []).length} source${(p.sources ?? []).length === 1 ? "" : "s"} — click to open them`]
+        .filter(Boolean).join(" — ");
+      if (setup) chip.onclick = () => openPacks(setup, p.id);
+      list.appendChild(chip);
+    }
+    r.appendChild(list);
+    su.appendChild(r);
+    const from = setup?.packsFrom === "receipt"
+      ? `delivered with the founding brief${setup.deliveredAt ? ` ${gateAge(Date.now() - setup.deliveredAt)} ago` : ""}`
+        + `${setup.deliveredBytes ? `, ${Math.round(setup.deliveredBytes / 1024)} KB` : ""}`
+      : "declared by this session's program — not proof that this pane received them";
+    const note = el("div", "bsnote", from);
+    if (setup?.omitted.length) note.textContent += ` · ${setup.omitted.length} omitted`;
+    if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
+    su.appendChild(note);
+    // E34 (docs/design/datenrechte-notiz.md): a pack is a pointer, never a right
+    su.appendChild(el("div", "bsnote", "Packs zeigen ihr, wo sie nachlesen soll. Ein Recht geben sie nicht."));
+  }
+  const since = facts?.sessionStart ?? s.openedAt ?? null;
+  const foot: string[] = [];
+  if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
+  if (s.inbound) foot.push(`${s.inbound.sends} send${s.inbound.sends === 1 ? "" : "s"} today`);
+  const mine = autosList.filter((a) => a.slot === slot && a.enabled).length;
+  if (mine) foot.push(`${mine} check-in${mine === 1 ? "" : "s"} armed`);
+  if (foot.length) {
+    const f = el("div", "bsnote", foot.join(" · "));
+    f.title = "how long this occupant has held the slot, what Fleet typed into it today, and its own scheduled prompts";
+    su.appendChild(f);
   }
 }
 
@@ -2299,18 +2498,89 @@ export function loadWorkplaces(force = false): void {
     .finally(() => { workplacesBusy = false; void renderBoard(); });
 }
 
-// what the name column shows: the lane's name, its branch, or the commit its worktree stands on
+// THE WORKTREE FIELD (card e66909b1; docs/design/ranke-notiz.md §1, rechter-tab-notiz.md §3b): where
+// the focused session works, said in one line at the right end of the tray — the Ranke's figure,
+// the address the session list gives it, the lane's NAME (owner 2026-10-04: never a hex tail) and,
+// while one runs, its test instance as the same green square the Ranke draws. A click shows that
+// worktree in Info and marks it there. On the phone the field fills the island's named empty place
+// "Arbeitsort" (#mort). Everything here is the poll's row plus the last Arbeitsorte read — no
+// request of its own. It lives beside the Arbeitsorte it reads (moved out of src/composer.ts).
+let wtFieldKey = "";
+export function renderWorkplaceField(): void {
+  const slot = panes[focused]?.slot ?? 0;
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  const repo = s?.cwd ? (s.worktree?.repo ?? s.repo ?? s.cwd) : null;
+  // the worktree's row in the last Arbeitsorte read — looked up again at the click, since the read
+  // may arrive after the field was drawn
+  const rowNow = () => {
+    const rows = repo ? workplaces?.repos.find((r) => r.repo === repo)?.worktrees ?? null : null;
+    return s && rows ? rows.find((w) => w.session?.slot === s.id) ?? (s.worktree ? null : rows.find((w) => w.primary) ?? null) : null;
+  };
+  const row = rowNow();
+  const up = row?.testinstanz?.state === "up";
+  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(s.id) : undefined;
+  const addr = !s?.cwd || !s.git ? null : lane ?? "main";
+  const name = !s?.cwd ? "" : s.worktree ? laneLabel(s) : baseName(repo ?? s.cwd);
+  const key = [addr, name, up, row?.path ?? "", s?.worktree?.branch ?? "", isMobile()].join("|");
+  if (key === wtFieldKey && document.getElementById("compwt")) return;
+  wtFieldKey = key;
+  const build = (id: string): HTMLButtonElement | null => {
+    if (!addr || !s) return null;
+    const b = el("button", "wtfield") as HTMLButtonElement;
+    b.id = id;
+    b.type = "button";
+    b.append(icon("ranke"), el("span", "wtref", addr), el("span", "wtname", name));
+    if (up) b.appendChild(el("span", "wtsq"));
+    const branch = s.worktree?.branch ?? null;
+    b.title = `${s.worktree ? `Lane ${addr} · ${name} auf ${branch}` : `Haupt-Checkout von ${baseName(repo ?? "")}`}`
+      + `${up ? " · Testinstanz läuft" : ""} — Klick zeigt diesen Arbeitsort in Info`;
+    b.setAttribute("aria-label", b.title);
+    b.onclick = () => {
+      if (!boardOpen) setBoard(true);
+      flashWorkplace(rowNow()?.path ?? null);
+    };
+    return b;
+  };
+  compTray.querySelector("#compwt")?.remove();
+  const desk = build("compwt");
+  if (desk) compTray.appendChild(desk);
+  const mort = document.getElementById("mort");
+  if (mort) {
+    const phone = build("mortwt");
+    mort.replaceChildren(...(phone ? [phone] : []));
+  }
+}
+
+// what the name column shows: the lane's name, its branch, or the commit its worktree stands on —
+// a device preference (fleet.ranke.mode, src/prefs.ts), so a reload keeps the owner's choice
 type RankeMode = "name" | "branch" | "stand";
-let rankeMode: RankeMode = "name";
-const RANKE_MODES: { mode: RankeMode; word: string; title: string }[] = [
-  { mode: "name", word: "Name", title: "Die Namen der Lanes zeigen" },
-  { mode: "branch", word: "Branch", title: "Statt der Namen die Branches zeigen — eine Zeile je Zweig bleibt" },
-  { mode: "stand", word: "Stand", title: "Statt der Namen den Commit zeigen, auf dem jeder Worktree steht, und wie weit er von seinem Ziel weg ist" },
+const RANKE_MODES: { mode: RankeMode; word: string; glyph: IconName; title: string }[] = [
+  { mode: "name", word: "Name", glyph: "label", title: "Die Namen der Lanes zeigen" },
+  { mode: "branch", word: "Branch", glyph: "branch", title: "Statt der Namen die Branches zeigen — eine Zeile je Zweig bleibt" },
+  { mode: "stand", word: "Stand", glyph: "commit", title: "Statt der Namen den Commit zeigen, auf dem jeder Worktree steht, und wie weit er von seinem Ziel weg ist" },
 ];
-// repos whose open/closed default (open = the focused session's repo) the owner flipped, and repos
-// whose worktrees without a session are unfolded — module state, so the repaint keeps them
-const rankeRepoFlip = new Set<string>();
+const rankeModeOf = (v: string): RankeMode => (v === "branch" || v === "stand" ? v : "name");
+let rankeMode: RankeMode = rankeModeOf(prefText("fleet.ranke.mode"));
+// which repo the owner opened or closed by hand (the default: the focused session's repo open, the
+// others closed) — a device preference too (fleet.ranke.repos), so the folding survives a reload.
+// The unfolded worktrees without a session stay module state: they are a look, not a choice.
+const rankeRepos: Map<string, boolean> = (() => {
+  const v = prefJSON<unknown>("fleet.ranke.repos");
+  const m = new Map<string, boolean>();
+  if (v && typeof v === "object" && !Array.isArray(v))
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (typeof x === "boolean") m.set(k, x);
+  return m;
+})(); // a hand-edited or foreign value is "nothing chosen", not a crash
 const rankeFoldOpen = new Set<string>();
+// the settings window resets the two (src/client.ts#PREF_APPLY): read them again and repaint
+export function reloadRankePrefs(): void {
+  rankeMode = rankeModeOf(prefText("fleet.ranke.mode"));
+  rankeRepos.clear();
+  const v = prefJSON<unknown>("fleet.ranke.repos");
+  if (v && typeof v === "object" && !Array.isArray(v))
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (typeof x === "boolean") rankeRepos.set(k, x);
+  void renderBoard();
+}
 // ONE open line under a row: `wt:<path>` (a worktree without a session) or `ti:<path>` (its test instance)
 let rankeOpen: string | null = null;
 let rankeFlash: { path: string; until: number } | null = null;
@@ -2749,21 +3019,27 @@ function rowCells(row: HTMLElement, node: string, ref: string, hue: number, name
 export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null): HTMLElement {
   loadWorkplaces();
   const sec = el("div", "bsec ranke");
-  const hd = boardHead("Arbeitsorte", "fleet");
+  const hd = sectionHead("Arbeitsorte", "fleet");
+  // the head's right end: the name column's switch as three glyphs, and the checks strip (R4)
+  const act = el("span", "act");
   const seg = el("span", "rkseg");
   seg.setAttribute("role", "group");
   seg.setAttribute("aria-label", "Die Namensspalte zeigt");
   for (const m of RANKE_MODES) {
-    const b = el("button", m.mode === rankeMode ? "on" : "", m.word) as HTMLButtonElement;
+    const b = el("button", m.mode === rankeMode ? "on" : "") as HTMLButtonElement;
     b.type = "button";
+    b.appendChild(icon(m.glyph));
     b.title = m.title;
     b.dataset.mode = m.mode;
+    b.setAttribute("aria-label", m.word);
     b.setAttribute("aria-pressed", String(m.mode === rankeMode));
-    b.onclick = () => { rankeMode = m.mode; void renderBoard(); };
+    b.onclick = () => { rankeMode = m.mode; prefSet("fleet.ranke.mode", m.mode === "name" ? null : m.mode); void renderBoard(); };
     seg.appendChild(b);
   }
-  hd.appendChild(seg);
+  act.append(seg, meterButton(focusSlot === null));
+  hd.appendChild(act);
   sec.appendChild(hd);
+  if (meterOpen) sec.appendChild(meterPanel());
   const wp = workplaces;
   if (!wp) {
     sec.appendChild(el("div", "bempty", workplacesErr ? `Die Arbeitsorte konnten nicht gelesen werden — ${workplacesErr}.` : "lese die Arbeitsorte…"));
@@ -2786,7 +3062,28 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     // and carries the stand measured BEFORE the copy (instance.source), in the band's own words.
     here.appendChild(testInstanceStandRow(instanceSource));
   } else {
-    for (const st of lives) here.appendChild(standRow("Live", st));
+    // "deploy due" lives HERE now (§3, I3): it is the same statement as the Live row — does the running
+    // server carry the newest code — so a due restart renames the row in the wait colour (G0.2: amber
+    // means unmeasured, a due restart waits on you), and an outdated page bundle adds its own line
+    const restartDue = deployGapInfo?.codeBehind === true;
+    for (const st of lives) {
+      const row = standRow(restartDue || st.target?.codeBehind === true ? "Neustart fällig" : "Live", st);
+      if (restartDue || st.target?.codeBehind === true) {
+        row.classList.add("due");
+        row.title = `${row.title} — Der laufende Server bootet von einem älteren Commit, und der Unterschied berührt Server-Code: neu starten, dann läuft dieser Stand.`;
+      }
+      here.appendChild(row);
+    }
+    if (bundleStaleInfo?.stale === true) {
+      const row = el("div", "zr stand due");
+      row.dataset.kind = "bundle";
+      row.appendChild(el("span", "nd wait"));
+      const nm = el("span", "nm");
+      nm.append(el("b", "", "Seite neu bauen"), " · der Code im Browser ist älter als src/");
+      row.appendChild(nm);
+      row.title = "Der Browser zeigt einen älteren Stand — im Terminal `bun run build` ausführen, dann ist er aktuell (public/*.js sind Bauartefakte).";
+      here.appendChild(row);
+    }
     if (!lives.length && deployGapInfo) {
       // an older server without stands: the deploy gap alone, said as plainly
       const row = el("div", "zr stand");
@@ -2842,7 +3139,7 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const rows = R.worktrees ?? [];
   const primary = rows.find((w) => w.primary) ?? null;
   const lanes = rows.filter((w) => !w.primary);
-  const isOpen = (R.repo === focusRepo) !== rankeRepoFlip.has(R.repo);
+  const isOpen = rankeRepos.get(R.repo) ?? R.repo === focusRepo;
   const slotOf = (w: WorkplaceRow): SlotInfo | undefined => {
     if (!w.session) return undefined;
     const s = fleet[w.session.slot - 1];
@@ -2887,7 +3184,11 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   rt.appendChild(add);
   head.appendChild(rt);
   head.title = `${R.repo} — ${isOpen ? "zuklappen" : "aufklappen"}`;
-  rowTarget(head, () => { if (rankeRepoFlip.has(R.repo)) rankeRepoFlip.delete(R.repo); else rankeRepoFlip.add(R.repo); void renderBoard(); });
+  rowTarget(head, () => {
+    rankeRepos.set(R.repo, !isOpen);
+    prefSet("fleet.ranke.repos", JSON.stringify(Object.fromEntries(rankeRepos)));
+    void renderBoard();
+  });
   head.setAttribute("aria-expanded", String(isOpen));
   g.appendChild(head);
   if (!isOpen) return g;
@@ -3147,68 +3448,84 @@ export let plaCard: HTMLElement | null = null;
 // docs-only tip is audited by the short proportional chain, and calling that "the full suite"
 // would send the reader to the wrong log and the wrong repair.
 export function plaOwnerHeadline(a: PostLandAuditInfo, tone: "red" | "unknown"): string {
-  if (tone === "red") {
-    return a.proportional
-      ? "The check after landing failed — the docs-only chain (install + pins) is failing on main"
-      : "The check after landing failed — the full suite is failing on main";
-  }
-  if (a.remoteReason === "timeout") {
-    const s = a.remoteTimeoutMs ? ` after ${Math.round(a.remoteTimeoutMs / 1000)}s` : "";
-    return `The check after landing timed out${s} — it was killed on the helper, so no verdict exists for this land`;
-  }
-  if (a.remoteReason === "could-not-start")
-    return "The check after landing could not start — the suite never ran on the helper, so no verdict exists for this land";
-  return "The check after landing did not measure — no verdict exists for this land";
+  if (tone === "red") return "Der Check nach dem Land ist rot";
+  if (a.remoteReason === "timeout") return "Der Check nach dem Land wurde abgebrochen";
+  if (a.remoteReason === "could-not-start") return "Der Check nach dem Land konnte nicht starten";
+  return "Der Check nach dem Land hat nichts gemessen";
 }
-// the consequence under the headline: what this means for the reader, and the ways back out —
-// undo-land stays named as the lane's own button, so the sentence needs no ↩ glyph (G0.6).
+// the sentence under the headline: WHICH tip, after WHICH land, and what this means — red names the
+// short chain of a docs-only tip apart from the full one, unknown says why there is no verdict
+export function plaOwnerLine(a: PostLandAuditInfo, tone: "red" | "unknown"): string {
+  const tip = `${a.main ?? "main"}@${a.mainSha?.slice(0, 8) || "?"}`;
+  const after = a.covers?.length ? ` nach dem Land von ${a.covers.map((b) => laneNameOfBranch(b)).join(", ")}` : "";
+  if (tone === "red") return a.proportional
+    ? `${tip} ist${after} rot — die kurze Kette für reine Doku-Stände scheitert. Rücknehmen oder reparieren.`
+    : `${tip} ist${after} rot — die ganze Prüfung scheitert. Rücknehmen oder reparieren.`;
+  const s = a.remoteReason === "timeout" && a.remoteTimeoutMs ? ` nach ${Math.round(a.remoteTimeoutMs / 1000)} s` : "";
+  return a.remoteReason === "timeout" ? `Auf dem Helfer${s} beendet — für ${tip}${after} gibt es kein Urteil.`
+    : a.remoteReason === "could-not-start" ? `Sie lief auf dem Helfer nie an — für ${tip}${after} gibt es kein Urteil.`
+    : `Für ${tip}${after} gibt es kein Urteil.`;
+}
+// the consequence, opened by "Ansehen": what this means for the reader, and the ways back out
 export function plaOwnerNote(tone: "red" | "unknown"): string {
   return tone === "red"
-    ? "Nothing was blocked and nothing was rolled back. “Undo last land” (in a lane’s Lanes section) reverses the newest lands, one press per land, at most 3 deep — which of them broke it is still yours to find."
-    : "A check that did not run is not a pass. Nothing about this land has been measured.";
+    ? "Nichts wurde blockiert, nichts zurückgenommen. „Undo last land“ (im ⋯ neben Land lane einer Lane) nimmt die neuesten Lands zurück, eines je Druck, höchstens 3 tief — welches es kaputt gemacht hat, findest du selbst."
+    : "Ein Check, der nicht lief, ist kein Bestehen. An diesem Land ist nichts gemessen.";
 }
 
 // ONE BUILDER FOR BOTH SURFACES. Green is silent and an ack is keyed to THIS audit (PLA_ACK_KEY,
 // src/plaudit.ts — the module under test); the receipt card is what an ack leaves behind, and its
-// "show again" is the return path the dismissal never had (grammatik G5.1, card K7).
+// "show again" is the return path the dismissal never had (grammatik G5.1, card K7). The card is the
+// draft's (rechter-tab-notiz.md §4a `alarm`, G2.1): in the flow, tinted, a signal edge at the bottom —
+// the headline, one sentence, "Ansehen" for the detail and the log, "Gesehen" to acknowledge.
+let plaOpen = false;
 export function plaAlarmCard(): HTMLElement | null {
   const al = postLandAlarm(postLandAudit, prefNumber(PLA_ACK_KEY));
   if (!al) { plaCard = null; return null; }
   const a = postLandAudit!;
-  const sec = el("details", `plasec ${al.tone}`);
-  (sec as HTMLDetailsElement).open = plaCard instanceof HTMLDetailsElement && plaCard.open;
-  const kind = al.tone === "red" ? "Land-Nachprüfung fehlgeschlagen" : "Land-Nachprüfung ungemessen";
-  sec.appendChild(el("summary", "plasummary", `${kind} · ${a.main ?? "main"}@${a.mainSha?.slice(0, 8) || "?"}`));
-  const detail = el("div", "pladetail");
-  detail.appendChild(scopeTag("machine"));
-  detail.appendChild(el("div", "plahd", plaOwnerHeadline(a, al.tone)));
-  detail.appendChild(el("div", "plawhere", al.where));
-  detail.appendChild(el("div", "hint planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
-  // THE WHOLE LOG, when a remote helper handed one over. `out` on the row is a 4 KB tail, and for a
-  // RED audit the next question is always "which checks, and what was around them" — an answer that
-  // used to live only in a run directory the helper deletes in its own `finally`. Drawn only when
-  // the rail actually joined something in: no link is "no log arrived", never an empty page.
-  const art = a.artifact;
-  if (art) {
-    const line = el("div", "hint planote");
-    const lg = el("a", "plalog", `suite.log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
-    lg.href = art.url;
-    lg.target = "_blank";
-    lg.rel = "noopener";
-    lg.title = `The full suite log the helper uploaded after this verdict, ${art.bytes} bytes,`
-      + ` sha256 ${art.sha256.slice(0, 12)}…. It arrived AFTER the row was written and is joined in`
-      + ` from a side rail — nothing about it changed the result above.`;
-    line.appendChild(lg);
-    detail.appendChild(line);
-  }
-  const ack = el("button", "plaack", "Seen") as HTMLButtonElement;
-  ack.title = "blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder (intern: fleet.plaudit.ack).";
+  const sec = el("div", `plasec ${al.tone}`);
+  sec.appendChild(el("div", "plat", plaOwnerHeadline(a, al.tone)));
+  sec.appendChild(el("div", "plad", plaOwnerLine(a, al.tone)));
+  const acts = el("div", "plaacts");
+  const look = el("button", "plaack", plaOpen ? "Weniger" : "Ansehen") as HTMLButtonElement;
+  look.setAttribute("aria-expanded", String(plaOpen));
+  look.title = "Wo, wann, was jetzt — und das ganze Protokoll, wenn der Helfer eines hochgeladen hat";
+  look.onclick = () => { plaOpen = !plaOpen; renderPostLandAudit(); };
+  const ack = el("button", "plaack quiet", "Gesehen") as HTMLButtonElement;
+  ack.title = "Blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder.";
   ack.onclick = () => {
     prefSet(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
     renderPostLandAudit();
   };
-  detail.appendChild(ack);
-  sec.appendChild(detail);
+  acts.append(look, ack);
+  sec.appendChild(acts);
+  if (plaOpen) {
+    const detail = el("div", "pladetail");
+    // where, in owner words: which repo, which tip, after which lands (the classifier's own line,
+    // src/plaudit.ts#postLandAlarm, stays the hover — it names the full path)
+    const wh = el("div", "plawhere", [baseName(a.repo ?? "") || "Repo nicht aufgezeichnet", `${a.main ?? "main"}@${a.mainSha?.slice(0, 8) || "?"}`,
+      a.covers?.length ? `nach ${a.covers.map((b) => laneNameOfBranch(b)).join(", ")}` : "welches Land davor lag, ist nicht aufgezeichnet",
+      ...(a.reason ? [a.reason] : [])].join(" · "));
+    wh.title = al.where;
+    detail.appendChild(wh);
+    detail.appendChild(el("div", "hint planote", `${fmtTs(a.at)} · ${plaOwnerNote(al.tone)}`));
+    // THE WHOLE LOG, when a remote helper handed one over: `out` on the row is a 4 KB tail, and for
+    // a red check the next question is "which checks, and what was around them". No link is "no log
+    // arrived", never an empty page.
+    const art = a.artifact;
+    if (art) {
+      const line = el("div", "hint planote");
+      const lg = el("a", "plalog", `Protokoll · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
+      lg.href = art.url;
+      lg.target = "_blank";
+      lg.rel = "noopener";
+      lg.title = `Das ganze Protokoll, das der Helfer nach diesem Urteil hochgeladen hat, ${art.bytes} Bytes,`
+        + ` sha256 ${art.sha256.slice(0, 12)}…. Es kam NACH der Zeile und ist von der Seite her verbunden — am Ergebnis oben ändert es nichts.`;
+      line.appendChild(lg);
+      detail.appendChild(line);
+    }
+    sec.appendChild(detail);
+  }
   plaCard = sec;
   return sec;
 }
@@ -3220,10 +3537,9 @@ export function plaReceiptCard(): HTMLElement | null {
   if (!a || a.result === "green") return null;
   if (prefNumber(PLA_ACK_KEY) !== a.at) return null;
   const sec = el("div", "plasec seen");
-  sec.appendChild(scopeTag("machine"));
   sec.appendChild(el("div", "hint planote",
-    `the ${a.result === "red" ? "failed" : "unfinished"} check after the last land (${fmtTs(a.at)}) is marked seen`));
-  const back = el("button", "plaack", "show again") as HTMLButtonElement;
+    `Der ${a.result === "red" ? "rote" : "ungemessene"} Check nach dem letzten Land (${fmtTs(a.at)}) ist als gesehen markiert`));
+  const back = el("button", "plaack", "wieder zeigen") as HTMLButtonElement;
   back.title = "zeigt die Meldung wieder, die du als gesehen markiert hattest.";
   back.onclick = () => { prefSet(PLA_ACK_KEY, null); renderPostLandAudit(); };
   sec.appendChild(back);
@@ -3234,18 +3550,13 @@ export const plaBoardCard = (): HTMLElement | null => plaAlarmCard() ?? plaRecei
 
 export function renderPostLandAudit() {
   const bar = $("plaudit");
-  if (!isMobile()) void renderMobileAlarmHint();
-  if (isMobile()) {
-    bar.replaceChildren();
-    bar.style.display = "none";
-    void renderMobileAlarmHint();
-    return;
-  }
   bar.replaceChildren();
   bar.style.display = "none";
-  // DESKTOP: the alarm is a board section. Swap the card in place when the board has one — the
-  // alarm must not wait for the board's own repaint (it rides this 2s poll on purpose), and the
-  // board's repaint must not yank the reading position just for it.
+  // the phone's own sign is the dot at the island (hidden on the desktop); the card itself is a
+  // section of Info on both, swapped in place when Info has one — the alarm must not wait for the
+  // board's own repaint (it rides this 2s poll on purpose), and that repaint must not yank the
+  // reading position just for it
+  void renderMobileAlarmHint();
   const had = plaCard?.isConnected ? plaCard : null;
   const card = plaBoardCard();
   if (had) { if (card) had.replaceWith(card); else had.remove(); }

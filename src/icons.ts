@@ -59,6 +59,16 @@ const PATHS = {
   // THE RANKE (card e66909b1): a stem with two branches leaving it at right angles — the worktree
   // field under the composer and the Arbeitsorte in Info draw the same figure
   ranke: ["M6 3.5v17", "M6 8.5h7a3 3 0 0 0 3-3v-1", "M6 15.5h11", "M16 5.5h.01", "M19.5 15.5h.01"],
+  // THE INFO COLUMN'S SESSION HEAD (rechter-tab-notiz.md §3, R1): Teilen and Exportieren as glyphs
+  // beside Umbenennen (pencil); copy for the branch value; check for a green check; and the three
+  // marks of the name column's switch — the lane's name, its branch, the commit it stands on
+  share: ["M12 15V4", "M8 8l4-4 4 4", "M5 12v7h14v-7"],
+  export: ["M12 4v11", "M8 11l4 4 4-4", "M5 20h14"],
+  copy: ["M9 9h10v10H9z", "M5 15V6a1 1 0 0 1 1-1h9"],
+  check: ["M5 12.5l4.5 4.5L19 7.5"],
+  label: ["M4 12V5h7l8.5 8.5-6.5 6.5z", "M8 9h.01"],
+  branch: ["M7 4v16", "M17 7v2a4 4 0 0 1-4 4H7", "M7 4h.01", "M17 7h.01", "M7 20h.01"],
+  commit: ["M3.5 12h5", "M15.5 12h5", "M12 15.5a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z"],
 } as const;
 
 export type IconName = keyof typeof PATHS;

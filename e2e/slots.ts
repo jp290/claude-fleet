@@ -1917,14 +1917,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       && !failedLandVerdict({ status: "merged", landed: false })
       && !failedLandVerdict({ status: "error", landed: true })
       && /hint\.onclick = \(\) => setBoard\(true\)/.test(cliSrc)
-      && /bar\.style\.display = "none";\n    void renderMobileAlarmHint\(\)/.test(cliSrc)
+      && /bar\.style\.display = "none";\n[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n  void renderMobileAlarmHint\(\)/.test(cliSrc)
       && /id="malarm" hidden/.test(indexSrc), "failedLandVerdict + mobile Info hint");
-  check("B4: both alarm cards disclose detail under one compact summary",
-    /el\("details", `plasec \$\{al\.tone\}`\)/.test(cliSrc)
-      && /el\("summary", "plasummary"/.test(cliSrc)
+  check("B4: both alarm cards keep their detail one gesture away — the check after the land behind Ansehen, the land under one summary",
+    /el\("div", `plasec \$\{al\.tone\}`\)/.test(cliSrc)
+      && /el\("button", "plaack", plaOpen \? "Weniger" : "Ansehen"\)/.test(cliSrc) && /if \(plaOpen\) \{/.test(cliSrc)
       && /el\("details", `bmergenote/.test(cliSrc)
       && /class="plasummary"/.test(indexSrc) === false
-      && /\.plasec \.plasummary/.test(indexSrc), "audit and land details");
+      && /\.plasec \.plaacts/.test(indexSrc), "audit card and land details");
   check("B5: expanded checks name their section and show every run once",
     /el\("h3", "smsectiontitle", "Alle Prüfläufe"\)/.test(cliSrc)
       && /order\.slice\(0, meterOpen \? undefined : METER_ROWS_MAX\)/.test(cliSrc)
@@ -2437,18 +2437,22 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // so a re-added machine-level section has to state where it goes.
   // the lane list (`lsec`) left for the Arbeitsorte (`ranke`) above the head, card e66909b1 —
   // asserted as an absence too, so a second lane list beside the Ranke has to say where it goes
-  check("client: the board renders in the owner's order — alarms → Arbeitsorte → head → setup → rights → changes → checks → history → tools",
-    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("ranke") && at("ranke") < at("idsec")
-    && at("idsec") < at("su") && at("su") < at("rsec") && at("rsec") < at("work")
-    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
-    && at("lsec") === -1 && at("gsec") === -1 && at("dsec1") === -1,
+  // Since cards R1–R4 (rechter-tab-notiz.md §3, Variante 3A, owner-Ja 2026-10-05) the order is alarms →
+  // Arbeitsorte → session → changes → notepad → history → "Mehr" (Setup, Rechte, Files, prompts as
+  // tabs). Setup (`su`), Rechte (`rsec`), the session's Checks (`ck`) and the tools fold (`tsec`) left
+  // the push list, the deploy line (`dsec0`) went into the Arbeitsorte's Live row — all asserted absent.
+  check("client: the board renders in the owner's order — alarms → Arbeitsorte → session → changes → notepad → history → more",
+    at("pla0") >= 0 && at("pla0") < at("esec0") && at("esec0") < at("ranke") && at("ranke") < at("idsec")
+    && at("idsec") < at("work") && at("work") < at("noteSec") && at("noteSec") < at("csec") && at("csec") < at("msec")
+    && at("lsec") === -1 && at("gsec") === -1 && at("dsec1") === -1 && at("dsec0") === -1
+    && at("su") === -1 && at("rsec") === -1 && at("ck") === -1 && at("tsec") === -1,
     JSON.stringify(pushOrder));
   // SETUP is what the session is MADE of — owner, 2026-09-19: „[Zitat entfernt]“
   // . The two fields he
   // named are asserted by name, and so is the ONE number that deliberately did NOT go in here:
   // the context fill moves every minute, so it belongs to the head's state line, not to a block
   // of founding choices. Source is the evidence — this suite has no DOM.
-  const setupSrc = boardSrc.slice(boardSrc.indexOf('el("div", "bsec bsetup")'), boardSrc.indexOf("if (brief) {"));
+  const setupSrc = boardSrc.slice(boardSrc.indexOf("function setupBody("), boardSrc.indexOf("// --- ARBEITSORTE: the Ranke"));
   check("client: the setup block names the profile and the context packs",
     // "Program type" since the founding window (F4): "Profile" is the founding choice there, the
     // machine profile of the program needed the name that cannot be read as it
@@ -2487,28 +2491,33 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: a pack list says whether it was DELIVERED or merely declared — intent never passes for delivery",
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
-  // THE SUCCESSION NUMBERS in the head (owner, 2026-09-20: they belong in the identity block he
-  // signed off). Four label/value rows, every value read off the brief's server-computed block —
-  // the two traps being a board that prints a threshold nobody armed, and one that draws an
-  // unmeasurable context as 0 %. Source is the evidence; this suite has no DOM, and the served
-  // numbers themselves are measured live in e2e/watch.ts against tickMigrate's own fixture.
-  const succSrc = boardSrc.slice(boardSrc.indexOf("if (facts?.succession) {"),
-    boardSrc.indexOf("// identifiers: machine strings in mono"));
-  check("client: the head names all four succession facts — fill, handover threshold, kind, handoff (G0.5: rail→Kind, MAIN-abgeleitet)",
-    /srow\("Fill",/.test(succSrc) && /srow\("Handover",/.test(succSrc)
-    && /srow\("Kind", sc\.rail/.test(succSrc) && !/srow\("Rail"/.test(succSrc) && /srow\("Handoff",/.test(succSrc),
-    "the succession rows in renderBoard");
-  check("client: an unmeasurable fill reads \"not measurable\" — the percentage exists only inside the sc.fill branch",
-    /: "not measurable"/.test(succSrc)
-    && /sc\.fill\n?\s*\? `\$\{tok\(sc\.fill\.usedTokens\)\} \/ \$\{tok\(sc\.fill\.windowTokens\)\} · \$\{Math\.round\(sc\.fill\.pct\)\} %`/.test(succSrc),
-    "the Fill row in renderBoard");
+  // THE SUCCESSION NUMBERS, one line since card R3 (rechter-tab-notiz.md §4): the fill and a switch
+  // with the threshold on its face; the four former facts (fill, threshold + hint, kind, handoff)
+  // live in its popover in readable words (G0.5 — no "Fill", "Handover", "Kind", "Handoff"). The two
+  // traps stay asserted: a board that prints a threshold nobody armed, and one that draws an
+  // unmeasurable context as 0 %. The served numbers are measured live in e2e/watch.ts, the route
+  // that sets them per session in e2e/self-token.ts, the DOM in runArbeitsorteDom's info claims.
+  const succSrc = boardSrc.slice(boardSrc.indexOf("function contextRow("), boardSrc.indexOf("// GEHÖRT ZU"));
+  check("client: the handover is ONE line, and its popover names the four facts in readable words",
+    /kvRow\("Kontext", v, "ctx"\)/.test(succSrc) && /row\("Kontext", \[/.test(succSrc) && /row\("Übergabe bei", thV,/.test(succSrc)
+    && /row\("Hinweis", \[seg\],/.test(succSrc) && /row\("Weg", \[way\], wayH\)/.test(succSrc) && /row\("Diese Session", \[/.test(succSrc)
+    && !/srow\("(Fill|Handover|Kind|Handoff)"/.test(boardSrc),
+    "contextRow + handoverRows in src/board.ts");
+  check("client: an unmeasurable fill reads \"nicht messbar\" — the percentage exists only inside the sc.fill branch",
+    /const fill = sc\.fill \? `\$\{Math\.round\(sc\.fill\.pct\)\} %` : "nicht messbar";/.test(succSrc),
+    "the Kontext row in src/board.ts");
   check("client: a threshold is printed only when the server sent one, otherwise the named reason",
-    /sc\.thresholdPct !== null \? `at \$\{sc\.thresholdPct\} % — \$\{nudge\}`/.test(succSrc)
-    && /`off — \$\{offWhy\[sc\.thresholdOff \?\? "rail"\]\}`/.test(succSrc),
-    "the Handover row in renderBoard");
-  check("client: the cap is drawn only where one exists — without one the row says `no cap`, never 0 of 5",
-    /sc\.cap !== null \? `Session \$\{sc\.session\} · \$\{sc\.taken \?\? 0\} of \$\{sc\.cap\}`/.test(succSrc)
-    && /`Session \$\{sc\.session\} · no cap`/.test(succSrc), "the Handoff row in renderBoard");
+    /sc\.thresholdPct !== null \? `Übergabe bei \$\{sc\.thresholdPct\} %` : "Übergabe aus"/.test(succSrc)
+    && /aus: \$\{OFF_WHY\[sc\.thresholdOff \?\? "rail"\]\}/.test(succSrc),
+    "the handover switch in src/board.ts");
+  check("client: the cap is drawn only where one exists — without one the popover says so, never 0 of 5",
+    /sc\.cap !== null \? `\$\{sc\.taken \?\? 0\} von \$\{sc\.cap\} Übergaben genutzt/.test(succSrc)
+    && /Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Deckel\./.test(succSrc), "the handover popover in src/board.ts");
+  check("client: the threshold and the hint are written per session over the handover route, the env value stays the default",
+    /api\(`\/api\/slots\/\$\{c\.slot\}\/handover`, \{ method: "PATCH"/.test(succSrc) && /expectedOpenedAt: c\.s\.openedAt/.test(succSrc)
+    && /writeHandover\(c, \{ thresholdPct: cur - 5 \}\)/.test(succSrc) && /writeHandover\(c, \{ thresholdPct: cur \+ 5 \}\)/.test(succSrc)
+    && /writeHandover\(c, \{ nudge: on \}\)/.test(succSrc) && /writeHandover\(c, \{ thresholdPct: null \}\)/.test(succSrc),
+    "writeHandover + handoverRows in src/board.ts");
   // THE SPACE CUT (owner, 2026-09-20: „[Zitat entfernt]“
   // ). Three lines left the column, and each of them was a REPETITION or a non-event, never
   // a fact: the setup block's `Type` row said what the head's own state line says word for word,
@@ -2517,27 +2526,34 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // fact each one was standing in for asserted beside it, so a re-added copy trips this.
   check("client: the session's KIND is said once — the head's state line, not a second Setup row",
     !/row\("Type",/.test(setupSrc)
-    // a failed read names no kind: "repo session" over a folder that is gone would invent a git fact
-    && /brief\?\.worktree \? "lane" : noGit \? "folder session" : brief \? "repo session" : "session"\} in slot \$\{slot\}/.test(boardSrc),
+    // a failed read names no kind: "Repo-Session" over a folder that is gone would invent a git fact
+    && /const kind = brief\?\.worktree \? "Lane" : noGit \? "Ordner-Session" : brief \? "Repo-Session" : "Session";/.test(boardSrc)
+    && /`\$\{word\} · \$\{kind\} in Slot \$\{slot\}`/.test(boardSrc),
     "the Type row vs the head's state line");
   check("client: a session with no packs draws no `none` row — absence is the ordinary case",
     !/row\("Packs", "none"/.test(setupSrc) && /if \(packs\.length\) \{/.test(setupSrc),
     "the packs branch in renderBoard");
-  check("client: an empty Checks section is not drawn at all, and a session WITH runs still gets one",
-    /if \(mine\.length\) nodes\.push\(ck\);/.test(boardSrc)
+  // I13 (card R4): this session's checks are its lane's own "Check" value (the newest stage with its
+  // age, every stage on hover) and, while it lands, its four steps — no Checks section of its own
+  check("client: the session's checks are a value of its lane, not a section of their own",
+    !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && /const r = kvRow\("Check", v\);/.test(boardSrc)
+    && /const r = kvRow\("Land", \[steps\]\);/.test(boardSrc)
     && !/No suite reported in the last few minutes/.test(cliSrc),
-    "the Checks section in renderBoard");
+    "checkRow + landStepsRow in src/board.ts");
   // WHOSE FACT: every section head carries one word from the closed set, and the two machine
   // alarms — which have no head of their own — carry it as their first line. A section that
   // re-appears without one is the confusion this cut exists to end (a fleet number read as a
   // session number), so the check is over the CALL SITES, not over a sample.
-  check("client: every board section head names its reach — session · repo · machine · fleet",
+  // Since card R1 the reach is the head's HOVER, not a visible word (G0.5; the draft's heads carry
+  // none): sectionHead writes it as data-scope and the SCOPE_TITLE sentence on every head.
+  check("client: every board section head names its reach — session · repo · machine · fleet — on hover",
     !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
-    && /boardHead\("Changes", "session"\)/.test(boardSrc) && /boardHead\("Checks", "session"\)/.test(boardSrc)
-    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\("Arbeitsorte", "fleet"\)/.test(cliSrc)
-    && /boardHead\("helper devices", "fleet"\)/.test(cliSrc)
-    && /sec\.appendChild\(scopeTag\("machine"\)\);/.test(cliSrc),
-    "the section heads in renderBoard");
+    && /h\.dataset\.scope = scope;\n  h\.title = SCOPE_TITLE\[scope\];/.test(cliSrc)
+    && /sectionHead\("Changes", "session"\)/.test(boardSrc) && /sectionHead\("Notizblock", "repo"\)/.test(boardSrc)
+    && /sectionHead\("History", "repo"\)/.test(boardSrc) && /sectionHead\("Arbeitsorte", "fleet"\)/.test(cliSrc)
+    && /sectionHead\("Mehr zu dieser Session", "session"\)/.test(boardSrc)
+    && /boardHead\("helper devices", "fleet"\)/.test(cliSrc),
+    "the section heads in src/board.ts");
   check("client: the scope vocabulary is CLOSED — four words, each with a sentence saying what it covers",
     /type BoardScope = "session" \| "repo" \| "machine" \| "fleet";/.test(cliSrc)
     && /const SCOPE_TITLE: Record<BoardScope, string>/.test(cliSrc),
@@ -2546,11 +2562,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // says so, and where another instance is configured it names the end of its own reach rather
   // than letting an empty station read as a quiet fleet — FLEET_INSTANCES is a link list, not a
   // federation, so nothing here can see that fleet's runs.
-  check("client: the suite meter's head carries the fleet scope and names what it CANNOT see",
-    /const scopeTag = el\("span", "bscope", "fleet"\);/.test(cliSrc)
-    && /instanceLinks\.filter\(\(l\) => l\.name !== instanceName\)/.test(cliSrc)
-    && /el\("span", "smscope", `\$\{instanceName \?\? "this machine"\}`\)/.test(cliSrc) && /kein Verbund/.test(cliSrc),
-    "renderSuiteMeter's head");
+  check("client: the checks strip names what it CANNOT see — another fleet's runs are not counted here",
+    /instanceLinks\.filter\(\(l\) => l\.name !== instanceName\)/.test(cliSrc)
+    && /el\("div", "cnt smscope", `Nur \$\{instanceName \?\? "dieser Rechner"\}/.test(cliSrc) && /kein Verbund/.test(cliSrc),
+    "meterPanel in src/board.ts");
   // …and the place is the column that may NEVER give way. The row is ~267 px wide at the board's
   // real width, so something has to: the lane name shrinks, the suite name shrinks, the machine
   // does not — it is the half a truncated row used to lose. The STATE is not a column at all any
@@ -2581,7 +2596,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: a repaint keeps the reading position, the keyboard focus and nothing else",
     /const focusKey = \(\(\): string \| null =>/.test(boardSrc)
     && /boardBody\.scrollTop = y;/.test(boardSrc)
-    && /if \(boardMenuOpen && boardMenuSlot !== slot\) boardMenuOpen = false;/.test(boardSrc),
+    && /if \(boardPop && boardPop\.slot !== slot\) boardPop = null;/.test(boardSrc),
     "renderBoard's paint step");
   check("client: the no-session branch rescues the scroll too, and the dead bnone selector is gone",
     /const y0 = boardBody\.scrollTop;/.test(boardSrc) && !/bnone/.test(cliSrc) && !/bnone/.test(indexSrc),
@@ -2605,13 +2620,18 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // entirely. What remains behind a disclosure is the prompt outline, and only that.
   // what is left behind a disclosure is exactly two things a reader reaches for rarely: the base
   // branch's own history, and the prompt outline. files/lanes/agents are NOT among them.
-  check("client: only 'already in main' and the prompt outline are folded — files, lanes and agents are not",
-    foldOrder.join(",") === "repoCommits,prompts",
-    JSON.stringify(foldOrder));
-  check("client: the file tree is a section of its own, with the scroll box that keeps it in place",
-    /nodes\.push\(fx\)/.test(boardSrc) && /fileTreeSection\(slot, s\.cwd\)/.test(boardSrc)
+  // Card R2 (§3 item 8): what is fixed at the founding or reached for rarely sits behind four tabs
+  // under "Mehr zu dieser Session", in this order; the base branch's history stays the one fold inside
+  // the opened History. Lanes and the advisory agents are NOT among them (the lanes are the Arbeitsorte).
+  const tabOrder = [...boardSrc.matchAll(/boardTab\("(\w+)"/g)].map((m) => m[1]);
+  check("client: Setup · Rechte · Files · Your prompts are the four tabs under \"Mehr\", and 'already in main' the one fold in History",
+    tabOrder.join(",") === "setup,rechte,files,prompts" && foldOrder.join(",") === "repoCommits"
+    && /prefSet\("fleet\.board\.folds", JSON\.stringify\(\[\.\.\.boardFolds\]\)\)/.test(boardSrc),
+    JSON.stringify({ tabOrder, foldOrder }));
+  check("client: the file tree is the Files tab, with the scroll box that keeps it in place and the explorer one glyph away",
+    /const fx = fileTreeSection\(slot, cwd\);/.test(boardSrc) && /glyphBtn\("folder", "Explorer öffnen", /.test(boardSrc)
     && /#board \.fxtree \{[^}]*max-height/.test(indexSrc) && /\.fxtree \{[^}]*overflow-y: auto/.test(indexSrc),
-    "the files section in renderBoard + #board .fxtree");
+    "the Files tab in src/board.ts + #board .fxtree");
   // …and both long lists are shown WHOLE. A silent client-side cut is the one thing they must not
   // do; where the SERVER caps (200 status lines, the newest 50 commits), the board names the cap
   // instead of letting a cut list read as "all of it".
@@ -2619,8 +2639,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     !/brief\.uncommittedFiles\.slice\(/.test(boardSrc) && !/brief\.files\.slice\(/.test(boardSrc)
     && /brief\.uncommitted > brief\.uncommittedFiles\.length/.test(boardSrc)
     && /the server reads at most 200 status lines/.test(boardSrc)
-    && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest \$\{brief\.commitsCap\}/.test(boardSrc),
-    "the changes + history sections in renderBoard");
+    && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest \$\{brief\.commitsCap\}/.test(boardSrc)
+    // History shows three on purpose (card R2) — with the full list one button away, never silently
+    && /all \? brief\.commits : brief\.commits\.slice\(0, HISTORY_SHOWN\)/.test(boardSrc) && /`Alle \$\{total\} \$\{total === 1 \? "Commit" : "Commits"\}`/.test(boardSrc),
+    "the changes + history sections in src/board.ts");
   // EVERY number the column prints is compared against a total the SERVER measured — never
   // against a length the client derived from the very list it is describing. The "and N more"
   // line under the changed files did exactly that until 2026-09-20 and contradicted the loop
@@ -2657,7 +2679,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "errorsSection in src/client.ts");
   // the suite ages in this column are the SERVER's stamps; this pane's clock may sit minutes away
   check("client: a check's age is measured against the corrected server clock",
-    /gateAge\(serverClock\(\) - b\.at\)/.test(boardSrc), "the checks section in renderBoard");
+    /meterLine\(b, serverClock\(\), true\)/.test(cliSrc) && /mmss\(serverClock\(\) - ball\.at\)/.test(boardSrc), "meterPanel + the land note in src/board.ts");
   // THE ADVISORY AGENTS ARE GONE from this column (owner, 2026-09-20: „[Zitat entfernt]“
   // ). Removed, not hidden: no buttons, no
   // caches, no session-only fold machinery. The SERVER routes stay, because the ③ auto-review
@@ -3744,19 +3766,20 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && /\.rowmenu\.open \{[^}]*position: fixed;[^}]*left: 0; right: 0; bottom: 0;/.test(mobileCss),
       JSON.stringify(menuLabels));
     // ROW 11e541e0: Rename, Share and Export at ONE visible place per session — the Info tab's head
-    // (desktop column, phone through ℹ), as quiet word buttons, not behind ⋯ and not on hover.
+    // (desktop column, phone through ℹ), not behind ⋯ and not on hover; since card R1 as glyph
+    // buttons beside the name, each with its sentence as hover and accessible name (G1.1).
     // Export opens the menu of choices; the choices travel to the server as switches.
     {
-      const boardSrc = cut("async function renderBoard()", "// 1b — SETUP");
+      const boardSrc = cut("function sessionSection(c: BoardCtx)", "// CHECK — the lane's newest check");
       const expSrc = cut("type ExportPart = ", "async function killSlot(");
-      const bmenuSrc = boardSrc.slice(boardSrc.indexOf('const menu = el("div", "bmenu")'));
-      check("session actions: Rename, Share and Export are visible word buttons in the Info tab's head, not behind ⋯",
-        /const acts = el\("div", "bbtnrow bheadacts"\)/.test(boardSrc) && /el\("button", "bbtn quiet", label\)/.test(boardSrc)
-          && boardSrc.includes('act("Rename", ') && boardSrc.includes('act(s.share ? "Shared — view only…" : "Share…", ')
-          && boardSrc.includes('act("Export…", ') && boardSrc.includes("void openExportDlg(slot, sessName)")
-          && !/item\("(Rename|Export)"|item\(s\.share/.test(bmenuSrc) && bmenuSrc.includes('item("Bring session back"')
+      const bmenuSrc = boardSrc.slice(boardSrc.indexOf("function kopfItems("));
+      check("session actions: Umbenennen, Teilen and Exportieren are visible glyph buttons in the Info tab's head, not behind ⋯",
+        boardSrc.includes('glyphBtn("pencil", "Umbenennen", ') && boardSrc.includes('glyphBtn("share", s.share ? "Geteilt" : "Teilen", ')
+          && boardSrc.includes('glyphBtn("export", "Exportieren", ') && boardSrc.includes("void openExportDlg(slot, sessName)")
+          && boardSrc.includes("startRename(row, s)") && boardSrc.includes("() => openShareDlg(slot)")
+          && !/popItem\("(Umbenennen|Teilen|Exportieren|Rename|Export)/.test(bmenuSrc) && bmenuSrc.includes('popItem("Session zurückholen"')
           && menuSrc.includes('item("Export…", ') && menuSrc.includes("void openExportDlg(s.id, "),
-        "renderBoard head + board ⋯ + row menu");
+        "sessionSection head + its ⋯ + row menu");
       const parts = [...expSrc.matchAll(/\["(\w+)", "[^"]+", "[^"]+"\],/g)].map((m) => m[1]);
       check("export menu: content, the five parts plus timestamps, and three conversation formats — sent as server switches",
         JSON.stringify(parts.slice(0, 6)) === JSON.stringify(["user", "assistant", "tools", "results", "thinking", "time"])
@@ -6549,9 +6572,12 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (width === 1200) {
         if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
         fx.meterLane = true;
-        const rowUp = await wait(`[...document.querySelectorAll('#boardsuites .smrow .smname')].some((n) => n.textContent.includes(' · '))`, 8000);
+        // the runs are under the checks strip in the Arbeitsorte's head (card R4): open it once
+        await wait(`document.querySelector('#boardbody .ranke .meterbtn')`, 8000);
+        await evaluate(`(() => { const b = document.querySelector('#boardbody .ranke .meterbtn'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); })()`);
+        const rowUp = await wait(`[...document.querySelectorAll('#boardbody .rkmeter .smrow .smname')].some((n) => n.textContent.includes(' · '))`, 8000);
         const meter = await evaluate<{ name: string; prefix: number; fit: number; board: number; row: number; what: number; placeInside: boolean } | null>(`(() => {
-          const n = [...document.querySelectorAll('#boardsuites .smrow .smname')].find((e) => e.textContent.includes(' · '));
+          const n = [...document.querySelectorAll('#boardbody .rkmeter .smrow .smname')].find((e) => e.textContent.includes(' · '));
           if (!n || !n.firstChild) return null;
           const row = n.parentElement, box = n.getBoundingClientRect(), len = n.textContent.length;
           const probe = document.createElement('span'); probe.style.font = getComputedStyle(n).font; probe.textContent = '…';
@@ -10156,7 +10182,11 @@ async function runCodexPermissions(): Promise<void> {
 // the page sends, so a click is judged by the request it made. Exported so a lane can drive it with an
 // artefact folder and against a mutated copy of the tree.
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
-export const ARBEITSORTE_STATES = ["lane", "modell", "tippen", "land", "viele", "branch", "alarm", "leer", "main"] as const;
+// the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
+// own annotation), `viele3`/`viele30` for its &n=3 / &n=30; `laneb` is the draft's variant B, and the
+// app shows the chosen variant A there (owner-Ja 2026-10-05: „[Zitat entfernt]“)
+export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "uebergabe", "menue", "kopf", "land", "mehr",
+  "viele", "viele3", "viele30", "branch", "alarm", "leer", "main"] as const;
 export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string): Promise<ArbeitsorteDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-arbeitsorte-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
@@ -10191,7 +10221,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
       { slot: 13, letter: "A", title: "Filter nach Saison", branch: "fleet/261005-filter-saison-91ab", target: "main", ahead: 2, repo: REPO2, working: true, landed: "no" },
     ];
     if (st === "leer") return base.map((l) => ({ ...l, slot: null, working: false }));
-    if (st !== "viele" && st !== "branch") return base;
+    if (st !== "viele" && st !== "branch" && st !== "viele30") return base;
     const more: Lane[] = [
       { slot: 11, letter: "C", title: "Insel am Telefon", branch: "fleet/261005-insel-am-telefon-1b2c", target: "overhaul", ahead: 4, working: true, landed: "no",
         checks: { local: green(h("c")), preview: { state: "red", head: h("old"), at: fx.now - 30 * 60_000, fails: ["e2e/slots.ts: glass island"], stale: true } } },
@@ -10204,6 +10234,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
     ];
     for (const [i, word] of ["export dialog", "notizblock", "gruendung", "alte suche", "zeitleiste alt", "explorer suche", "querformat", "schedule ansicht"].entries())
       more.push({ slot: null, branch: `fleet/261004-${word.replace(/ /g, "-")}-${(0xa000 + i).toString(16)}`, target: "overhaul", ahead: i % 3, landed: i % 3 ? "no" : null });
+    // &n=30: thirteen more worktrees, most of them without a session — the fold line carries them
+    if (st === "viele30") for (let i = 0; i < 13; i++)
+      more.push({ slot: null, branch: `fleet/261003-alt-${i + 1}-${(0xb000 + i).toString(16)}`, target: i % 4 ? "overhaul" : "main", ahead: i % 5, landed: i % 5 ? "no" : null });
     return [...base, ...more];
   };
   const pathOf = (l: Lane) => `${l.repo ?? REPO}.worktrees/${l.branch.replace(/\//g, "-")}`;
@@ -10214,12 +10247,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
     const put = (id: number, v: Record<string, unknown>) => { rows[id - 1] = { id, openedAt: openedAt(id), lastOutput: fx.now - 12 * 60_000, harness: "claude", ...v }; };
     if (st !== "leer") {
       put(1, { cwd: REPO, repo: REPO, label: "Orchestratorin", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
-      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", lastOutput: fx.now, git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", lastOutput: fx.now, programId: "0b3e0f1d2c3b4a59", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
       put(6, { cwd: REPO2, repo: REPO2, label: "rezepte-app", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
     }
     for (const l of lanes) if (l.slot) {
       const repo = l.repo ?? REPO;
       put(l.slot, { cwd: pathOf(l), repo: pathOf(l), label: `⎇ task ${l.branch.slice(-4)}`, taskTitle: l.title, mission: `${l.title} bauen.`,
+        taskId: `${hex(l.branch).slice(0, 8)}`,
         lastOutput: l.working ? fx.now : fx.now - 12 * 60_000, awaiting: l.awaiting,
         git: { branch: l.branch, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0 },
         worktree: { repo, branch: l.branch, anchor: { slot: repo === REPO ? 3 : 6, openedAt: openedAt(repo === REPO ? 3 : 6) }, letter: l.letter } });
@@ -10278,6 +10312,30 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
     };
   };
   const focusOf = (st: State): number | null => st === "leer" ? null : st === "main" ? 3 : 9;
+  // --- the Info column below the Arbeitsorte (cards R1–R4): what the brief, the merge state, the
+  // poll and the transcript carry for the focused session, per state
+  const OWN_FILES = ["M  docs/design/rechter-tab-notiz.md", "M  docs/design/rechter-tab-entwurf.html"];
+  const OWN_COMMITS = [["c3d4e5f", "docs: Rechter Tab — dritte Fassung"], ["b81f2a9", "docs: Zustand Slot, Zweig, Testinstanz"], ["a90e113", "docs: Ranke-Notiz nachziehen"]];
+  const NOTE = "Bilder bei 390 nochmal mit der Insel zusammen ansehen.";
+  const noteOf = (st: State) => st === "land" || st === "mehr" || st === "alarm" ? NOTE : null;
+  const UNDO_BRANCH = "fleet/261005-insel-am-telefon-1b2c";
+  const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean } };
+  const succession = (slot: number) => slot === 3
+    ? { rail: "standard-main", fill: { usedTokens: 520_000, windowTokens: 1_000_000, pct: 52 }, thresholdPct: null, thresholdOff: "fleet",
+      nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true }
+    : { rail: "lane", fill: { usedTokens: 370_000, windowTokens: 1_000_000, pct: 37 }, thresholdPct: handover.slot9?.thresholdPct ?? 40, thresholdOff: null,
+      nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 3, taken: 2, cap: 5, defaultPct: 40,
+      pctFrom: handover.slot9?.thresholdPct != null ? "session" : "fleet", nudgeOn: handover.slot9?.nudge ?? true };
+  const setupOf = () => ({ profile: "standard", repo: REPO, head: MAIN,
+    packs: [{ id: "grammatik", useWhen: "Oberflächen-Arbeit", sources: [{ path: "docs/design/grammatik.md", anchor: "# Grammatik" }], privateSourceId: null },
+      { id: "verify-e2e", useWhen: "Beweise", sources: [{ path: "AGENTS.md", anchor: "## Verify" }], privateSourceId: null }],
+    omitted: [], deliveredAt: fx.now - 2 * 3600_000, deliveredBytes: 14_000, packsFrom: "receipt" });
+  const gateOf = (st: State) => st === "land"
+    ? { lock: { pid: 4242, alive: true, state: "held", heldMs: 161_000, ageMs: 161_000, owner: { slot: 9, branch: own.branch } },
+      reports: [{ slot: 9, label: null, phase: "running", suite: "land gate", exitCode: null, at: fx.now - 161_000, origin: "server", branch: own.branch,
+        stage: "Sicherheit (2/3)", stats: { n: 12, p50: 250_000, p90: 300_000 } },
+      { slot: 10, label: null, phase: "waiting", suite: "Vorschau", exitCode: null, at: fx.now - 52_000, origin: "lane", branch: zeit.branch }] }
+    : { lock: null, reports: [] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -10318,9 +10376,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
       const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
       const url = new URL(request.url), p = url.pathname;
       fx.now = Date.now();
-      if (request.method === "POST") {
+      if (request.method === "POST" || request.method === "PATCH") {
         let body: unknown = null; try { body = JSON.parse(request.postData ?? "null"); } catch { body = request.postData ?? null; }
         fx.writes.push({ path: `${p}${url.search}`, body });
+        if (p === "/api/slots/9/handover") {
+          const b = body as { thresholdPct?: number | null; nudge?: boolean };
+          const cur = handover.slot9 ?? { thresholdPct: null, nudge: true };
+          handover.slot9 = { thresholdPct: "thresholdPct" in b ? b.thresholdPct ?? null : cur.thresholdPct, nudge: "nudge" in b ? b.nudge ?? true : cur.nudge };
+          return void json(requestId, { slot: 9, openedAt: openedAt(9), setting: handover.slot9, step: 5, min: 5, max: 95, succession: succession(9) });
+        }
         if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") return void json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
         return void json(requestId, { ok: true });
       }
@@ -10328,7 +10392,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st), instance: { name: "Mac" },
-        deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" } });
+        deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" },
+        programs: [{ id: "0b3e0f1d2c3b4a59", title: "Oberfläche", status: "active" }],
+        gate: gateOf(st), helperDevices: [{ id: "wh", name: "workhorse", lastSeen: fx.now - 5000, maxParallelSuites: 2, running: 0 }], helperOnlineMs: 20_000,
+        ...(st === "alarm" ? { postLandAudit: { at: fx.now - 20 * 60_000, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH] },
+          errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
+      if (p === "/api/tree") return void json(requestId, { root: REPO, files: Array.from({ length: 412 }, (_, i) => `src/datei-${i}.ts`), total: 412, capped: false });
+      if (/^\/api\/slots\/\d+\/memory-grant$/.test(p)) return void json(requestId, { slot: Number(p.split("/")[3]), openedAt: openedAt(Number(p.split("/")[3])), grant: null, inForce: false, knownProjects: [] });
       if (p === "/api/worktrees") return void json(requestId, workplaces(st));
       if (p === "/api/testinstanzen") return void (st === "alarm"
         ? json(requestId, { error: machineError }, 503)
@@ -10341,14 +10411,33 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         const slot = Number(m[1]);
         const lane = lanesOf(st).find((l) => l.slot === slot);
         const repo = lane ? lane.repo ?? REPO : slot === 6 ? REPO2 : REPO;
-        if (m[2] === "brief") return void json(requestId, { branch: lane?.branch ?? "main", head: lane ? hex(lane.branch) : MAIN,
-          worktree: lane ? { repo, branch: lane.branch } : null, sessionStart: fx.now - 3600_000, uncommitted: 0, uncommittedFiles: [], files: [], filesTotal: 0,
-          shortstat: "", commits: [], repoCommits: [], laneScoped: !!lane, laneBase: lane?.target ?? null, commitsCap: 200, ahead: lane?.ahead ?? 0, behind: 0 });
+        if (m[2] === "brief") {
+          const ownSlot = slot === 9 && st !== "land";
+          const mainFiles = ["M  docs/design/grammatik.md", "M  docs/programs/oberflaeche.md", "?? docs/design/neu.md"];
+          const commits = slot === 9 ? OWN_COMMITS : slot === 3
+            ? [["9f3e2a1", "feat: Sendeziel bleibt sichtbar beim Tippen"], ["c41d0b7", "docs: Grammatik G2.4a eintragen"], ["77ab3e0", "fix: Insel nimmt Wischen nach links"], ["5aa0e19", "docs: Notiz zur Leiste"]]
+            : [["7a2c01e", "feat: Zeitleiste springt zur Stunde"]];
+          const uncommittedFiles = ownSlot ? OWN_FILES : slot === 3 ? mainFiles : [];
+          return void json(requestId, { branch: lane?.branch ?? "main", head: lane ? hex(lane.branch) : MAIN,
+            worktree: lane ? { repo, branch: lane.branch } : null, sessionStart: fx.now - 3600_000, uncommitted: uncommittedFiles.length, uncommittedFiles,
+            files: slot === 9 ? Array.from({ length: 12 }, (_, i) => `M  src/teil-${i + 1}.ts`) : [], filesTotal: slot === 9 ? 12 : 0,
+            shortstat: slot === 9 ? "12 files changed, 340 insertions(+), 120 deletions(-)" : "",
+            commits: commits.map(([hash, subject], i) => ({ hash, subject, ts: fx.now - (i + 1) * 3600_000 })),
+            repoCommits: slot === 9 ? [{ hash: "1b2c3d4", subject: "fix: Leiste hält die Breite", ts: fx.now - 86_400_000 }] : [],
+            laneScoped: !!lane, laneBase: lane?.target ?? null, commitsCap: 200, ahead: lane?.ahead ?? 0, behind: 0,
+            setup: setupOf(), succession: succession(slot) });
+        }
         if (m[2] === "worktrees") return void json(requestId, { repo, main: "main", worktrees: lanesOf(st).filter((l) => (l.repo ?? REPO) === repo).map((l) => ({
           path: pathOf(l), branch: l.branch, slot: l.slot, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0, empty: !l.dirty && !l.ahead,
-          dirtyFiles: [], unpushedCommits: l.ahead ? [{ hash: hex(l.branch).slice(0, 7), subject: "feat: fixture" }] : [], note: null, notepad: null, review: null })) });
-        if (m[2] === "merge") return void json(requestId, { running: false });
-        return void json(requestId, { entries: [], total: 0, source: null, ttlSec: 300, queued: [] });
+          dirtyFiles: [], unpushedCommits: l.ahead ? [{ hash: hex(l.branch).slice(0, 7), subject: "feat: fixture" }] : [], note: null,
+          notepad: l.slot === 9 ? noteOf(st) : null, review: null })) });
+        if (m[2] === "merge") return void json(requestId, st === "land" && slot === 9 ? { running: true, last: null }
+          : { running: false, last: null, undoable: { branch: UNDO_BRANCH, at: fx.now - 40 * 60_000 } });
+        const prompts = slot === 9 || slot === 3 ? ["Baue die dritte Fassung", "Zeig mir die Bilder bei 390", "Der Abstand ist zu groß", "Mach die Übergabe lesbar", "Jetzt die Reiter", "Gut so, landen"] : [];
+        // incremental like the server: only what comes after the reader's cursor
+        const after = Number(url.searchParams.get("after") ?? 0) || 0;
+        return void json(requestId, { entries: prompts.map((text, i) => ({ role: "user", ts: fx.now - (6 - i) * 600_000, blocks: [{ t: "text", text }] })).slice(after),
+          total: prompts.length, source: `fixture-${slot}`, ttlSec: 300, queued: [] });
       }
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -10390,7 +10479,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
       const field = document.querySelector('#compwt'), tray = document.querySelector('#comptray'), sched = document.querySelector('#autobtn');
       const mort = document.querySelector('#mort .wtfield');
       return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
-        head: sec.querySelector('h3')?.textContent ?? null, seg: [...sec.querySelectorAll('.rkseg button')].map((b) => b.textContent + (b.classList.contains('on') ? '*' : '')),
+        head: sec.querySelector('h3')?.textContent ?? null, seg: [...sec.querySelectorAll('.rkseg button')].map((b) => b.dataset.mode + (b.classList.contains('on') ? '*' : '')),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'),
@@ -10446,7 +10535,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
         await navigate("http://fleet.fixture/blank");
         const focus = focusOf(st);
-        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); })()`);
+        handover.slot9 = null;
+        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}');
+          ${st === "land" ? "localStorage.setItem('fleet.meter.open', '1');" : ""}
+          ${st === "mehr" ? "localStorage.setItem('fleet.board.folds', JSON.stringify(['setup', 'rechte']));" : ""} })()`);
         await navigate("http://fleet.fixture/");
         if (phone && st === "leer") {
           // the phone opens Info from a pane's session (src/client.ts#sideOpen); with no session on
@@ -10476,7 +10568,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         let r = await read();
         facts.base = { index: r.index, before: r.before, head: r.head, seg: r.seg, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll };
         claims[`${tag}"Arbeitsorte" is the first section of Info after the alarms, above the session`] = r.head?.startsWith("Arbeitsorte") === true
-          && r.before.every((c) => /balert|plaboard|bfail/.test(c)) && (st === "leer" || /bhead/.test(r.next ?? ""));
+          && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead/.test(r.next ?? ""));
         const zw = branchRows(r);
         const pfX = new Set(zw.map((x) => x.pf?.box.x)), tiX = new Set(zw.map((x) => x.ti?.box.x));
         facts.columns = { pfX: [...pfX], tiX: [...tiX], heights: [...new Set(zw.map((x) => x.box.h))] };
@@ -10558,7 +10650,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
               && !!r.trayBox && r.trayBox.r - r.field.box.r <= 12;
         }
         // --- the state's own claims
-        if (st === "lane" || st === "land" || st === "modell" || st === "tippen") {
+        if (["lane", "laneb", "land", "modell", "tippen", "uebergabe", "menue", "kopf", "mehr"].includes(st)) {
           const mine = lane(r, 9)!, zeitRow = lane(r, 10)!;
           claims[`${tag}the own lane is the marked row 3A with its name, and its square is visible (Starten without hovering)`] =
             !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !!mine.ti?.sq && mine.ti.state === "not-running";
@@ -10660,12 +10752,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
             && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
         }
         if (st === "land") await shot(`${st}-${width}`);
-        if (st === "viele" || st === "branch") {
+        if (st === "viele" || st === "branch" || st === "viele30") {
           // open the second repo, as after a click on its head
           await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app'))?.click()`);
           await wait(`document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
           if (st === "branch") {
-            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Branch')?.click()`);
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.dataset.mode === 'branch')?.click()`);
             await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(own.branch)}`, 3000);
           }
           await settle(200);
@@ -10683,7 +10775,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
           claims[`${tag}a landed worktree shows the filled diamond "gelandet als <sha> in overhaul" and its check after the land running`] =
             e.pf!.beads[3].landed === "yes" && e.pf!.beads[3].title === `gelandet als ${sha7(hex("landed-e"))} in overhaul` && e.pf!.beads[4].state === "running";
           claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
-          if (st === "branch") claims[`${tag}the switch shows branches in the name column, still one row per branch`] = r.seg.includes("Branch*")
+          if (st === "branch") claims[`${tag}the switch shows branches in the name column, still one row per branch`] = r.seg.includes("branch*")
             && lane(r, 9)?.name === own.branch && z2.every((x) => x.box.h === (phone ? 40 : 24));
           await shot(`${st}-${width}`);
           if (st === "viele") {
@@ -10692,7 +10784,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
             claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
           }
           if (st === "branch") {
-            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Stand')?.click()`);
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.dataset.mode === 'stand')?.click()`);
             await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(sha7(hex(own.branch)))}`, 3000);
             r = await read();
             claims[`${tag}the switch "Stand" shows the commit every worktree stands on`] = lane(r, 9)?.name === sha7(hex(own.branch)) && lane(r, 11)?.name === sha7(hex("fleet/261005-insel-am-telefon-1b2c"));
@@ -10702,7 +10794,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         if (st === "alarm") await shot(`${st}-${width}`);
         if (st === "leer") {
           claims[`${tag}without a session the Ranke still shows every worktree, none marked, each with Öffnen behind a click`] =
-            !r.rows.some((x) => x.cls.includes("here")) && zw.every((x) => x.node === "leer") && /Focus a pane/.test(r.bodyText);
+            !r.rows.some((x) => x.cls.includes("here")) && zw.every((x) => x.node === "leer") && /Wähle eine Pane/.test(r.bodyText);
           await shot(`${st}-${width}`);
         }
         if (st === "main") {
@@ -10710,6 +10802,291 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
           claims[`${tag}a session in the main checkout marks the stem, its address is underlined, no lane is marked`] =
             m.cls.includes("here") && /\b3\b/.test(m.text) && !zw.some((x) => x.cls.includes("here"));
           await shot(`${st}-${width}`);
+        }
+        // --- THE REST OF INFO (cards R1–R4, rechter-tab-notiz.md §3–§4a, Variante 3A): the session
+        // block, Changes with Land lane and its ⋯, the notepad, History, the four tabs under "Mehr",
+        // the handover line with its popover, the checks strip in the Arbeitsorte's head. Every
+        // statement a DOM claim, every click judged by the request it sent.
+        {
+          const INFO = `(() => { const body = document.querySelector('#boardbody'); if (!body) return null;
+            const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom), w: Math.round(r.width), h: Math.round(r.height) }; };
+            const txt = (e) => e ? e.innerText.replace(/\\s+/g, ' ').trim() : null;
+            const sess = body.querySelector('.bhead'), work = body.querySelector('.bchanges'), pop = body.querySelector('.bpop');
+            const lower = [...body.querySelectorAll('.bhead, .bchanges, .bnotesec, .bhist, .bmoresec')];
+            const targets = lower.flatMap((s) => [...s.querySelectorAll('button, [role=button], textarea')])
+              .filter((b) => !b.closest('.btabbody') && !b.closest('.bpop') && b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden' && !b.hidden);
+            const ranke = body.querySelector('.ranke');
+            return {
+              title: document.querySelector('#boardtitle')?.textContent ?? null,
+              shellInfo: [...document.querySelectorAll('#shell-board *')].some((e) => !e.children.length && e.textContent.trim() === 'Info'),
+              kids: [...body.children].map((k) => k.className),
+              sess: sess ? { name: txt(sess.querySelector('.bheadname')), glyphs: [...sess.querySelectorAll('.bheadtop > .bib')].map((b) => ({ label: b.getAttribute('aria-label'), title: b.title, text: b.textContent.trim() })),
+                meta: txt(sess.querySelector('.bheadmeta')), kv: [...sess.querySelectorAll('.bkv')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .v')), title: r.title, sw: r.querySelector('.optsw')?.title ?? null })) } : null,
+              work: work ? { text: txt(work), state: txt(work.querySelector(':scope > .bstate')), files: work.querySelectorAll('.buncf').length, landnote: txt(work.querySelector('.landnote')),
+                buttons: [...work.querySelectorAll('.bchangeacts > button')].map((b) => ({ text: b.textContent.trim(), label: b.getAttribute('aria-label'), primary: b.classList.contains('primary'), disabled: b.disabled })) } : null,
+              pop: pop ? { kind: pop.dataset.pop, items: [...pop.querySelectorAll('.bmenuitem')].map((b) => ({ t: txt(b.querySelector('.t')), danger: b.classList.contains('danger'), color: getComputedStyle(b).color })),
+                seps: pop.querySelectorAll('.sep').length, rows: [...pop.querySelectorAll('.pr')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .pv')), h: txt(r.querySelector(':scope > .h')) })),
+                stepper: [...pop.querySelectorAll('.stepper button')].map((b) => b.disabled), box: box(pop) } : null,
+              focusPop: document.activeElement?.dataset?.pop ?? null,
+              note: (() => { const n = body.querySelector('.bnotesec'); if (!n) return null; const ta = n.querySelector('textarea'), save = n.querySelector('.bnotesave'), foot = n.querySelector('.bnotefoot');
+                return { rows: ta?.rows ?? 0, h: Math.round(ta?.getBoundingClientRect().height ?? 0), value: ta?.value ?? '', save: !!save && !save.hidden, foot: foot && !foot.hidden ? txt(foot.querySelector('.m')) : '' }; })(),
+              hist: (() => { const h = body.querySelector('.bhist'); return h ? { rows: h.querySelectorAll('.brow').length, files: h.querySelectorAll('.bfile').length, folds: h.querySelectorAll('.bfold').length, more: txt(h.querySelector('.bmorebtn')) } : null; })(),
+              tabs: [...body.querySelectorAll('.bmoresec .btab')].map((t) => ({ key: t.dataset.tab, open: t.classList.contains('open'), title: txt(t.querySelector('.tt')), sum: txt(t.querySelector('.sum')),
+                x: t.querySelector('.btabx')?.getAttribute('aria-label') ?? null, body: (txt(t.querySelector('.btabbody')) ?? '').slice(0, 400), h: Math.round(t.querySelector('.btabbtn').getBoundingClientRect().height) })),
+              meter: (() => { const b = ranke?.querySelector('.meterbtn'), p = ranke?.querySelector('.rkmeter');
+                return { btn: txt(b), open: b?.getAttribute('aria-expanded') ?? null, inHead: !!b?.closest('h3'), rows: p ? [...p.querySelectorAll('.smrow')].map((x) => txt(x)) : null,
+                  cnt: p ? txt(p.querySelector('.smcount')) : null, lock: p ? txt(p.querySelector('.smlockrow')) : null }; })(),
+              oldMeter: !!document.querySelector('#boardsuites'),
+              alarm: (() => { const a = body.querySelector('.plasec'), e = body.querySelector('.berrs');
+                return { card: a ? { cls: a.className, t: txt(a.querySelector('.plat')), d: txt(a.querySelector('.plad')), btns: [...a.querySelectorAll('button')].map((b) => b.textContent.trim()), detail: txt(a.querySelector('.pladetail')) } : null,
+                  errs: e ? txt(e.querySelector('.errrow')) : null }; })(),
+              live: txt([...body.querySelectorAll('.zr.stand')].find((r) => r.dataset.kind === 'live-server')),
+              bodyText: [...body.querySelectorAll('.btabbody')].reduce((t, b) => t.replace(b.innerText, ''), body.innerText),
+              small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
+              vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
+              headH: Math.round(ranke?.querySelector('h3')?.getBoundingClientRect().height ?? 0),
+              landBottom: (() => { const b = [...body.querySelectorAll('.bchangeacts > button')].find((x) => /Land lane|Landing/.test(x.textContent)); return b ? Math.round(b.getBoundingClientRect().bottom) : null; })(),
+            }; })()`;
+          type Info = { title: string | null; shellInfo: boolean; kids: string[];
+            sess: { name: string | null; glyphs: { label: string | null; title: string; text: string }[]; meta: string | null; kv: { k: string | null; v: string | null; title: string; sw: string | null }[] } | null;
+            work: { text: string | null; state: string | null; files: number; landnote: string | null; buttons: { text: string; label: string | null; primary: boolean; disabled: boolean }[] } | null;
+            pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[]; stepper: boolean[];
+              box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
+            note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
+            hist: { rows: number; files: number; folds: number; more: string | null } | null;
+            tabs: { key: string; open: boolean; title: string | null; sum: string | null; x: string | null; body: string; h: number }[];
+            meter: { btn: string | null; open: string | null; inHead: boolean; rows: string[] | null; cnt: string | null; lock: string | null }; oldMeter: boolean;
+            alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null } | null; errs: string | null }; live: string | null;
+            bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null;
+            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number };
+          const info = async (): Promise<Info> => {
+            const x = await evaluate<Info | null>(INFO);
+            if (!x) throw new Error("info DOM probe: no #boardbody");
+            return x;
+          };
+          const it = `info ${st}: `;
+          const hasSession = st !== "leer";
+          const isLane = hasSession && st !== "main";
+          // after the jump in `tippen` the column shows 3B: only the column-wide claims are read there
+          const detail = st !== "tippen";
+          const ownLanded = st === "land";
+          let n = await info();
+          facts.info = { kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
+          claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
+          if (!phone && hasSession) claims[`${it}the Arbeitsorte's head — title, the name switch, the checks strip — stays one line at 300 px`] = n.headH > 0 && n.headH <= 26;
+          claims[`${it}the checks strip is a word button in the Arbeitsorte's head, the pinned strip under the column head is gone`] =
+            n.meter.inHead && !n.oldMeter && n.meter.btn === (st === "land" ? "Prüfungen · 1 läuft" : st === "leer" ? "Prüfungen · frei · 1 Helfer" : "Prüfungen · frei");
+          // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Notizblock → History → Mehr
+          const order = n.kids.map((k) => k.includes("ranke") ? "ranke" : k.includes("bhead") ? "sess" : k.includes("bchanges") ? "changes"
+            : k.includes("bnotesec") ? "note" : k.includes("bhist") ? "history" : k.includes("bmore") ? "more" : k.includes("bnopane") ? "nopane"
+            : /plasec|berrs/.test(k) ? "alarm" : k).filter((k) => k !== "alarm");
+          claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Notizblock → History → Mehr`] = !hasSession
+            ? JSON.stringify(order) === JSON.stringify(["ranke", "nopane"])
+            : JSON.stringify(order) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "note", "history", "more"] : ["ranke", "sess", "changes", "history", "more"]);
+          claims[`${it}no process word anywhere in the column's visible text`] = !PROCESS.test(n.bodyText) && !ADDRESS.test(n.bodyText);
+          if (!hasSession) claims[`${it}without a session the column says so in one sentence and draws no session block`] = /Wähle eine Pane, um ihre Session zu sehen\./.test(n.bodyText) && !n.sess;
+          if (hasSession && detail && n.sess) {
+            claims[`${it}Umbenennen · Teilen · Exportieren · ⋯ are glyph buttons beside the name, each with its sentence on hover and as its name`] =
+              JSON.stringify(n.sess.glyphs.map((g) => g.label)) === JSON.stringify(["Umbenennen", "Teilen", "Exportieren", "Weitere Aktionen"])
+              && n.sess.glyphs.every((g) => g.title.length > 12 && g.text === "") && !/\b(Rename|Share…|Export…)/.test(n.bodyText);
+            const keys = n.sess.kv.map((r) => r.k);
+            claims[`${it}the session's values: ${isLane ? "Branch · Landet in · " + (ownLanded ? "Land" : "Check") + " · " : ""}Kontext · Gehört zu`] =
+              JSON.stringify(keys) === JSON.stringify(isLane ? ["Branch", "Landet in", ownLanded ? "Land" : "Check", "Kontext", "Gehört zu"] : ["Kontext", "Gehört zu"]);
+            const kon = n.sess.kv.find((r) => r.k === "Kontext");
+            claims[`${it}the handover is ONE line — "${isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus"}" — whether the hint was given only on hover`] = !!kon
+              && (kon.v ?? "").startsWith(isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus") && !/Hinweis/.test(kon.v ?? "")
+              && /Hinweis noch nicht gegeben/.test(kon.sw ?? "") && !/\b(Fill|Handover|Kind|Handoff)\b/.test(n.bodyText);
+            claims[`${it}"Gehört zu" carries the links${isLane ? " Auftrag · Akte" : ""}`] = isLane
+              ? /^Auftrag [0-9a-f]{8} Akte$/.test(n.sess.kv.find((r) => r.k === "Gehört zu")?.v ?? "") : n.sess.kv.some((r) => r.k === "Gehört zu");
+            if (isLane) {
+              const br = n.sess.kv.find((r) => r.k === "Branch"), land = n.sess.kv.find((r) => r.k === "Landet in");
+              claims[`${it}Branch in full with its copy glyph, and where it lands: "overhaul · ${ownLanded ? "3 Commits werden gelandet" : "3 Commits voraus"}"`] =
+                (br?.v ?? "").includes(own.branch) && land?.v === `overhaul ${ownLanded ? "3 Commits werden gelandet" : "3 Commits voraus"}`;
+              if (ownLanded) {
+                const steps = n.sess.kv.find((r) => r.k === "Land");
+                claims[`${it}while it lands, its four steps: wartet ✓ → wird geprüft (now) → gelandet → danach`] = steps?.v === "wartet wird geprüft gelandet danach"
+                  && /✓ wartet auf die Prüfung → ● wird geprüft → gelandet → der Check nach dem Land/.test(steps.title);
+              } else {
+                const ck = n.sess.kv.find((r) => r.k === "Check");
+                claims[`${it}Check names the newest check of the lane with its age, every stage on hover`] = /^läuft · (gerade eben|vor \d+ Min\.) Vorschau$/.test(ck?.v ?? "")
+                  && /Lokale Beweise: grün/.test(ck?.title ?? "") && /Land-Prüfung: noch keiner/.test(ck?.title ?? "");
+              }
+            }
+          }
+          if (hasSession && detail && n.work) {
+            const btns = n.work.buttons;
+            const want = !isLane ? ["Commit", "Commit with written message"] : ownLanded ? ["Landing…", "Weitere Lane-Aktionen"] : ["Commit", "Land lane", "Weitere Lane-Aktionen"];
+            claims[`${it}Changes' row: ${want.join(" · ")}${isLane ? " — Land lane the one primary, ⋯ beside it" : ""}`] =
+              JSON.stringify(btns.map((b) => b.label ?? b.text)) === JSON.stringify(want)
+              && (!isLane || (ownLanded ? btns.every((b) => b.disabled) : btns.filter((b) => b.primary).map((b) => b.text).join() === "Land lane"));
+            if (st !== "menue") claims[`${it}Shelve, Park for review and Undo last land are not on the surface — they are behind ⋯`] = !/Shelve|Park for review|Undo last land/.test(n.work.text ?? "");
+            if (isLane && !ownLanded) claims[`${it}the uncommitted files are listed: 2`] = n.work.files === 2 && n.work.state === "2 uncommitted files · 3 commits ready";
+            if (ownLanded) claims[`${it}under Landing… it says how far: "wird geprüft · m:ss von üblich 4:10"`] = /^wird geprüft · \d+:\d\d von üblich 4:10$/.test(n.work.landnote ?? "");
+          }
+          if (isLane && detail) claims[`${it}the notepad stays visible and compact: two lines, no save button and no counter while nothing changed`] =
+            !!n.note && n.note.rows === 2 && !n.note.save && (noteOf(st) ? n.note.value === NOTE && n.note.foot === "gesichert" : n.note.value === "" && n.note.foot === "")
+            && n.note.h <= (noteOf(st) ? 120 : 60);
+          if (hasSession && detail) {
+            claims[`${it}History shows the three newest commits and one button for the rest`] = !!n.hist && n.hist.rows <= 3 && n.hist.files === 0
+              && n.hist.more === (isLane ? "Alle 3 Commits · 12 Dateien" : "Alle 4 Commits");
+            const tabs = n.tabs;
+            claims[`${it}"Mehr zu dieser Session": Setup · Rechte · Files · Your prompts as tabs with their summary, ${phone ? 40 : 28} px high`] =
+              JSON.stringify(tabs.map((t) => t.key)) === JSON.stringify(["setup", "rechte", "files", "prompts"])
+              && tabs[0]?.sum === "standard · 2 Packs" && tabs[1]?.sum === (isLane ? "eigener Auftrag · keine Projektsichten" : "Program Oberfläche · keine Projektsichten")
+              && tabs[2]?.sum === "412 Dateien" && tabs[2]?.x === "Explorer öffnen" && tabs[3]?.sum === "6"
+              && tabs.every((t) => t.h === (phone ? 40 : 28)) && tabs.every((t) => t.open === (st === "mehr" && (t.key === "setup" || t.key === "rechte")));
+          }
+          if (phone && hasSession) {
+            const small = n.small.filter((x) => x.h < (x.cls.includes("lk") ? 32 : 40));
+            claims[`${it}on the phone every target below the Arbeitsorte is at least 40 px high (a link 32)`] = small.length === 0;
+          }
+          if (st === "lane" && !phone) claims[`${it}Land lane stands on the first screen at 1200 × 900`] = n.landBottom !== null && n.landBottom <= n.vh;
+          if (st === "land") claims[`${it}the strip opens every run: 3A's land check and 3B's preview, the stations counted, who holds the machine, the helper`] =
+            n.meter.open === "true" && (n.meter.rows ?? []).length === 2 && /^3A · Rechter Tab dichter/.test(n.meter.rows?.[0] ?? "") && /^3B · Zeitleiste/.test(n.meter.rows?.[1] ?? "")
+            && n.meter.cnt === "wartet 1 · läuft 1 · auf Helfer 0 · fertig 0"
+            && /^Ein Lauf zur Zeit auf diesem Rechner · 3A · Rechter Tab dichter seit 2:4\d · Helfer workhorse bereit$/.test(n.meter.lock ?? "")
+            && /läuft seit 2:4\d \/ ~4:10/.test(n.meter.rows?.[0] ?? "") && /wartet seit 0:5\d/.test(n.meter.rows?.[1] ?? "");
+          if (st === "alarm") {
+            claims[`${it}the check after the land is a tinted card at the top: "Der Check nach dem Land ist rot", one sentence, Ansehen · Gesehen`] =
+              !!n.alarm.card && n.alarm.card.cls.includes("red") && n.alarm.card.t === "Der Check nach dem Land ist rot"
+              && /^main@[0-9a-f]{8} ist nach dem Land von .+ rot — die ganze Prüfung scheitert\. Rücknehmen oder reparieren\.$/.test(n.alarm.card.d ?? "")
+              && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Ansehen", "Gesehen"]) && n.kids[0]?.includes("plasec");
+            claims[`${it}the server errors are one line under it: "3 Serverfehler · 2 verschiedene seit …"`] = /^3 Serverfehler · 2 verschiedene seit /.test(n.alarm.errs ?? "");
+            claims[`${it}the due restart is the Live row itself: "Neustart fällig · läuft auf …"`] = (n.live ?? "").startsWith("Neustart fällig · läuft auf") && !/deploy due/i.test(n.bodyText);
+            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
+            await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
+            n = await info();
+            claims[`${it}"Ansehen" opens where, when and the way back ("Undo last land" in the ⋯ beside Land lane)`] = /Undo last land/.test(n.alarm.card?.detail ?? "") && /im ⋯ neben Land lane/.test(n.alarm.card?.detail ?? "");
+            await shot(`info-${st}-${width}`);
+            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Gesehen')?.click()`);
+            claims[`${it}"Gesehen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
+              await wait(`document.querySelector('#boardbody .plasec.seen') && localStorage.getItem('fleet.plaudit.ack') !== null`, 3000);
+          }
+          // --- the three popovers: at their button on the desktop, a sheet from the bottom on the phone
+          // the phone's sheet spans Info's own window (a side sheet over the session) and sits on its bottom edge
+          const sheetOk = (b: { x: number; r: number; b: number; w: number } | undefined) => !!b && (phone
+            ? !!n.boardBox && Math.abs(b.x - n.boardBox.x) <= 1 && Math.abs(b.r - n.boardBox.r) <= 1 && Math.abs(b.b - n.vh) <= 2 : b.w >= 200);
+          if (st === "uebergabe" || st === "main") {
+            await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+            await wait(`document.querySelector('#boardbody .bpop[data-pop="ueb"]')`, 3000);
+            await settle(150);
+            n = await info();
+            facts.ueb = n.pop;
+            const rows = n.pop?.rows ?? [];
+            claims[`${it}the switch opens the handover settings in readable words: Kontext · Übergabe bei · Hinweis · Weg · Diese Session`] = n.pop?.kind === "ueb"
+              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Kontext", "Übergabe bei", "Hinweis", "Weg", "Diese Session"])
+              && (isLane ? rows[0]?.v === "370k von 1M · 37 %" && rows[1]?.v === "− 40 % +" && rows[3]?.v === "neue Session im selben Worktree"
+                && rows[4]?.v === "die 3. dieser Lane" && /2 von 5 Übergaben genutzt/.test(rows[4]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[2]?.h ?? "")
+                : rows[3]?.v === "über das Program" && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[1]?.h ?? "") && n.pop?.stepper.every((d) => d) === true)
+              && sheetOk(n.pop?.box);
+            await shot(`info-${st}-${width}`);
+            if (st === "uebergabe") {
+              fx.writes = [];
+              await evaluate(`document.querySelector('#boardbody .bpop .stepper button[aria-label="Schwelle heben"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop .stepper .val')?.textContent === '45 %'`, 3000);
+              await evaluate(`[...document.querySelectorAll('#boardbody .bpop .seg button')].find((b) => b.textContent === 'Aus')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop .seg button.on')?.textContent === 'Aus'`, 3000);
+              n = await info();
+              facts.uebWrites = fx.writes;
+              claims[`${it}+ writes 45 % and Aus writes the hint off — for THIS occupant, over the handover route`] =
+                fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: 45 }))
+                && fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), nudge: false }))
+                && (n.sess?.kv.find((r) => r.k === "Kontext")?.v ?? "").startsWith("37 % · Übergabe bei 45 % Hinweis aus")
+                && /zurück auf 40 %/.test(n.pop?.rows[1]?.v ?? "");
+            }
+            await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+            await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
+            n = await info();
+            claims[`${it}Escape closes the popover and hands the focus back to its switch`] = !n.pop && n.focusPop === "ueb";
+          }
+          if (st === "menue") {
+            await evaluate(`document.querySelector('#boardbody .bchangeacts button[data-pop="land"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .bpop[data-pop="land"]')`, 3000);
+            await settle(150);
+            n = await info();
+            facts.menue = n.pop;
+            const items = n.pop?.items ?? [];
+            claims[`${it}⋯ beside Land lane: Shelve · Park for review · — · Undo last land (its lane), the danger last and red, on screen`] = n.pop?.kind === "land"
+              && JSON.stringify(items.slice(0, 2).map((x) => x.t)) === JSON.stringify(["Shelve", "Park for review"])
+              && /^Undo last land \((3C|1b2c)\)$/.test(items[2]?.t ?? "") && items.length === 3 && n.pop.seps === 1
+              && items[2]?.danger === true && items[2]?.color === r.danger && items.slice(0, 2).every((x) => !x.danger) && sheetOk(n.pop?.box)
+              && (n.pop?.box.b ?? Infinity) <= n.vh;
+            await shot(`info-${st}-${width}`);
+            await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+            await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
+            n = await info();
+            claims[`${it}Escape closes it and the focus is back on ⋯`] = !n.pop && n.focusPop === "land";
+          }
+          if (st === "kopf") {
+            await evaluate(`document.querySelector('#boardbody .bheadtop button[data-pop="kopf"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .bpop[data-pop="kopf"]')`, 3000);
+            await settle(150);
+            n = await info();
+            facts.kopf = n.pop;
+            const items = n.pop?.items ?? [];
+            claims[`${it}the session's ⋯: Branch kopieren · Commit kopieren · Worktree-Pfad kopieren · — · Session zurückholen (danger, last)`] = n.pop?.kind === "kopf"
+              && JSON.stringify(items.map((x) => x.t)) === JSON.stringify(["Branch kopieren", "Commit kopieren", "Worktree-Pfad kopieren", "Session zurückholen"])
+              && n.pop.seps === 1 && items[3]?.danger === true && items[3]?.color === r.danger && sheetOk(n.pop?.box);
+            await shot(`info-${st}-${width}`);
+            await evaluate(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem')].find((b) => b.textContent.startsWith('Branch kopieren'))?.click()`);
+            claims[`${it}"Branch kopieren" says it copied`] = await wait(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem .t')].some((t) => t.textContent === 'Kopiert')`, 2000);
+          }
+          if (st === "mehr") {
+            const setupTab = n.tabs.find((t) => t.key === "setup"), rightsTab = n.tabs.find((t) => t.key === "rechte");
+            claims[`${it}Setup and Rechte open show the former blocks unchanged: Program type and the packs, Eigene Arbeit · Projektsichten · Ausführung · Deine Sicht`] =
+              /Program type standard/.test(setupTab?.body ?? "") && /grammatik/.test(setupTab?.body ?? "") && /Ein Recht geben sie nicht/.test(setupTab?.body ?? "")
+              && /Eigene Arbeit/.test(rightsTab?.body ?? "") && /Projektsichten/.test(rightsTab?.body ?? "") && /Deine Sicht/.test(rightsTab?.body ?? "");
+            await evaluate(`document.querySelector('#boardbody .bhist .bmorebtn')?.click()`);
+            await wait(`document.querySelector('#boardbody .bhist .bfile')`, 3000);
+            n = await info();
+            claims[`${it}"Alle 3 Commits · 12 Dateien" opens the whole history: the commits, the 12 files, "Already in overhaul" folded`] =
+              !!n.hist && n.hist.rows === 3 && n.hist.files === 12 && n.hist.folds === 1 && n.hist.more === "Weniger zeigen";
+            // the draft's `mehr` stands at the opened tabs, as after a click there
+            await evaluate(`document.querySelector('#boardbody .bmoresec')?.scrollIntoView({ block: 'start' })`);
+            await settle(120);
+            await shot(`info-${st}-${width}`);
+            // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
+            if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
+            await navigate("http://fleet.fixture/");
+            await wait(`document.querySelector('#boardbody .bmoresec .btab')`, 15000);
+            if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); await wait(`document.querySelector('#boardbody .bmoresec .btab')`, 8000); }
+            await settle(500);
+            n = await info();
+            claims[`${it}which tabs are open and the open History survive a reload (src/prefs.ts)`] = n.tabs.filter((t) => t.open).map((t) => t.key).join() === "setup,rechte"
+              && n.hist?.more === "Weniger zeigen";
+          }
+          if (st === "lane") {
+            // writing in the notepad: "Notiz sichern" appears with the change, and only then
+            await evaluate(`(() => { const ta = document.querySelector('#boardbody .bnotesec textarea'); ta.value = 'Notiz aus der Probe'; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+            n = await info();
+            claims[`${it}a change to the notepad brings "Notiz sichern" and says "ungesichert"`] = !!n.note && n.note.save && n.note.foot === "ungesichert";
+            await evaluate(`(() => { const ta = document.querySelector('#boardbody .bnotesec textarea'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur(); })()`);
+          }
+          if (st === "branch") {
+            // the name column's switch and the opened repo survive a reload (src/prefs.ts)
+            // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
+            if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
+            await navigate("http://fleet.fixture/");
+            if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); }
+            const back = await wait(`document.querySelector('#boardbody .rkseg button.on')?.dataset.mode === 'stand' && !!document.querySelector('#boardbody .zr[data-slot="13"]')`, 15000);
+            facts.reload = await evaluate(`({ mode: localStorage.getItem('fleet.ranke.mode'), repos: localStorage.getItem('fleet.ranke.repos'),
+              on: document.querySelector('#boardbody .rkseg button.on')?.dataset.mode ?? null, s13: !!document.querySelector('#boardbody .zr[data-slot="13"]'),
+              text: (document.querySelector('#boardbody')?.innerText ?? '').slice(0, 300) })`);
+            claims[`${it}the switch "Stand" and the opened second repo survive a reload`] = back;
+          }
+          if (st === "viele3") {
+            const zw3 = branchRows(await read());
+            claims[`${it}with three branches: one row each, no fold line`] = zw3.length === 3 && !(await read()).rows.some((x) => x.cls.includes("zf"));
+          }
+          if (!["alarm", "uebergabe", "main", "menue", "kopf", "mehr"].includes(st)) {
+            await evaluate(`document.querySelector('#boardbody').scrollTop = 0`);
+            await settle(120);
+            await shot(`info-${st}-${width}`);
+            // …and the column's lower half, scrolled to its end
+            await evaluate(`document.querySelector('#boardbody').scrollTop = 99999`);
+            await settle(120);
+            await shot(`info-${st}-${width}-unten`);
+          }
         }
         results.push({ width, height, state: st, claims, facts });
       }

@@ -15358,7 +15358,20 @@ exit 0
         && (mpUExec.view?.programs ?? []).length === 0,
       JSON.stringify({ ...mpU, exec: mpUExec.view?.programs?.length ?? null }));
 
-    // (10) THE SUCCESSION CARRIES BOTH BINDINGS AND THEIR DUTIES
+    // (10) THE SUCCESSION CARRIES BOTH BINDINGS AND THEIR DUTIES — and a second lane of B asks and
+    // ends first, so its question's event is one the cut cannot hand on: it must be lost into B's
+    // OWN handover, never into A's (red before fleetEventProgramId: A's settle took every event)
+    const mpLaneB2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number; cwd?: string };
+    await stopSrv();
+    const mpPlantB2 = readState();
+    if (mpLaneB2.slot && mpPlantB2.slots?.[String(mpLaneB2.slot)]) mpPlantB2.slots[String(mpLaneB2.slot)]!.programId = mpB.id;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(mpPlantB2, null, 2), { mode: 0o600 });
+    await restartSrv();
+    await post("/api/dispatch", { on: false });
+    const mpGoneQ = await mpCall(slotToken(mpLaneB2.slot ?? null), "/api/self/clarifications",
+      { question: "one main: this lane of B ends before the succession" });
+    const mpGoneReq = ((await mpGoneQ.json()) as { request?: { id?: string; eventId?: string } }).request;
+    if (mpLaneB2.slot) await post(`/api/slots/${mpLaneB2.slot}/kill`, {});
     const mpPredOpenedAt = readState().slots?.[String(mpSlot)]?.openedAt ?? 0;
     const mpSuccLabel = "one-main-two-programs-successor";
     const mpSuccPending = selfSucceed(mpTok, { label: mpSuccLabel });
@@ -15404,11 +15417,19 @@ exit 0
     const mpOldTok = await mpCall(mpTok, "/api/self/attention", { kind: "decision", text: "old token", programId: mpA.id });
     check("one MAIN, two Programs (10c): the predecessor's token is dead after the succession (401)",
       mpOldTok.status === 401, String(mpOldTok.status));
+    // …and what the cut could NOT hand on stays with the Program it belongs to
+    const mpLostOf = (id: string) => readState().programs?.find((p) => p.id === id)?.handover?.lost ?? [];
+    const mpGoneEvent = mpGoneReq?.eventId ?? "";
+    check("one MAIN, two Programs (10d): the event of B's ended lane is lost into B's OWN handover, and A's handover does not hold it",
+      mpGoneQ.status === 200 && !!mpGoneEvent
+        && mpLostOf(mpB.id).some((row) => row.id === mpGoneEvent && row.kind === "fleet-event")
+        && !mpLostOf(mpA.id).some((row) => row.id === mpGoneEvent),
+      JSON.stringify({ asked: mpGoneQ.status, event: mpGoneEvent, lostA: mpLostOf(mpA.id), lostB: mpLostOf(mpB.id) }));
 
     // cleanup: panes, worktrees, rows, Programs — and the dispatch switch as it was
     for (const slot of [mpLaneA.slot, mpLaneB.slot, mpProbeSlot, mpSlot])
       if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
-    for (const cwd of [mpLaneA.cwd, mpLaneB.cwd])
+    for (const cwd of [mpLaneA.cwd, mpLaneB.cwd, mpLaneB2.cwd])
       if (cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", cwd]);
     for (const id of [mpRowA, mpRowB, mpForeignRow, mpNoteRow?.id ?? ""])
       if (id) await post(`/api/tasks/${id}/delete`, {});

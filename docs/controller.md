@@ -168,7 +168,10 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
   **Eine MAIN mehrerer Programs** (je Projekt eine MAIN, Owner 2026-10-06; `docs/self-api.md`
   §Bindung) übergibt ALLE in einer Nachfolge: das erste Program trägt Founding-Marker und Receipt,
   jedes weitere wird im selben Schnitt umgebunden und bekommt seinen eigenen `handover`, seine
-  Lineage (`succeed`), seine offenen Attention- und Rückfragezeilen. Ein Program, das der Owner
+  Lineage (`succeed`), seine offenen Attention- und Rückfragezeilen. Ein FleetEvent geht mit dem
+  Program, zu dem sein Objekt gehört (Report, Rückfrage, Lane; `server.ts#fleetEventProgramId`),
+  und ein nicht übertragbares steht in dessen eigenem `handover.lost`; ein Event ohne beweisbares
+  Program (etwa ein Watch der MAIN selbst) trägt das erste Program. Ein Program, das der Owner
   währenddessen abschließt oder umbindet, geht nicht mit und behält seinen Record. Ein Verbund mit
   einem Game-Maker-Program wird mit Namen abgelehnt (409). Nach einem Absturz zwischen Kill und
   Bindungsschnitt stehen die mitgehenden Programs stale; steht eine gebundene Nachfolgerin, bindet

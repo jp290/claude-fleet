@@ -760,7 +760,9 @@ kommentieren/zurückziehen nur, wenn sie sie selbst filed), `program-execution` 
 **Nachfolge:** `POST /api/self/succeed` einer MAIN mit n Programs übergibt ALLE an eine Nachfolgerin
 (`docs/controller.md` §Nachfolge). Das erste Program trägt Founding-Marker und Receipt, die übrigen
 (`companions`) werden im selben Schnitt reserviert, erfasst (eigener `handover`), im Brief genannt,
-umgebunden (Lineage `succeed`), ihre offenen Attention- und Rückfragezeilen gehen mit. Antwort:
+umgebunden (Lineage `succeed`), ihre offenen Attention- und Rückfragezeilen gehen mit, ebenso die
+FleetEvents ihrer Lanes (`server.ts#fleetEventProgramId`); ein nicht übertragbares steht im
+`handover.lost` SEINES Programs, nie in dem des ersten. Antwort:
 `companions: [<ids>]`. Ein Satz mit einem Game-Maker-Program wird mit Namen abgelehnt.
 
 ## Program-MAIN-Ausführungsschiene (der Gründungsbrief benennt sie)

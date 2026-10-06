@@ -12467,6 +12467,26 @@ function heldSuccessionProgramIds(holding: Program): Set<string> {
     && p.main?.slot === main.slot && p.main.openedAt === main.openedAt).map((p) => p.id));
 }
 
+// WHICH OF A SUCCESSION'S PROGRAMS an event addressed to the leaving MAIN belongs to — read from
+// the event's own object, never from `receiverAddress` (a MAIN of n Programs is addressed by its
+// FIRST one, deliveryAddress). A report names its Program, a question its provenance, a lane event
+// its lane: the live occupation first, else the one Program among `candidates` whose rows the lane
+// slot dispatched. `null` = no Program of the cut is provable (a watch on a deploy or an audit is
+// the occupant's own, an ambiguous slot is not guessed) — the founding Program then settles it.
+function fleetEventProgramId(e: FleetEvent, candidates: ReadonlySet<string>): string | null {
+  if (e.kind === "fleet-report") return e.payload.programId;
+  const question = clarifications.find((c) => c.eventId === e.id);
+  if (question) return question.provenance.programId;
+  if (!("subjectSlot" in e) || !("subjectBranch" in e)) return null;
+  const lane = slotFrom(e.subjectSlot);
+  if (lane?.cwd && lane.worktree?.branch === e.subjectBranch
+    && (!("subjectOpenedAt" in e) || e.subjectOpenedAt === undefined || lane.openedAt === e.subjectOpenedAt))
+    return lane.programId ?? null;
+  const ids = new Set(tasks.filter((t) => t.slot === e.subjectSlot && candidates.has(t.programId ?? ""))
+    .map((t) => t.programId));
+  return ids.size === 1 ? [...ids][0] ?? null : null;
+}
+
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
   // send-uncertain is refusable for the same reason it is not terminal: once the worker occupant is
   // gone there is nobody left to retry the send for, and an unrefusable row would never be pruned.
@@ -36266,10 +36286,18 @@ function captureProgramHandover(program: Program, predecessor: SuccessionPredece
     obligations: [...fresh, ...stillOpen], settled, lost: [...(program.handover?.lost ?? [])], dropped: 0 };
 }
 
+// `cut` names every Program this succession moves (the founding one and its companions). Each
+// settles the events of its OWN Program into its OWN handover (fleetEventProgramId); an event no
+// Program of the cut can be proven for falls to the founding one, as it did before the cut held n.
 function settleProgramSuccessionDuties(program: Program, predecessor: SuccessionPredecessorIdentity,
-  successor: Slot | null, handover: ProgramHandover): void {
+  successor: Slot | null, handover: ProgramHandover,
+  cut: { ids: ReadonlySet<string>; founding: boolean } = { ids: new Set([program.id]), founding: true }): void {
   const from = (slot: number | null, openedAt: number | null): boolean =>
     slot === predecessor.slot && openedAt === predecessor.openedAt;
+  const ownEvent = (e: FleetEvent): boolean => {
+    const id = fleetEventProgramId(e, cut.ids);
+    return id === program.id || (cut.founding && (id === null || !cut.ids.has(id)));
+  };
   const liveSuccessor = successor?.cwd && program.status === "active"
     && program.main?.slot === successor.id && program.main.openedAt === successor.openedAt ? successor : null;
   const baseReason = program.status !== "active" ? "program not active" : "no successor bound";
@@ -36306,7 +36334,7 @@ function settleProgramSuccessionDuties(program: Program, predecessor: Succession
       `${c.id} program=${program.id} from slot ${predecessor.slot} openedAt ${predecessor.openedAt}`);
   }
   for (const e of fleetEvents) {
-    if (!from(e.receiverSlot, e.receiverOpenedAt)) continue;
+    if (!from(e.receiverSlot, e.receiverOpenedAt) || !ownEvent(e)) continue;
     if (e.status === "subject-gone") {
       lost(e.id, "fleet-event", "lane gone");
       continue;
@@ -36778,6 +36806,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
   spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity,
   companions: readonly Program[] = []): Promise<Response> {
   const all = [program, ...companions];
+  // the one cut every settle below names, so each Program keeps the events of its own lanes
+  const cutIds: ReadonlySet<string> = new Set(all.map((p) => p.id));
+  const primaryCut = { ids: cutIds, founding: true };
+  const companionCut = { ids: cutIds, founding: false };
   if (all.some((p) => programBootstrapInflight.has(p.id)))
     return json({ error: "Program-MAIN founding already in flight" }, 409);
   if (program.founding)
@@ -36881,7 +36913,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     // hand on — the same settle the primary takes, and its holding ends as `retire`
     const settleCompanionsLost = (): void => {
       for (const c of companionRecords) {
-        settleProgramSuccessionDuties(c.program, predecessor, null, c.retained);
+        settleProgramSuccessionDuties(c.program, predecessor, null, c.retained, companionCut);
         c.program.handover = c.retained;
         if (boundToPredecessor(c.program)) closeProgramLineage(c.program, "retire", Date.now());
       }
@@ -36917,7 +36949,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
             settleCompanionsLost();
           }
           if (retained) {
-            settleProgramSuccessionDuties(program, predecessor, null, retained);
+            settleProgramSuccessionDuties(program, predecessor, null, retained, primaryCut);
             program.handover = retained;
           }
           if (retained || companionRecords.length) await saveStateNow();
@@ -36948,7 +36980,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
             closeProgramLineage(program, "retire", Date.now());
         }
         if (retained) {
-          settleProgramSuccessionDuties(program, predecessor, null, retained);
+          settleProgramSuccessionDuties(program, predecessor, null, retained, primaryCut);
           program.handover = retained;
         }
         settleCompanionsLost();
@@ -36969,7 +37001,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       if (retained) {
         program.handover = { ...retained,
           from: { ...retained.from, sessionId: predecessorSessionId } };
-        settleProgramSuccessionDuties(program, predecessor, s, program.handover);
+        settleProgramSuccessionDuties(program, predecessor, s, program.handover, primaryCut);
       }
       // the same save moves the authority and records the move: predecessor closed by `succeed`,
       // successor appended via `succeed`
@@ -36989,7 +37021,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       for (const c of companionRecords) {
         const cBound = c.program.main;
         if (!cBound || !boundToPredecessor(c.program)) {
-          settleProgramSuccessionDuties(c.program, predecessor, null, c.retained);
+          settleProgramSuccessionDuties(c.program, predecessor, null, c.retained, companionCut);
           c.program.handover = c.retained;
           audit("main_succession", s.id, `program ${c.program.id} companion not moved: its authority changed during the respawn`);
           continue;
@@ -36997,7 +37029,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         const cOld = { ...cBound };
         c.program.main = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null, boundAt: at };
         c.program.handover = { ...c.retained, from: { ...c.retained.from, sessionId: predecessorSessionId } };
-        settleProgramSuccessionDuties(c.program, predecessor, s, c.program.handover);
+        settleProgramSuccessionDuties(c.program, predecessor, s, c.program.handover, companionCut);
         appendProgramLineage(c.program, lineageEntryFromMain(c.program.main, "succeed"),
           { main: cOld, endedBy: "succeed" });
         for (const a of attentionRequests) {

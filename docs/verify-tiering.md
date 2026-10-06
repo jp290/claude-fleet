@@ -5255,10 +5255,12 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
 übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 36 der 52 Module sind nach
-DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`).
+DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`, `security`).
 
-**Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren wurde EINE Auswahl (`slots,tasks`, §16d).
-Für die anderen 28 „allein"-Zeilen steht kein Lauf dahinter, sondern nur die Abwesenheit einer Kante
+**Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren sind bisher zwei Auswahlen mit Lauf:
+`slots,tasks` (§16d) und die Handauswahl `ctl,land-durability,tasks` (§16c.1, Land-Receipt) — drei
+der 36 „allein“-Zeilen haben damit einen Lauf hinter sich (`slots`, `ctl`, `land-durability`). Für
+die anderen 33 „allein“-Zeilen steht kein Lauf dahinter, sondern nur die Abwesenheit einer Kante
 in dieser Tabelle — und die Tabelle modelliert, was ein Modul HERSTELLT, nicht was es voraussetzt,
 ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist ihr erster Messpunkt.
 
@@ -5296,7 +5298,6 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `lane-suite` ·L | — | — | allein |
 | `verify-rules` ·L | — | — | allein |
 | `programs` ·L | `ctx.restartSelfTok` `ctx.restartSelfSlot` | — | 2: self-token programs |
-| `supervisor` ·L | `server:slots-1-2-open` | — | allein |
 | `trailstats` ·L | `ctx.restartSelfTok` | — | 2: self-token trailstats |
 | `ref-advance` ·L | — | — | allein |
 | `outcomes` ·L | — | `server:program-confirmed` | allein |
@@ -5322,7 +5323,7 @@ Die fünf Server-Zustands-Fixtures, die kein Feld trägt, mit ihrem Beleg:
 
 | Fixture | Schreiber | vom Runner selbst pflanzbar? | Beleg |
 | --- | --- | --- | --- |
-| `server:slots-1-2-open` | `slots` | **ja** — dieselben zwei Aufrufe wie `e2e/slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie) und K4 (supervisor braucht irgendeinen Slot mit Self-Credential) |
+| `server:slots-1-2-open` | `slots` | **ja** - dieselben zwei Aufrufe wie `e2e/slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie); K4 brauchte seinerzeit irgendeinen Slot mit Self-Credential (das damals geprüfte Modul ist seit 288e2e57 entfernt) |
 | `server:slots-1-2-driven` | `slots` | nein | Prompt-Log, Transcript, Brief, Summary-Cache, angehängte Pane — sechs Leser, und niemand hat gemessen, dass Öffnen allein reicht; bewusst konservativ |
 | `server:program-confirmed` | `outcomes` | nein | K1: 3 FAIL + TypeError in `e2e/tasks.ts` im ersten `--shard`-Lauf |
 | `server:share-persisted` | `share` | nein | seit dcb2839e liest `e2e/tasks.ts` `fleet.json` `shares[0]` für seine Auth-Negativkontrolle; gemessen 2026-10-06 (Lane 22, Freeze 27a8b43e): tasks-only rot an genau dieser Vorbedingung, derselbe Baum mit `tasks,share` grün — bewusst konservativ, nicht synthetisiert |
@@ -5407,13 +5408,20 @@ gemessen rund 13 % schneller als dieser Rechner (1 839 s gegen 2 113 s, §5 der 
 382 s Arbeitszeit auf diesem Host. Der hostgleiche Vergleich fehlt — dafür müsste ein UNGEFILTERTER
 Lauf lokal auf demselben Baum stehen, und der wurde nicht gefahren.
 
-**Und die Grenze, gemessen am eigenen Fall:** das eine Rot des ersten Laufs war
-`state.sh: one forkSha line …` in `e2e/outcomes.ts` — echt und in derselben Kette entstanden
-(`state.sh` spawnt `bun land-collision-stats.ts` → `task-land-waves.ts` → `verify-proportion.ts` →
-`suite-modules.ts`, und die handgepflegte Kopierliste des Fixture-Repos nannte die neue Datei nicht).
-`outcomes` liegt NICHT im Schluss von `slots,tasks` — eine `slots,tasks`-Vorschau hätte diesen
-Regress also strukturell nicht finden können, egal wie grün sie endet. Das ist Grenze 3 aus §16a an
-einem echten Befund statt an einer Warnung. Seit diesem Vorfall schließt `e2e/pins.ts` die
+**Und der Befund, der hier als Grenze 3 erzählt wurde — KORREKTUR 2026-10-06, der Code gewinnt:**
+das eine Rot des ersten Laufs war `state.sh: one forkSha line …` in `e2e/outcomes.ts` — echt und in
+derselben Kette entstanden (`state.sh` spawnt `bun land-collision-stats.ts` → `task-land-waves.ts` →
+`verify-proportion.ts` → `suite-modules.ts`, und die handgepflegte Kopierliste des Fixture-Repos
+nannte die neue Datei nicht). Der hier ursprünglich gezogene Satz — „`outcomes` liegt NICHT im
+Schluss von `slots,tasks`“ — ist FALSCH, und zwar gegen den Code BEIDER Messbäume: schon `b7c79318`
+und `9f96a63b` lesen in `suite-modules.ts#MODULE_FIXTURES` bei `tasks` `server:program-confirmed`,
+das nur `outcomes` schreibt — der Schluss von `slots,tasks` enthielt outcomes also schon am
+Messtag (2026-09-17, `git show b7c79318:suite-modules.ts` + `modulePlanFor` → `slots self-token
+outcomes tasks`). Seit `4c9c7be1` (2026-10-06, Fixture `server:share-persisted`) zieht die Auswahl
+auch `share`, heute also `slots share self-token outcomes tasks`. Eine `slots,tasks`-Vorschau auf
+dem Messbaum hätte `e2e/outcomes.ts` somit DOCH gefahren und den Regress gesehen — der Fall ist
+KEIN Beleg für Grenze 3 aus §16a. Grenze 3 bleibt als konstruktive Grenze bestehen (§16a), aber
+ohne dieses Beispiel. Seit diesem Vorfall schließt `e2e/pins.ts` die
 Kopierliste in Stufe 1 (jeder relative Import einer gelisteten `.ts` muss selbst gelistet sein) —
 derselbe Defekt kostet dort Millisekunden statt 27 Minuten auf einer zweiten Maschine.
 
@@ -5429,19 +5437,22 @@ NACH `restart` ist also: **Slot 1 tot, Slot 2 offen**. Der Runner pflanzt in ein
 ohne `slots` aber BEIDE (§Basisfixture). Genau das ist die Divergenz.
 
 **Betroffen ist eine Auswahl, die (a) `slots` nicht enthält und (b) ein Modul enthält, das nach
-`restart` läuft, ohne `restart` zu ziehen.** Nach `restart` laufen sieben Module; vier davon sind
-betroffen, drei nicht:
+`restart` läuft, ohne `restart` zu ziehen.** Nach `restart` laufen zwölf Module; neun davon sind
+nicht betroffen (keine Kante), drei ziehen `restart`:
 
 | Modul nach `restart` | zieht `restart`? | Weg |
 | --- | --- | --- |
-| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
+| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` · `state-snapshot` · `trace` · `konzepte` · `role-address` · `stuck-delivery` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
 | `steward-core` | ja | liest `ctx.gapRepo`/`ctx.auditPath`/`ctx.planted*`, die nur `restart` schreibt |
 | `steward-outcomes` | ja | über `sc.*` → `steward-core` → `restart` |
 | `security` | ja | liest `ctx.auditPath` → `restart` |
 
-**Wie schwer das wiegt, gemessen statt vermutet:** keines der vier Module referenziert Slot 1 oder
-Slot 2 überhaupt (`grep -c '/api/slots/[12]/' e2e/{verify-queue,deploy-facts,errors,host-hygiene}.ts`
-→ 0 · 0 · 0 · 0). Ein direkter Bruch ist damit nicht bekannt. Eine INDIREKTE Abhängigkeit (eine
+**Wie schwer das wiegt, gemessen statt vermutet:** von den neun referenzieren acht Slot 1 oder
+Slot 2 überhaupt nicht (`grep -c '/api/slots/[12]/'` über die acht ohne `konzepte` → je 0).
+`konzepte` öffnet Slot 1 selbst (`e2e/konzepte.ts:169`, cwd=Repo, Label `konzept-main`) — in der
+vollen Suite nach `restart` gegen den toten Slot 1, in der gefilterten Runde gegen den gepflanzt
+offenen; ob `/open` auf einem offenen Slot dasselbe tut wie auf einem toten, ist ungemessen. Ein
+direkter Bruch ist bei den acht damit nicht bekannt, für `konzepte` offen. Eine INDIREKTE Abhängigkeit (eine
 Zählung über alle Sessions, ein Sweep) ist damit **nicht ausgeschlossen** — sie ist ungemessen, und
 genau so ist dieser Absatz zu lesen: kein Freifahrtschein, sondern eine benannte Lücke.
 
@@ -5452,8 +5463,8 @@ genau so ist dieser Absatz zu lesen: kein Freifahrtschein, sondern eine benannte
    in der Auswahl nachgeprüft, bevor es adjudiziert wird.
 2. *Kante deklarieren (konservativ, teuer):* eine Fixture `server:slot-1-killed`, geschrieben von
    `restart`, gelesen von den vier. Dann zieht ihr Schluss `restart` und damit dessen eigene Kette
-   (`slots autos share self-token intake restart`) — die Welt wird treu, und die vier billigsten
-   Vorschauen des Registers kosten ab dann sechs Module statt eines.
+   (`slots autos share self-token intake restart`) - die Welt wird treu, und die neun nach `restart`
+   laufenden Allein-Vorschauen kosten ab dann sechs Module statt eines.
 3. *Pflanzen nur für Leser:* die Basisfixture nur setzen, wenn ein laufendes Modul
    `server:slots-1-2-open` liest. Billig, aber **falsch als Pauschalregel**: für ein Modul VOR
    `restart`, das die Slots nicht liest (`watch`), entspricht das Pflanzen der vollen Suite, und

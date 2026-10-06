@@ -102,8 +102,10 @@ const tokenOf = (slot: number): string => {
   return state.slots[String(slot)]?.selfToken ?? "";
 };
 const events = async (token: string): Promise<StuckDeliveryFleetEvent[]> => {
-  const r = await fetch(BASE + "/api/self/events", { headers: { "x-fleet-self-token": token } });
-  const body = await r.json() as { events: StuckDeliveryFleetEvent[] };
+  const r = await fetch(BASE + "/api/self", { headers: { "x-fleet-self-token": token } });
+  const body = await r.json() as { events?: StuckDeliveryFleetEvent[]; error?: string };
+  if (!r.ok || !Array.isArray(body.events))
+    throw new Error(`stuck-delivery Self events read: HTTP ${r.status}, ${body.error ?? "missing events"}`);
   return body.events.filter((e) => e.kind === "delivery-stuck");
 };
 

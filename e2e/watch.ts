@@ -3684,14 +3684,22 @@ export async function run(): Promise<void> {
           const starvedWatchId = ((await starvedWatch.json()) as { watch?: { id: string } }).watch?.id ?? "";
           // the receiver's lastOutput is its boot stamp; the other event's 1 s idle gate must age
           // through on its own terms before the report's paste is allowed to happen — read the
-          // gate itself (the server's own now - lastOutput), never a clock of our own.
+          // gate itself (the server's own now - lastOutput), never a clock of our own. LOUD on
+          // exhaustion: the release below used to be guarded by a sleep that guaranteed the gate;
+          // a poll that gives up quietly would let the fixture paste against a closed gate.
+          let gateAged = false;
+          let gateLastMs: number | null = null;
           for (let i = 0; i < 40; i++) {
             const sx = ((await (await get("/api/sessions")).json()) as
               { now: number; slots: { id: number; lastOutput: number }[] });
             const sl = sx.slots.find((x) => x.id === main);
-            if (sl && sx.now - sl.lastOutput >= 1000) break;
+            gateLastMs = sl ? sx.now - sl.lastOutput : null;
+            if (gateLastMs !== null && gateLastMs >= 1000) { gateAged = true; break; }
             await Bun.sleep(100);
           }
+          if (!gateAged)
+            check("Q6 fixture precondition: the receiver's lastOutput aged past the 1 s idle gate before the report's paste was allowed to happen", false,
+              `last observed ${gateLastMs === null ? "receiver absent from /api/sessions" : `${gateLastMs}ms stale`} < 1000ms after 40×100 ms`);
           writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
           const starvedOffered = await reachedLatch(beforePasteLatch);
           const rowAt5 = await reportRow(rowId);
@@ -4246,12 +4254,18 @@ export async function run(): Promise<void> {
     // lane is killed or recycled — and the owner's unread result would read as „[Zitat entfernt]“
     // while nobody had read anything. BREAKS IF the mint stamps `?? s.id` instead of `?? null`.
     await post(`/api/slots/${taskLane.slot}/kill`, {});
-    for (let i = 0; i < 40; i++) { // the teardown itself is the positive fact: wait until the slot is really gone
+    // the teardown itself is the positive fact: wait until the slot is really gone, and say so if
+    // it never does — a silent give-up would let the untouched-row assertion below pass vacuously.
+    let slotGone = false;
+    for (let i = 0; i < 40; i++) {
       const sx = ((await (await get("/api/sessions")).json()) as
         { slots: { id: number; cwd: string | null }[] });
-      if (sx.slots.find((x) => x.id === taskLane.slot)?.cwd == null) break;
+      if (sx.slots.find((x) => x.id === taskLane.slot)?.cwd == null) { slotGone = true; break; }
       await Bun.sleep(50);
     }
+    if (!slotGone)
+      check("B4 fixture precondition: the killed worker's slot reads gone (cwd null) before its row is judged", false,
+        "the slot never left /api/sessions after the kill — teardown did not complete within 40×50 ms");
     const afterKill = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);
     await restartSrv();
     const afterRestart = (await fleetReportEventRows()).find((e) => e.id === inboxEvent?.id);

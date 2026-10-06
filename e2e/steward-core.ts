@@ -616,13 +616,21 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // every read below waits on the record itself — its server-stamped ts at the tail — never on
   // a guessed flush delay. ---
   const jSettled = async (ts: number | undefined): Promise<void> => {
-    if (ts === undefined) return;
+    if (ts === undefined) {
+      check("steward journal precondition: the POST carried its server-stamped ts for the flush wait", false,
+        "the append chain cannot be waited on without the record's own ts — the reads below run unanchored");
+      return;
+    }
+    let last: number | undefined;
     for (let i = 0; i < 60; i++) {
       const tail = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as
         { records?: { ts?: number }[] }).records?.[0]?.ts;
       if (tail === ts) return;
+      last = tail;
       await Bun.sleep(50);
     }
+    check("steward journal precondition: the just-anchored record reached the tail before the reads that follow", false,
+      `expected tail ts ${ts}, last observed ${last === undefined ? "absent" : last} after 60×50 ms`);
   };
   const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true });
   const jPost1J = (await jPost1.json()) as { ok?: boolean; ts?: number };

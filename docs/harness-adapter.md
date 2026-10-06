@@ -844,7 +844,8 @@ Messbefund bis zum nächsten Fleet-Paste, Belegungswechsel oder Server-Neustart,
 bei jedem Board-Poll. Ein Self-Absender erhält genau ein dauerhaftes `FleetEvent` der Art
 `delivery-stuck` pro Send, bei einem Bundle je unterschiedlichem Absender. Dessen exakte
 Belegung wird vor dem Schreiben erneut geprüft. Der Fakt wird als `delivery:"inbox"` über
-`GET /api/self/events` gelesen und dort quittiert; ohne Self-Prinzipal gibt es kein Event.
+`GET /api/self` gelesen; `GET /api/self/events/<id>` liest einen einzelnen Fakt,
+`POST /api/self/events/<id>/ack` quittiert ihn. Ohne Self-Prinzipal gibt es kein Event.
 Der Sensor tippt, löscht oder sendet nichts erneut. Der Client bleibt unverändert und
 unterstützt keine eigene Darstellung dieses neuen Fakts; die typisierte API ist die Fläche.
 `e2e/stuck-delivery.ts` belegt Payload-Rest, eingeklappten Rest, verzögertes Wiedererscheinen,

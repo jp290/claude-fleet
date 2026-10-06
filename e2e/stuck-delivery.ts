@@ -20,7 +20,7 @@ const fixture = String.raw`
 #include <sys/time.h>
 static char buf[32768], mode[64];
 static size_t len, paste_start;
-static int enters, backspaces, pasted, pasting;
+static int enters, backspaces, keys, pasted, pasting;
 static long long hidden_until;
 static const char *mode_file, *state_file;
 static long long now_ms(void) {
@@ -30,23 +30,23 @@ static long long now_ms(void) {
 static void save(void) {
   FILE *f = fopen(state_file, "w");
   if (!f) return;
-  fprintf(f, "enters=%d backspaces=%d\n", enters, backspaces);
+  fprintf(f, "enters=%d backspaces=%d keys=%d\n", enters, backspaces, keys);
   fwrite(buf, 1, len, f); fclose(f);
 }
 static void paint(void) {
   fputs("\033[2J\033[H", stdout);
-  if (hidden_until > now_ms()) { fputs("redrawing\n", stdout); fflush(stdout); return; }
+  if (hidden_until > now_ms()) { fputs("redrawing\r\n", stdout); fflush(stdout); return; }
   hidden_until = 0;
-  fputs("────────────────────────────────────────\n❯ ", stdout);
+  fputs("────────────────────────────────────────\r\n❯ ", stdout);
   if (pasted && (!strcmp(mode, "collapsed") || !strcmp(mode, "late"))) {
     fwrite(buf, 1, paste_start, stdout);
     fputs("[Pasted text #1 +79 lines]", stdout);
   } else {
     for (size_t i = 0; i < len; i++) {
-      putchar(buf[i]); if (buf[i] == '\n') fputs("  ", stdout);
+      if (buf[i] == '\n') fputs("\r\n  ", stdout); else putchar(buf[i]);
     }
   }
-  fputs("\n────────────────────────────────────────\n", stdout); fflush(stdout);
+  fputs("\r\n────────────────────────────────────────\r\n", stdout); fflush(stdout);
 }
 int main(int argc, char **argv) {
   if (argc < 3) return 2;
@@ -66,6 +66,7 @@ int main(int argc, char **argv) {
     }
     unsigned char c;
     if (read(0, &c, 1) != 1) break;
+    keys++;
     if (c == 27) {
       char seq[32]; size_t n = 0;
       while (n < sizeof seq - 1 && read(0, &c, 1) == 1) {
@@ -74,6 +75,7 @@ int main(int argc, char **argv) {
       seq[n] = 0;
       if (!strcmp(seq, "[200~")) { pasting = 1; paste_start = len; }
       if (!strcmp(seq, "[201~")) { pasting = 0; pasted = 1; save(); paint(); }
+      else save();
       continue;
     }
     if (!pasting && (c == '\r' || c == '\n')) {
@@ -86,7 +88,7 @@ int main(int argc, char **argv) {
       backspaces++; if (len) len--; save(); paint();
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;
-      if (!pasting) paint();
+      if (!pasting) { save(); paint(); }
     }
   }
   return 0;
@@ -158,6 +160,12 @@ export async function run(): Promise<void> {
       owned.push(target);
       await until(async () => (await sessions()).find((s) => s.id === target)?.agent === "alive",
         { timeoutMs: 12000, what: `${mode}: target raw agent alive` });
+      const ready = await until(async () => {
+        const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `s${target}`);
+        return composerRows(form, frame.out) !== null && composerBuffer(form, frame.out) === "";
+      }, { timeoutMs: 2000, what: `${mode}: raw fixture exposes the declared empty composer` });
+      check(`stuck-delivery ${mode} SETUP: raw fixture offers the declared empty composer`, ready);
+      if (!ready) throw new Error(`stuck-delivery ${mode}: raw fixture exposes no empty composer`);
       const before = await events(senderToken);
       const text = mode === "collapsed" || mode === "late"
         ? Array.from({ length: 80 }, (_, i) => `stuck-delivery ${mode} line ${i}`).join("\n")
@@ -206,7 +214,7 @@ export async function run(): Promise<void> {
       if (mode !== "replaced") {
         const finalState = readFileSync(stateFile, "utf8");
         check(`stuck-delivery ${mode}: sensor sends zero Enter/erase/replay and preserves the input`,
-          immediateState === finalState && /^enters=1 backspaces=0\n/.test(finalState));
+          immediateState === finalState && /^enters=1 backspaces=0 keys=\d+\n/.test(finalState));
       }
       const cap = await tmuxOut("capture-pane", "-p", "-e", "-t", `s${sender}`);
       check(`stuck-delivery ${mode}: sender composer receives no automatic notification paste`,

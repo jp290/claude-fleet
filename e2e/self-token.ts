@@ -4,7 +4,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BASE, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
 import { MERGE_IDLE_MS } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
@@ -98,6 +98,87 @@ export async function run(ctx: Ctx): Promise<void> {
   const bothSelfRow = await bothOnSelf.json() as { slot?: number };
   check("Owner-Bearer beside a valid Self-Token preserves the self door's session scope",
     bothOnSelf.status === 200 && bothSelfRow.slot === lnTok.slot, `${bothOnSelf.status} slot=${bothSelfRow.slot}`);
+  // --- THE OWNER'S HANDOVER SETTING per session (GET/PATCH /api/slots/:id/handover, server.ts#
+  // patchHandover; the right column's Übergabe popover). The owner sets a threshold in 5-steps and
+  // the hint on or off for ONE occupant; the brief's succession facts then carry the session's value
+  // instead of the rail's env value, fleet.json keeps it with its occupant, and every refusal leaves
+  // the setting as it was. A self credential — even this lane's own — never reaches the door. ---
+  {
+    const L = lnTok.slot;
+    type Facts = { thresholdPct: number | null; thresholdOff: string | null; defaultPct: number; pctFrom: string; nudgeOn: boolean };
+    type View = { slot: number; openedAt: number | null; setting: { thresholdPct: number | null; nudge: boolean } | null;
+      step: number; min: number; max: number; succession: Facts | null };
+    const hv = async (slot = L): Promise<{ status: number; body: View }> => {
+      const r = await get(`/api/slots/${slot}/handover`);
+      return { status: r.status, body: (await r.json().catch(() => ({}))) as View };
+    };
+    const hp = (body: unknown, headers: Record<string, string> = H, slot = L) =>
+      fetch(`${BASE}/api/slots/${slot}/handover`, { method: "PATCH", headers, body: JSON.stringify(body) });
+    const v0 = await hv();
+    const opened = v0.body.openedAt;
+    check("handover: GET names the occupant, the 5-step bounds and the rail's own value as the default — nothing set yet",
+      v0.status === 200 && typeof opened === "number" && opened > 0 && v0.body.setting === null && v0.body.step === 5
+        && v0.body.min === 5 && v0.body.max === 95 && v0.body.succession?.pctFrom === "fleet" && v0.body.succession.nudgeOn === true
+        && typeof v0.body.succession.defaultPct === "number", JSON.stringify(v0));
+    const set = await hp({ expectedOpenedAt: opened, thresholdPct: 35, nudge: false });
+    const setB = (await set.json().catch(() => ({}))) as View;
+    const brief = (await (await get(`/api/slots/${L}/brief`)).json().catch(() => ({}))) as { succession?: Facts };
+    const effective = (f: Facts | null | undefined) => !!f && (f.thresholdOff === null ? f.thresholdPct === 35 : f.thresholdPct === null);
+    check("handover: PATCH sets 35 % and the hint off for THIS occupant — the answer and the brief carry the session's value",
+      set.status === 200 && setB.setting?.thresholdPct === 35 && setB.setting.nudge === false && setB.succession?.pctFrom === "session"
+        && setB.succession.nudgeOn === false && effective(setB.succession)
+        && brief.succession?.pctFrom === "session" && brief.succession.nudgeOn === false && effective(brief.succession),
+      JSON.stringify({ status: set.status, setB, brief: brief.succession }));
+    let persisted: unknown = null;
+    for (let i = 0; i < 40; i++) {
+      try { persisted = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { handover?: unknown }> }).slots?.[String(L)]?.handover ?? null; } catch { /* mid-write */ }
+      if ((persisted as { thresholdPct?: number } | null)?.thresholdPct === 35) break;
+      await Bun.sleep(100);
+    }
+    check("handover: fleet.json keeps the setting with its occupant",
+      (persisted as { thresholdPct?: number; nudge?: boolean; occupant?: { slot?: number; openedAt?: number } } | null)?.thresholdPct === 35
+        && (persisted as { nudge?: boolean }).nudge === false
+        && (persisted as { occupant?: { slot?: number; openedAt?: number } }).occupant?.slot === L
+        && (persisted as { occupant?: { openedAt?: number } }).occupant?.openedAt === opened, JSON.stringify(persisted));
+    const SJ = { "content-type": "application/json" };
+    const refusals: [string, Promise<Response>, number, string | null][] = [
+      ["self token in its header", hp({ expectedOpenedAt: opened, thresholdPct: 60 }, { ...SJ, "x-fleet-self-token": selfTok }), 401, null],
+      ["self token as bearer", hp({ expectedOpenedAt: opened, thresholdPct: 60 }, { ...SJ, authorization: `Bearer ${selfTok}` }), 401, null],
+      ["no credential", hp({ expectedOpenedAt: opened, thresholdPct: 60 }, SJ), 401, null],
+      ["33 is not a 5-step", hp({ expectedOpenedAt: opened, thresholdPct: 33 }), 400, "bad-threshold"],
+      ["0 is below the floor", hp({ expectedOpenedAt: opened, thresholdPct: 0 }), 400, "bad-threshold"],
+      ["100 is above the ceiling", hp({ expectedOpenedAt: opened, thresholdPct: 100 }), 400, "bad-threshold"],
+      ["a string is no number", hp({ expectedOpenedAt: opened, thresholdPct: "40" }), 400, "bad-threshold"],
+      ["the hint takes only true/false", hp({ expectedOpenedAt: opened, nudge: "aus" }), 400, "bad-nudge"],
+      ["an empty body sets nothing", hp({ expectedOpenedAt: opened }), 400, "nothing-to-set"],
+      ["another occupant's openedAt", hp({ expectedOpenedAt: (opened ?? 0) + 1, thresholdPct: 60 }), 409, "occupant-changed"],
+    ];
+    const seen: string[] = [];
+    let allRefused = true;
+    for (const [what, res, status, refusal] of refusals) {
+      const r = await res;
+      const j = (await r.json().catch(() => ({}))) as { refusal?: string };
+      seen.push(`${what}=${r.status}:${j.refusal ?? "-"}`);
+      if (r.status !== status || (refusal !== null && j.refusal !== refusal)) allRefused = false;
+    }
+    const after = await hv();
+    check("handover refusals: a self credential is 401, a value off the 5-step range or of the wrong type is 400, another occupant is 409 — the setting stays 35 % / hint off",
+      allRefused && after.body.setting?.thresholdPct === 35 && after.body.setting.nudge === false, `${seen.join(" ")} · ${JSON.stringify(after.body.setting)}`);
+    const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd)?.id ?? null;
+    const idle = free === null ? null : await hp({ expectedOpenedAt: 0, thresholdPct: 40 }, H, free);
+    const idleJ = (await idle?.json().catch(() => ({}))) as { refusal?: string } | undefined;
+    const unknown = await hp({ expectedOpenedAt: 0, thresholdPct: 40 }, H, 999);
+    check("handover refusals: a slot without a session is 409 not-active, a slot that does not exist is 404",
+      free !== null && idle?.status === 409 && idleJ?.refusal === "not-active" && unknown.status === 404,
+      `free=${free} idle=${idle?.status}:${idleJ?.refusal} unknown=${unknown.status}`);
+    const back = await hp({ expectedOpenedAt: opened, thresholdPct: null, nudge: true });
+    const backB = (await back.json().catch(() => ({}))) as View;
+    check("handover: null and the hint on return the session to the fleet's values — no record is kept",
+      back.status === 200 && backB.setting === null && backB.succession?.pctFrom === "fleet" && backB.succession.nudgeOn === true,
+      JSON.stringify(backB));
+  }
+
   const ownerOnSelf = await selfAuto({ token: TOKEN });
   check("the owner token does not substitute for a selfToken on this route", ownerOnSelf.status === 401);
   const wrongSelf = await selfAuto({ token: "0".repeat(32) });

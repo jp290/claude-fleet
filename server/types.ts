@@ -2005,6 +2005,29 @@ function loadReportDelegate(v: unknown): ReportDelegate | null {
   return { v: 1, delegateId: g.delegateId, revision: g.revision as number, issuedBy: g.issuedBy, issuedAt: g.issuedAt,
     lineageId: g.lineageId as string | null, occupant, revokedAt: g.revokedAt as number | null, transferredFrom: from };
 }
+// THE OWNER'S HANDOVER SETTING on one occupant (Slot.handover; server.ts#patchHandover, the
+// right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
+// HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
+// FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
+// its hint at all. Bound to `occupant` like a read grant: a successor is a new session.
+interface HandoverSetting { thresholdPct: number | null; nudge: boolean; setAt: number; occupant: MemoryGrantOccupant }
+const HANDOVER_PCT_MIN = 5;
+const HANDOVER_PCT_MAX = 95;
+const HANDOVER_PCT_STEP = 5;
+const handoverPctOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
+  && n >= HANDOVER_PCT_MIN && n <= HANDOVER_PCT_MAX && n % HANDOVER_PCT_STEP === 0;
+// fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values)
+function loadHandoverSetting(v: unknown): HandoverSetting | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const g = v as Record<string, unknown>;
+  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "setAt", "occupant"].includes(k))) return null;
+  const o = g.occupant as Record<string, unknown> | null;
+  if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
+    || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
+    || typeof o.openedAt !== "number") return null;
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, setAt: g.setAt,
+    occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
+}
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
 // A slot put to sleep on purpose (server.ts#sleepSlot): its tmux session is gone, its occupant is not.
 // `sessionId` and `transcript` are the resume evidence the door checked BEFORE it tore the pane down —
@@ -2126,6 +2149,10 @@ interface Slot {
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
   lineageId: string | null;
+  // THE OWNER'S HANDOVER SETTING for this occupant (HandoverSetting), null where the owner set none —
+  // the session then runs on the rail's env threshold with the hint on. Reset with the occupant by
+  // openSlot and the teardown, never carried by a succession, persisted in fleet.json.
+  handover: HandoverSetting | null;
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.
@@ -3559,11 +3586,12 @@ export type {
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageObligationRef, LineageHandover,
-  LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate,
+  LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate, HandoverSetting,
 };
 export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
+  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,

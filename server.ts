@@ -171,6 +171,7 @@ import {
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
   helperReposFrom, loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
+  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting, type HandoverSetting,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -2518,6 +2519,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   memoryGrant: null,
   reportDelegate: null,
   lineageId: null,
+  handover: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
   titleCarry: "text",
@@ -5902,11 +5904,12 @@ function stateSnapshot(): string {
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
+    handover?: HandoverSetting;
     browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9549,6 +9552,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.lineageId = null; // a recycled slot is not the role line; the succession rails stamp it back
   s.memoryGrant = null; // ...nor its read grant: the generic succession rail alone carries one across
   s.reportDelegate = null; // ...nor its report delegation, on the same terms
+  s.handover = null; // ...nor the owner's handover setting: a new occupant starts on the fleet's values
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
   // the one caller that stamps it back (prior + 1) right after this call, for the one case where
   // the slot keeps the same worktree and the same work across the session boundary
@@ -9759,6 +9763,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.releasedBy = null;
   s.memoryGrant = null;
   s.reportDelegate = null;
+  s.handover = null;
   detachSlotTasks(s.id, closedNote, parked);
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id);
@@ -24424,14 +24429,26 @@ interface SuccessionFacts {
   // keyed by originId, so a hand-opened lane has no row to count against, and the main rails have
   // no cap at all.
   session: number; taken: number | null; cap: number | null;
+  // THE OWNER'S SETTING for this session (Slot.handover, PATCH /api/slots/:id/handover): the rail's
+  // env value it falls back to, whether `thresholdPct` is this session's own (`pctFrom: "session"`),
+  // and whether the tick may write the hint at all. The effective threshold above already applies it.
+  defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
 }
+// the threshold the tick compares against for THIS session: the owner's own value where one is set,
+// otherwise the rail's env value (FLEET_LANE_MIGRATE_PCT for a lane, FLEET_MIGRATE_PCT for a main)
+const railPct = (lane: boolean): number => (lane ? LANE_MIGRATE_PCT : MIGRATE_PCT);
+function handoverPct(s: Slot, lane: boolean): number {
+  const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null;
+  return own ?? railPct(lane);
+}
+const handoverNudgeOn = (s: Slot): boolean => !(s.handover && s.handover.occupant.openedAt === s.openedAt && !s.handover.nudge);
 function successionThresholdOff(s: Slot, lane: boolean): ThresholdOff | null {
   if (s.label === STEWARD_LABEL) return "steward";
   if (s.awaiting === "owner") return "waiting";
   if (!s.sessionId) return "unpinned";
   if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
   if (MIGRATE_PCT <= 0) return "fleet";        // the master switch: no tick is registered at all
-  if ((lane ? LANE_MIGRATE_PCT : MIGRATE_PCT) <= 0) return "rail";
+  if (handoverPct(s, lane) <= 0) return "rail";
   return null;
 }
 // A PROGRAM-MAIN'S LINE IS ITS PROGRAM (docs/self-api.md §Linien-Record): it never carries a
@@ -24463,7 +24480,7 @@ function successionFacts(s: Slot): SuccessionFacts {
   return {
     rail: lane ? "lane" : migrateRailOf(s),
     fill: contextFill(s),
-    thresholdPct: off ? null : lane ? LANE_MIGRATE_PCT : MIGRATE_PCT,
+    thresholdPct: off ? null : handoverPct(s, lane),
     thresholdOff: off,
     nudges: mine?.nudges ?? 0,
     nudgedAt: mine?.lastAt ? mine.lastAt : null,
@@ -24472,7 +24489,48 @@ function successionFacts(s: Slot): SuccessionFacts {
     session: line + 1,
     taken,
     cap: lane && s.originId && FLEET_LANE_SUCCEED_MAX > 0 ? FLEET_LANE_SUCCEED_MAX : null,
+    defaultPct: railPct(lane),
+    pctFrom: s.handover && s.handover.occupant.openedAt === s.openedAt && s.handover.thresholdPct !== null ? "session" : "fleet",
+    nudgeOn: handoverNudgeOn(s),
   };
+}
+
+// THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
+// credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
+// {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean}; null returns the
+// threshold to the rail's env value. Both fields are this occupant's and die with it (Slot.handover).
+// The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
+function handoverView(s: Slot): Response {
+  return json({ slot: s.id, openedAt: s.cwd ? s.openedAt : null, setting: s.handover,
+    step: HANDOVER_PCT_STEP, min: HANDOVER_PCT_MIN, max: HANDOVER_PCT_MAX,
+    succession: s.cwd ? successionFacts(s) : null });
+}
+function patchHandover(s: Slot, body: Record<string, unknown> | null): Response {
+  if (!s.cwd) return json({ refusal: "not-active", error: "slot not active" }, 409);
+  if (body?.expectedOpenedAt !== s.openedAt)
+    return json({ refusal: "occupant-changed", error: `expectedOpenedAt must name this slot's current occupant (${s.openedAt})` }, 409);
+  const hasPct = Object.prototype.hasOwnProperty.call(body, "thresholdPct");
+  const hasNudge = Object.prototype.hasOwnProperty.call(body, "nudge");
+  if (!hasPct && !hasNudge) return json({ refusal: "nothing-to-set", error: "send thresholdPct and/or nudge" }, 400);
+  if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
+    return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
+  if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
+  // the band is claude's (tickMigrate skips every other harness before it reads the fill): a setting
+  // there would name a gate that cannot fire, so it is refused rather than stored
+  if (harnessOf(s.harness) !== CLAUDE_HARNESS)
+    return json({ refusal: "harness", error: `${s.harness ?? "this harness"} is not on the handover band — nothing would act on a setting` }, 409);
+  const cur = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
+  const next: HandoverSetting = {
+    thresholdPct: hasPct ? body.thresholdPct as number | null : cur?.thresholdPct ?? null,
+    nudge: hasNudge ? body.nudge as boolean : cur?.nudge ?? true,
+    setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
+  };
+  // the fleet's own values are no setting: storing them would keep a record that says nothing
+  s.handover = next.thresholdPct === null && next.nudge ? null : next;
+  // no audit row of its own: server/audit-log.ts#AuditEvent is outside this card's surface, and the
+  // setting is device-free owner state like a rename — fleet.json carries it with its occupant
+  saveState();
+  return handoverView(s);
 }
 
 // THE SUCCESSION LINE, small enough for the 2 s poll. The brief (GET /api/slots/:id/brief) has
@@ -24679,7 +24737,10 @@ async function tickMigrate(): Promise<void> {
     // had was the land it might be nowhere near). `awaiting === "owner"` still covers the clarify
     // lane above: it was told to stop and wait, and a handover nudge is work it must not start.
     const lane = s.worktree !== null;
-    const threshold = lane ? LANE_MIGRATE_PCT : MIGRATE_PCT;
+    // the owner's own threshold for this session wins over the rail's env value, and a session the
+    // owner switched the hint off for is not this tick's business at all (Slot.handover)
+    if (!handoverNudgeOn(s)) continue;
+    const threshold = handoverPct(s, lane);
     if (threshold <= 0) continue; // a rail whose own threshold is 0 is off even while the tick runs
     const fill = contextFill(s);
     if (fill === null || fill.pct < threshold) continue; // cannot tell is never coerced to zero
@@ -40159,6 +40220,13 @@ if (existsSync(STATE_FILE)) {
             && (wtRaw === undefined || wtRaw === null)) s.memoryGrant = g;
           else console.log(`[fleet] slot ${s.id}: persisted memory grant dropped at boot — it does not name this occupant and line exactly`);
         }
+        // THE HANDOVER SETTING comes back only onto the occupant it was set on (HandoverSetting)
+        const pho = (v as { handover?: unknown }).handover;
+        if (pho !== undefined) {
+          const h = loadHandoverSetting(pho);
+          if (h && h.occupant.slot === s.id && h.occupant.openedAt === s.openedAt) s.handover = h;
+          else console.log(`[fleet] slot ${s.id}: persisted handover setting dropped at boot — it does not name this occupant`);
+        }
         // THE REPORT DELEGATION, on the read grant's exact terms (ReportDelegate)
         const prd = (v as { reportDelegate?: unknown }).reportDelegate;
         if (prd !== undefined) {
@@ -45654,6 +45722,13 @@ Bun.serve<WSData>({
       const s = slotFrom(grantMatch[1]);
       if (!s) return json({ error: "unknown slot" }, 404);
       return req.method === "GET" ? memoryGrantView(s) : await patchMemoryGrant(s, await readJson(req));
+    }
+    // THE HANDOVER SETTING (Slot.handover): owner-only by POSITION like the read grant beside it
+    const handoverMatch = /^\/api\/slots\/(\d+)\/handover$/.exec(url.pathname);
+    if (handoverMatch && (req.method === "GET" || req.method === "PATCH")) {
+      const s = slotFrom(handoverMatch[1]);
+      if (!s) return json({ error: "unknown slot" }, 404);
+      return req.method === "GET" ? handoverView(s) : patchHandover(s, await readJson(req));
     }
     // THE REPORT DELEGATION (ReportDelegate): owner-only by POSITION like the read grant beside it
     const delegateMatch = /^\/api\/slots\/(\d+)\/report-delegate$/.exec(url.pathname);

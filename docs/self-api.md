@@ -615,6 +615,21 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Schwelle und Hinweis je Session setzt der Owner** (Owner-Route, seit 2026-10-06, die Übergabe-Zeile
+  der rechten Spalte): `GET /api/slots/:id/handover` antwortet `{slot, openedAt, setting, step, min, max,
+  succession}`; `PATCH` mit `{expectedOpenedAt, thresholdPct?, nudge?}` setzt für GENAU diese Belegung eine
+  eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `null` = zurück auf den Env-Wert der Schiene) und
+  ob `tickMigrate` ihr den Hinweis überhaupt schreibt (`nudge: false` = nie). Der Env-Wert
+  (`FLEET_MIGRATE_PCT` / `FLEET_LANE_MIGRATE_PCT`) bleibt der Default und der Hauptschalter bleibt
+  `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`) und
+  `nudgeOn`, und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
+  (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung; eine neue Belegung — auch die
+  Nachfolgerin einer Lane — beginnt auf den Fleet-Werten. Fleet-Werte selbst sind keine Einstellung:
+  `null` + Hinweis an speichert nichts. Ablehnungen: jede Self-Credential (Header oder Bearer) 401 wie an
+  jeder Owner-Route, ein Wert außerhalb der 5er-Schritte oder vom falschen Typ 400 (`bad-threshold`,
+  `bad-nudge`, `nothing-to-set`), eine andere Belegung 409 `occupant-changed`, ein Slot ohne Session 409
+  `not-active`, ein Nicht-claude-Harness 409 `harness` (das Band gilt nur für claude), ein unbekannter Slot
+  404. Gemessen in `e2e/self-token.ts`.
 - **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
   scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
   der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und

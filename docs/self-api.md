@@ -4836,6 +4836,7 @@ Eintrag die Autorität bekam, `endedBy`, WIE das Halten endete; `endedAt`/`ended
 | `rebound` | ein Bootstrap über eine STALE Bindung — derselbe Moment wie die Trail-Zeile `program_main_rebound` |
 | `succeed` | die Nachfolge (`succeedProgramMain`), der Eintrag der Nachfolgerin |
 | `backfill-unknown` | genau EIN Eintrag beim Laden eines Programs, das `main` hatte, bevor der Record existierte — `boundAt` aus `main` kopiert, nie eine erfundene frühere Geschichte |
+| `attach` | der Owner bindet ein aktives Program an eine MAIN, die schon für andere Programs ihres Projekts läuft (`bootstrap-main` mit `{slot}`, `server.ts#attachProgramToLiveMain`) — keine Session wurde dafür gegründet; Trail-Zeile `program_main_attach` |
 
 | `endedBy` | Moment |
 | --- | --- |

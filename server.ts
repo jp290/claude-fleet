@@ -2582,12 +2582,15 @@ const appendProgramLineage = (program: Program, entry: ProgramLineageEntry,
 // ends NOW, with the observed time. Programs whose `main` names a different occupation are
 // untouched — the binding itself is deliberately left in place (it is what "stale" means).
 const closeProgramLineageForOccupant = (slot: number, openedAt: number, at: number): void => {
+  // an in-place succession in flight owns this ending — for EVERY Program of the occupation, the
+  // one carrying the marker and the ones moving with it: its binding cut closes the entries as
+  // `succeed`, and clearProgramFounding / the companion settle close them as `retire` when no
+  // successor was bound
+  const succeeding = programs.some((p) => p.founding?.mode === "succession"
+    && p.founding.predecessor?.slot === slot && p.founding.predecessor.openedAt === openedAt);
   for (const p of programs) {
     if (!p.main || p.main.slot !== slot || p.main.openedAt !== openedAt) continue;
-    // an in-place succession in flight owns this ending: its binding cut closes the entry as
-    // `succeed`, and clearProgramFounding closes it as `retire` when no successor was bound
-    if (p.founding?.mode === "succession" && p.founding.predecessor?.slot === slot
-      && p.founding.predecessor.openedAt === openedAt) continue;
+    if (succeeding && p.status === "active") continue;
     closeProgramLineage(p, "retire", at);
   }
 };
@@ -3327,10 +3330,19 @@ async function programExecutionView(s: Slot): Promise<Response> {
       unknown,
     };
   });
+  // THE MERKZETTEL of this MAIN's project: program-less notiz rows targeting its own repo — faults no
+  // running Program caused, filed with POST /api/self/tasks {programId:null}. Listed, never started;
+  // the full row is GET /api/self/tasks/<id>. Only for a bound MAIN: the project is its checkout.
+  const projectRepo = projected.length && s.cwd ? await repoKeyOf(s) : null;
+  const projectNotes = projectRepo === null ? [] : tasks.filter((t) => !t.programId && t.kind === "notiz"
+    && !taskTerminal(t) && t.repo !== null && repoCanon(t.repo) === projectRepo)
+    .map((t) => ({ id: t.id, status: t.status, source: t.source, created: t.created,
+      head: t.text.split("\n")[0]!.slice(0, 160) }));
   return json({
     at: Date.now(),
     session: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
     programs: projected,
+    ...(projectRepo === null ? {} : { projectNotes }),
   });
 }
 // --- THE PROJECT MEMORY DOOR, M1 (GET /api/self/memory; docs/self-api.md §memory) --------------
@@ -3374,16 +3386,24 @@ async function memoryScopeFor(s: Slot, url: URL): Promise<MemoryScope> {
       return memoryRefusal("foreign-task", `task ${wantTask} is not this lane's task (${taskIds.join(", ") || "none"}) — a lane reads its own task only`);
     return { ok: true, principal: "lane", taskIds: wantTask !== null ? [wantTask] : taskIds, programId };
   }
-  const bound = boundProgramForMain(s);
-  if (!bound.ok)
-    return memoryRefusal("no-scope", `${bound.error} — memory is read from a lane's own task or from the Program this session is the bound MAIN of`);
-  if (wantProgram !== null && wantProgram !== bound.program.id)
-    return memoryRefusal("foreign-program", `program ${wantProgram} is not the Program this session is bound MAIN of (${bound.program.id})`);
-  if (wantTask === null) return { ok: true, principal: "program-main", program: bound.program, taskIds: null };
+  const binding = mainBindingOf(s);
+  if (!binding.ok)
+    return memoryRefusal("no-scope", `${binding.error} — memory is read from a lane's own task or from the Program this session is the bound MAIN of`);
+  const own = ownProgramsPhrase(binding.programs);
+  if (wantProgram !== null && !binding.programs.some((p) => p.id === wantProgram))
+    return memoryRefusal("foreign-program", `program ${wantProgram} is not a Program this session is bound MAIN of (${own})`);
+  if (wantTask === null) {
+    // a MAIN of several Programs reads ONE of them per call: `program=` picks it among its own
+    const bound = boundProgramForMain(s, wantProgram ?? undefined);
+    if (!bound.ok) return memoryRefusal("program-required", bound.error);
+    return { ok: true, principal: "program-main", program: bound.program, taskIds: null };
+  }
   const t = tasks.find((x) => x.id === wantTask) ?? await youngestArchivedTask(wantTask);
   if (!t) return memoryRefusal("unknown-task", `task ${wantTask} is neither in the queue nor in tasks-archive.jsonl`, 404);
-  if (t.programId !== bound.program.id)
-    return memoryRefusal("foreign-task", `task ${wantTask} belongs to ${t.programId ? `program ${t.programId}` : "no program"}, not to ${bound.program.id}`);
+  // the row names its Program; it must be one of this occupation's own (and the pick, if any)
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok || (wantProgram !== null && wantProgram !== t.programId))
+    return memoryRefusal("foreign-task", `task ${wantTask} belongs to ${t.programId ? `program ${t.programId}` : "no program"}, not to ${wantProgram !== null ? `program ${wantProgram}` : own}`);
   return { ok: true, principal: "program-main", program: bound.program, taskIds: [wantTask] };
 }
 
@@ -3567,13 +3587,13 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   const s = principal?.kind === "session" ? slots[principal.slot - 1] : undefined;
   if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
   const identity = { slot: s.id, openedAt: s.openedAt, taskId: s.taskId ?? null, programId: s.programId ?? null };
-  const bound = s.worktree ? null : boundProgramForMain(s);
+  const bound = s.worktree ? null : boundProgramsForMain(s).map((p) => p.id).join(",");
   const unchanged = () => {
     const still = resolveSelfPrincipal(req);
     return s.openedAt === identity.openedAt && still?.kind === "session"
       && still.slot === identity.slot && still.openedAt === identity.openedAt
       && (s.taskId ?? null) === identity.taskId && (s.programId ?? null) === identity.programId
-      && (!bound?.ok || (() => { const now = boundProgramForMain(s); return now.ok && now.program === bound.program; })());
+      && (bound === null || boundProgramsForMain(s).map((p) => p.id).join(",") === bound);
   };
   const refused = (refusal: string, error: string, status = 409) => ({ status, body: { refusal, error } });
   type BorrowSource = { path?: string; anchor?: string; privateSourceId?: string; version?: number;
@@ -9445,7 +9465,7 @@ const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, "model-push">, 
   },
 };
 function deliveryRole(s: Slot): DeliveryRole | null {
-  return boundProgramForMain(s).ok ? "main" : s.worktree ? "lane"
+  return boundProgramsForMain(s).length ? "main" : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : null;
 }
 function deliveryMeaning(path: Exclude<SendPath, "model-push">, s: Slot): string {
@@ -9823,9 +9843,11 @@ type ImmediateDelivery = { slot: Slot; text: string; submit: boolean; options: S
   origin: { slot: number; openedAt: number } };
 const deliveryBundles = new Map<string, DeliveryBundle>();
 const DELIVERY_BUNDLE_SEC = Math.max(0, Number(process.env.FLEET_DELIVERY_BUNDLE_SEC ?? 900) | 0);
+// A MAIN of n Programs is ONE receiver: every bound Program resolves to the same occupant, so the
+// first of them is the address and all of that occupant's deliveries ride one bundle.
 function deliveryAddress(s: Slot): DeliveryAddress {
-  const bound = boundProgramForMain(s);
-  if (bound.ok) return { kind: "program", id: bound.program.id };
+  const bound = boundProgramsForMain(s)[0];
+  if (bound) return { kind: "program", id: bound.id };
   if (!s.worktree && isOrchestratorLabel(s.label)) return { kind: "orchestrator" };
   return { kind: "slot", id: s.id };
 }
@@ -12153,10 +12175,16 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     // so a recycle during the body read cannot re-answer the question at all — which is what used
     // to make the recheck below load-bearing against a silent downgrade to the generic path. It
     // still refuses that occupant; it is no longer the only thing that would.
+    //
+    // A MAIN OF SEVERAL PROGRAMS hands ALL of them to one successor (one MAIN per project): the
+    // first carries the founding marker and the respawn, the others move with it in the same
+    // binding cut, each with its own captured handover. A game-maker Program never shares that
+    // rail — its handover is a checkpoint only its own MAIN writes — so a set containing one is
+    // refused by name rather than half-handed over.
     const bound = programs.filter((p) => p.status === "active" && p.main
       && p.main.slot === predecessorIdentity.slot && p.main.openedAt === predecessorIdentity.openedAt);
-    if (bound.length > 1)
-      return json({ error: `ambiguous succession: this session is Program-MAIN of ${bound.length} active programs` }, 409);
+    if (bound.length > 1 && bound.some((p) => isGameMaker(p)))
+      return json({ error: `this session is Program-MAIN of ${bound.length} active programs and ${bound.filter((p) => isGameMaker(p)).map((p) => p.id).join(", ")} is game-maker — a game-maker Program succeeds alone; the owner must move the other bindings first` }, 409);
     const gameMaker = bound.length === 1 && isGameMaker(bound[0]!);
     const handoffReady = gameMaker ? await handoffCommittedAfterOpen(s) : null;
     const pointerCommitted = bound.length === 0 && channel.pointer !== null
@@ -12170,7 +12198,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     if (pointerCommitted === false)
       return json({ error: "pointer must name a tracked file that is committed and clean in this checkout — a pointer at uncommitted prose is a handover the successor cannot read" }, 409);
 
-    if (bound.length === 1) {
+    if (bound.length >= 1) {
       // refused, not ignored: a Program-MAIN's handover is the Program record (captureProgramHandover),
       // byte for byte as before this cut, and a second channel beside it could disagree with it
       if (namesChannel)
@@ -12195,7 +12223,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
         return json({ error: "game-maker succession takes no carry — the committed \"## Current game checkpoint\" section is the one handover channel, and its Next: line is where the first act belongs. Put it there and succeed without a carry" }, 409);
       const checkpoint = await gameMakerCheckpointError(bound[0]!, s);
       if (checkpoint) return json({ error: checkpoint }, 409);
-      return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity);
+      return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity, bound.slice(1));
     }
     // THE LINE and what dies with the predecessor, captured while it is still whole and judged by the
     // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
@@ -12415,6 +12443,15 @@ function standardSuccessionHolding(slotId: number, includeBoundSuccessor = false
         && slotFrom(slotId)?.cwd && slotFrom(slotId)?.openedAt === p.main.openedAt)));
 }
 
+// THE PROGRAMS A HELD SUCCESSION CARRIES: the holding itself and every active Program naming the
+// same occupation — the companions that move with it in one cut (succeedProgramMain). A question or
+// report of any of them is held exactly as one of the holding's own.
+function heldSuccessionProgramIds(holding: Program): Set<string> {
+  const main = holding.main;
+  return new Set(programs.filter((p) => p.status === "active" && !!main
+    && p.main?.slot === main.slot && p.main.openedAt === main.openedAt).map((p) => p.id));
+}
+
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
   // send-uncertain is refusable for the same reason it is not terminal: once the worker occupant is
   // gone there is nobody left to retry the send for, and an unrefusable row would never be pruned.
@@ -12448,7 +12485,7 @@ function reconcileClarifications(teardownSlotId?: number): boolean {
     if (!workerGone && !receiverGone) continue;
     const holding = standardSuccessionHolding(c.receiver.slot);
     if (!workerGone && receiverGone && holding && c.status === "open"
-      && c.basis === "program-main" && c.provenance.programId === holding.id
+      && c.basis === "program-main" && heldSuccessionProgramIds(holding).has(c.provenance.programId ?? "")
       && c.receiver.openedAt === holding.main?.openedAt) continue;
     refuseClarification(c, workerGone
       ? "worker occupant ended or was replaced"
@@ -12706,7 +12743,7 @@ function markFleetEventReceiverGone(slotId: number): boolean {
     if (holding && e.receiverOpenedAt === holding.main?.openedAt
       && ((e.status === "pending" && fleetEventDeliveryClass(e) === "sofort")
         || clarifications.some((c) => c.eventId === e.id && c.status === "open"
-          && c.basis === "program-main" && c.provenance.programId === holding.id))) continue;
+          && c.basis === "program-main" && heldSuccessionProgramIds(holding).has(c.provenance.programId ?? "")))) continue;
     if (DELIVERY_BUNDLE_SEC > 0 && e.status === "pending" && e.receiverAddress
       && e.receiverAddress.kind !== "slot"
       && fleetEventDeliveryClass(e) === "buendelbar") continue;
@@ -12903,12 +12940,11 @@ function fleetReportsFor(s: Slot): FleetReport[] {
   // walked but whose result could not be read would be its own defect.
   const occupantBound = (b: { slot: number; openedAt: number; sessionId: string | null } | null): boolean =>
     !!b && b.slot === s.id && b.openedAt === s.openedAt;
-  const programBound = boundProgramForMain(s);
+  const programBound = new Set(boundProgramsForMain(s).map((p) => p.id));
   // An owner-inbox row still reaches its WORKER through the first arm — the lane can read back
   // what it filed — and reaches no session at all through the second, which is the point.
   return fleetReports.filter((r) => occupantBound(r.worker) || occupantBound(r.receiver)
-    || (r.basis === "program" && programBound.ok
-      && r.provenance.programId === programBound.program.id));
+    || (r.basis === "program" && programBound.has(r.provenance.programId ?? "")));
 }
 
 // WHO, IF ANYONE, CAN STILL JUDGE THIS ROW. ONE function, because the SELF door and the OWNER door
@@ -13712,9 +13748,10 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
   const report = fleetReports.find((r) => r.id === id);
   if (!report) return json({ error: "unknown fleet report" }, 404);
   if (report.basis === "program") {
-    const bound = boundProgramForMain(s);
-    if (!bound.ok) return json({ error: bound.error }, 409);
-    if (bound.program.id !== report.provenance.programId)
+    // THE PROGRAM COMES FROM THE REPORT, and it must be one of this occupation's own
+    const bound = boundProgramForMain(s, report.provenance.programId);
+    if (!bound.ok && bound.why !== "foreign") return json({ error: bound.error }, 409);
+    if (!bound.ok)
       return json({ error: `fleet report belongs to another Program — only the bound MAIN of program ${report.provenance.programId} may judge it` }, 409);
   }
   // FIRST, ahead of the occupant comparison, for acknowledgeFleetEvent's reason verbatim: an
@@ -13786,8 +13823,9 @@ async function decideFleetReport(s: Slot, id: string, disposition: FleetReportDi
 }
 
 async function decideFleetReportsBatch(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
+  const own = new Set(binding.programs.map((p) => p.id));
   if (!body || Object.keys(body).some((key) => key !== "decisions")
     || !Array.isArray(body.decisions) || body.decisions.length < 1 || body.decisions.length > 100)
     return json({ error: "decisions must be an array of 1 to 100 verdicts" }, 400);
@@ -13815,7 +13853,7 @@ async function decideFleetReportsBatch(s: Slot, body: Record<string, unknown> | 
   for (const entry of entries) {
     const report = fleetReports.find((r) => r.id === entry.id);
     if (!report) return json({ error: `unknown fleet report ${entry.id}` }, 404);
-    if (report.basis !== "program" || report.provenance.programId !== bound.program.id)
+    if (report.basis !== "program" || !own.has(report.provenance.programId ?? ""))
       return json({ error: `fleet report ${entry.id} belongs to another Program` }, 409);
     if (report.decision) return json({ error: `fleet report ${entry.id} was already ${report.decision.disposition}` }, 409);
     const worker = slotFrom(report.worker.slot);
@@ -14277,9 +14315,9 @@ function sessionIdMatchOf(recorded: string | null, live: string | null): Session
 //  · `unknown` spans BOTH directions of the door. The land route compares the recorded value
 //    against the live one DIRECTLY, so two nulls (a harness that pins no session id) are an
 //    admitted match while one null on either side is refused — both label as `unknown` here;
-//  · the door additionally requires an ACTIVE status and an UNAMBIGUOUS binding (boundProgramForMain
-//    refuses two active programs on one occupation in its own words). Neither is checked here, so
-//    an `exact` on an ambiguous occupation is still a land that door refuses.
+//  · the door additionally requires an ACTIVE status and that the landed ROW's Program is one of the
+//    occupation's own (boundProgramForMain, from the row). Neither is checked here, so an `exact`
+//    is still a land that door refuses for a row of a foreign Program.
 // It reports IDENTITY. Authority stays where it is decided, and a sight that claimed otherwise
 // would be exactly as wrong as the silence it replaces.
 //
@@ -14427,13 +14465,17 @@ function programStatusView(p: Program, ctx?: ProgramStatusContext): ProgramStatu
 //
 // ATTRIBUTION IS THE EXACT LIVE BINDING OR NOTHING. A budget belongs to an OCCUPANT; it is
 // attributed to a PROGRAM only where that program's binding names one live occupant (slot AND
-// openedAt) and no other program names the same one. Every other case is `unknown` with its reason
+// openedAt); other Programs naming the same occupant share it (one MAIN per project), and the note
+// says so. Every other case is `unknown` with its reason
 // and NEVER 0 — "there is no receiver" and "the receiver has no room left" are opposite facts, and
 // a 0 would read as the second while meaning the first.
 function programReturnPath(p: Program): { deliveryBudget: DeliveryBudget; deliveryBudgetNote: string } {
   const budget = programDeliveryBudget(p);
   const slot = budget.state === "known" ? p.main?.slot ?? null : null;
-  return { deliveryBudget: budget, deliveryBudgetNote: deliveryBudgetNote(budget, slot) };
+  const shared = budget.state === "known" && p.main ? programs.filter((o) => o.status === "active"
+    && o.main?.slot === p.main!.slot && o.main.openedAt === p.main!.openedAt).length : 1;
+  return { deliveryBudget: budget, deliveryBudgetNote: deliveryBudgetNote(budget, slot)
+    + (shared > 1 ? ` — one budget shared by the ${shared} active programs this MAIN holds` : "") };
 }
 
 function programDeliveryBudget(p: Program): DeliveryBudget {
@@ -14445,14 +14487,10 @@ function programDeliveryBudget(p: Program): DeliveryBudget {
   if (!(live?.cwd && live.id === main.slot && live.openedAt === main.openedAt))
     return { state: "unknown", reason: `the binding names slot ${main.slot} opened ${main.openedAt},`
       + " which no live occupant matches — a dead binding has no budget, and no budget is not a free one" };
-  // Two programs naming the same occupation is not a receiver with a doubled budget: it is one
-  // occupant whose room belongs to neither program alone. Reporting the sum under both names would
-  // let an owner spend it twice on paper.
-  const twins = programs.filter((o) => !!o.main && o.main.slot === main.slot
-    && o.main.openedAt === main.openedAt);
-  if (twins.length > 1)
-    return { state: "unknown", reason: `${twins.length} programs name the same live occupant`
-      + ` (slot ${main.slot}), so this receiver's budget belongs to no single one of them` };
+  // Several Programs naming the same occupation are ONE receiver — the project's MAIN — with ONE
+  // budget. Every one of them reads that same budget (it is the room the next report of ANY of
+  // their lanes needs), never a share of it and never a sum: the note names how many Programs it
+  // serves, so nobody reads it as n separate rooms.
   return slotDeliveryBudget(live.id);
 }
 
@@ -14493,9 +14531,8 @@ function deliveryBudgetNote(b: DeliveryBudget, slot: number | null): string {
 //    separating a numeric successor in the same slot from the occupation that was bound;
 //  · it never touches a program that is not `active`.
 //
-// `for`, not `find`, for boundProgramForMain's reason: an ambiguous state (two active Programs on
-// one occupation) is refused there rather than silently resolved, and filling both nulls here
-// leaves that refusal exactly as loud as it was.
+// `for`, not `find`: one occupation may be the MAIN of several active Programs (one MAIN per
+// project), and every one of those bindings recorded the same absence — each learns the same id.
 //
 // Returns whether anything changed; the CALLER saves, because every call site already sits inside
 // a save it owns.
@@ -14519,8 +14556,10 @@ function backfillProgramMainSessionId(s: Slot): boolean {
 }
 
 // The one authority bracket, and it is the SAME occupant rule programExecutionView and
-// clarificationReceiverFor project by. programId is derived HERE and nowhere else — no body field
-// can nominate the program a request is filed against.
+// clarificationReceiverFor project by. programId is derived HERE and nowhere else: a door whose act
+// names an object (a row, a report, a lane) passes that object's own programId, and a door without
+// one passes the caller's CHOICE — which may only pick among the programs this occupation is bound
+// to. No request can name a program outside that set and be answered with it.
 //
 // sessionId is REPORTED, never gated (loosened 2026-08-21, and this is the honest reason): `slot +
 // openedAt` already identifies the occupation uniquely — openedAt changes on every reopen, so a
@@ -14529,23 +14568,56 @@ function backfillProgramMainSessionId(s: Slot): boolean {
 // same pane, same cwd, silently losing its attention rights. It is no security boundary either —
 // whoever can drive that pane already holds the FLEET_SELF_TOKEN baked into it.
 //
-// `filter`, not `find`: two active Programs naming the same occupation is unreachable today (0 such
-// tuples measured 2026-08-21), and a `find` would answer such a state by silently picking the first
-// one. Ambiguity gets its OWN refusal, in its own words — collapsing it into "you are not bound"
-// would tell the caller to go fix the wrong thing.
+// N PROGRAMS, ONE MAIN (owner 2026-10-06: „[Zitat entfernt]“ — je Projekt eine dauerhafte MAIN,
+// Programs sind endliche Vorhaben darin). Until then two active Programs naming one occupation were
+// "ambiguous" and cost the session every right. Now the binding is a SET, and the three refusals
+// stay three different sentences because they send the caller to three different places:
+//  · unbound  — no active Program names this occupation at all;
+//  · choose   — several do, the act names no object, and the caller did not pick one;
+//  · foreign  — the object (or the pick) belongs to a Program outside this occupation's set. This is
+//    the strict edge: a lane, a report or a land filed under a foreign Program would bypass that
+//    Program's own owner confirmation, so it is never resolved by guessing.
 type BoundMain =
   | { ok: true; program: Program; sessionIdMatch: "exact" | "divergent" | "unknown" }
-  | { ok: false; error: string };
-function boundProgramForMain(s: Slot): BoundMain {
-  const matches = programs.filter((p) => p.status === "active" && p.main
+  | { ok: false; error: string; why: "unbound" | "choose" | "foreign" };
+type MainBinding = { ok: true; programs: Program[] } | { ok: false; error: string };
+function mainUnboundError(): string {
+  return "not the current bound MAIN of an active program — attention is raised by a program's own main session";
+}
+function boundProgramsForMain(s: Pick<Slot, "id" | "openedAt">): Program[] {
+  return programs.filter((p) => p.status === "active" && p.main
     && p.main.slot === s.id && p.main.openedAt === s.openedAt);
-  if (matches.length > 1)
-    return { ok: false, error: `ambiguous Program-MAIN binding: ${matches.length} active programs name slot ${s.id} openedAt ${s.openedAt} — the owner must resolve which one this session is MAIN of` };
-  const program = matches[0];
-  if (!program) return { ok: false, error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" };
-  const bound = program.main!;
+}
+function mainBindingOf(s: Slot): MainBinding {
+  const bound = boundProgramsForMain(s);
+  return bound.length ? { ok: true, programs: bound } : { ok: false, error: mainUnboundError() };
+}
+// how a refusal names the caller's own set: "program X" for one, "programs X, Y" for several
+function ownProgramsPhrase(bound: readonly Program[]): string {
+  return bound.length === 1 ? `program ${bound[0]!.id}` : `programs ${bound.map((p) => p.id).join(", ")}`;
+}
+// `programId` absent (undefined) = the act names no object: one binding answers by itself, several
+// need a choice. Present (a string, or null for an unbracketed object) = it must be one of the set.
+function boundProgramForMain(s: Slot, programId?: string | null): BoundMain {
+  const matches = boundProgramsForMain(s);
+  if (!matches.length) return { ok: false, why: "unbound", error: mainUnboundError() };
+  const program = programId === undefined
+    ? matches.length === 1 ? matches[0] : undefined
+    : matches.find((p) => p.id === programId);
+  if (!program && programId === undefined)
+    return { ok: false, why: "choose", error: `this session is bound MAIN of ${matches.length} active programs (${matches.map((p) => p.id).join(", ")}) on slot ${s.id} openedAt ${s.openedAt} — name the one this act belongs to as programId` };
+  if (!program)
+    return { ok: false, why: "foreign", error: `${programId === null ? "an object without a program" : `program ${programId}`} is not one of the programs this session is bound MAIN of (${ownProgramsPhrase(matches)})` };
   return { ok: true, program,
-    sessionIdMatch: sessionIdMatchOf(bound.sessionId, s.sessionId) };
+    sessionIdMatch: sessionIdMatchOf(program.main!.sessionId, s.sessionId) };
+}
+// A CHOICE READ OFF A REQUEST (a body field or a query parameter), validated as a choice and nothing
+// more: absent stays absent, anything that is not a program-id-shaped string is a 400 of its own.
+function programChoiceOf(raw: unknown): { ok: true; programId: string | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, programId: undefined };
+  if (typeof raw !== "string" || !/^[0-9a-f]{1,64}$/.test(raw))
+    return { ok: false, error: "programId must name one of the programs this session is bound MAIN of" };
+  return { ok: true, programId: raw };
 }
 setPrincipalState({
   slots: () => slots,
@@ -14570,8 +14642,11 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
     return { ok: true, refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
       ...(s.programId ? { program: s.programId } : {}) } };
   if (p.role === "main") {
-    const bound = boundProgramForMain(s);
-    return bound.ok ? { ok: true, refs: { ...base, program: bound.program.id } } : { ok: false, error: bound.error };
+    // a MAIN of several Programs writes as the project's MAIN: the trace then names the occupation
+    // and no Program, rather than one picked at random
+    const binding = mainBindingOf(s);
+    return binding.ok ? { ok: true, refs: { ...base,
+      ...(binding.programs.length === 1 ? { program: binding.programs[0]!.id } : {}) } } : { ok: false, error: binding.error };
   }
   return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
 }
@@ -14584,10 +14659,10 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
 // nothing, and a session outside any git repository has no project and is refused by name.
 type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
 async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
-  const bound = boundProgramForMain(s);
-  const rolle = positionRole(s, bound);
+  const binding = mainBindingOf(s);
+  const rolle = positionRole(s, binding);
   if (rolle === "generic")
-    return { ok: false, error: `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this session is none of them (${bound.ok ? "role generic" : bound.error})` };
+    return { ok: false, error: `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this session is none of them (${binding.ok ? "role generic" : binding.error})` };
   const repo = s.cwd ? await repoKeyOf(s) : null;
   if (!repo) return { ok: false, error: "this session's working directory is in no git repository — without a project binding no entry can be chosen for it" };
   return { ok: true, leser: { projekt: projectKeyOf(repo), rolle, harness: harnessOf(s.harness).id } };
@@ -14596,14 +14671,16 @@ async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
 // THE SCOPE OF BOTH INBOX DOORS, in one place because they answer the SAME two questions in the
 // same words. A lane is refused FIRST and by its own sentence: it has no program inbox at all, and
 // letting it fall through to the binding refusal would tell it to go bind itself as a MAIN. Past
-// that the binding answers — verbatim, so "not bound" and "ambiguously bound" stay the two
-// different things boundProgramForMain already separates. 409 throughout, never 401: the caller
+// that the binding answers — verbatim, so "not bound", "pick one of yours" and "not one of yours"
+// stay the different things boundProgramForMain already separates. 409 throughout, never 401: the caller
 // holds the right token, the question is not askable from where it stands.
+// A MAIN of several Programs picks the inbox with `?program=` (one of its own); the receipt door
+// needs no pick at all — the entry id names its Program, which must be one of the caller's.
 type InboxScope = { ok: true; program: Program } | { ok: false; response: Response };
-function inboxProgramFor(s: Slot): InboxScope {
+function inboxProgramFor(s: Slot, programId?: string): InboxScope {
   if (s.worktree && s.label !== STEWARD_LABEL)
     return { ok: false, response: json({ error: "a lane has no program inbox — a lane files its result, its MAIN reads the inbox" }, 409) };
-  const bound = boundProgramForMain(s);
+  const bound = boundProgramForMain(s, programId);
   if (!bound.ok) return { ok: false, response: json({ error: bound.error }, 409) };
   return { ok: true, program: bound.program };
 }
@@ -14769,8 +14846,10 @@ function programInboxStatus(p: Program): { unread: number; oldestAt: number | nu
 }
 
 // GET /api/self/inbox — the pull half. Reads the record, joins the subjects, stamps nothing.
-async function programInboxFor(s: Slot): Promise<Response> {
-  const scope = inboxProgramFor(s);
+async function programInboxFor(s: Slot, url: URL): Promise<Response> {
+  const choice = programChoiceOf(url.searchParams.get("program"));
+  if (!choice.ok) return json({ error: choice.error }, 400);
+  const scope = inboxProgramFor(s, choice.programId);
   if (!scope.ok) return scope.response;
   return json(await programInboxView(scope.program));
 }
@@ -14781,7 +14860,10 @@ async function programInboxFor(s: Slot): Promise<Response> {
 // Which entry comes from the PATH; the program comes from the binding, so no body is read and none
 // could nominate a Program this caller is not MAIN of.
 async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
-  const scope = inboxProgramFor(s);
+  // the entry names its Program; without a binding the binding's own refusal answers first
+  const own = boundProgramsForMain(s);
+  const owner = own.find((p) => p.inbox?.entries.some((e) => e.id === id)) ?? own[0];
+  const scope = inboxProgramFor(s, owner?.id);
   if (!scope.ok) return scope.response;
   const { program } = scope;
   const entry = program.inbox?.entries.find((e) => e.id === id);
@@ -14789,10 +14871,10 @@ async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
     // NAMED even though it is structurally unreachable from here: the id space is global, so an
     // entry that exists on ANOTHER Program must not read as "unknown" to a MAIN that simply cannot
     // reach it — the two answers send the caller to two different places.
-    const foreign = programs.find((p) => p.id !== program.id
+    const foreign = programs.find((p) => !own.includes(p)
       && p.inbox?.entries.some((e) => e.id === id));
     if (foreign)
-      return json({ error: `inbox entry belongs to another Program — this MAIN reads program ${program.id}` }, 409);
+      return json({ error: `inbox entry belongs to another Program — this MAIN reads ${ownProgramsPhrase(own)}` }, 409);
     return json({ error: "unknown inbox entry" }, 404);
   }
   if (entry.readBy !== null) return json({ ok: true, existing: true, entry });
@@ -14811,14 +14893,17 @@ async function readProgramInboxEntry(s: Slot, id: string): Promise<Response> {
 
 // WHO THE CALLER IS AS A SENDER. Never from a body — a body-set sender would make the two hard
 // properties unprovable in one stroke, because any principal could then claim any address.
+// A MAIN of several Programs sends under ONE of them, picked by `programId` among its own; a pick
+// by anyone who is not a bound MAIN is refused, never quietly ignored.
 type MessageSender = { ok: true; from: MessageAddress } | { ok: false; response: Response };
-function messageSenderFor(s: Slot): MessageSender {
+function messageSenderFor(s: Slot, programId?: string): MessageSender {
   if (s.worktree && s.label !== STEWARD_LABEL)
     return { ok: false, response: json({ error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409) };
   if (s.label === STEWARD_LABEL)
     return { ok: false, response: json({ error: "the steward does not send addressed messages" }, 409) };
-  const bound = boundProgramForMain(s);
+  const bound = boundProgramForMain(s, programId);
   if (bound.ok) return { ok: true, from: { kind: "program", id: bound.program.id } };
+  if (bound.why !== "unbound" || programId !== undefined) return { ok: false, response: json({ error: bound.error }, 409) };
   if (deliveryRecipient({ kind: "orchestrator" }) === s)
     return { ok: true, from: { kind: "role", role: "orchestrator" } };
   if (s.cwd && s.openedAt > 0 && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
@@ -14835,9 +14920,9 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   if (!s.cwd || s.openedAt <= 0 || s.label === STEWARD_LABEL) return [];
   if (s.worktree) return [{ kind: "lane", slot: s.id, openedAt: s.openedAt }];
   const out: MessageAddress[] = [];
-  const bound = boundProgramForMain(s);
-  if (bound.ok) out.push({ kind: "program", id: bound.program.id });
-  if (!bound.ok && deliveryRecipient({ kind: "orchestrator" }) === s)
+  const bound = boundProgramsForMain(s);
+  for (const p of bound) out.push({ kind: "program", id: p.id });
+  if (!bound.length && deliveryRecipient({ kind: "orchestrator" }) === s)
     out.push({ kind: "role", role: "orchestrator" });
   if (!out.length && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
     && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
@@ -14944,12 +15029,14 @@ function messageViewFor(s: Slot): Response {
 // a caller that cannot address anyone is told THAT, before its body is graded on a rail it may not
 // use at all.
 async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  const sender = messageSenderFor(s);
+  const choice = programChoiceOf(body?.programId);
+  const sender = messageSenderFor(s, choice.ok ? choice.programId : undefined);
   if (!sender.ok) return sender.response;
   if (!body) return json({ error: "body must be an object" }, 400);
-  const extra = Object.keys(body).filter((k) => !["to", "payload", "idempotencyKey", "replyTo"].includes(k));
+  const extra = Object.keys(body).filter((k) => !["to", "payload", "idempotencyKey", "replyTo", "programId"].includes(k));
   if (extra.length)
-    return json({ error: `body reads only to, payload, idempotencyKey, replyTo — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding and can never be named in a body` }, 400);
+    return json({ error: `body reads only to, payload, idempotencyKey, replyTo, programId — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` }, 400);
+  if (!choice.ok) return json({ error: choice.error }, 400);
   const to = loadMessageAddress(body.to, "to");
   if (typeof to === "string") return json({ error: to }, 400);
   const payload = loadMessagePayload(body.payload, "payload");
@@ -15136,13 +15223,15 @@ async function readMessageFor(s: Slot, id: string): Promise<Response> {
 // checkout, and a row of another Program — or an unbracketed row — stays the owner's alone.
 // Everything after the bracket is the shared `pinNoteToTask`, so the two doors cannot drift.
 async function assignNoteForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN assigns sources only to rows of program ${program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN assigns sources only to rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the assignment's target repo cannot be derived" }, 409);
@@ -15165,13 +15254,21 @@ async function assignNoteForMain(s: Slot, id: string, body: Record<string, unkno
 
 async function taskDoorForMain(s: Slot, id: string, action: "read" | "comment" | "withdraw",
   body: Record<string, unknown> | null = null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — this door reads or changes only rows of program ${program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own — with ONE
+  // exception, the MERKZETTEL: a program-less notiz at this MAIN's own project (the repo check below
+  // still applies) is the MAIN's to read, and — where the MAIN filed it — to comment and withdraw.
+  // Every other unbracketed row stays the owner's.
+  const projectNote = !t.programId && t.kind === "notiz" && (action === "read" || t.source === "main");
+  const bound = projectNote ? null : boundProgramForMain(s, t.programId ?? null);
+  if (bound && !bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — this door reads or changes only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const program = bound?.ok ? bound.program : null;
+  const sessionIdMatch = bound?.ok ? bound.sessionIdMatch
+    : sessionIdMatchOf(binding.programs[0]!.main!.sessionId, s.sessionId);
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo) return json({ error: "this session's checkout is not a git repository" }, 409);
   const target = t.repo ?? DISPATCH_REPO;
@@ -15184,7 +15281,7 @@ async function taskDoorForMain(s: Slot, id: string, action: "read" | "comment" |
     const text = typeof body?.text === "string" ? body.text.trim() : "";
     const answer = /^Ansatz ([0-9a-f]{24}):\s*(.+)$/s.exec(text);
     const review = answer ? fleetEvents.find((e): e is LaneReviewFleetEvent => e.kind === "lane-review"
-      && e.id === answer[1] && e.payload.taskId === t.id && e.payload.programId === program.id
+      && e.id === answer[1] && e.payload.taskId === t.id && program !== null && e.payload.programId === program.id
       && e.payload.ansatz === "ueberdenken") : undefined;
     if (text.startsWith("Ansatz ") && (!answer || !review || text.length > MAX_COMMENT_TEXT
       || !answer[2]!.trim() || /\n|[.!?]\s+\S/.test(answer[2]!.trim())))
@@ -15231,13 +15328,15 @@ async function taskDoorForMain(s: Slot, id: string, action: "read" | "comment" |
 // it indistinguishable from the owner's own — absence is not harmlessness, so it buys the stricter
 // answer. What a MAIN may overwrite is a machine-compiled brief and its own earlier sharpening.
 async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN sharpens only the briefs of rows of program ${program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN sharpens only the briefs of rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
   // the owner door's own two sentences, so one question keeps one answer wherever it is asked
   if (t.kind !== "auftrag")
     return json({ error: `${t.kind} is never sent to a lane — it has no brief` }, 409);
@@ -15300,9 +15399,9 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
 // one row, and refusing the other n-1 over them would push the MAIN back to one call per row.
 const CONFIRM_CARDS_MAX = 20;
 async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
+  const own = new Set(binding.programs.map((p) => p.id));
   if (!body) return json({ error: "invalid json" }, 400);
   const extra = Object.keys(body).filter((k) => k !== "ids");
   if (extra.length)
@@ -15319,9 +15418,13 @@ async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null
   if (missing.length) return json({ error: `unknown task(s): ${missing.join(", ")} — nothing confirmed` }, 404);
   const found = rows as Task[];
   // ALL OR NOTHING over the bracket, checked for every id before any row is touched.
-  const foreign = found.filter((t) => t.programId !== program.id).map((t) => t.id);
+  // Each row names its own Program; a batch may span several of the binding's own, never one outside.
+  const foreign = found.filter((t) => !own.has(t.programId ?? "")).map((t) => t.id);
   if (foreign.length)
-    return json({ error: `task(s) ${foreign.join(", ")} belong to no program of this MAIN — a Program-MAIN confirms only rows of program ${program.id}; nothing confirmed` }, 409);
+    return json({ error: `task(s) ${foreign.join(", ")} belong to no program of this MAIN — a Program-MAIN confirms only rows of ${ownProgramsPhrase(binding.programs)}; nothing confirmed` }, 409);
+  // reported per the row's own binding, like every neighbouring door; a batch over several Programs
+  // of one occupation reports the first row's — the occupation, and so the live id, is the same
+  const sessionIdMatch = sessionIdMatchOf(binding.programs.find((p) => p.id === found[0]!.programId)!.main!.sessionId, s.sessionId);
   const mainRepo = await repoKeyOf(s);
   if (!mainRepo)
     return json({ error: "this session's checkout is not a git repository — the rows' target repo cannot be compared; nothing confirmed" }, 409);
@@ -15356,8 +15459,9 @@ async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null
     t.filesProposal = undefined;
   }
   if (confirmed.length) {
-    audit("task_cards_confirm", s.id, `${confirmed.map((c) => c.id).join(",")} program=${program.id}`,
-      { programId: program.id, ids: confirmed.map((c) => c.id).join(","), n: confirmed.length });
+    const programIds = [...new Set(confirmed.map((c) => found.find((x) => x.id === c.id)!.programId!))].join(",");
+    audit("task_cards_confirm", s.id, `${confirmed.map((c) => c.id).join(",")} program=${programIds}`,
+      { programId: programIds, ids: confirmed.map((c) => c.id).join(","), n: confirmed.length });
     await saveStateNow();
   }
   return json({ ok: true, sessionIdMatch, confirmed, skipped });
@@ -15422,18 +15526,20 @@ function releasedWavePartnersOf(t: Task): string[] {
 }
 
 async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
-  // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "ambiguously bound"
-  // stay two different refusals, because they tell the caller to go fix two different things.
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  // The authority bracket answers first and IN ITS OWN WORDS — "not bound" and "not this binding's
+  // program" stay two different refusals, because they tell the caller to go fix two different things.
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  // (1) THE PROGRAM COMES FROM THE BINDING. A row of another Program is not this MAIN's to release,
-  // and an unbracketed row (programId null) is nobody's — for those the owner's ▸ queue stays the
-  // only door, which is exactly the state this act was asked not to change.
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN releases only rows of program ${program.id}` }, 409);
+  // (1) THE PROGRAM COMES FROM THE ROW, and it must be one the binding holds. A row of another
+  // Program is not this MAIN's to release, and an unbracketed row (programId null) is nobody's — for
+  // those the owner's ▸ queue stays the only door, which is exactly the state this act was asked
+  // not to change.
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN releases only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
   // (3) An advisory row is not work, in the same words the two existing doors use (dispatchTask's
   // last lock and the ▸ queue button) — one sentence for one question, wherever it is asked.
   if (t.kind !== "auftrag")
@@ -15636,13 +15742,15 @@ async function holdWatchFor(s: Slot, id: string, repo: string, until: TaskHoldUn
 // hold may add a reason or an until, but cannot replace a standing until. The Watch never releases it.
 async function holdTaskForMain(s: Slot, id: string, grund: string | null, until?: TaskHoldUntil): Promise<Response> {
   const openedAt = s.openedAt;
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN holds only rows of program ${program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN holds only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
   if (t.kind !== "auftrag")
     return json({ error: `a ${t.kind} is advisory — the dispatcher never runs this, there is no start to hold` }, 409);
   if (t.status !== "pending" && t.status !== "queued")
@@ -15869,11 +15977,10 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // door answers with. Placed above the bracket on purpose: on a follower host a caller must not
   // have to be correctly bound to learn that nothing here can ever reach main.
   if (!LANDS_ENABLED) return json({ error: LANDS_LOCKED }, 409);
-  // (1) THE BRACKET, in its own words. "not bound" and "ambiguously bound" stay two refusals here
-  // exactly as at the release and filing doors.
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  // (1) THE BRACKET, in its own words. "not bound" and "not this binding's program" stay two
+  // refusals here exactly as at the release and filing doors.
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   // ...and for THIS act the identity is EXACT, which is a deliberate departure from the
   // reported-never-gated doctrine its three neighbours follow. Those widen who may WRITE A ROW or
   // ASK A QUESTION; this one moves an integration branch. The comparison is the recorded triple
@@ -15881,15 +15988,23 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
   // both sides null — is an exact match and can use this route, while a session re-minted inside
   // the pane loses land rights until the owner rebinds the MAIN. Refusing is the recoverable
   // direction; landing under an identity nobody confirmed is not.
-  if (program.main!.sessionId !== s.sessionId)
-    return json({ error: `this session's id does not match the bound MAIN identity (${sessionIdMatch}) — landing is the one act bound to the exact recorded occupant; ask the owner to re-bind the Program-MAIN`, sessionIdMatch }, 409);
+  // Asked BEFORE the row is read, so an identity refusal never depends on which row was named: it
+  // fires when NO binding of this occupation recorded the live id. The row's own Program is asked
+  // the same question again below, once the row has named it.
+  const identityRefusal = (match: SessionIdMatch): Response =>
+    json({ error: `this session's id does not match the bound MAIN identity (${match}) — landing is the one act bound to the exact recorded occupant; ask the owner to re-bind the Program-MAIN`, sessionIdMatch: match }, 409);
+  if (binding.programs.every((p) => p.main!.sessionId !== s.sessionId))
+    return identityRefusal(sessionIdMatchOf(binding.programs[0]!.main!.sessionId, s.sessionId));
   // (2) THE ROW.
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  // (3) ...of THIS Program. A row of another Program is not this MAIN's to land, and an unbracketed
-  // row is nobody's — for those the owner's board stays the only door.
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN lands only rows of program ${program.id}` }, 409);
+  // (3) ...of ONE OF THIS BINDING'S Programs. A row of another Program is not this MAIN's to land,
+  // and an unbracketed row is nobody's — for those the owner's board stays the only door.
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN lands only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
+  if (program.main!.sessionId !== s.sessionId) return identityRefusal(sessionIdMatch);
   // (4) ...that is executable and RUNNING, with a lane. Three separate sentences: an advisory row
   // never had a lane, a `done` row already landed, and any other status means there is nothing
   // running to land.
@@ -16177,12 +16292,14 @@ async function selfLandTaskForMain(s: Slot, id: string): Promise<Response> {
 // E4 · the bound Program-MAIN decides which variant of ITS program's group lands. The binding answers
 // first in its own words, like at every neighbouring door; the rules are decideVariantGroup's.
 async function decideVariantForMain(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== bound.program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN decides only groups of program ${bound.program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN decides only groups of ${ownProgramsPhrase(binding.programs)}` }, 409);
   const decided = await decideVariantGroup(t, body?.winner, "main", s.id);
   return json({ ...decided.body, sessionIdMatch: bound.sessionIdMatch }, decided.status);
 }
@@ -16208,24 +16325,31 @@ async function waitForMainFileTestLatch(occupant: SlotStreamOccupant): Promise<v
 // `s` describes whoever holds the slot NOW, not the session whose token authenticated this request.
 async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   body: Record<string, unknown> | null): Promise<Response> {
-  // The authority bracket answers FIRST and in its own words — "not bound" and "ambiguously bound"
-  // stay two different refusals, exactly as at the release door: they send the caller to fix two
-  // different things.
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program } = bound;
+  // The authority bracket answers FIRST and in its own words — "not bound", "pick one of yours" and
+  // "not one of yours" stay three different refusals: they send the caller to fix three different
+  // things.
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   if (!body) return json({ error: "invalid json" }, 400);
-  // (1) THE PROGRAM COMES FROM THE BINDING. A body naming one is refused rather than compared or
-  // overwritten: a comparison would make the field look consultable, and an overwrite would let a
-  // caller believe it filed against a program its request never reached.
-  if (body.programId !== undefined)
-    return json({ error: `programId comes from this session's MAIN binding (${program.id}) and is never read from the body` }, 400);
+  // (1) THE PROGRAM COMES FROM THE BINDING. A filing names no object a Program could be read from,
+  // so a MAIN of several Programs PICKS one with `programId` — and the pick may only name one of its
+  // own: a foreign id is refused, never compared into a match or overwritten into one. One binding
+  // answers by itself. `programId: null` is the MERKZETTEL: a notiz at the PROJECT (the row's repo,
+  // no Program) — a fault no running Program caused, readable by the owner, starting nothing.
+  const merkzettel = body.programId === null;
+  const choice = merkzettel ? { ok: true as const, programId: undefined } : programChoiceOf(body.programId);
+  if (!choice.ok) return json({ error: choice.error }, 400);
+  const picked = merkzettel ? null : boundProgramForMain(s, choice.programId);
+  if (picked && !picked.ok) return json({ error: picked.error }, 409);
+  const program = picked?.ok ? picked.program : null;
+  if (merkzettel && body.kind !== undefined && body.kind !== "notiz")
+    return json({ error: "a project note (programId null) is kind notiz — it records, it starts nothing" }, 400);
   // (2) …and the rest as a closed set, named in the refusal so the caller can see what it may say.
   // The spawn triple joined the set as one unit: harness/model/effort are the same three top-level
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo", "programId"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
     return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
@@ -16300,7 +16424,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const taskBase = await taskBaseFromBody(body, targetRepo);
   if (!taskBase.ok) return json({ error: taskBase.error }, 400);
   const mainText = body.text.slice(0, MAX_TASK_TEXT).trim();
-  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program.id, taskBase.base);
+  const authorCard = body.card === undefined ? null : await authorCardFrom(body.card, mainText, targetRepo, program?.id, taskBase.base);
   if (authorCard && !authorCard.ok) return json({ error: authorCard.error }, authorCard.status);
   // (4b) THE OCCUPANT AND BINDING RE-PROOFS, followed by a fresh repo-list read before the first
   // mutation below (there is no await from here to `tasks = capTasks`). The succession door states
@@ -16319,10 +16443,12 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // binding from before the await would stamp `programId` from a binding that no longer exists.
   // Requiring the SAME Program keeps a moved binding a refusal naming both ids, never a silent
   // re-target of the caller's request onto whatever it is bound to now.
-  const stillBound = boundProgramForMain(s);
-  if (!stillBound.ok) return json({ error: stillBound.error }, 409);
-  if (stillBound.program.id !== program.id)
-    return json({ error: `this session's MAIN binding moved from program ${program.id} to ${stillBound.program.id} while the row was being prepared — nothing filed` }, 409);
+  // A project note re-proves the binding itself — the occupation must still be some Program's MAIN.
+  const stillBinding = mainBindingOf(s);
+  if (!stillBinding.ok) return json({ error: stillBinding.error }, 409);
+  const stillBound = program ? boundProgramForMain(s, program.id) : null;
+  if (program && !stillBound?.ok)
+    return json({ error: `this session's MAIN binding moved from program ${program.id} to ${stillBinding.programs.map((p) => p.id).join(", ")} while the row was being prepared — nothing filed` }, 409);
   if (body.repo !== undefined) {
     const dispatchRepos = new Set(landWaveProjectionNow().repos.map(({ repo }) => repoCanon(repo)));
     if (DISPATCH_REPO) dispatchRepos.add(repoCanon(DISPATCH_REPO));
@@ -16330,20 +16456,25 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
       return json({ error: "repo is no longer a known dispatch repository — nothing filed" }, 409);
   }
   // …and the reported match comes from the RE-READ, for the same reason: it is a fact about the
-  // binding this row was actually filed under.
-  const { sessionIdMatch } = stillBound;
+  // binding this row was actually filed under (a project note: the occupation's first binding).
+  const sessionIdMatch = stillBound?.ok ? stillBound.sessionIdMatch
+    : sessionIdMatchOf(stillBinding.programs[0]!.main!.sessionId, s.sessionId);
   // (5) TWO CAPS, per Program, because only `auftrag` is releaseable. Both count only rows this
   // door filed (`source: "main"`) for this Program, so owner drafts cannot lock its MAIN out. A
   // full advisory bucket never closes the work door; a full work bucket never closes observation.
   // Each refusal names its kind and number — a caller must know which disposition can make room.
+  // A project note has no Program to count against: it counts against its PROJECT (the target
+  // repo's program-less MAIN notes), under the advisory number — the Merkzettel is a notiz.
+  const sameBucket = (x: Task): boolean => program ? x.programId === program.id
+    : !x.programId && x.repo !== undefined && x.repo !== null && repoCanon(x.repo) === targetRepo;
   if (kind === "auftrag") {
     // a group counts ONCE: its variant rows are the same request, not n filings
-    const openPending = tasks.filter((x) => x.source === "main" && x.programId === program.id
+    const openPending = tasks.filter((x) => x.source === "main" && sameBucket(x)
       && x.status === "pending" && x.kind === "auftrag" && !x.variantOf).length;
     if (openPending >= PROGRAM_MAX_PENDING)
       return json({ error: `program auftrag filing cap reached (${openPending}/${PROGRAM_MAX_PENDING} pending auftrag rows not yet released) — release or drop one first` }, 409);
   } else {
-    const openPendingAdvisory = tasks.filter((x) => x.source === "main" && x.programId === program.id
+    const openPendingAdvisory = tasks.filter((x) => x.source === "main" && sameBucket(x)
       && x.status === "pending" && x.kind !== "auftrag").length;
     if (openPendingAdvisory >= PROGRAM_MAX_PENDING_ADVISORY)
       return json({ error: `program advisory filing cap reached (${openPendingAdvisory}/${PROGRAM_MAX_PENDING_ADVISORY} pending advisory rows awaiting owner disposition) — ask the owner to dispose or drop one first` }, 409);
@@ -16363,7 +16494,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const id = randomBytes(4).toString("hex");
   const t: Task = {
     id, originId: id, text: mainText,
-    source: "main", kind, kindAtCreate: kind, repo: targetRepo, programId: program.id,
+    source: "main", kind, kindAtCreate: kind, repo: targetRepo, ...(program ? { programId: program.id } : {}),
     ...(taskBase.base ? { base: taskBase.base } : {}),
     ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     ...(authorCard?.ok ? { card: authorCard.card } : {}),
@@ -16387,7 +16518,7 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // an unattended release, and a filing lost inside the debounce window would vanish exactly the
   // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
   await saveStateNow();
-  audit("main_task", occupant.slot, `${t.id} program=${program.id} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`,
+  audit("main_task", occupant.slot, `${t.id} program=${program?.id ?? "none (project note)"} ${kind}${variantRows.length ? ` variants=${variantRows.length}` : ""}`,
     targetRepo !== mainRepo ? { openedAt: occupant.openedAt, mainRepo, targetRepo } : undefined);
   // A PARKED PROPOSAL IS ITS OWN ACT, booked under the event the ledger already reserves for it
   // (server/audit-log.ts: "a lane or MAIN parks a proposal … with the proposing slot"). Two lines,
@@ -16443,7 +16574,11 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   if (candidateSha !== null && (typeof candidateSha !== "string"
     || !ATTENTION_CANDIDATE_SHA_RE.test(candidateSha)))
     return json({ error: "candidateSha must be null or a lowercase hexadecimal SHA (40-64 chars)" }, 400);
-  const bound = boundProgramForMain(s);
+  // A raised question names no object a Program could be read from, so a MAIN of several Programs
+  // PICKS one with `programId` — only ever one of its own; a single binding answers by itself.
+  const choice = programChoiceOf(body.programId);
+  if (!choice.ok) return json({ error: choice.error }, 400);
+  const bound = boundProgramForMain(s, choice.programId);
   if (!bound.ok) return json({ error: bound.error }, 409);
   const { program, sessionIdMatch } = bound;
   const kind = body.kind as AttentionKind;
@@ -16453,7 +16588,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   // sentence must not mint a twin, which is the case a nervous retry actually produces.
   const open = attentionRequests.filter((a) => (a.status === "open" || a.status === "send-uncertain")
     && attentionBound(a, s));
-  const existing = open.find((a) => a.kind === kind && a.text === text);
+  const existing = open.find((a) => a.kind === kind && a.text === text && a.programId === program.id);
   if (existing) return json({ ok: true, existing: true, id: existing.id, request: attentionReceipt(existing), sessionIdMatch });
   if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
     return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
@@ -16577,9 +16712,8 @@ async function withdrawAttention(s: Slot, id: string, body: Record<string, unkno
 // (rebindAttentionToSuccessor), so the successor re-raising the same sentence finds the existing row
 // instead of minting the third copy of it (the S12 question was asked three times that way).
 function attentionFor(s: Slot): (AttentionRequest & { delivery: AttentionDelivery | null })[] {
-  const bound = boundProgramForMain(s);
-  return attentionRequests.filter((a) => attentionBound(a, s)
-    || (bound.ok && a.programId === bound.program.id))
+  const own = new Set(boundProgramsForMain(s).map((p) => p.id));
+  return attentionRequests.filter((a) => attentionBound(a, s) || own.has(a.programId))
     .map((a) => ({ ...a, delivery: attentionDelivery(a) }));
 }
 
@@ -16675,9 +16809,10 @@ function reconcileAttention(teardownSlotId?: number, why?: SlotEnding): boolean 
     // …and so does every reconcile while an in-place succession of this requester is in flight:
     // the successor's open tears the slot down a second time (openSlot's own dropWatchesFor), and
     // the binding cut that rebinds the question comes right after it
-    const inFlight = program?.founding;
-    if (program?.status === "active" && inFlight?.mode === "succession"
-      && inFlight.predecessor?.slot === a.requester.slot && inFlight.predecessor.openedAt === a.requester.openedAt) continue;
+    // — for every Program of that MAIN: the marker sits on one of them, the others move in its cut
+    const inFlight = programs.some((p) => p.status === "active" && p.founding?.mode === "succession"
+      && p.founding.predecessor?.slot === a.requester.slot && p.founding.predecessor.openedAt === a.requester.openedAt);
+    if (program?.status === "active" && inFlight) continue;
     refuseAttention(a, "requester session ended");
     dirty = true;
   }
@@ -17141,18 +17276,24 @@ const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? cardSpawnOf(t) ?? DEF
 async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; openedAt: number }): Promise<Response> {
   let sessionIdMatch: "exact" | "divergent" | "unknown" | undefined;
   let programId: string | undefined;
+  let actorSlot: Slot | undefined;
   if (actor) {
     const s = slotFrom(actor.slot);
     if (!s?.cwd || s.openedAt !== actor.openedAt) return json({ error: "session occupant changed" }, 409);
-    const bound = boundProgramForMain(s);
-    if (!bound.ok) return json({ error: bound.error }, 409);
-    sessionIdMatch = bound.sessionIdMatch;
-    programId = bound.program.id;
+    const binding = mainBindingOf(s);
+    if (!binding.ok) return json({ error: binding.error }, 409);
+    actorSlot = s;
   }
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (programId && t.programId !== programId)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN changes workers only for rows of program ${programId}` }, 409);
+  if (actorSlot) {
+    // THE PROGRAM COMES FROM THE ROW, and it must be one of the actor's own
+    const bound = boundProgramForMain(actorSlot, t.programId ?? null);
+    if (!bound.ok)
+      return json({ error: `task belongs to no program of this MAIN — a Program-MAIN changes workers only for rows of ${ownProgramsPhrase(boundProgramsForMain(actorSlot))}` }, 409);
+    sessionIdMatch = bound.sessionIdMatch;
+    programId = bound.program.id;
+  }
   if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — only an auftrag has a worker` }, 409);
   if (t.variants?.length || t.variantOf !== undefined)
     return json({ error: "a variant group's workers are fixed in its variants" }, 409);
@@ -17171,8 +17312,8 @@ async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; op
   if (actor) {
     const current = slotFrom(actor.slot);
     if (!current?.cwd || current.openedAt !== actor.openedAt || current.worktree) return json({ error: "session occupant changed" }, 409);
-    const bound = boundProgramForMain(current);
-    if (!bound.ok || bound.program.id !== programId || t.programId !== programId)
+    const bound = boundProgramForMain(current, programId ?? null);
+    if (!bound.ok || t.programId !== programId)
       return json({ error: "Program-MAIN binding changed while its worker was being set" }, 409);
   }
   const before = t.spawn;
@@ -17666,14 +17807,15 @@ const LANE_EXIT_HANDOFF_CODEX = `you are laying the baton down DELIBERATELY (don
 function nativeCompaction(harness: string | null): boolean {
   return harnessOf(harness ?? "").id === CODEX_HARNESS.id;
 }
-function positionRole(s: Slot, bound = boundProgramForMain(s)): "program-main" | "lane" | "orchestrator" | "generic" {
-  return bound.ok ? "program-main"
+function positionRole(s: Slot, binding: MainBinding = mainBindingOf(s)): "program-main" | "lane" | "orchestrator" | "generic" {
+  return binding.ok ? "program-main"
     : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : "generic";
 }
 function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
-  const bound = boundProgramForMain(s);
-  const role = positionRole(s, bound);
+  const binding = mainBindingOf(s);
+  const role = positionRole(s, binding);
+  const own = new Set(binding.ok ? binding.programs.map((p) => p.id) : []);
   let receiver: { role: string; slot: number; openedAt: number } | null = null;
   if (role === "lane" && s.programId) {
     const program = programs.find((p) => p.id === s.programId && p.status === "active");
@@ -17704,11 +17846,11 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     ...fleetReportsFor(s).filter((r) => !r.decision
       && !(r.worker.slot === s.id && r.worker.openedAt === s.openedAt)
       && ((r.receiver?.slot === s.id && r.receiver.openedAt === s.openedAt)
-        || (r.basis === "program" && bound.ok && r.provenance.programId === bound.program.id)))
+        || (r.basis === "program" && own.has(r.provenance.programId ?? ""))))
       .map((r) => {
         const worker = slotFrom(r.worker.slot);
         const ended = !worker?.cwd || worker.openedAt !== r.worker.openedAt;
-        const landed = r.basis === "program" && bound.ok && ended
+        const landed = r.basis === "program" && binding.ok && ended
           && (r.status === "needs-main" || r.status === "complete")
           && outcomes.some((o) => o.disposition === "landed" && o.branch === r.worker.branch
             && typeof o.ts === "number" && o.ts >= r.reportedAt
@@ -17718,7 +17860,11 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     ...successionDebts.filter((d) => d.slot === s.id && d.successorOpenedAt === s.openedAt)
       .map((d) => ({ kind: "succession-debt", id: d.id, slot: s.id })),
   ];
-  return { role, taskId: s.taskId, programId: s.programId ?? (bound.ok ? bound.program.id : null),
+  // `programId` keeps its one-Program meaning (a lane's Program, or the MAIN's only one); a MAIN of
+  // several reads them all in `programIds` and gets null there rather than an arbitrary first
+  return { role, taskId: s.taskId,
+    programId: s.programId ?? (binding.ok && binding.programs.length === 1 ? binding.programs[0]!.id : null),
+    ...(binding.ok ? { programIds: binding.programs.map((p) => p.id) } : {}),
     receiver, harness: s.harness, model: s.model, waitingOnMe };
 }
 function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null): string {
@@ -19004,14 +19150,14 @@ const tickOwnsRow = (t: Task): boolean =>
 const releaseVerdictNow = (t: Task): StartPlanReleaseVerdict => releaseVerdict(startPlanRowOf(t));
 // Does this program have a MAIN that can land what a policy starts? The exact binding
 // boundProgramForMain accepts — an active program whose `main` names a live slot opened at that
-// instant, and no second active program naming the same occupant — read without a caller slot.
+// instant — read without a caller slot. Other active Programs naming the same occupant are that
+// MAIN's other Programs (one MAIN per project), never a reason to read this one as unbound.
 const programMainLive = (programId: string): boolean => {
   const p = programs.find((x) => x.id === programId);
   if (!p || p.status !== "active" || !p.main) return false;
   const { slot, openedAt } = p.main;
   const occupant = slotFrom(slot);
-  return !!occupant?.cwd && occupant.openedAt === openedAt
-    && programs.filter((x) => x.status === "active" && x.main?.slot === slot && x.main.openedAt === openedAt).length === 1;
+  return !!occupant?.cwd && occupant.openedAt === openedAt;
 };
 let dispatchBusy = false;
 
@@ -22081,13 +22227,15 @@ async function mintReviewCandidate(s: Slot, hours: number):
 
 async function reviewParkTaskForMain(s: Slot, taskId: string,
   body: Record<string, unknown> | null): Promise<Response> {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return json({ error: bound.error }, 409);
-  const { program, sessionIdMatch } = bound;
+  const binding = mainBindingOf(s);
+  if (!binding.ok) return json({ error: binding.error }, 409);
   const t = tasks.find((x) => x.id === taskId);
   if (!t) return json({ error: "unknown task" }, 404);
-  if (t.programId !== program.id)
-    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN parks only rows of program ${program.id}` }, 409);
+  // THE PROGRAM COMES FROM THE ROW, and it must be one of this occupation's own
+  const bound = boundProgramForMain(s, t.programId ?? null);
+  if (!bound.ok)
+    return json({ error: `task belongs to no program of this MAIN — a Program-MAIN parks only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
+  const { program, sessionIdMatch } = bound;
   if (t.status !== "sent" || t.slot === null)
     return json({ error: `task is ${t.status} with slot ${t.slot ?? "null"} — only a sent row held by a live lane can be parked for review` }, 409);
   const lane = slotFrom(t.slot);
@@ -22104,8 +22252,8 @@ async function reviewParkTaskForMain(s: Slot, taskId: string,
   const cwd = lane.cwd;
   const minted = await mintReviewCandidate(lane, hours);
   if (!minted.ok) return json({ error: minted.error }, minted.code);
-  const stillBound = boundProgramForMain(s);
-  if (!sameSlotStreamOccupant(s, caller) || !stillBound.ok || stillBound.program.id !== program.id)
+  const stillBound = boundProgramForMain(s, program.id);
+  if (!sameSlotStreamOccupant(s, caller) || !stillBound.ok)
     return json({ error: "the Program-MAIN binding changed while the lane was checked — nothing was parked" }, 409);
   if (!sameSlotStreamOccupant(lane, target) || lane.cwd !== cwd
     || lane.worktree?.branch !== minted.candidate.branch)
@@ -22968,9 +23116,9 @@ const MIGRATE_MAX_NUDGES = 3;
 
 type MigrateRail = "standard-main" | "game-maker-main" | "handoff";
 function migrateRailOf(s: Slot): MigrateRail {
-  const bound = boundProgramForMain(s);
-  if (!bound.ok) return "handoff";
-  return isGameMaker(bound.program) ? "game-maker-main" : "standard-main";
+  const bound = boundProgramsForMain(s);
+  if (!bound.length) return "handoff";
+  return bound.some(isGameMaker) ? "game-maker-main" : "standard-main";
 }
 
 // --- WHAT THE SUCCESSION RAIL HAS ALREADY DONE WITH THIS SESSION, read for the board -------------
@@ -36226,8 +36374,32 @@ function standardHandoverLines(program: Program, handover: ProgramHandover): str
   ];
 }
 
+// THE OTHER PROGRAMS OF THE SAME MAIN (one MAIN per project), handed on in the same cut. Each one's
+// handover is its OWN record — retained in full beside it in GET /api/self/program-execution — and
+// only what is that Program's alone is previewed here: the watches and check-ins the record also
+// names are the OCCUPANT's, already previewed above, and repeating them per Program would read as
+// n times the work.
+function companionSuccessionLines(companions: readonly { program: Program; retained: ProgramHandover }[]): string[] {
+  if (!companions.length) return [];
+  return companions.flatMap(({ program, retained }) => {
+    const inbox = programInboxStatus(program);
+    const addressed = programMessageStatus(program);
+    const attention = retained.obligations.filter((o) => o.kind === "attention").length;
+    return [
+      ``,
+      `ALSO YOURS — you are the CONTINUED MAIN of Program ${program.id} («${program.title}») as well: your predecessor held ${companions.length + 1} active Programs of this project, and every binding moved to you in the same cut. Its doors are the same doors; where an act names no row, report or lane, pick this Program with programId.`,
+      `- Its handover is its own record (\`handover\` of program ${program.id} in GET /api/self/program-execution): ${retained.obligations.length} retained rows, ${attention} of them historical owner decisions; the watches and check-ins in it are the occupant's rows previewed above.`,
+      `- Program inbox: ${inbox.unread} unread. GET /api/self/inbox?program=${program.id} reads it.`,
+      `- Addressed messages: ${addressed.unread} unread for this Program. GET /api/self/messages reads them.`,
+      `Owner-confirmed Program content of ${program.id} (verbatim JSON):`,
+      JSON.stringify(programContent(program), null, 2),
+    ];
+  });
+}
+
 function buildProgramMainSuccessionBrief(program: Program, carry: string | null, frame: ProgramMainFrame,
-  anchorBlock: string, retained: ProgramHandover | null): string {
+  anchorBlock: string, retained: ProgramHandover | null,
+  companions: readonly { program: Program; retained: ProgramHandover }[] = []): string {
   const next = carry ? [``, `The first thing the predecessor would do next (max. ${MAX_SUCCESSION_CARRY} characters):`, carry] : [];
   // the Standard rail only, and it PREVIEWS the record that is about to be persisted — never the
   // live rows. A game-maker successor is told to read its checkpoint and NOTHING else (step 7 of
@@ -36265,7 +36437,7 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
     "Owner-confirmed Program content (verbatim JSON):",
     JSON.stringify(programContent(program), null, 2),
   ];
-  return body.join("\n") + railBlockFor(program) + anchorBlock;
+  return [...body, ...companionSuccessionLines(companions)].join("\n") + railBlockFor(program) + anchorBlock;
 }
 
 // --- ROLE CARDS — verbatim from docs/rollenkarten.md -------------------------------------------
@@ -36580,19 +36752,30 @@ async function repoSheetView(rawRepo: string): Promise<Response> {
   });
 }
 
+// `companions` are the OTHER active Programs this predecessor is MAIN of (one MAIN per project).
+// They ride the SAME respawn: `program` carries the founding marker and the receipt, every
+// companion is reserved, captured, briefed and rebound in the same binding cut — and settled as
+// lost by the same rules wherever the primary is.
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
-  spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity): Promise<Response> {
-  if (programBootstrapInflight.has(program.id))
+  spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity,
+  companions: readonly Program[] = []): Promise<Response> {
+  const all = [program, ...companions];
+  if (all.some((p) => programBootstrapInflight.has(p.id)))
     return json({ error: "Program-MAIN founding already in flight" }, 409);
   if (program.founding)
     return foundingUnavailableResponse(program.founding, "pending",
       "Program-MAIN founding recovery is pending; retry did not open another slot");
-  const predecessorCurrent = (): boolean => program.status === "active"
-    && program.main?.slot === predecessor.slot && program.main.openedAt === predecessor.openedAt
+  const pendingCompanion = companions.find((c) => c.founding);
+  if (pendingCompanion?.founding)
+    return foundingUnavailableResponse(pendingCompanion.founding, "pending",
+      `Program-MAIN founding recovery is pending on program ${pendingCompanion.id}, which this MAIN also holds; retry did not open another slot`);
+  const boundToPredecessor = (p: Program): boolean => p.status === "active"
+    && p.main?.slot === predecessor.slot && p.main.openedAt === predecessor.openedAt;
+  const predecessorCurrent = (): boolean => all.every(boundToPredecessor)
     && sameSuccessionOccupant(s, predecessor);
   if (!predecessorCurrent())
     return json({ error: "Program-MAIN predecessor authority changed before succession started" }, 409);
-  programBootstrapInflight.add(program.id); // synchronous reservation before any transfer await
+  for (const p of all) programBootstrapInflight.add(p.id); // synchronous reservation before any transfer await
   let treeLease: GameMakerTreeLease | null = null;
   try {
     try {
@@ -36661,13 +36844,32 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       .map(validAuditRow).filter((row): row is PostLandAuditRow => row !== null);
     if (!predecessorCurrent())
       return await refuse(409, "Program-MAIN predecessor authority changed while the handover read the audit ledger", "predecessor-revoked-before-open");
+    const capturedAt = Date.now();
     const retained = isGameMaker(program)
-      ? null : captureProgramHandover(program, predecessor, successorAt, Date.now(), handoverAuditRows);
+      ? null : captureProgramHandover(program, predecessor, successorAt, capturedAt, handoverAuditRows);
+    // the companions' records in the same tick, against the same ledger read (never game-maker:
+    // handleSelfSucceed refuses that set)
+    const companionRecords = companions.map((c) => ({ program: c,
+      retained: captureProgramHandover(c, predecessor, successorAt, capturedAt, handoverAuditRows) }));
     // …and if that record would not survive its own loader, the succession stops instead of
     // reporting a handover it is about to destroy — before the kill, so the predecessor stays.
     const retentionRefusal = retained === null ? null : handoverCaptureRefusal(retained);
     if (retentionRefusal) return await refuse(409, `Program-MAIN ${retentionRefusal}`, "handover-unretainable");
-    const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained);
+    for (const c of companionRecords) {
+      const refusal = handoverCaptureRefusal(c.retained);
+      if (refusal) return await refuse(409, `Program-MAIN ${refusal} (program ${c.program.id})`, "handover-unretainable");
+    }
+    // a companion that is not moved to the successor keeps its record and loses what it cannot
+    // hand on — the same settle the primary takes, and its holding ends as `retire`
+    const settleCompanionsLost = (): void => {
+      for (const c of companionRecords) {
+        settleProgramSuccessionDuties(c.program, predecessor, null, c.retained);
+        c.program.handover = c.retained;
+        if (boundToPredecessor(c.program)) closeProgramLineage(c.program, "retire", Date.now());
+      }
+    };
+    const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained,
+      companionRecords);
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     // WHICH CONVERSATION LEAVES, read before the kill clears it — never guessed afterwards
@@ -36693,8 +36895,9 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           if (retained) {
             settleProgramSuccessionDuties(program, predecessor, null, retained);
             program.handover = retained;
-            await saveStateNow();
           }
+          settleCompanionsLost();
+          if (retained || companionRecords.length) await saveStateNow();
         },
         // refused before the kill: the predecessor stands and stays bound, only the marker falls
         async () => { await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open"); });
@@ -36725,6 +36928,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           settleProgramSuccessionDuties(program, predecessor, null, retained);
           program.handover = retained;
         }
+        settleCompanionsLost();
         await saveStateNow().catch((e: unknown) => logError("programSuccessionUnbound", e));
         const error = candidateOk
           ? `Program-MAIN successor stands on slot ${s.id} but was not bound: the Program's authority changed during the respawn`
@@ -36754,6 +36958,31 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         if (a.programId !== program.id || (a.status !== "open" && a.status !== "send-uncertain")) continue;
         const successor = attentionSuccessorFor(a);
         if (successor) rebindAttentionToSuccessor(a, successor);
+      }
+      // THE COMPANIONS MOVE IN THE SAME CUT, each by the primary's own steps: binding, retained
+      // record, duties, lineage, open attention. One the owner completed or rebound meanwhile is not
+      // taken along — it keeps its record and settles as lost, exactly like an unbound primary.
+      const movedCompanions: string[] = [];
+      for (const c of companionRecords) {
+        const cBound = c.program.main;
+        if (!cBound || !boundToPredecessor(c.program)) {
+          settleProgramSuccessionDuties(c.program, predecessor, null, c.retained);
+          c.program.handover = c.retained;
+          audit("main_succession", s.id, `program ${c.program.id} companion not moved: its authority changed during the respawn`);
+          continue;
+        }
+        const cOld = { ...cBound };
+        c.program.main = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null, boundAt: at };
+        c.program.handover = { ...c.retained, from: { ...c.retained.from, sessionId: predecessorSessionId } };
+        settleProgramSuccessionDuties(c.program, predecessor, s, c.program.handover);
+        appendProgramLineage(c.program, lineageEntryFromMain(c.program.main, "succeed"),
+          { main: cOld, endedBy: "succeed" });
+        for (const a of attentionRequests) {
+          if (a.programId !== c.program.id || (a.status !== "open" && a.status !== "send-uncertain")) continue;
+          const successor = attentionSuccessorFor(a);
+          if (successor) rebindAttentionToSuccessor(a, successor);
+        }
+        movedCompanions.push(c.program.id);
       }
       delete program.founding;
       try {
@@ -36817,10 +37046,12 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       saveHistory(s);
       logPrompt(s, deliveredBrief, "auto", sentAt);
       // the pane's session id may have been learned during boot; the binding names the conversation
-      if (program.main?.slot === s.id && program.main.openedAt === openedAt && program.main.sessionId === null && s.sessionId)
-        program.main = { ...program.main, sessionId: s.sessionId };
+      for (const p of all)
+        if (p.main?.slot === s.id && p.main.openedAt === openedAt && p.main.sessionId === null && s.sessionId)
+          p.main = { ...p.main, sessionId: s.sessionId };
       await saveStateNow();
       return json({ ok: true, slot: s.id, label: s.label, program: programDigest(program),
+        ...(companions.length ? { companions: movedCompanions } : {}),
         ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
         ...(receipt ? {} : { receipt: false }) });
     } finally {
@@ -36828,7 +37059,86 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     }
   } finally {
     releaseGameMakerTreeLease(treeLease);
-    programBootstrapInflight.delete(program.id);
+    for (const p of all) programBootstrapInflight.delete(p.id);
+  }
+}
+
+// THE OWNER'S BIND TO A MAIN THAT ALREADY RUNS (owner 2026-10-06: je Projekt eine dauerhafte MAIN,
+// Programs sind endliche Vorhaben darin). bootstrap-main with `{slot}` founds NOTHING: it binds this
+// active Program to the live session on that slot, which must already be the bound MAIN of at least
+// one other active Program — so a Program can only ever join a MAIN the owner bound before, never
+// make one out of an arbitrary pane. Every rule of the founding door that is about the PROGRAM holds
+// here too: a live binding is never displaced, a founding in flight or pending recovery refuses, and
+// a stale binding is replaced loudly (named in the answer, closed as `rebound` in the lineage). A
+// game-maker Program succeeds alone (handleSelfSucceed), so it neither joins nor is joined.
+//
+// The MAIN learns it in its pane, once, after the durable cut — a courtesy like the attention hint:
+// the binding is the fact, and GET /api/self/program-execution lists the new Program either way.
+async function attachProgramToLiveMain(program: Program, body: Record<string, unknown>,
+  alreadyInflight: boolean): Promise<Response> {
+  const extra = Object.keys(body).filter((k) => k !== "slot");
+  if (extra.length)
+    return json({ error: `binding to a live MAIN reads slot only — [${extra.join(", ")}] belongs to founding a new session` }, 400);
+  if (typeof body.slot !== "number" || !Number.isInteger(body.slot))
+    return json({ error: "slot must be the slot number of a live Program-MAIN" }, 400);
+  if (program.status !== "active")
+    return json({ error: `cannot bind Program-MAIN for a ${program.status} program` }, 409);
+  const target = slotFrom(body.slot);
+  if (!target?.cwd || target.worktree || target.label === STEWARD_LABEL)
+    return json({ error: `slot ${body.slot} holds no live non-lane session — a Program joins a MAIN that is already running` }, 409);
+  const live = program.main ? slotFrom(program.main.slot) : undefined;
+  if (program.main && live?.cwd && live.openedAt === program.main.openedAt) {
+    if (live === target) return json({ ok: true, existing: true, program: publicProgram(program) });
+    return json({ error: `program ${program.id} is bound to the live MAIN on slot ${program.main.slot} — a live binding is never displaced` }, 409);
+  }
+  if (alreadyInflight || program.founding)
+    return program.founding && !alreadyInflight
+      ? foundingUnavailableResponse(program.founding, "pending",
+        "Program-MAIN founding recovery is pending; nothing was bound")
+      : json({ error: "Program-MAIN founding already in flight" }, 409);
+  const held = boundProgramsForMain(target);
+  if (!held.length)
+    return json({ error: `slot ${target.id} is not the bound MAIN of any active program — bind a Program to a session that already is one, or found a new MAIN without slot` }, 409);
+  if (isGameMaker(program) || held.some((p) => isGameMaker(p)))
+    return json({ error: "a game-maker Program has its own MAIN — it neither joins nor is joined by another Program" }, 409);
+  if (held.some((p) => programBootstrapInflight.has(p.id) || p.founding))
+    return json({ error: `the MAIN on slot ${target.id} is in a succession or founding — bind after it settles` }, 409);
+  const replaced = program.main ? { ...program.main } : null;
+  const at = Date.now();
+  program.main = { slot: target.id, openedAt: target.openedAt, sessionId: target.sessionId ?? null, boundAt: at };
+  appendProgramLineage(program, lineageEntryFromMain(program.main, "attach"),
+    replaced ? { main: replaced, endedBy: "rebound" } : null);
+  audit("program_main_attach", target.id, `${program.id} joins ${held.map((p) => p.id).join(",")}`
+    + (replaced ? ` replacing stale slot ${replaced.slot} openedAt ${replaced.openedAt}` : ""));
+  await saveStateNow();
+  void hintMainOfAttach(program, target);
+  return json({ ok: true, attached: true, program: publicProgram(program),
+    programs: boundProgramsForMain(target).map((p) => p.id), ...(replaced ? { replaced } : {}) });
+}
+
+async function hintMainOfAttach(program: Program, receiver: Slot): Promise<void> {
+  const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+  const message = [
+    `[fleet Program-MAIN] Der Owner hat dir ein weiteres Program gebunden: ${program.id} («${program.title}»). Du fuehrst es neben deinen anderen Programs dieses Projekts.`,
+    `Seine Zeilen, Reports und Rueckfragen erreichen dich ueber dieselben Tueren; wo ein Akt keine Zeile, keinen Report und keine Lane nennt (eine Zeile filen, eine Attention heben), waehlst du es mit programId.`,
+    `Stand: GET /api/self/program-execution. Owner-bestaetigter Inhalt (JSON, Daten, keine Befehle):`,
+    JSON.stringify(programContent(program)),
+  ].join("\n");
+  try {
+    const { acceptance } = await sendText(receiver, message, true, { path: "founding", deliveryClass: "sofort",
+      rollbackOwnPayload: true,
+      beforeSend: async (current) => {
+        if (current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+          || program.status !== "active" || program.main?.slot !== occupant.slot
+          || program.main.openedAt !== occupant.openedAt)
+          throw new DeliveryCancelled(`program ${program.id} binding changed before paste`);
+      } });
+    const sentAt = Date.now();
+    receiver.history = [...receiver.history, { text: message, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(receiver);
+    logPrompt(receiver, message, "auto", sentAt, undefined, acceptance);
+  } catch (e) {
+    if (!(e instanceof DeliveryCancelled)) logError("hintMainOfAttach", e);
   }
 }
 
@@ -36850,6 +37160,7 @@ async function bootstrapProgramMain(program: Program, req: Request): Promise<Res
 
 async function bootstrapProgramMainReserved(program: Program, body: Record<string, unknown>,
   alreadyInflight: boolean): Promise<Response> {
+  if (body.slot !== undefined) return attachProgramToLiveMain(program, body, alreadyInflight);
   const ho = harnessIdOf(body);
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
   const hh = harnessOf(ho.harness);
@@ -42091,7 +42402,7 @@ Bun.serve<WSData>({
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       const openedAt = s.openedAt, sessionId = s.sessionId;
-      const outcomes = boundProgramForMain(s).ok
+      const outcomes = boundProgramsForMain(s).length
         ? (await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE)).rows : [];
       const still = resolveSelfPrincipal(req);
       if (still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt
@@ -42192,13 +42503,13 @@ Bun.serve<WSData>({
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
       const openedAt = s.openedAt, sessionId = s.sessionId;
-      const bound = boundProgramForMain(s);
+      const bound = boundProgramsForMain(s);
       const answer = await programExecutionView(s);
       const still = resolveSelfPrincipal(req);
-      const current = boundProgramForMain(s);
+      const current = boundProgramsForMain(s);
       if (still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt
         || s.openedAt !== openedAt || s.sessionId !== sessionId || slotFrom(s.id) !== s
-        || bound.ok !== current.ok || (bound.ok && current.ok && bound.program !== current.program))
+        || bound.length !== current.length || bound.some((p, i) => current[i] !== p))
         return json({ refusal: "occupant-changed", error: "the occupant or Program binding changed during this read" }, 409);
       return answer;
     }
@@ -42287,9 +42598,15 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane cannot write its Program's context packs — its MAIN maintains them" }, 409);
-      const bound = boundProgramForMain(s);
+      const binding = mainBindingOf(s);
+      if (!binding.ok) return json({ error: binding.error }, 409);
+      // packs belong to ONE Program: a MAIN of several picks it with `programId` among its own
+      const packBody = await readJson(req);
+      const choice = programChoiceOf(packBody?.programId);
+      if (!choice.ok) return json({ error: choice.error }, 400);
+      const bound = boundProgramForMain(s, choice.programId);
       if (!bound.ok) return json({ error: bound.error }, 409);
-      const raw = (await readJson(req))?.packs;
+      const raw = packBody?.packs;
       if (!s.cwd) return json({ error: "this session has no working directory to name a repository" }, 409);
       let repoRoot: string;
       try { repoRoot = await repoRootOf(s.cwd); }
@@ -42315,7 +42632,7 @@ Bun.serve<WSData>({
       const valid = validateProgramContextPacks(raw, { trackedPaths: listing.trackedPaths, sourceBytes });
       if (!valid.ok) return json({ error: "context packs refused", issues: valid.issues }, 400);
       // Every await above was git; the binding is re-read at the write, not trusted from before them.
-      const still = boundProgramForMain(s);
+      const still = boundProgramForMain(s, bound.program.id);
       if (!still.ok || still.program !== bound.program) return json({ error: "Program-MAIN binding changed while checking — nothing written" }, 409);
       const program = still.program;
       if (valid.packs.length > 0) program.contextPacks = valid.packs;
@@ -42398,7 +42715,7 @@ Bun.serve<WSData>({
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      return await programInboxFor(s);
+      return await programInboxFor(s, url);
     }
 
     const selfInboxRead = /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/.exec(url.pathname);
@@ -43031,12 +43348,14 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not offer another lane's tree — a lane offers its own on POST /api/self/suite-offer" }, 409);
-      const bound = boundProgramForMain(s);
-      if (!bound.ok) return json({ error: bound.error }, 409);
+      const binding = mainBindingOf(s);
+      if (!binding.ok) return json({ error: binding.error }, 409);
       const target = laneSuiteProxyTarget(mainLaneOffer[1]!);
       if (!target.ok) return target.response;
-      if (target.lane.programId !== bound.program.id)
-        return json({ error: `slot ${target.lane.id} is not a lane of program ${bound.program.id} — a MAIN offers the trees of its own program's lanes only` }, 409);
+      // the lane names its Program, and it must be one of this occupation's own
+      const bound = boundProgramForMain(s, target.lane.programId ?? null);
+      if (!bound.ok)
+        return json({ error: `slot ${target.lane.id} is not a lane of ${ownProgramsPhrase(binding.programs)} — a MAIN offers the trees of its own program's lanes only` }, 409);
       return laneSuiteOfferDoor(target.lane, target.wt, req, `MAIN slot ${s.id} of ${bound.program.id}`);
     }
 

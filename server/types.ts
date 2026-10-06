@@ -2586,8 +2586,10 @@ const loadProgramStudioBinding = (value: unknown): ProgramStudioBinding | undefi
 // entry's `via`. `endedBy:"rebound"` on an entry therefore means precisely "its death was never
 // observed; the binding was found stale at rebind time". `replaced` is the one exit without a
 // successor: a bootstrap over a stale binding dropped it with its founding marker and then failed,
-// so the Program stands active and unbound.
-type ProgramLineageVia = "bootstrap" | "rebound" | "succeed" | "backfill-unknown";
+// so the Program stands active and unbound. `attach` is the owner binding an active Program to a MAIN
+// that is ALREADY RUNNING for other Programs of its project (bootstrap-main with `slot`): one MAIN per
+// project, n Programs — the entry starts there, no session was founded for it.
+type ProgramLineageVia = "bootstrap" | "rebound" | "succeed" | "backfill-unknown" | "attach";
 type ProgramLineageEndedBy = "rebound" | "succeed" | "retire" | "replaced";
 interface ProgramLineageEntry {
   slot: number; openedAt: number; sessionId: string | null; boundAt: number;
@@ -2597,7 +2599,7 @@ interface ProgramLineage { v: 1; entries: ProgramLineageEntry[]; dropped: number
 // the oldest entries fall off first and are COUNTED, so a capped record still says how much of the
 // history it no longer carries
 const PROGRAM_LINEAGE_MAX = 50;
-const PROGRAM_LINEAGE_VIA: ProgramLineageVia[] = ["bootstrap", "rebound", "succeed", "backfill-unknown"];
+const PROGRAM_LINEAGE_VIA: ProgramLineageVia[] = ["bootstrap", "rebound", "succeed", "backfill-unknown", "attach"];
 const PROGRAM_LINEAGE_ENDED_BY: ProgramLineageEndedBy[] = ["rebound", "succeed", "retire", "replaced"];
 const PROGRAM_LINEAGE_ENTRY_KEYS = ["slot", "openedAt", "sessionId", "boundAt", "via", "endedAt", "endedBy"];
 type ProgramLineageRead = { ok: true; lineage: ProgramLineage } | { ok: false; error: string };

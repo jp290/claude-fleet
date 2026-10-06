@@ -13654,21 +13654,22 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const r of mVarRows) await post(`/api/tasks/${r.id}/delete`, {});
     await post(`/api/tasks/${mVarGroupId}/delete`, {});
 
-    // (4) THE BODY CANNOT NOMINATE ANYTHING. `programId` answers in its own sentence (naming the
-    // program the binding already decided), and the rest of the world's fields are refused as a
-    // CLOSED SET rather than dropped — a field silently ignored is a field the caller believes was
-    // honoured. Both directions are checked at once: a body naming the caller's own program is
-    // refused too, so this is a rule about the FIELD and not about which value it carries.
+    // (4) THE BODY CANNOT NOMINATE ANYTHING OUTSIDE THE BINDING. `programId` is a CHOICE among the
+    // caller's own bound Programs since one MAIN per project (2026-10-06) — a FOREIGN one answers
+    // 409 in the binding's own sentence (e2e/programs.ts proves the own-choice half) — and the
+    // rest of the world's fields are refused as a CLOSED SET rather than dropped: a field silently
+    // ignored is a field the caller believes was honoured.
     const mBeforeBody = (await mAll()).length;
-    const mBodyProgram = await mFile(mToken, { text: "acp23 body programId", programId: mMainProgram });
+    const mForeignProgram = "f0f0f0f0f0f0f0f0f0f0f0f0";
+    const mBodyProgram = await mFile(mToken, { text: "acp23 body programId", programId: mForeignProgram });
     const mBodyProgramText = await mBodyProgram.text();
     const mBodyRepo = await mFile(mToken, { text: "acp23 body repo", repo: REPO });
     const mBodyRepoText = await mBodyRepo.text();
     const mBodyStatus = await mFile(mToken, { text: "acp23 body status", status: "queued", queue: true });
     const mBodyStatusText = await mBodyStatus.text();
-    check("ACP-23 (4): programId in the body is a 400 in its own words, repo/status/queue are refused as a closed set, and none of the three minted a row",
-      mBodyProgram.status === 400
-        && mBodyProgramText.includes("programId comes from this session's MAIN binding")
+    check("ACP-23 (4): a foreign programId in the body is a 409 naming the binding's own program, repo/status/queue are refused as a closed set, and none of the three minted a row",
+      mBodyProgram.status === 409
+        && mBodyProgramText.includes(`program ${mForeignProgram} is not one of the programs this session is bound MAIN of`)
         && mBodyProgramText.includes(mMainProgram)
         && mBodyRepo.status === 400 && mBodyRepoText.includes("[repo]")
         && mBodyRepoText.includes("this door reads text and kind only")

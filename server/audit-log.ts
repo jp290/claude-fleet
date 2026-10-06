@@ -386,6 +386,10 @@ type AuditEvent =
   // response says it once, to one caller. Detail names the program and the REPLACED occupation
   // (slot + openedAt), never a line of the Program's content or of the founding brief.
   | "program_main_rebound"
+  // the owner bound an active Program to a MAIN that already runs for other Programs of its project
+  // (bootstrap-main with `slot`, server.ts#attachProgramToLiveMain). Detail names the program, the
+  // Programs it joins and a replaced stale occupation if there was one — never Program content.
+  | "program_main_attach"
   // THE PORTFOLIO READ GRANT (memory M4, server.ts#patchMemoryGrant / #transferMemoryGrant): the
   // owner set or revoked a grant on one occupant, a generic succession carried it (same or narrower)
   // to the successor, or a set failed to reach disk and was rolled back. Detail names grant id,

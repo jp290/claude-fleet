@@ -48,7 +48,7 @@ interface ProgramContent {
 // the persisted authority lineage (server.ts#ProgramLineage): one entry per holding of a Program's
 // MAIN authority, written in the same save as `main`; only the newest entry may be open
 interface ProgramLineageEntry { slot: number; openedAt: number; sessionId: string | null; boundAt: number;
-  via: "bootstrap" | "rebound" | "succeed" | "backfill-unknown"; endedAt: number | null;
+  via: "bootstrap" | "rebound" | "succeed" | "backfill-unknown" | "attach"; endedAt: number | null;
   endedBy: "rebound" | "succeed" | "retire" | "replaced" | null }
 interface ProgramLineage { v: number; entries: ProgramLineageEntry[]; dropped: number }
 // the persisted PROGRAM INBOX (server/types.ts#ProgramInbox): pointers to rows that already exist,
@@ -3146,17 +3146,10 @@ export async function run(ctx: Ctx): Promise<void> {
     `head=${successionHeadBefore} worktree=${existsSync(`${REPO}/HANDOFF.md`)}`);
 
   const mainSelfTokenAfterRestart = readState().slots?.[String(mainSlot)]?.selfToken ?? "";
-  const ambiguousReceiptsBefore = await contextReceipts();
-  const occupiedBeforeAmbiguous = (await sessions()).slots.filter((s) => s.cwd).length;
-  const ambiguousSuccession = await selfSucceed(mainSelfTokenAfterRestart);
-  const ambiguousSuccessionText = await ambiguousSuccession.text();
-  check("Program-MAIN succession ambiguity: two active bindings are a loud numbered 409 with no slot or receipt side effect",
-    ambiguousSuccession.status === 409
-      && ambiguousSuccessionText.includes("ambiguous succession: this session is Program-MAIN of 2 active programs")
-      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeAmbiguous
-      && (await contextReceipts()).total === ambiguousReceiptsBefore.total
-      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === JSON.stringify(bound),
-    `${ambiguousSuccession.status} ${ambiguousSuccessionText}`);
+  // Two active bindings on one occupation are no longer ambiguous (one MAIN per project,
+  // 2026-10-06): such a succession moves BOTH, which the one-MAIN block at the end of this file
+  // proves on its own Programs. This fixture's second binding has served its load check above and
+  // is completed BEFORE the succession below, so mainProgram's succession stays the one under test.
   await programPost(ambiguousProgram.id, "complete");
 
   // --- A DELIVERY THAT FAILS AFTER AN IN-PLACE RESPAWN, on a throwaway Program so the main one
@@ -7914,46 +7907,53 @@ export async function run(ctx: Ctx): Promise<void> {
   // bound" and read like the cut failing, when nothing was ever measured.
   check("ambiguity fixture: two active programs are loaded naming the identical occupation",
     twinsLoaded === 2, `${twinsLoaded} active programs name slot ${successorSlot} openedAt ${transferredBinding?.openedAt}`);
-  // V1b on the SAME twin fixture: one occupation named twice is not a doubled budget, it is a
-  // budget that belongs to no single program. Reporting the sum under both names would let an
-  // owner spend the same five places twice on paper.
+  // V1b on the SAME twin fixture: one occupation named twice is ONE receiver (one MAIN per project,
+  // 2026-10-06) with ONE budget — never a doubled one and never a share. Both programs read the
+  // SAME known numbers, and the note says the budget is shared so nobody reads two rooms into it.
   const twinBudgets = (await ownerPrograms()).filter((p) => p.id === mainProgram.id || p.id === twinId);
-  check("V1b attribution: two programs naming one occupation read UNKNOWN on BOTH, with the count in the reason",
+  check("V1b attribution: two programs naming one occupation read the SAME known budget on both, and the note names it shared",
     twinBudgets.length === 2
-      && twinBudgets.every((p) => p.deliveryBudget?.state === "unknown"
-        && (p.deliveryBudget.reason ?? "").includes("2 programs name the same live occupant")
-        && (p.deliveryBudget.reason ?? "").includes(`slot ${successorSlot}`)
-        && p.deliveryBudget.free === undefined
-        && (p.deliveryBudgetNote ?? "").startsWith("return path unknown: ")),
+      && twinBudgets.every((p) => p.deliveryBudget?.state === "known"
+        && JSON.stringify(p.deliveryBudget) === JSON.stringify(twinBudgets[0]!.deliveryBudget)
+        && (p.deliveryBudgetNote ?? "").startsWith(`return path open at slot ${successorSlot}: `)
+        && (p.deliveryBudgetNote ?? "").includes("shared by the 2 active programs")),
     JSON.stringify(twinBudgets.map((p) => [p.id, p.deliveryBudget, p.deliveryBudgetNote])));
   // V1a on the SAME twin fixture, and it deliberately does NOT follow the budget into `unknown`.
   // A budget belongs to an OCCUPANT and cannot be split between two names; an identity comparison
   // is per-BINDING and stays well defined — each program recorded an id, and the live pane reports
-  // one. What ambiguity costs is AUTHORITY, and that refusal lives where it is decided:
-  // boundProgramForMain answers "ambiguous Program-MAIN binding" to every door regardless of what
-  // this pair says, which is exactly why the pair must never be read as a land verdict.
-  check("V1a attribution: two programs naming one occupation keep a defined health on BOTH — identity is per-binding, ambiguity is the door's own refusal",
+  // one. Which Program an act belongs to is decided where the act is: boundProgramForMain derives
+  // it from the act's object or the caller's choice, regardless of what this pair says — which is
+  // exactly why the pair must never be read as a land verdict.
+  check("V1a attribution: two programs naming one occupation keep a defined health on BOTH — identity is per-binding, the Program of an act is the door's own question",
     twinBudgets.length === 2
       && twinBudgets.every((row) => row.health?.occupancy === "live"
         && row.health.sessionIdMatch === "unknown"),
     JSON.stringify(twinBudgets.map((row) => [row.id, row.health])));
   const ambiguous = await attentionRaise(successorToken, "which program am I the MAIN of?");
   const ambiguousText = await ambiguous.text();
+  const twinChosen = await fetch(`${BASE}/api/self/attention`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
+    body: JSON.stringify({ kind: "decision", text: "a question of the twin program", programId: twinId }) });
+  const twinChosenBody = await twinChosen.json() as { ok?: boolean; request?: { programId?: string } };
   const unboundProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
   const unboundProbeOpen = unboundProbeSlot === null ? null
     : await post(`/api/slots/${unboundProbeSlot}/open`, { cwd: REPO, label: "unbound-attention-probe" });
   const unboundProbeToken = readState().slots?.[String(unboundProbeSlot)]?.selfToken ?? "";
   const unbound = await attentionRaise(unboundProbeToken, "am I the MAIN of anything at all?");
   const unboundText = await unbound.text();
-  check("boundProgramForMain: an ambiguous binding is its OWN 409 — never collapsed into \"you are not bound\"",
+  // A MAIN of two Programs raising a question that names no Program is asked to CHOOSE — its own
+  // 409, never collapsed into "you are not bound" — and a choice of one of its own is answered.
+  check("boundProgramForMain: a MAIN of two Programs is asked to choose (its OWN 409, never \"you are not bound\"), and a choice among its own is raised under that Program",
     !!unboundProbeOpen?.ok && ambiguous.status === 409 && unbound.status === 409
-      && ambiguousText.includes("ambiguous Program-MAIN binding")
+      && ambiguousText.includes("bound MAIN of 2 active programs")
       && ambiguousText.includes(`slot ${successorSlot}`)
       && ambiguousText.includes(`openedAt ${transferredBinding?.openedAt}`)
+      && ambiguousText.includes("programId")
       && !ambiguousText.includes("not the current bound MAIN")
+      && twinChosen.ok && twinChosenBody.request?.programId === twinId
       && unboundText.includes("not the current bound MAIN")
-      && !unboundText.includes("ambiguous"),
-    `ambiguous=${ambiguous.status}:${ambiguousText} unbound=${unbound.status}:${unboundText}`);
+      && !unboundText.includes("bound MAIN of 2"),
+    `choose=${ambiguous.status}:${ambiguousText} chosen=${twinChosen.status}:${JSON.stringify(twinChosenBody)} unbound=${unbound.status}:${unboundText}`);
   if (unboundProbeSlot !== null) await post(`/api/slots/${unboundProbeSlot}/kill`, {});
 
   // The sessionId GATE is gone, and this is the case it used to swallow: same pane, same slot, same
@@ -15128,5 +15128,286 @@ exit 0
     if (lidUnplant.laneSucceedCounts) delete lidUnplant.laneSucceedCounts[lidTaskId];
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(lidUnplant, null, 2), { mode: 0o600 });
     await restartSrv();
+  }
+
+  // === ONE MAIN, n PROGRAMS (owner 2026-10-06: „[Zitat entfernt]“ — je Projekt eine dauerhafte
+  // MAIN mit Nachfolge, Programs sind endliche Vorhaben darin). Until then two active Programs naming
+  // one occupation were "ambiguous" and the MAIN lost every right. Here ONE MAIN holds TWO active
+  // Programs of the same repo and walks every MAIN door for EACH of them; a lane's report and question
+  // reach it through the Program of the lane's row; a succession carries BOTH bindings and their open
+  // duties; and a session bound to neither still meets 409 at every door. Each door derives the
+  // Program from its object (row, report, lane) or — where it has none — takes a CHOICE that may only
+  // name one of the MAIN's own Programs. ===
+  {
+    type MpTask = { id: string; status: string; programId?: string; repo?: string | null; kind: string;
+      hold?: { slot: number } | null; spawn?: { harness: string | null } };
+    type MpAttention = { id: string; programId: string; status: string;
+      requester: { slot: number; openedAt: number } };
+    type MpClarification = { id: string; status: string; basis?: string;
+      receiver: { slot: number; openedAt: number } };
+    const mpDispatchBefore = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    await post("/api/dispatch", { on: false });
+    const mpTasks = async (): Promise<MpTask[]> => ((await (await get("/api/tasks")).json()) as { tasks: MpTask[] }).tasks;
+    const mpTask = async (id: string): Promise<MpTask | undefined> => (await mpTasks()).find((t) => t.id === id);
+    const mpCall = (token: string, path: string, body?: unknown): Promise<Response> =>
+      fetch(`${BASE}${path}`, { method: "POST", headers: { "x-fleet-self-token": token,
+        ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const mpRead = async <T,>(token: string, path: string): Promise<{ status: number; body: T }> => {
+      const r = await fetch(`${BASE}${path}`, { headers: { "x-fleet-self-token": token } });
+      return { status: r.status, body: await r.json() as T };
+    };
+    const mpCard = { ziel: "one main two programs probe row", surface: { files: ["code.txt"], symbols: [] },
+      done: "die Zeile ist freigegeben", verify: "bun e2e/pins.ts", verboten: [] };
+
+    const mpA = await activateNewProgram("One MAIN two programs — A");
+    const mpB = await activateNewProgram("One MAIN two programs — B");
+    const mpForeign = await activateNewProgram("One MAIN two programs — foreign");
+    const mpLabel = "one-main-two-programs";
+    const mpPending = beginBootstrap(mpA.id, { cwd: REPO, label: mpLabel, harness: "codex", model: "gpt-5.5", effort: "high" });
+    const mpSlot = await waitForLabel(mpLabel);
+    if (mpSlot !== null) await respawnScreen(mpSlot, ">_ OpenAI Codex (v0.147.0)");
+    const mpBoot = await mpPending;
+    const mpTok = slotToken(mpSlot);
+    const mpProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
+    const mpProbeOpen = mpProbeSlot === null ? null
+      : await post(`/api/slots/${mpProbeSlot}/open`, { cwd: REPO, label: "one-main-unbound-probe" });
+    const mpProbeTok = slotToken(mpProbeSlot);
+
+    // (1) THE OWNER BINDS B TO THE MAIN THAT ALREADY RUNS — bootstrap-main with {slot} founds nothing
+    const mpAttachUnbound = await programPost(mpB.id, "bootstrap-main", { slot: mpProbeSlot });
+    const mpAttachUnboundText = await mpAttachUnbound.text();
+    const mpAttach = await programPost(mpB.id, "bootstrap-main", { slot: mpSlot });
+    const mpAttachBody = await mpAttach.json() as { ok?: boolean; attached?: boolean; programs?: string[] };
+    const mpAttachAgain = await programPost(mpB.id, "bootstrap-main", { slot: mpSlot });
+    const mpAttachAgainBody = await mpAttachAgain.json() as { existing?: boolean };
+    const mpBindings = (await ownerPrograms()).filter((p) => p.id === mpA.id || p.id === mpB.id);
+    const mpOccupiedAfterAttach = (await sessions()).slots.filter((x) => x.cwd).length;
+    const mpLineageB = readState().programs?.find((p) => p.id === mpB.id)?.lineage;
+    check("one MAIN, two Programs (1): the owner binds B to the live MAIN of A without founding a session — both name ONE occupation, lineage says attach, a repeat is existing:true, an unbound pane is refused",
+      mpBoot.ok && mpSlot !== null && mpTok !== "" && !!mpProbeOpen?.ok
+        && mpAttachUnbound.status === 409 && mpAttachUnboundText.includes("is not the bound MAIN of any active program")
+        && mpAttach.ok && mpAttachBody.attached === true
+        && JSON.stringify([...(mpAttachBody.programs ?? [])].sort()) === JSON.stringify([mpA.id, mpB.id].sort())
+        && mpAttachAgain.ok && mpAttachAgainBody.existing === true
+        && mpBindings.length === 2 && mpBindings.every((p) => p.main?.slot === mpSlot
+          && p.main.openedAt === mpBindings[0]!.main?.openedAt)
+        && mpLineageB?.entries.at(-1)?.via === "attach" && mpLineageB.entries.at(-1)?.slot === mpSlot,
+      JSON.stringify({ boot: mpBoot.status, unbound: `${mpAttachUnbound.status} ${mpAttachUnboundText}`,
+        attach: mpAttachBody, again: mpAttachAgainBody, mains: mpBindings.map((p) => [p.id, p.main]),
+        lineage: mpLineageB?.entries.at(-1), occupied: mpOccupiedAfterAttach }));
+    // the return path is ONE receiver: both read the same known budget, and the note says it is shared
+    check("one MAIN, two Programs (1b): both Programs read the MAIN's one delivery budget as KNOWN, and the note names it shared",
+      mpBindings.every((p) => p.deliveryBudget?.state === "known"
+        && (p.deliveryBudgetNote ?? "").includes("shared by the 2 active programs")),
+      JSON.stringify(mpBindings.map((p) => [p.id, p.deliveryBudget, p.deliveryBudgetNote])));
+
+    // (2) program-execution: one read, both Programs
+    const mpExec = await selfExecution(mpTok);
+    check("one MAIN, two Programs (2): GET /api/self/program-execution projects BOTH Programs for the one MAIN",
+      mpExec.response.ok && JSON.stringify((mpExec.view?.programs ?? []).map((p) => p.program.id).sort())
+        === JSON.stringify([mpA.id, mpB.id].sort()),
+      JSON.stringify((mpExec.view?.programs ?? []).map((p) => p.program.id)));
+
+    // (3) FILING names no object, so it takes a CHOICE — only among the MAIN's own Programs
+    const mpFile = (body: Record<string, unknown>): Promise<Response> => mpCall(mpTok, "/api/self/tasks", body);
+    const mpNoChoice = await mpFile({ text: "one main: which program?", kind: "auftrag", card: mpCard });
+    const mpNoChoiceText = await mpNoChoice.text();
+    const mpForeignChoice = await mpFile({ text: "one main: foreign program", kind: "auftrag", card: mpCard, programId: mpForeign.id });
+    const mpForeignChoiceText = await mpForeignChoice.text();
+    const mpFiledA = await mpFile({ text: "one main: row of A", kind: "auftrag", card: mpCard, programId: mpA.id });
+    const mpFiledB = await mpFile({ text: "one main: row of B", kind: "auftrag", card: mpCard, programId: mpB.id });
+    const mpRowA = ((await mpFiledA.json()) as { task?: MpTask }).task?.id ?? "";
+    const mpRowB = ((await mpFiledB.json()) as { task?: MpTask }).task?.id ?? "";
+    check("one MAIN, two Programs (3): filing without a choice is a 409 naming both, a foreign choice is a 409, and a choice of each own Program files a pending row under it",
+      mpNoChoice.status === 409 && mpNoChoiceText.includes("bound MAIN of 2 active programs")
+        && mpNoChoiceText.includes(mpA.id) && mpNoChoiceText.includes(mpB.id)
+        && mpForeignChoice.status === 409 && mpForeignChoiceText.includes(`program ${mpForeign.id} is not one of the programs this session is bound MAIN of`)
+        && mpFiledA.ok && mpFiledB.ok
+        && (await mpTask(mpRowA))?.programId === mpA.id && (await mpTask(mpRowB))?.programId === mpB.id
+        && (await mpTask(mpRowA))?.status === "pending" && (await mpTask(mpRowB))?.status === "pending",
+      JSON.stringify({ none: `${mpNoChoice.status} ${mpNoChoiceText}`, foreign: `${mpForeignChoice.status} ${mpForeignChoiceText}`,
+        a: mpFiledA.status, b: mpFiledB.status }));
+
+    // (4) THE ROW DOORS derive the Program from the row: release, hold, spawn and land, for EACH
+    const mpForeignRow = ((await (await post("/api/tasks", { queue: false, text: "one main: foreign row",
+      programId: mpForeign.id, card: mpCard })).json()) as { task: MpTask }).task.id;
+    const mpDoor = async (id: string): Promise<Record<string, number | string>> => {
+      const release = await mpCall(mpTok, `/api/self/tasks/${id}/release`);
+      const hold = await mpCall(mpTok, `/api/self/tasks/${id}/hold`, { grund: "one main hold probe" });
+      const spawn = await mpCall(mpTok, `/api/self/tasks/${id}/spawn`, { harness: "codex" });
+      const land = await mpCall(mpTok, `/api/self/tasks/${id}/land`);
+      return { release: release.status, hold: hold.status, spawn: spawn.status, land: land.status, landText: await land.text() };
+    };
+    const mpDoorA = await mpDoor(mpRowA);
+    const mpDoorB = await mpDoor(mpRowB);
+    const mpDoorForeign = await mpDoor(mpForeignRow);
+    const mpOwnDoorsOk = (d: Record<string, number | string>): boolean => d.release === 200 && d.hold === 200
+      && d.spawn === 200 && d.land === 409 && String(d.landText).includes("only a running row has a lane to land");
+    check("one MAIN, two Programs (4): release, hold, spawn and land each admit a row of A AND a row of B (land stops at the row's own state, never at the binding); a foreign row is refused at every one",
+      mpOwnDoorsOk(mpDoorA) && mpOwnDoorsOk(mpDoorB)
+        && (await mpTask(mpRowA))?.status === "queued" && (await mpTask(mpRowB))?.status === "queued"
+        && (await mpTask(mpRowA))?.hold?.slot === mpSlot && (await mpTask(mpRowB))?.spawn?.harness === "codex"
+        && mpDoorForeign.release === 409 && mpDoorForeign.hold === 409 && mpDoorForeign.spawn === 409
+        && mpDoorForeign.land === 409 && String(mpDoorForeign.landText).includes("belongs to no program of this MAIN")
+        && String(mpDoorForeign.landText).includes(`programs ${mpA.id}, ${mpB.id}`)
+        && (await mpTask(mpForeignRow))?.status === "pending",
+      JSON.stringify({ a: mpDoorA, b: mpDoorB, foreign: mpDoorForeign }));
+
+    // (5) ATTENTION names no object: a choice per Program, none or a foreign one refused
+    const mpRaise = (body: Record<string, unknown>): Promise<Response> => mpCall(mpTok, "/api/self/attention", body);
+    const mpAttNone = await mpRaise({ kind: "decision", text: "one main: unnamed question" });
+    const mpAttForeign = await mpRaise({ kind: "decision", text: "one main: foreign question", programId: mpForeign.id });
+    const mpAttA = await mpRaise({ kind: "decision", text: "one main: question of A", programId: mpA.id });
+    const mpAttB = await mpRaise({ kind: "decision", text: "one main: question of B", programId: mpB.id });
+    const mpAttAId = ((await mpAttA.json()) as { id?: string }).id ?? "";
+    const mpAttBId = ((await mpAttB.json()) as { id?: string }).id ?? "";
+    const mpAttList = (await mpRead<{ requests: MpAttention[] }>(mpTok, "/api/self/attention")).body.requests;
+    check("one MAIN, two Programs (5): attention without a choice or with a foreign one is 409; with each own Program it is raised under that Program and listed for the MAIN",
+      mpAttNone.status === 409 && mpAttForeign.status === 409 && mpAttA.ok && mpAttB.ok
+        && mpAttList.find((a) => a.id === mpAttAId)?.programId === mpA.id
+        && mpAttList.find((a) => a.id === mpAttBId)?.programId === mpB.id,
+      JSON.stringify({ none: mpAttNone.status, foreign: mpAttForeign.status, a: mpAttA.status, b: mpAttB.status,
+        listed: mpAttList.map((a) => [a.id, a.programId]) }));
+
+    // (6) A LANE OF EACH PROGRAM: its question and its report reach the MAIN through its own Program
+    const mpLaneA = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number; cwd?: string };
+    const mpLaneB = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number; cwd?: string };
+    await stopSrv();
+    const mpPlant = readState();
+    if (mpLaneA.slot && mpPlant.slots?.[String(mpLaneA.slot)]) mpPlant.slots[String(mpLaneA.slot)]!.programId = mpA.id;
+    if (mpLaneB.slot && mpPlant.slots?.[String(mpLaneB.slot)]) mpPlant.slots[String(mpLaneB.slot)]!.programId = mpB.id;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(mpPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    await post("/api/dispatch", { on: false });
+    const mpLaneATok = slotToken(mpLaneA.slot ?? null);
+    const mpLaneBTok = slotToken(mpLaneB.slot ?? null);
+    const mpAsk = async (token: string, question: string): Promise<{ status: number; id: string; basis: string; receiver: number | null }> => {
+      const r = await mpCall(token, "/api/self/clarifications", { question });
+      const body = await r.json() as { request?: { id?: string; basis?: string; receiver?: { slot: number } } };
+      return { status: r.status, id: body.request?.id ?? "", basis: body.request?.basis ?? "", receiver: body.request?.receiver?.slot ?? null };
+    };
+    const mpQA = await mpAsk(mpLaneATok, "one main: lane of A asks");
+    const mpQB = await mpAsk(mpLaneBTok, "one main: lane of B asks");
+    const mpReportA = await mpCall(mpLaneATok, "/api/self/fleet-report", { status: "needs-main", text: "one main: report of the lane of A" });
+    const mpReportB = await mpCall(mpLaneBTok, "/api/self/fleet-report", { status: "needs-main", text: "one main: report of the lane of B" });
+    const mpReportAId = ((await mpReportA.json()) as { report?: { id?: string } }).report?.id ?? "";
+    const mpReportBId = ((await mpReportB.json()) as { report?: { id?: string } }).report?.id ?? "";
+    const mpReports = (await mpRead<{ reports: { id: string; provenance: { programId: string | null } }[] }>(mpTok, "/api/self/fleet-report")).body.reports;
+    const mpInboxA = (await mpRead<{ program?: string; entries?: { ref: string }[] }>(mpTok, `/api/self/inbox?program=${mpA.id}`)).body;
+    const mpInboxB = (await mpRead<{ program?: string; entries?: { ref: string }[] }>(mpTok, `/api/self/inbox?program=${mpB.id}`)).body;
+    const mpInboxNone = await mpRead<{ error?: string }>(mpTok, "/api/self/inbox");
+    check("one MAIN, two Programs (6): each lane's question is addressed to the MAIN through its row's Program, and both reports reach its report list and the inbox of their OWN Program",
+      mpQA.status === 200 && mpQB.status === 200 && mpQA.basis === "program-main" && mpQB.basis === "program-main"
+        && mpQA.receiver === mpSlot && mpQB.receiver === mpSlot
+        && mpReportA.ok && mpReportB.ok
+        && mpReports.find((r) => r.id === mpReportAId)?.provenance.programId === mpA.id
+        && mpReports.find((r) => r.id === mpReportBId)?.provenance.programId === mpB.id
+        && mpInboxA.program === mpA.id && !!mpInboxA.entries?.some((e) => e.ref === mpReportAId)
+        && !mpInboxA.entries?.some((e) => e.ref === mpReportBId)
+        && mpInboxB.program === mpB.id && !!mpInboxB.entries?.some((e) => e.ref === mpReportBId)
+        && mpInboxNone.status === 409,
+      JSON.stringify({ qa: mpQA, qb: mpQB, ra: mpReportA.status, rb: mpReportB.status,
+        reports: mpReports.map((r) => [r.id, r.provenance.programId]), inboxA: mpInboxA.program, inboxB: mpInboxB.program,
+        inboxNone: mpInboxNone.status }));
+
+    // (7) THE JUDGING DOORS: each report accepted through its own Program, A's question answered
+    const mpAcceptA = await mpCall(mpTok, `/api/self/fleet-report/${mpReportAId}/accept`, { reason: "one main: A accepted" });
+    const mpAcceptB = await mpCall(mpTok, `/api/self/fleet-report/${mpReportBId}/accept`, { reason: "one main: B accepted" });
+    const mpReplyA = await mpCall(mpTok, `/api/self/clarifications/${mpQA.id}/reply`, { text: "one main: A's answer" });
+    check("one MAIN, two Programs (7): fleet-report accept admits the report of EACH Program, and the clarification reply door answers A's lane",
+      mpAcceptA.status === 200 && mpAcceptB.status === 200 && mpReplyA.status === 200,
+      `acceptA=${mpAcceptA.status} acceptB=${mpAcceptB.status} replyA=${mpReplyA.status}`);
+
+    // (8) THE MERKZETTEL: a project note (programId null) is filed, read and listed — and starts nothing
+    const mpNote = await mpFile({ text: "one main: a fault no running program caused", programId: null });
+    const mpNoteRow = ((await mpNote.json()) as { task?: MpTask }).task;
+    const mpNoteRead = mpNoteRow ? await mpRead<{ ok?: boolean }>(mpTok, `/api/self/tasks/${mpNoteRow.id}`) : null;
+    const mpNoteRelease = mpNoteRow ? await mpCall(mpTok, `/api/self/tasks/${mpNoteRow.id}/release`) : null;
+    const mpNoteListed = ((await selfExecution(mpTok)).view as unknown as { projectNotes?: { id: string }[] } | null)
+      ?.projectNotes?.some((n) => n.id === mpNoteRow?.id) ?? false;
+    const mpNoteAuftrag = await mpFile({ text: "one main: a project auftrag", kind: "auftrag", programId: null });
+    check("one MAIN, two Programs (8): the Merkzettel — a programId:null note lands at the project (repo, no Program), the MAIN reads and lists it, it never releases, and only a notiz may be filed there",
+      mpNote.ok && !!mpNoteRow && mpNoteRow.programId === undefined && mpNoteRow.kind === "notiz"
+        && !!mpNoteRow.repo && realpathSync(mpNoteRow.repo) === realpathSync(REPO)
+        && mpNoteRead?.status === 200 && mpNoteListed
+        && mpNoteRelease?.status === 409 && mpNoteAuftrag.status === 400,
+      JSON.stringify({ note: mpNote.status, row: mpNoteRow, read: mpNoteRead?.status, listed: mpNoteListed,
+        release: mpNoteRelease?.status, auftrag: mpNoteAuftrag.status }));
+
+    // (9) A SESSION BOUND TO NEITHER still meets 409 at every door
+    const mpU = {
+      file: (await mpCall(mpProbeTok, "/api/self/tasks", { text: "unbound filing", programId: mpA.id })).status,
+      release: (await mpCall(mpProbeTok, `/api/self/tasks/${mpRowA}/release`)).status,
+      hold: (await mpCall(mpProbeTok, `/api/self/tasks/${mpRowB}/hold`)).status,
+      spawn: (await mpCall(mpProbeTok, `/api/self/tasks/${mpRowA}/spawn`, { harness: "codex" })).status,
+      land: (await mpCall(mpProbeTok, `/api/self/tasks/${mpRowB}/land`)).status,
+      accept: (await mpCall(mpProbeTok, `/api/self/fleet-report/${mpReportBId}/accept`, {})).status,
+      reply: (await mpCall(mpProbeTok, `/api/self/clarifications/${mpQB.id}/reply`, { text: "not mine" })).status,
+      attention: (await mpCall(mpProbeTok, "/api/self/attention", { kind: "decision", text: "unbound", programId: mpB.id })).status,
+      note: mpNoteRow ? (await mpRead<unknown>(mpProbeTok, `/api/self/tasks/${mpNoteRow.id}`)).status : 0,
+    };
+    const mpUExec = await selfExecution(mpProbeTok);
+    check("one MAIN, two Programs (9): a session bound to neither Program gets 409 at filing, release, hold, spawn, land, report accept, reply, attention and the project note — and program-execution projects nothing for it",
+      Object.values(mpU).every((status) => status === 409)
+        && (mpUExec.view?.programs ?? []).length === 0,
+      JSON.stringify({ ...mpU, exec: mpUExec.view?.programs?.length ?? null }));
+
+    // (10) THE SUCCESSION CARRIES BOTH BINDINGS AND THEIR DUTIES
+    const mpPredOpenedAt = readState().slots?.[String(mpSlot)]?.openedAt ?? 0;
+    const mpSuccLabel = "one-main-two-programs-successor";
+    const mpSuccPending = selfSucceed(mpTok, { label: mpSuccLabel });
+    let mpSuccSlot: number | null = null;
+    for (let i = 0; i < 80 && mpSuccSlot === null; i++) {
+      await Bun.sleep(100);
+      const row = readState().slots?.[String(mpSlot)];
+      if (row?.label === mpSuccLabel && (row.openedAt ?? 0) !== mpPredOpenedAt && (row.openedAt ?? 0) > 0) mpSuccSlot = mpSlot;
+    }
+    if (mpSuccSlot !== null) { await Bun.sleep(250); await respawnScreen(mpSuccSlot, ">_ OpenAI Codex (v0.147.0)"); }
+    const mpSucc = await mpSuccPending;
+    const mpSuccBody = await mpSucc.json().catch(() => ({})) as { ok?: boolean; program?: { id?: string }; companions?: string[] };
+    const mpSuccTok = slotToken(mpSuccSlot);
+    const mpSuccOpenedAt = readState().slots?.[String(mpSlot)]?.openedAt ?? 0;
+    const mpAfter = (await ownerPrograms()).filter((p) => p.id === mpA.id || p.id === mpB.id);
+    const mpStoredB = readState().programs?.find((p) => p.id === mpB.id);
+    check("one MAIN, two Programs (10): one succession moves BOTH bindings to the successor in one cut — A carries the founding, B moves with it and its lineage closes the attach holding by succeed",
+      mpSucc.ok && mpSuccBody.ok === true && mpSuccBody.program?.id === mpA.id
+        && JSON.stringify(mpSuccBody.companions) === JSON.stringify([mpB.id])
+        && mpSuccOpenedAt !== mpPredOpenedAt
+        && mpAfter.length === 2 && mpAfter.every((p) => p.main?.slot === mpSlot && p.main.openedAt === mpSuccOpenedAt)
+        && mpStoredB?.lineage?.entries.at(-2)?.via === "attach" && mpStoredB.lineage.entries.at(-2)?.endedBy === "succeed"
+        && mpStoredB.lineage.entries.at(-1)?.via === "succeed" && mpStoredB.lineage.entries.at(-1)?.openedAt === mpSuccOpenedAt
+        && mpStoredB.handover?.from.openedAt === mpPredOpenedAt && mpStoredB.handover.to.openedAt === mpSuccOpenedAt,
+      JSON.stringify({ status: mpSucc.status, body: mpSuccBody, pred: mpPredOpenedAt, succ: mpSuccOpenedAt,
+        mains: mpAfter.map((p) => [p.id, p.main]), lineageB: mpStoredB?.lineage?.entries.slice(-2), handoverB: mpStoredB?.handover }));
+    const mpSuccAtt = (await mpRead<{ requests: MpAttention[] }>(mpSuccTok, "/api/self/attention")).body.requests ?? [];
+    const mpSuccQ = (await mpRead<{ requests: MpClarification[] }>(mpSuccTok, "/api/self/clarifications")).body.requests ?? [];
+    const mpSuccReplyB = await mpCall(mpSuccTok, `/api/self/clarifications/${mpQB.id}/reply`, { text: "one main: B's answer from the successor" });
+    const mpSuccExec = await selfExecution(mpSuccTok);
+    const mpSuccRelease = await mpCall(mpSuccTok, `/api/self/tasks/${mpRowB}/release`);
+    check("one MAIN, two Programs (10b): the duties of BOTH Programs moved with it — each open attention names the successor, B's open lane question is the successor's to answer, and every door answers it for both",
+      [mpAttAId, mpAttBId].every((id) => { const a = mpSuccAtt.find((x) => x.id === id);
+        return a?.status === "open" && a.requester.slot === mpSlot && a.requester.openedAt === mpSuccOpenedAt; })
+        && mpSuccQ.find((c) => c.id === mpQB.id)?.receiver.openedAt === mpSuccOpenedAt
+        && mpSuccReplyB.status === 200
+        && JSON.stringify((mpSuccExec.view?.programs ?? []).map((p) => p.program.id).sort()) === JSON.stringify([mpA.id, mpB.id].sort())
+        && mpSuccRelease.status === 200,
+      JSON.stringify({ attention: mpSuccAtt.map((a) => [a.id, a.programId, a.status, a.requester]),
+        question: mpSuccQ.find((c) => c.id === mpQB.id) ?? null, replyB: mpSuccReplyB.status,
+        exec: (mpSuccExec.view?.programs ?? []).map((p) => p.program.id), release: mpSuccRelease.status }));
+    // …and the predecessor's credential names nobody any more
+    const mpOldTok = await mpCall(mpTok, "/api/self/attention", { kind: "decision", text: "old token", programId: mpA.id });
+    check("one MAIN, two Programs (10c): the predecessor's token is dead after the succession (401)",
+      mpOldTok.status === 401, String(mpOldTok.status));
+
+    // cleanup: panes, worktrees, rows, Programs — and the dispatch switch as it was
+    for (const slot of [mpLaneA.slot, mpLaneB.slot, mpProbeSlot, mpSlot])
+      if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
+    for (const cwd of [mpLaneA.cwd, mpLaneB.cwd])
+      if (cwd) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", cwd]);
+    for (const id of [mpRowA, mpRowB, mpForeignRow, mpNoteRow?.id ?? ""])
+      if (id) await post(`/api/tasks/${id}/delete`, {});
+    for (const p of [mpA, mpB, mpForeign]) await programPost(p.id, "complete", { force: true });
+    await post("/api/dispatch", { on: mpDispatchBefore });
   }
 }

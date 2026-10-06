@@ -2048,9 +2048,10 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     && /clarifications\.find\(/.test(clarificationOpenBody)
     && !/body\.receiver/.test(clarificationOpenBody)
     && /if \(s\.worktree && s\.label !== STEWARD_LABEL\)/.test(attentionRouteBody)
-    && /boundProgramForMain\(s\)/.test(attentionOpenBody)
+    && /boundProgramForMain\(s, choice\.programId\)/.test(attentionOpenBody)
+    && /const choice = programChoiceOf\(body\.programId\);/.test(attentionOpenBody)
     && /programId: program\.id/.test(attentionOpenBody)
-    && !/body\.programId/.test(attentionOpenBody);
+    && !/programId: body\./.test(attentionOpenBody);
   pin("question return paths preserve the lane->derived Program-MAIN and bound Program-MAIN->owner role cuts",
     laneQuestion?.adapter?.route === "/api/self/clarifications"
       && laneQuestion.adapter.method === "POST" && laneQuestion.adapter.roleCondition === "lane only"
@@ -3167,7 +3168,7 @@ await import(pathToFileURL(process.argv[2]).href);
         {id: 'own', readBy: null, to: {kind: 'program', id: 'own-program'}},
         {id: 'foreign', readBy: null, to: {kind: 'role', role: 'orchestrator'}}]};
       const watches = [], parkedSends = [], clarifications = [], successionDebts = [];
-      const boundProgramForMain = () => ({ok: true, program: {id: 'own-program'}});
+      const mainBindingOf = () => ({ok: true, programs: [{id: 'own-program'}]});
       const positionRole = () => 'program-main', isOrchestratorLabel = () => false;
       const fleetReportsFor = () => [], slotFrom = () => s;
       const messageAddressesFor = () => [{kind: 'program', id: 'own-program'}];
@@ -3202,7 +3203,7 @@ await import(pathToFileURL(process.argv[2]).href);
           let slots = [s];
           const resolveSelfPrincipal = () => slots[0] === s ? {kind:'session',slot:1,openedAt:1} : null;
           const slotFrom = () => slots[0];
-          const program = {id:'own'}, boundProgramForMain = () => ({ok:true,program});
+          const program = {id:'own'}, boundProgramsForMain = () => [program];
           const crossAwait = async () => {await Promise.resolve();
             if (${change}) slots = [{...s,openedAt:2,sessionId:'replacement'}];};
           const readLedger = async () => {await crossAwait(); return {rows:[]};};
@@ -3309,8 +3310,8 @@ await import(pathToFileURL(process.argv[2]).href);
   const sharpenBody = sharpenAt < 0 ? "" : server.slice(sharpenAt, server.indexOf("async function releaseTaskForMain", sharpenAt));
   pin("the brief-sharpening door DERIVES program and repo, closes its body, and refuses the owner's own text",
     sharpenBody.length > 0
-      && /const bound = boundProgramForMain\(s\);/.test(sharpenBody)
-      && /t\.programId !== program\.id/.test(sharpenBody)
+      && /const binding = mainBindingOf\(s\);/.test(sharpenBody)
+      && /const bound = boundProgramForMain\(s, t\.programId \?\? null\);/.test(sharpenBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(sharpenBody)
       && /repoCanon\(target\) !== mainRepo/.test(sharpenBody)
       && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text" && k !== "review"\)/.test(sharpenBody)
@@ -3645,8 +3646,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // at all — the strongest form of the /api/self/autos rule, which merely IGNORES a `slot` field.
   pin("the Program-MAIN release door DERIVES program and repo — no request field can nominate either",
     relBody.length > 0
-      && /const bound = boundProgramForMain\(s\);/.test(relBody)
-      && /t\.programId !== program\.id/.test(relBody)
+      && /const binding = mainBindingOf\(s\);/.test(relBody)
+      && /const bound = boundProgramForMain\(s, t\.programId \?\? null\);/.test(relBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(relBody)
       && /repoCanon\(target\) !== mainRepo/.test(relBody)
       && !/\bbody\b/.test(relBody) && !/\breq\b/.test(relBody),
@@ -3859,16 +3860,22 @@ await import(pathToFileURL(process.argv[2]).href);
   const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
+  // ONE MAIN PER PROJECT (2026-10-06): a body `programId` is no longer refused outright — it is a
+  // CHOICE among the caller's own bound Programs, answered by boundProgramForMain(s, choice) and
+  // never by anything else; `null` is the project note (Merkzettel). The pin holds that the choice
+  // goes through the binding and nowhere around it.
   pin("the Program-MAIN filing door DERIVES its program, limits repo to known dispatch targets and reads a CLOSED body",
     crBody.length > 0
-      && /const bound = boundProgramForMain\(s\);/.test(crBody)
-      && /programId: program\.id,/.test(crBody)
+      && /const binding = mainBindingOf\(s\);/.test(crBody)
+      && /boundProgramForMain\(s, choice\.programId\)/.test(crBody)
+      && /programChoiceOf\(body\.programId\)/.test(crBody)
+      && /programId: program\.id/.test(crBody)
+      && !/programId: body\./.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
       && /repo: targetRepo,/.test(crBody)
       && /landWaveProjectionNow\(\)\.repos/.test(crBody)
       && /dispatchRepos\.has\(requested\)/.test(crBody)
-      && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo", "programId"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at
@@ -3896,13 +3903,14 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("createTaskForMain re-proves the exact occupant and THEN the binding, both after the await and before any mutation",
     crCode.length > 0
       && /if \(!sameSlotStreamOccupant\(s, occupant\)\)/.test(crCode)
-      && /const stillBound = boundProgramForMain\(s\);/.test(crCode)
-      && /if \(stillBound\.program\.id !== program\.id\)/.test(crCode)
+      && /const stillBound = program \? boundProgramForMain\(s, program\.id\) : null;/.test(crCode)
+      && /if \(program && !stillBound\?\.ok\)/.test(crCode)
       && crCode.indexOf("const mainRepo = await repoKeyOf(s);") < crCode.indexOf("if (!sameSlotStreamOccupant(s, occupant))")
-      && crCode.indexOf("if (!sameSlotStreamOccupant(s, occupant))") < crCode.indexOf("const stillBound = boundProgramForMain(s);")
-      && crCode.indexOf("const stillBound = boundProgramForMain(s);") < crCode.indexOf("tasks = capTasks(")
+      && crCode.indexOf("if (!sameSlotStreamOccupant(s, occupant))") < crCode.indexOf("const stillBinding = mainBindingOf(s);")
+      && crCode.indexOf("const stillBinding = mainBindingOf(s);") < crCode.indexOf("const stillBound = program ? boundProgramForMain(s, program.id) : null;")
+      && crCode.indexOf("const stillBound = program ? boundProgramForMain(s, program.id) : null;") < crCode.indexOf("tasks = capTasks(")
       // …and NO await may reopen the window between the last re-proof and the mutation
-      && !/await /.test(crCode.slice(crCode.indexOf("const stillBound = boundProgramForMain(s);"),
+      && !/await /.test(crCode.slice(crCode.indexOf("const stillBinding = mainBindingOf(s);"),
         crCode.indexOf("tasks = capTasks("))),
     crCode.includes("if (!sameSlotStreamOccupant(s, occupant))") ? "occupant then binding, no await after" : "no occupant re-proof");
   // …and the SNAPSHOT the re-proof compares against is taken by the CALLER, before the body read.
@@ -6378,7 +6386,7 @@ await import(pathToFileURL(process.argv[2]).href);
     const absentLine = "1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.";
     pin("Program-MAIN lineage: the cap (50) and every via/endedBy state name in server.ts are the ones docs/self-api.md §authority.lineage documents, and the unknown sentences match",
       lineageCap === "50" && docsLineageCap === "50"
-        && via.length === 4 && endedBy.length === 4
+        && via.length === 5 && endedBy.length === 4
         && [...via, ...endedBy].every((name) => lineageDoc.includes(`| \`${name}\` |`))
         && server.includes(`"${absentLine}"`) && lineageDoc.includes(absentLine)
         && server.includes("`1 lineage gap: lineage begins at ${p.lineage.entries[0].boundAt}; earlier bound sessions are not reconstructible.`")
@@ -10318,17 +10326,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_MESSAGES} — a lane still never sends and keeps its named 409 before sender binding`,
     /if \(s\.worktree && s\.label !== STEWARD_LABEL\)/.test(msgSender)
       && msgSender.includes('error: "a lane does not address principals — a lane files its result, and its MAIN speaks for the program" }, 409)')
-      && msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s)"),
-    `sender=${msgSender !== ""} laneBeforeBinding=${msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s)")}`);
+      && msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s, programId)"),
+    `sender=${msgSender !== ""} laneBeforeBinding=${msgSender.indexOf("if (s.worktree") < msgSender.indexOf("boundProgramForMain(s, programId)")}`);
   // M2 — THE SENDER IS DERIVED, NEVER READ FROM A BODY. One line of `body.from` would make every
   // other property on this rail unprovable, because any principal could then claim any address.
+  // `programId` (2026-10-06, one MAIN per project) is a CHOICE among the caller's own bound
+  // Programs, answered inside messageSenderFor by the binding — never an address of its own.
   const msgSend = server.match(/async function sendMessageFor\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  const msgDerived = msgSend.includes("messageSenderFor(s, choice.ok ? choice.programId : undefined)");
+  const msgClosed = msgSend.includes('["to", "payload", "idempotencyKey", "replyTo", "programId"]');
   pin(`${RULE_MESSAGES} — sendMessageFor derives the sender from the binding and reads a closed body that cannot name one`,
-    msgSend !== "" && msgSend.includes("messageSenderFor(s)")
-      && msgSend.includes('["to", "payload", "idempotencyKey", "replyTo"]')
+    msgSend !== "" && msgDerived && msgClosed
       && !/body\.(from|sender|slot)\b/.test(msgSend),
     msgSend === "" ? "sendMessageFor not found in the server universe"
-      : `derived=${msgSend.includes("messageSenderFor(s)")} closed=${msgSend.includes('["to", "payload", "idempotencyKey", "replyTo"]')}`);
+      : `derived=${msgDerived} closed=${msgClosed}`);
   // M4 — THE ONE WRITER, counted like the inbox's: `dropped` is only a true number while a single
   // function maintains it, so a second assignment anywhere in the universe is the violation.
   const msgWriters = (server.match(/\bmessages = \{/g) ?? []).length;

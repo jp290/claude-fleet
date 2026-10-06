@@ -2516,7 +2516,9 @@ export async function run(): Promise<void> {
       check("owner send: no-agent refuses zero bytes and the old refused-to-draft formatter fails",
         noAgent.status === 409 && noAgentBody.agent === "no-agent" && noAgentBody.receipt?.delivery === "refused"
           && zeroBytes(start) && await replay(noAgent, noAgentMessage) && !await replay(noAgent, noAgentMessage, legacy),
-        JSON.stringify({ http: noAgent.status, agent: noAgentBody.agent, zeroBytes: zeroBytes(start) }));
+        JSON.stringify({ http: noAgent.status, agent: noAgentBody.agent, delivery: noAgentBody.receipt?.delivery,
+          zeroBytes: zeroBytes(start), formatter: sendFailureMessage(noAgent.status, noAgentBody),
+          replay: await replay(noAgent, noAgentMessage), legacyReplay: await replay(noAgent, noAgentMessage, legacy) }));
       await post(`/api/slots/${slot}/kill`, {});
       await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
 

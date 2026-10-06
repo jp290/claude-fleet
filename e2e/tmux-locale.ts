@@ -78,7 +78,13 @@ try {
     { name: "no LANG/LC_ALL", env: {} },
     { name: "LANG=C", env: { LANG: "C", LC_ALL: "C" } },
   ];
+  const globalEnvironment = await tmuxOut("show-environment", "-g");
+  const keeper = `tmux-locale-keep-${process.pid}`;
+  let keeperOwned = false;
   try {
+    const kept = await tmuxOut("new-session", "-d", "-s", keeper, "sleep 600");
+    if (kept.code !== 0) throw new Error("tmux-locale: isolated daemon keeper unavailable");
+    keeperOwned = true;
     let baseline: Probe | null = null;
     for (const [index, locale] of locales.entries()) {
       const env: Record<string, string> = {
@@ -146,6 +152,14 @@ try {
     }
   } finally {
     await restartSrv({ PATH: process.env.PATH ?? "/usr/bin:/bin" });
+    const restoredEnvironment = await tmuxOut("show-environment", "-g");
+    check("tmux-locale: server restarts preserve the daemon's entire global environment",
+      globalEnvironment.code === 0 && restoredEnvironment.code === 0
+        && globalEnvironment.out === restoredEnvironment.out);
+    if (keeperOwned) {
+      const stopped = await tmuxOut("kill-session", "-t", `=${keeper}`);
+      check("tmux-locale: cleanup removes its exact daemon keeper", stopped.code === 0);
+    }
     rmSync(scratch, { recursive: true, force: true });
   }
 }

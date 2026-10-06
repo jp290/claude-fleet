@@ -32679,14 +32679,18 @@ async function reportServerRun<T>(key: string, rec: Omit<ServerRun, "at">, fn: (
   serverRuns.set(key, { ...rec, at: Date.now() });
   try { return await serverRunScope.run(key, fn); } finally { serverRuns.delete(key); }
 }
-// How long a LIVE holder may hold before the surface calls it out. Measured on this machine: a
-// full isolated run takes 5.8–9.8 min (six runs, post-land-audits.jsonl) and the gate chain's
-// individual wrappers 21–38 s. 20 minutes is therefore "no suite here takes this long", with 2x
-// headroom on the longest run ever recorded, and it is the ONLY state on this surface that
-// deserves a warning: a suite that should have finished and has not.
+// How long a LIVE holder may hold before the surface calls it out. Derived 2026-10-06 from the
+// measured hold population since the 2026-09-26 slowdown, not from a guess: 75 completed full
+// isolated runs (26.09.–06.10., trail register e2e-trail/, full runs only) took up to 96.7 min
+// (p90 70.5 min), and audit shards up to 28.6 min (post-land-audits.jsonl). The old 20 min was
+// sized for August's 5.8–9.8 min runs and flagged every healthy full run — the owner saw
+// „[Zitat entfernt]“ on a healthy hold, 2026-10-06. 120 min sits ~25% above the longest
+// measured healthy hold and binds every holder alike, shard or full local preview. It is the
+// ONLY state on this surface that deserves a warning: a suite that should have finished and has
+// not.
 // Overridable because the number is a claim about THIS machine: a slower box, or a suite that
 // grows, would otherwise turn this warning into the same constant false alarm it replaces.
-const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OVERDUE_MS) || 20 * 60_000);
+const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OVERDUE_MS) || 120 * 60_000);
 // What the lock MEANS, decided here rather than in the renderer — the threshold above is a claim
 // about this machine and belongs where a check can reach it (e2e/verify-queue.ts §2).
 //   held    — a live holder inside the normal window: a suite is running.

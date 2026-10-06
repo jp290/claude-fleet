@@ -167,21 +167,42 @@ export async function run(): Promise<void> {
     check("§2 a live holder inside the normal window is `held` — a suite is running",
       live?.state === "held", JSON.stringify(live));
 
-    // OVERDUE: the same live holder, backdated past SUITE_HOLD_OVERDUE_MS. The server reads the
-    // claim time off the pid file's mtime, so moving that mtime IS the passage of time here — no
-    // sleep, and no threshold constant duplicated into the test. 25 min is past the 20 min cap.
-    const backdated = new Date(Date.now() - 25 * 60_000);
-    utimesSync(`${OWN_LOCK}/pid`, backdated, backdated);
+    // HOLD-WINDOW legs, all on the same live holder, all by mtime backdating: the server reads
+    // the claim time off the pid file's mtime, so moving that mtime IS the passage of time here —
+    // no sleep, and the threshold constant is never copied into this file. The magnitudes below
+    // are the MEASURED healthy population instead: full isolated runs have completed at up to
+    // 96.7 min since the 2026-09-26 slowdown (75 completed full runs 26.09.–06.10. in the trail
+    // register, p90 70.5 min), so a 70-minute-old claim sits inside the healthy family and a
+    // 3-hour-old one past any run ever measured to finish.
+    const heldOld = new Date(Date.now() - 70 * 60_000);
+    utimesSync(`${OWN_LOCK}/pid`, heldOld, heldOld);
+    const heldLong = (await gateOf())?.lock;
+    check("§2 a live holder with a 70-minute-old claim is `held` — the window covers measured healthy full runs",
+      heldLong?.state === "held" && heldLong.alive === true && heldLong.pid === process.pid
+        && heldLong.heldMs >= 70 * 60_000, JSON.stringify(heldLong));
+    const wedgedOld = new Date(Date.now() - 180 * 60_000);
+    utimesSync(`${OWN_LOCK}/pid`, wedgedOld, wedgedOld);
     const over = (await gateOf())?.lock;
-    check("§2 a live holder past the overdue cap is `overdue` — still alive, no longer normal",
+    check("§2 a live holder with a 3-hour-old claim is `overdue` — still alive, no longer normal",
       over?.state === "overdue" && over.alive === true && over.pid === process.pid, JSON.stringify(over));
     check("§2 overdue still requires proven PID+birth identity, and its next act is inspection",
       over?.identityProven === true && over.nextAction === "inspect holder"
         && over.reason === `recorded pid ${process.pid} is alive and its process-birth fingerprint matches`,
       JSON.stringify(over));
     check("§2 overdue is the ONLY warning state: it is reached by TIME, on a holder that is alive",
-      over?.heldMs !== undefined && over.heldMs > 20 * 60_000, String(over?.heldMs));
-    // and back, so the checks below start from an unaged claim
+      over?.heldMs !== undefined && over.heldMs > 175 * 60_000, String(over?.heldMs));
+    // GEGENPROBE and the override knob in one leg: under the retired 20-minute value the SAME
+    // 70-minute-old claim reads overdue — the false alarm this threshold was moved for (a healthy
+    // full run has held 70+ min since 2026-09-26). The env name is the documented override, the
+    // value is the retired default kept here as data, never the shipped constant.
+    await restartSrv({ FLEET_SUITE_LOCK: OWN_LOCK, FLEET_SUITE_OVERDUE_MS: String(20 * 60_000) });
+    utimesSync(`${OWN_LOCK}/pid`, heldOld, heldOld);
+    const oldCap = (await gateOf())?.lock;
+    check("§2 under the retired 20-minute override the same 70-minute-old claim IS overdue — the old false alarm, reproduced",
+      oldCap?.state === "overdue" && oldCap.alive === true && oldCap.heldMs >= 70 * 60_000,
+      JSON.stringify(oldCap));
+    // back to the shipped default for the rest of §2, and an unaged claim
+    await restartSrv({ FLEET_SUITE_LOCK: OWN_LOCK });
     const nowStamp = new Date();
     utimesSync(`${OWN_LOCK}/pid`, nowStamp, nowStamp);
 

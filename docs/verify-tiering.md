@@ -3046,8 +3046,13 @@ ihn nennt, und die Lane wird in beiden Fällen benachrichtigt.
 **Was offen bleibt (benannt, nicht getan):** bei `FLEET_AUDIT_SHARDS` ≤ 1 bleibt eine volle Vorschau
 ganz und verfällt wie zuvor; ein voller Lauf über `POST /api/self/jobs` (`docs/self-api.md`, MAIN-eigene
 Vorschau, `timeoutMs` 2 700 000) ist nicht geshardet und verfällt ebenso; und
-`server.ts#SUITE_HOLD_OVERDUE_MS` (20 min) rechnet noch mit den alten 5,8–9,8 min, warnt bei einem
-lokalen vollen Lauf also immer.
+`server.ts#SUITE_HOLD_OVERDUE_MS` trägt seit 2026-10-06 **120 min**, abgeleitet aus der gemessenen
+Halte-Population seit dem 26.09. statt aus den August-5,8–9,8 min: 75 vollendete volle Läufe im
+Trail-Register (26.09.–06.10.) dauerten bis zu **96,7 min** (p90 70,5 min), Audit-Shards bis zu
+28,6 min (`post-land-audits.jsonl`). Der alte 20-min-Wert meldete jeden gesunden vollen Lauf als
+stuck — der Owner sah „[Zitat entfernt]“ bei gesundem Lauf (06.10.). Die 120 min liegen ~25 %
+über dem längsten gemessenen gesunden Halt und gelten für jeden Halter, Shard wie lokale volle
+Vorschau; `FLEET_SUITE_OVERDUE_MS` bleibt als Override.
 
 ### 14.1 Ein remote `unknown` mit exit 127 ist zuerst ein leerer Klon, nicht ein fehlendes Kommando (2026-08-29)
 

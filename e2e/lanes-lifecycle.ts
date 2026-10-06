@@ -163,7 +163,9 @@ async function instanceBandChecks(): Promise<void> {
   // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): with the variable the server's own
   // checkout leaves the Arbeitsorte repo list (its only possible row there is an unreadable
   // placeholder), without it the list is unchanged. Same server, one restart, both sides.
-  const selfRepo = realpathSync(REPO);
+  // the server's OWN checkout is ROOT (the staged tree this run executes in), never REPO — REPO is
+  // FLEET_E2E_REPO, the throwaway fixture repo the lane checks spawn (harness.ts 41 vs 43)
+  const selfRepo = realpathSync(ROOT);
   const plainWp = await (await get("/api/worktrees")).json() as WorktreesRepos;
   check("band wire: the live fleet lists its own checkout as a workplace (the unchanged live picture)",
     (plainWp.repos ?? []).some((r) => r.repo === selfRepo), JSON.stringify((plainWp.repos ?? []).map((r) => r.repo)));
@@ -190,7 +192,10 @@ async function instanceBandChecks(): Promise<void> {
   // client — painted only from instance.source
   const client = readFileSync(`${src}/src/client.ts`, "utf8").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   const html = readFileSync(`${src}/public/index.html`, "utf8");
-  const wired = (c: string, h: string) => c.includes("renderInstanceBand(data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source)));")
+  // the wire since 7caecc0b extracts tiSource once and feeds BOTH the band and the board's
+  // instanceSource from it (src/client.ts#loadSessions) — anchor that shape, not an older inline one
+  const wired = (c: string, h: string) => c.includes("const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));")
+    && c.includes("renderInstanceBand(tiSource);") && c.includes("setInstanceSource(tiSource);")
     && c.includes('document.documentElement.classList.toggle("tiband", !!source);') && c.includes("tiBand.hidden = !source;")
     && c.includes("instanceBandText(source,") && h.includes('<div id="tiband" hidden></div>') && h.includes("#tiband[hidden] { display: none; }");
   check("band client: the band paints only from instance.source and is hidden (no html.tiband) without it", wired(client, html));
@@ -396,7 +401,9 @@ async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: st
         }
         await new Promise(r => setTimeout(r, 900));
         const row = document.querySelector('#board .zr.stand');
-        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.textContent === 'Helfer');
+        // .nm's textContent INCLUDES the .cnt child (machineHead appends the sub into it), so the
+        // name must be read from the first text node — exact equality on textContent never matches
+        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helfer');
         const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');
         const brief = document.querySelector('#board .bfail .bstate, #board .bempty');
         return { rowText: row ? row.textContent : '(no row)', helperText: helper ? helper.querySelector('.cnt')?.textContent ?? null : null,

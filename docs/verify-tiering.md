@@ -5278,7 +5278,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `summary` | `server:slots-1-2-driven` | — | 2: slots summary |
 | `transport` | `server:slots-1-2-driven` | — | 2: slots transport |
 | `autos` | `server:slots-1-2-driven` | `ctx.aPersistId` `ctx.aPerpPersistId` | 2: slots autos |
-| `share` | `server:slots-1-2-driven` | `ctx.shViewId` `ctx.shCookie` `ctx.shIntId` `ctx.shICookie` | 2: slots share |
+| `share` | `server:slots-1-2-driven` | `ctx.shViewId` `ctx.shCookie` `ctx.shIntId` `ctx.shICookie` `server:share-persisted` | 2: slots share |
 | `lanes-basic` ·L | `server:slots-1-2-open` | `lc.lnSlot` `lc.lnPath` | allein |
 | `review` ·L | `ctx.shIntId` `ctx.shICookie` | — | 3: slots share review |
 | `watch` ·L | — | — | allein |
@@ -5301,7 +5301,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `ref-advance` ·L | — | — | allein |
 | `outcomes` ·L | — | `server:program-confirmed` | allein |
 | `land-durability` ·L | — | — | allein |
-| `tasks` | `ctx.restartSelfTok` `ctx.restartSelfSlot` `server:program-confirmed` | — | 3: self-token outcomes tasks |
+| `tasks` | `ctx.restartSelfTok` `ctx.restartSelfSlot` `server:program-confirmed` `server:share-persisted` | — | 5: slots share self-token outcomes tasks |
 | `intake` | `ctx.shViewId` `ctx.shCookie` `server:slots-1-2-driven` | `ctx.shPersistId` | 3: slots share intake |
 | `sweep` | — | — | allein |
 | `restart` | `ctx.shIntId` `ctx.shICookie` `ctx.shPersistId` `ctx.aPersistId` `ctx.aPerpPersistId` `ctx.restartSelfTok` `ctx.restartSelfSlot` `server:slots-1-2-driven` | `ctx.cmdEnv` `ctx.gapEnv` `ctx.gapRepo` `ctx.auditPath` `ctx.plantedTranscript` `ctx.plantedTranscriptBytes` `ctx.plantedModel` `server:srv-env-after-restart` | 6: slots autos share self-token intake restart |
@@ -5318,13 +5318,14 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `steward-outcomes` | `sc.stewGet` `sc.stewPost` `sc.slot` `sc.settleForSteward` | — | 8: slots autos share self-token intake restart steward-core steward-outcomes |
 | `security` | `ctx.shICookie` `ctx.auditPath` `sc.token` `sc.stewGet` | — | 8: slots autos share self-token intake restart steward-core security |
 
-Die vier Server-Zustands-Fixtures, die kein Feld trägt, mit ihrem Beleg:
+Die fünf Server-Zustands-Fixtures, die kein Feld trägt, mit ihrem Beleg:
 
 | Fixture | Schreiber | vom Runner selbst pflanzbar? | Beleg |
 | --- | --- | --- | --- |
 | `server:slots-1-2-open` | `slots` | **ja** — dieselben zwei Aufrufe wie `e2e/slots.ts`, vor dem ersten Schritt | K2 (`shelve rejects a non-worktree slot` ohne sie) und K4 (supervisor braucht irgendeinen Slot mit Self-Credential) |
 | `server:slots-1-2-driven` | `slots` | nein | Prompt-Log, Transcript, Brief, Summary-Cache, angehängte Pane — sechs Leser, und niemand hat gemessen, dass Öffnen allein reicht; bewusst konservativ |
 | `server:program-confirmed` | `outcomes` | nein | K1: 3 FAIL + TypeError in `e2e/tasks.ts` im ersten `--shard`-Lauf |
+| `server:share-persisted` | `share` | nein | seit dcb2839e liest `e2e/tasks.ts` `fleet.json` `shares[0]` für seine Auth-Negativkontrolle; gemessen 2026-10-06 (Lane 22, Freeze 27a8b43e): tasks-only rot an genau dieser Vorbedingung, derselbe Baum mit `tasks,share` grün — bewusst konservativ, nicht synthetisiert |
 | `server:srv-env-after-restart` | `restart` | nein | K5: 5 FAIL in `steward-core`, Wurzel `target slot not idle` — `FLEET_STEWARD_MIN_IDLE_MS` fehlte |
 
 `ctx.cmdEnv` und `ctx.gapEnv` schreibt `e2e/restart.ts` und liest niemand sonst; sie stehen in der

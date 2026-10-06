@@ -10427,9 +10427,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // ANSWER rather than on the table: it is what a reader is promised `FLEET_E2E_MODULES=slots,tasks`
   // means, and it changes the moment any edge into tasks changes.
   const plan = modulePlanFor(["slots", "tasks"]);
-  pin(`${RULE_MODULES} — FLEET_E2E_MODULES=slots,tasks closes over exactly slots, self-token, outcomes, tasks`,
-    JSON.stringify(plan.run) === JSON.stringify(["slots", "self-token", "outcomes", "tasks"])
-      && plan.skipped.length === listed.length - 4 && plan.unknown.length === 0 && plan.unresolved.length === 0,
+  pin(`${RULE_MODULES} — FLEET_E2E_MODULES=slots,tasks closes over exactly slots, share, self-token, outcomes, tasks`,
+    JSON.stringify(plan.run) === JSON.stringify(["slots", "share", "self-token", "outcomes", "tasks"])
+      && plan.skipped.length === listed.length - 5 && plan.unknown.length === 0 && plan.unresolved.length === 0,
     JSON.stringify({ run: plan.run, skipped: plan.skipped.length, pulled: plan.pulled.map((p) => p.module) }));
   // every module names a reason for every module it leaves out — "silently dropped" is the thing
   // this whole mechanism must never do, and an empty reason string would be exactly that
@@ -10483,7 +10483,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     ["…and a selection that needs no lane module is fine without it",
       sel("auth", { repoSet: false }).refusal === null],
     ["a good selection returns a plan and no refusal",
-      sel("slots,tasks").refusal === null && sel("slots,tasks").plan?.run.length === 4],
+      sel("slots,tasks").refusal === null && sel("slots,tasks").plan?.run.length === 5],
   ];
   pin(`${RULE_MODULES} — every refusal refuses: a bad selection never becomes a smaller run`,
     refusals.every(([, ok]) => ok), refusals.filter(([, ok]) => !ok).map(([n]) => n).join(" · "));

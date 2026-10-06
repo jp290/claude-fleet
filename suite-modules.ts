@@ -107,6 +107,13 @@ export const FIXTURES: readonly Fixture[] = [
     // K1, the first --shard run's own finding: 3 FAILs + a TypeError in tasks.ts, 2026-09-13 21:57.
   },
   {
+    name: "server:share-persisted", origin: "server-state",
+    what: "at least one Share persisted in fleet.json (shares[]) — since dcb2839e tasks.ts reads "
+      + "shares[0] for its operational auth negative control and fails its own precondition without it",
+    // deliberately NOT synthesizable: measured 2026-10-06 (Lane 22, freeze 27a8b43e) — a tasks-only
+    // preview died on exactly that precondition while the same tree ran green with tasks,share.
+  },
+  {
     name: "server:srv-env-after-restart", origin: "server-state",
     what: "srv respawned from restart.ts's own env line — the one that carries "
       + "FLEET_STEWARD_MIN_IDLE_MS, without which the server gates 60 s while the steward probe waits 800 ms",
@@ -145,7 +152,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "transport", reads: ["server:slots-1-2-driven"] },
   { module: "autos", reads: ["server:slots-1-2-driven"], writes: ["ctx.aPersistId", "ctx.aPerpPersistId"] },
   { module: "share", reads: ["server:slots-1-2-driven"],
-    writes: ["ctx.shViewId", "ctx.shCookie", "ctx.shIntId", "ctx.shICookie"] },
+    writes: ["ctx.shViewId", "ctx.shCookie", "ctx.shIntId", "ctx.shICookie", "server:share-persisted"] },
   { module: "lanes-basic", lane: true, reads: ["server:slots-1-2-open"], writes: ["lc.lnSlot", "lc.lnPath"] },
   { module: "review", lane: true, reads: ["ctx.shIntId", "ctx.shICookie"] },
   { module: "watch", lane: true },
@@ -168,7 +175,8 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "ref-advance", lane: true },
   { module: "outcomes", lane: true, writes: ["server:program-confirmed"] },
   { module: "land-durability", lane: true },
-  { module: "tasks", reads: ["ctx.restartSelfTok", "ctx.restartSelfSlot", "server:program-confirmed"] },
+  { module: "tasks", reads: ["ctx.restartSelfTok", "ctx.restartSelfSlot", "server:program-confirmed",
+    "server:share-persisted"] },
   { module: "intake", reads: ["ctx.shViewId", "ctx.shCookie", "server:slots-1-2-driven"],
     writes: ["ctx.shPersistId"] },
   { module: "sweep" },

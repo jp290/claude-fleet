@@ -158,7 +158,7 @@ export async function run(): Promise<void> {
       JSON.stringify(main));
     check("(LP.spec closure) a non-main target defaults to the exact transitive fixture closure",
       integration.preview?.default === "modules"
-        && JSON.stringify(integration.modules) === '["self-token","outcomes","tasks"]'
+        && JSON.stringify(integration.modules) === '["slots","share","self-token","outcomes","tasks"]'
         && JSON.stringify(integration.preview.plan) === JSON.stringify(modulePlanFor(["tasks"])), JSON.stringify(integration));
     const before = "function laneSuiteView(j: {state:string}) {\n  return { state: j.state };\n}\n";
     const after = before.replace("state: j.state", "state: String(j.state)");

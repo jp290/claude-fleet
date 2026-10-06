@@ -652,11 +652,11 @@ export async function run(ctx: Ctx): Promise<void> {
       && localProofFor(["docs/guide.md"]).modules === undefined,
     JSON.stringify({ e2eOnly: modProof.modules, mixed: mixedProof.modules, plumbing: plumbingProof.modules }));
   // …and the closure the RUNNER will take from that advice, from the same table the runner reads:
-  // a lane handed ["tasks"] runs four modules, not one, and is told which and why.
+  // a lane handed ["tasks"] runs five modules, not one, and is told which and why.
   const tasksPlan = modulePlanFor(["tasks"]);
-  check("local proof: the module advice closes over its fixtures — tasks pulls self-token and outcomes, with a reason each",
-    JSON.stringify(tasksPlan.run) === JSON.stringify(["self-token", "outcomes", "tasks"])
-      && tasksPlan.pulled.length === 2 && tasksPlan.pulled.every((p) => p.why.includes("reads"))
+  check("local proof: the module advice closes over its fixtures — tasks pulls share, self-token and outcomes, with a reason each",
+    JSON.stringify(tasksPlan.run) === JSON.stringify(["slots", "share", "self-token", "outcomes", "tasks"])
+      && tasksPlan.pulled.length === 4 && tasksPlan.pulled.every((p) => p.why.includes("reads"))
       && tasksPlan.skipped.every((sk) => sk.why.length > 20) && tasksPlan.unresolved.length === 0,
     JSON.stringify({ run: tasksPlan.run, pulled: tasksPlan.pulled }));
   const conservativeProof = localProofFor(["docs/guide.md", "new-top-level.unknown"]);

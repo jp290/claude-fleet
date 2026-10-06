@@ -5249,7 +5249,7 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 34 der 50 Module sind nach
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 35 der 51 Module sind nach
 DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`).
 
 **Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren wurde EINE Auswahl (`slots,tasks`, §16d).
@@ -5289,6 +5289,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `concurrency` ·L | — | — | allein |
 | `self-token` ·L | `server:slots-1-2-open` | `ctx.restartSelfTok` `ctx.restartSelfSlot` | allein |
 | `lane-suite` ·L | — | — | allein |
+| `verify-rules` ·L | — | — | allein |
 | `programs` ·L | `ctx.restartSelfTok` `ctx.restartSelfSlot` | — | 2: self-token programs |
 | `supervisor` ·L | `server:slots-1-2-open` | — | allein |
 | `trailstats` ·L | `ctx.restartSelfTok` | — | 2: self-token trailstats |

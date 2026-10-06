@@ -12243,7 +12243,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity, bound.slice(1));
     }
     return await succeedGeneric(s, { label, carry, channel, spawn, predecessorIdentity,
-      memoryGrant: body?.memoryGrant, appendix: null });
+      memoryGrant: body?.memoryGrant, appendix: null, beforeKill: null });
   } finally {
     successionInflight.delete(identity);
   }
@@ -12258,6 +12258,10 @@ interface GenericSuccession {
   predecessorIdentity: SuccessionPredecessorIdentity; memoryGrant: unknown;
   // the owner door's standing-handover age and transcript rest; null on the self door
   appendix: string | null;
+  // the owner door's LAST question before the kill, asked after every await of the brief build: a
+  // turn that started while the brief was built keeps its pane (null on the self door — its caller
+  // is the predecessor itself, mid-turn by definition)
+  beforeKill: (() => Promise<Response | null>) | null;
 }
 async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Response> {
   const { label, carry, channel, spawn, predecessorIdentity } = opts;
@@ -12299,6 +12303,10 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // the self door's brief stays byte for byte what it was
   const brief = opts.appendix === null ? ritual : `${ritual}\n\n${opts.appendix}`;
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  if (opts.beforeKill) {
+    const refused = await opts.beforeKill();
+    if (refused) return refused;
+  }
   laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
   try {
     const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
@@ -12420,6 +12428,10 @@ const liveStandingHandover = (s: Slot): StandingHandover | null =>
 // the scale it is cut for. Newest first under the cap; each entry trimmed in the middle.
 const FRESH_TAIL_MAX = 24_000;
 const FRESH_TAIL_ENTRY_MAX = 1_500;
+// user lines that are Claude Code's own plumbing, by NAME — slash-command echo, local command output,
+// `!` shell input/output, reminders. Any other "<" opening is a message (a chat-view send arrives as
+// <pasted_content …>, and that is the owner's own words).
+const FRESH_TAIL_PLUMBING = /^<(command-(name|message|args)|local-command-(stdout|stderr|caveat)|bash-(input|stdout|stderr)|system-reminder)>/;
 interface FreshTail { state: "read" | "none"; reason: string | null; source: string | null;
   entries: number; omitted: number; chars: number; text: string }
 async function freshTranscriptTail(s: Slot, since: number | null): Promise<FreshTail> {
@@ -12434,8 +12446,7 @@ async function freshTranscriptTail(s: Slot, since: number | null): Promise<Fresh
   for (const e of read.entries) {
     if (e.meta) continue;
     const text = e.blocks.filter((b) => b.t === "text").map((b) => b.text).join("\n").trim();
-    // a user line opening with "<" is harness plumbing (slash-command echo, local stdout), not a message
-    if (!text || (e.role === "user" && text.startsWith("<"))) continue;
+    if (!text || (e.role === "user" && FRESH_TAIL_PLUMBING.test(text))) continue;
     if (since !== null && !(e.ts !== null && Date.parse(e.ts) > since)) continue;
     const half = FRESH_TAIL_ENTRY_MAX / 2;
     const body = text.length <= FRESH_TAIL_ENTRY_MAX ? text
@@ -12502,21 +12513,32 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     if (standing?.pointer && !(await lineagePointerCommitted(predecessorIdentity.cwd, standing.pointer)))
       return no(ownerSucceedNo(409, "pointer-uncommitted", "the standing handover's pointer no longer names a committed, clean file — the session writes it again; nothing was handed over"));
     const tail = await freshTranscriptTail(s, standing?.at ?? null);
-    // the reads above were awaits: the occupant, its standing handover and its rest are asked again
-    // right before respawnInPlace ends it — a turn that started meanwhile keeps the pane
-    if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
-      return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
-    const lateRail = ownerSucceedRailRefusal(s);
-    if (lateRail && lateRail.reason !== "in-flight") return no(lateRail);
-    const lateBusy = await ownerSucceedBusy(s);
-    if (lateBusy) return no(lateBusy);
+    // the reads above were awaits, and so are the brief's git and context reads inside
+    // succeedGeneric: occupant, standing handover and rest are asked here AND once more as its
+    // beforeKill, after the brief is built — a delivery landing in either window finds the pane
+    // standing and the door answers 409. What remains open is respawnInPlace's own tmux lookup
+    // before kill-pane (milliseconds; a codex target adds its support probe).
+    const lastQuestion = async (): Promise<Response | null> => {
+      if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
+        return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
+      const lateRail = ownerSucceedRailRefusal(s);
+      if (lateRail && lateRail.reason !== "in-flight") return no(lateRail);
+      const lateBusy = await ownerSucceedBusy(s);
+      return lateBusy ? no(lateBusy) : null;
+    };
+    const early = await lastQuestion();
+    if (early) return early;
     const now = Date.now();
-    audit("main_succession", s.id, `generic owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
-      + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
+    const beforeKill = async (): Promise<Response | null> => {
+      const refused = await lastQuestion();
+      if (!refused) audit("main_succession", s.id, `generic owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
+        + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
+      return refused;
+    };
     return await succeedGeneric(s, { label: s.label, carry: null,
       channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
       spawn: { model: s.model, effort: s.effort }, predecessorIdentity, memoryGrant: undefined,
-      appendix: freshSuccessionAppendix(standing, tail, now) });
+      appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
   } finally {
     successionInflight.delete(identity);
   }

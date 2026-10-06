@@ -720,13 +720,15 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   (`lineage.record.intent`/`pointer`); der Brief bekommt hinter dem üblichen Ritual einen Abschnitt mit
   Schreibzeit und Alter der Übergabe und dem **Transkript-Rest** seit `at`
   (`server.ts#freshTranscriptTail`: Eingänge und Antworttexte, keine Werkzeugaufrufe, -ausgaben,
-  Thinking oder Harness-Meta; jeder Eintrag in der Mitte auf 1500 Zeichen gekürzt, neueste zuerst unter
+  Thinking oder Harness-Meta — Claude-Code-Plumbing nach Namen, `server.ts#FRESH_TAIL_PLUMBING`; ein
+  Chat-Ansicht-Umschlag `<pasted_content …>` bleibt, er trägt die Worte des Owners; jeder Eintrag in der Mitte auf 1500 Zeichen gekürzt, neueste zuerst unter
   24 000 Zeichen). Ohne stehende Übergabe läuft die Tür trotzdem und sagt es: der Rest ist dann das Ende
   der Unterhaltung. Gelesen wird über den Konversationsleser des Slots — harness-neutral, bewiesen ist
   Claude; ohne lesbares Transkript steht `TRANSKRIPT-REST: unbekannt (<Grund>)`.
   Antwort wie `succeed` plus `briefBytes`. Verweigerungen, je `{error, reason}`: `not-active` (400),
-  `busy` (409, Pane-Ausgabe binnen `MERGE_IDLE_MS` — dasselbe Prädikat wie `sleep`; vor dem Kill
-  erneut gefragt), `asleep`, `slot-changing`, `steward`, `lane`, `program-main`, `game-maker`,
+  `busy` (409, Pane-Ausgabe binnen `MERGE_IDLE_MS` — dasselbe Prädikat wie `sleep`; zuletzt
+  NACH dem Brief-Bau unmittelbar vor `respawnInPlace` erneut gefragt, `server.ts#succeedGeneric`
+  `beforeKill`), `asleep`, `slot-changing`, `steward`, `lane`, `program-main`, `game-maker`,
   `in-flight`, `pointer-uncommitted` (alle 409). Audit `main_succession` mit `owner-triggered`.
 - **`GET /api/slots/:id/succeed`** (Owner) — die Lese-Tür für den Knopf, ohne Wirkung: `{ready,
   refusal: {reason, error} | null, idleMs, observed, idleThresholdMs, standingHandover: {at, ageMs,

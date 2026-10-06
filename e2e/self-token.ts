@@ -1622,7 +1622,11 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
   appendFileSync(file, line("user", at + 1, "OWNER-AFTER-MARK bitte noch den Report")
     + line("assistant", at + 2, [{ type: "text", text: "SESSION-AFTER-MARK mache ich" },
       { type: "tool_use", id: "toolu_owner_succ", name: "Bash", input: { command: "echo TOOL-CALL-MARK" } }])
-    + line("user", at + 3, [{ type: "tool_result", tool_use_id: "toolu_owner_succ", content: "TOOL-OUTPUT-MARK" }]));
+    + line("user", at + 3, [{ type: "tool_result", tool_use_id: "toolu_owner_succ", content: "TOOL-OUTPUT-MARK" }])
+    // the plumbing filter names its forms (MAIN review of 8cffd3be, finding 2): a slash-command echo
+    // is dropped, a chat-view send — the owner's words in their envelope — stays
+    + line("user", at + 4, "<command-name>/model</command-name> PLUMBING-MARK")
+    + line("user", at + 5, '<pasted_content id="p-1">\nOWNER-PASTED-MARK aus der Chat-Ansicht\n</pasted_content id="p-1">'));
 
   // RESTS: a pane printing is refused by name, and nothing ends. The busy state is OBSERVED on the
   // non-mutating preview first — a POST into a pane that happened to pause would hand over for real.
@@ -1657,7 +1661,7 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
   const readyPreview = await preview(free);
   check("owner succession setup: the recorder holds the pane and the preview says it rests, with the handover's age and a read tail",
     resting && readyPreview.ready === true && readyPreview.standingHandover?.at === at
-      && (readyPreview.standingHandover.ageMs ?? -1) >= 0 && readyPreview.tail?.state === "read" && readyPreview.tail.entries === 2,
+      && (readyPreview.standingHandover.ageMs ?? -1) >= 0 && readyPreview.tail?.state === "read" && readyPreview.tail.entries === 3,
     `resting=${resting} preview=${JSON.stringify(readyPreview)}`);
   const promptsOfOld = async (): Promise<number> =>
     (await plogRead()).filter((e) => e.slot === free && e.openedAt === oldOpenedAt).length;
@@ -1683,8 +1687,8 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
   }
   check("owner succession door: the successor's brief names the standing handover's write time and age, then the transcript rest after it — typed text only",
     brief.includes("VOM OWNER AUSGELÖST") && brief.includes(`geschrieben ${new Date(at).toISOString()} — Alter `)
-      && brief.includes("OWNER-AFTER-MARK") && brief.includes("SESSION-AFTER-MARK")
-      && !brief.includes("BEFORE-MARK") && !brief.includes("TOOL-CALL-MARK") && !brief.includes("TOOL-OUTPUT-MARK")
+      && brief.includes("OWNER-AFTER-MARK") && brief.includes("SESSION-AFTER-MARK") && brief.includes("OWNER-PASTED-MARK")
+      && !brief.includes("PLUMBING-MARK") && !brief.includes("BEFORE-MARK") && !brief.includes("TOOL-CALL-MARK") && !brief.includes("TOOL-OUTPUT-MARK")
       && Buffer.byteLength(brief) === pressedBody.briefBytes,
     brief.slice(0, 1500));
   const heirTok = await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "";

@@ -4210,6 +4210,19 @@ await import(pathToFileURL(process.argv[2]).href);
     foundingSends === 2 && foundingWaits === 2 && foundingGraces === 7 && laneRailGated && orchRailGated
       && packsRailGated && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
     `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} packsRail=${packsRailGated} inPlace=${inPlaceGated.join(",")}`);
+  // THE OWNER SUCCESSION DOOR asks „[Zitat entfernt]“ LAST, after the brief's awaits (MAIN review of
+  // 8cffd3be, finding 1): server.ts#succeedGeneric runs its beforeKill after the brief is built and
+  // before respawnInPlace, and server.ts#handleOwnerSucceed hands it the busy question. Moving the
+  // call above the brief build, or passing null from the owner door, turns this red.
+  const genericBody = bodyOf("async function succeedGeneric(", "async function handleSelfRetire");
+  const killAskAt = genericBody.indexOf("await opts.beforeKill()");
+  const ownerDoorBody = bodyOf("async function handleOwnerSucceed(", "async function handleSelfHandover(");
+  pin("the owner succession door re-asks rest after the brief is built and before the in-place kill",
+    killAskAt > genericBody.indexOf("const brief = ") && genericBody.indexOf("const brief = ") > 0
+      && killAskAt < genericBody.indexOf("await respawnInPlace(s, ")
+      && /beforeKill \}\);/.test(ownerDoorBody) && ownerDoorBody.includes("await ownerSucceedBusy(s)")
+      && /appendix: null, beforeKill: null \}\);/.test(bodyOf("async function handleSelfSucceed(", "// THE GENERIC RAIL")),
+    `ask@${killAskAt} brief@${genericBody.indexOf("const brief = ")} respawn@${genericBody.indexOf("await respawnInPlace(s, ")}`);
   // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
   // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
   // marker appears, which only holds as a statement about READINESS if the marker lands after the

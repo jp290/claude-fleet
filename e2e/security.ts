@@ -312,6 +312,10 @@ const PRE_AUTH_ROUTES = [
   // one refuses it), no second worktree, no queue-row status change, no repo it is not already in,
   // and a tree with one uncommitted or untracked line refuses it outright. The steward stays 409 on
   // both doors and a lane stays 409 on /retire.
+  '= /api/self/handover', // added 2026-10-07: the caller's OWN standing handover (intent OR pointer,
+  // the succeed body's checks) on its own slot row, bound to its occupation. Writes no pane, ends
+  // nothing, names no target; the owner's door POST /api/slots/:id/succeed is the only reader that
+  // acts on it, and that door sits behind the owner gate. Lane/Program-MAIN/game-maker/steward 409.
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   // added 2026-08-07. The widest READ on the every-session tier —
   // it is the only self route whose payload is not this slot's own row but a fleet-wide ledger

@@ -863,15 +863,21 @@ function realpathLoose(p: string): string {
 // The shared temp roots the fence closes like home: /tmp (every session's scratch, suite copies,
 // operator dumps) and, on darwin, the per-user dir that holds $TMPDIR and the user cache dir. Read
 // once: getconf answers for the user, not for this process's possibly overridden TMPDIR.
+let piZaiUserTempMemo: string | null | undefined;
+function piZaiUserTemp(): string | null {
+  if (piZaiUserTempMemo !== undefined) return piZaiUserTempMemo;
+  piZaiUserTempMemo = null;
+  if (process.platform === "darwin") {
+    const t = Bun.spawnSync(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]).stdout.toString().trim().replace(/\/+$/, "");
+    if (t.startsWith("/")) piZaiUserTempMemo = realpathLoose(t);
+  }
+  return piZaiUserTempMemo;
+}
 let piZaiTmpRootsMemo: string[] | null = null;
 function piZaiTmpRoots(): string[] {
   if (piZaiTmpRootsMemo) return piZaiTmpRootsMemo;
-  const roots = [realpathLoose("/tmp")];
-  if (process.platform === "darwin") {
-    const t = Bun.spawnSync(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]).stdout.toString().trim().replace(/\/+$/, "");
-    if (t.startsWith("/")) roots.push(dirname(realpathLoose(t)));
-  }
-  piZaiTmpRootsMemo = [...new Set(roots)];
+  const t = piZaiUserTemp();
+  piZaiTmpRootsMemo = [...new Set([realpathLoose("/tmp"), ...(t ? [dirname(t)] : [])])];
   return piZaiTmpRootsMemo;
 }
 // Reading inside home is opened for the tools pi's shell can name: every PATH dir under home, and
@@ -922,6 +928,7 @@ function piZaiFenceFor(cwd: string): string | null {
     denyRoots: PI_ZAI_DENY_ROOTS,
     tmpRoots: piZaiTmpRoots(), ownTmp: piZaiTmpFor(realpathLoose("/tmp"), realCwd),
     suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd),
+    userTemp: piZaiUserTemp(),
   });
 }
 // The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test

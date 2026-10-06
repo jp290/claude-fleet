@@ -102,7 +102,19 @@ export interface PiZaiFenceInput {
   suiteLock: string;  // e2e-stage.sh#FLEET_SUITE_LOCK's default; it and its `.q` stay read-write
   toolRoots: readonly string[]; // read-only openings inside home: the PATH dirs there, pi's package root
   git: PiZaiGit | null; // piZaiGitOf(cwd)
+  // darwin's per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`, realpath), inside the closed tmpRoots;
+  // names where SwiftPM's atomic writes go (PIZAI_NSIRD_TOOLS). Absent or null: no such opening.
+  userTemp?: string | null;
 }
+
+// The tools whose atomic writes behind the fence are let through. Foundation's atomic write stages
+// in an item-replacement dir `<DARWIN_USER_TEMP_DIR>/TemporaryItems/NSIRD_<process>_<random>` —
+// chosen by confstr, not $TMPDIR — and with that create refused, `swift build` never wrote its
+// output-file-map.json and died at "encountered an I/O error (code: 1) while reading …" (measured
+// 2026-10-06, sandbox log: swift-build/swift-package and swift-driver denied file-write-create
+// there). Only these names, and only create and unlink: enough for the staged file to be made and
+// renamed out, while another process's staged content stays unreadable and unwritable.
+export const PIZAI_NSIRD_TOOLS = ["swift-build", "swift-package", "swift-driver"] as const;
 
 // Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and
 // on macOS /tmp and $TMPDIR are symlinks (/private/...), so a literal would silently match nothing.
@@ -129,7 +141,8 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
   // the CLOSED areas must exist as named: an empty one would close nothing and read as a fence
   if (i.tmpRoots.length === 0) return null;
   const g = i.git;
-  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...denyRoots,
+  const userTemp = i.userTemp ?? null;
+  const paths = [...(userTemp ? [userTemp] : []), i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, own, ...socks, ...denyRoots,
     ...i.tmpRoots, i.ownTmp, i.suiteLock, i.tmuxDir, ...i.toolRoots, ...(g ? [g.common, g.admin] : [])];
   if (!paths.every((p) => FENCE_PATH_RE.test(p) && !p.split("/").includes(".."))) return null;
   if (g?.ref && !/^refs\/heads\/[A-Za-z0-9_.@+\-/]+$/.test(g.ref)) return null;
@@ -177,6 +190,9 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // never emitted empty: an allow without a filter would re-open the whole disk
     + (readOnly.length ? `(allow ${content} ${readOnly.join(" ")})` : "")
     + (gitWrite.length ? `(allow file-write* ${gitWrite.join(" ")})` : "")
+    // SwiftPM's atomic-write staging dirs in the closed per-user temp dir (PIZAI_NSIRD_TOOLS)
+    + (userTemp ? `(allow file-write-create file-write-unlink (regex #"^${rx(userTemp)}/TemporaryItems/NSIRD_`
+      + `(${PIZAI_NSIRD_TOOLS.join("|")})_[^/]+(/|$)"))` : "")
     // (C) NEVER, even inside an opening. (1) the owner token's two FILE families. A regex, not two
     // literals: fleet.json.bak and .env.bak-* sit beside the originals and a literal missed them (T1).
     + `(deny ${allRead} file-write* (regex #"^${rx(i.fleetDir)}/(fleet[.]json|[.]env)")`

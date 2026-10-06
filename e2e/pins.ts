@@ -55,7 +55,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX
 import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
-import { LIVE_TMUX_SOCK, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
+import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
 import {
@@ -4408,6 +4408,24 @@ await import(pathToFileURL(process.argv[2]).href);
         && PRIVATE_SCAFFOLD.every((f) => prof.includes(`(literal "${fx.cwd}/${f}")`))
         && ["CLAUDE.md", "OWNER.md", ".env"].every((f) => (PRIVATE_SCAFFOLD as readonly string[]).includes(f)),
       `${gitNever.filter((r) => !neverW.includes(r)).length} git rules missing / scaffold=${PRIVATE_SCAFFOLD.join(",")}`);
+    // SwiftPM's atomic writes stage in <DARWIN_USER_TEMP_DIR>/TemporaryItems/NSIRD_<tool>_*, inside the
+    // closed temp roots: opened for the named tools only, and only create + unlink — never a read, never
+    // a write into a file that already exists (another process's staged content). Without a userTemp no
+    // such rule at all. Mutation: widen the ops, drop the tool names, or emit it without userTemp — red.
+    {
+      const ut = "/private/var/folders/fx/fx/T";
+      const withUt = piZaiFenceProfile({ ...fx, userTemp: ut }) ?? "";
+      const nsird = `(allow file-write-create file-write-unlink (regex #"^${ut}/TemporaryItems/NSIRD_(${PIZAI_NSIRD_TOOLS.join("|")})_[^/]+(/|$)"))`;
+      const nsirdParts = {
+        exact: withUt.includes(nsird) && (withUt.match(/NSIRD_/g) ?? []).length === 1,
+        beforeNever: withUt.indexOf(nsird) > 0 && withUt.indexOf(nsird) < withUt.indexOf(NEVER),
+        swiftOnly: PIZAI_NSIRD_TOOLS.length > 0 && PIZAI_NSIRD_TOOLS.every((t) => /^swift-[a-z]+$/.test(t)),
+        absentWithout: !prof.includes("NSIRD_") && !(piZaiFenceProfile({ ...fx, userTemp: null }) ?? "").includes("NSIRD_"),
+        quoteRefused: piZaiFenceProfile({ ...fx, userTemp: '/private/var/folders/fx/"T' }) === null,
+      };
+      pin("pi-zai's fence lets SwiftPM stage atomic writes in the per-user temp dir: named tools, create and unlink only",
+        Object.values(nsirdParts).every(Boolean), JSON.stringify(nsirdParts));
+    }
     pin("pi-zai builds NO fence when a tool root would re-open home, or no temp root is named",
       piZaiFenceProfile({ ...fx, toolRoots: ["/Users/fx"] }) === null && piZaiFenceProfile({ ...fx, toolRoots: ["/Users"] }) === null
         && piZaiFenceProfile({ ...fx, tmpRoots: [] }) === null && piZaiFenceProfile({ ...fx, git: { ...fx.git, ref: "refs/heads/a\"b" } }) === null,

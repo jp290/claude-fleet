@@ -951,7 +951,8 @@ jeden Prozess — hinter dem Zaun stirbt dann jedes `bun` an `EPERM`, ohne Zaun 
 `.git/hooks`, `git config`, ein fremder Ref, der `.git`-Zeiger und der Live-Socket verweigert. Grün:
 `git status`/`show`/`commit`/`reset --soft`, `bun install --frozen-lockfile`, `bun e2e/pins.ts`,
 `tsc`, `bun run build`, `pi --version`, ein pi-Start bis zum Gauge `0.0%/1.0M` mit pis eigenem
-Bash-Werkzeug (erbt den Zaun), `curl` an die Self-API, `cc` und `swiftc` (kompilieren und laufen).
+Bash-Werkzeug (erbt den Zaun), `curl` an die Self-API, `cc`, `swiftc` und
+`swift build --disable-sandbox` (kompilieren und laufen).
 Ein lokaler Suite-Lauf hinter dem Zaun nimmt den Mutex wieder (`e2e-stage.sh#_st_birth_kinfo`, unten).
 
 **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`); das Netz — was
@@ -961,12 +962,24 @@ andere tmux-Sockets als `claudefleet`; Signale an fremde Prozesse (bewusst offen
 prüft fremde Halter per `kill -0`); Metadaten unter Home für bekannte Namen; ein liegengelassenes
 `packed-refs.lock` blockiert Ref-Löschungen, bis es entfernt ist. **Code der Lane läuft ungezäunt**,
 sobald ihn der Land-Gate, der Post-Land-Audit oder ein Helfer-Job ausführt — die Grenze dort ist
-Review und Gate, nicht dieser Zaun. **Native Builds:** `swift build --disable-sandbox` scheitert hinter
-dem Zaun mit `encountered an I/O error (code: 1) while reading …/output-file-map.json`, `xcodebuild`
-(unsigniert, eigene `-derivedDataPath`/`-resultBundlePath`/`-clonedSourcePackagesDirPath`) mit
-`Could not resolve package dependencies: permissionDenied`; ohne Zaun mit derselben Umgebung beide
-grün — ungeklärt, vermutlich das Per-User-Verzeichnis (`confstr`, nicht `$TMPDIR`); auch mit
-`SDKROOT=$(xcrun --show-sdk-path)` unverändert rot. SwiftPMs eigener
+Review und Gate, nicht dieser Zaun. **Native Builds:** `swift build --disable-sandbox` ist hinter dem
+Zaun grün (gemessen 2026-10-06, ein Executable-Paket: `Build complete!`, das Binary läuft). Ursache
+des früheren `encountered an I/O error (code: 1) while reading …/output-file-map.json` war kein
+Lesen: Foundations atomares Schreiben legt sein Staging-Verzeichnis
+`<DARWIN_USER_TEMP_DIR>/TemporaryItems/NSIRD_<prozess>_*` per `confstr` an, nicht unter `$TMPDIR`,
+und der Zaun verweigerte das Anlegen (Sandbox-Log: `swift-build`, `swift-package`, `swift-driver`).
+Geöffnet ist darum genau das, für die Werkzeuge in `server/pi-zai-fence.ts#PIZAI_NSIRD_TOOLS`, und
+nur `file-write-create`/`file-write-unlink`: eine fremde Staging-Datei bleibt unlesbar und
+unbeschreibbar, `TemporaryItems` unlistbar (gegengeprobt); löschen könnte eine Lane sie. Die
+`couldn't create cache file …/xcrun_db-*`-Zeilen bleiben (stderr, kein Abbruch): xcruns Cache und
+Xcodes `…/C/com.apple.DeveloperTools` bestimmen, welche Programme ein späterer UNGEZÄUNTER Aufruf
+startet, und bleiben darum zu wie die git-Hooks. **`xcodebuild` bleibt rot** (unsigniert, eigene
+`-derivedDataPath`/`-clonedSourcePackagesDirPath`/`-packageCachePath`/`-resultBundlePath`):
+`Could not resolve package dependencies` — sein Manifest-Compile übergeht `TMPDIR` und
+`CLANG_MODULE_CACHE_PATH`, legt `…/T/TemporaryDirectory.*` an und schreibt in den gemeinsamen
+Modulcache `<DARWIN_USER_CACHE_DIR>/clang/ModuleCache`. Den öffnet der Zaun nicht: ein von der Lane
+geschriebenes Modul läse der nächste ungezäunte Build des Owners. Offen, bis xcodebuild sich umlenken
+lässt. SwiftPMs eigener
 Manifest-Sandkasten ist ein verschachteltes `sandbox-exec`, und macOS verweigert `sandbox_apply` unter
 JEDEM äußeren Profil mit einer Regel (gemessen, das alte Profil eingeschlossen); darum fährt
 `e2e-isolated.sh` hinter einem Zaun den pass-through-Stand-in wie off-darwin, und `e2e/security.ts`

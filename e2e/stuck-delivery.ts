@@ -38,7 +38,9 @@ static void paint(void) {
   if (hidden_until > now_ms()) { fputs("redrawing\r\n", stdout); fflush(stdout); return; }
   hidden_until = 0;
   fputs("────────────────────────────────────────\r\n❯ ", stdout);
-  if (pasted && (!strcmp(mode, "collapsed") || !strcmp(mode, "late"))) {
+  if (!len) {
+    fputs("\033[2mTry a prompt\033[0m", stdout);
+  } else if (pasted && (!strcmp(mode, "collapsed") || !strcmp(mode, "late"))) {
     fwrite(buf, 1, paste_start, stdout);
     fputs("[Pasted text #1 +79 lines]", stdout);
   } else {

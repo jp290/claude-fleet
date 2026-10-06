@@ -58,8 +58,11 @@ export const CARD_KEY = "card";
 //   9 (2026-09-26) — DELEGATION is a filing header and survives card re-reads
 //  10 (2026-09-26) — KLASSE is a checked header; its registry is supplied by the caller
 //  11 — WEB: search is an optional, explicitly checked research declaration
+//  12 (2026-10-06) — a repo script matches in every spelling of the same repo-relative path
+//                    ("./scripts/gate.sh", "scripts/gate.sh", „[Zitat entfernt]“); a same-named
+//                    script under a different path still refuses
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 11;
+export const CARD_VALIDATOR_VERSION = 12;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -200,14 +203,19 @@ const namesChainStep = (verify: string): boolean =>
 const CLARIFY_CLOSE = new RegExp(`(?<![\\w/-])${CLARIFY_CLOSE_ROUTE}(?![\\w/-])`);
 const namesClarifyClose = (verify: string): boolean => CLARIFY_CLOSE.test(verify);
 
+// THE SAME SCRIPT IN EVERY SPELLING (v12). A repo entry may write "./scripts/gate.sh" or
+// "/scripts/gate.sh", a card the same path bare ("scripts/gate.sh") or behind an interpreter
+// ("sh scripts/gate.sh") — the same file on disk, so both texts are reduced to their .sh tokens
+// and compared with the "./" and "/" prefixes stripped. The token boundaries keep a longer path
+// one token: "src/scripts/gate.sh" shares the filename but not the path and still refuses
+// (2026-10-06, five example-app cards died on the spelling alone).
+const repoScriptPaths = (text: string): string[] =>
+  [...text.matchAll(/(?<![\w./-])((?:\.?\/)?[\w./-]+\.sh)(?![\w./-])/g)]
+    .map(([, path]) => path.replace(/^(?:\.\/)+/, "").replace(/^\//, ""));
 const namesRepoVerify = (verify: string, command: string): boolean => {
   if (collapse(verify) === collapse(command)) return true;
-  const scripts = command.matchAll(/(?:^|[^\w./-])((?:\.\/|\/)[\w./-]+\.sh)(?=$|[^\w./-])/g);
-  for (const [, path] of scripts) {
-    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`(?<![\\w./-])${escaped}(?![\\w./-])`).test(verify)) return true;
-  }
-  return false;
+  const wanted = new Set(repoScriptPaths(command));
+  return repoScriptPaths(verify).some((path) => wanted.has(path));
 };
 
 // THE TWO NAMED ALIASES of a verify value, and nothing beyond them. The filing format itself writes

@@ -55,6 +55,25 @@ export function runCardRules(check: (name: string, ok: boolean, detail?: string)
     check("(VR.card foreign) a foreign repo keeps its own isolated-named verify command without Fleet preview gaps",
       foreign.valid && !foreign.gaps.some((gap) => gap.startsWith("verify")), JSON.stringify(foreign));
   }
+  // THE REPO SCRIPT IN EVERY SPELLING (CARD_VALIDATOR_VERSION 12): the entry "./scripts/gate.sh",
+  // the card "scripts/gate.sh" or "sh scripts/gate.sh" — one repo-relative path, accepted; a
+  // same-named script under a different path keeps the refusal.
+  const foreignCard = (command: string, verify: string) =>
+    validateCard({ ziel: "Repo-Regel pruefen", done: "Das eigene Kommando steht in der Karte", verify },
+      { ...CARD_CONTEXT, foreignVerifyCommand: command });
+  const repoGate = "./scripts/gate.sh";
+  for (const spelling of ["./scripts/gate.sh", "scripts/gate.sh", "sh scripts/gate.sh"])
+    check("(VR.card repo spelling) the entry's script passes in every spelling of the same repo-relative path",
+      foreignCard(repoGate, spelling).valid, spelling);
+  for (const command of ["scripts/gate.sh", "sh scripts/gate.sh"])
+    check("(VR.card repo entry) a bare or interpreter-led entry accepts the ./ spelling of its script",
+      foreignCard(command, repoGate).valid, command);
+  for (const other of ["tools/gate.sh", "src/scripts/gate.sh", "./tools/gate.sh"]) {
+    const result = foreignCard(repoGate, other);
+    check("(VR.card repo other path) a same-named script under a different path still refuses",
+      !result.valid && result.gaps.some((gap) => gap.startsWith("verify:")
+        && gap.includes("does not name this repository's configured verify command")), other);
+  }
   const reread = validate("./e2e-isolated.sh nur wenn localProof.isolatedPreview es verlangt");
   check("(VR.card alias) alias normalization preserves the obligation for the next reading",
     reread.body.verify.includes("localProof.isolatedPreview") && validate(reread.body.verify).valid,

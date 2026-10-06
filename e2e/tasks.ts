@@ -10627,8 +10627,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v11) CARD_VALIDATOR_VERSION is 11, so cards refused before WEB or earlier rules are read once more",
-      CARD_VALIDATOR_VERSION === 11, String(CARD_VALIDATOR_VERSION));
+    check("(v11) CARD_VALIDATOR_VERSION is 12, so cards refused before WEB or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 12, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the

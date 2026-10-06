@@ -257,10 +257,10 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   const fullVerify = typeof raw.verify === "string" ? collapse(raw.verify) : "";
   const previewNamed = fullVerify.search(ISOLATED_ALIAS) >= 0 || /suite-offer|volle\s+vorschau|full\s+preview/i.test(fullVerify);
   const previewConditional = PREVIEW_CONDITION.test(fullVerify);
-  if (previewNamed && !previewConditional)
-    gaps.push("verify: preview not owed by a card — Vorschau nur wenn localProof.isolatedPreview es verlangt; eine VERIFY-Zeile erweitert die Regel nicht");
   const verbatim = typeof repoCommand === "string" && !!fullVerify && fullVerify === collapse(repoCommand);
-  const rawVerify = verbatim || (previewNamed && previewConditional) ? fullVerify : text1(raw.verify);
+  if (repoCommand === undefined && !verbatim && previewNamed && !previewConditional)
+    gaps.push("verify: preview not owed by a card — Vorschau nur wenn localProof.isolatedPreview es verlangt; eine VERIFY-Zeile erweitert die Regel nicht");
+  const rawVerify = verbatim || (repoCommand === undefined && previewNamed && previewConditional) ? fullVerify : text1(raw.verify);
   const { verify, aliased } = typeof repoCommand === "string"
     ? { verify: rawVerify, aliased: false } : verifyAliased(rawVerify);
   // A foreign repo WITHOUT its own entry keeps the chain rule it had before v7 — refusing all of

@@ -49,6 +49,12 @@ export function runCardRules(check: (name: string, ok: boolean, detail?: string)
   for (const line of conditional)
     check("(VR.card accept) a conditional preview or ordinary gate proof has no preview gap",
       validate(line).valid && !previewGap(line), line);
+  for (const verify of ["./e2e-isolated.sh", "run ./e2e-isolated.sh"]) {
+    const foreign = validateCard({ ziel: "Foreign proof", done: "Own command passes", verify },
+      { ...CARD_CONTEXT, foreignVerifyCommand: "./e2e-isolated.sh" });
+    check("(VR.card foreign) a foreign repo keeps its own isolated-named verify command without Fleet preview gaps",
+      foreign.valid && !foreign.gaps.some((gap) => gap.startsWith("verify")), JSON.stringify(foreign));
+  }
   const reread = validate("./e2e-isolated.sh nur wenn localProof.isolatedPreview es verlangt");
   check("(VR.card alias) alias normalization preserves the obligation for the next reading",
     reread.body.verify.includes("localProof.isolatedPreview") && validate(reread.body.verify).valid,

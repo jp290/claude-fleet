@@ -6194,15 +6194,18 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2, h = document.elementFromPoint(x, y);
         return { x, y, on: !!h && (h === e || e.contains(h)) }; })()`;
       let point = await evaluate<{ x: number; y: number; on: boolean } | null>(aim);
+      // settled = two aims agreed AND the point was on the target; a last aim that merely lands on it
+      // after twenty moving ones is not settled (review of cc3da8fc)
+      let settled = false;
       for (let i = 0; point && i < 20; i++) {
         await evaluate("new Promise(r => setTimeout(r, 120))");
         const again = await evaluate<{ x: number; y: number; on: boolean } | null>(aim);
         const held = !!again && Math.abs(again.x - point.x) < 1 && Math.abs(again.y - point.y) < 1;
         point = again;
-        if (held && point!.on) break;
+        if (held && point!.on) { settled = true; break; }
       }
       if (!point) { missing.push(expression.slice(0, 120)); return false; }
-      if (!point.on) { unsettled.push(`click target never settled: ${expression.replace(/\s+/g, " ").slice(0, 120)}`); return false; }
+      if (!settled) { unsettled.push(`click target never settled: ${expression.replace(/\s+/g, " ").slice(0, 120)}`); return false; }
       fx.inputs.push(`click ${Math.round(point.x)},${Math.round(point.y)}`);
       const at = { x: point.x, y: point.y };
       await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });

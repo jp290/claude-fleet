@@ -957,8 +957,12 @@ chmod 600 "$PI_ZAI_KEY_FILE"
 # without seatbelt (the Linux helper) would, correctly, refuse every pi-zai start, and each check
 # that needs the stand-in Pi live would go red for the platform, not the tree. So OFF darwin only,
 # the fence binary is a pass-through; e2e/security.ts §6a says out loud that no fence was measured.
+# The same holds INSIDE a seatbelt: a pi-zai lane runs this suite behind its own fence, and macOS
+# refuses a nested sandbox_apply under any outer profile with a rule in it (measured 2026-10-06,
+# the pre-allowlist profile included) — every pi-zai pane would print its fence-failed marker.
+# Probed, not guessed: one nested apply of the emptiest profile, here, before anything spawns.
 # EXPORTED like CODEX_HOME above: the srv and the runner (restartSrv forwards every FLEET_*) see it.
-if [ "$(uname -s)" != Darwin ]; then
+if [ "$(uname -s)" != Darwin ] || ! /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
   printf '#!/bin/sh\n[ "$1" = -p ] && shift 2\nexec "$@"\n' > "$DIR/sandbox-exec-standin"
   chmod +x "$DIR/sandbox-exec-standin"
   export FLEET_PI_ZAI_SANDBOX_EXEC="$DIR/sandbox-exec-standin"

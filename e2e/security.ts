@@ -1540,7 +1540,9 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       && pzBroken.status === 0 && pzBroken.error === undefined,
     `${pzBroken.error?.message ?? `exit ${pzBroken.status}`} / ${pzBrokenOut.slice(-200)}`
       + ` / exact line runnable=${pzExact.includes(`'${pzSbx}'`) && !pzExact.startsWith('"')}`);
-  if (process.platform === "darwin") {
+  // measurable only where the REAL seatbelt runs: darwin, and not inside a seatbelt already
+  // (e2e-isolated.sh then names a pass-through stand-in, exactly as it does off darwin)
+  if (process.platform === "darwin" && pzSbx === "/usr/bin/sandbox-exec") {
     // The canary: fenced vs. unfenced, same probe, same path — without the control the EPERM
     // measures nothing. Opens only; not one byte of either file is read.
     const pzRun = (sh: string, fenced: boolean): string => {
@@ -1590,10 +1592,59 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check("§6a fence canary: the pane's OWN session dir stays writable and the repo stays readable",
       own.includes("WROTE") && lane.includes("OPENED"), `${own.trim().slice(0, 90)} | ${lane.trim().slice(0, 90)}`);
     rmSync(zaiForeign, { recursive: true, force: true });
+    // THE ALLOWLIST (owner 2026-10-06, server/pi-zai-fence.ts (A)–(C)): home and the shared temp roots
+    // are closed by DEFAULT, not by a list — so the canaries are paths no rule names. Each with its
+    // unfenced control. The home probe LISTS (no byte of any file is read); the temp probe opens a
+    // file this suite made beside its instance (ROOT sits under the closed temp roots, REPO is the
+    // pane's opened cwd). Run inside a fenced lane, HOME is that lane's own temp home and the probes
+    // measure the inner profile all the same.
+    const home = process.env.HOME ?? "";
+    const tmpCanary = `${realpathSync(ROOT)}/pz-allowlist-canary.txt`;
+    writeFileSync(tmpCanary, "closed-temp canary\n");
+    const closed: [string, string][] = [
+      ["home listing", `ls '${home}' >/dev/null && echo OPENED`],
+      ["a file in the closed temp roots", opens(tmpCanary)],
+      ["the cwd's private .env (scaffold)", opens(`${realpathSync(REPO)}/.env`)],
+    ];
+    for (const [what, sh] of closed) {
+      const open = pzRun(sh, false);
+      const denied = pzRun(sh, true);
+      check(`§6a allowlist: ${what} opens without the fence and is refused behind it`,
+        home !== "" && open.includes("OPENED") && denied.includes("Operation not permitted") && !denied.includes("OPENED"),
+        `${open.trim().slice(-60)} | ${denied.trim().slice(-90)}`);
+    }
+    rmSync(tmpCanary, { force: true });
+    // the files that steer the NEXT unfenced git run in this tree (the server's own status ticks):
+    // a hook and the repo config stay unwritable even though the cwd around them is writable
+    const gitDir = `${realpathSync(REPO)}/.git`;
+    const hookW = pzRun(`echo x > '${gitDir}/hooks/pz-canary' && echo WROTE`, true);
+    const cfgW = pzRun(`echo '[pz]' >> '${gitDir}/config' && echo WROTE`, true);
+    const hookCtl = pzRun(`echo x > '${gitDir}/hooks/pz-canary' && echo WROTE`, false);
+    rmSync(`${gitDir}/hooks/pz-canary`, { force: true });
+    check("§6a allowlist: a git hook and the repo config are writable without the fence and refused behind it",
+      hookCtl.includes("WROTE") && !hookW.includes("WROTE") && hookW.includes("Operation not permitted")
+        && !cfgW.includes("WROTE") && cfgW.includes("Operation not permitted"),
+      `${hookCtl.trim().slice(-40)} | ${hookW.trim().slice(-80)} | ${cfgW.trim().slice(-80)}`);
+    // THE PROCESS CHANNEL, both halves of one rule: a FOREIGN process's argv/env (sysctl
+    // KERN_PROCARGS2) is closed behind the fence, its start time (KERN_PROC_PID, what the suite mutex
+    // proves a holder by) stays readable. The foreign process is this runner itself. Only lengths
+    // and a birth string are printed, never a byte of the environment.
+    const kinfo = `bun -e 'const { dlopen, FFIType, ptr } = require("bun:ffi");
+const c = dlopen("/usr/lib/libSystem.B.dylib", { sysctl: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 } });
+const q = (mib, cap) => { const b = new Uint8Array(cap); const n = new BigUint64Array([BigInt(cap)]); return c.symbols.sysctl(ptr(new Int32Array(mib)), mib.length, ptr(b), ptr(n), null, 0) === 0 ? Number(n[0]) : -1; };
+const pid = ${process.pid};
+console.log("procargs=" + q([1, 49, pid], 262144) + " kinfo=" + q([1, 14, 1, pid], 1024));'`;
+    const pa = (o: string, k: string): number => Number(new RegExp(`${k}=(-?\\d+)`).exec(o)?.[1] ?? "NaN");
+    const paOpen = pzRun(kinfo, false);
+    const paFenced = pzRun(kinfo, true);
+    check("§6a process channel: a foreign process's argv/env is readable without the fence and closed behind it, its birth readable on both sides",
+      pa(paOpen, "procargs") > 0 && pa(paFenced, "procargs") === -1 && pa(paOpen, "kinfo") >= 16 && pa(paFenced, "kinfo") >= 16,
+      `open: ${paOpen.trim().slice(-50)} | fenced: ${paFenced.trim().slice(-50)}`);
   } else {
-    // No seatbelt on this host: the wrapper names a pass-through stand-in, so nothing above the
-    // marker check measured a fence — said here under its own name instead of reading as green.
-    check("§6a fence canary NOT measurable off darwin — the wrapper's pass-through stand-in is in use, not a fence",
+    // No usable seatbelt here — another platform, or this run already sits behind one (a fenced
+    // pi-zai lane): the wrapper names a pass-through stand-in, so nothing above the marker check
+    // measured a fence — said here under its own name instead of reading as green.
+    check("§6a fence canary NOT measurable here (off darwin, or inside a seatbelt already) — the wrapper's pass-through stand-in is in use, not a fence",
       pzSbx !== "/usr/bin/sandbox-exec" && existsSync(pzSbx), pzSbx);
   }
   check("§6a the controlled Pi stand-in really started after the key guard",

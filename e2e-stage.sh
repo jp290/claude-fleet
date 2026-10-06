@@ -197,7 +197,32 @@ FLEET_SUITE_POLL_SEC="${FLEET_SUITE_POLL_SEC:-15}"
 _st_who=$(basename "$0" 2>/dev/null || echo suite)
 _st_t0=$(date +%s)
 _st_say_at=0   # elapsed seconds at which the next line is due; 0 = the first block always speaks
+# BEHIND THE pi-zai FENCE `ps` CANNOT START: /bin/ps is setuid and sandbox-exec refuses its exec
+# under every profile (docs/messungen/2026-09-21-pi-zai-lesezaun.md T5), so a fenced lane got no own
+# birth and every local suite stopped at [suite-lock-error] exit 3. The fence closes the ENVIRONMENT
+# channel (kern.procargs*), not the process table: kinfo_proc via sysctl(KERN_PROC_PID) still answers
+# with the start time, for this process and for a foreign holder alike (server/pi-zai-fence.ts (E)).
+# This reads exactly that and prints it in the C-locale `ps -o lstart=` shape, whitespace already
+# collapsed — the same string server.ts#processBirthFingerprint reads with ps from outside the fence.
+# Decided ONCE per run, here and not inside _st_birth_of (every caller runs that in a `$(…)`
+# subshell, where a memo would die), and only by whether ps starts at all: where it does (every
+# unfenced host, the Linux helper) nothing below changes, and a dead pid's birth stays empty either way.
+if ps -o pid= -p "$$" >/dev/null 2>&1; then _st_ps_starts=1; else _st_ps_starts=0; fi
+_st_birth_kinfo() {
+  bun -e 'const { dlopen, FFIType, ptr } = require("bun:ffi");
+const c = dlopen("/usr/lib/libSystem.B.dylib", { sysctl: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 } });
+const pid = Number(process.argv[process.argv.length - 1]);
+if (!Number.isInteger(pid) || pid <= 0) process.exit(1);
+const mib = new Int32Array([1, 14, 1, pid]); /* CTL_KERN, KERN_PROC, KERN_PROC_PID */
+const buf = new BigInt64Array(128);
+const len = new BigUint64Array([1024n]);
+if (c.symbols.sysctl(ptr(mib), 4, ptr(buf), ptr(len), null, 0) !== 0 || len[0] < 16n) process.exit(1);
+const d = new Date(Number(buf[0]) * 1000); /* kp_proc.p_starttime.tv_sec sits at offset 0 */
+const two = (n) => String(n).padStart(2, "0");
+console.log(`${"SunMonTueWedThuFriSat".substr(d.getDay() * 3, 3)} ${"JanFebMarAprMayJunJulAugSepOctNovDec".substr(d.getMonth() * 3, 3)} ${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`);' "$1" 2>/dev/null
+}
 _st_birth_of() {
+  if [ "$_st_ps_starts" = 0 ]; then _st_birth_kinfo "$1"; return; fi
   # LC_ALL=C IS THE VALIDATOR'S OTHER HALF, not a nicety. `ps -o lstart=` is locale-formatted:
   # measured 2026-09-01 on the Debian/de_DE helper it prints "Di Sep  1 ...", and _st_valid_birth
   # — which requires English month/day names — rejects it, so identityProven stays null and the

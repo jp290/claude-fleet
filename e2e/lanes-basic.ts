@@ -51,6 +51,39 @@ export async function run(lc: LaneCtx): Promise<void> {
       && /(^|\s|;)pi --session-id/.test(hwFlat), hwFlat.slice(-160));
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-pi`], { cwd: REPO });
+  // THE PRIVATE SCAFFOLD FOLLOWS THE HARNESS (owner 2026-10-06, server.ts#laneScaffoldFor): a pi-zai
+  // lane gets none of the gitignored copies a claude lane gets — what Z.ai must never see is not in
+  // its tree at all, and bun would load a cwd `.env` into every process it starts. The test repo
+  // ignores `.env` and `OWNER.md` (CLAUDE.md is tracked-able there, so it is left out of the fixture);
+  // OWNER.md is planted for this probe only. Control first, on the same source: a claude lane DOES
+  // get both, or the absence below measures a source that had nothing to copy.
+  {
+    const ownerPlanted = !exists(`${REPO}/OWNER.md`);
+    if (ownerPlanted) writeFileSync(`${REPO}/OWNER.md`, "fixture owner model — private scaffold probe\n");
+    const scaffold = [".env", "OWNER.md"];
+    const presentIn = (dir: string): string[] => scaffold.filter((f) => exists(`${dir}/${f}`));
+    try {
+      await post("/api/slots/7/kill", {});
+      const cl = await post("/api/slots/7/open-worktree", { repo: REPO, branch: "e2e-lane-scaffold" });
+      const clDir = `${REPO}.worktrees/e2e-lane-scaffold`;
+      const clHas = presentIn(clDir);
+      await post("/api/slots/7/kill", {});
+      spawnSync("git", ["worktree", "remove", "--force", clDir], { cwd: REPO });
+      check("control: a claude lane gets the gitignored scaffold (.env, OWNER.md) copied from the source",
+        cl.ok && clHas.length === scaffold.length, `${cl.status} present=[${clHas.join(",")}]`);
+      const pz = await post("/api/slots/7/open-worktree", { repo: REPO, branch: "e2e-lane-pi-zai", harness: "pi-zai" });
+      const pzDir = `${REPO}.worktrees/e2e-lane-pi-zai`;
+      const pzHas = presentIn(pzDir);
+      const pzCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out.replaceAll("\\", "");
+      await post("/api/slots/7/kill", {});
+      spawnSync("git", ["worktree", "remove", "--force", pzDir], { cwd: REPO });
+      check("a pi-zai lane's worktree carries none of that scaffold — no .env, no OWNER.md",
+        pz.ok && exists(`${REPO}/.env`) && pzHas.length === 0 && pzCmd.includes("pi --provider zai"),
+        `${pz.status} present=[${pzHas.join(",")}] spawn=${pzCmd.slice(-80)}`);
+    } finally {
+      if (ownerPlanted) rmSync(`${REPO}/OWNER.md`, { force: true });
+    }
+  }
   // ...and the same road for the container harness, which is the one where the lane path MATTERS:
   // its whole cut is that git stays host-local while only the agent moves into the box, so a lane
   // is its primary shape. `-w "$PWD"` is what carries the worktree's own path in — the pane's cwd

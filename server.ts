@@ -171,7 +171,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
 import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
-import { parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile } from "./server/pi-zai-fence";
+import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
 import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
@@ -860,13 +860,68 @@ function realpathLoose(p: string): string {
   const parent = dirname(p);
   return parent === p ? p : `${realpathLoose(parent)}/${basename(p)}`;
 }
+// The shared temp roots the fence closes like home: /tmp (every session's scratch, suite copies,
+// operator dumps) and, on darwin, the per-user dir that holds $TMPDIR and the user cache dir. Read
+// once: getconf answers for the user, not for this process's possibly overridden TMPDIR.
+let piZaiTmpRootsMemo: string[] | null = null;
+function piZaiTmpRoots(): string[] {
+  if (piZaiTmpRootsMemo) return piZaiTmpRootsMemo;
+  const roots = [realpathLoose("/tmp")];
+  if (process.platform === "darwin") {
+    const t = Bun.spawnSync(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]).stdout.toString().trim().replace(/\/+$/, "");
+    if (t.startsWith("/")) roots.push(dirname(realpathLoose(t)));
+  }
+  piZaiTmpRootsMemo = [...new Set(roots)];
+  return piZaiTmpRootsMemo;
+}
+// Reading inside home is opened for the tools pi's shell can name: every PATH dir under home, and
+// the package root of the `pi` it starts (~/.local/bin/pi is a symlink into a global node_modules,
+// and the PATH dir alone would leave its target closed). Resolved per spawn, like the PATH itself.
+function piZaiToolRoots(home: string): string[] {
+  const dirs = (process.env.PATH ?? "").split(":").filter((d) => d.startsWith("/")).map(realpathLoose);
+  const roots = dirs.filter((d) => d.startsWith(`${home}/`));
+  for (const d of dirs) {
+    let p: string;
+    try { p = realpathSync(`${d}/pi`); } catch { continue; }
+    for (let up = dirname(p); up !== dirname(up); up = dirname(up)) {
+      const parent = basename(dirname(up));
+      if (parent === "node_modules" || parent.startsWith("@") && basename(dirname(dirname(up))) === "node_modules") {
+        roots.push(up);
+        break;
+      }
+    }
+    break;
+  }
+  return [...new Set(roots)].filter((r) => r.startsWith(`${home}/`));
+}
+// The active developer dir's own bins, put FIRST on the fenced PATH. /usr/bin/git, clang, swiftc and
+// their siblings are xcrun shims, and xcrun keys its lookup cache (in the closed per-user temp dir)
+// by HOME: behind the fence's own HOME every git call missed it, retried a write there and printed
+// an EPERM line (measured 2026-10-06, 0.2–2.8 s per call). The binaries the shims would have found,
+// found directly: the developer dir's usr/bin (git, make) and, under Xcode, the default toolchain's
+// (clang, swift, ld). "" off darwin or without a developer dir: the PATH then stays as it is.
+let piZaiDevPathMemo: string | undefined;
+function piZaiDevPath(): string {
+  if (piZaiDevPathMemo !== undefined) return piZaiDevPathMemo;
+  piZaiDevPathMemo = "";
+  if (process.platform === "darwin") {
+    const dev = Bun.spawnSync(["/usr/bin/xcode-select", "-p"]).stdout.toString().trim();
+    if (SPAWN_PATH_RE.test(dev) && existsSync(`${dev}/usr/bin/git`))
+      piZaiDevPathMemo = [`${dev}/Toolchains/XcodeDefault.xctoolchain/usr/bin`, `${dev}/usr/bin`].filter((d) => existsSync(d)).join(":");
+  }
+  return piZaiDevPathMemo;
+}
 // null = the fence cannot be BUILT for this cwd; the spawn line then starts no pi (PI_ZAI_FENCE_FAILED).
 function piZaiFenceFor(cwd: string): string | null {
+  const home = realpathLoose(HOME);
+  const realCwd = realpathLoose(cwd);
   return piZaiFenceProfile({
-    home: realpathLoose(HOME), fleetDir: realpathLoose(import.meta.dir),
-    agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realpathLoose(cwd),
+    home, fleetDir: realpathLoose(import.meta.dir),
+    agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realCwd,
     tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
     denyRoots: PI_ZAI_DENY_ROOTS,
+    tmpRoots: piZaiTmpRoots(), ownTmp: piZaiTmpFor(realpathLoose("/tmp"), realCwd),
+    suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd),
   });
 }
 // The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test
@@ -1044,10 +1099,23 @@ const PI_ZAI_HARNESS: Harness = {
       console.error(`pi-zai: no read fence buildable for ${o.cwd} — pi not started`);
       return `${guard}printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}`;
     }
+    // The pane's temp home is made out here too, owner-only: behind the fence home and /tmp are
+    // closed, so HOME, TMPDIR and bun's cache point below it for pi and every child — a tool that
+    // writes its cache under the real home would die on EPERM, here it writes its own.
+    const own = piZaiTmpFor(realpathLoose("/tmp"), realpathLoose(o.cwd));
     const sbx = `'${PI_ZAI_SANDBOX_EXEC}' -p "$FLEET_PZ_SB"`;
     return `${guard}FLEET_PZ_SB='${profile}'; `
-      + `{ mkdir -p '${PI_ZAI_AGENT_DIR}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' && ${sbx} /usr/bin/true; } `
+      + `{ mkdir -p '${PI_ZAI_AGENT_DIR}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' `
+      + `&& (umask 077; mkdir -p '${own}/home' '${own}/tmp') && ${sbx} /usr/bin/true; } `
       + `|| { printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `
+      + `HOME='${own}/home' TMPDIR='${own}/tmp' BUN_INSTALL_CACHE_DIR='${own}/home/.bun/install/cache' `
+      // git's automatic gc/maintenance would pack refs into the SHARED packed-refs, which the fence
+      // keeps read-only (it would rewrite every branch, main included): off for this pane's git alone
+      + `GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=gc.auto GIT_CONFIG_VALUE_0=0 GIT_CONFIG_KEY_1=maintenance.auto GIT_CONFIG_VALUE_1=false `
+      // clang's and swift's module cache defaults to the closed per-user cache dir, and CoreFoundation
+      // (SwiftPM, xcodebuild) finds the home through getpwuid, not $HOME: both pointed at the own home
+      + `CLANG_MODULE_CACHE_PATH='${own}/home/.cache/clang/ModuleCache' CFFIXED_USER_HOME='${own}/home' `
+      + (piZaiDevPath() ? `PATH='${piZaiDevPath()}':"$PATH" ` : "")
       + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${sbx} ${cmd}; exec ${SHELL}`;
   },
   // Unsupported for the same reason as Pi: there is no host Claude transcript return channel,
@@ -1107,7 +1175,7 @@ const PI_ZAI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; read fence (sandbox-exec): owner secrets, fleet.json/.env, other sessions, other processes and the live tmux socket denied, writes and network open; process-local agent directory leaves ~/.pi untouched",
+  note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; read fence (sandbox-exec): home and shared temp closed except the lane worktree, its git, the pi runtime, PATH tools and an own temp home; owner secrets, other sessions, other process environments and the live tmux socket denied; no copied CLAUDE.md/OWNER.md/.env in its lanes; network open; process-local agent directory leaves ~/.pi untouched",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
@@ -7060,7 +7128,8 @@ function taskBranchSlug(title: string): string {
   return slug;
 }
 
-async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string,
+  harness: Harness = CLAUDE_HARNESS): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
@@ -7101,6 +7170,28 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   }
   await excludeLaneScratch(path);
+  await laneScaffoldFor(root, path, harness);
+  return { repo: root, path, branch, form };
+}
+
+// THE PRIVATE LANE SCAFFOLD, per harness. A pi-zai lane gets NONE of it (owner 2026-10-06: what Z.ai
+// must never see, a GLM lane cannot read): pi loads AGENTS.md, never CLAUDE.md, yet 15 of 201 pi-zai
+// sessions read the copied CLAUDE.md through the read tool and 37 more named it in shell commands
+// (docs/messungen/2026-10-06-pi-zai-lesebedarf.md), and bun auto-loads a cwd `.env` into every
+// process it starts. What a GLM lane needs as rules stands in AGENTS.md. Called at creation and on
+// the owner's harness switch (switchLaneHarness), so the scaffold always matches the harness that
+// runs in the tree: switching TO pi-zai removes the copies, switching away writes them again. Only
+// GITIGNORED names are touched either way — a tracked file of that name is the repo's work, not a
+// copy. The fence additionally refuses their content inside any pi-zai cwd (server/pi-zai-fence.ts).
+const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
+async function laneScaffoldFor(root: string, path: string, harness: Harness): Promise<void> {
+  if (scaffoldFree(harness)) {
+    for (const f of PRIVATE_SCAFFOLD) {
+      if (!existsSync(`${path}/${f}`) || (await git(path, "check-ignore", "-q", f)).code !== 0) continue;
+      rmSync(`${path}/${f}`, { force: true });
+    }
+    return;
+  }
   // copy env scaffolding a fresh checkout lacks — but ONLY files git IGNORES in the source
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
   // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay
@@ -7124,7 +7215,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
     chmodSync(`${path}/CLAUDE.md`, 0o600);
   }
-  for (const f of [".env", "CLAUDE.md", "OWNER.md", ".claude/settings.local.json"]) {
+  for (const f of PRIVATE_SCAFFOLD) {
     if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
     if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
@@ -7137,7 +7228,6 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     writeFileSync(`${path}/${f}`, readFileSync(`${root}/${f}`), { mode: 0o600 });
     chmodSync(`${path}/${f}`, 0o600);
   }
-  return { repo: root, path, branch, form };
 }
 
 // THE ONE SEAM that keeps a clone lane from being a rewrite of this file. Everything Fleet knows
@@ -7996,7 +8086,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   if (!h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
   const root = await repoRootOf(repo);
   const anchor = await decideLaneAnchor(root, parent);
-  const wt = await createWorktree(root, branch, form);
+  const wt = await createWorktree(root, branch, form, undefined, undefined, h);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
   // reserve+construct is one synchronous step — see laneLetterReservations
@@ -11913,6 +12003,9 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   const brief = buildLaneHarnessBrief({ branch: ref.branch, base, from, to, taskId: s.taskId,
     rows: hold.map((h) => h.task), head: headRead.code === 0 ? headRead.out : "(unbekannt)", log,
     status: statusShown, footer: laneExitFooter(ho.harness, selfPosition(s).receiver) });
+  // the private scaffold follows the harness that will run in this tree (laneScaffoldFor): a switch
+  // TO pi-zai removes the copies before its pane starts, a switch away from it writes them again
+  await laneScaffoldFor(ref.repo, expected.cwd, hh);
   // the lane's MCP profile and Remote Control ride along only where the NEW harness can carry them
   // (browserOf/remoteOf refuse them elsewhere); a box rides along only into a harness that has one
   return await restartLaneSession(s, { cwd: expected.cwd, ref, label: s.label, harness: ho.harness,
@@ -17322,7 +17415,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
       : undefined);
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH);
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.

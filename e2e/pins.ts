@@ -55,7 +55,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX
 import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
-import { LIVE_TMUX_SOCK, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
+import { LIVE_TMUX_SOCK, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { quotaPosition, newResetEntries } from "../codex-quota";
 import {
@@ -903,6 +903,33 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   pin("suite-lock reaper re-checks pid AND process birth before removing a stale/recycled lock",
     stage.includes('$_st_cur_pid" = "$_st_hp"') && stage.includes('$_st_cur_birth" = "$_st_hb"'),
     "missing reap-time birth equality in e2e-stage.sh");
+  // THE BIRTH WITHOUT ps (2026-10-06). Behind the pi-zai fence ps cannot start at all (setuid under
+  // sandbox-exec), so e2e-stage.sh reads kinfo_proc's start time itself. That string is compared
+  // byte-for-byte with what server.ts#processBirthFingerprint reads through ps OUTSIDE the fence, so
+  // the two readers must agree — EXECUTED here for this process and for pid 1 (a foreign one), on a
+  // host where both exist. Mutation: pad the day, drop the C-locale names, read a wrong offset — red.
+  {
+    const RULE_KINFO = "e2e-stage.sh's ps-free birth reader prints exactly the C-locale `ps -o lstart=` birth (own and foreign pid)";
+    const fnAt = stage.indexOf("_st_birth_kinfo() {");
+    const fnEnd = stage.indexOf("\n}\n", fnAt);
+    const gate = stage.includes('if ps -o pid= -p "$$" >/dev/null 2>&1; then _st_ps_starts=1; else _st_ps_starts=0; fi')
+      && stage.includes('if [ "$_st_ps_starts" = 0 ]; then _st_birth_kinfo "$1"; return; fi');
+    const psOf = (pid: number): string | null => {
+      const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+      return r.error || r.status !== 0 || typeof r.stdout !== "string" ? null : r.stdout.trim().replace(/\s+/g, " ");
+    };
+    if (process.platform !== "darwin") skip(RULE_KINFO, `kinfo_proc via libSystem exists only on darwin (here: ${process.platform}) — the reader is never selected where ps starts`);
+    else if (psOf(process.pid) === null) skip(RULE_KINFO, "ps cannot start here (a fenced run) — no ps reading to hold the reader against");
+    else if (fnAt < 0 || fnEnd < 0) pin(RULE_KINFO, false, "no _st_birth_kinfo in e2e-stage.sh");
+    else {
+      const fn = stage.slice(fnAt, fnEnd + 3);
+      const pids = [process.pid, 1];
+      const got = pids.map((pid) => spawnSync("sh", ["-c", `${fn}\n_st_birth_kinfo ${pid}`], { encoding: "utf8", timeout: 20_000 }).stdout?.trim() ?? "");
+      const want = pids.map(psOf);
+      pin(RULE_KINFO, gate && got.every((g, k) => g !== "" && g === want[k]),
+        `gate=${gate} ${pids.map((pid, k) => `pid${k === 0 ? "(self)" : "1"}: kinfo=[${got[k]}] ps=[${want[k]}]`).join(" · ")}`);
+    }
+  }
 
   // THE INHERITED HOLD (2026-09-04) is a must-pair across a shell script and a TypeScript file —
   // exactly the drift no compiler sees. server.ts's ff retry chain holds this mutex itself and
@@ -4318,10 +4345,10 @@ await import(pathToFileURL(process.argv[2]).href);
   // PI-ZAI'S READ FENCE (docs/messungen/2026-09-21-pi-zai-lesezaun.md §5 item 2). The builder runs
   // over fixture paths and the GENERATED profile must carry the three rules that each, alone, would
   // have failed a probe: T1 the fleet.json/.env regex (a literal missed the .bak copies), T3 the PAIR
-  // process-info-others + sysctl kern.proc (either alone left 508–531 PIDs' environments readable),
-  // T2 the live tmux socket — present even when the fixture names no socket of its own. Mutation:
-  // strike any one of those lines in server/pi-zai-fence.ts and this row is red. What the rules DO
-  // (EPERM, 2 PIDs) is executed, not read, in e2e/security.ts §6a.
+  // process-info-others + sysctl kern.procargs (either alone left 508–531 PIDs' environments
+  // readable), T2 the live tmux socket — present even when the fixture names no socket of its own.
+  // Mutation: strike any one of those lines in server/pi-zai-fence.ts and this row is red. What the
+  // rules DO (EPERM, the own tree's PIDs only) is executed, not read, in e2e/security.ts §6a.
   {
     const RULE_PZ_FENCE = "pi-zai's generated read fence holds the three measured rules: fleet.json/.env regex, process-info+sysctl pair, live tmux socket";
     const fx = { home: "/Users/fx", fleetDir: "/Users/fx/claude-fleet", agentDir: "/Users/fx/.config/claude-fleet/pi-zai-agent",
@@ -4329,20 +4356,62 @@ await import(pathToFileURL(process.argv[2]).href);
       tmuxDir: "/private/tmp/tmux-501", sockets: [] as string[],
       // five SYNTHETIC deny roots — the owner's real ones are private names and live only in the
       // host's .env; no tracked file may carry them
-      denyRoots: ["/Users/fx/deny-a", "/Users/fx/deny-b", "/Users/fx/deny-b.worktrees", "/Users/fx/Desktop/deny-c", "/Users/fx/deny-d"] };
+      denyRoots: ["/Users/fx/deny-a", "/Users/fx/deny-b", "/Users/fx/deny-b.worktrees", "/Users/fx/Desktop/deny-c", "/Users/fx/deny-d"],
+      tmpRoots: ["/private/tmp", "/private/var/folders/fx/fx"], ownTmp: "/private/tmp/fleet-pi-zai/0123456789abcdef",
+      suiteLock: "/private/tmp/fleet-e2e.lock",
+      toolRoots: ["/Users/fx/.bun/bin", "/Users/fx/.local/bin", "/Users/fx/.local/lib/node_modules/@scope/pi"],
+      git: { common: "/Users/fx/claude-fleet/.git", admin: "/Users/fx/claude-fleet/.git/worktrees/lane-1", ref: "refs/heads/fleet/lane-1" } };
     const prof = piZaiFenceProfile(fx) ?? "";
-    // the file-deny form runs up to the allow that re-opens this pane's own session
-    const dfAt = prof.indexOf("(deny file-read* file-write* ");
-    const denyFiles = dfAt < 0 ? "" : prof.slice(dfAt, prof.indexOf(")(allow file-read* file-write* ", dfAt));
+    // the never-deny runs up to the allow that re-opens this pane's own session
+    const NEVER = "(deny file-read-data file-read-metadata file-read-xattr file-write* ";
+    const dfAt = prof.indexOf(NEVER);
+    const denyFiles = dfAt < 0 ? "" : prof.slice(dfAt, prof.indexOf(")(allow ", dfAt));
     const parts = {
       regex: denyFiles.includes('(regex #"^/Users/fx/claude-fleet/(fleet[.]json|[.]env)")'),
       procInfo: prof.includes("(deny process-info* (target others))"),
-      sysctl: prof.includes('(deny sysctl-read (sysctl-name-regex #"^kern[.]proc"))'),
+      sysctl: prof.includes('(deny sysctl-read (sysctl-name-regex #"^kern[.]procargs"))'),
       liveSock: prof.includes(`(deny network-outbound (remote unix-socket (path-literal "/private/tmp/tmux-501/${LIVE_TMUX_SOCK}"))`)
         && LIVE_TMUX_SOCK === "claudefleet",
       allowDefault: prof.startsWith("(version 1)(allow default)"),
     };
     pin(RULE_PZ_FENCE, Object.values(parts).every(Boolean), JSON.stringify(parts));
+    // THE ALLOWLIST SHAPE (owner 2026-10-06, docs/messungen/2026-10-06-pi-zai-lesebedarf.md): home and
+    // the shared temp roots are closed for content and writes FIRST, every opening follows, and every
+    // never-rule follows every opening — SBPL's later rule wins within one operation. And no file
+    // rule may use the `file-read*` wildcard: a rule naming `file-read-data` beats a wildcard one in
+    // EITHER order (measured on macOS 26.3), so one wildcard never-rule would silently lose to an
+    // opening and the key file or a foreign session would read straight through. Mutation: open a
+    // never-rule with `file-read*`, or move the home deny below an opening — red.
+    const RULE_PZ_ALLOWLIST = "pi-zai's fence closes home and the temp roots first, opens only named areas, and never-rules come last in explicit operations";
+    const closeAt = prof.indexOf('(deny file-read-data file-read-xattr file-write* (subpath "/Users/fx") (subpath "/private/tmp") (subpath "/private/var/folders/fx/fx"))');
+    // every allow but the leading `(allow default)`; past the never-rules only this pane's own
+    // session may re-open (and the bare listing of sessions/ that pi's mkdir needs)
+    const openings = [...prof.matchAll(/\(allow (?!default\))[^()]*/g)].map((m) => m.index ?? -1);
+    const lateOpenings = openings.filter((i) => i > dfAt).map((i) => prof.slice(i, prof.indexOf("))", i)));
+    const shape = {
+      closedFirst: closeAt > 0 && openings.length > 0 && openings.every((i) => i > closeAt),
+      cwdOpen: prof.includes(`(allow file-read-data file-read-xattr file-write* (subpath "${fx.cwd}")`),
+      neverAfterOpenings: dfAt > 0 && lateOpenings.length === 2 && lateOpenings.every((o) => o.includes(`"${fx.agentDir}/sessions`)),
+      noWildcardFileRule: !/\((?:allow|deny) file-read\*/.test(prof),
+      noBareAllow: !/\(allow (?!default\))[a-z*-]+(?: [a-z*-]+)*\)/.test(prof),
+      ownBranchOnly: prof.includes(`(literal "${fx.git.common}/${fx.git.ref}")`) && !prof.includes(`(subpath "${fx.git.common}/refs")`),
+    };
+    pin(RULE_PZ_ALLOWLIST, Object.values(shape).every(Boolean), JSON.stringify(shape));
+    // what may never be written even inside an opening: every file that makes the NEXT, unfenced git
+    // run in this worktree execute something (hooks, a config's fsmonitor/hooksPath, a re-aimed
+    // `.git` or `commondir` pointer), and the private scaffold's content inside the cwd
+    const gitNever = ["hooks", "config", "config.worktree", "commondir", "gitdir"].flatMap((f) =>
+      [fx.git.common, fx.git.admin].map((d) => f === "hooks" ? `(subpath "${d}/hooks")` : `(literal "${d}/${f}")`));
+    const neverW = prof.slice(prof.lastIndexOf("(deny file-write* "));
+    pin("pi-zai's fence never lets a lane write a file that steers the server's unfenced git, nor read the private scaffold in its cwd",
+      gitNever.every((r) => neverW.includes(r)) && neverW.includes(`(literal "${fx.cwd}/.git")`)
+        && PRIVATE_SCAFFOLD.every((f) => prof.includes(`(literal "${fx.cwd}/${f}")`))
+        && ["CLAUDE.md", "OWNER.md", ".env"].every((f) => (PRIVATE_SCAFFOLD as readonly string[]).includes(f)),
+      `${gitNever.filter((r) => !neverW.includes(r)).length} git rules missing / scaffold=${PRIVATE_SCAFFOLD.join(",")}`);
+    pin("pi-zai builds NO fence when a tool root would re-open home, or no temp root is named",
+      piZaiFenceProfile({ ...fx, toolRoots: ["/Users/fx"] }) === null && piZaiFenceProfile({ ...fx, toolRoots: ["/Users"] }) === null
+        && piZaiFenceProfile({ ...fx, tmpRoots: [] }) === null && piZaiFenceProfile({ ...fx, git: { ...fx.git, ref: "refs/heads/a\"b" } }) === null,
+      "a home-wide tool root, an empty temp list or a quote-bearing ref still built a profile");
     pin("pi-zai's generated file-read/file-write deny covers every configured deny root",
       fx.denyRoots.every((p) => denyFiles.includes(`(subpath "${p}")`)),
       `${fx.denyRoots.filter((p) => !denyFiles.includes(`(subpath "${p}")`)).length} missing roots`);
@@ -4967,6 +5036,20 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("every lane-creating call site asks laneFormOf for the form — none takes createWorktree's default",
     cwCalls.length >= 2 && cwUnasked.length === 0,
     `${cwCalls.length} call sites, ${cwUnasked.length} passing no form: ${cwUnasked.join(" | ") || "none"}`);
+  // ...and every one of them names the HARNESS that will run in the tree, because the private
+  // scaffold follows it (server.ts#laneScaffoldFor, owner 2026-10-06): a call site that let the
+  // claude default stand would copy CLAUDE.md, OWNER.md and .env into a pi-zai lane — the exact
+  // absence-shaped mistake of the form rule above. The owner's harness switch re-runs the same
+  // function for the new harness BEFORE the pane restarts.
+  const cwNoHarness = cwCalls.filter((a) => a.split(",").length < 6 || !/\b(h|spawnH)\b/.test(a.split(",")[5] ?? ""));
+  const switchSpan = serverExec.slice(serverExec.indexOf("async function switchLaneHarness("),
+    serverExec.indexOf("\n}\n", serverExec.indexOf("async function switchLaneHarness(")));
+  pin("every lane-creating call site passes its harness to createWorktree, and the harness switch re-scaffolds before the restart",
+    cwCalls.length >= 2 && cwNoHarness.length === 0
+      && switchSpan.includes("await laneScaffoldFor(ref.repo, expected.cwd, hh);")
+      && switchSpan.indexOf("await laneScaffoldFor(") < switchSpan.indexOf("restartLaneSession(")
+      && /const scaffoldFree = \(h: Harness\): boolean => h === PI_ZAI_HARNESS;/.test(server),
+    `${cwNoHarness.length} call sites without a harness: ${cwNoHarness.join(" | ") || "none"} / switch=${switchSpan.includes("laneScaffoldFor")}`);
   // ...and the values those call sites pass really do come from the ONE resolution. A second
   // derivation ("if harness === codex then clone") would satisfy the rule above and be exactly the
   // drift the single function exists to prevent — it is how the adapter's answer and the request's

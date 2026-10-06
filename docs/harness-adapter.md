@@ -884,40 +884,99 @@ und die Negativprobe ohne `.pi` (`docs/messungen/2026-09-18-pi-zai-start-readine
 (`src/protocol.ts#contextWindowFor`); für glm-5.3-flash steht dort keine Zeile — ein Flash-Slot
 meldet ctx `unknown`, bis eine eigene Messung die Zeile rechtfertigt.
 
-**Lesezaun (seit 2026-09-22, Owner-Auftrag).** pi läuft nur hinter einem je Pane erzeugten
-`sandbox-exec`-Profil (`server/pi-zai-fence.ts#piZaiFenceProfile`, Entwurf und Proben T1–T5:
-`docs/messungen/2026-09-21-pi-zai-lesezaun.md`). Die Startzeile testet es zuerst an `/usr/bin/true`;
-scheitert das (Binary fehlt, Profil ungültig, Pfad außerhalb des Zeichensatzes), startet pi
-**nicht**, die Pane druckt `pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its
-self-test` und bleibt eine Shell (`comms` findet kein pi → `no-agent`). Das `$(cat key)` läuft
-außen, nur pi und seine Kinder sind gezäunt; die eigene Session-Unterordnung legt die äußere Shell
-an. Das Binary ist absolut (`/usr/bin/sandbox-exec`, `FLEET_PI_ZAI_SANDBOX_EXEC` nur für den
-Linux-Helfer der Suite), nie über `PATH`. **Gesperrt** (Lesen und Schreiben): `fleet.json*` und
-`.env*` im Server-Checkout (Regex, fängt die `.bak`-Kopien), `~/.ssh`, der Key und
-`~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/cloudflared/pi, die Transkripte
-aller claude-/codex-/pi-Sessions und fremder pi-zai-Slots; außerdem die privaten Wurzeln des Owners
-aus `FLEET_PI_ZAI_DENY_ROOTS` (seit 2026-09-24; Lesen und Schreiben, einschließlich Unterpfaden, beim
-Profilbau per Realpath aufgelöst). Ihre NAMEN sind selbst privat und stehen nur in der gitignorten
-`.env` des Hosts, nie in einer getrackten Datei: doppelpunktgetrennte absolute Pfade, jeder im
-Zaun-Zeichensatz, weder `/` noch mit `..`-Segment, keiner doppelt
-(`server/pi-zai-fence.ts#parsePiZaiDenyRoots`). Fehlt der Wert, ist er leer oder verletzt ein
-Eintrag die Form, ist der Zaun nicht baubar und pi startet nicht (Pane-Zeile wie oben, beim Boot
-zusätzlich eine `console.error`-Zeile); der Server selbst bootet weiter, die übrigen Harnesses
-bleiben nutzbar. `e2e/pins.ts` hält Parser und Leer-Verweigerung, `e2e/security.ts` §6a prüft fünf
-synthetische Wurzeln der Suite (je Wurzel und echte Kinddatei, nur Metadaten) mit offener
-Kontrollprobe und `EPERM` aus dem tatsächlich gespawnten Profil. Die Umgebung fremder Prozesse (das Paar
-`process-info*` others + `sysctl-read kern.proc`, gemessen 396 → 2 lesbare PIDs); der
-`claudefleet`-tmux-Socket; Keychain-Lookups. `e2e/pins.ts` hält das erzeugte Profil, `e2e/security.ts`
-§6a führt es aus. **Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`);
-das Netz — was lesbar ist, ist exfiltrierbar; alles außerhalb des Inventars, u. a. 38 weitere `.env`
-unter `~` (ein Deny-Profil ist so gut wie sein Inventar); andere tmux-Sockets als `claudefleet`.
-Ein bereits laufender pi-zai-Prozess behält sein altes Profil; wirksam wird eine Wurzel erst, wenn
-der Owner sie in der `.env` setzt, deployt und neu spawnt. Bei späterer Umleitung einer Wurzel per Symlink muss erneut gespawnt
-werden; ein Symlink aus einem geschützten Baum auf ein Ziel außerhalb des Baums bleibt eine Grenze
-des pfadbasierten Zauns. **Preis:** `ps` ist setuid und startet unter keinem `sandbox-exec`-Profil — `e2e/pins.ts`
-überspringt darum seine Geburts-Regel benannt, der Suite-Lock verweigert geschlossen (Suiten über
-Suite-Offer), `ctl.sh`-Owner-Verben fehlen. `sandbox-exec` ist von Apple als deprecated markiert;
-der Selbsttest fängt einen Bruch. Workhorse/Linux ist ungemessen (Gegenstück wäre `bwrap`).
+**Lesezaun (seit 2026-09-22, Owner-Auftrag; seit 2026-10-06 eine Allowlist).** pi läuft nur hinter
+einem je Pane erzeugten `sandbox-exec`-Profil (`server/pi-zai-fence.ts#piZaiFenceProfile`). Die
+Startzeile testet es zuerst an `/usr/bin/true`; scheitert das (Binary fehlt, Profil ungültig, Pfad
+außerhalb des Zeichensatzes), startet pi **nicht**, die Pane druckt `pi-zai: pi was NOT started -
+its read fence (sandbox-exec) failed its self-test` und bleibt eine Shell (`comms` findet kein pi →
+`no-agent`). Das `$(cat key)` läuft außen, nur pi und seine Kinder sind gezäunt; die eigene
+Session-Unterordnung und das eigene Temp-Home legt die äußere Shell an. Das Binary ist absolut
+(`/usr/bin/sandbox-exec`, `FLEET_PI_ZAI_SANDBOX_EXEC` nur für die Stand-in-Fälle der Suite), nie über
+`PATH`.
+
+*Form.* Owner 2026-10-06: was Z.ai nie sehen soll, kann eine GLM-Lane gar nicht erst lesen. Bis dahin
+`allow default` plus Sperrliste; die Lesezählung `docs/messungen/2026-10-06-pi-zai-lesebedarf.md`
+fand 212 erfolgreiche Reads auf 157 Pfade außerhalb des eigenen Worktrees, alle an der Liste vorbei.
+Jetzt, in dieser Reihenfolge (SBPL: die spätere Regel gewinnt innerhalb derselben Operation):
+**(A) geschlossen** für Inhalt, Verzeichnislisten, xattrs und Schreiben: das ganze Home, `/private/tmp`
+und das Darwin-Per-User-Verzeichnis (`getconf DARWIN_USER_TEMP_DIR`, darin `$TMPDIR` und der
+User-Cache — dort liegen Graph-, Audit- und Suite-Kopien des Fleet-Betriebs). Metadaten (`stat`)
+bleiben offen: realpath, getcwd und jede Aufwärtssuche (git, bun, node) brauchen sie; ein Name muss
+dafür schon bekannt sein, Auflisten ist zu. **(B) wieder geöffnet** nur der Standardbedarf der
+Zählung: der eigene Worktree (RW), das eigene Temp-Home `/private/tmp/fleet-pi-zai/<hash(cwd)>` (RW),
+das pi-zai-Agent-Verzeichnis (RW), der Suite-Mutex `fleet-e2e.lock` samt `.q` und `/tmp/tmux-<uid>`
+(RW), lesend die PATH-Verzeichnisse unter Home und das Paket-Root des gestarteten `pi`, lesend das
+gemeinsame git-Verzeichnis einer Worktree-Lane, schreibend davon nur `objects/`, das eigene
+Admin-Verzeichnis, der EINE eigene Branch (Ref, Lock, Reflog) und `packed-refs.lock` (git 2.50 nimmt
+es nach jedem Commit und gibt es leer zurück; ein Umbenennen über `packed-refs` bleibt verweigert,
+gemessen). **(C) nie, auch innerhalb einer Öffnung:** `fleet.json*`/`.env*` im Server-Checkout
+(Regex), `~/.ssh`, der Key, `~/.config/claude-fleet/secrets`, die Logins von codex/claude/gh/
+cloudflared/pi, `auth.json` im Agent-Verzeichnis, die Transkripte aller claude-/codex-/pi-Sessions und
+fremder pi-zai-Slots (die eigene Session wieder offen), die Wurzeln aus `FLEET_PI_ZAI_DENY_ROOTS`;
+der Inhalt von `.env`, `CLAUDE.md`, `OWNER.md`, `.claude/settings.local.json` im cwd; und jedes
+Schreiben auf Dateien, die den NÄCHSTEN, ungezäunten git-Lauf in diesem Baum etwas ausführen ließen
+(der Server fährt dort Status-Ticks und den Land): Hooks, `config`/`config.worktree`, `commondir`,
+`gitdir` und der `.git`-Zeiger des Worktrees. **(D–E)** wie bisher: der `claudefleet`-Socket,
+Keychain-Lookups und die Umgebung fremder Prozesse — das Paar `process-info*` others +
+`sysctl-read kern.procargs*`. Bis 2026-10-06 sperrte die sysctl-Hälfte `^kern.proc` ganz; die engere
+Form lässt `KERN_PROC_PID` (pid, Startzeit, 16-Byte-Name, kein argv, kein env) offen, weil der
+Suite-Mutex einen fremden Halter an seiner Startzeit erkennt. Gemessen 2026-10-06 mit `bun:ffi`:
+ohne Zaun 445 lesbare procargs (20 mit `FLEET_TOKEN=`), mit dem Paar 3 bis 6 — der eigene Baum, kein
+`FLEET_TOKEN` —, und 618 fremde Startzeiten. **Jede Dateiregel nennt ihre Operationen explizit,** nie
+`file-read*`: eine Regel auf `file-read-data` schlägt eine auf `file-read*` in BEIDER Reihenfolge
+(gemessen auf macOS 26.3) — eine Wildcard-Sperre in (C) hätte gegen jede Öffnung in (B) verloren.
+`e2e/pins.ts` hält Reihenfolge, Operationen und das git-Schreibverbot am erzeugten Profil.
+
+*Umgebung hinter dem Zaun.* `HOME`, `TMPDIR`, bun-Cache, clang-Modulcache und `CFFIXED_USER_HOME`
+zeigen ins eigene Temp-Home (ein Werkzeug, das seinen Cache unters echte Home schreiben wollte,
+stürbe sonst an `EPERM`; git liest so auch kein `~/.gitconfig` — die Identität steht in der
+Repo-Config); `PATH` beginnt mit den echten Binaries des Developer-Verzeichnisses statt der
+xcrun-Shims (xcrun schlüsselt seinen Cache nach `HOME` und versuchte sonst bei jedem git-Aufruf einen
+verweigerten Schreibzugriff); `gc.auto=0`/`maintenance.auto=false` per `GIT_CONFIG_*`, weil ein
+automatisches pack-refs das gemeinsame `packed-refs` umschreiben würde. **Private Lane-Kopien:** eine
+pi-zai-Lane bekommt weder `CLAUDE.md` noch `OWNER.md` noch `.env` noch
+`.claude/settings.local.json` (`server.ts#laneScaffoldFor`, beim Anlegen und beim Harness-Wechsel des
+Owners; ein Wechsel weg von pi-zai schreibt sie wieder). bun lädt ein `.env` im cwd selbsttätig in
+jeden Prozess — hinter dem Zaun stirbt dann jedes `bun` an `EPERM`, ohne Zaun las es die Datei.
+
+*Gemessen am 2026-10-06* (`sandbox-exec` mit genau diesem Profil, Worktree ohne private Kopien):
+`cat ~/.zshrc` → `cat: /Users/<owner>/.zshrc: Operation not permitted`; `ls ~`, der Haupt-Checkout,
+`/private/tmp/claude-<uid>` und das Per-User-Verzeichnis ebenso; Schreiben unter Home, in
+`.git/hooks`, `git config`, ein fremder Ref, der `.git`-Zeiger und der Live-Socket verweigert. Grün:
+`git status`/`show`/`commit`/`reset --soft`, `bun install --frozen-lockfile`, `bun e2e/pins.ts`,
+`tsc`, `bun run build`, `pi --version`, ein pi-Start bis zum Gauge `0.0%/1.0M` mit pis eigenem
+Bash-Werkzeug (erbt den Zaun), `curl` an die Self-API, `swiftc` mit `SDKROOT=$(xcrun --show-sdk-path)`.
+Ein lokaler Suite-Lauf hinter dem Zaun nimmt den Mutex wieder (`e2e-stage.sh#_st_birth_kinfo`, unten).
+
+**Offen bleibt:** das eigene Env (`ZAI_API_KEY`, der eigene `FLEET_SELF_TOKEN`); das Netz — was
+lesbar ist, ist exfiltrierbar, also alles im Worktree, die gemeinsame git-Historie und alles außerhalb
+von Home und Temp, was nicht in `FLEET_PI_ZAI_DENY_ROOTS` steht (gemountete Volumes, `/Users/Shared`);
+andere tmux-Sockets als `claudefleet`; Signale an fremde Prozesse (bewusst offen: der Suite-Mutex
+prüft fremde Halter per `kill -0`); Metadaten unter Home für bekannte Namen; ein liegengelassenes
+`packed-refs.lock` blockiert Ref-Löschungen, bis es entfernt ist. **Code der Lane läuft ungezäunt**,
+sobald ihn der Land-Gate, der Post-Land-Audit oder ein Helfer-Job ausführt — die Grenze dort ist
+Review und Gate, nicht dieser Zaun. **Native Builds:** `swift build --disable-sandbox` scheitert hinter
+dem Zaun mit `encountered an I/O error (code: 1) while reading …/output-file-map.json`, `xcodebuild`
+(unsigniert, eigene `-derivedDataPath`/`-resultBundlePath`/`-clonedSourcePackagesDirPath`) mit
+`Could not resolve package dependencies: permissionDenied`; ohne Zaun mit derselben Umgebung beide
+grün — ungeklärt, vermutlich das Per-User-Verzeichnis (`confstr`, nicht `$TMPDIR`). SwiftPMs eigener
+Manifest-Sandkasten ist ein verschachteltes `sandbox-exec`, und macOS verweigert `sandbox_apply` unter
+JEDEM äußeren Profil mit einer Regel (gemessen, das alte Profil eingeschlossen); darum fährt
+`e2e-isolated.sh` hinter einem Zaun den pass-through-Stand-in wie off-darwin, und `e2e/security.ts`
+§6a sagt dann benannt, dass kein Zaun gemessen wurde. Ein bereits laufender pi-zai-Prozess behält
+sein altes Profil; wirksam wird das neue erst mit Deploy und Neu-Spawn. Ein Symlink aus einem
+geöffneten Baum auf ein Ziel außerhalb bleibt eine Grenze des pfadbasierten Zauns. `sandbox-exec`
+ist von Apple als deprecated markiert; der Selbsttest fängt einen Bruch. Workhorse/Linux ist
+ungemessen (Gegenstück wäre `bwrap`).
+
+**Suite-Mutex hinter dem Zaun.** `/bin/ps` ist setuid, und `sandbox-exec` verweigert dessen `exec`
+unter jedem Profil; ohne eigene Startzeit verweigerte jeder lokale Suite-Lauf mit
+`[suite-lock-error] … exit 3` (Report `6d2bb265`). `e2e-stage.sh` entscheidet einmal je Lauf, ob `ps`
+überhaupt startet; nur wenn nicht, liest `_st_birth_kinfo` die Startzeit per `bun:ffi` aus
+`sysctl(KERN_PROC_PID)` und druckt sie in der C-Locale-Form von `ps -o lstart=` — byte-gleich mit dem,
+was `server.ts#processBirthFingerprint` von außen per `ps` liest (`e2e/pins.ts` führt beide für den
+eigenen und einen fremden Prozess aus). Lock-Identität und Zaun widersprechen sich damit nicht mehr:
+die Identität braucht die Startzeit, der Zaun schließt argv und env.
 
 **API-Stau erkennen, fortsetzen und melden.** `apiStall` ist ein beobachteter Fehler bei einer
 seit mindestens 10 s stillen Pane; `lastOutput:0` bleibt unbekannt. Claude liest die letzte

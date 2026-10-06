@@ -15331,13 +15331,14 @@ exit 0
     const mpNoteListed = ((await selfExecution(mpTok)).view as unknown as { projectNotes?: { id: string }[] } | null)
       ?.projectNotes?.some((n) => n.id === mpNoteRow?.id) ?? false;
     const mpNoteAuftrag = await mpFile({ text: "one main: a project auftrag", kind: "auftrag", programId: null });
-    check("one MAIN, two Programs (8): the Merkzettel — a programId:null note lands at the project (repo, no Program), the MAIN reads and lists it, it never releases, and only a notiz may be filed there",
+    const mpNoteElsewhere = await mpFile({ text: "one main: a note for another project", programId: null, repo: REPO2 });
+    check("one MAIN, two Programs (8): the Merkzettel — a programId:null note lands at the MAIN's own project (repo, no Program), the MAIN reads and lists it, it never releases, only a notiz may be filed there and never into another repo",
       mpNote.ok && !!mpNoteRow && mpNoteRow.programId === undefined && mpNoteRow.kind === "notiz"
         && !!mpNoteRow.repo && realpathSync(mpNoteRow.repo) === realpathSync(REPO)
         && mpNoteRead?.status === 200 && mpNoteListed
-        && mpNoteRelease?.status === 409 && mpNoteAuftrag.status === 400,
+        && mpNoteRelease?.status === 409 && mpNoteAuftrag.status === 400 && mpNoteElsewhere.status === 400,
       JSON.stringify({ note: mpNote.status, row: mpNoteRow, read: mpNoteRead?.status, listed: mpNoteListed,
-        release: mpNoteRelease?.status, auftrag: mpNoteAuftrag.status }));
+        release: mpNoteRelease?.status, auftrag: mpNoteAuftrag.status, elsewhere: mpNoteElsewhere.status }));
 
     // (9) A SESSION BOUND TO NEITHER still meets 409 at every door
     const mpU = {

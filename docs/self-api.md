@@ -752,8 +752,8 @@ nach dem Speichern. Ohne `slot` gründet die Route wie bisher eine neue Session.
 
 **Merkzettel:** `POST /api/self/tasks` mit `"programId": null` filed eine `notiz` am PROJEKT —
 Zeile mit `repo`, ohne Program — für einen Fehler, den kein laufendes Vorhaben verursacht hat. Sie
-startet nichts (release 409), zählt gegen den Advisory-Deckel des Projekts, und nur `kind:"notiz"`
-ist dort erlaubt (400 sonst). Die MAIN liest sie über `GET /api/self/tasks/:id` (eigenes Repo;
+startet nichts (release 409), zählt gegen den Advisory-Deckel des Projekts, nur `kind:"notiz"` ist
+dort erlaubt und nur am EIGENEN Projekt (ein `repo` daneben ist 400). Die MAIN liest sie über `GET /api/self/tasks/:id` (eigenes Repo;
 kommentieren/zurückziehen nur, wenn sie sie selbst filed), `program-execution` listet die offenen als
 `projectNotes`; der Owner sieht sie als gewöhnliche Zeile.
 

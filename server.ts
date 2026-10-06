@@ -3333,7 +3333,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
   // THE MERKZETTEL of this MAIN's project: program-less notiz rows targeting its own repo — faults no
   // running Program caused, filed with POST /api/self/tasks {programId:null}. Listed, never started;
   // the full row is GET /api/self/tasks/<id>. Only for a bound MAIN: the project is its checkout.
-  const projectRepo = projected.length && s.cwd ? await repoKeyOf(s) : null;
+  const projectRepo = boundProgramsForMain(s).length && s.cwd ? await repoKeyOf(s) : null;
   const projectNotes = projectRepo === null ? [] : tasks.filter((t) => !t.programId && t.kind === "notiz"
     && !taskTerminal(t) && t.repo !== null && repoCanon(t.repo) === projectRepo)
     .map((t) => ({ id: t.id, status: t.status, source: t.source, created: t.created,
@@ -9153,14 +9153,24 @@ async function clearProgramFounding(program: Program, founding: ProgramFounding,
   // left open while this marker owned the ending — it closes here, as the retire it turned out to be
   const pred = founding.mode === "succession" ? founding.predecessor : null;
   const predLive = pred ? slotFrom(pred.slot) : null;
+  // …and so do the holdings of every OTHER active Program of that MAIN (one MAIN per project): they
+  // were moving with this marker (succeedProgramMain's companions), so their ending is the same one
+  const companionLineages = new Map<Program, ProgramLineage | undefined>();
   if (pred && program.main?.slot === pred.slot && program.main.openedAt === pred.openedAt
-    && !(predLive?.cwd && predLive.openedAt === pred.openedAt))
+    && !(predLive?.cwd && predLive.openedAt === pred.openedAt)) {
     closeProgramLineage(program, "retire", Date.now());
+    for (const c of programs) {
+      if (c === program || c.status !== "active" || c.main?.slot !== pred.slot || c.main.openedAt !== pred.openedAt) continue;
+      companionLineages.set(c, c.lineage);
+      closeProgramLineage(c, "retire", Date.now());
+    }
+  }
   try {
     await saveStateNow();
   } catch (e) {
     program.founding = founding; // fail closed in memory when disk did not acknowledge the cut
     if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
+    for (const [c, l] of companionLineages) if (l) c.lineage = l; else delete c.lineage;
     throw e;
   }
   audit("program_founding_recover", founding.target.slot,
@@ -9856,9 +9866,14 @@ function deliveryAddressKey(address: DeliveryAddress): string {
 }
 function deliveryRecipient(address: DeliveryAddress): Slot | null {
   if (address.kind === "program") {
-    const main = programs.find((p) => p.id === address.id && p.status === "active")?.main;
+    // A MAIN of several Programs is addressed by its first one (deliveryAddress). When that Program
+    // completes, the occupant it names is still the receiver as long as it is the live MAIN of
+    // another active Program — its other Programs' traffic must not die with the finished one.
+    const program = programs.find((p) => p.id === address.id);
+    const main = program?.main;
     const s = main ? slotFrom(main.slot) : null;
-    return s?.cwd && s.openedAt === main?.openedAt ? s : null;
+    if (!s?.cwd || s.openedAt !== main?.openedAt) return null;
+    return program?.status === "active" || boundProgramsForMain(s).length > 0 ? s : null;
   }
   if (address.kind === "orchestrator") {
     const candidates = orchestratorLabelHolders();
@@ -15262,7 +15277,8 @@ async function taskDoorForMain(s: Slot, id: string, action: "read" | "comment" |
   // exception, the MERKZETTEL: a program-less notiz at this MAIN's own project (the repo check below
   // still applies) is the MAIN's to read, and — where the MAIN filed it — to comment and withdraw.
   // Every other unbracketed row stays the owner's.
-  const projectNote = !t.programId && t.kind === "notiz" && (action === "read" || t.source === "main");
+  const projectNote = !t.programId && t.kind === "notiz" && t.repo !== null
+    && (action === "read" || t.source === "main");
   const bound = projectNote ? null : boundProgramForMain(s, t.programId ?? null);
   if (bound && !bound.ok)
     return json({ error: `task belongs to no program of this MAIN — this door reads or changes only rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
@@ -16344,6 +16360,8 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   const program = picked?.ok ? picked.program : null;
   if (merkzettel && body.kind !== undefined && body.kind !== "notiz")
     return json({ error: "a project note (programId null) is kind notiz — it records, it starts nothing" }, 400);
+  if (merkzettel && body.repo !== undefined)
+    return json({ error: "a project note (programId null) belongs to this MAIN's own project — [repo] is not read" }, 400);
   // (2) …and the rest as a closed set, named in the refusal so the caller can see what it may say.
   // The spawn triple joined the set as one unit: harness/model/effort are the same three top-level
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
@@ -36890,13 +36908,18 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
         async (e) => {
-          await rollbackProgramFounding(program, founding,
-            e instanceof TmuxNewSessionUnavailable ? "tmux-new-session-unavailable" : "successor-open-failed");
+          try {
+            await rollbackProgramFounding(program, founding,
+              e instanceof TmuxNewSessionUnavailable ? "tmux-new-session-unavailable" : "successor-open-failed");
+          } finally {
+            // the companions settle even when the primary's rollback throws: their records must not
+            // wait on the marker's own persistence
+            settleCompanionsLost();
+          }
           if (retained) {
             settleProgramSuccessionDuties(program, predecessor, null, retained);
             program.handover = retained;
           }
-          settleCompanionsLost();
           if (retained || companionRecords.length) await saveStateNow();
         },
         // refused before the kill: the predecessor stands and stays bound, only the marker falls

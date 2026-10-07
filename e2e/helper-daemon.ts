@@ -339,9 +339,11 @@ export async function run(h: {
       const f = pending.shift()!;
       if (seen.includes(f)) continue;
       seen.push(f);
-      for (const m of readFileSync(`${root}/${f}`, "utf8").matchAll(/(?:from|import)\s*\(?\s*"(\.[^"]*)"/g)) {
-        const hit = resolveSpec(norm(`${dirname(f)}/${m[1]!}`));
-        if (!hit) throw new Error(`${f} imports "${m[1]}", which resolves to no file under ${root}`);
+      // either quote, as a MATCHED pair: a single-quoted relative import would otherwise drop out of
+      // the list silently and the fixture would lack a file without any error (review of 0ad70ed2)
+      for (const m of readFileSync(`${root}/${f}`, "utf8").matchAll(/(?:from|import)\s*\(?\s*(["'])(\.[^"']*)\1/g)) {
+        const hit = resolveSpec(norm(`${dirname(f)}/${m[2]!}`));
+        if (!hit) throw new Error(`${f} imports "${m[2]}", which resolves to no file under ${root}`);
         pending.push(hit);
       }
     }

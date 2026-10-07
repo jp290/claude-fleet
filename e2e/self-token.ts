@@ -1930,6 +1930,25 @@ async function ownerProgramSuccession(): Promise<void> {
   check("tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
     staleNudges.length === 1 && (await migratePrompts(F.slot)).length === 0 && (await migratePrompts(T.slot)).length === 1,
     `fresh=${(await migratePrompts(F.slot)).length} stale=${(await migratePrompts(T.slot)).length}`);
+  // …and FRESH IS RE-ASKED WHEN THE CONVERSATION GROWS, not when the pane paints (MAIN review): the
+  // fresh subject's transcript now grows past FRESH_TAIL_MAX while its pane prints nothing at all, so
+  // its lastOutput stays put. Mutation: key the memo on lastOutput instead of the file → the memoised
+  // "fresh" is never asked again and this stays 0.
+  const fFile = fileOf(repoF, 1);
+  const fSilentBefore = (await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput;
+  const fBody = readFileSync(fFile, "utf8");
+  writeFileSync(fFile, fBody.slice(0, fBody.length - usage.length) + Array.from({ length: 20 }, (_, k) =>
+    line(repoF, k % 2 ? "assistant" : "user", atF + 10 + k, k % 2 ? [{ type: "text", text: `GREW-${k} ${"x".repeat(1490)}` }]
+      : `GREW-${k} ${"y".repeat(1490)}`)).join("") + usage);
+  const fLastOutput = (await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput;
+  let grownNudges = await migratePrompts(F.slot);
+  for (let i = 0; i < 100 && grownNudges.length === 0; i++) {
+    await Bun.sleep(100);
+    grownNudges = await migratePrompts(F.slot);
+  }
+  check("tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
+    grownNudges.length === 1 && fLastOutput !== undefined && fLastOutput === fSilentBefore,
+    `nudges=${grownNudges.length} lastOutput before=${fSilentBefore}/${fLastOutput} after=${(await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput}`);
 
   // GAME-MAKER stays on its own rail at both doors
   const gDoor = await post(`/api/slots/${G.slot}/succeed`, {});

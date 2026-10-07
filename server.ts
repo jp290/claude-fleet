@@ -24912,13 +24912,21 @@ function laneMigrateMessage(fill: ContextFill): string {
 // FRESH_TAIL_MAX). A handover written three hours ago over a pane that has rested since is fresh; one
 // written ten minutes ago before 30 000 characters of work is not, and the nudge then asks for a new
 // one. An unreadable rest is never fresh (cannot tell is not "nothing lost"). Memoised per occupant on
-// (handover, last output): the answer cannot change while the pane printed nothing, so a slot that
-// sits past its cooldown does not re-read its transcript every tick.
+// (handover, transcript file, its size and mtime): the answer cannot change while the conversation
+// file did not, so a slot that sits past its cooldown does not re-read it every tick. KEYED ON THE
+// FILE, NOT ON `lastOutput` (MAIN review of this cut): lastOutput is a pane-activity proxy whose
+// refresh a quiet window (our own paste echo, a resize repaint) and title-only bytes suppress on
+// purpose, so a transcript could grow past the cap behind an unchanged lastOutput and a memoised
+// "fresh" would never be asked again. tickMigrate is claude-only, so transcriptFile names the file.
 const migrateFreshMemo = new Map<number, { key: string; fresh: boolean }>();
 async function standingHandoverFresh(s: Slot): Promise<boolean> {
   const standing = liveStandingHandover(s);
   if (!standing) return false;
-  const key = `${s.openedAt}:${s.sessionId}:${standing.at}:${s.lastOutput}`;
+  const file = transcriptFile(s);
+  if (!file) return false;
+  let stat: { size: number; mtimeMs: number };
+  try { stat = statSync(file); } catch { return false; }
+  const key = `${s.openedAt}:${s.sessionId}:${standing.at}:${file}:${stat.size}:${stat.mtimeMs}`;
   const memo = migrateFreshMemo.get(s.id);
   if (memo?.key === key) return memo.fresh;
   const tail = await freshTranscriptTail(s, standing.at);

@@ -44264,12 +44264,12 @@ Bun.serve<WSData>({
     // ). Two doors, one gate: the bound MAIN of an active Program. A decision
     // is APPENDED here and is valid at once; a text is only PROPOSED here and changes nothing until
     // the owner confirms it on POST /api/programs/:id/text-proposals.
-    if ((url.pathname === "/api/self/program-decisions" || url.pathname === "/api/self/program-text-proposals")
-      && req.method === "POST") {
+    const programTextDoor = /^\/api\/self\/program-(decisions|text-proposals)$/.exec(url.pathname);
+    if (programTextDoor && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      const decisionDoor = url.pathname === "/api/self/program-decisions";
+      const decisionDoor = programTextDoor[1] === "decisions";
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: decisionDoor
           ? "a lane cannot write its Program's decisions — its MAIN does"

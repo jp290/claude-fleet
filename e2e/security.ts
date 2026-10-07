@@ -84,6 +84,12 @@ const PRE_AUTH_ROUTES = [
   // It stores tracked path/anchor pointers only, validated against the caller's own integration HEAD,
   // and starts, dispatches and writes into no pane.
   '= /api/self/program-context-packs',
+  // The Program's living text, MAIN half (2026-10-07, docs/self-api.md §program-text). Two POST doors
+  // for the bound MAIN of an active Program only (boundProgramForMain; a lane and an unbound session
+  // 409; the occupant is re-resolved after the body await): `decisions` APPENDS one string to the
+  // Program's decisions, `text-proposals` stores a PROPOSAL that changes no valid text — only the
+  // owner's /api/programs/:id/text-proposals applies it. No pane is written, nothing starts.
+  String.raw`~ /^\/api\/self\/program-(decisions|text-proposals)$/`,
   // The konzept door (Program Konzeptgedaechtnis 31aa88ea, Karte 1). Reads and APPENDS to a private
   // ledger under FLEET_KONZEPT_ROOT, open to a lane and to the bound MAIN of an active Program; every
   // other session 409s. What bounds it: the konzept id is ^k-[a-z0-9-]{1,64}$ (no path segment reaches
@@ -451,7 +457,10 @@ const PRE_AUTH_ROUTES = [
   // `release-valid` joined 2026-09-15 (Freigabe-Schnitt B) with the owner's collective release: it
   // moves named rows pending→queued, the owner's ▸ queue over a previewed selection, so it is owner
   // side for `release`'s reason — tokenGate first, a MAIN token 401 (e2e/programs.ts release-valid (2)).
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid))?$/`,
+  // `text-proposals` joined 2026-10-07 with the Program's living text: it APPLIES a MAIN's proposed
+  // intent/successCriterion/nonGoals or rejects it — an owner confirmation by definition, so tokenGate
+  // first and a MAIN token 401 (e2e/programs.ts living text (6)).
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid|text-proposals))?$/`,
   // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
   // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
   // and the handler sits before the steward interceptor only so a steward credential meets the same

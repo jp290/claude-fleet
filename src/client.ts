@@ -230,8 +230,11 @@ function renderInstanceBand(source: InstanceSource | null) {
   tiBand.title = band.title;
 }
 
-function renderInstanceHead() {
-  const key = JSON.stringify([instanceName, instanceLinks, switchLinks, instanceCodexCli,
+// `switches` is the Umschalter half, handed in rather than read from module state: the renderer's
+// free names are a contract with the extracted-source fixture in e2e/tasks.ts (R3c), and an
+// omitted argument is the board without test instances it has always rendered
+function renderInstanceHead(switches: readonly SwitchLink[] = []) {
+  const key = JSON.stringify([instanceName, instanceLinks, switches, instanceCodexCli,
     Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
     instanceLinks.map((link) => codexCliUnknown(link.codexCli, instanceObservedNow))]);
   if (key === instRendered) return; // an open menu must survive the 2 s poll
@@ -245,15 +248,15 @@ function renderInstanceHead() {
   const n = Math.max(instanceLinks.length, 1);
   const at = instanceLinks.findIndex((l) => instOriginOf(l.url) === location.origin);
   // an unnamed single host shows only the screen and its "+": the title row has no room for a word
-  const back = switchLinks.some((l) => l.kind === "live");
-  const tis = switchLinks.filter((l) => l.kind === "testinstanz").length;
+  const back = switches.some((l) => l.kind === "live");
+  const tis = switches.filter((l) => l.kind === "testinstanz").length;
   instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
     el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"),
-    ...(switchLinks.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
+    ...(switches.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
   instBtn.title = n > 1
     ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
     : MORE_HOSTS;
-  if (switchLinks.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
+  if (switches.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
     : ` · Umschalter: ${tis} ${tis === 1 ? "Testinstanz" : "Testinstanzen"} dieser Maschine`;
   instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
   instBtn.classList.add("pick");
@@ -274,11 +277,11 @@ function renderInstanceHead() {
     row.onclick = go(link);
     return row;
   }));
-  if (switchLinks.length) {
+  if (switches.length) {
     // the Umschalter: same tab, same `go`, a bare origin — on the live board each running
     // test instance, on a test instance the way back
     instMenu.appendChild(el("div", "hint instnote", back ? "Umschalter · zurück" : "Umschalter · Testinstanzen dieser Maschine"));
-    for (const link of switchLinks) {
+    for (const link of switches) {
       const row = el("button", "instrow");
       row.style.flexWrap = "wrap";
       // name and origin each on their own line: a worktree name is long, and a phone that cut the
@@ -7408,7 +7411,7 @@ export async function refresh() {
     });
     instanceCodexCli = codexCliSnapshotFrom(data.codexCli);
     instanceObservedNow = data.now;
-    renderInstanceHead();
+    renderInstanceHead(switchLinks);
     const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
     renderInstanceBand(tiSource);
     setInstanceSource(tiSource);

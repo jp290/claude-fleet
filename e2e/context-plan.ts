@@ -1,3 +1,5 @@
+import { renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
+import { sectionAt, sourceSection } from "../context-sections";
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
   CONTEXT_PACK_CAPABILITIES,
@@ -13,11 +15,14 @@ import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { codexPermissionsFrom } from "../server/types";
+import { piZaiFenceProfile } from "../server/pi-zai-fence";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, planRepoContext,
   readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
+import { packIdFassung, standSincePreview, type PackStandPreview, type PackStandReceipt } from "../src/protocol";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
   type SnippetFile, type SnippetRow } from "../context-snippets";
@@ -631,11 +636,14 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     SNIPPET_HIT_MAX_LINES === 60 && definitionLines(alpha.split("\n"), "alphaTwo").join(",") === "5",
     `${SNIPPET_HIT_MAX_LINES} ${definitionLines(alpha.split("\n"), "alphaTwo")}`);
 
+  sessionAgentsChecks(check);
+  await laneSessionFilesChecks(check);
   taskCatalogChecks(check);
   privatePackChecks(check);
   await contextBorrowChecks(check);
 
   orchestrationTriggerChecks(check);
+  foundingStandChecks(check);
 
   if (!externalCheck) {
     console.log(rows.join("\n"));
@@ -1070,4 +1078,260 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
       taskQueue: seedPlan.omitted.find((pack) => pack.id === "task-queue") }));
 }
 
+
+
+// --- THE FOUNDING WINDOW'S PREVIEW AGAINST THE RECEIPT (card 91b52b3a). src/protocol.ts#standSincePreview
+// is the one rule the window applies after a start; each fixture is one receipt shape the ledger can
+// hold, and every row a missing fact touches must come out `unknown` — never `same`. The server-backed
+// half (e2e/context-packs.ts) feeds it a real preview and a real receipt; this half pins the rule.
+function foundingStandChecks(check: ContextPlanCheck): void {
+  const H1 = "a".repeat(64), H2 = "b".repeat(64), HEAD1 = "1".repeat(40), HEAD2 = "2".repeat(40);
+  const anchors = [{ path: "AGENTS.md", anchor: "## Repo contract" }];
+  const preview: PackStandPreview = { head: HEAD1, packs: [
+    { id: "promise-anchor", anchors, sourceHash: H1 },
+    { id: "konzept-claude-fleet", anchors: { privateSourceId: "k-claude-fleet" }, sourceHash: H2 },
+  ] };
+  const receipt = (over: Partial<PackStandReceipt> = {}): PackStandReceipt => ({
+    head: HEAD1, selected: [{ id: "promise-anchor", anchors, sourceHash: H1 }], omitted: [], ...over });
+  const row = (r: ReturnType<typeof standSincePreview>, id: string) => r.packs.find((p) => p.id === id);
+
+  const same = standSincePreview(preview, receipt(), ["promise-anchor"]);
+  check("founding stand: an unchanged source is `same`, and so is the HEAD",
+    same.head === "same" && row(same, "promise-anchor")?.stand === "same" && same.packs.length === 1, JSON.stringify(same));
+
+  const moved = standSincePreview(preview, receipt({ head: HEAD2, selected: [{ id: "promise-anchor", anchors, sourceHash: H2 }] }), ["promise-anchor"]);
+  check("founding stand: a source changed between preview and start is `changed`, the receipt's hash is the delivered one",
+    moved.head === "changed" && row(moved, "promise-anchor")?.stand === "changed"
+      && row(moved, "promise-anchor")?.preview === H1 && row(moved, "promise-anchor")?.delivered === H2, JSON.stringify(moved));
+
+  const headOnly = standSincePreview(preview, receipt({ head: HEAD2 }), ["promise-anchor"]);
+  check("founding stand: a HEAD that moved without touching the pack's source keeps the pack `same` and the HEAD `changed`",
+    headOnly.head === "changed" && row(headOnly, "promise-anchor")?.stand === "same", JSON.stringify(headOnly));
+
+  const reanchored = standSincePreview(preview, receipt({ selected: [{ id: "promise-anchor",
+    anchors: [{ path: "AGENTS.md", anchor: "## Other" }], sourceHash: H1 }] }), ["promise-anchor"]);
+  check("founding stand: a moved anchor with the same blob is `changed`, named as anchors",
+    row(reanchored, "promise-anchor")?.stand === "changed" && row(reanchored, "promise-anchor")?.why === "anchors", JSON.stringify(reanchored));
+
+  // AN OLD RECEIPT without head and sourceHash, and an old server's preview without them: unknown on
+  // every row they touch. Mutation: let a missing hash fall through to the comparison → `same` here.
+  const old = standSincePreview(preview, { selected: [{ id: "promise-anchor", anchors }] }, ["promise-anchor"]);
+  const oldPreview = standSincePreview({ head: null, packs: [{ id: "promise-anchor" }] }, receipt(), ["promise-anchor"]);
+  const noPreview = standSincePreview(null, receipt(), ["promise-anchor"]);
+  check("founding stand: an old receipt, an old preview and no preview at all are `unknown` — never `same`",
+    old.head === "unknown" && row(old, "promise-anchor")?.stand === "unknown"
+      && oldPreview.head === "unknown" && row(oldPreview, "promise-anchor")?.stand === "unknown"
+      && noPreview.head === "unknown" && row(noPreview, "promise-anchor")?.stand === "unknown",
+    JSON.stringify({ old, oldPreview, noPreview }));
+
+  const privateRow = (verdict: unknown) => row(standSincePreview(preview, receipt({ selected: [{ id: "konzept-claude-fleet",
+    anchors: { privateSourceId: "k-claude-fleet" }, sourceHash: H2, private: { verdict, version: 1 } }] }), ["konzept-claude-fleet"]),
+    "konzept-claude-fleet")?.stand;
+  check("founding stand: a private pack follows its delivery verdict — match same, drift drift, an unreadable verdict unknown",
+    privateRow("match") === "same" && privateRow("drift") === "drift" && privateRow(undefined) === "unknown",
+    `${privateRow("match")} ${privateRow("drift")} ${privateRow(undefined)}`);
+
+  const missing = standSincePreview(preview, receipt({ selected: [], omitted: [{ id: "konzept-claude-fleet",
+    why: "source-unavailable", reason: "FLEET_KONZEPT_ROOT is not set on this server" }] }), ["konzept-claude-fleet"]);
+  const silent = standSincePreview(preview, receipt({ selected: [], omitted: [] }), ["promise-anchor"]);
+  check("founding stand: a requested pack the delivery omitted is `not-delivered` with the receipt's own reason, or with none",
+    row(missing, "konzept-claude-fleet")?.stand === "not-delivered"
+      && row(missing, "konzept-claude-fleet")?.why === "source-unavailable: FLEET_KONZEPT_ROOT is not set on this server"
+      && row(silent, "promise-anchor")?.stand === "not-delivered" && row(silent, "promise-anchor")?.why === null,
+    JSON.stringify({ missing, silent }));
+
+  const extra = standSincePreview(preview, receipt({ selected: [{ id: "promise-anchor", anchors, sourceHash: H1 },
+    { id: "uninvited", anchors, sourceHash: H1 }] }), ["promise-anchor"]);
+  check("founding stand: a receipt pack nobody requested is `extra`",
+    row(extra, "uninvited")?.stand === "extra" && row(extra, "promise-anchor")?.stand === "same", JSON.stringify(extra));
+
+  // A FASSUNG IS DECLARED BY THE ID, or there is none — never read off a hash, a harness or a ledger.
+  const fassungen = ["codex-native-context-v1", "x-v12", "portable-core", "konzept-claude-fleet", "x-v0", "x-v1x", "v1"]
+    .map((id) => packIdFassung(id));
+  check("founding stand: the fassung comes from an explicit -v<N> id suffix only",
+    JSON.stringify(fassungen) === JSON.stringify([1, 12, null, null, null, null, null]), JSON.stringify(fassungen));
+}
+
 if (import.meta.main) await run();
+
+function sessionAgentsChecks(check: ContextPlanCheck): void {
+  const tree = realManifestTree();
+  if ("error" in tree) { check("session agents: source tree is readable", false, tree.error); return; }
+  const server = readFileSync(join(tree.root, "server.ts"), "utf8");
+  const constant = (name: string): string => {
+    const match = new RegExp("const " + name + " = (`(?:\\\\.|[^`])*`);", "s").exec(server);
+    if (!match) throw new Error(`session agents probe: missing ${name}`);
+    return match[0];
+  };
+  const fn = (name: string): string => {
+    const start = server.indexOf(`function ${name}(`);
+    const end = server.indexOf("\n}", start);
+    if (start < 0 || end < 0) throw new Error(`session agents probe: missing ${name}`);
+    return server.slice(start, end + 2);
+  };
+  const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync([
+    ...["LANE_ROLE_CARD", "MAIN_ROLE_CARD", "ORCHESTRATOR_ROLE_CARD", "LANE_EXIT_HANDOFF", "LANE_EXIT_HANDOFF_CODEX", "RAIL_HEAD", "RAIL_TAIL", "ORCHESTRATOR_CONTEXT_LINE_CODEX"].map(constant),
+    fn("memoryPointer"), fn("laneExitFooter"),
+    'return { roles: [LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_ROLE_CARD + "\\n" + ORCHESTRATOR_CONTEXT_LINE_CODEX], laneExitFooter, mainFooter: RAIL_HEAD + RAIL_TAIL };',
+  ].join("\n"));
+  const deps = { HOST: "127.0.0.1", PORT: 8790, MAX_FLEET_REPORT_TEXT: 4000,
+    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex" };
+  const templates = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {
+    roles: string[]; laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null) => string; mainFooter: string;
+  };
+  const sourceBytes = new Map(tree.sourceBytes);
+  for (const pack of CONTEXT_PACKS) if ("sources" in pack) for (const source of pack.sources)
+    sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
+  const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
+  const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
+  const expected = [582, 1549, 403, 321, 3959, 4777];
+  const measured = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.bytes);
+  check("session agents: six verify parts carry the approved tree bytes (fixture 670/902/161/711/3917/2623)",
+    JSON.stringify(measured) === JSON.stringify(expected), JSON.stringify(measured));
+  const sums: string[] = [];
+  for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
+    const footer = position === "lane" ? templates.laneExitFooter("codex", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
+    const input = { role: { text: templates.roles[index]!, path: "server.ts", anchor: `${position}-role` }, position, harness: "codex", plan, sourceBytes, footer };
+    const rendered = renderSessionAgents(input);
+    const carried = rendered.parts.filter((part) => part.ort === "box");
+    check(`session agents: ${position} is deterministic, measures the exact file and stays below 32 KiB`,
+      JSON.stringify(renderSessionAgents(input)) === JSON.stringify(rendered) && rendered.bytes === Buffer.byteLength(rendered.text)
+        && rendered.bytes < SESSION_AGENTS_LIMIT && rendered.projectDocMaxBytes === undefined,
+      `${rendered.bytes} bytes; box=${carried.map((part) => `${part.id}:${part.bytes}`).join(",")}`);
+    sums.push(`${position}=${rendered.bytes}`);
+    check(`session agents: ${position} box receipts hash the delivered source bytes`, carried.every((part) =>
+      part.content !== null && part.bytes === Buffer.byteLength(part.content)
+      && part.sha256 === createHash("sha256").update(part.content).digest("hex")));
+    const deliveredFooter = rendered.parts.find((part) => part.id === "footer")?.content;
+    if (deliveredFooter) check(`session agents: ${position} footer retains no sentence-equal carried instruction`,
+      sessionExitFooter(deliveredFooter, rendered.text.slice(0, rendered.text.indexOf(position === "lane" ? "## Lane-Ende" : "## Program-Schiene"))) === deliveredFooter);
+    const headings = ["## Rolle", "## Anleitung", "## Wissen", "## Packs auf Abruf"];
+    check(`session agents: ${position} keeps role, instruction, knowledge, pointers and footer in order`,
+      headings.every((heading, i) => rendered.text.indexOf(heading) >= 0 && (i === 0 || rendered.text.indexOf(heading) > rendered.text.indexOf(headings[i - 1]!)))
+      && (!footer || rendered.text.indexOf(position === "lane" ? "## Lane-Ende" : "## Program-Schiene") > rendered.text.indexOf("## Packs auf Abruf")));
+    const gate = rendered.parts.find((part) => part.id === "verify-e2e.gate-vs-audit");
+    check(`session agents: ${position} carries the portable contract once and gate knowledge only for MAIN`,
+      rendered.text.split("## Portable operating contract").length === 2
+      && gate?.ort === (position === "main" ? "box" : "ausleihe") && (gate?.content !== null) === (position === "main"));
+  }
+  check("session agents: position sums are observed", sums.length === 3, sums.join("; "));
+  const base = { role: { text: templates.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane" as const, harness: "codex", plan, sourceBytes, footer: "" };
+  for (const harness of ["claude", "codex", "pi", "pi-zai"]) {
+    const footer = templates.laneExitFooter(harness, { role: "program-main", slot: 10 });
+    const rendered = renderSessionAgents({ role: { text: templates.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" },
+      position: "lane", harness, plan, sourceBytes, footer });
+    check(`native lane render: ${harness} carries one role and measured source parts`,
+      rendered.text.split(templates.roles[0]!).length === 2 && rendered.parts[0]?.anchor === "LANE_ROLE_CARD"
+        && rendered.parts[0].bytes === Buffer.byteLength(templates.roles[0]!)
+        && rendered.parts.filter((part) => part.content !== null).every((part) => part.sha256 === createHash("sha256").update(part.content!).digest("hex")),
+      `${rendered.bytes} bytes`);
+  }
+  const missingBytes = new Map(sourceBytes);
+  missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");
+  const missing = renderSessionAgents({ ...base, sourceBytes: missingBytes, selection: { "verify-e2e.gate-vs-audit": "box" } });
+  check("session agents: a missing anchor falls back only its own part, leaving instructions in the box",
+    missing.parts.find((part) => part.id === "verify-e2e.gate-vs-audit")?.refusal === "source-anchor-missing"
+    && missing.parts.find((part) => part.id === "verify-e2e.kern")?.ort === "box"
+    && missing.text.includes("source-anchor-missing"));
+  const chosen = renderSessionAgents({ ...base, selection: { "verify-e2e.more": "box", "verify-e2e.lane": "ausleihe" } });
+  check("session agents: choices operate on parts without switching the rest of their pack",
+    chosen.parts.find((part) => part.id === "verify-e2e.more")?.ort === "box"
+    && chosen.parts.find((part) => part.id === "verify-e2e.lane")?.ort === "ausleihe"
+    && chosen.parts.find((part) => part.id === "verify-e2e.kern")?.ort === "box");
+  for (const harness of ["codex", "pi", "pi-zai", "pi-ox", "pi-unfenced"]) {
+    const empty = renderSessionAgents({ ...base, harness, plan: { selected: [], omitted: [] } });
+    check(`session agents: ${harness} keeps its mandatory portable contract even with optional packs off`,
+      empty.parts.find((part) => part.id === "portable-core.contract")?.bytes === 8229
+      && empty.text.split("## Portable operating contract").length === 2 && empty.bytes < SESSION_AGENTS_LIMIT);
+  }
+  const privateBytes = "Private knowledge supplied at the boundary.\n";
+  const privateBox = renderSessionAgents({ ...base, selection: { "konzept-claude-fleet.private": "box" },
+    privateSources: new Map([["k-claude-fleet", { path: "/fixture/k-claude-fleet/v1.md", content: privateBytes }]]) });
+  const privatePart = privateBox.parts.find((part) => part.id === "konzept-claude-fleet.private");
+  check("session agents: injected private knowledge measures exact bytes; missing private bytes stay unknown",
+    privatePart?.ort === "box" && privatePart.bytes === Buffer.byteLength(privateBytes)
+    && privatePart.sha256 === createHash("sha256").update(privateBytes).digest("hex")
+    && renderSessionAgents(base).parts.find((part) => part.id === "konzept-claude-fleet.private")?.bytes === null);
+  const huge = renderSessionAgents({ ...base, role: { ...base.role, text: "x".repeat(SESSION_AGENTS_LIMIT) } });
+  check("session agents: exceeding 32 KiB exposes the precise project document switch",
+    huge.bytes > SESSION_AGENTS_LIMIT && huge.projectDocMaxBytes === huge.bytes);
+  const duplicate = "Read the exact output. Preserve this footer sentence.";
+  check("session agents: sentence-equal instructions disappear from the footer only",
+    sessionExitFooter(duplicate, "--- DER LOOP --- Read the exact output.") === "Preserve this footer sentence.");
+  const legacy = { id: "legacy", useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
+  const legacyRender = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [legacy], omitted: [] }, sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
+  check("session agents: an unsplit pack retains its exact existing pointer bytes",
+    legacyRender.text.includes("- legacy — Read on demand\n  old.md | ## Old") && !legacyRender.text.includes("old bytes"));
+  const section = "### Part\nGrüße.\n```md\n### False sibling\n```\n";
+  check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
+    sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section
+    && sectionAt(section, "x.md", "### Missing") === null);
+}
+
+async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {
+  const source = readFileSync(join(import.meta.dir, "../server.ts"), "utf8");
+  const start = source.indexOf("async function writeLaneSessionAgents(");
+  const end = source.indexOf("\n}", start);
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end + 2));
+  const git = async (repo: string, ...args: string[]) => {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const deps = { git, existsSync, readFileSync, mkdirSync, dirname, appendFileSync, lstatSync, writeFileSync, chmodSync };
+  const write = new Function(...Object.keys(deps), `${js}; return writeLaneSessionAgents;`)(...Object.values(deps)) as
+    (path: string, agents: { text: string }) => Promise<void>;
+  const codexStart = source.indexOf("  spawnCmd: (o) => {", source.indexOf("const CODEX_HARNESS: Harness"));
+  const codexEnd = source.indexOf("\n  },", codexStart);
+  const arrow = source.slice(codexStart + "  spawnCmd: ".length, codexEnd + 4);
+  const codexDeps = { codexPermissionsFrom, realpathSync, shellSingleQuote: (s: string) => `'${s.replaceAll("'", "'\\''")}'`,
+    CODEX_TEXT_LANE_MCP: "text-mcp", PATH_EXPORT: "", SHELL: "/bin/sh" };
+  const spawnCodex = new Function(...Object.keys(codexDeps), `return (${arrow});`)(...Object.values(codexDeps)) as
+    (opts: Record<string, unknown>) => string;
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "lane-agents-files-")));
+  try {
+    for (const resume of [false, true]) {
+      const options = { cwd: repo, permissions: { sandbox: "danger-full-access", approval: "never" }, browserMcp: true,
+        sessionId: "11111111-1111-1111-1111-111111111111", resume };
+      const normal = spawnCodex(options), large = spawnCodex({ ...options, projectDocMaxBytes: 41980 });
+      check(`native Codex ${resume ? "resume" : "fresh"}: only oversized project docs get the exact byte budget`,
+        !normal.includes("project_doc_max_bytes") && large.includes(" -c project_doc_max_bytes=41980")
+          && large.replace(" -c project_doc_max_bytes=41980", "") === normal);
+    }
+    await git(repo, "init", "-q");
+    const text = "## Rolle\n\nEin Satz aus der Lane-Rolle.\n";
+    await write(repo, { text });
+    const exclude = (await git(repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")).out;
+    const first = readFileSync(exclude, "utf8");
+    await write(repo, { text });
+    check("lane files: exact render and native Claude import are excluded with a clean tree",
+      readFileSync(join(repo, "AGENTS.override.md"), "utf8") === text
+        && readFileSync(join(repo, "CLAUDE.local.md"), "utf8") === "@AGENTS.override.md\n"
+        && (await git(repo, "check-ignore", "AGENTS.override.md", "CLAUDE.local.md")).out === "AGENTS.override.md\nCLAUDE.local.md"
+        && (await git(repo, "status", "--porcelain")).out === "");
+    check("lane files: repeated preparation does not duplicate exclusions", readFileSync(exclude, "utf8") === first);
+    await git(repo, "add", "-f", "AGENTS.override.md");
+    let refused = "";
+    try { await write(repo, { text: "overwrite" }); } catch (err) { refused = String(err); }
+    check("lane files: tracked native rules refuse overwrite", refused.includes("session rule paths must be untracked")
+      && readFileSync(join(repo, "AGENTS.override.md"), "utf8") === text);
+    await git(repo, "rm", "--cached", "-f", "AGENTS.override.md");
+    unlinkSync(join(repo, "CLAUDE.local.md"));
+    writeFileSync(join(repo, "target"), "keep");
+    symlinkSync(join(repo, "target"), join(repo, "CLAUDE.local.md"));
+    refused = "";
+    try { await write(repo, { text }); } catch (err) { refused = String(err); }
+    check("lane files: symlink import refuses writing outside its file", refused.includes("session rule path is a symlink")
+      && readFileSync(join(repo, "target"), "utf8") === "keep");
+    mkdirSync(join(repo, "denied"));
+    writeFileSync(join(repo, "denied/canary"), "blocked");
+    const profile = piZaiFenceProfile({ home: repo, fleetDir: repo, agentDir: join(repo, "agent"),
+      keyFile: join(repo, "key"), cwd: repo, tmuxDir: join(repo, "tmux"), sockets: [], denyRoots: [join(repo, "denied")] });
+    check("lane files: pi-zai fence builds with a local native rule file", profile !== null);
+    if (process.platform === "darwin" && profile) {
+      const allowed = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/cat", join(repo, "AGENTS.override.md")], { encoding: "utf8" });
+      const denied = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/cat", join(repo, "denied/canary")], { encoding: "utf8" });
+      check("lane files: real pi-zai seatbelt reads session rules and refuses private roots", allowed.status === 0
+        && allowed.stdout === text && denied.status !== 0 && denied.stdout === "");
+    }
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}

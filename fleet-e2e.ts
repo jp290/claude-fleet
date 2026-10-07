@@ -34,6 +34,7 @@ import * as apiStall from "./e2e/api-stall";
 import * as tmuxLocale from "./e2e/tmux-locale";
 import * as prompts from "./e2e/prompts";
 import * as briefstats from "./e2e/briefstats";
+import * as bytes from "./e2e/bytes";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
 import * as slots from "./e2e/slots";
@@ -175,6 +176,10 @@ const steps: Step[] = [
 
   { unit: "tmux-locale", module: "tmux-locale", run: async () => {
     await tmuxLocale.run();
+  } },
+
+  { unit: "bytes", module: "bytes", run: async () => {
+    await bytes.run(check);
   } },
 
   // --- auth, request guards, the ✨ enhance surface, and the directory/pin API ---

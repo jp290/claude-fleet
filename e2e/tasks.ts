@@ -350,9 +350,53 @@ function codexFirstTurnFixtures(): void {
 }
 
 export async function run(ctx: Ctx): Promise<void> {
+  {
+    const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const code = source.slice(source.indexOf("const taskBaseTreeCache ="), source.indexOf("// The graph half of the surface", source.indexOf("const taskBaseTreeCache ="))).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+    const repo = mkdtempSync(join(tmpdir(), "fleet-sessions-git-"));
+    try {
+      const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+      if (git("init", "-q", "-b", "main").status !== 0) throw new Error("sessions Git fixture init failed");
+      writeFileSync(join(repo, "fixture.ts"), "export const value = 1;\n");
+      if (git("add", "fixture.ts").status !== 0
+        || git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture").status !== 0)
+        throw new Error("sessions Git fixture commit failed");
+      const exercise = (resolverCode: string) => {
+        let now = 0, spawns = 0, denied = true;
+        const boundary = { spawnSync: (args: string[], options: Parameters<typeof Bun.spawnSync>[1]) => {
+          spawns++;
+          return denied ? { success: false, stdout: Buffer.alloc(0) } : Bun.spawnSync(args, options);
+        } };
+        const base = new Function("Bun", "repoCanon", "repoBases", "statSync", "readFileSync", "resolve", "basename", "Date",
+          new Bun.Transpiler({ loader: "ts" }).transformSync(resolverCode) + "\nreturn taskBaseSnapshotFor;")
+          (boundary, realpathSync, {}, statSync, readFileSync, resolve, basename, { now: () => now }) as
+          (repo: string, base: string) => import("../task-metadata").TrackedSnapshot | null;
+        const missing = Array.from({ length: 213 }, () => base(repo, "main"));
+        const initialSpawns = spawns;
+        denied = false; now = 4999;
+        const beforeRetry = base(repo, "main");
+        const beforeRetrySpawns = spawns;
+        now = 5000;
+        const recovered = base(repo, "main");
+        return { allUnknown: missing.every((row) => row === null), initialSpawns, beforeRetry,
+          beforeRetrySpawns, paths: recovered ? [...recovered.paths] : null };
+      };
+      const result = exercise(code);
+      check("(sessions-latency) 213 task rows share one failed Git discovery and retain UNKNOWN until its 5 s retry",
+        result.allUnknown && result.initialSpawns === 1 && result.beforeRetry === null && result.beforeRetrySpawns === 1,
+        JSON.stringify(result));
+      check("(sessions-latency) failed Git discovery recovers at the retry boundary with the exact tracked paths",
+        JSON.stringify(result.paths) === JSON.stringify(["fixture.ts"]), JSON.stringify(result));
+      const mutantCode = code.replace("if (failedAt !== undefined && Date.now() - failedAt < 5000) return null;", "if (false) return null;");
+      const mutant = exercise(mutantCode);
+      check("(sessions-latency) mutation: removing the failed-discovery cache repeats Git once per task row",
+        mutantCode !== code && mutant.allUnknown && mutant.initialSpawns === 213 && result.initialSpawns === 1,
+        JSON.stringify({ normal: result.initialSpawns, mutant: mutant.initialSpawns }));
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  }
+
   const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
     .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
-  const laneRolePrefix = LANE_ROLE_CARD === "" ? "" : `\n\n${LANE_ROLE_CARD}`;
   const laneCardCount = (prompt: string): number =>
     LANE_ROLE_CARD === "" ? 0 : prompt.split(LANE_ROLE_CARD).length - 1;
   const repo2VerifyCommand = (() => {
@@ -383,6 +427,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // absent on a row written before the fields existed — a date, never "no model" or "no block"
     modelOrigin?: string;
     snippet?: { bytes: number; hits: number; omitted: { ref: string; why: string }[] };
+    sessionAgents?: { path: string; sha256: string; bytes: number; parts: {
+      id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string;
+    }[] };
     executionClass?: string | null;
     executionRole?: { harness: string; model: string; effort: string } | null;
   }
@@ -391,6 +438,28 @@ export async function run(ctx: Ctx): Promise<void> {
   const briefHashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
   const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
     (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
+
+  const NATIVE_RULES_MARK = "\n\nSession-Regeln: ";
+  const taskPayload = (prompt: string): string => prompt.slice(0, prompt.lastIndexOf(NATIVE_RULES_MARK));
+  const nativeRules = async (prompt: string): Promise<string> => {
+    const delivered = (await plogRead()).findLast((entry) => entry.text === prompt);
+    const path = delivered?.cwd ? resolve(delivered.cwd, prompt.slice(prompt.lastIndexOf(NATIVE_RULES_MARK) + NATIVE_RULES_MARK.length)) : "";
+    return prompt.includes(NATIVE_RULES_MARK) && existsSync(path) ? readFileSync(path, "utf8") : "";
+  };
+  const nativeReceiptMatches = (prompt: string, receipt: ContextReceipt | undefined, agents: string): boolean => {
+    const meta = receipt?.sessionAgents;
+    const role = meta?.parts.find((part) => part.id === "role");
+    const footer = meta?.parts.find((part) => part.id === "footer");
+    const footerText = agents.slice(agents.indexOf("## Lane-Ende\n\n") + "## Lane-Ende\n\n".length).trimEnd();
+    return !!meta && meta.path === "AGENTS.override.md" && meta.bytes === Buffer.byteLength(agents)
+      && meta.sha256 === createHash("sha256").update(agents).digest("hex")
+      && role?.path === "server.ts" && role.anchor === "LANE_ROLE_CARD" && role.bytes === Buffer.byteLength(LANE_ROLE_CARD)
+      && role.sha256 === createHash("sha256").update(LANE_ROLE_CARD).digest("hex") && role.ort === "box"
+      && footer?.path === "server.ts" && footer.anchor === "laneExitFooter" && footer.bytes === Buffer.byteLength(footerText)
+      && footer.sha256 === createHash("sha256").update(footerText).digest("hex") && footer.ort === "box"
+      && laneCardCount(agents) === 1 && laneCardCount(prompt) === 0
+      && !prompt.includes(LANE_EXIT_MARK) && !prompt.includes("ContextPlan v2 anchors");
+  };
 
   // --- TASK WORKBENCH CLIENT CONTRACT. The suite has no browser DOM, so the search and partition
   // rules are cut out of the REAL browser source, transpiled, and run against deliberately
@@ -3518,10 +3587,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && s3Mit.text.indexOf("S3-Kommentar:") > s3Mit.marker.length,
       JSON.stringify(s3Mit.text.slice(0, 300)));
     check("(s3) the block rides before the lane's exit footer, and the STORED brief is untouched by the comment",
-      s3Mit.text.indexOf("S3-Kommentar:") < s3Mit.text.indexOf(LANE_EXIT_MARK)
+      s3Mit.text.indexOf("S3-Kommentar:") < s3Mit.text.indexOf(NATIVE_RULES_MARK)
       && (((await (await get("/api/tasks")).json()) as { tasks: { id: string; brief?: { text?: string } }[] }).tasks
         .find((t) => t.id === s3Mit.id)?.brief?.text === s3Mit.marker),
-      `blockAt=${s3Mit.text.indexOf("S3-Kommentar:")} footerAt=${s3Mit.text.indexOf(LANE_EXIT_MARK)}`);
+      `blockAt=${s3Mit.text.indexOf("S3-Kommentar:")} footerAt=${s3Mit.text.indexOf(NATIVE_RULES_MARK)}`);
     check("(s3) a commentless row's founding prompt carries no comments block — byte-wise the delivery this replaces",
       s3Ohne.text.startsWith(s3Ohne.marker) && !s3Ohne.text.includes("KOMMENTARE AUF DIESER ZEILE"),
       JSON.stringify(s3Ohne.text.slice(0, 200)));
@@ -3700,13 +3769,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // one measures the ANCHOR REGION (what the planner appended) and reads the footer only to know
     // where that region ends; (d-footer) measures the footer. A missing footer must not red the
     // anchor check as well, or the failure stops naming which of the two broke.
-    const lifecycleAt = deliveredPrompt.indexOf(LANE_EXIT_MARK);
-    const lifecycleFooter = lifecycleAt >= 0 ? deliveredPrompt.slice(lifecycleAt) : "";
-    const anchorRegion = deliveredPrompt.slice(DBRIEF.length + laneRolePrefix.length,
-      lifecycleAt >= 0 ? lifecycleAt : deliveredPrompt.length);
-    check("a dispatch into a FOREIGN tree delivers the stored brief and one Lane card, with no anchor block",
-      LANE_ROLE_CARD.length > 0 && deliveredPrompt.startsWith(DBRIEF + laneRolePrefix)
-      && laneCardCount(deliveredPrompt) === 1 && anchorRegion === ""
+    const deliveredAgents = await nativeRules(deliveredPrompt);
+    const lifecycleAt = deliveredAgents.indexOf(LANE_EXIT_MARK);
+    const lifecycleFooter = lifecycleAt >= 0 ? deliveredAgents.slice(lifecycleAt) : "";
+    const anchorRegion = taskPayload(deliveredPrompt).slice(DBRIEF.length);
+    check("a foreign dispatch keeps the stored brief and pointer, with one role and measured footer only in native rules",
+      LANE_ROLE_CARD.length > 0 && deliveredPrompt.startsWith(DBRIEF + NATIVE_RULES_MARK)
+      && nativeReceiptMatches(deliveredPrompt, deliveredReceipt, deliveredAgents) && anchorRegion === ""
       && !deliveredPrompt.includes("ContextPlan v2 anchors")
       && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
@@ -3715,7 +3784,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // its result untracked, sat idle-dirty, and filed nothing. This probe fails
     // under its OWN name if the block is absent, so a missing ending can never read as a passing
     // dispatch. Its counterpart is (i-footer): the clarify brief must NOT carry it.
-    check("(d-footer) a MUTATING brief ends with the three exit acts — commit (no untracked), typed fleet-report, idle",
+    check("(d-footer) native lane rules carry the measured three exit acts — commit (no untracked), typed fleet-report, idle",
       lifecycleFooter.includes("1. COMMIT") && lifecycleFooter.includes("NO untracked files")
       && lifecycleFooter.includes("/api/self/fleet-report")
       && ["complete", "needs-main", "failed", "handoff"].every((status) => lifecycleFooter.includes(status))
@@ -5756,6 +5825,7 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const fAgents = await nativeRules(fPrompt);
     // THE POINTER, resolved by its own commit and line numbers against the lane source. The block sits between the brief and the
     // anchors, so the anchor check below finds its block by position rather than by prefix.
     const snipLabelRe = new RegExp(`^- ${SNIP_PATH.replace(/[./]/g, "\\$&")}#snippetProbeTarget@([0-9a-f]{12}) Z. (\\d+)-(\\d+)`);
@@ -5769,7 +5839,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const snipAtMain = snipMainText.split("\n").slice(snipFrom - 1, snipTo).join("\n");
     const snipOmitted = fLines.find((line) => line.startsWith("ausgelassen: ")) ?? "";
     check("(d3) the delivered brief carries the named symbol's complete pointer from the lane's commit, though main moved before the brief was cut",
-      snipMoved && fHead !== snipLaneSha && fReceipt?.head === fHead
+      snipMoved && fHead !== snipLaneSha && fReceipt?.head === snipLaneSha
       && fPrompt.includes(`\n\nQuellpaket — Symbolzeiger aus ${snipLaneSha.slice(0, 12)} `)
       && snipLabel !== null && snipLabel[1] === snipLaneSha.slice(0, 12)
       && snipFrom > 1 && snipTo > snipFrom
@@ -5778,7 +5848,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && snipAtLane.includes("lane-commit:")
       && snipOmitted.includes(`${SNIP_PATH}#snippetProbeAbsent (symbol-not-found)`)
       && snipOmitted.includes("snippet-probe/link.ts#snippetProbeTarget (not-a-regular-file)")
-      && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf("\n\nContextPlan v2 anchors"),
+      && fPrompt.indexOf("\n\nQuellpaket") < fPrompt.indexOf(NATIVE_RULES_MARK),
       JSON.stringify({ snipMoved, lane: snipLaneSha, head: fHead, receiptHead: fReceipt?.head ?? null,
         label: fLines[snipLabelAt] ?? null, omitted: snipOmitted, shown: snipShown?.slice(0, 160) ?? null }));
     // THE SOURCE PACKAGE ON THE LEDGER: the block's own bytes (it ends where the anchors begin in
@@ -5786,7 +5856,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // with the reason the block printed. Without the field this reads undefined and the row keeps
     // no trace of 56 % of a brief.
     const snipBlockBytes = fPrompt.includes("\n\nQuellpaket")
-      ? new TextEncoder().encode(fPrompt.slice(fPrompt.indexOf("\n\nQuellpaket"), fPrompt.indexOf("\n\nContextPlan v2 anchors"))).byteLength
+      ? new TextEncoder().encode(fPrompt.slice(fPrompt.indexOf("\n\nQuellpaket"), fPrompt.indexOf(NATIVE_RULES_MARK))).byteLength
       : -1;
     check("(d3) the receipt counts the source package it delivered: block bytes, pointers shown, and the named refs it omitted",
       !!fReceipt?.snippet && snipBlockBytes > 0 && fReceipt.snippet.bytes === snipBlockBytes
@@ -5799,8 +5869,8 @@ export async function run(ctx: Ctx): Promise<void> {
       !!fReceipt && fPrompt.includes("\n\nQuellpaket")
       && fReceipt.deliveredBytes === new TextEncoder().encode(fPrompt).byteLength,
       JSON.stringify({ deliveredBytes: fReceipt?.deliveredBytes ?? null, prompt: new TextEncoder().encode(fPrompt).byteLength }));
-    check("a dispatch INSIDE the Fleet checkout renders both public seeds and omits the unavailable private seed",
-      fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && fPrompt.includes("\n\nContextPlan v2 anchors")
+    check("a Fleet dispatch carries both public seeds in native rules and omits the unavailable private seed",
+      fd.ok && fdJ.ok === true && fPrompt.startsWith(fBrief) && nativeReceiptMatches(fPrompt, fReceipt, fAgents)
       && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.omitted.length === CONTEXT_PACKS.length - fReceipt.selected.length
       && fReceipt.omitted.filter((entry) => entry.id === "konzept-claude-fleet").length === 1
@@ -5809,19 +5879,19 @@ export async function run(ctx: Ctx): Promise<void> {
       && fReceipt.omitted.filter((entry) => entry.id !== "konzept-claude-fleet")
         .every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
-    check("the Fleet-frame receipt is one row, names this checkout at its integration head, and every anchor it names is in the delivered bytes",
+    check("the Fleet receipt names its startup commit and every selected anchor appears in native rules",
       !!fReceipt && (await contextReceipts()).total === fBefore.total + 1
-      && fReceipt.repo === realpathSync(ROOT) && fReceipt.head === fHead
+      && fReceipt.repo === realpathSync(ROOT) && fReceipt.head === snipLaneSha
       && fReceipt.selected.every((pack) => Array.isArray(pack.anchors)
-        ? pack.anchors.every((anchor) => fPrompt.includes(anchor.path) && fPrompt.includes(anchor.anchor))
-        : fPrompt.includes(pack.anchors.privateSourceId)),
+        ? pack.anchors.every((anchor) => fAgents.includes(anchor.path) && fAgents.includes(anchor.anchor))
+        : fAgents.includes(pack.anchors.privateSourceId)),
       `${fHead} ${JSON.stringify(fReceipt ?? null)}`);
     // WHY, not just WHERE — the whole point of v2. Each selected pack contributes EXACTLY ONE
     // purpose line to the delivered block: counting occurrences (rather than asserting presence)
     // is what catches a renderer that repeats useWhen once per source line, which is the shape a
     // two-source pack like verify-e2e would otherwise take.
-    const useWhenLines = fPrompt.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
-    check("the v2 block states each selected pack's purpose exactly once, whatever its source count",
+    const useWhenLines = fAgents.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
+    check("native rule pointers state each selected pack's purpose exactly once",
       !!fReceipt && fReceipt.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
         && useWhenLines.filter((line) => line === `- ${pack.id} [${pack.hardness}] — ${pack.useWhen}`).length === 1)
@@ -5829,10 +5899,10 @@ export async function run(ctx: Ctx): Promise<void> {
       `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
     const konzeptRow = fReceipt?.selected.find((pack) => pack.id === "konzept-claude-fleet");
     const konzeptOmissions = fReceipt?.omitted.filter((pack) => pack.id === "konzept-claude-fleet") ?? [];
-    const konzeptLine = fPrompt.split("\n").find((line) => line.startsWith("  ") && line.includes("k-claude-fleet")) ?? "";
+    const konzeptLine = fAgents.split("\n").find((line) => line.startsWith("  ") && line.includes("k-claude-fleet")) ?? "";
     check("the Fleet lane brief omits the unavailable private konzept anchor, and the receipt names source-unavailable and the unset root",
       konzeptRow === undefined && konzeptOmissions.length === 1 && konzeptLine === ""
-      && !fPrompt.includes("- konzept-claude-fleet")
+      && !fAgents.includes("- konzept-claude-fleet")
       && konzeptOmissions[0]?.why === "source-unavailable"
       && konzeptOmissions[0]?.reason === "FLEET_KONZEPT_ROOT is not set on this server",
       `${konzeptLine} ${JSON.stringify(konzeptOmissions)}`);
@@ -6181,7 +6251,7 @@ export async function run(ctx: Ctx): Promise<void> {
         { prompts: { ts?: number; slot?: number; source?: string; text?: string }[] }).prompts)
         .find((p) => p.source === "auto" && p.slot === slot && (p.ts ?? 0) >= since)?.text ?? "";
     const dispatchAndRead = async (taskId: string, briefText: string):
-      Promise<{ prompt: string; receipt?: ContextReceipt; slot: number | null }> => {
+      Promise<{ prompt: string; agents: string; receipt?: ContextReceipt; slot: number | null }> => {
       await post(`/api/tasks/${taskId}/brief`, { text: briefText });
       // the floor for the prompt read below. A slot NUMBER is recycled, so a probe that only
       // matched on slot+prefix could read the PREVIOUS occupant's prompt — and two probes here
@@ -6196,7 +6266,7 @@ export async function run(ctx: Ctx): Promise<void> {
         res.ok && typeof dispatchBody.slot === "number",
         `${taskId}: ${res.status} ${dispatchText.slice(0, 300)}`);
       const slot = dispatchBody.slot ?? null;
-      if (slot === null) return { prompt: "", slot };
+      if (slot === null) return { prompt: "", agents: "", slot };
       let receipt: ContextReceipt | undefined;
       let prompt = "";
       for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
@@ -6205,7 +6275,7 @@ export async function run(ctx: Ctx): Promise<void> {
         if (receipt && prompt) break;
         await Bun.sleep(500);
       }
-      return { prompt, receipt, slot };
+      return { prompt, agents: await nativeRules(prompt), receipt, slot };
     };
     const rootLanes: string[] = [];
     const closeLane = async (slot: number | null): Promise<void> => {
@@ -6259,7 +6329,7 @@ export async function run(ctx: Ctx): Promise<void> {
       card: { ziel: s7Goal, surface: { files: ["wave-brief.ts"], symbols: [] },
         done: longDone, verify: longVerify, verboten: ["kein Auto-Dispatch"] } });
     const longId = ((await longPost.json()) as { task?: { id?: string } }).task?.id ?? "";
-    const longSent = longId ? await dispatchAndRead(longId, longBrief) : { prompt: "", slot: null };
+    const longSent = longId ? await dispatchAndRead(longId, longBrief) : { prompt: "", agents: "", receipt: undefined, slot: null };
     await closeLane(longSent.slot);
     // Restoring laneProse's old deletion drops the raw 900/500-character lines; the card fallback
     // contains only the extractor's 400-character values, so both end markers disappear.
@@ -6283,7 +6353,7 @@ export async function run(ctx: Ctx): Promise<void> {
       classPost.ok && !!classId, `${classPost.status}: ${classPostText.slice(0, 300)}`);
     const classBefore = ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; spawn?: unknown; card?: { klasse?: string; valid?: boolean } }[] }).tasks.find((t) => t.id === classId);
-    const classSent = classId ? await dispatchAndRead(classId, classBrief) : { prompt: "", slot: null };
+    const classSent = classId ? await dispatchAndRead(classId, classBrief) : { prompt: "", agents: "", receipt: undefined, slot: null };
     await closeLane(classSent.slot);
     check("(s3-shadow) a class card resolves hand@1 and Opus 5.5 in the receipt while spawn stays absent",
       classPost.ok && classBefore?.card?.valid === true && classBefore.card.klasse === "hand"
@@ -6304,7 +6374,7 @@ export async function run(ctx: Ctx): Promise<void> {
     try { overrideId = (JSON.parse(overridePostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
     check("(s3-shadow) override fixture files a card against the tracked register",
       overridePost.ok && !!overrideId, `${overridePost.status}: ${overridePostText.slice(0, 300)}`);
-    const overrideSent = overrideId ? await dispatchAndRead(overrideId, overrideBrief) : { prompt: "", slot: null };
+    const overrideSent = overrideId ? await dispatchAndRead(overrideId, overrideBrief) : { prompt: "", agents: "", receipt: undefined, slot: null };
     await closeLane(overrideSent.slot);
     check("(s3-shadow) explicit ROLLE wins in the class receipt",
       overridePost.ok && overrideSent.receipt?.executionClass === "hand@1"
@@ -6320,8 +6390,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const ctl = await dispatchAndRead(ctlId, HUB_BRIEF);
     await closeLane(ctl.slot);
     check("(d5-live-control) a dispatch with no candidate note carries no block and receipts notes:[]",
-      LANE_ROLE_CARD.length > 0 && ctl.prompt.startsWith(`${HUB_BRIEF}${laneRolePrefix}\n\nContextPlan v2 anchors`)
-      && laneCardCount(ctl.prompt) === 1
+      LANE_ROLE_CARD.length > 0 && ctl.prompt.startsWith(`${HUB_BRIEF}${NATIVE_RULES_MARK}`)
+      && nativeReceiptMatches(ctl.prompt, ctl.receipt, ctl.agents)
       && !ctl.prompt.includes("Notizen auf deiner Flaeche")
       && Array.isArray(ctl.receipt?.notes) && ctl.receipt.notes.length === 0
       && !("executionClass" in (ctl.receipt ?? {})),
@@ -6358,7 +6428,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const hub = await dispatchAndRead(hubId, HUB_BRIEF);
     await closeLane(hub.slot);
     check("(d5-live-b) a hub-only overlap adds nothing — the delivered bytes equal the no-note control exactly",
-      hub.prompt === ctl.prompt && hub.prompt.length > 0
+      taskPayload(hub.prompt) === taskPayload(ctl.prompt) && hub.agents === ctl.agents && hub.prompt.length > 0
+      && nativeReceiptMatches(hub.prompt, hub.receipt, hub.agents)
       && Array.isArray(hub.receipt?.notes) && hub.receipt.notes.length === 0,
       `equal=${hub.prompt === ctl.prompt} notes=${JSON.stringify(hub.receipt?.notes ?? null)}`);
 
@@ -6366,9 +6437,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const RANK_BRIEF = "N1-RANK-FIXTURE — seven candidates, five lines";
     const rankId = await mkTask("Auftrag: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
     const rank = await dispatchAndRead(rankId, RANK_BRIEF);
-    const rankBlock = rank.prompt.slice(RANK_BRIEF.length + laneRolePrefix.length,
-      rank.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
-        ? rank.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+    const rankBlock = rank.prompt.slice(RANK_BRIEF.length,
+      rank.prompt.indexOf(NATIVE_RULES_MARK) >= 0
+        ? rank.prompt.indexOf(NATIVE_RULES_MARK) : undefined);
     const rankLines = rankBlock.split("\n").filter((l) => l.startsWith("- notiz "));
 
     // --- (n2-routes) THE TWO NOTE DOORS, ON THE LANE THAT WAS ACTUALLY SHOWN THE FIVE NOTES.
@@ -6493,7 +6564,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Mutation that breaks it: any comparator term (nA>nB count, nB>nC age, nD>nE cluster), the
     // cap (nF/nG would appear), or moving the block after the anchors (the slice would be empty).
     check("(d5-live-a) seven candidates deliver exactly five lines, ranked cluster → count → age",
-      laneCardCount(rank.prompt) === 1 && rankLines.length === 5
+      nativeReceiptMatches(rank.prompt, rank.receipt, rank.agents) && rankLines.length === 5
       && rankLines.map((l) => l.split(" ")[2]).join(",") === [nA, nB, nC, nD, nE].join(",")
       && rankBlock.startsWith("\n\nNotizen auf deiner Flaeche (5, Deckel 5):\n")
       && !rankBlock.includes(nF) && !rankBlock.includes(nG) && !rankBlock.includes(nHub),
@@ -6613,8 +6684,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${n3Task}/brief`, { text: N3BRIEF });
     const n3Disp = await dispatchAndRead(n3Task, N3BRIEF);
     const n3Block = n3Disp.prompt.slice(N3BRIEF.length,
-      n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
-        ? n3Disp.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+      n3Disp.prompt.indexOf(NATIVE_RULES_MARK) >= 0
+        ? n3Disp.prompt.indexOf(NATIVE_RULES_MARK) : undefined);
     check("(n3-c) the brief names intersecting pinned sources with their ROW and excludes a hub-only pin",
       n3Block.includes(`- notiz ${nF} · zu ${n3Task} · `)
       && n3Block.includes(`- notiz ${nG} · zu ${n3Task} · `)
@@ -6741,8 +6812,8 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const n3CapBlock = n3CapDisp.prompt.slice(CAPBRIEF.length,
-      n3CapDisp.prompt.indexOf("\n\nContextPlan v2 anchors") >= 0
-        ? n3CapDisp.prompt.indexOf("\n\nContextPlan v2 anchors") : undefined);
+      n3CapDisp.prompt.indexOf(NATIVE_RULES_MARK) >= 0
+        ? n3CapDisp.prompt.indexOf(NATIVE_RULES_MARK) : undefined);
     check("(n3-h) seven sources under a cap of five: five previewed, two NAMED, all seven readable in full",
       n3CapBlock.split("\n").filter((l) => l.startsWith("- notiz ")).length === 5
       && n3CapBlock.includes("+ 2 weitere angeheftete Quellen")
@@ -6878,7 +6949,7 @@ export async function run(ctx: Ctx): Promise<void> {
       owner: "owner", status: "active",
     }]), "declare context packs");
 
-    const dispatchInto = async (brief: string, text: string): Promise<{ prompt: string; receipt?: ContextReceipt; lane: string | null }> => {
+    const dispatchInto = async (brief: string, text: string): Promise<{ prompt: string; agents: string; receipt?: ContextReceipt; lane: string | null }> => {
       const task = (await (await post("/api/tasks", { text, queue: false, repo: mRepo })).json()) as { task: { id: string } };
       await post(`/api/tasks/${task.task.id}/brief`, { text: brief });
       const res = await post(`/api/tasks/${task.task.id}/dispatch`, {});
@@ -6896,17 +6967,18 @@ export async function run(ctx: Ctx): Promise<void> {
         ? ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
           .slots.find((slot) => slot.id === body.slot)?.cwd ?? null
         : null;
+      const agents = await nativeRules(prompt);
       if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
       await post(`/api/tasks/${task.task.id}/delete`, {});
-      return { prompt, receipt, lane };
+      return { prompt, agents, receipt, lane };
     };
 
     const okBrief = "DISPATCH-MANIFEST FIXTURE — a foreign tree that declares its own pack";
     const ok = await dispatchInto(okBrief, "dispatch-manifest-valid");
-    check("a dispatch into a tree with a tracked valid manifest delivers the repo-declared pack in the block and on the receipt",
-      validCommit === 0 && ok.prompt.startsWith(`${okBrief}${laneRolePrefix}\n\nContextPlan v2 anchors`)
-      && laneCardCount(ok.prompt) === 1
-      && ok.prompt.includes("dispatch-declared") && ok.prompt.includes("AGENTS.md | ## Repo contract")
+    check("a tracked valid manifest delivers its declared pack in native rules and on the receipt",
+      validCommit === 0 && ok.prompt.startsWith(`${okBrief}${NATIVE_RULES_MARK}`)
+      && nativeReceiptMatches(ok.prompt, ok.receipt, ok.agents)
+      && ok.agents.includes("dispatch-declared") && ok.agents.includes("AGENTS.md | ## Repo contract")
       && ok.receipt?.selected.length === 1 && ok.receipt.selected[0]?.id === "dispatch-declared"
       // the Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
       // never substituted, which is the whole shape of the merge at this seam
@@ -6920,12 +6992,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // Same seam-split as (d): the claim is about the ANCHOR REGION (a broken manifest must append
     // nothing there rather than drop the omission silently), so the lifecycle footer is measured
     // out of the way instead of being allowed to read as an appended block.
-    const badFooterAt = bad.prompt.indexOf(LANE_EXIT_MARK);
-    const badAnchorRegion = bad.prompt.slice(badBrief.length + laneRolePrefix.length,
-      badFooterAt >= 0 ? badFooterAt : bad.prompt.length);
+    const badAnchorRegion = taskPayload(bad.prompt).slice(badBrief.length);
     check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
-      brokenCommit === 0 && bad.prompt.startsWith(badBrief + laneRolePrefix)
-      && laneCardCount(bad.prompt) === 1 && badAnchorRegion === ""
+      brokenCommit === 0 && bad.prompt.startsWith(badBrief + NATIVE_RULES_MARK)
+      && nativeReceiptMatches(bad.prompt, bad.receipt, bad.agents) && badAnchorRegion === ""
       && !bad.prompt.includes("ContextPlan v2 anchors")
       && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === CONTEXT_PACKS.length + 1
       && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
@@ -7059,11 +7129,30 @@ export async function run(ctx: Ctx): Promise<void> {
           check(`(web) ${search ? "search" : "absent"}: dispatch starts the declared Codex lane`,
             dispatch.ok && started.ok === true && typeof row.slot === "number", `status=${dispatch.status}`);
           if (typeof row.slot !== "number") continue;
+          const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
+          const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
+          check(`(web) ${search ? "search" : "absent"}: dispatched lane has its exact cwd for session trust`,
+            typeof cwd === "string" && existsSync(cwd), `cwd=${cwd ?? "absent"}`);
+          if (!cwd || !existsSync(cwd)) continue;
+          const reviewer = 'approvals_reviewer="user"';
+          const workspace = 'sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}';
+          const mcp = 'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}';
+          const trust = `projects={${JSON.stringify(realpathSync(cwd))}={trust_level="trusted"}}`;
           const expected = (id?: string): string => `${id ? `codex resume '${id}'` : "codex"}`
-            + " --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
+            + " --no-daemon --sandbox danger-full-access --ask-for-approval never"
+            + ` -c check_for_update_on_startup=false -c ${q(reviewer)} -c ${q(workspace)}`
             + " --model 'gpt-6-astra' -c model_reasoning_effort='high'"
-            + (search ? " --search" : "")
-            + ' -c \'mcp_servers.playwright={command="npx",args=["@playwright/mcp@latest"],enabled=false}\'';
+            + (search ? " --search" : "") + ` -c ${q(mcp)} -c ${q(trust)}`;
+          const expectedArgv = (id?: string): string[] => [
+            ...(id ? ["resume", id] : []), "--no-daemon", "--sandbox", "danger-full-access",
+            "--ask-for-approval", "never", "-c", "check_for_update_on_startup=false", "-c", reviewer,
+            "-c", workspace, "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high",
+            ...(search ? ["--search"] : []), "-c", mcp, "-c", trust,
+          ];
+          const exactArgv = (args: string[], id?: string): boolean =>
+            JSON.stringify(args) === JSON.stringify(expectedArgv(id))
+              && !args.includes("--dangerously-bypass-approvals-and-sandbox")
+              && args.filter((arg) => arg === "--search").length === (search ? 1 : 0);
           const command = async (): Promise<string> => {
             const out = (await tmuxOut("display-message", "-p", "-t", `s${row.slot}`, "#{pane_start_command}")).out;
             const at = out.lastIndexOf("; codex ");
@@ -7076,10 +7165,27 @@ export async function run(ctx: Ctx): Promise<void> {
             const args = readFileSync(invoked, "utf8").trim().split("\n");
             check(`(web) ${search ? "search" : "absent"} ${phase}: generated command is byte-exact`,
               actual === wanted, JSON.stringify({ actual, wanted }));
-            check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives the exact search selection`,
-              args.filter((arg) => arg === "--search").length === (search ? 1 : 0)
-              && (id ? args[0] === "resume" && args[1] === id : args[0] === "--dangerously-bypass-approvals-and-sandbox"),
-              `searchFlags=${args.filter((arg) => arg === "--search").length}`);
+            check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives exact permissions, trust and search argv`,
+              exactArgv(args, id), JSON.stringify({ args, expected: expectedArgv(id) }));
+            const correct = expectedArgv(id);
+            const mutations: [string, string[]][] = [
+              ["bypass", [...correct, "--dangerously-bypass-approvals-and-sandbox"]],
+              ["daemon", correct.filter((arg) => arg !== "--no-daemon")],
+              ["sandbox", correct.map((arg) => arg === "danger-full-access" ? "workspace-write" : arg)],
+              ["approval", correct.map((arg) => arg === "never" ? "on-request" : arg)],
+              ["update", correct.map((arg) => arg === "check_for_update_on_startup=false" ? "check_for_update_on_startup=true" : arg)],
+              ["reviewer", correct.map((arg) => arg === reviewer ? 'approvals_reviewer="auto"' : arg)],
+              ["workspace", correct.map((arg) => arg === workspace ? 'sandbox_workspace_write={network_access=true}' : arg)],
+              ["model", correct.map((arg) => arg === "gpt-6-astra" ? "wrong-model" : arg)],
+              ["effort", correct.map((arg) => arg === "model_reasoning_effort=high" ? "model_reasoning_effort=low" : arg)],
+              ["MCP", correct.map((arg) => arg === mcp ? 'mcp_servers.playwright={enabled=true}' : arg)],
+              ["trust", correct.map((arg) => arg === trust ? 'projects={"/other"={trust_level="trusted"}}' : arg)],
+              ["search", search ? correct.filter((arg) => arg !== "--search") : [...correct, "--search"]],
+              ...(id ? [["resume ID", correct.map((arg) => arg === id ? "10000000-0000-4000-8000-000000000099" : arg)] as [string, string[]]] : []),
+            ];
+            const acceptedMutations = mutations.filter(([, changed]) => exactArgv(changed, id)).map(([name]) => name);
+            check(`(web) ${search ? "search" : "absent"} ${phase}: argv oracle rejects every changed contract field`,
+              acceptedMutations.length === 0, `accepted=${JSON.stringify(acceptedMutations)}`);
           };
           await observe();
           await until(async () => (await plogRead()).slice(promptsBefore).some((e) =>
@@ -7095,8 +7201,6 @@ export async function run(ctx: Ctx): Promise<void> {
             laneRestart.ok && laneRestarted.slot === row.slot && laneRestarted.delivered === true,
             `status=${laneRestart.status} error=${laneRestarted.error ?? "none"}`);
           if (laneRestart.ok) await observe(undefined, "lane restart");
-          const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
-          const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
           const id = crypto.randomUUID();
           writeFileSync(join(sessionsDir, `rollout-web-${id}.jsonl`), JSON.stringify({ type: "session_meta",
             payload: { id, cwd, timestamp: new Date().toISOString(), thread_source: "user" } }) + "\n");
@@ -7162,7 +7266,8 @@ export async function run(ctx: Ctx): Promise<void> {
       ? (await tmuxOut("display-message", "-p", "-t", `s${xdJ.slot}`, "#{pane_start_command}")).out : "";
     const xCmdFlat = xCmd.replaceAll("\\", "");
     check("a DISPATCHED lane spawns the named harness — codex runs full-access, update-disabled, with the given model",
-      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(xCmdFlat)
+      /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never /.test(xCmdFlat)
+      && !xCmdFlat.includes("bypass")
       && xCmdFlat.includes("-c check_for_update_on_startup=false")
       && xCmdFlat.includes("--model 'openai/gpt-5-codex'"),
       xCmd.slice(-220));
@@ -9385,7 +9490,7 @@ export async function run(ctx: Ctx): Promise<void> {
         w3CommentRes.ok && w3Prompt.includes("--- KOMMENTARE AUF DIESER ZEILE ---")
         && w3Prompt.includes(w3Comment)
         && w3Prompt.indexOf("wave part two:") < w3Prompt.indexOf(w3Comment)
-        && w3Prompt.indexOf(w3Comment) < w3Prompt.indexOf("--- HOW THIS LANE ENDS"),
+        && w3Prompt.indexOf(w3Comment) < w3Prompt.indexOf(NATIVE_RULES_MARK),
         `ok=${w3CommentRes.ok} commentAt=${w3Prompt.indexOf(w3Comment)} rowAt=${w3Prompt.indexOf("wave part two:")}`);
 
       // (5) THE SELF-SPLIT. Its refusals first, so the success below is measured against a door
@@ -13034,6 +13139,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // accessor cannot hide a second line before the count starts
     const kLogAt = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
 
+    // a Codex spawn stores the normalized profile it will actually start with (server.ts#taskSpawnFromBody):
+    // the card's role names none, so the row carries the explicit full-access default beside the triple
+    const CODEX_DEFAULT_PERMISSIONS = { sandbox: "danger-full-access", approval: "never" };
     // (kr1) SET time, at the create door: the card's role IS the row's spawn (a bare "claude" collapses
     // to null, the one representation of the default harness); the live row's codex triple likewise;
     // a body triple is the choice and the card fills nothing; a role the validators refuse (claude has
@@ -13045,7 +13153,7 @@ export async function run(ctx: Ctx): Promise<void> {
       kCard("code.txt", { harness: "claude", model: "claude-sonnet-5-5[1m]", effort: "ultra" }));
     check("(kr1) POST /api/tasks with an author card: Task.spawn carries the card's harness/model/effort at birth (the live codex triple too)",
       k1?.card?.valid === true && JSON.stringify(k1.spawn) === JSON.stringify({ harness: null, model: SONNET.model, effort: SONNET.effort })
-      && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify(LIVE),
+      && k1Live?.card?.valid === true && JSON.stringify(k1Live.spawn) === JSON.stringify({ ...LIVE, permissions: CODEX_DEFAULT_PERMISSIONS }),
       JSON.stringify({ k1: { card: k1?.card?.rolle, spawn: k1?.spawn }, live: { card: k1Live?.card?.rolle, spawn: k1Live?.spawn } }));
     check("(kr1) a body triple beside the card is the choice, and a role the validators refuse adopts nothing — the card stays valid, spawn absent",
       JSON.stringify(k1Body?.spawn) === JSON.stringify({ harness: null, model: "k-body-model", effort: null })
@@ -13566,7 +13674,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(kr6) POST /api/self/tasks with a valid card role: Task.spawn carries the card's harness/model/effort at birth",
       mRoleRes.status === 200 && mRoleRow?.card?.valid === true
       && JSON.stringify(mRoleRow.card.rolle) === JSON.stringify(mRole)
-      && JSON.stringify(mRoleRow.spawn) === JSON.stringify(mRole),
+      && JSON.stringify(mRoleRow.spawn) === JSON.stringify({ ...mRole, permissions: { sandbox: "danger-full-access", approval: "never" } }),
       `${mRoleRes.status} ${JSON.stringify({ card: mRoleRow?.card, spawn: mRoleRow?.spawn })}`);
     // A pending MAIN auftrag spends PROGRAM_MAX_PENDING (5): left standing, this row fills the cap
     // one filing early and (rc2b)'s MAIN filing is refused 409.

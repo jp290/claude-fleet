@@ -1,3 +1,4 @@
+import { PERF_ROTATE_BYTES, type PerfRecord } from "../src/protocol";
 // The three send paths (JSON answers, static assets, ws.send): gzip, the app.js cache-buster
 // chain, and the byte ledger behind GET /api/transport. See server/transport.ts.
 //
@@ -7,7 +8,7 @@
 // when it is done. That also makes the "a new bundle reaches the client" check a real swap
 // rather than a claim about a file nobody touched.
 import { writeFileSync, readFileSync, existsSync, unlinkSync, statSync } from "node:fs";
-import { BASE, IP, ROOT, TOKEN, check, get, wsUrl } from "./harness";
+import { BASE, IP, ROOT, TOKEN, REPO, check, get, post, wsUrl } from "./harness";
 
 interface Ledger {
   totals: { httpBytes: number; httpRequests: number; gzipSaved: number; wsBytes: number; wsMessages: number; wsConnections: number; wsOpen: number };
@@ -24,6 +25,7 @@ const scriptSrc = (html: string): string => /<script(?: type="module")? src="([^
 const bytes = async (r: Response): Promise<Buffer> => Buffer.from(new Uint8Array(await r.arrayBuffer()));
 
 export async function run(): Promise<void> {
+  await runPerfTransport();
   const appJs = `${ROOT}/public/app.js`;
   let original: Buffer | null | undefined;
   let originalError = "";
@@ -138,4 +140,95 @@ export async function run(): Promise<void> {
     if (original) writeFileSync(appJs, original);
     else if (existsSync(appJs)) unlinkSync(appJs);
   }
+}
+
+
+interface PerfReport {
+  n: number;
+  hidden: number;
+  records: (PerfRecord & { at: number })[];
+  groups: { j: string; dev: string; v: number; n: number; failed: number; hidden: number; p50: number | null; p75: number | null; p95: number | null }[];
+}
+export async function runPerfTransport(): Promise<void> {
+  const headers = { cookie: `fleet=${TOKEN}`, "content-type": "application/json" };
+  const perfPost = (body: unknown, h: HeadersInit = headers): Promise<Response> => fetch(BASE + "/api/perf", { method: "POST", headers: h, body: JSON.stringify(body) });
+  const perfRead = async (q = ""): Promise<PerfReport> => (await (await fetch(BASE + "/api/perf" + q, { headers })).json()) as PerfReport;
+  const row = (ms: number): PerfRecord => ({ j: "J1", ms, clientMs: ms, serverMs: 0, netMs: 0,
+    dev: "desktop", saver: false, v: 424242, slots: 16, ok: true });
+  const files = [`${ROOT}/perf.jsonl`, `${ROOT}/perf.jsonl.1`];
+  const before = files.map((f) => existsSync(f) ? readFileSync(f) : null);
+  try {
+    for (const f of files) if (existsSync(f)) unlinkSync(f);
+    const empty = await perfRead();
+    check("perf: an empty ledger has n=0 and no manufactured zero latency", empty.n === 0 && empty.groups.length === 0 && empty.records.length === 0, JSON.stringify(empty));
+    const noCookie = await perfPost([row(1)], { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" });
+    check("perf: Owner bearer without Owner cookie cannot submit telemetry", noCookie.status === 403, `${noCookie.status}`);
+    check("perf: Owner bearer without Owner cookie cannot read telemetry",
+      (await fetch(BASE + "/api/perf", { headers: { authorization: `Bearer ${TOKEN}` } })).status === 403);
+    check("perf: anonymous telemetry is refused", (await fetch(BASE + "/api/perf", { method: "POST", body: "[]" })).status === 401);
+    check("perf: a foreign Origin with an Owner cookie is refused",
+      !(await perfPost([row(1)], { ...headers, origin: "https://example.invalid" })).ok);
+    const bad = await perfPost([row(1), { ...row(2), token: "must-never-be-stored" }]);
+    check("perf: unknown content fields reject the whole batch", bad.status === 400 && (await perfRead()).n === 0, `${bad.status}`);
+    check("perf: failed rows with fabricated zero latency are refused", (await perfPost([{ ...row(0), ok: false }])).status === 400);
+    check("perf: non-enum journey values are refused", (await perfPost([{ ...row(1), j: ["J1"] }])).status === 400);
+    check("perf: a client-chosen timestamp is refused", (await perfPost([{ ...row(1), at: 1 }])).status === 400);
+    check("perf: a non-boolean background marker is refused", (await perfPost([{ ...row(1), attrs: { hidden: "yes" } }])).status === 400);
+    check("perf: free-form failure reasons are refused", (await perfPost([{ ...row(1), attrs: { reason: "/private/path" } }])).status === 400);
+    check("perf: more than fifty records are refused", (await perfPost(Array.from({ length: 51 }, () => row(1)))).status === 400);
+    check("perf: a body above the byte cap is refused", (await fetch(BASE + "/api/perf", { method: "POST", headers, body: " ".repeat(64001) })).status === 413);
+    const synthetic = Array.from({ length: 20 }, (_, i) => row(20 - i));
+    check("perf: an Owner cookie appends twenty records", (await perfPost(synthetic)).ok);
+    const report = await perfRead();
+    const g = report.groups[0];
+    check("perf: twenty values 1..20 have nearest-rank p50=10,p75=15,p95=19", report.n === 20 && g?.n === 20 && g.p50 === 10 && g.p75 === 15 && g.p95 === 19, JSON.stringify(g));
+    check("perf: ledger timestamps are server-owned", report.records.every((r) => Number.isFinite(r.at) && r.at > 0));
+    await perfPost([{ ...row(9999), attrs: { hidden: true } }]);
+    const background = await perfRead();
+    const bg = background.groups[0];
+    check("perf: background rows remain visible but cannot inflate default percentiles", background.n === 21 && background.hidden === 1 && background.records.at(-1)?.attrs?.hidden === true && bg?.hidden === 1 && bg.n === 20 && bg.p50 === 10 && bg.p75 === 15 && bg.p95 === 19, JSON.stringify(bg));
+    const fail: PerfRecord = { ...row(0), j: "J2", ok: false, ms: null, clientMs: null, serverMs: null, netMs: null };
+    await perfPost([fail, { ...row(31), dev: "mobile" }, { ...row(41), v: 424243 }]);
+    const grouped = await perfRead();
+    check("perf: journey, device and build each partition the distribution", grouped.groups.length === 4 && grouped.groups.find((x) => x.dev === "mobile")?.p75 === 31 && grouped.groups.find((x) => x.v === 424243)?.p75 === 41, JSON.stringify(grouped.groups));
+    const fg = grouped.groups.find((x) => x.j === "J2");
+    check("perf: failures count separately with null percentiles", fg?.n === 0 && fg.failed === 1 && fg.p50 === null && fg.p75 === null && fg.p95 === null, JSON.stringify(fg));
+    const future = await perfRead(`?since=${Date.now() + 60000}&until=${Date.now() + 120000}`);
+    check("perf: an empty time window has n=0", future.n === 0 && future.groups.length === 0 && future.records.length === 0);
+    check("perf: an invalid time window is refused", (await fetch(BASE + "/api/perf?since=2&until=1", { headers })).status === 400);
+    writeFileSync(files[0], "\n".repeat(PERF_ROTATE_BYTES));
+    await perfPost([row(91)]);
+    check("perf: rotation caps the active file and its one retained generation", statSync(files[0]).size < PERF_ROTATE_BYTES && statSync(files[1]).size === PERF_ROTATE_BYTES, JSON.stringify(files.map((f) => statSync(f).size)));
+    writeFileSync(files[0], "\n".repeat(PERF_ROTATE_BYTES));
+    await perfPost([row(92)]);
+    const rotated = await perfRead();
+    check("perf: the next rotation replaces the old generation without an archive", rotated.n === 1 && rotated.records[0]?.ms === 92 && !existsSync(`${files[0]}.archive`), JSON.stringify(rotated.groups));
+    check("perf: active ledger permissions are private", (statSync(files[0]).mode & 0o777) === 0o600);
+  } finally {
+    for (const [i, f] of files.entries()) { if (before[i]) writeFileSync(f, before[i]!); else if (existsSync(f)) unlinkSync(f); }
+  }
+  const sessions = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
+  const id = sessions.slots.find((s) => !s.cwd)?.id;
+  check("perf timing: an unused scratch slot is available", id !== undefined);
+  if (id === undefined) return;
+  await post(`/api/slots/${id}/open`, { cwd: REPO });
+  try {
+    const responses: [string, Response][] = [
+      ["sessions", await get("/api/sessions")],
+      ["transcript", await get(`/api/slots/${id}/transcript?after=0`)],
+      ["brief", await get(`/api/slots/${id}/brief`)],
+      ["send", await post("/send", { slot: id, text: "perf timing fixture", submit: true })],
+    ];
+    for (const [name, res] of responses) {
+      const timing = res.headers.get("server-timing") ?? "";
+      const pieces = timing.split(/,\s*/);
+      check(`perf timing: ${name} has only parseable, numeric timing metrics`, res.ok && pieces.every((p) => /^(total|queue|ready|paste|settle|arrival|submit|accept|cleanup);dur=\d+\.\d{3}$/.test(p)) && /^total;dur=/.test(timing), `${res.status} ${timing}`);
+      if (name === "send") {
+        const values = pieces.map((p) => Number(p.split("=")[1]));
+        check("perf timing: send phase sum does not exceed total", values.length >= 7 && values.slice(1).reduce((a, b) => a + b, 0) <= values[0], timing);
+      }
+    }
+    const refused = await post("/send", { slot: 99, text: "invalid target" });
+    check("perf timing: a refused send retains its error status and carries total", refused.status === 400 && /^total;dur=\d+\.\d{3}$/.test(refused.headers.get("server-timing") ?? ""));
+  } finally { await post(`/api/slots/${id}/kill`, {}); }
 }

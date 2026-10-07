@@ -2178,40 +2178,45 @@ for (const [k, pid] of [["", ${foreign.pid ?? 0}], ["group", ${process.pid}]]) c
   const bx = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "off" });
   check("§6e codex rejects an effort outside its fixed list (400, never config pass-through)",
     bx.status === 400, String(bx.status));
+  // The ONLY codex config this section reads is the instance's isolated CODEX_HOME (e2e-isolated.sh
+  // exports it before its tmux server starts) — never the owner's ~/.codex, which is not a fixture.
+  // Absent stays absent: the spawn may not create it either.
+  const codexHome = process.env.CODEX_HOME ?? "";
+  const instanceKey = `/${ROOT.split("/").filter(Boolean).pop() ?? ""}/`;
+  const codexHomeConfig = (): Buffer | null =>
+    existsSync(`${codexHome}/config.toml`) ? readFileSync(`${codexHome}/config.toml`) : null;
+  const codexConfigBefore = codexHome.includes(instanceKey) ? codexHomeConfig() : null;
   const ox = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "ultra" });
   check("§6e a slot opens on the codex harness with a declared effort (200)", ox.ok, String(ox.status));
   const xcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
-  // THE ROW THAT MATTERS MOST HERE flipped on 2026-08-12: full local access is the owner's
-  // decision for normal harnesses, so the spawn line must carry the bypass flag AND the persisted
-  // trust entry — without the latter, codex blocks on its own per-path trust prompt (measured:
-  // the flag does not cover it) and an unattended brief lands in a dead prompt.
+  // THE ROW THAT MATTERS MOST HERE. Full local access is still the owner's default for a codex slot
+  // that names no profile, but since 0bdc70bc it is spelled as the explicit profile (sandbox
+  // danger-full-access, approval never), never the bypass flag. Trust is a session-local
+  // whole-table override for the slot's realpath — without it codex blocks on its own per-path
+  // trust prompt (measured 2026-08-12) — and nothing on the line writes any config.toml.
   const xcmdFlat = xcmd.replaceAll("\\", "");
-  check("§6e the codex spawn line runs full access and writes the slot's trust entry first",
-    xcmdFlat.includes("codex --dangerously-bypass-approvals-and-sandbox")
-    && !xcmdFlat.includes("--sandbox workspace-write")
-    && xcmdFlat.includes('trust_level = "trusted"'), xcmdFlat.slice(-200));
-  // ...and the entry lands under THIS instance's CODEX_HOME (e2e-isolated.sh exports it before its
-  // tmux server starts), never in the owner's ~/.codex/config.toml — which had collected 8 502
-  // suite temp paths before (docs/messungen/2026-09-14-codex-lane-verdrahtung.md). Keyed on the
-  // instance directory's own name, so a /private/var vs /var spelling of the cwd cannot hide it.
-  const codexHome = process.env.CODEX_HOME ?? "";
-  const instanceKey = `/${ROOT.split("/").filter(Boolean).pop() ?? ""}/`;
-  const hasOwn = (p: string): boolean => {
-    try { return readFileSync(p, "utf8").split("\n").some((l) => l.startsWith("[projects.") && l.includes(instanceKey)); }
-    catch { return false; }
-  };
-  let scopedTrust = false;
-  for (let i = 0; i < 40 && codexHome.includes(instanceKey) && !(scopedTrust = hasOwn(`${codexHome}/config.toml`)); i++) await Bun.sleep(125);
-  const leakedTrust = hasOwn(`${process.env.HOME}/.codex/config.toml`);
-  check("§6e the codex trust entry lands in the instance's CODEX_HOME, and none of this instance's paths in ~/.codex/config.toml",
-    codexHome.includes(instanceKey) && scopedTrust && !leakedTrust,
-    `CODEX_HOME=${codexHome || "(unset)"} scoped=${scopedTrust} leaked=${leakedTrust} key=${instanceKey}`);
+  const xTrust = `-c 'projects={"${realpathSync(REPO)}"={trust_level="trusted"}}'`;
+  check("§6e the codex spawn line runs the explicit full-access default and carries the slot's session-local trust override",
+    xcmdFlat.includes("codex --no-daemon --sandbox danger-full-access --ask-for-approval never ")
+    && !xcmdFlat.includes("bypass") && !xcmdFlat.includes("--sandbox workspace-write")
+    && xcmdFlat.includes(xTrust) && !xcmdFlat.includes("config.toml") && !xcmdFlat.includes(">>"), xcmdFlat.slice(-260));
+  const codexConfigAfter = codexHome.includes(instanceKey) ? codexHomeConfig() : null;
+  check("§6e opening the codex slot leaves the instance's CODEX_HOME config byte-identical (absent stays absent)",
+    codexHome.includes(instanceKey) && (codexConfigBefore === null ? codexConfigAfter === null
+      : codexConfigAfter !== null && codexConfigBefore.equals(codexConfigAfter)),
+    `CODEX_HOME=${codexHome || "(unset)"} before=${codexConfigBefore === null ? "absent" : `${codexConfigBefore.length}B`} `
+      + `after=${codexConfigAfter === null ? "absent" : `${codexConfigAfter.length}B`} key=${instanceKey}`);
   // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
-  check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --dangerously/.test(xcmdFlat), xcmdFlat.slice(-160));
-  check("§6e the codex spawn line passes only the fixed update and effort config keys",
-    xcmd.includes(" -c check_for_update_on_startup=false")
-    && xcmd.includes(" -c model_reasoning_effort='ultra'")
-    && (xcmd.match(/(?:^|\s)-c(?:\s|$)/g) ?? []).length === 2, xcmd.slice(-220));
+  check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --no-daemon /.test(xcmdFlat), xcmdFlat.slice(-160));
+  // a closed, ordered key list: update check off, the reviewer pinned to the user, the workspace-write
+  // table pinned so ambient globals cannot widen it, the declared effort, the session-local trust
+  const xKeys = [...xcmdFlat.matchAll(/(?:^|\s)-c\s+'?([A-Za-z_.]+)=/g)].map((m) => m[1]);
+  check("§6e the codex spawn line passes exactly the fixed config keys, in order",
+    JSON.stringify(xKeys) === JSON.stringify(["check_for_update_on_startup", "approvals_reviewer",
+      "sandbox_workspace_write", "model_reasoning_effort", "projects"])
+    && xcmdFlat.includes(" -c check_for_update_on_startup=false") && xcmdFlat.includes(` -c 'approvals_reviewer="user"'`)
+    && xcmdFlat.includes(" -c 'sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}'")
+    && xcmdFlat.includes(" -c model_reasoning_effort='ultra'"), `${JSON.stringify(xKeys)} ${xcmdFlat.slice(-260)}`);
   // no session id anywhere: pinsSession is false, and a pinned-but-unpassed id is the shape that
   // makes a respawn silently resume nothing while the state file claims a conversation
   check("§6e the codex spawn line pins NO session id (`--last` cannot identify this pane)",

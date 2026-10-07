@@ -667,7 +667,7 @@ function runLinks(): void {
       && /setConn\(true\);\s*this\.hideDown\(\);/.test(client) && client.includes("this.reconnect(); };\n    this.downBar.append("),
     `sendRaw ${sendRaw.length} chars`);
   check("terminal: held keys are sent after the seed write of the current socket, and a slot change discards them",
-    /this\.term\.write\(new Uint8Array\(e\.data as ArrayBuffer\)[^\n]*\n\s*if \(action\.reset\) this\.flushHeld\(\);/.test(client)
+    /^([ \t]+)this\.term\.write\(new Uint8Array\(e\.data as ArrayBuffer\), pin \|\| action\.reset \? \(\) => \{\n(?:\1[ \t]+[^\n]*\n)*\1\} : undefined\);\s*if \(action\.reset\) this\.flushHeld\(\);/m.test(client.replace(/^[ \t]*\/\/.*$/gm, ""))
       && /this\.slot = slot;[\s\S]*?this\.held = "";[\s\S]*?this\.connect\(\)/.test(client)
       && (client.match(/this\.flushHeld\(\)/g) ?? []).length === 1,
     `flushHeld ${flushHeld.length} chars`);

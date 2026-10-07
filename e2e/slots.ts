@@ -15,14 +15,48 @@ import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
-import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
+import { normalizeLaneAnchor, validPerfRecord, PERF_BATCH_MAX, type PerfRecord, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
 import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 
+// A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
+// starts it from THIS runner, whose env carries FLEET_VERIFY_CMD (e2e-isolated.sh evals SRV_ENV into
+// it), and every later pane inherits that global — e2e/restart.ts's deliberately unconfigured server
+// included. Such a section snapshots these keys before it starts and restores them exactly, unset
+// included, when it ends.
+const TMUX_ENV_KEYS = ["FLEET_VERIFY_CMD", "FLEET_SEPARATE_LANE_SLOTS", "FLEET_MAX_SESSIONS"];
+const tmuxEnvSnapshot = (): Promise<(string | null)[]> => Promise.all(TMUX_ENV_KEYS.map(async (key) => {
+  const shown = await tmuxOut("show-environment", "-g", key);
+  return shown.code === 0 ? shown.out.slice(key.length + 1).trimEnd() : null;
+}));
+const restoreTmuxEnv = async (before: (string | null)[]): Promise<void> => {
+  for (const [i, key] of TMUX_ENV_KEYS.entries()) {
+    const value = before[i];
+    if (value === null) await tmuxOut("set-environment", "-gu", key);
+    else await tmuxOut("set-environment", "-g", key, value);
+  }
+};
+
 export async function run(): Promise<void> {
+  await runPerfMarks();
+  const permissionsEnvBefore = await tmuxEnvSnapshot();
+  let permissionsEnvDuring: (string | null)[] = [];
+  try {
+    await runCodexPermissions();
+  } finally {
+    permissionsEnvDuring = await tmuxEnvSnapshot();
+    await restoreTmuxEnv(permissionsEnvBefore);
+  }
+  const permissionsEnvAfter = await tmuxEnvSnapshot();
+  const setOrUnset = (values: (string | null)[]): (string | null)[] => values.map((v) => v === null ? null : "set");
+  // `during` is evidence, not the claim: it says whether this run's section did end the tmux server
+  check("the Codex permissions section leaves the tmux global env exactly as it found it (unset stays unset)",
+    JSON.stringify(permissionsEnvAfter) === JSON.stringify(permissionsEnvBefore),
+    JSON.stringify({ keys: TMUX_ENV_KEYS, before: setOrUnset(permissionsEnvBefore),
+      during: setOrUnset(permissionsEnvDuring), after: setOrUnset(permissionsEnvAfter) }));
   // --- slots ---
   const fixed = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
   check("the sidebar API exposes all 16 fixed slots in order",
@@ -30,11 +64,7 @@ export async function run(): Promise<void> {
     JSON.stringify(fixed.slots.map((s) => s.id)));
 
   const separateLanes: { slot: number; cwd: string }[] = [];
-  const tmuxEnvKeys = ["FLEET_VERIFY_CMD", "FLEET_SEPARATE_LANE_SLOTS", "FLEET_MAX_SESSIONS"];
-  const tmuxEnvBefore = await Promise.all(tmuxEnvKeys.map(async (key) => {
-    const shown = await tmuxOut("show-environment", "-g", key);
-    return shown.code === 0 ? shown.out.slice(key.length + 1).trimEnd() : null;
-  }));
+  const tmuxEnvBefore = await tmuxEnvSnapshot();
   const restartSeparate = (enabled: boolean, max: number): Promise<void> => restartSrv({
     FLEET_SEPARATE_LANE_SLOTS: enabled ? "1" : "0", FLEET_MAX_SESSIONS: String(max),
     FLEET_E2E_COMPOSER_MODE: process.env.FLEET_E2E_COMPOSER_MODE ?? "",
@@ -106,11 +136,7 @@ export async function run(): Promise<void> {
     }
     for (let id = 1; id <= 16; id++) await post(`/api/slots/${id}/kill`, {});
     await restartSeparate(false, 16);
-    for (const [i, key] of tmuxEnvKeys.entries()) {
-      const value = tmuxEnvBefore[i];
-      if (value === null) await tmuxOut("set-environment", "-gu", key);
-      else await tmuxOut("set-environment", "-g", key, value);
-    }
+    await restoreTmuxEnv(tmuxEnvBefore);
     const legacy = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
     check("switch off restores the exact 16-row slot board",
       legacy.slots.length === 16 && legacy.slots.every((s, i) => s.id === i + 1),
@@ -254,7 +280,7 @@ export async function run(): Promise<void> {
   // observed live 2026-07-25 on the steward slot. Slot 3 is free here (its open was rejected
   // above) and is killed again at the end of this block. ---
   const HOME = process.env.HOME ?? "";
-  type PersistedSlot3 = { label?: string | null; cwd?: string | null; openedAt?: number; selfToken?: string } | null | undefined;
+  type PersistedSlot3 = { label?: string | null; cwd?: string | null; openedAt?: number; selfToken?: string; permissions?: unknown } | null | undefined;
   const persistedSlot3 = async (): Promise<PersistedSlot3> => {
     try {
       return ((await Bun.file(`${ROOT}/fleet.json`).json()) as
@@ -361,6 +387,7 @@ export async function run(): Promise<void> {
     const openedB = await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "stream-race-B" });
     check("slot-stream fixture: B opens in the same reusable slot while A remains paused",
       openedB.ok, `${openedB.status} ${await openedB.text()}`);
+    const bOpened = await waitForPersistedSlot3((row) => row?.label === "stream-race-B");
     const bRaw = readdirSync(streamDir)
       .filter((name) => name.startsWith("s3-") && name.endsWith(".raw") && `${streamDir}/${name}` !== aFinal)
       .map((name) => `${streamDir}/${name}`);
@@ -372,8 +399,13 @@ export async function run(): Promise<void> {
     if (bFinal) appendFileSync(bFinal, `${beforeMarker}\n`);
     writeFileSync(releasePath, "release\n", { mode: 0o600 });
     const staleResult = await staleOpen;
+    // A's open RETURNS (does not hang) and says the truth about itself: its occupant was replaced
+    // while it spawned, so it answers 400 with the post-spawn identity refusal (server.ts#openSlot)
+    // instead of a 200 carrying B's row. B's identity, stream and label are the check below.
+    const staleBody = await staleResult.text();
     check("slot-stream fixture: releasing A lets its stale open return without hanging B",
-      staleResult.ok, `${staleResult.status} ${await staleResult.text()}`);
+      staleResult.status === 400 && staleBody === JSON.stringify({ error: "slot occupant changed during open spawn" }),
+      `${staleResult.status} ${staleBody}`);
     await tmuxOut("send-keys", "-t", "s3", `printf '${afterMarker}\\n'`, "Enter");
     let bBody = "";
     for (let i = 0; i < 60; i++) {
@@ -390,6 +422,12 @@ export async function run(): Promise<void> {
         && !bBody.includes("stream-race-A") && !readdirSync(streamDir).includes("s3.raw")
         && !readdirSync(streamDir).includes(aFinal.split("/").pop() ?? "") && leftovers.length === 0,
       JSON.stringify({ raceState, bBody: bBody.slice(-200), leftovers }));
+    check("the stale A refusal leaves B's occupant identity and its absent profile exactly as B opened them",
+      !!bOpened?.openedAt && raceState?.openedAt === bOpened.openedAt && raceState.selfToken === bOpened.selfToken
+        && (raceState.permissions ?? null) === null && (bOpened.permissions ?? null) === null,
+      JSON.stringify({ opened: bOpened && { openedAt: bOpened.openedAt, permissions: bOpened.permissions ?? null },
+        after: raceState && { openedAt: raceState.openedAt, permissions: raceState.permissions ?? null },
+        sameToken: raceState?.selfToken === bOpened?.selfToken }));
     await post("/api/slots/3/kill", {});
     const raceKillPersisted = await waitForPersistedSlot3((row) => row === null);
     check("slot-stream fixture: B kill is durable before the latch restart", raceKillPersisted === null,
@@ -707,6 +745,47 @@ export async function run(): Promise<void> {
   });
   check("a slot's own self-token cannot reach the model route (401 — it is not an owner credential)",
     /^[0-9a-f]{32}$/.test(selfTok2) && mdSelfWrite.status === 401, `tok=${selfTok2.length} ${mdSelfWrite.status}`);
+  for (const [path, method] of [["/api/subscription-usage", "GET"], ["/api/subscription-usage/refresh", "POST"]] as const) {
+    const unauthenticated = await fetch(BASE + path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    const self = await fetch(BASE + path, { method, headers: { "content-type": "application/json", "x-fleet-self-token": selfTok2 }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    const steward = await fetch(BASE + path, { method, headers: { "content-type": "application/json", authorization: `Bearer ${stewTok}` }, body: method === "POST" ? '{"target":"local"}' : undefined });
+    check(`subscription ${method}: owner credential required, self and steward cannot refresh/read`,
+      unauthenticated.status === 401 && self.status === 401 && steward.status === 403,
+      `anonymous=${unauthenticated.status} self=${self.status} steward=${steward.status}`);
+  }
+  for (const body of [null, [], {}, { target: "auto" }, { target: "local", path: "/private" }, { target: "provider", url: "https://example.com" }, { target: "local", shell: "echo unsafe" }]) {
+    const malformed = await post("/api/subscription-usage/refresh", body);
+    check("subscription refresh: closed body rejects malformed and arbitrary input", malformed.status === 400, String(malformed.status));
+  }
+  const malformedJson = await fetch(BASE + "/api/subscription-usage/refresh", { method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: '{"target":' });
+  check("subscription refresh: torn JSON body is 400", malformedJson.status === 400);
+  const queryInput = await get("/api/subscription-usage?path=private");
+  check("subscription read: no query-shaped source selection", queryInput.status === 400);
+  const providerRead = await post("/api/subscription-usage/refresh", { target: "provider" });
+  const providerUsage = await providerRead.json() as SubscriptionUsage;
+  check("subscription provider: unsupported account reader is explicit, no local substitution",
+    providerRead.status === 200 && providerUsage.codex.provider.status === "unsupported"
+    && providerUsage.codex.refresh.status === "unsupported" && providerUsage.codex.refresh.target === "provider"
+    && providerUsage.codex.refresh.reason === providerUsage.codex.provider.reason);
+  const beforeLocal = Date.now();
+  const localRead = await post("/api/subscription-usage/refresh", { target: "local" });
+  const localUsage = await localRead.json() as SubscriptionUsage;
+  const afterLocal = Date.now();
+  check("subscription local: server clock and target recorded independently from event time",
+    localRead.status === 200 && localUsage.generatedAt >= beforeLocal && localUsage.generatedAt <= afterLocal
+    && localUsage.codex.refresh.target === "local" && localUsage.codex.refresh.startedAt !== null
+    && localUsage.codex.refresh.startedAt >= beforeLocal && localUsage.codex.refresh.finishedAt !== null
+    && localUsage.codex.refresh.finishedAt <= afterLocal && localUsage.codex.source.accountBound === false);
+  const usage = await (await get("/api/subscription-usage")).json() as SubscriptionUsage;
+  check("subscription read: unknown owner decision is separate from register defaults and slot selection",
+    usage.schema === "fleet.subscription-usage/v1" && usage.model.ownerPreference.status === "unknown"
+    && usage.otherSubscriptions.status === "unknown" && usage.model.registerDefaults.worker.id === MODEL_DEFAULTS.worker.id
+    && usage.model.selected.some(row => row.slot === 2 && row.model === "claude-sonnet-5[1m]"
+      && row.source === "slot-state" && row.decisionSource === "unknown" && row.usedTurnModel === null));
+  const localWire = JSON.stringify({ codex: usage.codex, otherSubscriptions: usage.otherSubscriptions });
+  check("subscription wire: no paths, raw accounts, credentials or rollout contents",
+    !/accountId|email|access_token|session_meta|\/Users\/|\/tmp\/|prompt|message_content/.test(localWire));
   const mdAfter = await modelRowOf(2);
   check("...and none of the six rejections touched the stored pair",
     mdAfter?.model === "claude-sonnet-5[1m]" && mdAfter.effort === "high", JSON.stringify(mdAfter));
@@ -968,6 +1047,80 @@ export async function run(): Promise<void> {
       JSON.stringify({ status: blind.status, acceptance: blindBody.receipt?.acceptance,
         composerAfterEnter: blindResidue === null ? "absent" : `present, ${blindResidue.length} chars`,
         submittedTurn: blindTurns.includes("blackout-acceptance-probe") }));
+  }
+  // --- THE HELD BUNDLE, SHOWN (server.ts#heldDeliveriesView; docs/messungen/2026-10-03-terminal-vs-
+  // chat-warten.md, Szenario 4 and fix 3). The same stand-in pi in slot 3, a server with a 30 s bundle
+  // window and a due auto: the slot row of GET /api/sessions names what the bundle holds, and the
+  // owner's send takes it along („[Zitat entfernt]“) — afterwards the field is gone. The turns
+  // ledger is the witness that the auto was held, then typed exactly once. A report, never a gate:
+  // nothing here may change the bundle's timing.
+  {
+    type Held = { count: number; dueAt: number | null; paths: string[] };
+    type HeldAudit = { event?: string; slot?: number; path?: string; dueAt?: number; detail?: string };
+    const statePath = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsOf = (): string => { try { return readFileSync(`${statePath}.turns`, "utf8"); } catch { return ""; } };
+    const countIn = (hay: string, needle: string): number => hay.split(needle).length - 1;
+    const heldOf = async (): Promise<{ present: boolean; held?: Held }> => {
+      const row = ((await (await get("/api/sessions")).json()) as { slots: { id: number; heldDeliveries?: Held }[] })
+        .slots.find((x) => x.id === 3);
+      return { present: !!row && "heldDeliveries" in row, held: row?.heldDeliveries };
+    };
+    const auditTail = (from: number): HeldAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").slice(from)
+      .flatMap((l) => { try { return l ? [JSON.parse(l) as HeldAudit] : []; } catch { return []; } });
+    const autoText = `held-bundle-auto-${Date.now()}`, ownerText = `held-bundle-owner-${Date.now()}`;
+    // FLEET_HARNESS_AUTOMATION: slot 3 runs the pi stand-in, and an auto on a named harness is
+    // skipped (auto_skip, gate "harness") without it — the auto would never reach the bundle
+    await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "30", FLEET_HARNESS_AUTOMATION: "1" });
+    let agent: string | null | undefined;
+    for (let i = 0; i < 80 && agent !== "alive"; i++) {
+      agent = (await modelRowOf(3))?.agent;
+      if (agent !== "alive") await Bun.sleep(50);
+    }
+    const before = await heldOf();
+    // its own check: a fixture that could not be built must fail as ITSELF, never as the field
+    check("held bundle fixture: slot 3 runs the stand-in pi with a turns ledger, and nothing is held before the auto",
+      statePath !== "" && agent === "alive" && !before.present,
+      JSON.stringify({ statePath: statePath !== "", agent, before }));
+    const auditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
+    const scheduled = await post("/api/slots/3/autos", { text: autoText, everySec: 10, runs: 1, inSec: 1, idleSec: 0 });
+    let queued: HeldAudit | undefined, skipped: HeldAudit | undefined;
+    for (let i = 0; i < 200 && !queued && !skipped; i++) {
+      const tail = auditTail(auditFrom);
+      queued = tail.find((r) => r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
+      skipped = tail.find((r) => r.event === "auto_skip" && r.slot === 3);
+      if (!queued && !skipped) await Bun.sleep(100);
+    }
+    const held = await heldOf();
+    // BREAKS IF: the slot row omits a held bundle, counts it wrong, or names another deadline than
+    // the one the bundle was queued with (the delivery_bundle_queued audit row's own dueAt).
+    check("held bundle: a due auto in a 30 s bundle stands on the slot row as heldDeliveries {count:1, dueAt, paths:[auto]}",
+      scheduled.ok && !!queued && typeof queued.dueAt === "number" && held.held?.count === 1
+        && held.held.dueAt === queued.dueAt && queued.dueAt - Date.now() > 15_000
+        && JSON.stringify(held.held.paths) === JSON.stringify(["auto"]) && countIn(turnsOf(), autoText) === 0,
+      JSON.stringify({ scheduled: scheduled.status, queued: queued ?? null, skipped: skipped?.detail ?? null, held, now: Date.now() }));
+    const sent = await post("/send", { slot: 3, text: ownerText, submit: true });
+    let after = await heldOf();
+    for (let i = 0; i < 100 && after.present; i++) { await Bun.sleep(50); after = await heldOf(); }
+    for (let i = 0; i < 100 && countIn(turnsOf(), autoText) === 0; i++) await Bun.sleep(50);
+    const turns = turnsOf();
+    // BREAKS IF: the field outlives the flush, or the owner's send stops taking the held auto along
+    check("held bundle: the owner's send takes the held auto along, and afterwards the slot row carries no heldDeliveries",
+      sent.ok && !after.present && countIn(turns, autoText) === 1 && countIn(turns, ownerText) === 1,
+      JSON.stringify({ sent: sent.status, after, auto: countIn(turns, autoText), owner: countIn(turns, ownerText) }));
+    const oneShotText = `immediate-one-shot-${Date.now()}`;
+    const oneShotAuditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
+    const oneShotStartedAt = Date.now();
+    const oneShot = await post("/api/slots/3/autos", { text: oneShotText, everySec: null, inSec: 1, idleSec: 0 });
+    for (let i = 0; i < 200 && countIn(turnsOf(), oneShotText) === 0; i++) await Bun.sleep(100);
+    const oneShotHeld = await heldOf();
+    const oneShotQueued = auditTail(oneShotAuditFrom).filter((r) =>
+      r.event === "delivery_bundle_queued" && r.slot === 3 && r.path === "auto");
+    check("held bundle counterprobe: a one-shot arrives exactly once before the 30 s bundle deadline and is never held",
+      oneShot.ok && countIn(turnsOf(), oneShotText) === 1 && !oneShotHeld.present
+        && oneShotQueued.length === 0 && Date.now() - oneShotStartedAt < 30_000,
+      JSON.stringify({ scheduled: oneShot.status, turns: countIn(turnsOf(), oneShotText), held: oneShotHeld,
+        queued: oneShotQueued, elapsedMs: Date.now() - oneShotStartedAt }));
+    await restartSrv();
   }
   await post("/api/slots/3/kill", {});
   await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
@@ -1445,7 +1598,7 @@ export async function run(): Promise<void> {
       /\nfunction chatAnchor\([\s\S]*?\n\}/, /\nfunction restoreChatAnchor\([\s\S]*?\n\}/,
       /\nconst CHAT_SHELF_MAX = .*;/, /\nconst chatShelf = .*;/, /\nconst bodySource = .*;/]
       .map((re) => re.exec(cliSrc!)?.[0] ?? "").join("\n");
-    const lifted = ["assign", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
+    const lifted = ["assign", "visibleSwitch", "visibleExistingSwitch", "refreshEntities", "relinkChat", "resetChat", "shelveChat", "unshelveChat", "chatKids",
       "applyChatMemo", "scrollToEnd", "chatPosition", "chatScrolled", "followEnd", "settleEnd", "chatGrew", "paintEndBtn",
       "chatAdd"].map(methodSrc);
     let liftError = "";
@@ -1455,14 +1608,16 @@ export async function run(): Promise<void> {
       // module declares (ChatShelfRow, the group shapes) are declared loosely here
       const code = new Bun.Transpiler({ loader: "ts" }).transformSync(`type ChatShelfRow = any; type ChatToolGroup = any; type ChatNotifGroup = any;
 ${topSrc}
+const isMobile = () => false, dataSaver = false, bundleV = 0, PERF_BATCH_MAX = 50;
+${cliSrc!.slice(cliSrc!.indexOf("interface PerfSpan {"), cliSrc!.indexOf("\nsetInterval(flushPerf"))}
 class LiftedPane { ${lifted.join("\n")} }
 export default LiftedPane;`).replace(/export default LiftedPane;?/, "return LiftedPane;");
       // HTMLElement: chatAdd marks a delta's node .fresh only on an element — a fake kid counts as one
       PaneClass = new Function("fleet", "fxTree", "loadTree", "loadEntityDetails", "renderSlots", "saveView", "requestAnimationFrame",
-        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", "chatStill", "HTMLElement", code)(
+        "setTimeout", "clearTimeout", "CACHE_TTL_MS", "el", "mdInto", "decorateCode", "entityKnown", "chatStill", "HTMLElement", "document", code)(
         [], new Map(), async () => {}, async () => {}, () => {}, () => {}, (cb: () => void) => cb(),
         () => 0, () => {}, 300_000, () => ({ querySelectorAll: () => [] }), () => {}, () => {}, () => false, { matches: false },
-        { [Symbol.hasInstance]: (x: unknown) => !!(x as { classList?: unknown })?.classList });
+        { [Symbol.hasInstance]: (x: unknown) => !!(x as { classList?: unknown })?.classList }, { hidden: false });
     } catch (e) { liftError = e instanceof Error ? e.message : String(e); }
     // one transcript per slot: 30 messages of mixed height; the stand-in poll loads them from 0 or
     // brings `grow` new ones as a delta
@@ -1866,10 +2021,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("pending bubble: an empty or whitespace-only text never settles anything",
     !pendingSettledBy("", "") && !pendingSettledBy("  \n", " "));
   check("client: doSend shows the pending bubble BEFORE it awaits POST /send, and drops it when delivery fails",
-    /const pending = pane\.addPending\(outgoing\);\s*try \{\s*if \(!await deliver\(slot, outgoing\)\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
+    /const pending = pane\.addPending\(outgoing\);[\s\S]*const delivery = deliver\(slot, outgoing\);\s*sendOk = await delivery;[\s\S]*if \(!sendOk\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
-    /import \{ pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
+    // (the Esc marker joined the import, card "wartet in der Chat-Ansicht")
+    /import \{ isInterruptMark, pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
     // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
     // retires one bubble per owner part, 2026-10-03)
     && /if \(!parts\) \{ this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\); continue; \}/.test(cliSrc)
@@ -1879,7 +2035,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: the delivery head rides in the meta row beside the bubble, and the bubble and its copy carry the body only",
     /const \{ header, body \} = splitDeliveryHeader\(raw\);/.test(cliSrc)
     && /if \(header \|\| mark\) \{[\s\S]*?el\("span", "mhead", mark \?\? header \?\? ""\)[\s\S]*?meta\.appendChild\(head\)/.test(cliSrc)
-    && /mdInto\(body, text,/.test(cliSrc),
+    // the bubble renders the body — since 7d9c5394 minus the drop lines it shows as pictures
+    // (splitDropImages, own prompt only) — and the copy still hands out the whole body text
+    && /const drops = e\.role === "user" \? splitDropImages\(text\) : \{ rest: text, images: \[\] \};/.test(cliSrc)
+    && /mdInto\(body, drops\.rest,/.test(cliSrc)
+    && /copyButton\("copy", "copy this message as Markdown", \(\) => text\)/.test(cliSrc),
     "Pane.appendEntry / addMessage in src/client.ts");
 
   // --- A BUNDLED OWNER SEND (owner 2026-10-03: „[Zitat entfernt]“
@@ -1948,10 +2108,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
     && indexSrc.includes("Geplante Prompts für diese Session"),
     "tray titles in client.ts + public/index.html");
-  // --- THE FOUNDING WINDOW (Neuentwurf 2026-10-01 with the owner, src/founding.ts): one column of
-  // four fields — Ort, Rolle, Profil, Kontext — instead of tabs over a place list; the role applies
-  // a preset over the founding plan, stored fleet-wide; ⎇+ opens the same window. These checks hold
-  // the source to what the rendered window cannot show; runFoundingFocusDom below drives it.
+  // --- THE FOUNDING WINDOW (src/founding.ts): since 2026-10-04 the profile window of design v3 — the
+  // place, then ① Profil wählen, ② Anpassen (settings + the pack tree Gruppe → Pack → Teil) beside ③
+  // Was der Agent liest (the session file of GET /api/founding-plan); the role applies a preset over
+  // the founding plan, stored fleet-wide; ⎇+ opens the same window. These checks hold the source to
+  // what the rendered window cannot show; runFoundingFocusDom below drives it.
   let foundSrc = "", clientOnly = "", planSrc = "", prefsOnly = "", boardOnly = "", foundSrcError = "";
   try {
     foundSrc = readFileSync(`${sourceRoot}/src/founding.ts`, "utf8");
@@ -1965,17 +2126,17 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // whole-line comments stripped first: a claim about CODE must not be satisfied by prose
   const strip = (src: string) => src.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   const foundCode = strip(foundSrc), clientCode = strip(clientOnly), boardCode = strip(boardOnly);
-  check("founding window: a free place, ⎇+ and the board's New lane all open src/founding.ts — no one-click lane is left",
+  check("founding window: a free place, ⎇+ and the board's + Lane all open src/founding.ts — no one-click lane is left",
     // a regex, not the import as a string: e2e-stage.sh scans this file's TEXT for relative from-clauses
     /import \{ openLaneFounding, openPicker \} from "\.\/founding";/.test(clientCode)
     && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientCode)
     && /q\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(repo, parent\); \};/.test(clientCode)
-    && /nb\.onclick = \(\) => \{ openLaneFounding\(wts\.repo\); \};/.test(boardCode)
+    && /add\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(R\.repo\); \};/.test(boardCode)
     && foundCode.includes("export function openPicker(slotId: number)") && foundCode.includes("export function openLaneFounding(repo: string, parent?: LaneAnchor)")
     // should-reject: the one-click lane without packs, and the rejected 2026-09-22 surface
     && !/function newLane\(|newLane\(/.test(boardCode + clientCode)
     && !/function openPicker\(|\bgfStep\b|\bGF_ROLES\b|\brenderGf\b|"gf-(orch|plain|steward|wt-new|wt-old)"/.test(clientCode),
-    "client.ts emptyRow + quickLaneChip, board.ts New lane, founding.ts exports");
+    "client.ts emptyRow + quickLaneChip, board.ts + Lane in the Arbeitsorte, founding.ts exports");
   const foundCss = (() => {
     const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
     const end = indexSrc.indexOf("/* end of THE FOUNDING WINDOW */", at);
@@ -1983,7 +2144,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   })();
   check("founding window: ONE shell window of one size, no list — a state change never moves it",
     foundCode.includes("openShell({") && foundCode.includes('id: "found",')
-    && foundCss.includes("#shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));")
+    && foundCss.includes("#shell-found .shellwin { position: relative; width: min(1180px, calc(100vw - 32px)); height: min(920px, calc(100vh - 32px));")
     && foundCss.includes("#shell-found .shelllist, #shell-found .shelltools { display: none; }")
     && !/\.style\.(width|height|left|top)\s*=/.test(foundCode) && !foundCode.includes("gfwin"),
     foundCss.slice(0, 120) || "no #shell-found block in public/index.html");
@@ -1991,10 +2152,24 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     foundCss.length > 0 && !/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(foundCss.replace(/#shell-found/g, ""))
     && !/\.gf[a-z]/.test(indexSrc),
     (foundCss.replace(/#shell-found/g, "").match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? []).join(" ") || "clean");
-  check("founding window: four fields in reading order — Ort, Rolle, Profil, Kontext",
-    /fieldHead\(sec, "Ort",[\s\S]*fieldHead\(sec, "Rolle",[\s\S]*fieldHead\(sec, "Profil",[\s\S]*fieldHead\(sec, "Kontext",/.test(foundCode)
-    && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);"),
-    "renderPlace/renderRole/renderProfile/renderContext in src/founding.ts");
+  check("founding window: the place, then three numbered steps — ① Profil wählen, ② Anpassen beside ③ Was der Agent liest",
+    foundCode.includes('fieldHead(sec, "Ort",') && foundCode.includes('stepHead(1, "Profil wählen",')
+    && foundCode.includes('stepHead(2, "Anpassen",') && foundCode.includes('stepHead(3, "Was der Agent liest",')
+    && foundCode.includes("shell.detail.replaceChildren(fPlace, fRole, cols);") && foundCode.includes("cols.append(left, fFile);")
+    && /#shell-found \.fdcols \{ display: grid; grid-template-columns: 430px minmax\(0, 1fr\); \}/.test(foundCss)
+    && foundCss.includes("#shell-found .fdcols { grid-template-columns: minmax(0, 1fr); }"),
+    "open/renderPlace/renderRole/renderFile in src/founding.ts");
+  // the v3 rules the rendered window cannot prove alone: packs are a TREE (owner 01.10.: no card
+  // list), the file's order is fixed, technical lines live only behind hover/focus (without hover:
+  // hidden too, one unsaved switch shows them in the flow), and the word "Heftchen" is not in the view (card 569f8bb5)
+  check("founding window: packs are one tree Gruppe → Pack → Teil with a switch per level, the file keeps its fixed order, details on hover or behind the touch switch, no Heftchen",
+    foundCode.includes('const tree = el("div", "fdtree");') && /function packNode\(/.test(foundCode) && /function partNode\(/.test(foundCode)
+    && ["data-group", "data-pack", "data-part"].every((k) => foundCode.includes(`sw.dataset.${k.slice(5)} =`))
+    && /k: "rolle"[\s\S]*k: "auftrag"[\s\S]*k: "anl"[\s\S]*k: "wis"[\s\S]*k: "abruf"[\s\S]*k: "ende"/.test(foundCode)
+    && /@media \(hover: hover\) \{[\s\S]*#shell-found \.fdrow:hover > \.fdhv/.test(foundCss) && /@media \(hover: none\) \{\s*#shell-found \.fdhv \{ display: none; \}\s*#shell-found\.fdtech \.fdhv \{ display: block; \}/.test(foundCss)
+    && foundCode.includes('s.shell.root.classList.toggle("fdtech", s.tech);') && !/fleet\.\w*tech/i.test(foundCode)
+    && !/heftchen/i.test(foundCode) && !foundCode.includes("fdcx"),
+    "renderPacks/renderFile in src/founding.ts + .fdhv in public/index.html");
   check("founding window: the four roles are radio cards with one sentence each, two across on a phone",
     ['"Leer"', '"Lane"', '"Orchestratorin"', '"MAIN"'].every((w) => foundCode.includes(`name: ${w}`))
     && foundCode.includes('b.setAttribute("role", "radio");') && foundCode.includes('b.setAttribute("aria-checked", String(on));')
@@ -2044,7 +2219,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   const omitSay = /const OMIT_SAY[\s\S]*?\n};/.exec(foundCode)?.[0] ?? "";
   check("founding window: every omission reason of the plan is said in owner words, the raw one only behind intern:",
     reasons.length >= 8 && reasons.every((r) => omitSay.includes(`"${r}":`))
-    && (foundCode.match(/row\.title = `intern: \$\{o\.reason\}`;/g) ?? []).length === 2,
+    && (foundCode.match(/ · intern: \$\{o\.reason\}`/g) ?? []).length === 1,
     `reasons=${reasons.join(",")} missing=${reasons.filter((r) => !omitSay.includes(`"${r}":`)).join(",")}`);
   const bodySrc = foundCode.slice(foundCode.indexOf("function foundingBody()"), foundCode.indexOf("function blocker()"));
   check("founding window — should-reject: with no pack on the body carries no packs — one packs key, only in the conditional, and client.ts builds no second spawn body",
@@ -2052,7 +2227,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && !/function spawnBody\(/.test(clientCode),
     "foundingBody in src/founding.ts; no spawnBody in src/client.ts");
   check("founding window: the plan is read for (place, harness, mode), latest-wins, and re-read when any of the three moves",
-    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`")
+    foundCode.includes("`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}&role=${role}`")
     && foundCode.includes("if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return; // latest-wins")
     && foundCode.includes("if (s.planFor !== planKey()) void loadPlan();"),
     "loadPlan/renderContext in src/founding.ts");
@@ -2135,8 +2310,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 
   // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
   // sends, the transcript brings back the bundle the server writes, and the "wartet" bubble must go
-  // "durch" while every Fleet part stands as a quiet line. A browser that cannot run is the PROBE
-  // line — red, never a skip.
+  // "durch" while every Fleet part stands as a quiet line; then the session's queue ("wartet" from the
+  // queue, through a reload, adopted, "durch") and the Esc line. A browser that cannot run is the
+  // PROBE line — red, never a skip.
   try {
     for (const result of await runBundleChatDom(sourceRoot)) {
       const facts = JSON.stringify(result.facts).slice(0, 1500);
@@ -2145,6 +2321,49 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     }
   } catch (error) {
     check("bundle chat DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE HELD BUNDLE IN THE CHAT VIEW (Szenario 4 of the 2026-10-03 measurement), same rig: the slot
+  // row carries heldDeliveries, the view ends in one quiet line and the composer says "Senden nimmt sie
+  // mit"; without the field both are gone. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runHeldDeliveriesDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`held bundle DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("held bundle DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE TERMINAL SEARCH'S PLACE (card 746e381b), same rig: ⌘/Ctrl+F at 1200 opens the bar top right,
+  // off the corner row and the first 60 columns; at 390 a visible control of the pane opens it by
+  // taps alone. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runTermFindDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`terminal search DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("terminal search DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE ARBEITSORTE IN INFO (cards e66909b1 + abe74821, docs/design/rechter-tab-notiz.md §3b–§3d),
+  // same rig: the Ranke at the top of Info in the draft's nine states, at 1200 and 390 — rows, beads,
+  // squares, the stand of every carrier, the jump, the worktree field — each a DOM claim, and every
+  // click judged by the request it sent. A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runArbeitsorteDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("arbeitsorte DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
       error instanceof Error ? error.message : String(error));
   }
 
@@ -2164,6 +2383,23 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     }
   } catch (error) {
     check("phone island DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+
+  // THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+  // gebaut", docs/design/insel-glas-notiz.md), same fixture: the pill, the material and its opaque
+  // face, the spring, the icon buttons, the empty place Arbeitsort, the swipes and every way out, the
+  // keys, still — in Chromium and, where a Playwright WebKit resolves, in WebKit. WebKit not resolving
+  // is printed, not counted (the repo carries no Playwright); an engine that resolves and cannot run
+  // is its PROBE line — red, never a skip.
+  try {
+    for (const result of await runGlassIslandDom(sourceRoot)) {
+      if (result.notRun) { console.log(`NOTE  glass island DOM ${result.engine} not run here: ${result.notRun}`); continue; }
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`glass island DOM ${claim}`, ok, claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : "");
+    }
+  } catch (error) {
+    check("glass island DOM — PROBE: the engines run the real client bundle behind the fixture origin", false,
       error instanceof Error ? error.message : String(error));
   }
 
@@ -2197,11 +2433,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // `gsec` (the guest-console panel) left with the console itself, 2026-08-08, and `dsec1` (the
   // helper register) left for the meter's device count, 2026-09-19 — both absences are asserted,
   // so a re-added machine-level section has to state where it goes.
-  check("client: the board renders in the owner's order — alarms → head → setup → rights → changes → checks → history → lanes → tools",
-    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("idsec")
+  // the lane list (`lsec`) left for the Arbeitsorte (`ranke`) above the head, card e66909b1 —
+  // asserted as an absence too, so a second lane list beside the Ranke has to say where it goes
+  check("client: the board renders in the owner's order — alarms → Arbeitsorte → head → setup → rights → changes → checks → history → tools",
+    at("dsec0") >= 0 && at("dsec0") < at("esec0") && at("esec0") < at("ranke") && at("ranke") < at("idsec")
     && at("idsec") < at("su") && at("su") < at("rsec") && at("rsec") < at("work")
-    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("lsec") && at("lsec") < at("tsec")
-    && at("gsec") === -1 && at("dsec1") === -1,
+    && at("work") < at("ck") && at("ck") < at("csec") && at("csec") < at("tsec")
+    && at("lsec") === -1 && at("gsec") === -1 && at("dsec1") === -1,
     JSON.stringify(pushOrder));
   // SETUP is what the session is MADE of — owner, 2026-09-19: „[Zitat entfernt]“
   // . The two fields he
@@ -2294,7 +2532,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: every board section head names its reach — session · repo · machine · fleet",
     !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
     && /boardHead\("Changes", "session"\)/.test(boardSrc) && /boardHead\("Checks", "session"\)/.test(boardSrc)
-    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\(`Lanes in \$\{baseName\(wts\.repo\)\}`, "repo"\)/.test(boardSrc)
+    && /boardHead\("History", "repo"\)/.test(boardSrc) && /boardHead\("Arbeitsorte", "fleet"\)/.test(cliSrc)
     && /boardHead\("helper devices", "fleet"\)/.test(cliSrc)
     && /sec\.appendChild\(scopeTag\("machine"\)\);/.test(cliSrc),
     "the section heads in renderBoard");
@@ -2406,11 +2644,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // A FAILED READ IS NOT AN EMPTY SESSION — each of the four reads behind this column says so in
   // its own words, where its content would have been.
   check("client: a failed brief, lane map, transcript or error read is NAMED, not rendered as empty",
-    /The session brief could not be read/.test(boardSrc)
+    /Der Session-Brief konnte nicht gelesen werden/.test(boardSrc)
     && /The lane map could not be read/.test(boardSrc)
     && /The transcript could not be read/.test(boardSrc)
     && /The error list could not be read/.test(cliSrc)
-    && /This is a failed read, not an empty session/.test(boardSrc),
+    && /Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung/.test(boardSrc),
     "the failure sections in renderBoard");
   check("client: the errors fetch can no longer end in an unhandled rejection",
     /void api\("\/api\/errors"\)[\s\S]{0,700}?\}\)\.catch\(\(\) => \{/.test(cliSrc),
@@ -2957,12 +3195,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       /\.slot \.n, \.slot \.laneref \{[^}]*font-family: var\(--chat-mono\)/.test(indexSrc)
         && /\.slot \.n, \.slot \.laneref \{[^}]*color: hsl\(var\(--proj-h/.test(indexSrc),
       "the address chip rule in public/index.html");
+    const slotRowCode = (/^function slotRow\([\s\S]*?^\}/m.exec(rowSrc)?.[0] ?? "").replace(/^[ \t]*\/\/.*$/gm, "");
     check("lane row internals keep slot ids, routes, tooltips and rename persistence",
       rowSrc.includes("row.dataset.slot = String(s.id)")
         // the tooltip still answers "which slot is this lane in", which is what the routes below
         // are addressed by — it sits beside the cwd now that the band name carries the identity
         && rowSrc.includes("slot ${s.id} · ${s.cwd}")
-        && rowSrc.includes("showSlot(s.id)")
+        && /\bshowSlot\(s\.id\s*[,)]/.test(slotRowCode)
         && rowSrc.includes("`/api/slots/${s.id}/kill`")
         && cliSrc.includes("`/api/slots/${s.id}/rename`")
         && rowSrc.includes("startRename(row, s)"),
@@ -3747,6 +3986,77 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("conversation export rejects an inactive slot", (await get("/api/slots/4/export/conversation?probe=1")).status === 400);
   }
 
+  // --- THE SESSION'S OWN QUEUE AND THE ESC MARKER (card "wartet in der Chat-Ansicht",
+  // docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t, §6, fixes 1 and 4). Before, only the
+  // sending tab knew "wartet": terminal typing, a MAIN's /send and every reload had no state, and
+  // "[Request interrupted by user]" stood as the owner's bubble. The fixture plants the line shapes
+  // Claude Code 2.1.288 writes (measured transcript d8113bca, a cross-session remove from 47390407):
+  // A queued and taken at the turn's end (dequeue, then its ordinary user line), B typed during the
+  // next turn, C absorbed mid-turn (remove + queued_command), a task notification (plumbing, never
+  // "wartet"), a cross-session message whose remove lost its hop-chain attribute (must take X, not the
+  // older B), both Esc markers. Then one more real user turn: the queue was drained before it started.
+  // Last, D and E queued and ONE dequeue: FIFO takes D.
+  // BREAKS IF: the reader stops pairing, pairs LIFO, lets a changed remove take the wrong entry,
+  // shows plumbing as waiting, or makes an Esc marker the owner's turn again.
+  {
+    const qCwd = `${tmpdir()}/fleet-e2e-queue-${process.pid}`;
+    const qProj = `${process.env.HOME}/.claude/projects/${qCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(qCwd, { recursive: true });
+    mkdirSync(qProj, { recursive: true });
+    const at = (sec: number) => `2026-10-03T07:05:${String(sec).padStart(2, "0")}.000Z`;
+    const turn = (type: "user" | "assistant", content: unknown, sec: number) =>
+      `${JSON.stringify({ type, cwd: qCwd, isSidechain: false, timestamp: at(sec), message: { role: type, content } })}\n`;
+    const op = (operation: string, sec: number, extra: Record<string, unknown> = {}) =>
+      `${JSON.stringify({ type: "queue-operation", operation, timestamp: at(sec), sessionId: "q-fixture", ...extra })}\n`;
+    const qa = "[fleet-zustellung · Owner-Credential · Slot 1] queued A from the composer";
+    const qb = "typed in the terminal while the turn ran: B";
+    const qc = "absorbed mid-turn: C";
+    const tn = "<task-notification>\n<task-id>bq1</task-id>\n<status>completed</status>\n</task-notification>";
+    const xBody = "\nOrchestratorin an Slot 1: X\n</cross-session-message>";
+    writeFileSync(`${qProj}/queue.jsonl`,
+      turn("user", "queue fixture: the first turn", 1) + turn("assistant", [{ type: "text", text: "a turn runs" }], 2)
+      + op("enqueue", 3, { content: qa }) + op("dequeue", 4)
+      + turn("user", qa, 4) + op("enqueue", 5, { content: qb })
+      + op("enqueue", 6, { content: qc }) + op("remove", 7, { content: qc, reason: "absorbed_mid_turn" })
+      + `${JSON.stringify({ type: "attachment", cwd: qCwd, isSidechain: false, timestamp: at(7),
+        attachment: { type: "queued_command", prompt: qc, commandMode: "prompt", source_uuid: "q-c" } })}\n`
+      + op("enqueue", 8, { content: tn })
+      + op("enqueue", 9, { content: `<cross-session-message from="uds:/tmp/x.sock" hop-chain="abc123" from-name="o">${xBody}` })
+      + op("remove", 10, { content: `<cross-session-message from="uds:/tmp/x.sock" from-name="o">${xBody}`, reason: "absorbed_mid_turn" })
+      + turn("user", [{ type: "text", text: "[Request interrupted by user]" }], 11)
+      + turn("user", [{ type: "text", text: "[Request interrupted by user for tool use]" }], 12));
+    const qFree = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const qOpened = qFree !== undefined && (await post(`/api/slots/${qFree}/open`, { cwd: qCwd })).ok;
+    check("session queue fixture: a free slot opens on a throwaway cwd with a planted transcript", qOpened, `slot=${qFree}`);
+    if (qOpened) {
+      type QRead = { entries: { role: string; meta?: boolean; blocks: { text: string }[] }[]; total: number; queued?: { text: string; at: string | null }[] };
+      const q1 = (await (await get(`/api/slots/${qFree}/transcript`)).json()) as QRead;
+      check("session queue: the open entries ride with the transcript — only B, stamped when it was queued",
+        JSON.stringify(q1.queued) === JSON.stringify([{ text: qb, at: at(5) }]), JSON.stringify(q1.queued));
+      const stops = q1.entries.filter((e) => e.blocks.some((b) => b.text.startsWith("[Request interrupted by user")));
+      check("session queue: both Esc markers come as meta:true (a folded note), and neither is a user bubble any more",
+        stops.length === 2 && stops.every((e) => e.meta === true)
+          && !q1.entries.some((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text.startsWith("[Request interrupted"))),
+        JSON.stringify(stops));
+      check("session queue: the dequeued A and the absorbed C stand as the owner's turns, each once",
+        q1.entries.filter((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text === qa)).length === 1
+          && q1.entries.filter((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text === qc)).length === 1,
+        JSON.stringify(q1.entries.map((e) => [e.role, e.meta ?? false, e.blocks[0]?.text.slice(0, 40)])));
+      appendFileSync(`${qProj}/queue.jsonl`, turn("user", "the next real turn", 20));
+      const q2 = (await (await get(`/api/slots/${qFree}/transcript?after=${q1.total}`)).json()) as QRead;
+      check("session queue: a later real user turn means the queue was drained — nothing waits, the field still answers",
+        Array.isArray(q2.queued) && q2.queued.length === 0, JSON.stringify(q2.queued));
+      appendFileSync(`${qProj}/queue.jsonl`, op("enqueue", 21, { content: "D" }) + op("enqueue", 22, { content: "E" }) + op("dequeue", 23));
+      const q3 = (await (await get(`/api/slots/${qFree}/transcript?after=${q2.total}`)).json()) as QRead;
+      check("session queue: a dequeue takes the OLDEST open entry (D), E still waits",
+        JSON.stringify(q3.queued?.map((q) => q.text)) === JSON.stringify(["E"]), JSON.stringify(q3.queued));
+      await post(`/api/slots/${qFree}/kill`, {});
+    }
+    rmSync(qProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
+    rmSync(qCwd, { recursive: true, force: true });
+  }
+
   // --- a session in a folder WITHOUT git is an ordinary session, not a failed read ---
   // The defect (owner screenshot 2026-09-30, a fresh session opened on a plain folder): the brief
   // route answered every failed git read with „[Zitat entfernt]“, and the board drew that as a
@@ -3883,7 +4193,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("client: the board tells a plain folder (git:none) from a failed brief read",
       /const noGit = !briefRes\.ok && briefBody\?\.git === "none" \? briefBody : null;/.test(boardSrc)
         && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)
-        && /No git in this folder — changes, history and lanes apply only to a repository\./.test(boardSrc),
+        && /Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository\./.test(boardSrc),
       "renderBoard's brief read");
     // the window's own read (src/client.ts#loadGit) makes the SAME kind decision the board makes:
     // a plain folder is drawn calmly — the board noGit card's very sentence — while gone,
@@ -3899,7 +4209,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         if (!ternary) return null;
         try { return new Function(`return (e) => (${ternary});`)() as (e: { error?: string; git?: string } | null) => string; } catch { return null; }
       })();
-      const calm = "No git in this folder — changes, history and lanes apply only to a repository.";
+      const calm = "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.";
       check("client: the file window's loadGit draws git:none with the board's calm sentence and keeps the server's named error for every other kind",
         pick !== null
           && pick({ git: "none", error: "not a git repository" }) === calm
@@ -4969,11 +5279,28 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         if (window.fixturePlan === 'network') throw new Error('fixture network refusal');
         if (window.fixturePlan === '500') return Response.json({ error: 'fixture plan refusal' }, { status: 500 });
         if (window.fixturePlan === 'malformed') return Response.json({ selected: [{ id: 'broken' }], omitted: [] });
-        if (window.fixturePlan === 'many') return Response.json({ selected: Array.from({ length: 14 }, (_, i) => pack('fixture-pack-number-' + i, 'repo-manifest', 'Pack ' + i)), omitted: [] });
-        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: [
-          pack('fixture-alpha', 'repo-manifest', 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.'),
-          pack('fixture-beta', 'fleet-seed', 'Zweites Test-Pack')
-        ].filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha'), omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }] });
+        // THE PROFILE WINDOW'S PLAN (card 569f8bb5): packs in groups with their parts, and the session
+        // file rendered for the query's packs= and parts= the way session-agents.ts does — a pack's hint
+        // line stands while any of its parts is not whole in the file; every size is the text's own
+        const groups = ['grundlagen', 'pruefen-landen', 'sessions-fuehren', 'vor-arbeiten'];
+        const part = (packId, n, sorte, bytes, ort) => ({ id: packId + '.' + n, packId, path: 'AGENTS.md', anchor: '## ' + packId + ' ' + n, sorte, ort, sha256: 'f'.repeat(64), bytes, content: null, refusal: null });
+        const all = window.fixturePlan === 'many'
+          ? Array.from({ length: 14 }, (_, i) => ({ ...pack('fixture-pack-number-' + i, 'repo-manifest', 'Pack ' + i), group: groups[i % 4], parts: [part('fixture-pack-number-' + i, 'one', 'wissen', 100 + i, 'ausleihe')] }))
+          : [{ ...pack('fixture-alpha', 'repo-manifest', 'Erstes Test-Pack: voller Zweck mit langem Text, der mobil lesbar umbricht.'), group: 'grundlagen', parts: [part('fixture-alpha', 'one', 'anleitung', 300, 'box')] },
+             { ...pack('fixture-beta', 'fleet-seed', 'Zweites Test-Pack'), group: 'pruefen-landen', parts: [part('fixture-beta', 'one', 'wissen', 500, 'ausleihe'), part('fixture-beta', 'two', 'anleitung', 200, 'ausleihe')] }]
+            .filter(p => window.fixturePlan !== 'missing-id' || p.id !== 'fixture-alpha');
+        const q = new URLSearchParams(path.slice(path.indexOf('?') + 1));
+        const packsQ = q.get('packs'), partsQ = q.get('parts');
+        window.fixtureFileQueries.push({ role: q.get('role'), packs: packsQ, parts: partsQ });
+        const on = packsQ === null ? all : all.filter(p => packsQ.split(',').includes(p.id));
+        const parts = on.flatMap(p => p.parts.map(x => { const ort = partsQ === null ? x.ort : partsQ.split(',').includes(x.id) ? 'box' : 'ausleihe'; return { ...x, ort, content: ort === 'box' ? 'x'.repeat(x.bytes) : null }; }));
+        const role = { id: 'role', packId: null, path: 'server.ts', anchor: 'LANE_ROLE_CARD', sorte: 'anleitung', ort: 'box', sha256: 'a'.repeat(64), bytes: 100, content: 'r'.repeat(100), refusal: null };
+        const whole = sorte => parts.filter(x => x.ort === 'box' && x.sorte === sorte).map(x => x.content).join('\\n');
+        const hints = on.filter(p => p.parts.some(x => parts.find(y => y.id === x.id).ort !== 'box')).map(p => '- ' + p.id + ' — ' + p.useWhen + '\\n  AGENTS.md | ## ' + p.id).join('\\n');
+        const text = '## Rolle\\n\\n' + role.content + '\\n\\n## Anleitung\\n\\n' + whole('anleitung') + '\\n\\n## Wissen\\n\\n' + whole('wissen') + '\\n\\n## Packs auf Abruf\\n\\n' + hints + '\\n';
+        const sessionAgents = { text, bytes: new TextEncoder().encode(text).length, parts: [role, ...parts] };
+        if (window.fixturePlan === 'many') return Response.json({ selected: all, omitted: [], sessionAgents });
+        return Response.json({ head: 'fixture-head', branch: 'fixture', selected: all, omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported' }], sessionAgents });
       }
       throw new Error('unexpected fixture API: ' + path);
     };
@@ -5019,7 +5346,9 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: stub, loader: 'ts' }));
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0; window.fixtureStored = null;
-window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false;
+window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureFileQueries = [];
+// the tree opens its groups for a reader that asks which packs are on; a repaint only when one was closed
+window.fixtureUnfold = () => { if (!S) return; const before = S.open.size; for (const g of [...GROUPS, UNGROUPED]) S.open.add(g.id); if (S.open.size !== before) renderPacks(); };
 window.fixtureReload = () => { void loadPlan(); renderAll(); };
 window.fixturePlanReady = () => !!S?.plan && S.planFor === planKey();
 window.fixtureClose = closeFounding; window.fixtureSettled = () => !S?.busy;
@@ -5036,7 +5365,11 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
   writeFileSync(resolve(scratch, 'fixture.html'), `<!doctype html><meta charset="utf-8"><style>${css}</style><div id="slots"></div><button id="fixture-free">Freier Slot 2</button><script>window.fetch = () => { throw new Error('network forbidden in DOM fixture'); };</script><script>${await built.outputs[0].text()}</script>`);
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which('chromium') ?? Bun.which('chromium-browser') ?? Bun.which('google-chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error('DOM probe needs Chromium (FLEET_E2E_BROWSER): ' + executable); }
-  const browser = Bun.spawn([executable, '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
+  // the DEVICE is the fixture's, not the host's: a headless Chromium on the Linux helper reports
+  // (hover: none), the window then rightly puts every detail in the flow, and the desktop claims below
+  // measured a phone (preview a5394323f32d). Pinned: a mouse — hover, fine pointer (blink HoverType 2,
+  // PointerType 4) — so both hosts measure the same device; the PROBE line below checks it took.
+  const browser = Bun.spawn([executable, '--headless', '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -5087,24 +5420,53 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
     };
     const results: FoundingFocusDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]]) {
+      // the DEVICE per case: the desktop is a mouse (the launch pins it), the phone a touch screen —
+      // touch emulation turns the media to (hover: none) and (pointer: coarse); the probe still presses
+      // with mouse events, which a touch-emulated page receives as before
+      const touch = width < 700;
       await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await send('Emulation.setTouchEmulationEnabled', touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
       await send('Page.navigate', { url: `file://${scratch}/fixture.html` });
       await evaluate(`new Promise((resolve, reject) => { const until = Date.now() + 5000; const ready = () => { if (window.fixtureReady) return resolve(true); if (Date.now() > until) return reject(new Error('fixture not ready')); requestAnimationFrame(ready); }; ready(); })`);
       const g: Record<string, boolean> = {}, detail: Record<string, string> = {};
+      g[`PROBE: the fixture browser is the case's device — ${touch ? 'touch: (hover: none) and (pointer: coarse)' : 'mouse: (hover: hover) and (pointer: fine)'}, whatever the host`] = await evaluate<boolean>(touch
+        ? `matchMedia('(hover: none)').matches && matchMedia('(pointer: coarse)').matches`
+        : `matchMedia('(hover: hover)').matches && matchMedia('(pointer: fine)').matches`);
       const shot = async (stage: string) => {
         if (!artifacts) return;
         const png = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(resolve(artifacts, `${width}-${stage}.png`), Buffer.from(String(png.data), 'base64'));
       };
+      // the press goes to a POINT, and the window repaints on its own late answers (the tiles on every
+      // size and preset read): on a loaded host a repaint between press and release replaced the node,
+      // Chromium then fires no click, and the next step met an unopened popover (preview 2629f6335079).
+      // So the point is taken once the target holds still under it, and a press whose click never
+      // reached the target is pressed again — a disabled target fires none by design. A target that
+      // never settles, or three presses that never arrive, is the probe's own red line.
       const click = async (selector: string) => {
-        const point = await evaluate<{ x: number; y: number }>(`(() => {
-          const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('missing click target: ' + ${JSON.stringify(selector)});
-          e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`);
-        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
-        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
-        await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+        for (let attempt = 1; ; attempt++) {
+          const point = await evaluate<{ x: number; y: number; disabled: boolean }>(`new Promise((resolve, reject) => {
+            const sel = ${JSON.stringify(selector)}, until = Date.now() + 5000; let last = '';
+            if (!window.fixtureClickHook) { window.fixtureClickHook = true;
+              document.addEventListener('click', (ev) => { if (window.fixtureClickWant && ev.target instanceof Element && ev.target.closest(window.fixtureClickWant)) window.fixtureClickHit = true; }, true); }
+            const step = () => {
+              const e = document.querySelector(sel);
+              if (!e) { if (Date.now() > until) return reject(new Error('missing click target: ' + sel)); return requestAnimationFrame(step); }
+              e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
+              const p = { x: r.x + r.width / 2, y: r.y + r.height / 2 }, at = p.x + ',' + p.y, hit = document.elementFromPoint(p.x, p.y);
+              if (at === last && hit && e.contains(hit)) { window.fixtureClickWant = sel; window.fixtureClickHit = false; return resolve({ ...p, disabled: !!e.closest(':disabled') }); }
+              if (Date.now() > until) return reject(new Error('click target never held still under the pointer: ' + sel + ' — the point hits ' + (hit ? hit.tagName.toLowerCase() + '.' + String(hit.className) : 'nothing')));
+              last = at; requestAnimationFrame(step);
+            };
+            step();
+          })`);
+          const at = { x: point.x, y: point.y };
+          await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'left', clickCount: 1 });
+          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'left', clickCount: 1 });
+          await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+          if (point.disabled || await evaluate<boolean>(`window.fixtureClickHit === true`)) return;
+          if (attempt === 3) throw new Error(`click never reached its target in 3 presses: ${selector}`);
+        }
       };
       const wait = async (condition: string) => evaluate(`new Promise((resolve, reject) => {
         const until = Date.now() + 5000; const ready = () => { if (${condition}) return resolve(true);
@@ -5114,12 +5476,14 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const starts = `window.fixtureRequests.filter(r => r.url !== '/api/role-presets')`;
       const onlyStart = (url: string, body: unknown) => evaluate<boolean>(`(() => { const s = ${starts}; return s.length === 1 && s[0].url === ${JSON.stringify(url)} && JSON.stringify(s[0].body) === ${JSON.stringify(JSON.stringify(body))}; })()`);
       const said = async (name: string) => { detail[name] = await evaluate<string>(`JSON.stringify(window.fixtureRequests)`); };
-      const chips = `Array.from(document.querySelectorAll('.fdctx .fdcx:not(.out):not(.fix)'), e => e.querySelector('.fdcxid').textContent)`;
-      const ready = `document.querySelector('.fdadd') !== null && !document.querySelector('.fdctx .fdnote')`;
+      // the packs that are ON, read off the tree's switches (its groups unfolded first)
+      const chips = `(window.fixtureUnfold(), Array.from(document.querySelectorAll('.fdsw[data-pack]')).filter(e => e.getAttribute('aria-checked') === 'true').map(e => e.dataset.pack))`;
+      const ready = `document.querySelector('.fdtree') !== null`;
+      const fileSays = `(document.querySelector('#shell-found .fdtot')?.textContent || '')`;
       const reset = async (extra = '') => {
         await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r()); window.fixtureStored = null;
           window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false; window.fixtureResetSlots();
-          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; ${extra}`);
+          window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureFileQueries = []; ${extra}`);
         await evaluate(`window.fixtureOpen()`);
         await wait(ready);
       };
@@ -5137,7 +5501,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Leer — should-reject a packs key: the start body is exactly { cwd }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' }); await said('leer');
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`); await shot('lane');
-      g['Lane applies its preset: every pack the plan offers lights up, the delta line names them'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha","fixture-beta"]' && document.querySelector('.fddelta').textContent.includes('+fixture-alpha') && document.querySelectorAll('.fdcx.in').length === 2`);
+      await wait(`!!document.querySelector('.fdsec2[data-sec="abruf"]')`);
+      g['Lane applies its preset: every pack the plan offers is on, and the file names their hints'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha","fixture-beta"]' && document.querySelector('.fdsec2[data-sec="abruf"] .fdsay2').textContent.includes('1 Hinweis')`);
       g['Lane and worktree are one choice: the place moved to Neuer Worktree and says why'] = await evaluate<boolean>(`document.querySelector('.fdsegb.on').textContent === 'Neuer Worktree' && document.querySelector('.fdcouple').textContent.includes('Neuer Worktree')`);
       await evaluate(`const i = document.querySelector('.fdname input'); i.value = 'Mein Test'; i.dispatchEvent(new Event('input'))`);
       const stamp = await evaluate<string>(`(() => { const d = new Date(); return String(d.getFullYear() % 100).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); })()`);
@@ -5145,7 +5510,6 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Lane start: one open-worktree with the preset packs and the typed name as its branch'] = await onlyStart('/api/slots/2/open-worktree', { repo: '/fixture/repo', branch: `fleet/${stamp}-mein-test`, packs: ['fixture-alpha', 'fixture-beta'] }); await said('lane');
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost'); await wait(`document.querySelector('.fdlist') !== null`);
       await evaluate(`document.querySelector('.fdsw[data-pack="fixture-alpha"]').focus()`);
       const toggles: string[] = [];
       for (let i = 0; i < 2; i++) {
@@ -5156,8 +5520,9 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['toggles'] = JSON.stringify(toggles);
       await shot('list');
 
-      await reset(); await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('orch');
-      g['Orchestratorin shows her role card and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdcx.srv')?.textContent === 'Rollenkarte' && ${chips}.length === 0`);
+      await reset(); await click('.fdsw2b[data-agent="other"]'); await role('orch');
+      await wait(`!!document.querySelector('.fdsec2[data-sec="rolle"]')`);
+      g['Orchestratorin shows her role text in the file and carries no packs'] = await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="rolle"] .fdskb').textContent === '0,1 KB' && ${chips}.length === 0 && window.fixtureFileQueries.some(f => f.role === 'orchestratorin')`);
       await click('.fdgo');
       g['Orchestratorin with another agent: exactly { cwd, label, harness }'] = await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo', label: 'Orchestrator', harness: 'other' }); await said('orch');
 
@@ -5168,10 +5533,10 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const toMain = async () => { await click('.fdrole[data-role="main"]'); await wait(`${progs}.length > 0 || !!document.querySelector('.fdprogs .fdnote.warn')`); };
       // the MAIN default of the model register, as the window must send it (read, never copied)
       const mainDefault = { harness: MODEL_DEFAULTS.main.harness, model: MODEL_DEFAULTS.main.id, ...(MODEL_DEFAULTS.main.effort ? { effort: MODEL_DEFAULTS.main.effort } : {}) };
-      const profileShown = `({ agent: document.querySelector('.fdpf[data-pop="harness"] .fdpfv')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
-        effort: document.querySelector('.fdpf[data-pop="effort"] .fdpfv')?.textContent })`;
+      const profileShown = `({ agent: document.querySelector('.fdsw2b[data-agent].on')?.textContent, model: document.querySelector('.fdpf[data-pop="model"]')?.title,
+        effort: document.querySelector('.fdsw2b[data-effort].on')?.textContent })`;
       await reset();
-      g['the role cards are exactly Leer, Lane, Orchestratorin, MAIN — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'leer,lane,orch,main' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
+      g['the profile tiles are exactly Lane, MAIN, Orchestratorin, Leer (design v3 order) — no Steward is offered'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdrole'), b => b.dataset.role).join() === 'lane,main,orch,leer' && !document.querySelector('#shell-found').textContent.includes('Steward')`);
       await toMain(); await shot('main');
       const listed = await evaluate<string>(`JSON.stringify(${progs}.map(b => [b.dataset.program, b.disabled, b.querySelector('.fdpst').textContent]))`);
       detail['main-programs'] = listed;
@@ -5193,8 +5558,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-profile'] = JSON.stringify(shownMain);
       g['MAIN fills Agent, Modell and Effort with the MAIN default of the model register — Effort is no longer "Adapter wählt"'] =
         shownMain.agent === MODEL_DEFAULTS.main.harness && shownMain.model.startsWith(`Modell ${MODEL_DEFAULTS.main.id}`)
-        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter wählt');
-      g['MAIN carries no packs: the Programs founding brief stands in Kontext, no pack button'] = await evaluate<boolean>(`${chips}.length === 0 && !document.querySelector('.fdadd') && document.querySelector('.fdcx.srv')?.textContent === 'Gründungsbrief des Programs'`);
+        && shownMain.model.includes('MAIN-Standard') && shownMain.effort === (MODEL_DEFAULTS.main.effort ?? 'Adapter');
+      g['MAIN carries no packs: her plan stands read-only in the tree, every pack switch is fixed, her file renders the whole plan'] = await evaluate<boolean>(`(window.fixtureUnfold(), true) && document.querySelectorAll('.fdsw[data-pack]').length === 2 && Array.from(document.querySelectorAll('.fdsw[data-pack], .fdsw[data-group]')).every(e => e.disabled) && (() => { const asked = window.fixtureFileQueries.filter(f => f.role === 'main' && f.parts !== null); return asked.length > 0 && asked.every(f => f.packs === null); })()`);
       g['should-reject: MAIN without a chosen Program blocks the button and Enter'] = await blocked();
       await click('.fdprog[data-program="p-live"]');
       g['should-reject: a Program with a living MAIN cannot be chosen'] = await evaluate<boolean>(`document.querySelector('.fdprog[data-program="p-live"]').getAttribute('aria-checked') === 'false' && document.querySelector('.fdgo').disabled`);
@@ -5219,8 +5584,8 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-left'] = JSON.stringify(backToLeer);
       await click('.fdgo');
       g['leaving MAIN takes its default back: Leer shows Adapter wählt again and starts with exactly { cwd }'] =
-        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter wählt' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
-      await reset(); await toMain(); await click('[data-pop="effort"]'); await click('.fdpop .fdprow:nth-child(2)'); await role('leer');
+        backToLeer.agent === 'codex' && backToLeer.effort === 'Adapter' && await onlyStart('/api/slots/2/open', { cwd: '/fixture/repo' });
+      await reset(); await toMain(); await click('.fdsw2b[data-effort="low"]'); await role('leer');
       g['should-reject: an Effort the owner picked under MAIN is not taken back when the role changes'] =
         (await evaluate<{ effort: string }>(profileShown)).effort === 'low';
       await reset(`window.fixtureNoMainAgent = true;`); await toMain(); await click('.fdprog[data-program="p-free"]');
@@ -5228,7 +5593,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       detail['main-no-agent'] = JSON.stringify(noAgent);
       await click('.fdgo'); await wait(`window.fixtureSettled()`);
       g['should-reject: without the MAIN agent of the register on this machine nothing is filled — the door gets exactly { cwd }'] =
-        noAgent.agent === 'codex' && noAgent.effort === 'Adapter wählt'
+        noAgent.agent === 'codex' && noAgent.effort === 'Adapter'
         && await onlyStart('/api/programs/p-free/bootstrap-main', { cwd: '/fixture/repo' });
       await reset(`window.fixturePrograms = 'fail';`); await toMain();
       g['should-reject: Programs that cannot be read offer nothing, say so and block the start'] = await evaluate<boolean>(`${progs}.length === 0 && document.querySelector('.fdprogs .fdnote.warn').textContent.includes('Antwort 500')`) && await blocked();
@@ -5239,7 +5604,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
 
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
       await evaluate(`window.fixtureHold = true;`);
-      await click('[data-pop="harness"]'); await click('.fdpop .fdprow:nth-child(2)');
+      await click('.fdsw2b[data-agent="other"]');
       await wait(`window.fixtureReleases.length > 0`);
       g['should-reject: while the plan of a changed start is missing, packs block the button and Enter'] = await blocked();
       await evaluate(`window.fixtureHold = false; window.fixtureReleases.splice(0).forEach(r => r());`);
@@ -5249,7 +5614,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       for (const failure of ['500', 'malformed', 'network']) {
         await reset(); await role('lane'); await wait(`${chips}.length === 2`);
         await evaluate(`window.fixturePlan = ${JSON.stringify(failure)}; window.fixtureReload();`);
-        await wait(`document.querySelector('.fdbody .fdnote.warn') !== null`);
+        await wait(`document.querySelector('.fdpacks .fdnote.warn') !== null`);
         const sayPlan = await evaluate<boolean>(`${chips}.length === 0 && document.querySelector('.fdfootnote.warn')?.textContent.includes('ohne Packs')`);
         await click('.fdgo');
         g[`${failure} plan: the switches go off, the foot says it starts without packs, and the body carries none`] = sayPlan
@@ -5284,34 +5649,92 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await reset(`window.fixtureStored = { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } };`);
       await role('lane'); await wait(`${chips}.length === 1`);
       g['a stored preset wins over the built-in one and the card says "angepasst"'] = await evaluate<boolean>(`JSON.stringify(${chips}) === '["fixture-alpha"]' && document.querySelector('.fdrole[data-role="lane"] .fdrk').textContent.includes('angepasst')`);
+      // ALS PROFIL SICHERN and back (design v3): the session's pack choice becomes the role's preset
+      // over the existing door, only that role is stored, and "Auf Standard zurücksetzen" stores null
       await reset(); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
-      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      await click('.fdsw[data-pack="fixture-beta"]'); await wait(`${chips}.length === 1`);
+      const devFoot = await evaluate<string>(`document.querySelector('.fddev').textContent`);
+      await click('.fdkeep'); await wait(`window.fixtureRequests.some(r => r.url === '/api/role-presets')`);
       const stored = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
-      await click('.fdcmpfoot .fdghost'); await wait(`${chips}.length === 2`);
+      const keptAngepasst = await evaluate<boolean>(`document.querySelector('.fdrole[data-role="lane"] .fdrk').textContent.includes('angepasst') && !document.querySelector('.fddev').textContent.includes('weicht')`);
+      await click('.fdstep1 .fdghost'); await wait(`${chips}.length === 2`);
       const afterReset = await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`);
-      g['redrawing a preset stores only that role; the reset stores null and brings the packs back'] =
-        stored === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }])
+      g['Als Profil sichern stores only that role, the deviation is gone; the reset stores null and brings the packs back'] =
+        devFoot.includes('weicht in 1 Punkt') && keptAngepasst
+        && stored === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }])
         && afterReset === JSON.stringify([{ presets: { lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }, { presets: null }]);
       detail['presets'] = afterReset;
-      await shot('compare');
+      await shot('profile-saved');
       await reset(`window.fixtureStored = { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] } };`); await role('lane'); await wait(`${chips}.length === 2`);
-      await click('.fdctxfoot .fdghost:last-child'); await wait(`document.querySelector('.fdcmp') !== null`);
-      await click('.fdpip[aria-label="fixture-beta für Lane"]'); await wait(`${chips}.length === 1`);
+      await click('.fdsw[data-pack="fixture-beta"]'); await wait(`${chips}.length === 1`); await click('.fdkeep');
+      await wait(`window.fixtureRequests.some(r => r.url === '/api/role-presets')`);
       g['a stored Steward preset rides along unchanged when the window saves — dropping the card drops no stored choice'] =
         await evaluate<string>(`JSON.stringify(window.fixtureRequests.filter(r => r.url === '/api/role-presets').map(r => r.body))`)
         === JSON.stringify([{ presets: { steward: { base: 'none', plus: ['fixture-alpha'], minus: [] }, lane: { base: 'all', plus: [], minus: ['fixture-beta'] } } }]);
 
-      await reset(`window.fixturePlan = 'many';`); await role('lane'); await wait(`document.querySelectorAll('.fdctx .fdcx').length === 14`);
-      await wait(`document.querySelectorAll('.fdcx.in').length === 0`);
-      const line = await evaluate<{ rows: number; shown: number; more: string }>(`(() => {
-        const l = document.querySelector('.fdctx'); const shown = Array.from(l.querySelectorAll('.fdcx')).filter(c => !c.hidden);
-        // one line = every visible item on one vertical centre (items of different heights sit centred)
-        const centres = new Set(Array.from(l.children).filter(c => !c.hidden).map(c => { const r = c.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }));
-        const m = l.querySelector('.fdmore'); return { rows: centres.size, shown: shown.length, more: m.hidden ? '' : m.textContent };
+      // THE FILE ANSWERS EVERY SWITCH (card 569f8bb5): a part switched whole raises the size and its
+      // section names it; a pack switched off leaves the file over packs=; each change is a deviation
+      // with a dot, counted in the foot, and Wie Profil takes them all back. Every size is the route's.
+      await reset(); await role('lane'); await wait(`${chips}.length === 2 && !!document.querySelector('.fdtot')`);
+      const fileBefore = await evaluate<string>(fileSays);
+      // the size the owner reads, as a number („[Zitat entfernt]“) — a changed text alone is not a grown file (review 5a07f9e5)
+      const fileKb = `parseFloat(${fileSays}.replace(',', '.'))`;
+      const kbBefore = await evaluate<number>(fileKb);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+      const hvShown = `Array.from(document.querySelectorAll('#shell-found .fdhv')).map(e => getComputedStyle(e).display !== 'none')`;
+      g['at rest no technical line is shown: ids and hashes wait for hover or focus'] = await evaluate<boolean>(`${hvShown}.every(x => !x)`);
+      // a touch screen has no hover: one switch in the foot shows every technical line in the flow,
+      // and takes them back; the desktop never shows the switch (review d37a339b, MAIN's call)
+      if (touch) {
+        await shot('touch-rest');
+        await click('.fdtechb');
+        g['touch: Technik zeigen shows every technical line in the flow, the page stays 390 wide'] = await evaluate<boolean>(`(() => {
+          const shown = ${hvShown}; const d = document.querySelector('#shell-found .shelldetail');
+          return shown.length > 10 && shown.every(x => x) && document.querySelector('.fdtechb').getAttribute('aria-pressed') === 'true'
+            && document.documentElement.scrollWidth <= innerWidth && d.scrollWidth <= d.clientWidth;
+        })()`);
+        await shot('touch-tech');
+        await click('.fdtechb');
+        g['touch: the switch takes them back — at rest again'] = await evaluate<boolean>(`${hvShown}.every(x => !x) && document.querySelector('.fdtechb').getAttribute('aria-pressed') === 'false'`);
+      } else g['desktop: no Technik switch — hover and focus show the details'] = await evaluate<boolean>(`getComputedStyle(document.querySelector('.fdtechb')).display === 'none'`);
+      await evaluate(`document.querySelector('[data-fold="fixture-beta"]').click()`); await wait(`!!document.querySelector('[data-part="fixture-beta.one"]')`);
+      await click('[data-part="fixture-beta.one"]');
+      await wait(`${fileSays} !== ${JSON.stringify(fileBefore)} && !!document.querySelector('.fdsec2[data-sec="wis"] .fdit')`);
+      const partQuery = await evaluate<string>(`JSON.stringify(window.fixtureFileQueries[window.fixtureFileQueries.length - 1])`);
+      g['a part switched whole: the file re-reads with parts= naming it, Wissen lists it, the size grows'] =
+        JSON.parse(partQuery).parts.split(',').includes('fixture-beta.one') && await evaluate<boolean>(`document.querySelector('.fdsec2[data-sec="wis"] .fdinm').textContent.length > 0 && document.querySelector('.fdsec2[data-sec="wis"]').classList.contains('dev')`)
+        && Number.isFinite(kbBefore) && await evaluate<number>(fileKb) > kbBefore;
+      detail['part-query'] = partQuery;
+      detail['part-size'] = `${kbBefore} KB → ${await evaluate<number>(fileKb)} KB`;
+      const fileWithPart = await evaluate<string>(fileSays);
+      await click('.fdsw[data-pack="fixture-alpha"]');
+      await wait(`${fileSays} !== ${JSON.stringify(fileWithPart)}`);
+      g['a pack switched off leaves the file: packs= drops it and its group reads 0 von 1'] = await evaluate<boolean>(`(() => {
+        const last = window.fixtureFileQueries[window.fixtureFileQueries.length - 1];
+        return last.packs === 'fixture-beta' && document.querySelector('[data-group="grundlagen"]').closest('.fdline').querySelector('.fdcnt').textContent === '0 von 1';
       })()`);
-      g['fourteen packs stay ONE line: what does not fit is counted in +N'] = line.rows === 1 && line.more === `+${14 - line.shown}` && line.shown >= 1;
-      detail['line'] = JSON.stringify(line);
+      g['two deviations carry dots, the foot counts them; Wie Profil takes both back'] = await evaluate<boolean>(`document.querySelectorAll('.fdtree .fddvb').length >= 2 && document.querySelector('.fddev').textContent.includes('weicht in 2 Punkten')`);
+      await shot('profil-deviation');
+      await click('.fdlike'); await wait(`${chips}.length === 2 && ${fileSays} === ${JSON.stringify(fileBefore)}`);
+      g['Wie Profil: the file is the profile file again, no dot is left'] = await evaluate<boolean>(`!document.querySelector('.fdtree .fddvb') && !document.querySelector('.fddev').textContent.includes('weicht')`);
+      g['each profile tile names its file size from the route; Leer loads none'] = await evaluate<boolean>(`(() => {
+        const say = r => document.querySelector('.fdrole[data-role="' + r + '"] .fdrk').textContent;
+        return /^\\d+,\\d KB/.test(say('lane')) && /^\\d+,\\d KB/.test(say('main')) && /^\\d+,\\d KB/.test(say('orch')) && say('leer') === 'nichts geladen';
+      })()`);
+
+      // SCALING (owner to v2: „[Zitat entfernt]“): fourteen packs stand
+      // folded in their four groups — the first glance has four rows, a partial group says "N von M"
+      await reset(`window.fixturePlan = 'many';`); await role('lane');
+      await wait(`document.querySelectorAll('.fdtree > .fdnode').length === 4`);
+      const folded = await evaluate<{ groups: number; packs: number }>(`({ groups: document.querySelectorAll('.fdtree > .fdnode').length, packs: document.querySelectorAll('.fdsw[data-pack]').length })`);
+      await wait(`${chips}.length === 14`);
+      await click('.fdsw[data-pack="fixture-pack-number-0"]');
+      await wait(`document.querySelector('[data-group="grundlagen"]').getAttribute('aria-checked') === 'mixed'`);
+      g['fourteen packs fold into four group rows; a partly switched group reads 3 von 4 and stands half'] = folded.groups === 4 && folded.packs === 0
+        && await evaluate<boolean>(`document.querySelector('[data-group="grundlagen"]').closest('.fdline').querySelector('.fdcnt').textContent === '3 von 4'`);
+      await click('[data-group="grundlagen"]');
+      g['a half group switches all on with one click'] = await evaluate<boolean>(`document.querySelector('[data-group="grundlagen"]').getAttribute('aria-checked') === 'true'`);
+      detail['many'] = JSON.stringify(folded);
       await shot('many');
       g['nothing in the window is wider than the screen'] = await evaluate<boolean>(`(() => { const w = document.querySelector('#shell-found .shellwin'); return w.getBoundingClientRect().right <= innerWidth + 0.5 && document.querySelector('#shell-found .shelldetail').scrollWidth <= document.querySelector('#shell-found .shelldetail').clientWidth; })()`);
 
@@ -5322,7 +5745,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       const setup = async (mode: string, pack = false) => {
         await reset(`window.fixtureMode = ${JSON.stringify(mode)};`);
         if (!pack) return;
-        await click('.fdadd'); await click('.fdaddpop .fdprow'); await key('Escape');
+        await wait(`${chips}.length === 0`); await click('.fdsw[data-pack="fixture-alpha"]');
         await wait(`JSON.stringify(${chips}) === '["fixture-alpha"]' && !document.querySelector('.fdpop')`);
       };
       // every receipt this run renders is read for the inner words the owner never sees (card 1c17)
@@ -5338,7 +5761,12 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       })()`);
       const text = () => evaluate<string>(`document.querySelector('#shell-found')?.textContent || ''`);
       const actual = (name: string) => `document.querySelector('.fdproofrow[data-field="${name}"] .fdactual')`;
-      const pick = async (pop: string) => { await click(`[data-pop="${pop}"]`); await click('.fdpop .fdprow:nth-child(2)'); };
+      const pick = async (what: string) => {
+        if (what === 'effort') { await click('.fdsw2b[data-effort]:not([data-effort=""])'); return; }
+        await click(`[data-pop="${what}"]`);
+        await wait(`document.querySelector('[data-pop="${what}"]')?.getAttribute('aria-expanded') === 'true' && !!document.querySelector('.fdpop .fdprow:nth-child(2)')`);
+        await click('.fdpop .fdprow:nth-child(2)');
+      };
       const plain = async () => {
         await setup('equal'); await pick('model'); await pick('effort');
         await click('.fdgo'); await finished();
@@ -5424,6 +5852,14 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       await setup('equal'); await click('[data-pop="container"]');
       await click('.fdpop .fdpin:first-child input'); await send('Input.insertText', {text:'fixture-box'});
       await click('.fdpop .fdpin:nth-child(2) input'); await send('Input.insertText', {text:'fixture-daemon'});
+      // the phone's popover stood fixed 132 px over a foot of 154 px: its second field lay under the
+      // foot (preview fbd1c7109d95). should-reject: a fixed offset — the foot grows by 80 px here
+      const overFoot = `(() => { const p = document.querySelector('.fdpop').getBoundingClientRect(), f = document.querySelector('#shell-found .shellfoot').getBoundingClientRect(); return p.bottom <= f.top + 0.5; })()`;
+      const footFree = await evaluate<boolean>(overFoot);
+      await evaluate(`(() => { const d = document.createElement('div'); d.id = 'fixture-tall'; d.style.height = '80px'; document.querySelector('#shell-found .fdsaycol').append(d); })()`);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      g2['the open popover stands above the foot, and above a foot that grew'] = footFree && await evaluate<boolean>(overFoot);
+      await evaluate(`document.querySelector('#fixture-tall')?.remove()`);
       await key('Escape'); await click('.fdgo'); await finished();
       g2['container and daemon are exact observed values'] = await evaluate<boolean>(`${actual('Container')}?.textContent==='fixture-box' && ${actual('Docker-Daemon')}?.textContent==='fixture-daemon'`);
       await setup('unreported'); await pick('model'); await click('.fdgo'); await finished();
@@ -5454,6 +5890,7 @@ interface SettingsDomResult {
   facts: Record<string, unknown>;
 }
 type SettingsFixturePost = { url: string; body: unknown };
+type UsageKind = "measured" | "stale" | "missing" | "corrupt-source" | "null-secondary" | "timeout" | "late";
 export async function runSettingsDom(sourceRoot: string, artifacts?: string): Promise<SettingsDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-settings-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
@@ -5472,6 +5909,38 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     meterLane: false,
     // the protocol of the run: every native input sent and every /api request the page made
     inputs: [] as string[], requests: [] as string[],
+    // the "Verbrauch" section (card 038d2694): what GET /api/subscription-usage and the refresh
+    // answer, how late, and a raw body that is not the wire's shape
+    usageKind: "measured" as UsageKind, usageStatus: 200, usageDelay: 0, usageRaw: null as string | null,
+    refreshKind: "measured" as UsageKind, refreshStatus: 200, refreshDelay: 0,
+    // the stale event's age as last served: it grows with the run, so the claim reads it from here
+    staleAgeMs: null as number | null,
+  };
+  // THE USAGE WIRE AS THE SERVER SERVES IT (src/protocol.ts#SubscriptionUsage): one measurement event
+  // fixed for the run (its provenance is the event's identity), the age by the serving clock
+  const USAGE_EVENT_AT = Date.now() - 3 * 60_000, USAGE_STALE_AT = Date.now() - 40 * 60_000;
+  const USAGE_SELECTION = { kind: "recent-file-tails", maxFiles: 16, maxBytesPerFile: 262144, historyComplete: false };
+  const PROVIDER_REASON = "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced";
+  const usageBody = (kind: UsageKind, refresh: Record<string, unknown> = { target: null, status: "not-requested", startedAt: null, finishedAt: null, reason: null }) => {
+    const at = Date.now();
+    const win = (used: number, minutes: number, resetMin: number) => ({ used_percent: used, window_minutes: minutes, resets_at: Math.floor((at + resetMin * 60_000) / 1000) });
+    const gone = (status: string, reason: string) => ({ status, primary: null, secondary: null, source: { kind: "local-rollout", measuredAt: null,
+      fetchedAt: at - 5_000, ageMs: null, staleAfterMs: 900_000, reason, selection: USAGE_SELECTION, limitId: null, accountBound: false, provenance: null } });
+    const event = kind === "stale" ? USAGE_STALE_AT : kind === "late" ? at - 60_000 : USAGE_EVENT_AT;
+    if (kind === "stale") fx.staleAgeMs = at - event;
+    const codex = kind === "missing" ? gone("unknown", "missing-source") : kind === "corrupt-source" ? gone("error", "invalid-json-line")
+      : kind === "timeout" ? gone("error", "read-timeout")
+      : { status: kind === "stale" ? "stale" : "measured",
+        primary: kind === "late" ? win(99, 300, 30) : kind === "stale" ? win(30, 300, 90) : win(42, 300, 130),
+        secondary: kind === "null-secondary" ? null : kind === "late" ? win(97, 10080, 2000) : win(12.5, 10080, 3 * 1440 + 60),
+        source: { kind: "local-rollout", measuredAt: event, fetchedAt: at - 10_000, ageMs: at - event, staleAfterMs: 900_000,
+          reason: kind === "stale" ? "event-older-than-15-minutes" : null, selection: USAGE_SELECTION, limitId: "codex", accountBound: false,
+          provenance: kind === "late" ? "f".repeat(64) : kind === "stale" ? "5ta1e000".repeat(8) : "ab12cd34".repeat(8) } };
+    return { schema: "fleet.subscription-usage/v1", generatedAt: at, codex: { ...codex, refresh, provider: { status: "unsupported", reason: PROVIDER_REASON } },
+      otherSubscriptions: { status: "unknown", reason: "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract" },
+      model: { ownerPreference: { status: "unknown", reason: "no dated owner preference source with scope and validity" }, registerDefaults: MODEL_DEFAULTS,
+        selected: [{ slot: 1, harness: "claude", model: "claude-opus-5-5[1m]", source: "slot-state", decisionSource: "unknown", usedTurnModel: null },
+          { slot: 2, harness: "codex", model: "gpt-6.1-sol", source: "slot-state", decisionSource: "unknown", usedTurnModel: null }] } };
   };
   const plan = () => ({
     version: 1, budget: 5, unresolved: [],
@@ -5596,6 +6065,14 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
           return void json(requestId, { ok: true, repo: b.repo, maxLanes: b.maxLanes ?? null });
         }
         if (p === "/api/dispatch") { fx.dispatchOn = !!(body as { on?: boolean })?.on; return void json(requestId, { ok: true, on: fx.dispatchOn }); }
+        if (p === "/api/subscription-usage/refresh") {
+          const t = (body as { target?: string })?.target;
+          const kind = fx.refreshKind, status = fx.refreshStatus;
+          const answer = () => status !== 200 ? json(requestId, { error: "fixture: refresh refused" }, status)
+            : json(requestId, usageBody(t === "provider" ? fx.usageKind : kind, { target: t, status: t === "provider" ? "unsupported" : kind === "timeout" ? "timeout" : "ok",
+              startedAt: Date.now() - 200, finishedAt: Date.now(), reason: t === "provider" ? PROVIDER_REASON : kind === "timeout" ? "read-timeout" : null }));
+          return void setTimeout(answer, fx.refreshDelay);
+        }
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -5609,6 +6086,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (p === "/api/tasks") return void json(requestId, { tasks: TASKS });
       if (p === "/api/start-plan") return void (fx.planStatus === 200 ? json(requestId, plan()) : json(requestId, { error: "fixture: plan unreadable" }, fx.planStatus));
       if (p === "/api/machine-settings") return void json(requestId, machine);
+      if (p === "/api/subscription-usage") {
+        const kind = fx.usageKind, status = fx.usageStatus, raw = fx.usageRaw;
+        return void setTimeout(() => raw !== null ? reply(requestId, 200, raw) : status !== 200 ? json(requestId, { error: "fixture: usage unreadable" }, status)
+          : json(requestId, usageBody(kind)), fx.usageDelay);
+      }
       // an empty catalogue, served: a refused /api/harnesses is re-asked on every render (loadHarnesses
       // latches only on success) and would flood the request protocol of this run
       if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
@@ -5651,7 +6133,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       return { role: node.role?.value ?? null, name: node.name?.value ?? null, ignored: !!node.ignored,
         ...Object.fromEntries((node.properties ?? []).map((x) => [x.name, x.value?.value ?? null])) };
     };
-    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "] };
+    const KEY: Record<string, [number, string, string?]> = { Tab: [9, "Tab"], Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], " ": [32, "Space", " "],
+      ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"] };
     const key = async (name: string, shift = false) => {
       const [vk, code, text] = KEY[name];
       const modifiers = shift ? 8 : 0;
@@ -5693,7 +6176,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const W = () => document.querySelector('#shell-settings');
       const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && !e.closest('[hidden]');
       const focusables = () => [...(W()?.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])') ?? [])]
-        .filter((e) => !e.disabled && shown(e));
+        .filter((e) => !e.disabled && shown(e) && !(e.type === 'radio' && !e.checked && e.name && W().querySelector('input[type="radio"][name="' + e.name + '"]:checked')));
       const desc = (e) => !e ? 'none' : e === document.body ? 'body' : (e.tagName.toLowerCase() + (e.className ? '.' + String(e.className).split(' ').join('.') : '') + (e.textContent ? ':' + e.textContent.trim().slice(0, 24) : ''));
       const inside = () => !!W() && W().contains(document.activeElement);
       const row = (label) => [...(W()?.querySelectorAll('.setrow') ?? [])].find((r) => r.querySelector('.setlabel')?.textContent === label) ?? null;
@@ -5720,8 +6203,12 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       fx.caps = { default: 1, max: 8, caps: { [REPO_A]: 2 }, bases: { [REPO_A]: "overhaul" } };
       fx.capsStatus = 200; fx.planStatus = 200; fx.autosOn = true; fx.dispatchOn = true; fx.refuseCap = false; fx.posts = []; fx.meterLane = false;
       fx.inputs = []; fx.requests = [];
+      fx.usageKind = "measured"; fx.usageStatus = 200; fx.usageDelay = 0; fx.usageRaw = null;
+      fx.refreshKind = "measured"; fx.refreshStatus = 200; fx.refreshDelay = 0;
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -5744,11 +6231,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       claims["opening moves the focus into the window"] = await evaluate<boolean>("window.__fx.inside()");
       const nav = await evaluate<{ word: string; shown: boolean }[]>(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].map((b) => ({ word: b.textContent, shown: window.__fx.shown(b) }))`);
       facts.nav = nav;
-      claims["four section targets are visible, in the registry order"] = nav.length === 4 && nav.every((n) => n.shown);
+      claims["five section targets are visible, in the registry order"] = nav.length === 5 && nav.every((n) => n.shown);
       const navAx: Record<string, unknown>[] = [];
       for (let i = 0; i < nav.length; i++) navAx.push((await ax(`window.__fx.W().querySelectorAll('[data-settings-tab]')[${i}]`)) ?? {});
       facts.navAx = navAx;
-      claims["every section target is named by its visible word"] = navAx.length === 4 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
+      claims["every section target is named by its visible word"] = navAx.length === 5 && navAx.every((n, i) => n.name === nav[i].word && n.role === "button");
       // each target reached with a native click: it reads pressed and its section is on screen
       const reached: Record<string, unknown>[] = [];
       for (let i = 0; i < nav.length; i++) {
@@ -5763,7 +6250,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         await shot(width, `section-${i + 1}`);
       }
       facts.reached = reached;
-      claims["each of the four targets shows its section and reads pressed"] = reached.length === 4 && reached.every((r) => r.visible && r.pressed === "true");
+      claims["each of the five targets shows its section and reads pressed"] = reached.length === 5 && reached.every((r) => r.visible && r.pressed === "true");
       claims["switching sections keeps the focus on the target that was used"] = reached.every((r, i) => String(r.focus).includes(nav[i].word));
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[0]`);
 
@@ -5973,8 +6460,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       // --- 7. background repaint and repeated opening do not steal the focus
       await evaluate(`${capInput}.focus()`);
       const polls = fx.sessions;
+      const usageReads = () => fx.requests.filter((r) => r === "GET /api/subscription-usage").length;
+      const usageBefore = usageReads();
       await evaluate("new Promise(r => setTimeout(r, 4500))");
-      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
+      facts.repaint = { polls: fx.sessions - polls, focus: await evaluate<string>("window.__fx.desc(document.activeElement)"), usageReads: usageReads() - usageBefore };
+      claims["the open window reads the usage once, never with the poll: no usage request over two background polls"] = fx.sessions - polls >= 2 && usageReads() === usageBefore;
       claims["two background polls later the focus is still on the same control"] = fx.sessions - polls >= 2 && await evaluate<boolean>(`document.activeElement === ${capInput}`);
       await key("Escape");
       claims["Escape without staged values closes and returns the focus to the opener"] = await evaluate<boolean>(`!window.__fx.W() && document.activeElement === ${opener}`);
@@ -6079,6 +6569,249 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         fx.meterLane = false;
       }
 
+      // --- 11. "Verbrauch" (card 038d2694): windows, source and the three times apart, the explicit
+      // refresh with its loading/error/retry, every answer bound to the request that asked it, unknown
+      // never 0, the model facts apart — and no GET or render that refreshes or starts anything. A
+      // fresh page first: nothing measured has been seen yet.
+      const usageRefreshes = (from = 0) => fx.posts.slice(from).filter((x) => x.url === "/api/subscription-usage/refresh");
+      claims["steps 1-10 opened the window again and again and never asked for a usage refresh"] = usageRefreshes().length === 0;
+      fx.usageKind = "missing"; fx.usageDelay = 0; fx.usageRaw = null; fx.refreshKind = "measured"; fx.refreshStatus = 200; fx.refreshDelay = 0;
+      await navigate("http://fleet.fixture/");
+      await wait(ready, 12000);
+      const usePosts = fx.posts.length, useReqs = fx.requests.length;
+      let useOpens = 0;
+      const useSec = `window.__fx.section('Verbrauch')`;
+      const openUsage = async () => {
+        if (await evaluate<boolean>("!!window.__fx.W()")) await key("Escape");
+        await toGear(); await click(gear); await wait("window.__fx.W()");
+        useOpens++;
+        await click(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].find((b) => b.textContent === 'Verbrauch')`);
+      };
+      const settled = `!/wird gelesen/.test(${useSec}?.querySelector('[data-use="state"]')?.innerText ?? 'wird gelesen')`;
+      const use = async () => (await evaluate<Record<string, string> | null>(`Object.fromEntries([...(${useSec}?.querySelectorAll('[data-use]') ?? [])]
+        .map((e) => [e.dataset.use, e.innerText.replace(/\\s+/g, ' ').trim()]))`)) ?? {};
+      const useBtn = `${useSec}.querySelector('.usebtn')`;
+      const useRadio = (v: string) => `${useSec}.querySelector('input[type="radio"][value="${v}"]')`;
+      const useStatus = async () => evaluate<string>(`${useSec}?.querySelector('.usestatus')?.textContent ?? ''`);
+      const bars = async () => evaluate<number>(`${useSec}?.querySelectorAll('.usebar').length ?? -1`);
+      // THE OWNER'S WORDS (card e433), read in every data state below: the section's whole text — closed
+      // details and tooltips included — carries no event checksum and none of the reader's vocabulary,
+      // and every value that reads "unbekannt" says in one short sentence what is missing (a checksum is
+      // hex with letters AND digits — a model id's date, 20251001, is not one)
+      const plainStates: Record<string, { jargon: string[]; unknownWithout: string[] }> = {};
+      const plain = async (label: string) => {
+        const p = await evaluate<{ text: string; rows: { key: string; v: string; more: string }[] } | null>(`(() => { const s = ${useSec}; if (!s) return null;
+          const rows = [...s.querySelectorAll('[data-use]')].map((r) => ({ key: r.dataset.use, v: (r.querySelector('.setstatv')?.textContent ?? '').trim(),
+            more: (r.querySelector('.setstatl')?.textContent ?? '').replace(/\\s+/g, ' ').trim() }));
+          return { text: [s.textContent, ...[...s.querySelectorAll('[title]')].map((e) => e.title)].join(' ').replace(/\\s+/g, ' '), rows }; })()`);
+        if (!p) { plainStates[label] = { jargon: ["section missing"], unknownWithout: [] }; return; }
+        const jargon = p.text.match(/Sensor|Wire|Provenan\w*|kontogebunden|Ereignis\w*|Messereignis|Server-Uhr|Owner|Register|Harness|\bTurn\b|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b|ab12cd34|5ta1e000|ffffffff/gi) ?? [];
+        const unknownWithout = p.rows.filter((r) => /^unbekannt/.test(r.v) && !/^[A-ZÄÖÜ][^.]{8,88}\.$/.test(r.more)).map((r) => `${r.key}: ${r.more || "(leer)"}`);
+        plainStates[label] = { jargon: [...new Set(jargon)], unknownWithout };
+      };
+
+      // (a) a missing source: unknown with its reason, no number, no bar — and the open itself asked nothing
+      await openUsage();
+      await wait(settled, 4000);
+      const uMissing = await use();
+      const missingBars = await bars();
+      await plain("missing");
+      await shot(width, "usage-missing");
+      facts.usageMissing = { u: uMissing, bars: missingBars };
+      claims["usage, missing source: Zustand unbekannt with its reason, both windows unbekannt, no percent and no bar"] =
+        /^Zustand unbekannt/.test(uMissing.state ?? "") && /Auf dieser Maschine liegt kein Codex-Sitzungsordner\./.test(uMissing.state ?? "")
+        && /^Erstes Fenster unbekannt/.test(uMissing.primary ?? "") && /^Zweites Fenster unbekannt/.test(uMissing.secondary ?? "")
+        && !/%/.test(`${uMissing.primary}${uMissing.secondary}`) && missingBars === 0;
+      // (b) the refresh controls by name and state: a named radio group, local checked, the button named
+      const useGroupAx = await ax(`${useSec}.querySelector('fieldset')`);
+      const localAx = await ax(useRadio("local")), providerAx = await ax(useRadio("provider"));
+      const btnAx = await ax(useBtn);
+      facts.usageAx = { groupAx: useGroupAx, localAx, providerAx, btnAx };
+      claims["usage refresh: one group named 'Neu lesen aus', 'Gespeicherter Stand' checked, 'Konto beim Anbieter' not, the button named 'Neu lesen'"] =
+        useGroupAx?.name === "Neu lesen aus" && localAx?.role === "radio" && localAx?.name === "Gespeicherter Stand" && localAx?.checked === "true"
+        && providerAx?.name === "Konto beim Anbieter" && providerAx?.checked === "false" && btnAx?.name === "Neu lesen" && !btnAx?.disabled;
+      // (c) the keyboard picks the active target: unsupported, its reason in words, the button disabled — and Enter sends nothing
+      await evaluate(`${useRadio("local")}.focus()`);
+      await key("ArrowDown");
+      const provAx = await ax(useRadio("provider"));
+      const provBtn = await ax(useBtn);
+      const provHint = await evaluate<string>(`${useSec}.querySelector('#set-use-hint').textContent`);
+      await evaluate(`${useBtn}.focus()`); await key("Enter"); await key(" ");
+      const provPosts = usageRefreshes(usePosts).length;
+      await plain("provider");
+      await shot(width, "usage-provider");
+      await evaluate(`${useRadio("provider")}.focus()`);
+      await key("ArrowUp");
+      const backLocal = await ax(useRadio("local"));
+      facts.usageProvider = { provAx, provBtn, provHint, provPosts, backLocal };
+      claims["usage, active target by keyboard: checked, the button disabled with the unsupported reason, Enter/Space send no request"] =
+        provAx?.checked === "true" && provBtn?.disabled === true && /^Noch nicht möglich\. Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen\.$/.test(provHint) && provPosts === 0
+        && backLocal?.checked === "true";
+
+      // (d) a corrupt source the server reports, then an answer that is not the wire's shape
+      fx.usageKind = "corrupt-source";
+      await openUsage(); await wait(settled, 4000);
+      const uCorrupt = await use();
+      await plain("corrupt-source");
+      fx.usageRaw = JSON.stringify({ schema: "something-else", codex: { primary: { used_percent: 0 } } });
+      await openUsage(); await wait(settled, 4000);
+      const uShape = await use();
+      await plain("unreadable-answer");
+      fx.usageRaw = null;
+      await shot(width, "usage-unreadable");
+      facts.usageCorrupt = { uCorrupt, uShape };
+      claims["usage, corrupt source: Fehler with its reason, windows unbekannt; an answer of another shape reads 'nicht lesbar' and says what is missing, never 0"] =
+        /^Zustand Fehler/.test(uCorrupt.state ?? "") && /Eine Zeile in den Sitzungsdateien ist beschädigt\./.test(uCorrupt.state ?? "") && /^Erstes Fenster unbekannt/.test(uCorrupt.primary ?? "")
+        && /Die Antwort des Servers ist nicht lesbar\./.test(uShape.state ?? "") && /^Erstes Fenster unbekannt Es fehlt eine lesbare Antwort des Servers\.$/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
+
+      // (e) measured: two windows with their own length and reset, source and the three times apart, the model facts apart
+      fx.usageKind = "measured";
+      await openUsage(); await wait(settled, 4000);
+      const uM = await use();
+      const secText = await evaluate<string>(`${useSec}.innerText`);
+      await plain("measured");
+      await shot(width, "usage-measured");
+      facts.usageMeasured = uM;
+      claims["usage, measured: primary 42 % over 5 h and secondary 12,5 % over 7 Tage, each with its own reset"] =
+        /42 % verbraucht/.test(uM.primary ?? "") && /Fenster 5 h · beginnt neu um .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
+        && /12,5 % verbraucht/.test(uM.secondary ?? "") && /Fenster 7 Tage · beginnt neu um .+\(in 3 Tage( 1 h)?\)/.test(uM.secondary ?? "");
+      claims["usage, measured: source local and not the account itself, measured time, age and read time stand apart"] =
+        /^Quelle Codex-Sitzungsdateien dieser Maschine/.test(uM.source ?? "") && /Nicht direkt vom Konto/.test(uM.source ?? "")
+        && /16 neuesten Dateien, jeweils die letzten 256 KiB\. Ältere Einträge bleiben ungelesen\./.test(uM.source ?? "") && !/ab12cd34/.test(uM.source ?? "")
+        && /^Gemessen \d\d:\d\d:\d\d Wann Codex diesen Stand gemeldet hat\.$/.test(uM.measured ?? "") && /^Alter 3 min Gilt nach 15 min als veraltet\.$/.test(uM.age ?? "")
+        && /^Gelesen \d\d:\d\d:\d\d Wann die Fleet die Dateien gelesen hat\.$/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
+      claims["usage, model: the owner's preference unbekannt, the default, the sessions' selection and the model really used apart; no quota switch"] =
+        /^Deine Vorgabe unbekannt Von dir ist keine Modell-Vorgabe hinterlegt\.$/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
+        && /^Standard Worker .*Sol.* · MAIN .*Opus/.test(uM.defaults ?? "") && /^An Sessions gewählt 2 Sessions/.test(uM.selected ?? "")
+        && /Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst\./.test(uM.selected ?? "")
+        && /^Wirklich benutzt unbekannt Welches Modell wirklich geantwortet hat, ist nicht erfasst\.$/.test(uM.turn ?? "")
+        && /^Zustand unbekannt Für andere Abos erfasst die Fleet noch keinen Verbrauch\.$/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);
+      claims["usage: no path, account, credential or full event checksum in the section"] =
+        !/\/Users\/|\/fixture\/|@|token|ab12cd34ab12cd34/i.test(secText);
+
+      // (f) the explicit local refresh: loading on the focused button, then a READ without a new measurement event
+      fx.refreshDelay = 900; fx.refreshKind = "measured";
+      await evaluate(`${useBtn}.focus()`);
+      const beforeLocal = fx.posts.length;
+      await key("Enter");
+      const loadAx = await ax(useBtn);
+      const loading = { ax: loadAx, status: await useStatus(), focus: await evaluate<boolean>(`document.activeElement === ${useBtn}`) };
+      await plain("loading");
+      await shot(width, "usage-loading");
+      await key("Enter"); // pressed again while it reads: nothing more is sent
+      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const readDone = { status: await useStatus(), posts: usageRefreshes(beforeLocal), u: await use(), ax: await ax(useBtn) };
+      await plain("local-read");
+      await shot(width, "usage-local-read");
+      facts.usageLocal = { loading, readDone };
+      claims["usage refresh by keyboard: the focused button reads 'Liest …', busy and disabled, the status says it reads the local stored state"] =
+        loadAx?.name === "Liest …" && !!loadAx?.busy && loadAx?.disabled === true && loading.focus
+        && /Liest den gespeicherten Stand/.test(loading.status);
+      claims["usage refresh: exactly one POST {target:local}, and its answer says no new measurement event"] =
+        readDone.posts.length === 1 && JSON.stringify(readDone.posts[0].body) === JSON.stringify({ target: "local" })
+        && /nichts Neues, der Stand von \d\d:\d\d:\d\d gilt weiter\./.test(readDone.status)
+        && /42 % verbraucht/.test(readDone.u.primary ?? "") && readDone.ax?.name === "Neu lesen" && !readDone.ax?.disabled;
+
+      // (g) failure: the server's timeout, then a 500 and a 409 — the last measured windows stay, stale and dated, never 0; retry offered
+      fx.refreshDelay = 0; fx.refreshKind = "timeout";
+      await click(useBtn);
+      await wait(`/Neu lesen um .+ fehlgeschlagen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const uT = await use();
+      const tAx = await ax(useBtn);
+      const staleRow = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await plain("failed-timeout");
+      await shot(width, "usage-failed-stale");
+      fx.refreshStatus = 500;
+      await click(useBtn);
+      await wait(`/antwortet mit Fehler 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const after500 = { status: await useStatus(), u: await use() };
+      await plain("failed-500");
+      fx.refreshStatus = 409;
+      await click(useBtn);
+      await wait(`/liest gerade schon/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      const after409 = { status: await useStatus(), ax: await ax(useBtn) };
+      await plain("failed-409");
+      fx.refreshStatus = 200;
+      facts.usageFailure = { uT, tAx, staleRow, after500, after409 };
+      claims["usage failure: Fehler with its reason, the last measured 42 % stays as 'Stand von … veraltet', never 0 or blank"] =
+        /^Zustand Fehler Das Lesen hat länger als 5 s gedauert und wurde abgebrochen\./.test(uT.state ?? "") && /42 % verbraucht/.test(uT.primary ?? "")
+        && /Stand von \d\d:\d\d:\d\d, veraltet/.test(uT.primary ?? "") && /12,5 % verbraucht/.test(uT.secondary ?? "") && staleRow
+        && !/\b0 %/.test(`${uT.primary}${uT.secondary}`);
+      claims["usage failure offers the retry gesture: 'Erneut lesen' enabled after a timeout, a 500 and a 409, the windows kept"] =
+        tAx?.name === "Erneut lesen" && !tAx?.disabled && /Neu lesen fehlgeschlagen\. Der Server antwortet mit Fehler 500\./.test(after500.status)
+        && /42 % verbraucht/.test(after500.u.primary ?? "") && /liest gerade schon/.test(after409.status) && after409.ax?.name === "Erneut lesen";
+
+      // (h) a late GET answer after a newer refresh answer: the newer one stays
+      fx.usageKind = "stale"; fx.usageDelay = 1200; fx.refreshKind = "measured";
+      await openUsage();
+      await click(useBtn);
+      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await evaluate("new Promise(r => setTimeout(r, 1500))");
+      const uLateGet = await use();
+      await plain("late-get");
+      facts.usageLateGet = uLateGet;
+      claims["usage: an older GET answering after the refresh's answer does not overwrite it (42 % measured stays, not 30 % stale)"] =
+        /^Zustand aktuell/.test(uLateGet.state ?? "") && /42 % verbraucht/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
+
+      // (i) the window closed while a refresh read: its late answer paints nothing into the next window
+      fx.usageKind = "measured"; fx.usageDelay = 0; fx.refreshKind = "late"; fx.refreshDelay = 1200;
+      await click(useBtn);
+      await key("Escape");
+      const closedOnCancel = await evaluate<boolean>("!window.__fx.W()");
+      await openUsage(); await wait(settled, 4000);
+      await evaluate("new Promise(r => setTimeout(r, 1600))");
+      const uAfterClose = { u: await use(), status: await useStatus() };
+      await plain("after-close");
+      facts.usageAfterClose = { closedOnCancel, ...uAfterClose };
+      claims["usage: Escape closes while it reads, and that late answer (99 %) never reaches the reopened window"] =
+        closedOnCancel && /42 % verbraucht/.test(uAfterClose.u.primary ?? "") && !/99 %/.test(uAfterClose.u.primary ?? "") && uAfterClose.status === "";
+
+      // (j) the target switched while a local read was pending: its answer is dropped, the active target stays chosen
+      await click(useBtn);
+      await click(useRadio("provider"));
+      const useDropped = await useStatus();
+      await evaluate("new Promise(r => setTimeout(r, 1600))");
+      const uSwitch = { u: await use(), status: await useStatus(), provider: await ax(useRadio("provider")), btn: await ax(useBtn) };
+      await plain("switched");
+      await shot(width, "usage-switched");
+      await click(useRadio("local"));
+      facts.usageSwitch = { dropped: useDropped, ...uSwitch };
+      claims["usage: switching the target while a local read is pending drops its answer; the active target stays checked and disabled"] =
+        /Antwort verworfen, weil du die Quelle gewechselt hast\./.test(useDropped) && /42 % verbraucht/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
+        && uSwitch.provider?.checked === "true" && uSwitch.btn?.disabled === true;
+
+      // (k) a missing secondary window and a stale event on open
+      fx.refreshKind = "measured"; fx.refreshDelay = 0;
+      fx.usageKind = "null-secondary";
+      await openUsage(); await wait(settled, 4000);
+      const uNull = await use();
+      await plain("null-secondary");
+      fx.usageKind = "stale";
+      await openUsage(); await wait(settled, 4000);
+      const uStale = await use(), staleServed = fx.staleAgeMs;
+      const staleClass = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
+      await plain("stale");
+      await shot(width, "usage-stale");
+      facts.usageNullStale = { uNull, uStale, staleClass, staleServed };
+      claims["usage, null secondary: the primary measured, the secondary 'unbekannt' with the sentence that it was not sent, no 0"] =
+        /42 % verbraucht/.test(uNull.primary ?? "") && /^Zweites Fenster unbekannt Codex hat für dieses Fenster nichts mitgeschickt\.$/.test(uNull.secondary ?? "");
+      claims["usage, stale event: veraltet with its reason and age, the measured 30 % kept and marked"] =
+        /^Zustand veraltet Der letzte Stand ist älter als 15 Minuten\./.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
+        && staleServed !== null && staleServed >= 40 * 60_000 && (uStale.age ?? "").startsWith(`Alter ${Math.floor(staleServed / 60_000)} min`) && staleClass;
+      await key("Escape");
+      facts.usagePlain = plainStates;
+      claims["usage in the owner's words, in all 15 data states: no event checksum, no reader vocabulary, every 'unbekannt' says in one short sentence what is missing"] =
+        Object.keys(plainStates).length === 15 && Object.values(plainStates).every((x) => x.jargon.length === 0 && x.unknownWithout.length === 0);
+
+      // the whole step: each open read once, every POST was an explicit local refresh — nothing else written or
+      // started (the reloaded pane's own terminal size report, /resize, is the page's, not this section's)
+      const stepPosts = fx.posts.slice(usePosts).filter((x) => x.url !== "/resize");
+      const stepReads = fx.requests.slice(useReqs).filter((r) => r === "GET /api/subscription-usage").length;
+      facts.usageStep = { opens: useOpens, reads: stepReads, posts: stepPosts };
+      claims["usage step: one GET per window open, no poll; every POST is an explicit {target:local} refresh, no session or other write"] =
+        stepReads === useOpens && stepPosts.length === 7
+        && stepPosts.every((x) => x.url === "/api/subscription-usage/refresh" && JSON.stringify(x.body) === JSON.stringify({ target: "local" }));
+
       if (artifacts) { await send("Page.stopScreencast"); writeFileSync(resolve(artifacts, `video-${width}`, "times.json"), JSON.stringify(frameTimes)); recording = null; }
       facts.missing = missing.splice(0);
       facts.inputs = fx.inputs; facts.requests = fx.requests; facts.allPosts = fx.posts;
@@ -6107,11 +6840,12 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
-  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
+  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string; harness?: string;
+    permissions?: { sandbox: string; approval: string } };
   const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], sessions: 0, inputs: [] as string[] };
   const fresh = (): Row[] => [
     { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
-    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, harness: "codex", permissions: { sandbox: "workspace-write", approval: "on-request" } },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
   // one fake socket per pane: opens on the next tick, seeds one line, keeps every byte the page sends
@@ -6185,6 +6919,9 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
         // the send is answered like the server answers a delivered prompt; nothing is typed anywhere
         if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        // an upload is answered with the mention the server words; the file goes nowhere
+        const up = /^\/api\/slots\/(\d+)\/upload$/.exec(p);
+        if (up) return void json(requestId, { mention: `@.fleet-drops/orphan-${up[1]}.txt` });
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -6218,7 +6955,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       await send("Page.navigate", { url });
       await Promise.race([done, Bun.sleep(15000)]);
     };
-    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"] };
+    const KEY: Record<string, [number, string, string?]> = { Enter: [13, "Enter", "\r"], Escape: [27, "Escape"], Backspace: [8, "Backspace"] };
     const key = async (name: string) => {
       const [vk, code, text] = KEY[name];
       fx.inputs.push(`key ${name}`);
@@ -6261,6 +6998,8 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       fx.slots = fresh(); fx.sends = []; fx.inputs = [];
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: ${phone ? 1 : 2}, panes: ${phone ? "[1]" : "[1, 2]"}, focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -6294,7 +7033,32 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         facts.native = { slot1: await evaluate<string>("window.__fx.sent(1)"), slot2: await evaluate<string>("window.__fx.sent(2)"), draft: await evaluate<string>("document.querySelector('#input').value") };
         claims["native typing in that terminal reaches only slot 2's socket, never the composer"] = (facts.native as { slot2: string }).slot2.includes("xyz")
           && (facts.native as { slot1: string }).slot1 === before1 && (facts.native as { draft: string }).draft === "";
-        await shot(width, "terminal-2-focused");
+        const approvalFrame = 'Would you like to run the following command?\r\n  printf permission-probe\r\n  1. Yes, proceed\r\n  2. Yes, and don\'t ask again\r\n  3. No, and tell Codex what to do differently (esc)\r\n';
+        await evaluate(`(() => { const w = window.__ws.filter(w => /\\/ws\\/2(?:[/?]|$)/.test(w.url) && w.readyState === 1).at(-1); w.onmessage({ data: new TextEncoder().encode(${JSON.stringify(approvalFrame)}).buffer }); })()`);
+        const sendsBeforeApproval = sendsAt();
+        const alphaBeforeApproval = await evaluate<string>("window.__fx.sent(1)");
+        await typeText("1"); await key("Enter");
+        facts.permissionPrompt = { profile: fx.slots[1]?.permissions, where: await evaluate<string>("window.__fx.where()"),
+          target: await tgt(), beta: await evaluate<string>("window.__fx.sent(2)") };
+        claims["Codex workspace-write/on-request approval input stays in Beta's terminal, target and draft survive"] =
+          JSON.stringify(fx.slots[1]?.permissions) === '{"sandbox":"workspace-write","approval":"on-request"}'
+          && (facts.permissionPrompt as { where: string }).where === "terminal1"
+          && (facts.permissionPrompt as { beta: string }).beta.includes("1\r")
+          && await evaluate<string>("window.__fx.sent(1)") === alphaBeforeApproval
+          && await evaluate<string>("document.querySelector('#input').value") === "" && sendsAt() === sendsBeforeApproval
+          && names((facts.permissionPrompt as { target: Target }).target, 2, 2000, "Beta");
+        const oldSocketCount = await evaluate<number>("window.__ws.length");
+        await evaluate(`window.__ws.filter(w => /\\/ws\\/2(?:[/?]|$)/.test(w.url) && w.readyState === 1).at(-1).close()`);
+        const reconnected = await wait(`window.__ws.length > ${oldSocketCount} && window.__ws.at(-1).readyState === 1`, 5000);
+        await typeText("n"); await key("Enter");
+        facts.permissionReconnect = { reconnected, where: await evaluate<string>("window.__fx.where()"), target: await tgt(),
+          input: await evaluate<string>("window.__ws.at(-1).sent") };
+        claims["approval terminal reconnect preserves Beta focus, send target and socket destination"] = reconnected
+          && (facts.permissionReconnect as { where: string }).where === "terminal1"
+          && names((facts.permissionReconnect as { target: Target }).target, 2, 2000, "Beta")
+          && (facts.permissionReconnect as { input: string }).input.includes("n\r")
+          && await evaluate<string>("window.__fx.sent(1)") === alphaBeforeApproval && sendsAt() === sendsBeforeApproval;
+        await shot(width, "terminal-2-permission-reconnected");
 
         // --- 3. Enter sends to the target on screen, and only there
         await click("document.querySelector('#input')");
@@ -6420,6 +7184,86 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         await evaluate("document.activeElement?.blur()");
       }
 
+      // --- 8. THE FOCUSED slot is recycled while the box holds a draft (card "Ein Entwurf geht nie
+      // still an eine Session, fuer die er nicht geschrieben wurde", src/drafts.ts#BoxDraft): the draft
+      // stays, the target marks it as the ended session's, Enter (➤ on the phone) sends nothing, and
+      // only an emptied box or "übernehmen" frees it. The new session arrives on the poll alone.
+      {
+        const fs = phone ? 2 : 1;
+        const field = () => evaluate<string>("document.querySelector('#input').value");
+        const recycle = async (openedAt: number, label: string) => {
+          fx.slots = fx.slots.map((r) => (r.id === fs ? { ...r, openedAt, label } : r));
+          const ok = await polls(1); await settle(100); return ok;
+        };
+        const orphanShown = (t: Target, openedAt: number) => !!t && t.shown && t.slot === String(fs) && t.openedAt === String(openedAt)
+          && t.text.includes("Entwurf für beendete Session");
+        const adoptBtn = () => evaluate<{ shown: boolean; text: string; title: string; h: number } | null>(`(() => { const b = document.querySelector('#comptarget .ctadopt');
+          return b ? { shown: window.__fx.shown(b), text: b.textContent.trim(), title: b.title, h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
+        const pressSend = async () => { if (phone) await click("document.querySelector('#send')"); else await key("Enter"); await settle(250); };
+        await click("document.querySelector('#input')");
+        await evaluate("(() => { const t = document.querySelector('#input'); t.value = ''; t.dispatchEvent(new Event('input')); })()");
+        await typeText("für die alte Session");
+        const before = await tgt();
+        const polled = await recycle(5000, "Nachfolger");
+        facts.orphan = { before, polled, draft: await field(), target: await tgt(), adopt: await adoptBtn() };
+        const o = facts.orphan as { draft: string; target: Target; adopt: { shown: boolean; text: string; h: number } | null };
+        claims["a new session in the FOCUSED slot (openedAt 5000) keeps the draft on screen, marked as the ended session's, with übernehmen beside it"] =
+          !!before && before.openedAt !== "5000" && polled && o.draft === "für die alte Session" && orphanShown(o.target, 5000)
+          && !!o.adopt?.shown && o.adopt.text === "übernehmen" && (!phone || o.adopt.h >= 40);
+        await shot(width, "orphan-draft");
+        const s0 = sendsAt();
+        await pressSend();
+        await polls(1);
+        facts.orphanSend = { sends: fx.sends.slice(s0), draft: await field(), target: await tgt() };
+        claims[`${phone ? "➤" : "Enter"} sends the ended session's draft nowhere — no /send, the draft and its mark stay, through one more poll`] =
+          fx.sends.length === s0 && await field() === "für die alte Session" && orphanShown((facts.orphanSend as { target: Target }).target, 5000);
+        // emptying the field by hand frees it: the target names what runs now, and new text binds to it
+        await click("document.querySelector('#input')");
+        await evaluate("document.querySelector('#input').select()");
+        await key("Backspace");
+        facts.orphanCleared = { draft: await field(), target: await tgt(), adopt: await adoptBtn() };
+        const c = facts.orphanCleared as { draft: string; target: Target; adopt: unknown };
+        claims["an emptied field is free again: no mark, the target names the new session (openedAt 5000)"] = c.draft === "" && c.adopt === null
+          && names(c.target, fs, 5000, "Nachfolger") && !c.target?.text.includes("Entwurf");
+        // a second draft, a second recycle — "übernehmen" addresses it to the new session, and only then Enter sends
+        await typeText("jetzt für die neue");
+        await recycle(6000, "Dritte");
+        const marked = orphanShown(await tgt(), 6000);
+        await click("document.querySelector('#comptarget .ctadopt')");
+        facts.adopted = { marked, draft: await field(), target: await tgt(), adopt: await adoptBtn(), where: await evaluate<string>("window.__fx.where()") };
+        const a = facts.adopted as { draft: string; target: Target; adopt: unknown; where: string };
+        claims["übernehmen keeps the text, drops the mark and puts the keys back in the field"] = marked && a.draft === "jetzt für die neue"
+          && a.adopt === null && names(a.target, fs, 6000, "Dritte") && !a.target?.text.includes("Entwurf") && a.where === "composer";
+        await shot(width, "orphan-adopted");
+        const s1 = sendsAt();
+        await pressSend();
+        await wait("document.querySelector('#input').value === ''", 3000);
+        claims["after übernehmen the send goes to the new session's slot, exactly once"] = fx.sends.length === s1 + 1
+          && fx.sends[s1]?.slot === fs && fx.sends[s1]?.text === "jetzt für die neue";
+        // an attachment alone is a draft too: held through a recycle, sent nowhere, freed by its ✕
+        const file = resolve(scratch, "orphan.txt");
+        writeFileSync(file, "attachment for the old session");
+        const doc = await send("DOM.getDocument", { depth: 0 });
+        const node = await send("DOM.querySelector", { nodeId: (doc.root as { nodeId: number }).nodeId, selector: "#dropfile" });
+        await send("DOM.setFileInputFiles", { nodeId: node.nodeId, files: [file] });
+        const uploaded = await wait("document.querySelectorAll('#compfiles .att').length === 1", 3000);
+        await recycle(7000, "Vierte");
+        const s2 = sendsAt();
+        await click("document.querySelector('#input')");
+        await pressSend();
+        facts.orphanAttached = { uploaded, draft: await field(), files: await evaluate<number>("document.querySelectorAll('#compfiles .att').length"),
+          sends: fx.sends.slice(s2), target: await tgt() };
+        const f = facts.orphanAttached as { draft: string; files: number; target: Target };
+        claims["an attachment alone held through a recycle (openedAt 7000) is marked and sends nothing"] = uploaded && f.draft === "" && f.files === 1
+          && fx.sends.length === s2 && orphanShown(f.target, 7000);
+        await click("document.querySelector('#compfiles .att .attx')");
+        facts.orphanUnattached = { files: await evaluate<number>("document.querySelectorAll('#compfiles .att').length"), target: await tgt() };
+        const u = facts.orphanUnattached as { files: number; target: Target };
+        claims["its ✕ empties the box and frees it: the target names the new session again"] = u.files === 0
+          && names(u.target, fs, 7000, "Vierte") && !u.target?.text.includes("Entwurf");
+        await evaluate("document.activeElement?.blur()");
+      }
+
       // --- passive polls move no focus (on the phone: the keyboard stays closed)
       const whereBefore = await evaluate<string>("window.__fx.where()");
       await polls(2);
@@ -6448,6 +7292,10 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // Sessions and Werkzeuge (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter"):
 // their place, words, 40-px targets, and that each row does what the board's own control does;
 // at 390 and at 360 × 780 that their tool row and segments break into lines with no word cut off.
+// Since the island is glass (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+// gebaut") it is the 28-px pill with icon buttons, and Sessions opens as its left side; the phone
+// runs here under prefers-reduced-motion, so every state stands at once and a box is never read
+// mid-spring — motion, material and the swipes are runGlassIslandDom's.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 // `detail` holds the facts one claim was judged on — the whole `facts` outgrows a check line
 interface PhoneIslandDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown>; detail: Record<string, unknown> }
@@ -6621,6 +7469,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await send("Emulation.setTouchEmulationEnabled", touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: touch || width < 700 ? "reduce" : "no-preference" }] });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); })()`);
       await navigate("http://fleet.fixture/");
@@ -6758,14 +7607,32 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const st = facts.start as { mhead: boolean; keys: boolean; bar: Box; pill: Box; pane: Box; pillText: string; pillShape: string; open: boolean; mopen: boolean };
       claims[`${tag}no head and no fixed foot: #mhead is gone, the keys are folded, the bottom island floats 6 px from the edges`] =
         !st.mhead && !st.keys && !!bar && bar.x === 6 && bar.r === W - 6 && bar.b === bottom - 6;
-      // 2. the start is the closed pill: centred, state shape + name, 32 px seen and 40 px to hit
+      // 2. the start is the closed pill of glass: centred, state shape + name, 28 px seen, 44 px to hit
       const pill = st.pill;
-      const hitTop = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.y - 3})`) : false;
-      const hitBottom = pill ? await evaluate<boolean>(`window.__fx.hits('#mpill', ${pill.x + pill.w / 2}, ${pill.b + 3})`) : false;
-      facts.pillHit = { hitTop, hitBottom };
+      // the 44 px exactly: 8 px of rim above the glass (to the screen's edge — above it there is
+      // nothing to miss, so the zone must start there) and 8 px below, and 9 and 10 px below no longer
+      const zoneBox = await box("#mtop");
+      const hitAt = (dy: number) => pill ? evaluate<boolean>(`window.__fx.hits('#mtop', ${pill.x + pill.w / 2}, ${dy < 0 ? pill.y + dy : pill.b + dy})`) : Promise.resolve(false);
+      const hitTop = await hitAt(-7.5), hitBottom = await hitAt(7.5), missBelow = !await hitAt(9) && !await hitAt(10);
+      facts.pillHit = { zone: zoneBox, hitTop, hitBottom, missBelow };
       claims[`${tag}the start is the closed pill: centred, state shape and the session's name, nothing else`] = !st.open && !st.mopen && !!pill
-        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 6 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
-      claims[`${tag}the pill is 32 px seen and hits 40 px (4 px above and below it still open it)`] = !!pill && pill.h === 32 && hitTop && hitBottom;
+        && Math.abs(pill.x + pill.w / 2 - W / 2) <= 1 && pill.y === 8 && st.pillText === "Alpha" && /\bact (work|rest|sleep|bad)\b/.test(st.pillShape);
+      claims[`${tag}the pill is 28 px seen and hits exactly 44 px: 8 px above it (to the screen's edge) and 8 px below belong to the island, 9 and 10 px below no longer`] =
+        !!pill && pill.h === 28 && !!zoneBox && zoneBox.y === 0 && zoneBox.h === 44 && zoneBox.y === pill.y - 8 && zoneBox.b === pill.b + 8 && hitTop && hitBottom && missBelow;
+      if (pill && !st.open) {
+        await tapAt({ x: pill.x + pill.w / 2, y: pill.b + 6 }, "the rim under the pill");
+        const rimOpens = await isOpen();
+        await tap("document.querySelector('#mname')");
+        claims[`${tag}a tap on the rim 6 px under the glass opens the island too`] = rimOpens && !await isOpen();
+        // a mouse's own click decides however long its button is held: the touch tap's 250 ms bound
+        // swallowed a slow CDP click on a loaded machine (rights DOM 390, preview 2cd80fb28756)
+        const at = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+        fx.inputs.push(`mouse held 400 ms ${Math.round(at.x)},${Math.round(at.y)} the pill`);
+        await mouse("mouseMoved", at); await mouse("mousePressed", at); await settle(400); await mouse("mouseReleased", at); await settle();
+        const slowOpens = await isOpen();
+        if (slowOpens) await tap("document.querySelector('#mname')");
+        claims[`${tag}a mouse click held 400 ms on the pill opens the island too — the touch tap's 250 ms bound is no mouse's`] = slowOpens && !await isOpen();
+      }
       // 3. a tap on the pill opens; the open island covers the pane without moving it
       const termBefore = await box("document.querySelector('.paneterm')");
       await tap("document.querySelector('#mpill')");
@@ -6773,32 +7640,32 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const ids = ["#mslot", "#mname", "#minfo", "#mview", "#mhist", "#mauto", "#mmore"];
       const boxes: Record<string, Box> = {};
       for (const id of ids) boxes[id] = (await shown(id)) ? await box(id) : null;
-      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').textContent"),
+      facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').getAttribute('aria-label')"),
         term: await box("document.querySelector('.paneterm')"), pane: await box("window.__fx.pane()"), top: await box("#mtop"), where: await evaluate<string>("window.__fx.where()") };
       const op = facts.open as { opened: boolean; name: string; view: string; term: Box; pane: Box; top: Box; where: string };
       await shot(`${W}${keyboard ? "-tastatur" : ""}-auf`);
       const b = (id: string) => boxes[id];
-      claims[`${tag}a tap on the pill opens the island: slot button left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under the name`] =
+      claims[`${tag}a tap on the pill opens the island: Sessions left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under them`] =
         opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
         && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
-        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation";
+        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation anzeigen";
       // …and a finger at each centre meets that button, at the default text size and at the largest
-      // Aa (24 px, src/chatsize.ts) — where the words of the tools row no longer fit
+      // Aa (24 px, src/chatsize.ts) — the glyphs do not grow, the name's type stops at 15 px
       const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
         return !e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })`);
       const missedAt14 = await hittable();
       await evaluate("document.documentElement.style.setProperty('--chat-fs', '24px')");
       await settle(100);
-      const missedAt24 = (await hittable()).filter((id) => id !== "#mview" && id !== "#mhist" && id !== "#mauto");
+      const missedAt24 = await hittable();
       const moreAt24 = await box("#mmore");
       await evaluate("document.documentElement.style.removeProperty('--chat-fs')");
       await settle(100);
-      const sizeClaim = `${tag}every target in the open island is at least 40 px high, the icon buttons 40 × 40, each met by a finger at its centre`;
-      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 40) && ["#mslot", "#minfo", "#mmore"].every((id) => (b(id)?.w ?? 0) >= 40)
+      const sizeClaim = `${tag}every target in the open island is at least 44 px high, the icon buttons 44 × 44, each met by a finger at its centre`;
+      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 44) && ids.filter((id) => id !== "#mname").every((id) => (b(id)?.w ?? 0) >= 44)
         && missedAt14.length === 0;
       detail[sizeClaim] = { boxes, missedAt14 };
-      const bigClaim = `${tag}at the largest text size ⋯, ℹ and the slot button stay on screen and tappable (the words scroll under ⋯)`;
-      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 6;
+      const bigClaim = `${tag}at the largest text size every button of the open island stays on screen and tappable`;
+      claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 10;
       detail[bigClaim] = { missedAt24, moreAt24 };
       claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
         && JSON.stringify(op.term) === JSON.stringify(termBefore) && !!op.top && op.top.b > (termBefore?.y ?? 0);
@@ -6827,15 +7694,15 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sheetGone = async () => { await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200); };
       actions.slot = await act("#mslot", sheetIs("sessions"), sheetGone);
       actions.view = await act("#mview", "window.__fx.pane().classList.contains('chat')");
-      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').textContent"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
+      facts.chatView = { view: await evaluate<string>("document.querySelector('#mview').getAttribute('aria-label')"), tall: await evaluate<boolean>("document.querySelector('#comp').classList.contains('tall')"),
         placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
       actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
       actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions sheet, view, ℹ, History, tools sheet)`;
-      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
+      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions, view, ℹ, History, tools sheet)`;
+      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal anzeigen";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
       facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
       claims[`${tag}the field reads "Prompt für Alpha …" in the terminal and in the conversation`] =
@@ -6880,6 +7747,9 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const tapRow = async (word: string) => { await evaluate(`${rowSel(word)}?.scrollIntoView({ inline: 'nearest', block: 'nearest' })`); await settle(100); return tap(rowSel(word)); };
       const placed = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && r.sheet.r === W && r.sheet.b === bottom
         && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
+      // Sessions is the island's left side: from the left edge, 86 % wide, the visible screen tall
+      const sided = (r: SheetRead) => !!r.sheet && !!r.shade && r.sheet.x === 0 && Math.abs(r.sheet.w - W * 0.86) <= 1 && r.sheet.y === 0 && r.sheet.b === bottom
+        && r.shade.x === 0 && r.shade.y === 0 && r.shade.w === W && r.shade.b === bottom && !r.islandOpen;
 
       // --- the Sessions sheet
       await kbUp();
@@ -6887,8 +7757,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sess = await readSheet();
       await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-sessions`);
       facts.sessions = sess;
-      const sessPlaced = `${tag}the slot button opens the sheet Sessions: full width, set at the foot of the visible screen, over a shade; the island closes`;
-      claims[sessPlaced] = sessOpened && placed(sess);
+      const sessPlaced = `${tag}the Sessions button opens Sessions as the island's left side: from the left edge, 86 % wide, the visible screen tall, over a shade; the island closes`;
+      claims[sessPlaced] = sessOpened && sided(sess);
       detail[sessPlaced] = { sheet: sess.sheet, shade: sess.shade, bottom, islandOpen: sess.islandOpen };
       claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
       const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
@@ -6909,7 +7779,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await escape();
       const escClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')"), escWhere = await evaluate<string>("window.__fx.where()");
       await openVia("#mslot", "sessions");
-      await tapAt({ x: W / 2, y: 40 }, "shade");
+      await tapAt({ x: W - 20, y: 40 }, "shade"); // right of the side, where only the shade is
       const shadeClosed = await evaluate<boolean>("!document.body.classList.contains('msheet')");
       facts.sessClose = { escClosed, escWhere, shadeClosed };
       claims[`${tag}Escape closes the sheet and gives the focus to the pill; a tap on the shade closes it too`] = escClosed && escWhere === "#mpill" && shadeClosed;
@@ -7196,6 +8066,630 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
   }
 }
 
+// THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
+// gebaut", docs/design/insel-glas-notiz.md §1–§4), measured in TWO engines on the real client bundle
+// behind the fixture origin: Chromium through CDP (the suite's own browser, always) and WebKit
+// through Playwright's WebKit build when one resolves — FLEET_E2E_PLAYWRIGHT names a playwright-core
+// directory, else it is looked up from the source tree. The repo carries no Playwright dependency,
+// so a machine without one prints the WebKit half as not run (a line, not a check); a WebKit that
+// resolves but cannot run is its PROBE line, red. Both with an iPhone profile (390 × 844, DPR 3,
+// touch, mobile) and every gesture as REAL touch events (Input.dispatchTouchEvent in both
+// protocols), so the engine's own touch → pointer path runs. WebKit emulates prefers-contrast and
+// prefers-reduced-motion but not prefers-reduced-transparency: there the claim reads that the
+// engine parses the query and that the opaque face is bound to it. Every claim reads the DOM,
+// computed style or geometry, never the source. Exported so a lane can drive it with an artefact
+// folder and against a mutated copy of the tree.
+export interface GlassIslandResult { engine: "chromium" | "webkit"; claims: Record<string, boolean>; detail: Record<string, unknown>; notRun?: string }
+type GlassPt = { x: number; y: number };
+type GlassTouch = "touchStart" | "touchMove" | "touchEnd" | "touchCancel";
+interface GlassDriver {
+  open(): Promise<void>;
+  evaluate<T>(expression: string): Promise<T>;
+  touch(type: GlassTouch, at: GlassPt): Promise<void>;
+  // the engine's WHOLE tap: in WebKit Playwright's tap, which sends a click after the touchend as iOS
+  // does (a raw touch stream sends none); in Chromium the touch pair, whose gesture adds the click
+  tap(at: GlassPt): Promise<void>;
+  // the page's own size, as a browser that shrinks its layout viewport for the keyboard changes it
+  resize(width: number, height: number): Promise<void>;
+  type(text: string): Promise<void>;
+  key(key: "Escape" | "ArrowLeft" | "ArrowRight"): Promise<void>;
+  media(m: { motion?: boolean; contrast?: boolean; transparency?: boolean }): Promise<{ transparency: boolean }>;
+  consoleErrors(): string[];
+  shot(file: string): Promise<void>;
+  close(): Promise<void>;
+}
+type GlassServe = (path: string, method: string) => { status: number; type: string; body: string };
+const GLASS_W = 390, GLASS_H = 844;
+const GLASS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36";
+async function glassChromium(serve: GlassServe, init: string, scratch: string): Promise<GlassDriver> {
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) throw new Error("glass island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/chromium`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  // a start that fails (no endpoint, a timeout, a refused socket) takes its browser down before it
+  // throws: a headless Chromium left behind would sit on the machine every suite shares
+  let socket: WebSocket | undefined;
+  try {
+    let log = "", timer: ReturnType<typeof setTimeout> | undefined;
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + log)), 45000); }),
+    ]).finally(() => clearTimeout(timer));
+    const ws = new WebSocket(endpoint);
+    socket = ws;
+    // the socket opens, or it errors, closes or hangs past 15 s — each of the last three is the catch below
+    let openTimer: ReturnType<typeof setTimeout> | undefined;
+    await new Promise<void>((ok, bad) => {
+      ws.onopen = () => ok();
+      ws.onerror = () => bad(new Error("CDP connection failed"));
+      ws.onclose = () => bad(new Error("CDP connection closed before it opened"));
+      openTimer = setTimeout(() => bad(new Error("CDP connection did not open within 15 s")), 15000);
+    }).finally(() => clearTimeout(openTimer));
+    ws.onclose = null;
+  } catch (error) {
+    socket?.close(); browser.kill(); await browser.exited;
+    throw error;
+  }
+  const cdp = socket;
+  let serial = 0, sessionId: string | undefined, targetId = "", loaded: (() => void) | null = null;
+  const errors: string[] = [];
+  const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+  const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+    const id = ++serial;
+    const t = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+    pending.set(id, { ok: (v) => { clearTimeout(t); ok(v); }, bad: (e) => { clearTimeout(t); bad(e); } });
+    cdp.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  cdp.onmessage = (event) => {
+    const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+    if (msg.id !== undefined) {
+      const w = pending.get(msg.id); if (!w) return;
+      pending.delete(msg.id);
+      if (msg.error) w.bad(new Error(JSON.stringify(msg.error))); else w.ok(msg.result ?? {});
+      return;
+    }
+    if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+    if (msg.method === "Runtime.consoleAPICalled" && msg.params) {
+      const p = msg.params as { type?: string; args?: { value?: unknown; description?: string }[] };
+      if (p.type === "error") errors.push((p.args ?? []).map((a) => String(a.value ?? a.description ?? "")).join(" "));
+      return;
+    }
+    if (msg.method === "Log.entryAdded" && msg.params) {
+      const entry = (msg.params as { entry?: { level?: string; text?: string } }).entry;
+      if (entry?.level === "error") errors.push(entry.text ?? "");
+      return;
+    }
+    if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+    const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+    const a = serve(new URL(request.url).pathname, request.method);
+    void send("Fetch.fulfillRequest", { requestId, responseCode: a.status, responseHeaders: [{ name: "content-type", value: a.type }], body: Buffer.from(a.body).toString("base64") }).catch(() => undefined);
+  };
+  const navigate = async (url: string) => { const done = new Promise<void>((ok) => { loaded = ok; }); await send("Page.navigate", { url }); await Promise.race([done, Bun.sleep(15000)]); };
+  let media: { name: string; value: string }[] = [];
+  return {
+    async open() {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = undefined;
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable"); await send("Log.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: init });
+      await send("Emulation.setDeviceMetricsOverride", { width: GLASS_W, height: GLASS_H, deviceScaleFactor: 3, mobile: true });
+      await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await send("Emulation.setUserAgentOverride", { userAgent: GLASS_UA, platform: "iPhone" });
+      media = [];
+      await send("Emulation.setEmulatedMedia", { features: [] });
+      await navigate("http://fleet.fixture/blank");
+      await send("Runtime.evaluate", { expression: "localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }))" });
+      await navigate("http://fleet.fixture/");
+    },
+    async evaluate<T>(expression: string): Promise<T> {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("page threw: " + JSON.stringify(r.exceptionDetails).slice(0, 300));
+      return (r.result as { value: T }).value;
+    },
+    async touch(type, at) {
+      const lifted = type === "touchEnd" || type === "touchCancel";
+      await send("Input.dispatchTouchEvent", { type, touchPoints: lifted ? [] : [{ x: at.x, y: at.y, id: 1 }] });
+    },
+    async tap(at) {
+      await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y, id: 1 }] });
+      await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    },
+    async resize(width, height) { await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 3, mobile: true }); },
+    async type(text) { await send("Input.insertText", { text }); },
+    async key(key) {
+      const vk = { Escape: 27, ArrowLeft: 37, ArrowRight: 39 }[key];
+      await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: vk });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: vk });
+    },
+    async media(m) {
+      media = [{ name: "prefers-reduced-motion", value: m.motion ? "reduce" : "no-preference" }, { name: "prefers-contrast", value: m.contrast ? "more" : "no-preference" },
+        { name: "prefers-reduced-transparency", value: m.transparency ? "reduce" : "no-preference" }];
+      await send("Emulation.setEmulatedMedia", { features: media });
+      return { transparency: true };
+    },
+    consoleErrors() { return [...errors]; },
+    async shot(file) { writeFileSync(file, Buffer.from(String((await send("Page.captureScreenshot", { format: "png" })).data), "base64")); },
+    async close() { cdp.close(); browser.kill(); await browser.exited; },
+  };
+}
+async function glassWebkit(playwright: string, serve: GlassServe, init: string): Promise<GlassDriver> {
+  const mod = await import(playwright) as { default?: unknown };
+  type PwPage = { goto(u: string): Promise<unknown>; evaluate(e: string): Promise<unknown>; screenshot(o: { path: string }): Promise<unknown>;
+    on(event: "console", listener: (message: { type(): string; text(): string }) => void): void;
+    keyboard: { press(k: string): Promise<void>; type(t: string): Promise<void> }; touchscreen: { tap(x: number, y: number): Promise<void> };
+    setViewportSize(s: { width: number; height: number }): Promise<void>; emulateMedia(o: Record<string, unknown>): Promise<void>; _connection: { toImpl(p: unknown): { delegate: { _pageProxySession: { send(m: string, p: unknown): Promise<unknown> } } } } };
+  type PwContext = { newPage(): Promise<PwPage>; close(): Promise<void>; addInitScript(s: string): Promise<void>;
+    route(u: string, h: (r: { request(): { url(): string; method(): string }; fulfill(o: Record<string, unknown>): Promise<void> }) => unknown): Promise<void> };
+  const pw = (mod.default ?? mod) as { webkit: { launch(): Promise<{ newContext(o: unknown): Promise<PwContext>; close(): Promise<void> }> }; devices: Record<string, unknown> };
+  const browser = await pw.webkit.launch();
+  let context: PwContext | null = null, page: PwPage | null = null;
+  const errors: string[] = [];
+  const pg = () => { if (!page) throw new Error("no page"); return page; };
+  return {
+    async open() {
+      await context?.close();
+      context = await browser.newContext({ ...(pw.devices["iPhone 13"] as object), viewport: { width: GLASS_W, height: GLASS_H }, deviceScaleFactor: 3 });
+      await context.route("http://fleet.fixture/**", async (route) => { const r = route.request(); const a = serve(new URL(r.url()).pathname, r.method()); await route.fulfill({ status: a.status, contentType: a.type, body: a.body }); });
+      await context.addInitScript(init);
+      page = await context.newPage();
+      page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+      await page.goto("http://fleet.fixture/blank");
+      await page.evaluate("localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }))");
+      await page.goto("http://fleet.fixture/");
+    },
+    async evaluate<T>(expression: string): Promise<T> { return await pg().evaluate(expression) as T; },
+    async touch(type, at) {
+      // Playwright exposes only a tap; the touch stream goes through its WebKit protocol, which has
+      // Input.dispatchTouchEvent (reached through the in-process connection)
+      await pg()._connection.toImpl(pg()).delegate._pageProxySession.send("Input.dispatchTouchEvent", { type, touchPoints: [{ x: Math.round(at.x), y: Math.round(at.y), id: 1 }] });
+    },
+    async tap(at) { await pg().touchscreen.tap(Math.round(at.x), Math.round(at.y)); },
+    async resize(width, height) { await pg().setViewportSize({ width, height }); },
+    async type(text) { await pg().keyboard.type(text); },
+    async key(key) { await pg().keyboard.press(key); },
+    async media(m) {
+      await pg().emulateMedia({ reducedMotion: m.motion ? "reduce" : "no-preference", contrast: m.contrast ? "more" : "no-preference" });
+      return { transparency: false };
+    },
+    consoleErrors() { return [...errors]; },
+    async shot(file) { await pg().screenshot({ path: file }); },
+    async close() { await browser.close(); },
+  };
+}
+export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: string; engines?: ("chromium" | "webkit")[] } = {}): Promise<GlassIslandResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-glass-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const clientPath = resolve(sourceRoot, "src/client.ts");
+  let mutationApplied = false;
+  const mutated = await Bun.build({
+    entrypoints: [clientPath], target: "browser",
+    plugins: [{ name: "remove-layout-keyboard-height-fallback", setup(build) {
+      build.onLoad({ filter: /client\.ts$/ }, ({ path }) => {
+        if (path !== clientPath) return;
+        const source = readFileSync(path, "utf8");
+        const needle = "lastUnfocusedHeight - window.innerHeight > 120";
+        mutationApplied = source.includes(needle);
+        return { contents: source.replace(needle, "false"), loader: "ts" };
+      });
+    } }],
+  });
+  if (!mutated.success || !mutationApplied) throw new Error("layout keyboard mutation probe could not remove its height fallback");
+  const mutantAppJs = await mutated.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  const SHORT = "Alpha", LONG = "Nordlicht · Abgleich der Wetterstationen im Hochgebirge";
+  const alpha = { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: SHORT, openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 };
+  const slots = [alpha, { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))];
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"], models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  const posts: string[] = [];
+  let servedAppJs = appJs;
+  const serve: GlassServe = (p, method) => {
+    const json = (v: unknown, status = 200) => ({ status, type: "application/json", body: JSON.stringify(v) });
+    if (method === "POST") { posts.push(p); return json({ ok: true }); }
+    if (p === "/") return { status: 200, type: "text/html", body: indexHtml };
+    if (p === "/blank") return { status: 200, type: "text/html", body: "<!doctype html><title>blank</title>" };
+    if (p === "/app.js") return { status: 200, type: "text/javascript", body: servedAppJs };
+    if (p === "/xterm.css") return { status: 200, type: "text/css", body: xtermCss };
+    if (p === "/api/sessions") return json({ now: 10 * 60_000, chips: [], slots, tasks: [] });
+    if (p === "/api/harnesses") return json(HARNESSES);
+    return json({ error: "fixture: not served" }, 404);
+  };
+  // a socket per pane that answers and keeps nothing; a visualViewport the probe can shrink (the
+  // on-screen keyboard where the client reads it); window.__g reads the island
+  const INIT = `(() => { class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob'; (window.__ws ||= []).push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    const vv = new EventTarget(); let kbd = 0;
+    for (const [k, f] of Object.entries({ height: () => window.innerHeight - kbd, width: () => window.innerWidth, offsetTop: () => 0, offsetLeft: () => 0, pageTop: () => 0, pageLeft: () => 0, scale: () => 1 }))
+      Object.defineProperty(vv, k, { get: f });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+    window.__keyboard = (px) => { kbd = px; vv.dispatchEvent(new Event('resize')); };
+    window.__g = (() => {
+      const q = (s) => document.querySelector(s);
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) }; };
+      const shown = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]');
+      const state = () => ({ open: document.body.classList.contains('mopen'), sessions: document.body.classList.contains('msheet') && q('#msheet').dataset.sheet === 'sessions',
+        side: q('#msheetwrap').classList.contains('mside'), info: !!q('#shell-board'), title: q('#mtitle').textContent, target: q('#comptarget')?.dataset.slot ?? null,
+        sessionsP: q('#msheetwrap').style.getPropertyValue('--mside-p'), infoP: q('#shell-board')?.style.getPropertyValue('--mside-p') ?? null });
+      // widths of the glass, one per frame, for the spring's overshoot
+      const sample = (ms) => { window.__frames = []; const g = q('#mglas'), t0 = performance.now();
+        const f = () => { window.__frames.push([Math.round(performance.now() - t0), g.getBoundingClientRect().width]); if (performance.now() - t0 < ms) requestAnimationFrame(f); };
+        requestAnimationFrame(f); };
+      return { q, box, shown, state, sample };
+    })(); })()`;
+  const results: GlassIslandResult[] = [];
+  const engines = opts.engines ?? ["chromium", "webkit"];
+  try {
+    for (const engine of engines) {
+      const claims: Record<string, boolean> = {}, detail: Record<string, unknown> = {};
+      let driver: GlassDriver;
+      if (engine === "webkit") {
+        let playwright = process.env.FLEET_E2E_PLAYWRIGHT ?? "";
+        if (!playwright) try { playwright = Bun.resolveSync("playwright-core", sourceRoot); } catch { /* none on this machine */ }
+        else playwright = resolve(playwright, "index.js");
+        if (!playwright) { results.push({ engine, claims, detail, notRun: "no playwright-core resolves from the source tree and FLEET_E2E_PLAYWRIGHT is unset" }); continue; }
+        driver = await glassWebkit(playwright, serve, INIT);
+      } else driver = await glassChromium(serve, INIT, scratch);
+      const d = driver;
+      const tag = (s: string) => `${engine} · ${s}`;
+      const say = (claim: string, ok: boolean, facts?: unknown) => { claims[tag(claim)] = ok; if (facts !== undefined) detail[tag(claim)] = facts; };
+      const ev = <T>(e: string) => d.evaluate<T>(e);
+      const wait = (cond: string, ms = 3000) => ev<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+        const tick = () => { let v = false; try { v = !!(${cond}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+      const pause = (ms: number) => ev(`new Promise((r) => setTimeout(r, ${ms}))`);
+      type Box = { x: number; y: number; w: number; h: number; r: number; b: number } | null;
+      type State = { open: boolean; sessions: boolean; side: boolean; info: boolean; title: string; target: string | null; sessionsP: string; infoP: string | null };
+      const box = (sel: string) => ev<Box>(`window.__g.box(document.querySelector(${JSON.stringify(sel)}))`);
+      const state = () => ev<State>("window.__g.state()");
+      const shot = async (name: string) => { if (opts.artifacts) await d.shot(resolve(opts.artifacts, `${engine}-${name}.png`)); };
+      const tapAt = async (at: GlassPt, holdMs = 30) => { await d.touch("touchStart", at); await Bun.sleep(holdMs); await d.touch("touchEnd", at); await pause(120); };
+      // one finger: down at `from`, then each step (dx, dy from the start, an optional wait before it), then up
+      const swipe = async (from: GlassPt, steps: { dx: number; dy?: number; wait?: number }[], end: GlassTouch = "touchEnd") => {
+        await d.touch("touchStart", from);
+        let at = from;
+        for (const s of steps) { if (s.wait) await Bun.sleep(s.wait); at = { x: from.x + s.dx, y: from.y + (s.dy ?? 0) }; await d.touch("touchMove", at); }
+        await d.touch(end, at);
+      };
+      const settled = `!document.querySelector('#msheetwrap').style.getPropertyValue('--mside-p') && !(document.querySelector('#shell-board')?.style.getPropertyValue('--mside-p'))`;
+      const closed = `!document.body.classList.contains('mopen') && !document.body.classList.contains('msheet') && !document.querySelector('#shell-board')`;
+      const reset = async () => { for (let i = 0; i < 3 && !await ev<boolean>(closed); i++) { await d.key("Escape"); await pause(150); } await wait(closed, 2000); await pause(100); };
+      // a freshly booted page (or one whose media just changed) answers its first touches slowly —
+      // measured 0.2–1.6 s per event in Chromium — and a slow touch is no tap: warm up with taps on
+      // the terminal until a touchStart/touchEnd pair comes back inside 80 ms
+      const warm = async () => {
+        for (let i = 0; i < 12; i++) {
+          const t0 = performance.now();
+          await d.touch("touchStart", { x: GLASS_W / 2, y: 400 }); await d.touch("touchEnd", { x: GLASS_W / 2, y: 400 });
+          if (performance.now() - t0 < 80) break;
+          await pause(150);
+        }
+        await pause(200);
+      };
+      const boot = async (label: string) => {
+        alpha.label = label;
+        await d.open();
+        const ok = await wait(`document.querySelector('#panes .pane .xterm') && (window.__ws || []).some((w) => w.readyState === 1) && document.querySelector('#mtitle').textContent === ${JSON.stringify(label)} && document.querySelector('#mpill .mnm')`, 15000);
+        if (!ok) throw new Error(`${engine}: the client did not boot in the fixture origin: ` + await ev<string>("document.body.innerText.slice(0, 200)"));
+        await pause(600);
+        await warm();
+      };
+      try {
+        await boot(SHORT);
+        const viewportMeta = await ev<string>(`document.querySelector('meta[name="viewport"]')?.content ?? ""`);
+        const viewportErrors = d.consoleErrors().filter((message) => /interactive-widget|viewport/i.test(message));
+        say("the viewport directive stays on Blink and loading reports no viewport-meta error",
+          engine === "chromium" ? /interactive-widget=resizes-content/.test(viewportMeta) && viewportErrors.length === 0
+            : !/interactive-widget/.test(viewportMeta) && viewportErrors.length === 0,
+          { viewportMeta, viewportErrors });
+        await ev(`document.querySelector('#input').focus()`);
+        await d.resize(390, 500);
+        const shrunkKeyboard = await wait(`document.body.classList.contains('keyboard-open')`);
+        const shrinkFacts = await ev<{ open: boolean; inner: number; visual: number }>(
+          `({ open: document.body.classList.contains('keyboard-open'), inner: innerHeight, visual: visualViewport.height })`);
+        await d.resize(390, 844);
+        await d.resize(844, 390);
+        await pause(150);
+        const landscapeClosed = await wait(`!document.body.classList.contains('keyboard-open')`);
+        say("a focused field detects a layout-viewport keyboard resize, while the same landscape viewport without a keyboard stays closed",
+          shrunkKeyboard && shrinkFacts.open && shrinkFacts.inner === shrinkFacts.visual && landscapeClosed,
+          { shrinkFacts, landscape: await ev<{ inner: number; visual: number; open: boolean }>(
+            `({ inner: innerHeight, visual: visualViewport.height, open: document.body.classList.contains('keyboard-open') })`) });
+        await ev(`document.querySelector('#input').blur()`);
+        await d.resize(GLASS_W, GLASS_H);
+        await pause(150);
+        servedAppJs = mutantAppJs;
+        await boot(SHORT);
+        await ev(`document.querySelector('#input').focus()`);
+        await d.resize(390, 500);
+        await pause(150);
+        const mutantState = await ev<{ open: boolean; inner: number; visual: number }>(
+          `({ open: document.body.classList.contains('keyboard-open'), inner: innerHeight, visual: visualViewport.height })`);
+        say("mutation probe: removing the layout-height fallback makes the layout-viewport keyboard claim fail",
+          !mutantState.open && mutantState.inner === mutantState.visual, mutantState);
+        servedAppJs = appJs;
+        await boot(SHORT);
+        // touch: the page has touch events (WebKit's build reports maxTouchPoints 0 even with touch on)
+        const env = await ev<{ w: number; h: number; dpr: number; coarse: boolean; touch: boolean; mobile: boolean }>(
+          "({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio, coarse: matchMedia('(pointer: coarse)').matches, touch: 'ontouchstart' in window, mobile: matchMedia('(max-width: 700px)').matches })");
+        say("SETUP: the real client bundle boots under an iPhone profile — 390 × 844, DPR 3, touch events, a coarse pointer", env.w === GLASS_W && env.h === GLASS_H && env.dpr === 3 && env.coarse && env.touch && env.mobile, env);
+        await shot("zu");
+        // 1. the pill
+        const glass = await box("#mglas"), zone = await box("#mtop"), term = await box(".paneterm");
+        const pill = await ev<{ text: string; copies: number; over: boolean; run: boolean; label: string }>(`(() => { const p = document.querySelector('#mpill');
+          return { text: p.querySelector('.mband').textContent, copies: p.querySelectorAll('.mspur .mnm').length, over: p.querySelector('.mband').classList.contains('mover'),
+            run: p.querySelector('.mspur').classList.contains('mrun'), label: p.getAttribute('aria-label') }; })()`);
+        say("closed, the island is a pill 28 px high, 8 px under the top, centred, 96–168 px wide; state shape and name, nothing else",
+          !!glass && glass.h === 28 && glass.y === 8 && Math.abs(glass.x + glass.w / 2 - GLASS_W / 2) <= 1 && glass.w >= 96 && glass.w <= 168
+          && pill.text === SHORT && /\bact (work|rest|sleep|bad)\b/.test(await ev<string>("document.querySelector('#mpill .act')?.className ?? ''")), { glass, pill });
+        // exactly 44: 8 px of rim above (to the screen's edge, so the zone must start there) and below, 9 and 10 px below no longer
+        const inZone = (y: number) => glass ? ev<boolean>(`!!document.elementFromPoint(${glass.x + glass.w / 2}, ${y})?.closest('#mtop')`) : Promise.resolve(false);
+        const rim = glass ? { above: await inZone(glass.y - 7.5), below: await inZone(glass.b + 7.5), out9: await inZone(glass.b + 9), out10: await inZone(glass.b + 10) } : null;
+        say("the pill hits exactly 44 px: 8 px above the glass (to the screen's edge) and 8 px below belong to the zone, 9 and 10 px below no longer",
+          !!zone && !!glass && !!rim && zone.y === 0 && zone.h === 44 && zone.y === glass.y - 8 && zone.b === glass.b + 8 && rim.above && rim.below && !rim.out9 && !rim.out10, { zone, glass, rim });
+        say("the terminal starts 6 px under the glass", !!term && !!glass && term.y === glass.b + 6, { term, glass, pane: await box("#panes .pane") });
+        say(`a name that fits (${SHORT}) is no band: one copy, nothing runs`, !pill.over && pill.copies === 1 && !pill.run, pill);
+        // 2. the material
+        const mat = await ev<{ bd: string; shadow: string; bg: string; after: string }>(`(() => { const s = getComputedStyle(document.querySelector('#mglas'));
+          return { bd: s.backdropFilter || s.webkitBackdropFilter || '', shadow: s.boxShadow, bg: s.backgroundImage + ' | ' + s.backgroundColor, after: getComputedStyle(document.querySelector('#mglas'), '::after').display }; })()`);
+        say("the glass computes its material: blur(18px) saturate(1.6), three inset edges, light over a scrim",
+          /blur\(18px\)/.test(mat.bd) && /saturate\(1\.6\)/.test(mat.bd) && (mat.shadow.match(/inset/g) ?? []).length === 3 && /linear-gradient/.test(mat.bg), mat);
+        // 3. a tap opens: the glass springs to --maw × 96, the icon buttons spring in one after the other
+        await ev("window.__g.sample(1100)");
+        await tapAt({ x: GLASS_W / 2, y: 22 });
+        await pause(1150);
+        const frames = await ev<[number, number][]>("window.__frames");
+        const open = await ev<{ open: boolean; expanded: string; glass: Box; ease: string; delays: string[] }>(`(() => ({ open: document.body.classList.contains('mopen'),
+          expanded: document.querySelector('#mpill').getAttribute('aria-expanded'), glass: window.__g.box(document.querySelector('#mglas')),
+          ease: getComputedStyle(document.querySelector('#mglas')).transitionTimingFunction,
+          delays: [...document.querySelectorAll('#mopen .mib, #mname, #mort')].filter(window.__g.shown).map((e) => getComputedStyle(e).transitionDelay.split(',')[0].trim()) }))()`);
+        const final = open.glass?.w ?? 0, peak = Math.max(...frames.map((f) => f[1]));
+        await shot("auf-terminal");
+        say("a tap on the pill opens it: the glass becomes 370 × 96 (aria-expanded true)", open.open && open.expanded === "true" && !!open.glass && open.glass.w === 370 && open.glass.h === 96, open);
+        say("it opens as a spring: the glass overshoots its width by 1–6 % on the way (the linear() curve from response 0.38 / ζ 0.72)",
+          /^linear\(/.test(open.ease) && final > 0 && peak / final - 1 > 0.01 && peak / final - 1 < 0.06, { peak, final, ease: open.ease.slice(0, 60), frames });
+        say("the buttons spring in one after another, 22 ms apart from 60 ms", open.delays.length >= 9 && open.delays.every((v, i) => Math.abs(parseFloat(v) * (v.endsWith("ms") ? 1 : 1000) - (60 + 22 * i)) < 1), open.delays);
+        // 4. the buttons of the view: icons, no words
+        type Btns = { ids: string[]; bad: string[]; small: string[]; off: string[] };
+        const BTNS = `(() => { const bs = [...document.querySelectorAll('#mopen .mib')].filter(window.__g.shown);
+          return { ids: bs.map((b) => b.id), bad: bs.filter((b) => b.tagName !== 'BUTTON' || !b.getAttribute('aria-label') || !b.title || !b.querySelector('svg') || b.textContent.trim() !== '').map((b) => b.id),
+            small: bs.filter((b) => { const r = b.getBoundingClientRect(); return Math.round(r.width) < 44 || Math.round(r.height) < 44; }).map((b) => b.id),
+            off: bs.filter((b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; return r.left < 0 || r.right > innerWidth || !b.contains(document.elementFromPoint(x, y)); }).map((b) => b.id) }; })()`;
+        const term8 = await ev<Btns>(BTNS);
+        say("in the terminal: eight icon buttons — Sessions, Info, view, search, reconnect, History, Schedule, ⋯ — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
+          JSON.stringify(term8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mfind", "mreload", "mhist", "mauto", "mmore"]) && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
+        const ort = await ev<{ kids: number; text: string; label: string | null; box: Box; more: Box; glass: Box }>(`(() => { const o = document.querySelector('#mort');
+          return { kids: o.childNodes.length, text: o.textContent, label: o.getAttribute('aria-label'), box: window.__g.box(o), more: window.__g.box(document.querySelector('#mmore')), glass: window.__g.box(document.querySelector('#mglas')) }; })()`);
+        say('the place "Arbeitsort" is named and empty: aria-label Arbeitsort, no child, at least 64 px, right of ⋯, inside the glass',
+          ort.label === "Arbeitsort" && ort.kids === 0 && ort.text === "" && !!ort.box && !!ort.more && !!ort.glass && ort.box.w >= 64 && ort.box.x >= ort.more.r && ort.box.r <= ort.glass.r, ort);
+        // the open island closes by its name
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mname').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await pause(200);
+        say("a tap on the name closes it", !(await state()).open);
+        // the conversation: ↑ ↓ instead of search and reconnect, and the text runs under the glass
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        const toChat = await wait("document.querySelector('#panes .pane').classList.contains('chat')", 3000);
+        await pause(300);
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        const chat8 = { ...await ev<Btns>(BTNS), toChat, state: await state() };
+        const fade = await ev<string>("getComputedStyle(document.querySelector('#panes .pane'), '::after').backgroundImage");
+        await shot("auf-konversation");
+        say("in the conversation: eight icon buttons — Sessions, Info, view, ↑, ↓, History, Schedule, ⋯ — the same rules",
+          JSON.stringify(chat8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mup", "mdown", "mhist", "mauto", "mmore"]) && !chat8.bad.length && !chat8.small.length && !chat8.off.length, chat8);
+        say("the conversation runs on under the glass: no fade over its top", !/gradient/.test(fade ?? ""), fade);
+        await reset();
+        await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
+        await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await wait("!document.querySelector('#panes .pane').classList.contains('chat')", 3000);
+        await reset();
+        // a finger's whole tap on Sessions, ℹ and ⋯: each opens a surface under the finger, and the click the
+        // engine sends after the touchend must not land on that surface's shade and close it again
+        const opened: Record<string, string> = {
+          mslot: "document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'sessions'",
+          minfo: "!!document.querySelector('#shell-board')",
+          mmore: "document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'tools'" };
+        const stays: Record<string, boolean> = {};
+        for (const [id, cond] of Object.entries(opened)) {
+          await d.tap({ x: GLASS_W / 2, y: 22 }); await pause(900);
+          await d.tap(await ev<GlassPt>(`(() => { const r = document.querySelector('#${id}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`));
+          await pause(900);
+          stays[id] = await ev<boolean>(`!!(${cond})`);
+          await reset();
+        }
+        say("a finger's whole tap — the engine's click after it included — on Sessions, ℹ and ⋯ opens what it names, and it stays open",
+          Object.values(stays).every(Boolean), stays);
+        // 5. the swipe: right opens Sessions from the left, left the Info from the right — the session stays
+        const before = await state();
+        const centre = { x: GLASS_W / 2, y: 22 };
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await wait(settled, 2000);
+        const right = { ...await state(), sheet: await box("#msheet"), swipe: await ev<string>("document.querySelector('#mtop').dataset.swipe ?? ''") };
+        await shot("wisch-rechts-sessions");
+        say("a swipe to the right opens Sessions from the left edge (86 % wide, the screen tall); the session stays the same",
+          right.sessions && right.side && !!right.sheet && right.sheet.x === 0 && Math.abs(right.sheet.w - GLASS_W * 0.86) <= 1 && right.sheet.y === 0 && right.sheet.b === GLASS_H
+          && right.title === before.title && right.target === before.target && before.target === "1", { before, right });
+        await reset();
+        await swipe(centre, [{ dx: -30 }, { dx: -60 }, { dx: -90 }]);
+        await wait(settled, 2000);
+        const left = { ...await state(), win: await box("#shell-board .shellwin") };
+        await shot("wisch-links-info");
+        say("a swipe to the left opens the Info from the right edge (86 % wide); the session stays the same",
+          left.info && !left.sessions && !!left.win && left.win.r === GLASS_W && Math.abs(left.win.w - GLASS_W * 0.86) <= 1 && left.title === before.title && left.target === before.target, { before, left });
+        await reset();
+        // …and from the open island as well
+        await tapAt(centre); await pause(900);
+        await swipe({ x: GLASS_W / 2, y: 40 }, [{ dx: 30 }, { dx: 70 }]);
+        await wait(settled, 2000);
+        const fromOpen = await state();
+        say("a swipe on the open island opens the side too, and the island closes", fromOpen.sessions && !fromOpen.open && fromOpen.target === before.target, fromOpen);
+        await reset();
+        // the ways out: none of them opens anything, and none counts as a tap
+        const nothing = async (name: string, run: () => Promise<void>) => {
+          await run();
+          await pause(700);
+          const s = await state();
+          const ok = !s.open && !s.sessions && !s.info && s.target === before.target;
+          say(`${name}: nothing opens, the island stays shut`, ok, { ...s, swipe: await ev<string>("document.querySelector('#mtop').dataset.swipe ?? ''") });
+          await reset();
+        };
+        await nothing("20 px slowly to the right", () => swipe(centre, [{ dx: 7, wait: 120 }, { dx: 14, wait: 120 }, { dx: 20, wait: 120 }]));
+        await nothing("24 px over ~540 ms (0.04 px/ms)", () => swipe(centre, [{ dx: 9, wait: 180 }, { dx: 17, wait: 180 }, { dx: 24, wait: 180 }]));
+        await nothing("begun upright (12 px down, then 30 sideways)", () => swipe(centre, [{ dx: 2, dy: 12 }, { dx: 30, dy: 14 }]));
+        await nothing("out 80 px and back to 10 px", () => swipe(centre, [{ dx: 40, wait: 60 }, { dx: 80, wait: 60 }, { dx: 45, wait: 120 }, { dx: 10, wait: 120 }]));
+        await nothing("a press of 400 ms without moving", async () => { await d.touch("touchStart", centre); await Bun.sleep(400); await d.touch("touchEnd", centre); });
+        await nothing("the system takes the gesture (touchcancel after 90 px)", () => swipe(centre, [{ dx: 45 }, { dx: 90 }], "touchCancel"));
+        // a start in the outer 20 px belongs to iOS: measured on the open island, which reaches x = 10
+        await tapAt(centre); await pause(900);
+        await swipe({ x: 14, y: 40 }, [{ dx: 40 }, { dx: 90 }]);
+        await pause(700);
+        const edge = await state();
+        say("a swipe begun in the outer 20 px (x = 14) is left to iOS: no side opens", !edge.sessions && !edge.info, edge);
+        await reset();
+        // velocity: 24 px in ONE move opens (a protocol touch costs ~35 ms here, so two moves already
+        // arrive at 0.35 px/ms — liquid-glass.md Messfalle 3). The speed the island measured is read,
+        // not assumed: a slow delivery is retried, and every try must follow the rule — open exactly
+        // when it arrived faster than 0.4 px/ms
+        const flicks: { opened: boolean; v: number; dx: number }[] = [];
+        for (let i = 0; i < 4; i++) {
+          await swipe(centre, [{ dx: 24 }]);
+          await wait(settled, 2000);
+          const sw = JSON.parse(await ev<string>("document.querySelector('#mtop').dataset.swipe ?? '{}'")) as { v?: number; dx?: number };
+          flicks.push({ opened: (await state()).sessions, v: sw.v ?? 0, dx: sw.dx ?? 99 });
+          await reset();
+          if ((sw.v ?? 0) > 0.45) break;
+        }
+        const fast = flicks[flicks.length - 1];
+        say("a quick 24 px (measured above 0.4 px/ms) opens the side though it is under 28 px; a try that arrived slower does not",
+          !!fast && fast.v > 0.4 && fast.dx < 28 && fast.opened && flicks.every((f) => f.opened === (f.v > 0.4)), flicks);
+        // 6. the keys: ← and → on the focused island, Escape closes
+        await ev("document.querySelector('#mpill').focus()");
+        await d.key("ArrowLeft"); await wait(settled, 2000);
+        const kl = await state();
+        await d.key("Escape"); await pause(250);
+        const ke = await state();
+        await ev("document.querySelector('#mpill').focus()");
+        await d.key("ArrowRight"); await wait(settled, 2000);
+        const kr = await state();
+        await d.key("Escape"); await pause(250);
+        const kre = await state();
+        say("← on the focused island opens Sessions, → the Info; Escape closes each — the same as the swipes",
+          kl.sessions && !ke.sessions && kr.info && !kre.info && kre.target === before.target, { kl, ke, kr, kre });
+        await reset();
+        // 7. raised contrast (and, where the engine emulates it, reduced transparency): the opaque face
+        const face = `(() => { const s = getComputedStyle(document.querySelector('#mglas')), n = getComputedStyle(document.querySelector('#mpill .mnm'));
+          return { bd: s.backdropFilter || s.webkitBackdropFilter || '', bg: s.backgroundColor, img: s.backgroundImage, text: n.textShadow, after: getComputedStyle(document.querySelector('#mglas'), '::after').display }; })()`;
+        type Face = { bd: string; bg: string; img: string; text: string; after: string };
+        const opaque = (f: Face) => (f.bd === "none" || f.bd === "") && /^rgb\(12, 12, 14\)$/.test(f.bg) && f.img === "none" && f.text === "none" && f.after === "none";
+        await d.media({ contrast: true }); await warm();
+        const fc = await ev<Face>(face);
+        await shot("kontrast");
+        say("under prefers-contrast: more the pill is opaque — no blur, rgb(12, 12, 14) at full alpha, no highlight, no text shadow: nothing shows through", opaque(fc), fc);
+        const tr = await d.media({ transparency: true }); await pause(200);
+        const ft = await ev<Face>(face);
+        if (tr.transparency) say("under prefers-reduced-transparency: reduce the pill is the same opaque face", opaque(ft), ft);
+        else {
+          const bound = await ev<{ parses: boolean; rule: boolean }>(`(() => ({ parses: matchMedia('(prefers-reduced-transparency: reduce)').media !== 'not all',
+            rule: [...document.styleSheets].some((sh) => { const walk = (rs) => [...rs].some((r) => (r.media && /prefers-reduced-transparency/.test(r.media.mediaText) && /#mglas/.test(r.cssText)) || (r.cssRules && walk(r.cssRules))); try { return walk(sh.cssRules); } catch { return false; } }) }))()`);
+          say("prefers-reduced-transparency (not emulable here): the engine parses the query and the opaque face is bound to it", bound.parses && bound.rule, bound);
+        }
+        await d.media({});
+        // 8. still (prefers-reduced-motion): no spring, no band
+        await d.media({ motion: true }); await warm();
+        await ev("window.__g.sample(300)");
+        await tapAt(centre, 20);
+        await pause(320);
+        const stillFrames = await ev<[number, number][]>("window.__frames");
+        const stillGlass = await box("#mglas");
+        // every frame is the pill (96, or 93 while pressed: scale .97) or the open island — none between
+        say("still: the tapped island jumps to its full width — no frame in between, no overshoot",
+          !!stillGlass && stillGlass.w === 370 && stillFrames.some((f) => Math.round(f[1]) === 370) && stillFrames.every((f) => f[1] <= 96.5 || Math.round(f[1]) === 370), { stillFrames, stillGlass });
+        await reset();
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await pause(60);
+        const stillSide = { ...await state(), sheet: await box("#msheet") };
+        say("still: a swipe opens the side at once", stillSide.sessions && !!stillSide.sheet && stillSide.sheet.x === 0, stillSide);
+        await reset();
+        await d.media({});
+        // 9. a long name: a band only now, held while open, and none while still
+        await boot(LONG);
+        const lg = await ev<{ w: number; copies: number; over: boolean; anim: string; play: string; label: string }>(`(() => { const p = document.querySelector('#mpill'), s = p.querySelector('.mspur');
+          return { w: Math.round(document.querySelector('#mglas').getBoundingClientRect().width), copies: s.querySelectorAll('.mnm').length, over: p.querySelector('.mband').classList.contains('mover'),
+            anim: getComputedStyle(s).animationName, play: getComputedStyle(s).animationPlayState, label: p.getAttribute('aria-label') }; })()`);
+        await pause(1500);
+        await shot("langer-name");
+        say("a name that overflows runs as a band: the pill at 168 px, two copies, the animation running, the full name in aria-label",
+          lg.w === 168 && lg.over && lg.copies === 2 && lg.anim === "mtick" && lg.play === "running" && lg.label.startsWith(LONG), lg);
+        await tapAt(centre); await pause(300);
+        const held = await ev<string>("getComputedStyle(document.querySelector('#mpill .mspur')).animationPlayState");
+        say("the band holds while the island is open", held === "paused", held);
+        await reset();
+        await d.media({ motion: true }); await warm();
+        const lgStill = await ev<{ anim: string; over: boolean }>(`(() => ({ anim: getComputedStyle(document.querySelector('#mpill .mspur')).animationName, over: document.querySelector('#mpill .mband').classList.contains('mover') }))()`);
+        await tapAt(centre); await pause(150);
+        const twoLines = await ev<{ clamp: string; lines: number }>(`(() => { const n = document.querySelector('#mname .mnm'), s = getComputedStyle(n);
+          return { clamp: s.webkitLineClamp || s.getPropertyValue('-webkit-line-clamp'), lines: Math.round(n.getBoundingClientRect().height / parseFloat(s.lineHeight)) }; })()`);
+        say("still, the long name does not run: cut with its soft edge in the pill, in two lines when open", lgStill.anim === "none" && lgStill.over && String(twoLines.clamp) === "2" && twoLines.lines === 2, { lgStill, twoLines });
+        await reset();
+        await d.media({});
+        // 10. with the on-screen keyboard: the pill stays at the top, opening and swiping still work
+        await boot(SHORT);
+        await ev("document.querySelector('#input').focus(); window.__keyboard(336)");
+        await wait("document.body.classList.contains('keyboard-open')", 2000);
+        await pause(300);
+        const kg = await box("#mglas");
+        await tapAt(centre); await pause(900);
+        const kOpen = { ...await state(), where: await ev<string>("document.activeElement?.id ?? ''") };
+        await shot("tastatur");
+        say("with the keyboard up the pill stays 8 px under the top, and a tap opens it without taking the field's focus", !!kg && kg.y === 8 && kOpen.open && kOpen.where === "input", { kg, kOpen });
+        await d.key("Escape"); await pause(200);
+        await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
+        await wait(settled, 2000);
+        say("with the keyboard up a swipe still opens Sessions", (await state()).sessions);
+        // 11. the field upright in a browser whose keyboard shrinks the PAGE (a phone browser, the owner's
+        // a phone: the keyboard flashed and closed): the page drops under 500 px, which is also the
+        // phone on its side's height — the reading mode must not take over and hide the focused field
+        await boot(SHORT);
+        const fieldAt = await ev<GlassPt>("(() => { const r = document.querySelector('#input').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()");
+        await d.tap(fieldAt); await pause(200);
+        const tapFocus = await ev<boolean>(`(() => { window.__field = document.querySelector('#input'); window.__blurs = 0;
+          window.__field.addEventListener('blur', () => window.__blurs++); return document.activeElement === window.__field; })()`);
+        await d.resize(GLASS_W, 400); await pause(500);
+        const kept = await ev<{ same: boolean; focus: boolean; blurs: number; comp: string; reading: string }>(`({ same: document.querySelector('#input') === window.__field,
+          focus: document.activeElement === window.__field, blurs: window.__blurs, comp: getComputedStyle(document.querySelector('#comp')).display,
+          reading: getComputedStyle(document.querySelector('#mread')).display })`);
+        await shot("tastatur-schrumpft-seite");
+        await d.type("hallo"); await pause(100);
+        const typed = await ev<string>("document.querySelector('#input').value");
+        const sent0 = posts.length;
+        await d.tap(await ev<GlassPt>("(() => { const r = document.querySelector('#send').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
+        await pause(500);
+        const sentNow = posts.slice(sent0);
+        say("upright, a tap focuses the field, and when the keyboard shrinks the page to 390 × 400 the same field keeps the focus (no blur, still drawn, no reading mode), takes typed text and sends it",
+          tapFocus && kept.same && kept.focus && kept.blurs === 0 && kept.comp !== "none" && kept.reading === "none" && typed === "hallo" && sentNow.includes("/send"),
+          { tapFocus, kept, typed, sentNow });
+      } catch (error) {
+        say("PROBE: the engine ran the island's claims to the end", false, error instanceof Error ? error.message : String(error));
+      } finally { await d.close(); }
+      results.push({ engine, claims, detail });
+    }
+    return results;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 // THE RIGHTS OF A SESSION against a REAL isolated instance (card "Der Owner sieht an jeder Session
 // und beim Gruenden, was sie lesen darf", docs/design/datenrechte-notiz.md E1–E39). Unlike the
 // fixture probes above, nothing here is stubbed: the staged server answers every request, the
@@ -7374,8 +8868,11 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
     const openOn = async (width: number, height: number, slot: number, failFirstRead = false, longProject?: { projectKey: string; repo: string }) => {
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
-      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       const phone = width < 700;
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands
+      // mid-spring — a click aimed at ℹ while the glass still widened landed on the free glass under load and closed it
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
+      await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
         localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); ${failFirstRead ? `localStorage.setItem('probe.failGrant', '${slot}');` : ""}
         ${longProject ? `localStorage.setItem('probe.longProject', ${JSON.stringify(JSON.stringify(longProject))});` : ""} })()`);
@@ -7383,7 +8880,13 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       if (!await wait(`document.querySelector('#panes .pane .xterm')`, 15000))
         throw new Error("client did not boot against the instance: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       // the phone upright: ℹ sits in the top island (pill → ℹ), the pane's corner button is folded away
-      if (phone) { await click(`document.querySelector('#mpill')`); await click(`document.querySelector('#minfo')`); }
+      // …and ℹ is pressed only once the island stands open with ℹ itself under its centre
+      if (phone) {
+        await click(`document.querySelector('#mpill')`);
+        await wait(`document.body.classList.contains('mopen') && (() => { const i = document.querySelector('#minfo'), r = i.getBoundingClientRect();
+          return i.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()`, 5000);
+        await click(`document.querySelector('#minfo')`);
+      }
       return wait(`${RB}`, 10000);
     };
     const startVideo = async (name: string) => {
@@ -7756,6 +9259,9 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
 // (owner 2026-10-03: „[Zitat entfernt]“
 // ). The owner sends from the composer, /send is intercepted, and the transcript route
 // hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
+// The same rig then carries the session's queue (card "wartet in der Chat-Ansicht"): the transcript
+// route's `queued` names a terminal-typed prompt, a reload, a composer send the queue adopts, the
+// dequeue, and an Esc marker arriving as meta.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runBundleChatDom(sourceRoot: string, artifacts?: string): Promise<BundleChatDomResult[]> {
@@ -7767,11 +9273,14 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const ownerA = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erf.";
   const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
+  const termQ = "im Terminal getippt, waehrend der Schritt laeuft";
+  const ownerC = "Das ist ein erfundener Satz ohne?";
+  const ownerHead = "[fleet-zustellung · Owner-Credential · Slot 1] ";
   const fixture = bundleFixtures(readFileSync(resolve(sourceRoot, "server.ts"), "utf8"), ownerA, ownerB);
   if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
   const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
   const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
-  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[] };
+  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -7825,7 +9334,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
         return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
-          source: "/fixture/orch.jsonl", ttlSec: 300 });
+          source: "/fixture/orch.jsonl", ttlSec: 300, queued: fx.queued });
       }
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -7857,17 +9366,18 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const own = [...chat.querySelectorAll('.msg.user')].map((m) => ({ text: m.querySelector('.mbody').innerText.trim(), pending: m.classList.contains('pending'),
         state: m.querySelector('.msend')?.innerText.trim() ?? null, head: m.querySelector('.mhead')?.textContent ?? null, headTitle: m.querySelector('.mhead')?.title ?? null }));
       const sys = [...chat.querySelectorAll('.msys')].map((d) => { const r = d.getBoundingClientRect(), s = d.querySelector('summary');
-        return { text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
+        return { who: d.querySelector('.msyswho').textContent, text: d.querySelector('.msystext').textContent, rest: d.querySelector('.msysbody')?.textContent ?? null, title: s.title, open: d.open,
           inBubble: !!d.closest('.msg'), right: r.right, left: r.left, h: s.getBoundingClientRect().height,
           fs: getComputedStyle(d).fontSize, color: getComputedStyle(d).color }; });
       const meta = chat.querySelector('.mmeta');
-      return { own, sys, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
+      const last = chat.lastElementChild;
+      return { own, sys, lastOwn: last && last.matches('.msg.user') ? last.querySelector('.mbody').innerText.trim() : null, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
         chatRight: chat.getBoundingClientRect().right, chatLeft: chat.getBoundingClientRect().left,
         pageScroll: document.documentElement.scrollWidth - innerWidth, metaFs: meta ? getComputedStyle(meta).fontSize : null,
         faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })() }; })()`;
     type Read = { own: { text: string; pending: boolean; state: string | null; head: string | null; headTitle: string | null }[];
-      sys: { text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
-      raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
+      sys: { who: string; text: string; rest: string | null; title: string; open: boolean; inBubble: boolean; right: number; left: number; h: number; fs: string; color: string }[];
+      lastOwn: string | null; raw: boolean; chatRight: number; chatLeft: number; pageScroll: number; metaFs: string | null; faint: string };
     const results: BundleChatDomResult[] = [];
     let targetId = "";
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
@@ -7875,6 +9385,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
       fx.sends = [];
+      fx.queued = [];
       if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
       targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -7901,6 +9412,14 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       // wrapper (src/client.ts#unwrapPasted). The session's queue holds the same text first.
       const body = fixture.ownerFirst.slice(fixture.head.length);
       const stored = `${fixture.head}\n\n<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`;
+      fx.queued = [{ text: stored, at: at(54) }];
+      await settle(1600);
+      const q0 = await evaluate<Read>(READ);
+      facts.queuedBundle = q0.own;
+      claims["owner part 1/2 in the session's queue: the composer's send and the queued bundle are ONE \"wartet\" bubble, no raw mark"] =
+        q0.own.filter((m) => m.pending).length === 1 && q0.own.find((m) => m.pending)?.text === ownerA
+        && q0.own.find((m) => m.pending)?.state === "wartet" && !q0.raw;
+      fx.queued = [];
       fx.entries.push(text("user", `${stored}\n`, 55),
         text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
       await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
@@ -7913,8 +9432,10 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
         && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-zustellung · gebuendelte");
       claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
-      claims["the nudge part is ONE quiet line outside every bubble, showing the nudge's text"] = r1.sys.length === 1
-        && !r1.sys[0]!.inBubble && r1.sys[0]!.text === fixture.nudge && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
+      // ONE label (Abnahme 6936ed0b: "fleet [fleet message] …"): the part's own bracket is the label
+      claims["the nudge part is ONE quiet line outside every bubble, labelled once by its own bracket, showing the nudge's text"] = r1.sys.length === 1
+        && !r1.sys[0]!.inBubble && r1.sys[0]!.who === "fleet message" && r1.sys[0]!.text === fixture.nudge.slice("[fleet message] ".length)
+        && /fleet-buendel 2\/2 · path=inbox-nudge/.test(r1.sys[0]!.title);
       claims["the quiet line is quiet: the meta row's size and the faint ink, one line high, inside the chat column"] = r1.sys.length === 1
         && r1.sys[0]!.fs === r1.metaFs && r1.sys[0]!.color === r1.faint && r1.sys[0]!.h < 30 && r1.sys[0]!.left >= r1.chatLeft - 1 && r1.sys[0]!.right <= r1.chatRight + 1
         && r1.pageScroll <= 0;
@@ -7931,9 +9452,10 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const b = r2.own.filter((m) => m.text === ownerB);
       claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"durch\""] = r2.own.every((m) => !m.pending)
         && b.length === 1 && b[0]!.state === "durch" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
-      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble"] = !r2.raw && r2.sys.length === 4
-        && r2.sys[1]!.text === "[fleet] Lane 3 ist gelandet." && r2.sys[2]!.text === "[fleet] fleet-report von Slot 5: complete"
-        && r2.sys[3]!.text === "[fleet] Ende des Buendels." && r2.sys.every((s) => !s.inBubble);
+      claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble, each labelled once"] = !r2.raw && r2.sys.length === 4
+        && r2.sys[1]!.text === "Lane 3 ist gelandet." && r2.sys[2]!.text === "fleet-report von Slot 5: complete"
+        && r2.sys[3]!.text === "Ende des Buendels." && r2.sys.slice(1).every((s) => s.who === "fleet") && r2.sys.every((s) => !s.inBubble)
+        && r2.sys.every((s) => !s.text.startsWith("[fleet"));
       claims["↑/↓ jump between YOUR messages only: three bubbles, the Fleet parts are none of them"] =
         r2.own.length === 3 && r2.own.map((m) => m.text).join("|") === ["Wie weit ist die Messung?", ownerA, ownerB].join("|");
       // --- 4. a click opens a quiet line: the rest of the event stands below its first line
@@ -7942,10 +9464,1265 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
       const r3 = await evaluate<Read>(READ);
       claims["a click on a quiet line opens the rest of its text"] = clicked && r3.sys[2]?.open === true && r3.sys[2]?.rest === "zweiter Absatz des Reports";
       await shot(`${width}-3-ereignisse`);
+
+      // --- 5. THE SESSION'S QUEUE (card "wartet in der Chat-Ansicht"): a prompt typed in the TERMINAL
+      // mid-turn — no composer, no send from this tab — that the session holds in its queue
+      const sendsBefore = fx.sends.length;
+      fx.queued = [{ text: termQ, at: at(59) }];
+      const shownQ = await wait(`(() => { const m = [...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)}); return m && m.querySelector('.msend')?.innerText.trim() === 'wartet'; })()`);
+      const q1 = await evaluate<Read>(READ);
+      facts.queue = q1.own;
+      claims["queue: a prompt the session holds, sent from the terminal, stands as a \"wartet\" bubble — no send from this tab"] = shownQ
+        && fx.sends.length === sendsBefore && q1.own.filter((m) => m.text === termQ).length === 1;
+      claims["queue: the waiting bubble stands below everything that has arrived"] = q1.lastOwn === termQ;
+      await shot(`${width}-4-wartet-terminal`);
+      // --- 6. a RELOAD: the page forgot everything, the session's queue did not
+      await navigate("http://fleet.fixture/");
+      await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      const keptQ = await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)} && m.querySelector('.msend')?.innerText.trim() === 'wartet')`);
+      claims["queue: after a reload the bubble still says \"wartet\""] = keptQ;
+      await shot(`${width}-5-wartet-nach-reload`);
+      // --- 7. the composer sends while the turn runs: its own bubble shows at Enter, then the queue
+      // names the same send — it becomes the queue's bubble, never a second one
+      await sendFromComposer(ownerC);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      fx.queued = [...fx.queued, { text: ownerHead + ownerC, at: at(59) }];
+      await settle(1600);
+      const q2 = await evaluate<Read>(READ);
+      facts.adopted = q2.own;
+      claims["queue: the composer's send and the queue's entry for it are ONE \"wartet\" bubble"] =
+        q2.own.filter((m) => m.text === ownerC).length === 1 && q2.own.find((m) => m.text === ownerC)?.state === "wartet";
+      // --- 8. the turn ends: both leave the queue and arrive as the owner's turns
+      fx.queued = [];
+      fx.entries.push(text("user", termQ, 59), text("user", ownerHead + ownerC, 59));
+      await wait(`![...document.querySelectorAll('.pane .panechat .msg.user.pending')].length`);
+      await settle(300);
+      const q3 = await evaluate<Read>(READ);
+      facts.dequeued = q3.own;
+      claims["queue: after the dequeue both say \"durch\", each once, and nothing is left waiting"] = q3.own.every((m) => !m.pending)
+        && [termQ, ownerC].every((t) => q3.own.filter((m) => m.text === t).length === 1 && q3.own.find((m) => m.text === t)?.state === "durch");
+      await shot(`${width}-6-durch`);
+      // --- 9. Esc mid-turn: Claude Code's own marker arrives as meta (server.ts#viewEntry) — a quiet
+      // line under the answer, not a bubble of yours
+      fx.entries.push({ role: "user", ts: at(59), meta: true, blocks: [{ t: "text", text: "[Request interrupted by user]" }] });
+      await wait(`[...document.querySelectorAll('.pane .panechat .msys .msyswho')].some((w) => w.textContent === 'esc')`);
+      const q4 = await evaluate<Read>(READ);
+      facts.esc = q4.sys.at(-1);
+      claims["esc: the interrupt is one quiet line outside every bubble, and no bubble of yours says it"] =
+        q4.sys.filter((x) => x.who === "esc").length === 1 && !q4.sys.find((x) => x.who === "esc")!.inBubble
+        && /^interrupted/.test(q4.sys.find((x) => x.who === "esc")!.text) && !q4.own.some((m) => m.text.includes("Request interrupted"));
+      await shot(`${width}-7-esc`);
       results.push({ width, height, claims, facts });
     }
     return results;
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// THE HELD BUNDLE IN THE CHAT VIEW (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4
+// and fix 3), measured in a real browser on the real client bundle: the fixture's /api/sessions row
+// carries heldDeliveries the way server.ts#heldDeliveriesView writes it, and every claim reads the
+// DOM — one quiet line at the end of the view, "N Fleet-Zustellungen gehalten bis HH:MM", the
+// composer's "Senden nimmt sie mit", and both gone once the row no longer carries the field.
+// Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
+export interface HeldDeliveriesDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: string): Promise<HeldDeliveriesDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-held-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
+  const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
+  type Held = { count: number; dueAt: number | null; paths: string[] };
+  const fx = { entries: [] as Record<string, unknown>[], held: null as Held | null };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("held DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude",
+          ...(fx.held ? { heldDeliveries: fx.held } : {}) }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") {
+        const after = Number(url.searchParams.get("after") ?? 0);
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
+          source: "/fixture/orch.jsonl", ttlSec: 300, queued: [] });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("held DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the due time as the owner's clock writes it, derived here without the client's formatter
+    const clock = (ms: number) => evaluate<string>(`(() => { const d = new Date(${ms}); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); })()`);
+    const READ = `(() => { const chat = document.querySelector('.pane .panechat'); const line = chat.querySelector(':scope > .mheld');
+      const s = line?.querySelector('summary'), r = line?.getBoundingClientRect(), meta = chat.querySelector('.mmeta'), hint = document.querySelector('#compheld');
+      const hr = hint?.getBoundingClientRect();
+      return { lines: chat.querySelectorAll('.mheld').length, who: line?.querySelector('.msyswho')?.textContent ?? null,
+        text: line?.querySelector('.msystext')?.textContent ?? null, title: s?.title ?? null, last: !!line && chat.lastElementChild === line,
+        lastKind: chat.lastElementChild?.className ?? null, inBubble: !!line?.closest('.msg'), h: s ? s.getBoundingClientRect().height : 0,
+        left: r?.left ?? 0, right: r?.right ?? 0, fs: line ? getComputedStyle(line).fontSize : null, color: line ? getComputedStyle(line).color : null,
+        metaFs: meta ? getComputedStyle(meta).fontSize : null, chatLeft: chat.getBoundingClientRect().left, chatRight: chat.getBoundingClientRect().right,
+        pageScroll: document.documentElement.scrollWidth - innerWidth,
+        faint: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; chat.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })(),
+        hint: hint && !hint.hidden && hint.offsetHeight > 0 ? hint.textContent : null,
+        hintInside: !!hr && hr.left >= 0 && hr.right <= innerWidth && hr.bottom <= innerHeight && hr.height > 0 && hr.height < 30,
+        assistants: chat.querySelectorAll('.msg.assistant').length }; })()`;
+    type Read = { lines: number; who: string | null; text: string | null; title: string | null; last: boolean; lastKind: string | null;
+      inBubble: boolean; h: number; left: number; right: number; fs: string | null; color: string | null; metaFs: string | null;
+      chatLeft: number; chatRight: number; pageScroll: number; faint: string; hint: string | null; hintInside: boolean; assistants: number };
+    const results: HeldDeliveriesDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
+      fx.held = null;
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+      if (!booted) throw new Error("held DOM probe: the chat view did not show the fixture transcript: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(2500); // one owner poll (2 s) has run against a row without the field
+      const r0 = await evaluate<Read>(READ);
+      facts.none = { lines: r0.lines, hint: r0.hint };
+      claims["nothing held: no held line in the view and no sentence at the composer"] = r0.lines === 0 && r0.hint === null;
+
+      // --- 1. the bundle holds two deliveries, due in twenty minutes
+      const dueAt = Date.now() + 20 * 60_000;
+      fx.held = { count: 2, dueAt, paths: ["auto", "inbox-nudge"] };
+      const shown = await wait(`document.querySelector('.pane .panechat > .mheld')`);
+      await settle(200);
+      const r1 = await evaluate<Read>(READ);
+      const hhmm = await clock(dueAt);
+      facts.held = r1; facts.hhmm = hhmm;
+      claims["held: the view ends in ONE quiet Fleet line \"2 Fleet-Zustellungen gehalten bis HH:MM\", HH:MM the bundle's due time"] = shown
+        && r1.lines === 1 && r1.last && r1.who === "fleet" && r1.text === `2 Fleet-Zustellungen gehalten bis ${hhmm}`;
+      claims["held: the line is quiet — outside every bubble, the meta row's size and the faint ink, one line high, inside the chat column"] =
+        !r1.inBubble && r1.fs === r1.metaFs && r1.color === r1.faint && r1.h > 0 && r1.h < 30
+        && r1.left >= r1.chatLeft - 1 && r1.right <= r1.chatRight + 1 && r1.pageScroll <= 0;
+      claims["held: its tooltip names the held paths"] = (r1.title ?? "").includes("auto, inbox-nudge");
+      claims["held: the composer says \"Senden nimmt sie mit\", on one line inside the screen"] = r1.hint === "Senden nimmt sie mit" && r1.hintInside;
+      await shot(`${width}-1-gehalten`);
+
+      // --- 2. the agent writes on: what arrives stands above the held line
+      fx.entries.push(text("assistant", "Und die zweite Messung folgt gleich.", 52));
+      await wait(`document.querySelectorAll('.pane .panechat .msg.assistant').length >= 2`);
+      await settle(300);
+      const r2 = await evaluate<Read>(READ);
+      facts.grown = { last: r2.last, lastKind: r2.lastKind, lines: r2.lines };
+      claims["held: a newly arrived entry stands above it — the held line stays the last thing in the view"] = r2.assistants === 2 && r2.lines === 1 && r2.last;
+
+      // --- 3. one cold event, held without a deadline until the next send
+      fx.held = { count: 1, dueAt: null, paths: ["fleet-event"] };
+      const single = await wait(`document.querySelector('.pane .panechat > .mheld .msystext')?.textContent === '1 Fleet-Zustellung gehalten bis zum nächsten Senden'`);
+      claims["held: one delivery without a deadline reads \"1 Fleet-Zustellung gehalten bis zum nächsten Senden\""] = single;
+
+      // --- 4. the flush: the row no longer carries the field
+      fx.held = null;
+      const gone = await wait(`!document.querySelector('.pane .panechat .mheld') && document.querySelector('#compheld').hidden`);
+      await settle(200);
+      const r3 = await evaluate<Read>(READ);
+      facts.flushed = { lines: r3.lines, hint: r3.hint, lastKind: r3.lastKind };
+      claims["after the flush: the held line and the composer's sentence are gone"] = gone && r3.lines === 0 && r3.hint === null;
+      await shot(`${width}-2-nach-flush`);
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE TERMINAL SEARCH'S PLACE (card 746e381b): measured in a real browser on the real client bundle,
+// a terminal full of numbered rows behind a fake socket. At 1200 ⌘/Ctrl+F (the platform's own
+// modifier, read from navigator.platform as the client does) must open the bar top right, off the
+// corner row and off the first 60 terminal columns; at 390 a visible control of the pane — no
+// hardware keyboard — must open it, inside the screen and under the island's pill. Every claim
+// reads the DOM. Exported so a lane can drive it with an artefact folder and against an older tree.
+export interface TermFindDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runTermFindDom(sourceRoot: string, artifacts?: string): Promise<TermFindDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-termfind-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  // forty numbered rows of 120 columns: the column under any point of the bar can be read off a screenshot
+  const screen = Array.from({ length: 40 }, (_, i) => `${String(i + 1).padStart(3, "0")} ${"0123456789".repeat(12)}`).join("\r\n");
+  const FAKE = `(() => { class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob';
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode(${JSON.stringify(screen)}).buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("terminal search DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/term", label: "Terminal", openedAt: 1000, harness: "claude", lastOutput: 0 }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: null, ttlSec: 300 });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("terminal search DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // where the bar, the corner row's visible buttons, the terminal's first 60 columns and the pill are
+    const GEOM = `(() => { const pane = document.querySelector('.pane'), bar = pane.querySelector('.termfind');
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; };
+      const shown = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
+      // xterm sizes its helper textarea to exactly one cell (the IME anchor): the column width, read from xterm itself
+      const scr = pane.querySelector('.xterm-screen'), ta = pane.querySelector('.xterm-helper-textarea');
+      const cell = ta ? parseFloat(ta.style.width) || 0 : 0;
+      const s = box(scr);
+      return { open: bar.classList.contains('open'), bar: box(bar), pane: box(pane), tools: [...pane.querySelectorAll('.panetools button')].filter(shown).map(box),
+        cols60: s && cell ? { l: s.l, t: s.t, r: s.l + 60 * cell, b: s.b } : null, cell,
+        focus: document.activeElement === pane.querySelector('.termfindin'), termFocus: !!document.activeElement?.closest('.paneterm'),
+        pill: box(document.querySelector('#mpill')), pageScroll: document.documentElement.scrollWidth - innerWidth }; })()`;
+    type Box = { l: number; t: number; r: number; b: number; w: number; h: number };
+    type Geom = { open: boolean; bar: Box | null; pane: Box | null; tools: Box[]; cols60: { l: number; t: number; r: number; b: number } | null; cell: number;
+      focus: boolean; termFocus: boolean; pill: Box | null; pageScroll: number };
+    const meets = (a: { l: number; t: number; r: number; b: number }, b: { l: number; t: number; r: number; b: number }) =>
+      a.l < b.r - 0.5 && b.l < a.r - 0.5 && a.t < b.b - 0.5 && b.t < a.b - 0.5;
+    const results: TermFindDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE });
+      const phone = width < 700;
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
+      // the phone's top island springs (runGlassIslandDom measures that); here it stands at once, so no tap lands mid-spring
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
+      if (phone) await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [false] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      const booted = await wait(`document.querySelector('.pane:not(.chat) .xterm-screen') && parseFloat(document.querySelector('.pane .xterm-helper-textarea')?.style.width ?? '') > 0`, 15000);
+      if (!booted) throw new Error("terminal search DOM probe: the terminal did not boot: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(500);
+      await shot(`${width}-0-terminal`);
+      if (!phone) {
+        // --- the keyboard path: the platform's own modifier + F on the focused terminal
+        const apple = await evaluate<boolean>(`/Mac|iPhone|iPad|iPod/.test(navigator.platform)`);
+        await evaluate(`document.querySelector('.pane .xterm-helper-textarea')?.focus()`);
+        const modifiers = apple ? 4 : 2;
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "f", code: "KeyF", windowsVirtualKeyCode: 70, modifiers });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "f", code: "KeyF", windowsVirtualKeyCode: 70, modifiers });
+        await wait(`document.querySelector('.pane .termfind.open')`, 3000);
+        await evaluate(`(() => { const i = document.querySelector('.pane .termfindin'); i.value = '0123'; i.dispatchEvent(new Event('input')); })()`);
+        await settle(200);
+        const g = await evaluate<Geom>(GEOM);
+        facts.desktop = { apple, ...g };
+        claims[`${apple ? "⌘" : "Ctrl"}+F on the focused terminal opens the search with the caret in its field`] = g.open && g.focus;
+        claims["the bar sits top right: its right edge within 16 px of the pane's, its top in the pane's upper 100 px"] = !!g.bar && !!g.pane
+          && g.open && g.pane.r - g.bar.r <= 16 && g.pane.r - g.bar.r >= 0 && g.bar.t - g.pane.t <= 100;
+        claims["it covers no button of the corner row (.panetools)"] = !!g.bar && g.open && g.tools.length > 0 && g.tools.every((t) => !meets(g.bar!, t));
+        claims["it covers none of the first 60 terminal columns"] = !!g.bar && g.open && !!g.cols60 && g.cell > 0 && !meets(g.bar, g.cols60);
+        claims["no sideways page scroll"] = g.pageScroll <= 0;
+        await shot(`${width}-1-suche`);
+        await evaluate(`document.querySelector('.pane .termfindin')?.focus()`);
+        await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await settle(100);
+        const after = await evaluate<Geom>(GEOM);
+        claims["Escape closes it and the keys go back to the terminal"] = !after.open && after.termFocus;
+      } else {
+        // --- no hardware keyboard: a visible control of the pane, reached by taps alone. It is found
+        // by what it SAYS (its text or aria-label), never by a tooltip that merely lists "Suche" (⋯)
+        const before = await evaluate<{ controls: string[] }>(`(() => ({ controls: [...document.querySelectorAll('#mtop button, .pane .panetools button')]
+          .filter((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && getComputedStyle(b).visibility !== 'hidden'; }).map((b) => b.id || b.className) }))()`);
+        facts.closedControls = before.controls;
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(150);
+        const ctl = await evaluate<{ found: boolean; label: string; w: number; h: number; inView: boolean }>(`(() => {
+          const b = [...document.querySelectorAll('#mtop button, .pane .panetools button')].find((x) => {
+            const r = x.getBoundingClientRect(); return r.width > 0 && getComputedStyle(x).visibility !== 'hidden' && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')) && !x.classList.contains('panehover'); });
+          if (!b) return { found: false, label: '', w: 0, h: 0, inView: false };
+          window.__find = b; const r = b.getBoundingClientRect();
+          return { found: true, label: (b.textContent ?? '').trim() || b.title, w: r.width, h: r.height, inView: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
+        facts.control = ctl;
+        await shot(`${width}-1-insel`);
+        await evaluate(`window.__find?.click()`);
+        await wait(`document.querySelector('.pane .termfind.open')`, 3000);
+        await evaluate(`(() => { const i = document.querySelector('.pane .termfindin'); i.value = '0123'; i.dispatchEvent(new Event('input')); })()`);
+        await settle(200);
+        const g = await evaluate<Geom>(GEOM);
+        facts.phone = g;
+        claims["a visible control of the pane, one tap away in the island, is at least 40 px high and inside the screen"] = ctl.found && ctl.h >= 40 && ctl.inView;
+        claims["tapping it opens the search with the caret in its field — no hardware keyboard"] = ctl.found && g.open && g.focus;
+        claims["the open bar lies inside the screen and under the pill, not on it"] = !!g.bar && g.open && g.bar.l >= 0 && g.bar.r <= width
+          && (!g.pill || g.pill.h === 0 || g.bar.t >= g.pill.b - 0.5) && g.pageScroll <= 0;
+        await shot(`${width}-2-suche`);
+        // the conversation has no terminal to search: the island offers no search there
+        await evaluate(`document.querySelector('.pane .termfind .termfindbtn:last-child')?.click()`);
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(100);
+        await evaluate(`document.querySelector('#mview')?.click()`);
+        await wait(`document.querySelector('.pane.chat')`, 3000);
+        await evaluate(`document.querySelector('#mpill')?.click()`);
+        await settle(150);
+        claims["in the conversation view the island offers no terminal search"] = await evaluate<boolean>(`!!document.querySelector('.pane.chat')
+          && ![...document.querySelectorAll('#mtop button')].some((x) => x.getBoundingClientRect().width > 0 && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')))`);
+      }
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+type PermissionProfile = { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" };
+type PermissionRow = { id: number; cwd: string | null; openedAt: number; permissions?: PermissionProfile | { state: "invalid" };
+  codexRecovery?: { sessionId: string | null }; };
+
+async function runCodexPermissions(): Promise<void> {
+  const bin = `${ROOT}/permissions-bin`, argvLog = `${ROOT}/permissions-argv.jsonl`;
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(`${bin}/codex`, `#!/usr/bin/env bun\nimport {appendFileSync} from "node:fs";\nappendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2))+"\\n");\nconsole.log(">_ OpenAI Codex (vfixture)\\n› ");\nsetInterval(()=>{},1000);\n`);
+  chmodSync(`${bin}/codex`, 0o700);
+  const path = `${bin}:${process.env.PATH ?? ""}`;
+  const args = (): string[][] => exists(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]) : [];
+  const nextArgs = async (prior: number): Promise<string[]> => {
+    for (let i = 0; i < 100; i++) { const lines = args(); if (lines.length > prior) return lines[prior]; await Bun.sleep(50); }
+    return [];
+  };
+  const row = async (): Promise<PermissionRow | undefined> => ((await (await get("/api/sessions")).json()) as
+    { slots: PermissionRow[] }).slots.find((s) => s.id === 16);
+  const profileIs = (actual: unknown, expected: PermissionProfile): boolean => JSON.stringify(actual) === JSON.stringify(expected);
+  const flagsAre = (argv: string[], profile: PermissionProfile, sid?: string): boolean =>
+    argv[argv.indexOf("--sandbox") + 1] === profile.sandbox
+      && argv[argv.indexOf("--ask-for-approval") + 1] === profile.approval
+      && !argv.some((arg) => arg.includes("bypass"))
+      && argv.includes("--no-daemon") && argv.includes('approvals_reviewer="user"')
+      && argv.includes('sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}')
+      && (!sid || argv[0] === "resume" && argv[1] === sid);
+  const configPath = process.env.CODEX_HOME ? `${process.env.CODEX_HOME}/config.toml` : null;
+  const configBefore = configPath && exists(configPath) ? readFileSync(configPath) : null;
+  const cwd = resolve(REPO);
+  const sessions = process.env.FLEET_CODEX_SESSIONS_DIR;
+  check("Codex permissions fixture has an isolated rollout root", !!sessions && sessions !== `${process.env.HOME}/.codex/sessions`, sessions ?? "missing");
+  if (!sessions) return;
+  await restartSrv({ PATH: path });
+  try {
+    const capability = (await (await get("/api/harnesses")).json()) as { harnesses: { id: string;
+      permissions?: { status: string; sandbox?: string[]; approval?: string[]; default?: PermissionProfile } }[] };
+    check("Codex permissions capability publishes the closed choices and full-access default",
+      JSON.stringify(capability.harnesses.find((h) => h.id === "codex")?.permissions) === JSON.stringify({
+        status: "supported", sandbox: ["read-only", "workspace-write", "danger-full-access"], approval: ["on-request", "never"],
+        default: { sandbox: "danger-full-access", approval: "never" } }), JSON.stringify(capability));
+    const defaultProfile: PermissionProfile = { sandbox: "danger-full-access", approval: "never" };
+    let n = args().length;
+    const defaultOpen = await post("/api/slots/16/open", { cwd, harness: "codex", packs: [] });
+    check("Codex absence stores and spawns the explicit legacy full-access profile", defaultOpen.ok
+      && profileIs((await row())?.permissions, defaultProfile) && flagsAre(await nextArgs(n), defaultProfile));
+    for (const sandbox of ["read-only", "workspace-write", "danger-full-access"] as const) for (const approval of ["on-request", "never"] as const) {
+      const profile = { sandbox, approval }; const title = `Codex ${sandbox}/${approval}`;
+      n = args().length;
+      const opened = await post("/api/slots/16/open", { cwd, harness: "codex", permissions: profile, packs: [] });
+      const fresh = await row();
+      check(`${title}: fresh/recycle stores only the new selection and spawns its exact flags`, opened.ok
+        && profileIs(fresh?.permissions, profile) && fresh?.codexRecovery?.sessionId === null && flagsAre(await nextArgs(n), profile), JSON.stringify(fresh));
+      // The rollout sits where Codex writes it and server.ts#codexRolloutForId looks: the Y/M/D tree
+      // under the isolated sessions root, the id in the filename suffix and in session_meta, the
+      // slot's own cwd. Stamped before the pane spawned, so lazy discovery cannot hand it out — only
+      // the exact owner bind below can.
+      const sid = crypto.randomUUID();
+      const day = new Date();
+      const dayDir = `${sessions}/${day.getFullYear()}/${String(day.getMonth() + 1).padStart(2, "0")}/${String(day.getDate()).padStart(2, "0")}`;
+      mkdirSync(dayDir, { recursive: true });
+      const rollout = `${dayDir}/rollout-${Date.now()}-${sid}.jsonl`;
+      const meta = { id: sid, cwd: fresh?.cwd ?? null, timestamp: new Date(Date.now() - 10000).toISOString(),
+        thread_source: "user", originator: "codex-tui" };
+      writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: meta }) + "\n");
+      const staged = ((): { type?: string; payload?: typeof meta } | null => {
+        try { return JSON.parse(readFileSync(rollout, "utf8").split("\n")[0]) as { type?: string; payload?: typeof meta }; }
+        catch { return null; }
+      })();
+      check(`${title}: bind fixture is one dated user rollout naming exactly this id and the slot's cwd`,
+        !!fresh?.cwd && staged?.type === "session_meta" && staged.payload?.id === sid && staged.payload.cwd === fresh.cwd
+          && staged.payload.thread_source === "user" && rollout.endsWith(`-${sid}.jsonl`)
+          && /\/\d{4}\/\d{2}\/\d{2}\/rollout-/.test(rollout), JSON.stringify({ rollout, payload: staged?.payload }));
+      const bind = await post("/api/slots/16/codex-bind", { sessionId: sid });
+      const bindBody = await bind.text();
+      check(`${title}: exact conversation bind succeeds`, bind.ok, `${bind.status} ${bindBody}`);
+      n = args().length;
+      const restarted = await post("/api/slots/16/restart", { permissions: profile });
+      const after = await row();
+      check(`${title}: restart resumes only the exact ID with the same profile`, restarted.ok
+        && after?.codexRecovery?.sessionId === sid && profileIs(after?.permissions, profile)
+        && flagsAre(await nextArgs(n), profile, sid), JSON.stringify(after));
+      const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, PermissionRow> };
+      check(`${title}: persistence records the chosen profile`, profileIs(durable.slots[16]?.permissions, profile));
+      await tmuxOut("kill-session", "-t", "=s16");
+      n = args().length;
+      await restartSrv({ PATH: path });
+      const reloaded = await row();
+      check(`${title}: persisted reload and heal retain profile and exact resume`, profileIs(reloaded?.permissions, profile)
+        && reloaded?.codexRecovery?.sessionId === sid && flagsAre(await nextArgs(n), profile, sid), JSON.stringify(reloaded));
+      rmSync(rollout, { force: true });
+    }
+    const retained = await row(); n = args().length;
+    for (const permissions of [null, [], {}, { sandbox: "read-only" }, { sandbox: "unknown", approval: "never" },
+      { sandbox: "read-only", approval: "untrusted" }, { sandbox: "workspace-write", approval: "on-failure" },
+      { sandbox: "read-only", approval: { granular: {} } }, { sandbox: "read-only", approval: "never", extra: true }]) {
+      const response = await post("/api/slots/16/open", { cwd, harness: "codex", permissions });
+      const current = await row();
+      check("malformed/unsupported Codex permissions refuse before recycle or spawn", response.status === 400
+        && current?.openedAt === retained?.openedAt && profileIs(current?.permissions, defaultProfile) && args().length === n,
+        JSON.stringify(permissions));
+    }
+    for (const harness of capability.harnesses.filter((h) => h.id !== "codex")) {
+      const response = await post("/api/slots/16/open", { cwd, harness: harness.id, permissions: defaultProfile });
+      const error = await response.json() as { error?: string };
+      check(`${harness.id}: explicit permissions are unsupported before spawn`, response.status === 400
+        && error.error === `harness ${harness.id} permissions unsupported` && (await row())?.openedAt === retained?.openedAt
+        && args().length === n, JSON.stringify(error));
+    }
+    const different = await post("/api/slots/16/restart", { permissions: { sandbox: "read-only", approval: "never" } });
+    check("restart cannot silently change permissions or spawn", different.status === 409 && args().length === n);
+    await stopSrv(); await tmuxOut("kill-session", "-t", "=s16");
+    const legacy = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions?: unknown }> };
+    delete legacy.slots[16].permissions;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(legacy)); n = args().length;
+    await restartSrv({ PATH: path });
+    check("legacy Codex absence reloads the explicit historical full-access default", profileIs((await row())?.permissions, defaultProfile)
+      && flagsAre(await nextArgs(n), defaultProfile));
+    for (const permissions of [null, { sandbox: "read-only", approval: "untrusted" }, { state: "invalid" }]) {
+      await stopSrv(); await tmuxOut("kill-session", "-t", "=s16");
+      const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions: unknown }> };
+      durable.slots[16].permissions = permissions;
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(durable)); n = args().length;
+      await restartSrv({ PATH: path });
+      const invalid = await row();
+      const restart = await post("/api/slots/16/restart", {});
+      const snapshot = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof durable;
+      check("invalid stored permissions stay explicit across reload and refuse heal/restart without full-access fallback",
+        JSON.stringify(invalid?.permissions) === '{"state":"invalid"}' && restart.status === 400 && args().length === n
+          && (await tmuxOut("has-session", "-t", "=s16")).code !== 0
+          && JSON.stringify(snapshot.slots[16].permissions) === '{"state":"invalid"}', JSON.stringify(permissions));
+    }
+    const repaired: PermissionProfile = { sandbox: "read-only", approval: "on-request" }; n = args().length;
+    const recycled = await post("/api/slots/16/open", { cwd, harness: "codex", permissions: repaired, packs: [] });
+    check("owner recycle replaces invalid predecessor with only the new profile", recycled.ok
+      && profileIs((await row())?.permissions, repaired) && flagsAre(await nextArgs(n), repaired));
+    const programId = crypto.randomUUID().replaceAll("-", "").slice(0, 24);
+    await post("/api/dispatch", { on: false });
+    await stopSrv();
+    type PermissionFixtureState = { slots: Record<string, { cwd: string; openedAt: number; selfToken: string; sessionId: string | null }>;
+      programs: { id: string }[]; tasks: { id: string; programId?: string }[] };
+    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PermissionFixtureState;
+    const actor = state.slots[16];
+    state.programs.push({ id: programId, title: "permissions API fixture", intent: "exercise the existing task founding door",
+      successCriterion: "exact profile or explicit refusal", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now(), confirmedAt: Date.now(), activatedAt: Date.now(), proposedBy: { kind: "owner" },
+      main: { slot: 16, openedAt: actor.openedAt, sessionId: actor.sessionId, boundAt: Date.now() } } as { id: string });
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state));
+    await restartSrv({ PATH: path });
+    const selfPost = (token: string, endpoint: string, body: Record<string, unknown>): Promise<Response> => fetch(`${BASE}${endpoint}`, {
+      method: "POST", headers: { "x-fleet-self-token": token, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const taskRows = async (): Promise<{ id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } }[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } }[] }).tasks;
+    try {
+      const request = { text: "profile task founding fixture", kind: "auftrag", harness: "codex", permissions: repaired };
+      const filed = await selfPost(actor.selfToken, "/api/self/tasks", request);
+      const filedBody = await filed.json() as { task?: { id: string; programId?: string; repo?: string; spawn?: { permissions?: unknown } } };
+      const task = filedBody.task;
+      check("bound Program-MAIN task founding derives program/repo and stores exactly the selected Codex profile",
+        filed.status === 200 && task?.programId === programId && task.repo === realpathSync(cwd)
+          && profileIs(task.spawn?.permissions, repaired), JSON.stringify(task));
+      const taskCount = (await taskRows()).length;
+      const argvCount = args().length;
+      for (const patch of [{ permissions: null }, { permissions: { sandbox: "read-only", approval: "untrusted" } },
+        { harness: "claude" }, { surprise: true }, { programId: "foreign" }, { repo: `${cwd}-not-known` }]) {
+        const refused = await selfPost(actor.selfToken, "/api/self/tasks", { ...request, ...patch });
+        const detail = await refused.text();
+        check("Program-MAIN profile founding rejects shape/enum/unsupported/body/program/repo before row or spawn",
+          refused.status === 400 && (await taskRows()).length === taskCount && args().length === argvCount,
+          `${JSON.stringify(patch)} status=${refused.status} ${detail}`);
+      }
+      const foreignActor = await selfPost("not-a-self-token", "/api/self/tasks", request);
+      check("profile task founding does not admit an unauthenticated actor", foreignActor.status === 401
+        && (await taskRows()).length === taskCount && args().length === argvCount, String(foreignActor.status));
+      if (task?.id) {
+        const changed = await selfPost(actor.selfToken, `/api/self/tasks/${task.id}/spawn`, { harness: "codex", permissions: repaired });
+        check("bound MAIN worker-choice door accepts and preserves the exact profile", changed.ok
+          && profileIs((await taskRows()).find((t) => t.id === task.id)?.spawn?.permissions, repaired), String(changed.status));
+        n = args().length;
+        const dispatched = await post(`/api/tasks/${task.id}/dispatch`, {});
+        const dispatchBody = await dispatched.json() as { slot?: number; spawn?: { permissions?: unknown }; error?: string };
+        check("attended dispatch forwards the stored task profile through the real Fleet spawn command", dispatched.ok
+          && profileIs(dispatchBody.spawn?.permissions, repaired) && flagsAre(await nextArgs(n), repaired), JSON.stringify(dispatchBody));
+        if (dispatchBody.slot) await post(`/api/slots/${dispatchBody.slot}/kill`, {});
+      }
+    } finally {
+      await stopSrv();
+      const cleanup = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PermissionFixtureState;
+      cleanup.programs = cleanup.programs.filter((p) => p.id !== programId);
+      cleanup.tasks = cleanup.tasks.filter((t) => t.programId !== programId);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleanup));
+      await restartSrv({ PATH: path });
+    }
+    const configAfter = configPath && exists(configPath) ? readFileSync(configPath) : null;
+    check("all Fleet Codex lifecycle probes leave global config byte-identical", configBefore === null
+      ? configAfter === null : configAfter !== null && configBefore.equals(configAfter));
+  } finally {
+    await post("/api/slots/16/kill", {});
+    await restartSrv({ PATH: process.env.PATH ?? "" });
+    rmSync(bin, { recursive: true, force: true }); rmSync(argvLog, { force: true });
+  }
+}
+
+// THE ARBEITSORTE IN INFO (cards e66909b1 and abe74821; docs/design/rechter-tab-notiz.md §3b–§3d,
+// Variante 3A with the owner's four additions of 2026-10-05), measured in a real browser on the real
+// client bundle behind a fixture origin: GET /api/worktrees carries the repos, their worktrees and
+// the stand of every carrier the way src/protocol.ts#Workplaces types them, /api/sessions the
+// sessions. Every claim reads the DOM, at 1200 × 900 and 390 × 844, in the draft's states lane ·
+// modell · tippen · land · viele · branch · alarm · leer · main. The fixture also records every write
+// the page sends, so a click is judged by the request it made. Exported so a lane can drive it with an
+// artefact folder and against a mutated copy of the tree.
+export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export const ARBEITSORTE_STATES = ["lane", "modell", "tippen", "land", "viele", "branch", "alarm", "leer", "main"] as const;
+export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string): Promise<ArbeitsorteDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-arbeitsorte-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  if (artifacts) mkdirSync(artifacts, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  type State = typeof ARBEITSORTE_STATES[number];
+  // --- the fixture: two repos, lanes on main and on overhaul, a helper machine and a linked instance
+  const REPO = "/fixture/claude-fleet", REPO2 = "/fixture/rezepte-app";
+  const hex = (seed: string) => createHash("sha1").update(seed).digest("hex");
+  const MAIN = hex("main"), OVER = hex("overhaul"), MAIN2 = hex("main2"), BOOT = hex("boot");
+  type Check = { state: "running" | "green" | "red" | "skipped" | "waiting"; head: string | null; at: number | null; fails: string[]; stale: boolean | null } | null;
+  type Lane = { slot: number | null; letter?: string; title?: string; branch: string; target: "main" | "overhaul"; ahead: number; dirty?: number;
+    checks?: Partial<Record<"local" | "preview" | "gate" | "audit", Check>>; landed?: "yes" | "no" | null; landedAs?: string;
+    ti?: "up" | "expired" | "not-running"; awaiting?: "owner" | "main"; working?: boolean; repo?: string; auditUnreadable?: boolean };
+  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[] };
+  const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
+  const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
+  const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
+  const free: Lane = { slot: null, branch: "fleet/261005-insel-telefon-7c08", target: "overhaul", ahead: 2 };
+  const lanesOf = (st: State): Lane[] => {
+    const h = (b: string) => hex(b);
+    const base: Lane[] = [
+      { ...own, checks: { local: green(h(own.branch)), preview: st === "land" ? green(h(own.branch)) : { state: "running", head: h(own.branch), at: fx.now - 90_000, fails: [], stale: false },
+        gate: st === "land" ? { state: "running", head: null, at: fx.now - 160_000, fails: [], stale: null } : null }, landed: "no" },
+      { ...zeit, checks: { local: green(h(zeit.branch), 60), preview: green(h(zeit.branch), 55) }, landed: "no", ti: st === "modell" || st === "viele" || st === "branch" ? "up" : "not-running" },
+      { ...free, landed: "no", ti: st === "modell" ? "up" : "not-running" },
+      { slot: 13, letter: "A", title: "Filter nach Saison", branch: "fleet/261005-filter-saison-91ab", target: "main", ahead: 2, repo: REPO2, working: true, landed: "no" },
+    ];
+    if (st === "leer") return base.map((l) => ({ ...l, slot: null, working: false }));
+    if (st !== "viele" && st !== "branch") return base;
+    const more: Lane[] = [
+      { slot: 11, letter: "C", title: "Insel am Telefon", branch: "fleet/261005-insel-am-telefon-1b2c", target: "overhaul", ahead: 4, working: true, landed: "no",
+        checks: { local: green(h("c")), preview: { state: "red", head: h("old"), at: fx.now - 30 * 60_000, fails: ["e2e/slots.ts: glass island"], stale: true } } },
+      { slot: 12, letter: "D", title: "Leiste Marken", branch: "fleet/261005-leiste-marken-91e2", target: "overhaul", ahead: 2, awaiting: "owner", landed: "no",
+        checks: { local: green(h("d")), preview: { state: "waiting", head: h("d"), at: fx.now - 60_000, fails: [], stale: false } } },
+      { slot: 14, letter: "E", title: "Task-View gehalten", branch: "fleet/261005-task-view-gehalten-5e6b", target: "overhaul", ahead: 3, landed: "yes", landedAs: hex("landed-e"),
+        checks: { local: green(h("e"), 90), preview: green(h("e"), 80), gate: green(h("e"), 20), audit: { state: "running", head: OVER, at: fx.now - 5 * 60_000, fails: [], stale: true } } },
+      { slot: 15, letter: "F", title: "Datenrechte Quellen", branch: "fleet/261005-datenrechte-quellen-2c19", target: "overhaul", ahead: 5, working: true, landed: "no", auditUnreadable: true },
+      { slot: 16, letter: "G", title: "Modell-Register Sonnet", branch: "fleet/261005-modell-register-0f41", target: "main", ahead: 1, landed: "no", checks: { local: { state: "skipped", head: h("g"), at: fx.now - 3600_000, fails: [], stale: false } } },
+    ];
+    for (const [i, word] of ["export dialog", "notizblock", "gruendung", "alte suche", "zeitleiste alt", "explorer suche", "querformat", "schedule ansicht"].entries())
+      more.push({ slot: null, branch: `fleet/261004-${word.replace(/ /g, "-")}-${(0xa000 + i).toString(16)}`, target: "overhaul", ahead: i % 3, landed: i % 3 ? "no" : null });
+    return [...base, ...more];
+  };
+  const pathOf = (l: Lane) => `${l.repo ?? REPO}.worktrees/${l.branch.replace(/\//g, "-")}`;
+  const openedAt = (slot: number) => 1_000_000 + slot;
+  const sessions = (st: State) => {
+    const lanes = lanesOf(st);
+    const rows: Record<string, unknown>[] = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: null, label: null, lastOutput: 0 }));
+    const put = (id: number, v: Record<string, unknown>) => { rows[id - 1] = { id, openedAt: openedAt(id), lastOutput: fx.now - 12 * 60_000, harness: "claude", ...v }; };
+    if (st !== "leer") {
+      put(1, { cwd: REPO, repo: REPO, label: "Orchestratorin", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", lastOutput: fx.now, git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(6, { cwd: REPO2, repo: REPO2, label: "rezepte-app", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+    }
+    for (const l of lanes) if (l.slot) {
+      const repo = l.repo ?? REPO;
+      put(l.slot, { cwd: pathOf(l), repo: pathOf(l), label: `⎇ task ${l.branch.slice(-4)}`, taskTitle: l.title, mission: `${l.title} bauen.`,
+        lastOutput: l.working ? fx.now : fx.now - 12 * 60_000, awaiting: l.awaiting,
+        git: { branch: l.branch, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0 },
+        worktree: { repo, branch: l.branch, anchor: { slot: repo === REPO ? 3 : 6, openedAt: openedAt(repo === REPO ? 3 : 6) }, letter: l.letter } });
+    }
+    return rows;
+  };
+  const row = (l: Lane) => {
+    const head = hex(l.branch), target = l.target === "main" ? (l.repo === REPO2 ? MAIN2 : MAIN) : OVER;
+    const checks = { local: l.checks?.local ?? null, preview: l.checks?.preview ?? null, gate: l.checks?.gate ?? null, audit: l.checks?.audit ?? null };
+    const reasons = Object.entries(checks).filter(([, v]) => v === null).map(([k]) => ({ field: `checks.${k}`, reason: k === "audit" && l.auditUnreadable ? "audit-history-unreadable" : `${k}-not-retained` }));
+    if (l.landed === null) reasons.push({ field: "target.landed", reason: "nothing-to-land" });
+    const ti = l.ti === "up" ? { state: "up", instance: { state: "up", expiresAt: fx.now + 2 * 3600_000, port: 8913, recordedSource: { before: { head } } } }
+      : l.ti === "expired" ? { state: "expired", instance: { state: "expired", expiresAt: fx.now - 12 * 60_000 } }
+      : { state: "not-running", instance: { state: "not-running" } };
+    return { path: pathOf(l), primary: false, branch: l.branch, head, base: { branch: l.target, head: target }, distance: { ahead: l.ahead, behind: 0 },
+      session: l.slot ? { slot: l.slot, openedAt: openedAt(l.slot) } : null,
+      target: { branch: l.target, head: target, behind: 0, landed: l.landed ?? null, landedAs: l.landedAs ?? null, basis: "land-note" },
+      checks, template: (l.repo ?? REPO) === REPO ? "present" : "missing", testinstanz: (l.repo ?? REPO) === REPO ? ti : null, reasons };
+  };
+  const workplaces = (st: State) => {
+    const lanes = lanesOf(st);
+    const primary = (repo: string, head: string) => ({ path: repo, primary: true, branch: "main", head, base: { branch: "main", head }, distance: { ahead: 0, behind: 0 },
+      session: null, target: { branch: "main", head, behind: 0, landed: null, landedAs: null, basis: "land-note" },
+      checks: { local: null, preview: null, gate: null, audit: null }, template: repo === REPO ? "present" : "missing",
+      testinstanz: repo === REPO ? { state: "not-running", instance: { state: "not-running" } } : null,
+      reasons: [{ field: "target.landed", reason: "nothing-to-land" }] });
+    const cmp = (head: string | null, ref: string, behind: number, codeBehind: boolean | null) => ({ ref, head: MAIN, mergeBase: head ? MAIN : null,
+      distance: head ? { ahead: 0, behind } : null, codeBehind: head ? (behind ? codeBehind : false) : null, reasons: [] });
+    const behind = st === "alarm" ? 5 : 0;
+    return {
+      repos: [
+        { repo: REPO, branches: [{ branch: "main", head: MAIN, distance: { ahead: 0, behind: 0 }, reasons: [] }, { branch: "overhaul", head: OVER, distance: { ahead: 41, behind: 0 }, reasons: [] }],
+          worktrees: [primary(REPO, MAIN), ...lanes.filter((l) => (l.repo ?? REPO) === REPO).map(row)], landNotes: { truncated: false }, reasons: [] },
+        { repo: REPO2, branches: [{ branch: "main", head: MAIN2, distance: { ahead: 0, behind: 0 }, reasons: [] }],
+          worktrees: [primary(REPO2, MAIN2), ...lanes.filter((l) => l.repo === REPO2).map(row)], landNotes: { truncated: false }, reasons: [] },
+      ],
+      stands: [
+        { kind: "live-server", repo: REPO, name: null, path: null, head: behind ? BOOT : MAIN, basis: "boot-head", codeScope: "server", observedAt: fx.now,
+          target: behind ? { ref: "refs/heads/main", head: MAIN, mergeBase: BOOT, distance: { ahead: 0, behind }, codeBehind: true, reasons: [] } : cmp(MAIN, "refs/heads/main", 0, null),
+          remote: null, update: null, reasons: [] },
+        { kind: "worktree", repo: REPO, name: null, path: REPO, head: MAIN, basis: "worktree-head", codeScope: "repository", observedAt: fx.now,
+          target: cmp(MAIN, "refs/heads/main", 0, null), remote: [{ name: "origin", ref: "refs/remotes/origin/main", head: hex("origin"), mergeBase: hex("origin"),
+            distance: { ahead: 3, behind: 0 }, codeBehind: false, reasons: [], refUpdatedAt: fx.now - 7200_000, refAgeMs: 7200_000 }], update: null, reasons: [] },
+        { kind: "worktree", repo: REPO2, name: null, path: REPO2, head: MAIN2, basis: "worktree-head", codeScope: "repository", observedAt: fx.now,
+          target: { ref: "refs/heads/main", head: MAIN2, mergeBase: MAIN2, distance: { ahead: 0, behind: 0 }, codeBehind: false, reasons: [] }, remote: "none", update: null, reasons: [] },
+        { kind: "test-instance", repo: REPO, name: null, path: pathOf(zeit), head: null, basis: "copy-unproven", codeScope: "server", observedAt: fx.now, target: null, remote: null, update: null,
+          reasons: [{ field: "head", reason: "copy-running-version-unproven" }] },
+        { kind: "helper-daemon", repo: REPO, name: "workhorse", path: null, head: MAIN, basis: "heartbeat", codeScope: "helper-daemon", observedAt: fx.now - 40_000,
+          target: cmp(MAIN, "refs/heads/main", 0, null), remote: null, update: { state: "reported", main: "main", mainSha: MAIN }, reasons: [] },
+        { kind: "helper-instance", repo: REPO, name: "workhorse", path: null, head: null, basis: "checkout-unproven", reportedCheckout: { head: hex("helper-checkout"), observedAt: fx.now - 40_000 },
+          codeScope: "server", observedAt: fx.now - 40_000, target: null, remote: null, update: null, reasons: [{ field: "head", reason: "helper-instance-running-sha-unreported" }] },
+        { kind: "linked-instance", repo: null, name: "Zweite Fleet", path: null, head: null, basis: "link-only", codeScope: "server", observedAt: null, target: null, remote: null, update: null,
+          reasons: [{ field: "head", reason: "linked-instance-sha-unreported" }] },
+      ],
+      measuredAt: fx.now, cacheMs: 3000,
+    };
+  };
+  const focusOf = (st: State): number | null => st === "leer" ? null : st === "main" ? 3 : 9;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const url = new URL(request.url), p = url.pathname;
+      fx.now = Date.now();
+      if (request.method === "POST") {
+        let body: unknown = null; try { body = JSON.parse(request.postData ?? "null"); } catch { body = request.postData ?? null; }
+        fx.writes.push({ path: `${p}${url.search}`, body });
+        if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") return void json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
+        return void json(requestId, { ok: true });
+      }
+      const st = fx.state;
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st), instance: { name: "Mac" },
+        deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" } });
+      if (p === "/api/worktrees") return void json(requestId, workplaces(st));
+      const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
+      if (m) {
+        const slot = Number(m[1]);
+        const lane = lanesOf(st).find((l) => l.slot === slot);
+        const repo = lane ? lane.repo ?? REPO : slot === 6 ? REPO2 : REPO;
+        if (m[2] === "brief") return void json(requestId, { branch: lane?.branch ?? "main", head: lane ? hex(lane.branch) : MAIN,
+          worktree: lane ? { repo, branch: lane.branch } : null, sessionStart: fx.now - 3600_000, uncommitted: 0, uncommittedFiles: [], files: [], filesTotal: 0,
+          shortstat: "", commits: [], repoCommits: [], laneScoped: !!lane, laneBase: lane?.target ?? null, commitsCap: 200, ahead: lane?.ahead ?? 0, behind: 0 });
+        if (m[2] === "worktrees") return void json(requestId, { repo, main: "main", worktrees: lanesOf(st).filter((l) => (l.repo ?? REPO) === repo).map((l) => ({
+          path: pathOf(l), branch: l.branch, slot: l.slot, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0, empty: !l.dirty && !l.ahead,
+          dirtyFiles: [], unpushedCommits: l.ahead ? [{ hash: hex(l.branch).slice(0, 7), subject: "feat: fixture" }] : [], note: null, notepad: null, review: null })) });
+        if (m[2] === "merge") return void json(requestId, { running: false });
+        return void json(requestId, { entries: [], total: 0, source: null, ttlSec: 300, queued: [] });
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("arbeitsorte DOM probe: evaluate failed: " + JSON.stringify(r.exceptionDetails).slice(0, 300) + " :: " + expression.replace(/\s+/g, " ").slice(0, 160));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // everything a claim reads, in one pass over the DOM
+    const READ = `(() => { const sec = document.querySelector('#boardbody .ranke'); if (!sec) return null;
+      const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), r: Math.round(r.right), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; };
+      const vis = (e) => !!e && getComputedStyle(e).visibility !== 'hidden' && e.getBoundingClientRect().width > 0;
+      const col = (e, p) => e ? getComputedStyle(e)[p] : null;
+      const probe = (v) => { const t = document.createElement('span'); t.style.color = v; sec.append(t); const c = getComputedStyle(t).color; t.remove(); return c; };
+      const rows = [...sec.querySelectorAll('.zr')].map((r) => { const pf = r.querySelector(':scope > .pf'), ti = r.querySelector(':scope > .ti');
+        return { cls: r.className, id: r.dataset.id ?? null, slot: r.dataset.slot ?? null, node: r.dataset.node ?? null, kind: r.dataset.kind ?? null,
+          text: r.innerText.replace(/\\s+/g, ' ').trim(), title: r.title, box: box(r),
+          ref: r.querySelector(':scope > .ref')?.textContent ?? null, name: r.querySelector(':scope > .nm')?.textContent ?? null,
+          nd: col(r.querySelector(':scope > .nd'), 'backgroundColor'),
+          pf: pf ? { box: box(pf), aria: pf.getAttribute('aria-label'), beads: [...pf.children].map((c) => ({ tag: c.tagName, stage: c.dataset.stage ?? null, state: c.dataset.state ?? null, landed: c.dataset.landed ?? null, title: c.title, bg: col(c, 'backgroundColor'), cls: c.className })) } : null,
+          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: ti.disabled } : null,
+          tag: r.querySelector('.tag')?.textContent ?? null, tagTitle: r.querySelector('.tag')?.title ?? null }; });
+      const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent) }));
+      const body = document.querySelector('#boardbody');
+      const kids = [...body.children];
+      const field = document.querySelector('#compwt'), tray = document.querySelector('#comptray'), sched = document.querySelector('#autobtn');
+      const mort = document.querySelector('#mort .wtfield');
+      return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
+        head: sec.querySelector('h3')?.textContent ?? null, seg: [...sec.querySelectorAll('.rkseg button')].map((b) => b.textContent + (b.classList.contains('on') ? '*' : '')),
+        rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
+        secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
+        bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'),
+        live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'),
+        field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
+        trayBox: box(tray), schedBox: box(sched), mort: mort ? mort.innerText.replace(/\\s+/g, ' ').trim() : null,
+        focusSlot: (window.__fxPane && window.__fxPane()) ?? null }; })()`;
+    type Bead = { tag: string; stage: string | null; state: string | null; landed: string | null; title: string; bg: string; cls: string };
+    type Row = { cls: string; id: string | null; slot: string | null; node: string | null; kind: string | null; text: string; title: string; box: { x: number; r: number; y: number; w: number; h: number };
+      ref: string | null; name: string | null; nd: string | null; pf: { box: { x: number; r: number }; aria: string | null; beads: Bead[] } | null;
+      ti: { state: string | null; title: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null; tagTitle: string | null };
+    type Read = { index: number; before: string[]; next: string | null; head: string | null; seg: string[]; rows: Row[];
+      lines: { cls: string; for: string | null; text: string; title: string; buttons: string[] }[]; text: string; svgPaths: number; inkPaths: number;
+      secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean;
+      live: string; wait: string; danger: string; amber: string;
+      field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
+      trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number } | null; mort: string | null };
+    const read = async (): Promise<Read> => {
+      const r = await evaluate<Read | null>(READ);
+      if (!r) throw new Error("arbeitsorte DOM probe: no .ranke section in #boardbody: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no #boardbody'"));
+      return r;
+    };
+    const lane = (r: Read, slot: number) => r.rows.find((x) => x.slot === String(slot));
+    const byId = (r: Read, id: string) => r.rows.find((x) => x.id === id);
+    const branchRows = (r: Read) => r.rows.filter((x) => x.cls.split(" ").includes("zw"));
+    const sha7 = (h: string) => h.slice(0, 7);
+    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })`);
+    const PROCESS = /\b(baton|gate|audit|suite|deploy|mutex|srv)\b/i;
+    const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
+    const results: ArbeitsorteDomResult[] = [];
+    let targetId = "";
+    for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      const phone = width < 700;
+      for (const st of ARBEITSORTE_STATES) {
+        const claims: Record<string, boolean> = {};
+        const facts: Record<string, unknown> = {};
+        fx.state = st; fx.writes = [];
+        if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+        targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+        sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+        await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+        await send("Page.enable"); await send("Runtime.enable");
+        await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
+          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };` });
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+        await navigate("http://fleet.fixture/blank");
+        const focus = focusOf(st);
+        await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); })()`);
+        await navigate("http://fleet.fixture/");
+        if (phone && st === "leer") {
+          // the phone opens Info from a pane's session (src/client.ts#sideOpen); with no session on
+          // the fleet there is none, and the island's place Arbeitsort stays empty with its word
+          await wait("document.querySelector('#mpill')", 8000);
+          await settle(2500);
+          const mort = await evaluate<{ field: boolean; empty: boolean }>(`({ field: !!document.querySelector('#mort .wtfield'), empty: document.querySelector('#mort')?.childElementCount === 0 })`);
+          facts.mort = mort;
+          claims[`${st}: with no session the island's place Arbeitsort stays empty — no field names a worktree nobody works in`] = !mort.field && mort.empty;
+          await shot(`${st}-${width}`);
+          results.push({ width, height, state: st, claims, facts });
+          continue;
+        }
+        if (phone) {
+          await wait("document.querySelector('#mpill')", 8000);
+          await settle(400);
+          await evaluate("document.querySelector('#mpill')?.click()");
+          await wait("document.body.classList.contains('mopen')", 2000);
+          await settle(200);
+          await evaluate("document.querySelector('#minfo')?.click()");
+        }
+        const shown = await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 15000);
+        if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the Ranke did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
+        await settle(400);
+        const tag = `${st}: `;
+        // --- the common claims, every state
+        let r = await read();
+        facts.base = { index: r.index, before: r.before, head: r.head, seg: r.seg, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll };
+        claims[`${tag}"Arbeitsorte" is the first section of Info after the alarms, above the session`] = r.head?.startsWith("Arbeitsorte") === true
+          && r.before.every((c) => /balert|plaboard|bfail/.test(c)) && (st === "leer" || /bhead/.test(r.next ?? ""));
+        const zw = branchRows(r);
+        const pfX = new Set(zw.map((x) => x.pf?.box.x)), tiX = new Set(zw.map((x) => x.ti?.box.x));
+        facts.columns = { pfX: [...pfX], tiX: [...tiX], heights: [...new Set(zw.map((x) => x.box.h))] };
+        claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and the beads and the square stand in one column across every repo`] =
+          zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && pfX.size === 1 && tiX.size === 1;
+        claims[`${tag}every branch carries five beads in the order local · preview · land check · in its target · after the land, each with a tooltip`] =
+          zw.every((x) => !!x.pf && x.pf.beads.length === 5 && x.pf.beads.map((b) => b.stage ?? b.tag).join(",") === "local,preview,gate,B,audit"
+            && x.pf.beads.every((b) => b.title.length > 4) && !!x.pf.aria);
+        claims[`${tag}every branch says whether it is in its target — "noch nicht auf overhaul" / "gelandet als <sha>" / unknown — from target.landed`] =
+          zw.every((x) => { const b = x.pf?.beads[3]; if (!b) return false;
+            return b.landed === "no" ? /^noch nicht auf (main|overhaul)$/.test(b.title) : b.landed === "yes" ? /^gelandet als [0-9a-f]{7} in /.test(b.title)
+              : /^(nichts zu landen|unbekannt, ob)/.test(b.title); });
+        claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
+        claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
+        claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] = !r.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(r.bodyText);
+        claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
+        // abe74821 — the stand of every carrier, grouped by machine
+        const machines = r.rows.filter((x) => x.cls.includes("mach")).map((x) => x.text);
+        const stands = r.rows.filter((x) => x.kind);
+        facts.stands = { machines, stands: stands.map((x) => `${x.kind}: ${x.text}`) };
+        const liveRow = stands.find((x) => x.kind === "live-server");
+        claims[`${tag}this machine first, then the helper machine, then the linked instance — each carrier says "läuft auf"`] =
+          machines[0]?.startsWith("Mac") === true && machines.some((m) => m.startsWith("workhorse")) && machines.some((m) => m.startsWith("Zweite Fleet"))
+          && stands.length >= 4 && stands.every((x) => x.text.includes("läuft auf"));
+        claims[`${tag}Live says the running commit and how far from main`] = !!liveRow && liveRow.text.includes(`läuft auf ${sha7(st === "alarm" ? BOOT : MAIN)}`)
+          && (st === "alarm" ? liveRow.text.includes("5 hinter main") && liveRow.text.includes("betrifft den Server-Code") && liveRow.nd === r.wait
+            : liveRow.text.includes("neuester Stand von main") && liveRow.nd === r.live);
+        const helperI = stands.find((x) => x.kind === "helper-instance"), linked = stands.find((x) => x.kind === "linked-instance"), daemon = stands.find((x) => x.kind === "helper-daemon");
+        claims[`${tag}an unknown stand stays unknown with its sentence: the helper's instance names its checkout, the linked instance that its repos are not read here`] =
+          !!helperI && helperI.text.includes("läuft auf unbekannt") && helperI.text.includes(`Checkout ${sha7(hex("helper-checkout"))}`)
+          && !!linked && linked.text.includes("läuft auf unbekannt · ihre Repos liest dieser Server nicht")
+          && !!daemon && daemon.text.includes(`läuft auf ${sha7(MAIN)}`) && /zuletzt gemeldet/.test(daemon.title);
+        const repos = r.rows.filter((x) => x.cls.includes("repo"));
+        facts.repos = repos.map((x) => ({ text: x.text, tag: x.tag, cls: x.cls }));
+        claims[`${tag}every repo the server reads is a group; a repo without a remote says "kein Remote" quietly, one with a remote names it`] =
+          repos.length === 2 && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main/.test(x.tagTitle ?? ""))
+          && repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === "kein Remote");
+        const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
+        // overhaul: every claude-fleet worktree aiming at it that has not landed; main: its own lanes plus overhaul itself
+        const repoLanes = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.landed !== "yes");
+        const nOver = repoLanes.filter((l) => l.target === "overhaul").length, nMain = repoLanes.filter((l) => l.target === "main").length + 1;
+        const landsWord = (n: number) => `${n} ${n === 1 ? "landet" : "landen"} hier`;
+        facts.lands = { main: mainRow?.text, over: overRow?.text, nMain, nOver };
+        claims[`${tag}the stem main and the branch overhaul say in words how many land there`] = !!mainRow && !!overRow
+          && overRow.text.includes(landsWord(nOver)) && overRow.text.includes("41 vor main") && mainRow.text.includes(landsWord(nMain)) && mainRow.text.includes(sha7(MAIN));
+        // the worktree field under the composer (desktop: the tray's right end; phone: the island's Arbeitsort)
+        if (focus) {
+          const name = st === "main" ? "claude-fleet" : "Rechter Tab dichter";
+          const addr = st === "main" ? "main" : "3A";
+          claims[`${tag}the worktree field names the address and the lane's name, ${phone ? "in the island's place Arbeitsort" : "right-aligned after Schedule"}`] = phone
+            ? (r.mort ?? "").includes(addr) && (r.mort ?? "").includes(name)
+            : !!r.field && r.field.vis && r.field.text.includes(addr) && r.field.text.includes(name) && !!r.schedBox && r.field.box.x >= r.schedBox.r
+              && !!r.trayBox && r.trayBox.r - r.field.box.r <= 12;
+        }
+        // --- the state's own claims
+        if (st === "lane" || st === "land" || st === "modell" || st === "tippen") {
+          const mine = lane(r, 9)!, zeitRow = lane(r, 10)!;
+          claims[`${tag}the own lane is the marked row 3A with its name, and its square is visible (Starten without hovering)`] =
+            !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !!mine.ti?.sq && mine.ti.state === "not-running";
+          claims[`${tag}the own path main → overhaul → 3A is drawn in ink`] = r.inkPaths === 1;
+          claims[`${tag}the node says the state: 3A works (green), 3B is still (a ring), the word in the tooltip`] =
+            mine.nd === r.live && mine.title.includes("arbeitet") && zeitRow.node === "still" && zeitRow.nd !== r.live && /still/.test(zeitRow.title);
+          const beads = mine.pf!.beads;
+          claims[`${tag}3A's beads: local green · preview ${st === "land" ? "green" : "running (green fill)"} · land check ${st === "land" ? "running" : "none yet"} · not yet on overhaul`] =
+            beads[0].state === "green" && (st === "land" ? beads[1].state === "green" && beads[2].state === "running" && beads[2].bg === r.live
+              : beads[1].state === "running" && beads[1].bg === r.live && beads[2].state === "none") && beads[3].landed === "no" && beads[3].title === "noch nicht auf overhaul";
+        }
+        if (st === "lane" && !phone) {
+          // the worktree field shows its worktree in Info: a click marks the own row for a moment
+          await evaluate(`document.querySelector('#boardbody').scrollTop = 9999; document.querySelector('#compwt')?.click()`);
+          const marked = await wait(`document.querySelector('#boardbody .zr.flash')?.dataset.slot === '9'`, 4000);
+          claims[`${tag}a click on the worktree field marks the own branch in Info`] = marked;
+        }
+        if (st === "lane") {
+          // a click on the own square opens its line with Starten; Starten asks the slot's route for a 4-h copy
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Starten'))`, 3000);
+          r = await read();
+          const line = r.lines.find((l) => l.cls.includes("ti"));
+          facts.tiLine = line;
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Starten')?.click()`);
+          await wait(`false`, 400);
+          facts.writes = fx.writes;
+          claims[`${tag}the square opens its line "Testinstanz · keine" with Starten, and Starten asks for a copy of THIS lane for 4 hours`] =
+            !!line && /Testinstanz · keine/.test(line.text) && line.buttons.join(",") === "Starten"
+            && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
+        }
+        if (st === "modell") {
+          const zeitRow = lane(r, 10)!, freeRow = byId(r, pathOf(free))!;
+          const until = await clock(fx.now + 2 * 3600_000);
+          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session`] =
+            zeitRow.ti?.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && freeRow.ti?.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
+            && zeitRow.ti.title.startsWith(`Testinstanz läuft bis ${until}`);
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
+          r = await read();
+          const line = r.lines.find((l) => l.cls.includes("ti"));
+          facts.tiLine = line;
+          claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.includes(`bis ${until}`)
+            && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Öffnen')?.click()`);
+          await wait(`(window.__opened || []).length >= 2`, 3000);
+          const opened = await evaluate<string[]>("window.__opened || []");
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Stoppen')?.click()`);
+          await wait(`false`, 400);
+          // the slotless worktree's instance goes through the worktree route, named by repo and path
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"] .ti')?.click()`);
+          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})`, 3000);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))}).querySelector('button')?.click()`);
+          await wait(`false`, 400);
+          facts.writes = fx.writes; facts.opened = opened;
+          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
+          claims[`${tag}Öffnen asks the slot's route for the opening link and opens it in a new tab; Stoppen sends down`] =
+            fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "open")
+            && opened.includes("http://fleet.fixture/blank?instanz")
+            && fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "down");
+          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] =
+            fx.writes.some((w) => w.path === wtRoute && (w.body as { action?: string })?.action === "open");
+        }
+        if (st === "tippen") {
+          // a click on a branch with a session jumps there like a click in the session list
+          await shot(`${st}-vorher-${width}`);
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
+          const jumped = phone
+            ? await wait(`!document.querySelector('#shell-board')`, 4000)
+            : await wait(`document.querySelector('#boardbody .zr.here')?.dataset.slot === '10'`, 6000);
+          facts.jumped = jumped;
+          if (phone) {
+            claims[`${tag}on the phone a jump closes Info, and the session is the one in the pane`] = jumped
+              && await wait(`document.querySelector('#comptarget')?.dataset.slot === '10'`, 3000);
+            // back into Info for the slotless row
+            await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200);
+            await evaluate("document.querySelector('#minfo')?.click()");
+            await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 8000); await settle(300);
+            r = await read();
+            claims[`${tag}after the jump the marked row is 3B — the Ranke stands as before`] = lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here");
+          } else {
+            r = await read();
+            claims[`${tag}after the jump the pane and Info show 3B, the Ranke stands as before, only the mark moved`] = jumped
+              && lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here") && branchRows(r).length === zw.length;
+          }
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.zx')`, 3000);
+          r = await read();
+          const x = r.lines.find((l) => l.cls.includes("zx2"));
+          facts.opened = r.lines;
+          claims[`${tag}a branch without a session opens up with its branch, Öffnen and Schließen…`] = !!x && x.buttons.includes("Öffnen") && x.buttons.includes("Schließen…")
+            && r.lines.some((l) => l.cls.includes("zx") && l.text.includes(free.branch));
+          await shot(`${st}-${width}`);
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.zx2 button')].find((b) => b.textContent === 'Öffnen')?.click()`);
+          await wait(`false`, 400);
+          claims[`${tag}Öffnen there reopens the worktree in a free slot`] = fx.writes.some((w) => w.path === "/api/lanes"
+            && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
+        }
+        if (st === "land") await shot(`${st}-${width}`);
+        if (st === "viele" || st === "branch") {
+          // open the second repo, as after a click on its head
+          await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app'))?.click()`);
+          await wait(`document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
+          if (st === "branch") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Branch')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(own.branch)}`, 3000);
+          }
+          await settle(200);
+          r = await read();
+          const z2 = branchRows(r);
+          const fold = r.rows.find((x) => x.cls.includes("zf"));
+          facts.many = { rows: z2.length, fold: fold?.text, pfX: [...new Set(z2.map((x) => x.pf?.box.x))], tiX: [...new Set(z2.map((x) => x.ti?.box.x))] };
+          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; beads and squares still flee across both repos`] =
+            !!fold && /\d+ ohne Session/.test(fold.text)
+              && new Set(z2.map((x) => x.pf?.box.x)).size === 1 && new Set(z2.map((x) => x.ti?.box.x)).size === 1 && z2.some((x) => x.slot === "13");
+          const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
+          claims[`${tag}the bead states read apart: red stale preview is a red ring, waiting is a green ring, skipped is a dash, an unreadable record is amber`] =
+            c.pf!.beads[1].cls === "bad stale" && d.pf!.beads[1].state === "waiting" && g.pf!.beads[0].state === "skipped" && f.pf!.beads[4].state === "unknown"
+            && /unbekannt/.test(f.pf!.beads[4].title);
+          claims[`${tag}a landed worktree shows the filled diamond "gelandet als <sha> in overhaul" and its check after the land running`] =
+            e.pf!.beads[3].landed === "yes" && e.pf!.beads[3].title === `gelandet als ${sha7(hex("landed-e"))} in overhaul` && e.pf!.beads[4].state === "running";
+          claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
+          if (st === "branch") claims[`${tag}the switch shows branches in the name column, still one row per branch`] = r.seg.includes("Branch*")
+            && lane(r, 9)?.name === own.branch && z2.every((x) => x.box.h === (phone ? 40 : 24));
+          await shot(`${st}-${width}`);
+          if (st === "viele") {
+            await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
+            const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
+            claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
+          }
+          if (st === "branch") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.textContent === 'Stand')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(sha7(hex(own.branch)))}`, 3000);
+            r = await read();
+            claims[`${tag}the switch "Stand" shows the commit every worktree stands on`] = lane(r, 9)?.name === sha7(hex(own.branch)) && lane(r, 11)?.name === sha7(hex("fleet/261005-insel-am-telefon-1b2c"));
+            await shot(`stand-${width}`);
+          }
+        }
+        if (st === "alarm") await shot(`${st}-${width}`);
+        if (st === "leer") {
+          claims[`${tag}without a session the Ranke still shows every worktree, none marked, each with Öffnen behind a click`] =
+            !r.rows.some((x) => x.cls.includes("here")) && zw.every((x) => x.node === "leer") && /Focus a pane/.test(r.bodyText);
+          await shot(`${st}-${width}`);
+        }
+        if (st === "main") {
+          const m = byId(r, `${REPO}#main`)!;
+          claims[`${tag}a session in the main checkout marks the stem, its address is underlined, no lane is marked`] =
+            m.cls.includes("here") && /\b3\b/.test(m.text) && !zw.some((x) => x.cls.includes("here"));
+          await shot(`${st}-${width}`);
+        }
+        results.push({ width, height, state: st, claims, facts });
+      }
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+
+export async function runPerfMarks(): Promise<void> {
+  const root = dirname(realpathSync(`${ROOT}/node_modules`));
+  const source = readFileSync(`${root}/src/client.ts`, "utf8");
+  const start = source.indexOf("interface PerfSpan {");
+  const end = source.indexOf("\nsetInterval(flushPerf", start);
+  check("perf marks: the probe can load the client measurement functions", start >= 0 && end > start);
+  if (start < 0 || end < start) return;
+  let now = 100;
+  const frames: (() => void)[] = [];
+  const beacons: { path: string; blob: Blob }[] = [];
+  let accepts = true;
+  const doc = { hidden: false }, input = { disabled: true };
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  const observers = new Set<Observer>();
+  class Observer {
+    constructor(readonly callback: () => void) {}
+    observe(): void { observers.add(this); }
+    disconnect(): void { observers.delete(this); }
+  }
+  let read: () => Promise<Response> = async () => { throw new Error("fixture fetch failed"); };
+  interface Span { attrs: NonNullable<PerfRecord["attrs"]>; }
+  interface FetchProbe { perfChat: Span | null; perfSwitch: Span | null; pollChat: () => Promise<void>; }
+  interface Marks { start: (j: string, at?: number) => Span; finish: (span: Span, ok: boolean, res?: Response) => void;
+    ready: (span: Span, res: Response) => void; visibility: () => void; refresh: () => Promise<void>;
+    probe: () => FetchProbe; flush: () => void; records: PerfRecord[]; }
+  const poll = source.slice(source.indexOf("  private async pollChat()"), source.indexOf("\n  // the poll pump drives"));
+  const refresh = source.slice(source.indexOf("export async function refresh()"), source.indexOf("\n// --- the poll pump:"));
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + `
+class FetchProbe {
+  slot = 1; view = "chat"; chatBusy = false; pastN = null; chatGen = 0; chatTotal = 0;
+  perfChat = perfStart("J4"); perfSwitch = perfStart("J2");
+  ${poll}
+}
+${refresh.replace("export async", "async")}
+`);
+  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", "document", "MutationObserver", "setTimeout", "clearTimeout", "ta", "api", "plan", code + "\nreturn {start:perfStart,finish:perfFinish,ready:perfBoardReady,visibility:perfVisibility,refresh,probe:()=>new FetchProbe(),flush:flushPerf,records:perfBuffer};")(
+    { now: () => now, timeOrigin: 1000000, getEntriesByType: () => [], getEntriesByName: () => [] },
+    () => false, false, 42, [{ cwd: "/fixture" }, { cwd: null }], (fn: () => void) => frames.push(fn),
+    { sendBeacon: (path: string, blob: Blob) => { if (accepts) beacons.push({ path, blob }); return accepts; } }, PERF_BATCH_MAX,
+    { href: "http://127.0.0.1/" }, doc, Observer,
+    (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, (id: number) => timers.delete(id), input,
+    () => read(), () => ({ chatMs: 0 })) as Marks;
+  const paint = (): void => { while (frames.length) frames.shift()!(); };
+  // t | event | exclusive owner: 100 start J1..J4 | 120 paint all four | 130 failed send.
+  for (const j of ["J1", "J2", "J3", "J4"]) { const span = marks.start(j); marks.finish(span, true); marks.finish(span, true); }
+  check("perf marks: a completed action waits for paint", marks.records.length === 0);
+  now = 120; paint();
+  check("perf marks: four actions emit exactly one valid row apiece", marks.records.length === 4 && marks.records.every(validPerfRecord) && new Set(marks.records.map((r) => r.j)).size === 4, JSON.stringify(marks.records));
+  check("perf marks: duration runs from start through paint", marks.records.every((r) => r.ms === 20 && r.clientMs === 20 && r.serverMs === null && r.netMs === null));
+  const fail = marks.start("J3"); now = 130; marks.finish(fail, false); marks.finish(fail, false);
+  const failed = marks.records.at(-1);
+  check("perf marks: a failed send emits once with null latency", marks.records.length === 5 && failed?.ok === false && failed.ms === null && failed.clientMs === null && failed.serverMs === null && failed.netMs === null && validPerfRecord(failed), JSON.stringify(failed));
+  accepts = false; marks.flush();
+  check("perf marks: a refused beacon queue keeps the buffer", marks.records.length === 5 && beacons.length === 0);
+  accepts = true; marks.flush();
+  check("perf marks: beacons go only to the own server and clear queued rows", marks.records.length === 0 && beacons.length === 1 && beacons[0]?.path === "/api/perf" && beacons[0].blob.type.startsWith("application/json"), JSON.stringify({ n: marks.records.length, beacons: beacons.map((b) => ({ path: b.path, type: b.blob.type })) }));
+  // t | event | exclusive owner: 140 board paint disabled | 150 enabled paint | 30150 composer timeout.
+  now = 140;
+  marks.ready(marks.start("J1"), new Response()); paint();
+  check("perf marks: a disabled composer leaves J1 pending after the data paint", marks.records.length === 0 && observers.size === 1);
+  now = 150; input.disabled = false;
+  for (const observer of observers) observer.callback();
+  paint();
+  check("perf marks: J1 ends once at the first enabled composer paint", marks.records.length === 1 && marks.records[0]?.ok === true && marks.records[0].ms === 10 && timers.size === 0 && observers.size === 0, JSON.stringify(marks.records));
+  input.disabled = true;
+  marks.ready(marks.start("J1"), new Response()); paint();
+  now = 30150;
+  for (const fn of [...timers.values()]) fn();
+  check("perf marks: a composer timeout emits one failed row with a fixed reason", marks.records.length === 2 && marks.records[1]?.ok === false && marks.records[1].ms === null && marks.records[1].attrs?.reason === "composer-timeout" && timers.size === 0 && observers.size === 0, JSON.stringify(marks.records));
+  marks.flush();
+  const hiddenSpan = marks.start("J2"); marks.finish(hiddenSpan, true);
+  accepts = false; doc.hidden = true; marks.visibility(); doc.hidden = false; paint();
+  doc.hidden = true; marks.finish(marks.start("J4"), false); doc.hidden = false;
+  check("perf marks: spans hidden during paint or at start keep the background marker", marks.records.length === 2 && marks.records.every((r) => r.attrs?.hidden === true && validPerfRecord(r)), JSON.stringify(marks.records));
+  accepts = true; marks.flush();
+  const probe = marks.probe();
+  read = async () => {
+    probe.perfChat = marks.start("J4"); probe.perfSwitch = marks.start("J2");
+    throw new Error("fixture fetch failed after a new view action");
+  };
+  await probe.pollChat();
+  check("perf marks: a thrown transcript fetch closes captured and current owned spans once", marks.records.length === 4 && marks.records.every((r) => r.ok === false && r.ms === null && r.attrs?.reason === "fetch-error" && validPerfRecord(r)) && probe.perfChat === null && probe.perfSwitch === null, JSON.stringify(marks.records));
+  read = async () => { throw new Error("fixture board fetch failed"); };
+  await marks.refresh(); await marks.refresh();
+  check("perf marks: a thrown first board fetch emits exactly one failed J1", marks.records.length === 5 && marks.records[4]?.j === "J1" && marks.records[4].ok === false && marks.records[4].attrs?.reason === "fetch-error", JSON.stringify(marks.records));
+  marks.flush();
+  for (let i = 0; i < 110; i++) marks.finish(marks.start("J2"), false);
+  check("perf marks: the client buffer is bounded at one hundred rows", marks.records.length === 100);
+  const clean = source.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  for (const [j, anchor] of [["J1", 'perfStart("J1", 0)'], ["J2", 'this.perfSwitch = perfStart("J2", at'],
+    ["J3", 'perfStart("J3", at'], ["J4", 'this.perfChat = perfStart("J4", at']] as const)
+    check(`perf marks: ${j} has a live action boundary`, clean.includes(anchor));
+  check("perf marks: J2 terminal timing remains explicitly unmeasured", clean.includes('this.perfSwitch.attrs.serverMs = "ws-seed-unmeasured"'));
+  check("perf marks: send measures the event timestamp", clean.includes('perfSendClickAt = e.timeStamp') && clean.includes('void doSend(e.timeStamp)'));
 }

@@ -1910,16 +1910,20 @@ async function memoryDoor(): Promise<void> {
     for (let k = 0; k < 100; k++) {
       prompts = existsSync(`${dir}/streams/prompts.jsonl`) ? readFileSync(`${dir}/streams/prompts.jsonl`, "utf8")
         .trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as { slot: number; text: string }) : [];
-      if (laneSlot.every((s) => prompts.some((p) => p.slot === s && p.text.includes("HOW THIS LANE ENDS")))) break;
+      if (laneSlot.every((s) => prompts.some((p) => p.slot === s && p.text.includes("\n\nSession-Regeln: ")))) break;
       await Bun.sleep(150);
     }
-    check("the delivered lane footer names the same MAIN receiver as GET /api/self position",
-      prompts.some((p) => p.slot === laneSlot[0] && p.text.includes("Empfaenger: program-main Slot 1")),
-      JSON.stringify(prompts.filter((p) => p.slot === laneSlot[0]).map((p) => p.text.includes("Empfaenger: program-main Slot 1"))));
-    check("the delivered lane footer points to GET /api/self position.receiver with its self-token header as the live receiver",
-      prompts.some((p) => p.slot === laneSlot[0]
-        && p.text.includes("Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self-token: $FLEET_SELF_TOKEN, Feld position.receiver. Die Slotnummer oben ist ein Snapshot.")),
-      JSON.stringify(prompts.filter((p) => p.slot === laneSlot[0]).map((p) => p.text.includes("Feld position.receiver"))));
+    const nativeLaneRules = laneSlot.map((slot) => {
+      const prompt = prompts.find((p) => p.slot === slot && p.text.includes("\n\nSession-Regeln: "))?.text ?? "";
+      const path = `${readState().slots[String(slot)]?.cwd}/${prompt.slice(prompt.lastIndexOf("\n\nSession-Regeln: ") + "\n\nSession-Regeln: ".length)}`;
+      return { prompt, text: prompt.includes("\n\nSession-Regeln: ") && existsSync(path) ? readFileSync(path, "utf8") : "" };
+    });
+    check("the native lane footer names the same MAIN receiver as GET /api/self position",
+      nativeLaneRules[0]?.text.includes("Empfaenger: program-main Slot 1") === true
+        && !nativeLaneRules[0].prompt.includes("Empfaenger: program-main Slot 1"));
+    check("the native lane footer points to GET /api/self position.receiver with its self-token header as the live receiver",
+      nativeLaneRules[0]?.text.includes("Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self-token: $FLEET_SELF_TOKEN, Feld position.receiver. Die Slotnummer oben ist ein Snapshot.") === true
+        && !nativeLaneRules[0].prompt.includes("Feld position.receiver"));
 
     await memStop(i);
     const positionBaseline = readState();
@@ -2068,13 +2072,16 @@ async function memoryDoor(): Promise<void> {
       const end = text.indexOf("\n\n", at);
       return end < 0 ? text.slice(at) : text.slice(at, end);
     };
-    const briefs = laneSlot.map((s) => prompts.find((p) => p.slot === s && p.text.includes("HOW THIS LANE ENDS"))?.text ?? "");
-    check("memory pointer: every founding lane brief carries the reader pointer, at most 512 UTF-8 bytes",
-      briefs.every((b) => paragraph(b).includes("/api/self/memory?view=work")
+    const briefs = nativeLaneRules.map((rules) => rules.text);
+    check("memory pointer: every native lane file carries the reader pointer once, at most 512 UTF-8 bytes",
+      briefs.every((b, n) => paragraph(b).includes("/api/self/memory?view=work")
+        && b.split("YOUR MEMORY").length === 2 && !nativeLaneRules[n]!.prompt.includes("YOUR MEMORY")
         && new TextEncoder().encode(paragraph(b)).byteLength <= 512),
       briefs.map((b) => new TextEncoder().encode(paragraph(b)).byteLength).join(","));
     check("memory pointer: the founding brief copies no mechanical state — no sibling's hold reason, no sibling row, no audit state",
-      briefs.every((b, n) => b !== "" && !b.includes(grund[n]!) && !b.includes(Hh[n]!) && !b.includes(D[n]!)
+      briefs.every((b, n) => b !== "" && !nativeLaneRules[n]!.prompt.includes(grund[n]!)
+        && !nativeLaneRules[n]!.prompt.includes(Hh[n]!) && !nativeLaneRules[n]!.prompt.includes(D[n]!)
+        && !b.includes(grund[n]!) && !b.includes(Hh[n]!) && !b.includes(D[n]!)
         // `"status":` is NOT in this list: the exit footer's own fleet-report curl carries it
         && !/"(hold|audit|grund)":/.test(b)),
       briefs.map((b) => b.length).join(","));

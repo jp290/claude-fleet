@@ -20,6 +20,66 @@ import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
 import type { CodexFirstTurn } from "./conversation-read";
+import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX, HELPER_REPOS_BYTES_MAX,
+  HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
+
+export function helperReposFrom(raw: unknown): HelperReposReading | null {
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string): boolean => Object.keys(v).sort().join(",") === keys;
+  const time = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+  const sha = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
+  const count = (v: unknown): boolean => v === null || typeof v === "number" && Number.isSafeInteger(v)
+    && v >= 0 && v <= HELPER_REPO_COMMITS_MAX;
+  const reason = (v: unknown): v is HelperRepoReason | null => v === null || typeof v === "string"
+    && ["unreadable", "not-repo-root", "budget", "unsafe-label", "ref-cap", "remote-cap", "commit-cap", "no-merge-base", "invalid-report"].includes(v);
+  if (!object(raw) || Buffer.byteLength(JSON.stringify(raw)) > HELPER_REPOS_BYTES_MAX
+    || !exact(raw, "at,repos") || !time(raw.at) || !Array.isArray(raw.repos) || raw.repos.length > HELPER_REPOS_MAX) return null;
+  const at = raw.at, names = new Set<string>();
+  const repos = (raw.repos as unknown[]).map((r): HelperReposReading["repos"][number] => {
+    const name = object(r) && typeof r.name === "string" && HELPER_REPO_NAME_RE.test(r.name) && !names.has(r.name) ? r.name : null;
+    if (name !== null) names.add(name);
+    const invalid = (): HelperReposReading["repos"][number] => ({ name, at: object(r) && time(r.at) ? r.at : at,
+      head: null, branch: null, remote: null, remotes: null, refs: [], coverage: "incomplete", reason: "invalid-report" });
+    if (!object(r) || !exact(r, "at,branch,coverage,head,name,reason,refs,remote,remotes") || name === null
+      || !time(r.at) || !(r.head === null || sha(r.head)) || !(r.branch === null || helperGitLabel(r.branch))
+      || ![null, "none", "present"].includes(r.remote as string | null)
+      || !(r.remotes === null || Array.isArray(r.remotes) && r.remotes.length <= HELPER_REPO_REMOTES_MAX
+        && r.remotes.every((n: unknown) => typeof n === "string" && HELPER_REPO_NAME_RE.test(n))
+        && new Set(r.remotes).size === r.remotes.length)
+      || !["complete", "incomplete"].includes(r.coverage as string) || !reason(r.reason)
+      || !Array.isArray(r.refs) || r.refs.length > HELPER_REPO_REFS_MAX
+      || r.remote === "none" && (!Array.isArray(r.remotes) || r.remotes.length !== 0 || r.refs.length !== 0)
+      || r.remote === "present" && (!Array.isArray(r.remotes) || r.remotes.length === 0)
+      || r.remote === null && r.remotes !== null
+      || r.coverage === "complete" && (r.head === null || r.reason !== null || r.remote === null)
+      || r.coverage === "incomplete" && r.reason === null
+      || r.head === null && (r.branch !== null || r.refs.length !== 0)) return invalid();
+    const reading: HelperReposReading["repos"][number] = { name, at: r.at, head: r.head as string | null,
+      branch: r.branch as string | null, remote: r.remote as "none" | "present" | null,
+      remotes: r.remotes as string[] | null, refs: [], coverage: r.coverage as "complete" | "incomplete", reason: r.reason };
+    const refs = new Set<string>();
+    for (const f of r.refs as unknown[]) {
+      const candidate = object(f) ? f.ref : null;
+      const ref = helperGitLabel(candidate) && !refs.has(candidate)
+        && reading.remotes?.some((n) => candidate.startsWith(`${n}/`)) ? candidate : null;
+      if (ref !== null) refs.add(ref);
+      if (!object(f) || !exact(f, "ahead,behind,head,mergeBase,reason,ref,updatedAt")
+        || ref === null || !sha(f.head) || !(f.updatedAt === null || time(f.updatedAt))
+        || !(f.mergeBase === null || sha(f.mergeBase)) || !count(f.ahead) || !count(f.behind) || !reason(f.reason)
+        || typeof f.ahead === "number" && typeof f.behind === "number" && f.ahead + f.behind > HELPER_REPO_COMMITS_MAX
+        || (f.reason === null ? f.mergeBase === null || f.ahead === null || f.behind === null
+          : f.mergeBase !== null || f.ahead !== null || f.behind !== null)
+        || r.coverage === "complete" && f.reason !== null) {
+        reading.refs.push({ ref, head: null, updatedAt: null, mergeBase: null, ahead: null, behind: null, reason: "invalid-report" });
+        reading.coverage = "incomplete"; reading.reason ??= "invalid-report";
+      } else reading.refs.push({ ref, head: f.head, updatedAt: f.updatedAt as number | null,
+        mergeBase: f.mergeBase as string | null, ahead: f.ahead as number | null, behind: f.behind as number | null, reason: f.reason });
+    }
+    return reading;
+  });
+  return { at, repos };
+}
+
 
 const BAND_SLOTS = 16;
 const SEPARATE_LANE_SLOTS = process.env.FLEET_SEPARATE_LANE_SLOTS === "1";
@@ -33,8 +93,21 @@ const MAX_SLOTS = BAND_SLOTS + (SEPARATE_LANE_SLOTS ? FLEET_MAX_SESSIONS : 0);
 // `context`: the pane's context budget (Slot.context) — Codex only, validated at set time (server.ts#contextOf).
 // Absent on every row that names none, the same byte-identity rule as `browser`.
 type SlotContext = { window: number; compactAt: number };
+type CodexPermissions = { sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  approval: "on-request" | "never" };
+type SlotPermissions = CodexPermissions | { state: "invalid" };
+const CODEX_PERMISSIONS_DEFAULT: Readonly<CodexPermissions> = { sandbox: "danger-full-access", approval: "never" };
+function codexPermissionsFrom(value: unknown): CodexPermissions | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes("sandbox") || !keys.includes("approval")) return null;
+  const { sandbox, approval } = value as { sandbox: unknown; approval: unknown };
+  if (sandbox !== "read-only" && sandbox !== "workspace-write" && sandbox !== "danger-full-access") return null;
+  if (approval !== "on-request" && approval !== "never") return null;
+  return { sandbox, approval };
+}
 type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null; browser?: true;
-  context?: SlotContext };
+  context?: SlotContext; permissions?: SlotPermissions };
 
 interface SlotStreamOccupant { slot: number; openedAt: number; selfToken: string }
 
@@ -2014,6 +2087,7 @@ interface Slot {
   // flag, today's spawn line byte for byte. Validated 0 < compactAt < window <= the client's catalog
   // maximum (server.ts#CODEX_CONTEXT_WINDOW_MAX); a stored value that fails it reloads as null. Same
   // lifetime as `effort`. A budget, not a quality promise: docs/messungen/2026-09-15-codex-kontextfenster-profile.md.
+  permissions: SlotPermissions | null;
   taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
   // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
   // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
@@ -3480,7 +3554,7 @@ export type {
   ProgramHandoverRead, ProgramRecordLoss, ProgramRecordLossRead,
   ProgramFoundingMode, ProgramFoundingOccupant, ProgramFoundingV1, ProgramFoundingProfileKind,
   ProgramFoundingIdentity, ProgramFoundingV2, ProgramFounding, ProgramFoundingRead, ProgramContent,
-  ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, SlotStreamOccupant,
+  ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, CodexPermissions, SlotPermissions, SlotStreamOccupant,
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
@@ -3488,6 +3562,7 @@ export type {
   LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate,
 };
 export {
+  CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
@@ -3521,3 +3596,20 @@ export {
   HELPER_ARTIFACT_GLOB_MAX, HELPER_ARTIFACT_MAX, HELPER_ARTIFACT_PATH_MAX,
   helperArtifactGlobsFrom, helperArtifactsFrom,
 };
+
+export interface WorkplaceCheckObservation {
+  repo: string; branch: string; stage: "local" | "preview" | "gate" | "audit";
+  state: "running" | "green" | "red" | "skipped" | "waiting" | null;
+  head: string | null; at: number; fails: string[]; reason?: string; command?: string; order?: number;
+}
+
+export interface WorkplaceStandSource {
+  kind: import("../src/protocol").WorkplaceStand["kind"];
+  repo: string | null; name: string | null; path: string | null; head: string | null;
+  basis: import("../src/protocol").WorkplaceStand["basis"];
+  reportedCheckout?: { head: string; observedAt: number };
+  repoReading?: import("../src/protocol").HelperRepoReading | null;
+  codeScope: import("../src/protocol").WorkplaceStand["codeScope"];
+  observedAt: number | null; branch: string | null; headReason: string;
+  update: import("../src/protocol").WorkplaceStand["update"];
+}

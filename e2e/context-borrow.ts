@@ -1,8 +1,10 @@
+import { sectionAt, sourceSection } from "../context-sections";
+import { renderSessionAgents } from "../session-agents";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CONTEXT_PACK_CAPABILITIES, CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
 import { planContext, planProgramContext, readPrivatePack, resolvePrivatePack } from "../context-plan";
 import { CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
@@ -32,6 +34,81 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     return result.stdout.trim();
   };
   try {
+    const exactSection = "  ### Kern\r\nExact section.\r\n";
+    const prefixSection = "### Kern — Extended heading\nUnique section.\n";
+    const exactText = `### Kernel\r\nWrong section.\r\n${exactSection}### After\r\n`;
+    const prefixText = `~~~md\n### Kern fake\n~~~\n    ### Kern indented\n${prefixSection}### After\n`;
+    check("context borrow: an exact anchor wins over an earlier prefix and preserves section bytes",
+      sectionAt(exactText, "exact.md", "### Kern") === exactSection);
+    check("context borrow: one prefix outside code resolves a shortened anchor",
+      sectionAt(prefixText, "prefix.md", "### Kern") === prefixSection);
+    const ambiguousText = "### Kernel\nFirst section.\n### Kern — Extended heading\nSecond section.\n";
+    for (const read of [sectionAt, sourceSection]) {
+      let error: unknown;
+      try { read(ambiguousText, "ambiguous.md", "### Kern"); } catch (caught) { error = caught; }
+      check(`context borrow: ${read.name} rejects ambiguous prefixes with a named error`,
+        error instanceof Error && error.name === "source-anchor-ambiguous"
+        && error.message.includes("ambiguous.md") && error.message.includes("### Kern"));
+    }
+    const readClient = (roots: readonly string[]) => {
+      const errors: string[] = [];
+      for (const root of roots) try {
+        const founding = readFileSync(join(root, "src/founding.ts"), "utf8");
+        const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// THE FOUR GROUPS"));
+        const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// whether this start"));
+        const client = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+          `${validators}\n${fixed}\nreturn { validPlan, partFixed };`))() as {
+          validPlan: (value: unknown) => boolean; partFixed: (value: unknown) => string | null;
+        };
+        return { client };
+      } catch (error) { errors.push(`${root}: ${error instanceof Error ? error.message : String(error)}`); }
+      return { error: errors.join("; ") };
+    };
+    const candidates = [sourceRoot];
+    try { candidates.push(dirname(resolve(sourceRoot, readlinkSync(join(sourceRoot, "node_modules"))))); } catch {}
+    const observed = readClient([...new Set(candidates)]);
+    const client = observed.client;
+    check("context borrow: PROBE: founding client validators are readable from the source tree", client !== undefined, observed.error);
+    const missingClient = readClient([root]);
+    check("context borrow: an unavailable founding source returns a setup error instead of throwing",
+      missingClient.client === undefined && missingClient.error?.includes("src/founding.ts") === true, missingClient.error);
+    for (const harness of ["claude", "codex"]) {
+      const input = { role: { text: "Fixture role.", path: "server.ts", anchor: "role" }, position: "lane", harness,
+        plan: { selected: [{ id: "renderer-anchor", estimatedBytes: 0, sources: [
+          { id: "ambiguous", path: "ambiguous.md", anchor: "### Kern" },
+          { id: "exact", path: "exact.md", anchor: "### Kern" },
+        ] }], omitted: [] }, selection: { "renderer-anchor.ambiguous": "box", "renderer-anchor.exact": "box" },
+        sourceBytes: new Map([["ambiguous.md", ambiguousText], ["exact.md", exactText],
+          ["AGENTS.md", "## Portable operating contract\nFixture contract.\n"]]), footer: "Keep footer." } as const;
+      let rendered: ReturnType<typeof renderSessionAgents> | undefined;
+      let error: unknown;
+      try { rendered = renderSessionAgents(input); } catch (caught) { error = caught; }
+      const part = rendered?.parts.find((item) => item.id === "renderer-anchor.ambiguous");
+      check(`context borrow: ${harness} rendering refuses an ambiguous anchor without throwing or delivering bytes`,
+        error === undefined && JSON.stringify(part) === JSON.stringify({ id: "renderer-anchor.ambiguous", packId: "renderer-anchor",
+          path: "ambiguous.md", anchor: "### Kern", sorte: "wissen", ort: "ausleihe", sha256: null, bytes: null,
+          content: null, refusal: "source-anchor-ambiguous" }), error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(part));
+      check(`context borrow: ${harness} rendering keeps other boxed sections and the named refusal pointer`,
+        rendered?.parts.find((item) => item.id === "renderer-anchor.exact")?.content === exactSection
+        && rendered.text.includes("ambiguous.md | ### Kern (source-anchor-ambiguous)")
+        && !rendered.text.includes("First section.") && !rendered.text.includes("Second section."));
+      if (client) {
+        const clientPlan = { selected: [{ id: "renderer-anchor", bytes: 0, source: "repo-manifest", parts: [part] }],
+          omitted: [], sessionAgents: rendered };
+        check(`context borrow: the client accepts the ${harness} plan with an ambiguous refusal in pack and file parts`,
+          part !== undefined && rendered !== undefined && client.validPlan(clientPlan));
+        check(`context borrow: the client names the ${harness} ambiguous anchor as fixed outside the file`,
+          part !== undefined && client.partFixed(part) === "Anker nicht eindeutig.");
+        check(`context borrow: the client still rejects an unknown refusal in ${harness} plan parts`,
+          part !== undefined && !client.validPlan({ ...clientPlan,
+            selected: [{ ...clientPlan.selected[0]!, parts: [{ ...part, refusal: "unknown-refusal" }] }] }));
+      }
+      let unexpected: unknown;
+      try { renderSessionAgents({ ...input, sourceBytes: new Map([["ambiguous.md", 123 as unknown as string]]) }); }
+      catch (caught) { unexpected = caught; }
+      check(`context borrow: ${harness} rendering still throws unrelated source parsing errors`,
+        unexpected instanceof TypeError && unexpected.message.includes("matchAll"), String(unexpected));
+    }
     g("init", "-q", "-b", "main"); g("config", "user.name", "e2e"); g("config", "user.email", "e2e@fleet");
     const section = "## Section\nGrüße vom HEAD.\n### Child\nKept child.\n````md\n## Fenced sibling\n```\n# Still fenced\n````\n~~~md\n# Tilde fenced\n~~~\n\n";
     const contract = "## Portable operating contract\nFixture contract.";
@@ -60,7 +137,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       json: (body: unknown, status = 200) => Response.json(body, { status }), STEWARD_LABEL: "steward",
       youngestArchivedTask: async () => null, planContext, planProgramContext, planRepoContext, readContextManifest,
       stampObservedSourceHashes, taskContextTriggers, CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, KONZEPT_ROOT_ENV,
-      readPrivatePack, resolvePrivatePack, createHash, basename: (path: string) => path.split("/").pop(),
+      readPrivatePack, resolvePrivatePack, sectionAt, createHash, basename: (path: string) => path.split("/").pop(),
       repoRootOf: async (path: string) => path, integrationHead: async () => g("rev-parse", "HEAD"),
       dispatchSourceTree: async () => sourceTree, variantSourceOf: (row: unknown) => row,
       DISPATCH_CONTEXT_MODE: "mutating", DISPATCH_CONTEXT_TRIGGERS: ["always"], DISPATCH_CONTEXT_CAPABILITIES: [...CONTEXT_PACK_CAPABILITIES],
@@ -80,7 +157,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
         deliveredThen: { receipts: { selected: { id: string; borrowedAt?: number }[] }[] }; readByAgent: string; borrowed: { total: number }; coverage: string }>;
     };
     type Answer = { status: number; body: { id?: string; refusal?: string; head?: string; borrowedAt?: number; sources?:
-      { content: string; sha256: string; bytes: number }[] } };
+      { content: string; sha256: string; bytes: number; anchor?: string; sorte?: string }[] } };
     const borrow = async (id: string, query = "", token = slot.selfToken): Promise<Answer> => {
       const url = new URL(`http://fixture/api/self/context/${id}${query}`);
       const response = await api.contextBorrowRoute(new Request(url, { headers: { "x-fleet-self-token": token } }), url, id);
@@ -196,6 +273,22 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     const code = await borrow("code-symbol");
     check("context borrow: a non-Markdown symbol serves conservatively from its line to EOF, excluding earlier code",
       code.status === 200 && code.body.sources?.[0]?.content === codeTail);
+    writeFileSync(join(root, "exact.md"), exactText);
+    writeFileSync(join(root, "prefix.md"), prefixText);
+    writeFileSync(join(root, "ambiguous.md"), ambiguousText);
+    g("add", "exact.md", "prefix.md", "ambiguous.md"); g("commit", "-q", "-m", "anchor resolution");
+    addPack("anchor-resolution", [{ path: "exact.md", anchor: "### Kern" }, { path: "prefix.md", anchor: "### Kern" }]);
+    addPack("ambiguous-anchor", [{ path: "exact.md", anchor: "### Kern" }, { path: "ambiguous.md", anchor: "### Kern" }]);
+    const anchors = await borrow("anchor-resolution");
+    check("context borrow: exact and unique prefix anchors serve their selected sections at HEAD",
+      anchors.status === 200 && anchors.body.sources?.[0]?.content === exactSection
+      && anchors.body.sources?.[1]?.content === prefixSection);
+    const ambiguous = await borrow("ambiguous-anchor");
+    const ambiguousLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
+    check("context borrow: ambiguous prefixes return named 409 without partial content or delivered bytes",
+      ambiguous.status === 409 && ambiguous.body.refusal === "source-anchor-ambiguous" && !ambiguous.body.sources
+      && ambiguousLine?.refusal === "source-anchor-ambiguous" && ambiguousLine.bytes === 0
+      && ambiguousLine.borrowedAt === null && JSON.stringify(ambiguousLine.sources) === "[]");
     writeFileSync(join(root, "AGENTS.md"), readFileSync(join(sourceRoot, "AGENTS.md")));
     mkdirSync(join(root, "docs"));
     writeFileSync(join(root, "docs/verify-tiering.md"), readFileSync(join(sourceRoot, "docs/verify-tiering.md")));
@@ -203,11 +296,14 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     const verify = await borrow("verify-e2e");
     const verifySources = verify.body.sources;
     const verifyLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);
-    check("context borrow: the real verify-e2e pack serves three sections totaling less than 40,000 bytes",
-      verify.status === 200 && verifySources?.length === 3 && verifySources.reduce((sum, item) => sum + item.bytes, 0) < 40_000
-      && verifySources[0]?.content.startsWith("## Verify\n") === true
-      && verifySources[1]?.content.startsWith("## 6. Pre-land gate vs post-land audit") === true
-      && verifySources[2]?.content.startsWith("## How a check is written\n") === true,
+    check("context borrow: the real verify-e2e pack serves six named sections with their sorten below 40,000 bytes",
+      verify.status === 200 && verifySources?.length === 6 && verifySources.reduce((sum, item) => sum + item.bytes, 0) < 40_000
+      && JSON.stringify(verifySources.map(({ anchor, sorte }) => ({ anchor, sorte }))) === JSON.stringify([
+        { anchor: "### Kern", sorte: "anleitung" }, { anchor: "### Lane", sorte: "anleitung" },
+        { anchor: "### MAIN", sorte: "anleitung" }, { anchor: "### More", sorte: "anleitung" },
+        { anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen" },
+        { anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen" },
+      ]),
       `served bytes: ${verifySources?.reduce((sum, item) => sum + item.bytes, 0) ?? "unknown"}`);
     check("context borrow: verify-e2e's ledger contains exact section hashes and the sum of delivered bytes",
       verifyLine?.bytes === verifySources?.reduce((sum, item) => sum + item.bytes, 0)

@@ -3,6 +3,7 @@ import {
   CONTEXT_PACK_HARNESSES,
   type ContextPackCapability,
   type ContextPackHardness,
+  type ContextPackGroup,
   type ContextPackMode,
   type ContextPackSource,
   type ContextPackStatus,
@@ -44,6 +45,7 @@ export interface ContextPlanInput {
 export type ContextPlanSelection = {
   readonly id: string;
   readonly hardness: ContextPackHardness;
+  readonly group?: ContextPackGroup;
   readonly useWhen?: string;
   readonly sources: readonly ContextPackSource[];
   readonly estimatedBytes: number;
@@ -55,6 +57,7 @@ export type ContextPlanSelection = {
 } | {
   readonly id: string;
   readonly hardness: ContextPackHardness;
+  readonly group?: ContextPackGroup;
   readonly useWhen?: string;
   readonly sources: { readonly privateSourceId: string };
   readonly estimatedBytes: number;
@@ -120,8 +123,8 @@ export function planContext(input: ContextPlanInput): ContextPlan {
       continue;
     }
     selected.push("sources" in pack
-      ? { id: pack.id, hardness: pack.hardness, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
-      : { id: pack.id, hardness: pack.hardness, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
+      ? { id: pack.id, hardness: pack.hardness, group: pack.group, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
+      : { id: pack.id, hardness: pack.hardness, group: pack.group, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
   }
 
   return { selected, omitted };

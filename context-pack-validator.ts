@@ -1,5 +1,9 @@
 import {
   CONTEXT_PACK_AUDIENCES,
+  CONTEXT_PACK_GROUPS,
+  CONTEXT_PART_SORTEN,
+  CONTEXT_POSITIONS,
+  contextPartId,
   CONTEXT_PACK_CAPABILITIES,
   CONTEXT_PACK_EVIDENCE,
   CONTEXT_PACK_HARDNESS,
@@ -89,13 +93,13 @@ type UnknownRecord = Record<string, unknown>;
 const PACK_KEYS = new Set([
   "id", "useWhen", "scope", "audience", "triggers", "hardness", "sources", "requiredCapabilities",
   "harnesses", "modes", "estimatedBytes", "evidence", "owner", "status", "supersedes",
-  "privateSourceId", "sourceHash", "observedAt",
+  "privateSourceId", "sourceHash", "observedAt", "group",
 ]);
 const BASE_REQUIRED = [
   "id", "scope", "audience", "triggers", "hardness", "requiredCapabilities", "harnesses",
   "modes", "estimatedBytes", "evidence", "owner", "status",
 ] as const;
-const SOURCE_KEYS = new Set(["path", "anchor"]);
+const SOURCE_KEYS = new Set(["path", "anchor", "id", "sorte", "positions"]);
 const CONTENT_KEY = /^(?:content|contents|prose|text|passage|quote|body)$/i;
 const PRIVATE_LEAK_KEY = /^(?:path|anchor|privatePath|host|hostname|identity|version|versionClaim)$/i;
 const PACK_ID = /^[a-z][a-z0-9-]*$/;
@@ -176,6 +180,8 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
     const scalarVocabulary = (field: string, vocabulary: readonly string[], code: ContextPackValidationCode): void => {
       if (!inVocabulary(raw[field], vocabulary)) emit(code, "error", packId, `unknown ${field}: ${String(raw[field])}`);
     };
+    if ("group" in raw && !inVocabulary(raw.group, CONTEXT_PACK_GROUPS))
+      emit("PACK_FIELD_INVALID", "error", packId, "group must name one of the four context groups");
     scalarVocabulary("scope", CONTEXT_PACK_SCOPES, "SCOPE_UNKNOWN");
     scalarVocabulary("audience", CONTEXT_PACK_AUDIENCES, "AUDIENCE_UNKNOWN");
     scalarVocabulary("hardness", CONTEXT_PACK_HARDNESS, "HARDNESS_UNKNOWN");
@@ -250,6 +256,7 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
       else if (!Array.isArray(raw.sources)) {
         if ("sources" in raw) emit("SOURCE_SHAPE_INVALID", "error", packId, "sources must be an array");
       } else {
+        const partIds = new Set<string>();
         for (let sourceIndex = 0; sourceIndex < raw.sources.length; sourceIndex++) {
           const source = raw.sources[sourceIndex];
           if (!isRecord(source)) {
@@ -262,6 +269,20 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
               emit("SOURCE_CONTENT_FORBIDDEN", "error", packId, `source content field is forbidden: ${key}`);
             else emit("SOURCE_UNKNOWN_KEY", "error", packId, `unknown source key: ${key}`);
           }
+          const partId = contextPartId(packId, { id: typeof source.id === "string" ? source.id : undefined }, sourceIndex);
+          if (("id" in source && (typeof source.id !== "string" || !/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)?$/.test(source.id))) || partIds.has(partId))
+            emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} id must be a unique part identifier`);
+          else partIds.add(partId);
+          if ("sorte" in source && !inVocabulary(source.sorte, CONTEXT_PART_SORTEN))
+            emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} sorte must be anleitung or wissen`);
+          if ("positions" in source && (!isRecord(source.positions)
+            || Object.keys(source.positions).length !== CONTEXT_POSITIONS.length
+            || CONTEXT_POSITIONS.some((position) => {
+              if (!isRecord(source.positions)) return true;
+              const ort = source.positions[position];
+              return typeof ort !== "string" || !["box", "ausleihe"].includes(ort);
+            })))
+            emit("SOURCE_SHAPE_INVALID", "error", packId, `source ${sourceIndex} positions must state box or ausleihe for lane, main and orchestratorin`);
           const path = source.path;
           const anchor = source.anchor;
           const pathDetail = typeof path === "string" ? path : undefined;

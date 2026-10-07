@@ -5,7 +5,8 @@ import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
-import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
+import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
+import { projectHue } from "./marks";
 import { METER_STATIONS, MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, meterLine, meterRuns, mmss, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
 import { porcelainPath } from "./gitpath";
@@ -13,11 +14,19 @@ import { icon } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { serverClock } from "./composer";
 import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
+import { perfRebuild } from "./perfmarks";
+
+// WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
+// poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
+// every reader of it (the Arbeitsorte rows, the rights wording) keeps exactly the live picture.
+let instanceSource: InstanceSource | null = null;
+export function setInstanceSource(s: InstanceSource | null) { instanceSource = s; }
 
 // the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
 wireRights({
   tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
   programsRead: () => programsRead, loadPrograms: () => loadPrograms(),
+  source: () => instanceSource,
   openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
 });
 
@@ -981,6 +990,7 @@ export function helperSummary(): string | null {
 }
 export function renderSuiteMeter() {
   if (!boardOpen) return; // mobile too: the meter renders into #boardsuites, which travels with #board
+  perfRebuild("renderSuiteMeter");
   const m = meterModel();
   const focusSlot = panes[focused]?.slot ?? null;
   meterEl.className = `lock-${m.lock ?? "none"}`;
@@ -1369,9 +1379,11 @@ export async function renderBoard() {
       // the same scroll rescue the main path has: these three sections can be taller than the
       // column, and without it the machine zone jumped back to the top on every tick
       const y0 = boardBody.scrollTop;
+      perfRebuild("renderBoard");
       boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(dp ? [dp] : []), ...(er ? [er] : []),
-        ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
+        arbeitsorteSection(null, null), ...(dv ? [dv] : []), el("div", "bempty", "Focus a pane with a session to see its brief."));
       boardBody.scrollTop = y0;
+      drawRankeLines(boardBody);
       return;
     }
     const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
@@ -1417,6 +1429,11 @@ export async function renderBoard() {
     if (dsec0) nodes.push(dsec0);
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
+    // 0b — ARBEITSORTE: every worktree of every repo this server reads, on the machines it knows,
+    // above the session (rechter-tab-notiz.md §3b, owner 2026-10-05). It absorbed the former
+    // „[Zitat entfernt]“ list and the test-instance card, every action of both included.
+    const ranke = arbeitsorteSection(slot, wts);
+    nodes.push(ranke);
 
     // 1 — HEAD: the session's name, its state, what it is for, and its identifiers as chips. Rename,
     // Share and Export are VISIBLE at the head's foot as quiet word buttons (row 11e541e0; owner
@@ -1764,18 +1781,18 @@ export async function renderBoard() {
       // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
       const ng = el("div", "bsec");
       ng.appendChild(boardHead("Changes", "session"));
-      const e = el("div", "bempty", "No git in this folder — changes, history and lanes apply only to a repository.");
-      e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
+      const e = el("div", "bempty", "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.");
+      e.title = `${s.cwd} ist ein einfacher Ordner; Sitzung, Prompts und Setup werden wie gewohnt gelesen`;
       ng.appendChild(e);
       nodes.push(ng);
     }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
       fail.appendChild(boardHead("Changes, history and lanes are missing", "session"));
-      fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
+      fail.appendChild(el("div", "bstate", `Der Session-Brief konnte nicht gelesen werden — ${briefErr}.`));
       // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
       // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
-      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
+      fail.appendChild(el("div", "bempty", "Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung. Die Spalte versucht es weiter."));
       nodes.push(fail);
     }
     if (brief) {
@@ -2171,190 +2188,15 @@ export async function renderBoard() {
         nodes.push(fx);
       }
 
-      // 6 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
-      // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
-      // ＋ new lane.
-      // LANES — a section of its own, no longer folded away with the tools: the owner reads the
-      // repo's open lanes as often as its commits, and asked for both in full view (2026-09-19,
-      // "[Zitat entfernt]").
+      // 6 — LANES: the repo's lane map moved into the Arbeitsorte at the top (0b) — every open
+      // worktree, who holds it, and the orphans' reopen/close/discard. What stays here is the one
+      // sentence when the focused repo's lane list could not be read, since the close controls of
+      // its orphans hang on that list.
       if (wtErr) {
         const lfail = el("div", "bsec bfail");
         lfail.appendChild(boardHead("Lanes", "repo"));
         lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
         nodes.push(lfail);
-      }
-      if (wts) {
-        const lsec = el("div", "bsec");
-        const lhd = boardHead(`Lanes in ${baseName(wts.repo)}`, "repo");
-        lhd.appendChild(el("span", "bsubstat", String(wts.worktrees.length)));
-        lsec.appendChild(lhd);
-        const sec = lsec;
-        if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "No open lanes."));
-        for (const w of wts.worktrees) {
-          const row = el("div", "bwt");
-          row.appendChild(el("span", "lanechip", "⎇"));
-          // fleet branches share a ~16-char prefix (`fleet/260806142…`) and differ only at the
-          // end, so an end-ellipsis cut two distinct lanes down to the SAME string. Split the
-          // name into a head that shrinks and a tail that never does. The tail is the last
-          // `-`/`/` segment, capped at 12 chars so a long separator-less name can't grow into
-          // an unshrinkable block that pushes the state and buttons out of the row.
-          const sep = Math.max(w.branch.lastIndexOf("-"), w.branch.lastIndexOf("/")) + 1;
-          const tail = w.branch.slice(Math.max(sep, w.branch.length - 12));
-          const b = el("span", "bwtbr");
-          b.appendChild(el("span", "bwtbrh", w.branch.slice(0, w.branch.length - tail.length)));
-          b.appendChild(el("span", "bwtbrt", tail));
-          b.title = w.path;
-          row.appendChild(b);
-          const state = w.dirty ? "editing" : w.ahead ? "ready" : "clean";
-          const parts: string[] = [];
-          if (w.dirty) parts.push(`•${w.dirty}`);
-          if (w.ahead) parts.push(`↑${w.ahead}`);
-          if (w.behind) parts.push(`↓${w.behind}`);
-          const stateEl = el("span", `bwtstate ${state}`, parts.join(" ") || "=");
-          stateEl.title = [
-            w.dirty ? `${w.dirty} uncommitted file${w.dirty === 1 ? "" : "s"}` : "working tree clean",
-            w.ahead ? `${w.ahead} commit${w.ahead === 1 ? "" : "s"} ahead of ${wts.main}` : "",
-            w.behind ? `${w.behind} behind ${wts.main}` : "",
-          ].filter(Boolean).join(" · ");
-          row.appendChild(stateEl);
-          if (w.slot != null) {
-            const here = w.slot === slot;
-            const chip = el("button", "bwtact", here ? "this slot" : `slot ${w.slot}`) as HTMLButtonElement;
-            chip.disabled = here;
-            if (!here) {
-              const target = w.slot;
-              chip.onclick = () => showSlot(target);
-            }
-            row.appendChild(chip);
-          } else {
-            const open = el("button", "bwtact", w.review ? "resume" : "open") as HTMLButtonElement;
-            open.title = w.review
-              ? `reopen review candidate ${w.review.id} in a free slot — its tasks bind back to it, and verify evidence from before the park counts as stale`
-              : "no session holds this worktree — reopen it in a free slot (reviewable/landable again)";
-            open.onclick = async () => {
-              if (laneReqBusy) return;
-              laneReqBusy = true;
-              try {
-                const r = await post("/api/lanes", { repo: wts.repo, attach: w.path });
-                const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-                if (!r.ok) { alert(j.error ?? "open failed"); return; }
-                await refresh();
-                if (j.slot) showSlot(j.slot);
-              } finally {
-                laneReqBusy = false;
-              }
-            };
-            row.appendChild(open);
-            // one "close" affordance: git state (w.empty) picks the safe default — a clean
-            // lane is removed after a light confirm; a lane with unsaved/unmerged work opens
-            // the deliberate discard read-window below (destruction stays gated exactly as
-            // before). "open" above is the separate, opposite intent (reattach to KEEP it).
-            const close = el("button", "bwtact del", "close") as HTMLButtonElement;
-            close.title = w.empty
-              ? "close this lane — clean worktree, nothing to lose (removes it)"
-              : "close this lane — it has unsaved/unmerged work: opens the discard read-window (destroys it). Reattach with ‘open’ to keep it.";
-            close.onclick = async () => {
-              if (w.empty) {
-                const ok = await showRiskPreview(`Close lane ${w.branch}? — clean worktree, nothing to lose`, w, "close");
-                if (!ok) return;
-                const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
-                if (!r.ok) {
-                  const j = (await r.json().catch(() => ({}))) as { error?: string };
-                  alert(j.error ?? "close failed");
-                }
-                void renderBoard();
-              } else {
-                discardArm = { path: w.path, at: Date.now() }; // deliberate destruction gate (read-window below)
-                void renderBoard();
-              }
-            };
-            row.appendChild(close);
-          }
-          sec.appendChild(row);
-          // shelve note: this orphan was set aside with "what's left" — show it so resuming has
-          // context (cleared server-side when the lane is reopened, removed, or discarded)
-          if (w.note != null) {
-            const nrow = el("div", "sweepv shelved");
-            nrow.appendChild(el("span", "sweepvbadge", w.review ? "⏸ review" : "⇲ shelved"));
-            nrow.appendChild(el("span", "sweepvreason", w.note || "(no note)"));
-            sec.appendChild(nrow);
-          }
-          // the review candidate's IDENTITY — what was parked, against what, carrying which verdict.
-          // A review record, not gate-green; the deadline asks for a decision and removes nothing.
-          if (w.review) {
-            const c = w.review;
-            const crow = el("div", "sweepv shelved");
-            crow.appendChild(el("span", "sweepvbadge", `candidate ${c.id}`));
-            crow.appendChild(el("span", "sweepvreason",
-              `head ${c.head.slice(0, 10)} · base ${c.base ?? "unknown"}${c.baseSha ? ` @ ${c.baseSha.slice(0, 10)}` : ""}`
-              + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
-              + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
-                : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
-            sec.appendChild(crow);
-          }
-          // THE OWNER'S NOTEPAD under the row of a worktree no slot holds — the parked candidate's
-          // (or shelved orphan's) detail area, the same one text per path the live board shows.
-          if (w.slot == null) sec.appendChild(notepadBlock(wts.repo, w));
-          // the confirm panel is not a dialog: the consequences ARE the wait screen. The
-          // destructive button unlocks only after the read window, counted from the first
-          // click and re-derived on every 3s board re-render, so polling can't reset or
-          // skip the gate. Stale arms (>60s) auto-cancel — a forgotten panel must not
-          // sit primed forever.
-          if (w.slot == null && discardArm?.path === w.path) {
-            if (Date.now() - discardArm.at > 60_000) { discardArm = null; continue; }
-            const arm = discardArm;
-            const box = el("div", "bdiscard");
-            box.appendChild(el("div", "bdtitle", `discard ${w.branch}?`));
-            if (w.empty) {
-              box.appendChild(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
-            } else {
-              if (w.dirtyFiles.length) {
-                box.appendChild(el("div", "bdline", `${w.dirtyFiles.length} uncommitted file${w.dirtyFiles.length === 1 ? "" : "s"} — DESTROYED, no undo:`));
-                for (const f of w.dirtyFiles.slice(0, 15)) box.appendChild(el("div", "riskfile", f));
-              } else {
-                box.appendChild(el("div", "bdline", "working tree clean — nothing uncommitted to lose"));
-              }
-              if (w.unpushedCommits.length) {
-                box.appendChild(el("div", "bdline", `${w.unpushedCommits.length} unmerged commit${w.unpushedCommits.length === 1 ? "" : "s"} — branch deleted; the undo line appears after:`));
-                for (const c of w.unpushedCommits.slice(0, 15)) box.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
-              } else {
-                box.appendChild(el("div", "bdline", `no commits beyond ${wts.main} — branch deleted`));
-              }
-            }
-            const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
-            cancel.onclick = () => { discardArm = null; void renderBoard(); };
-            const go = el("button", "bwtact del", "") as HTMLButtonElement;
-            const tick = () => {
-              const left = Math.ceil((arm.at + DISCARD_READ_MS - Date.now()) / 1000);
-              go.disabled = left > 0;
-              go.textContent = left > 0 ? `read the above … ${left}` : "☠ discard forever";
-            };
-            tick();
-            const iv = setInterval(() => { if (go.isConnected) tick(); else clearInterval(iv); }, 250);
-            go.onclick = async () => {
-              if (go.disabled) return;
-              go.disabled = true;
-              const r = await post("/api/worktrees/discard", { repo: wts.repo, path: w.path, branch: w.branch });
-              const j = (await r.json().catch(() => ({}))) as
-                { error?: string; branch?: string; head?: string | null };
-              discardArm = null;
-              if (!r.ok) alert(j.error ?? "discard failed");
-              else if (j.head) alert(j.branch === "(detached)"
-                ? `lane discarded.\nRecover until git gc from sha:\n  ${j.head}`
-                : `lane discarded.\nUndo until git gc:\n  git branch ${j.branch} ${j.head}`);
-              void renderBoard();
-            };
-            const btns = el("div", "bdbtns");
-            btns.append(cancel, go);
-            box.appendChild(btns);
-            sec.appendChild(box);
-          }
-        }
-        const nb = el("button", "bbtn quiet", "New lane") as HTMLButtonElement;
-        nb.title = `Neue Lane von ${wts.main} — Name, Profil und Kontext im Gründungsfenster`;
-        nb.onclick = () => { openLaneFounding(wts.repo); };
-        sec.appendChild(nb);
-        nodes.push(lsec);
       }
     }
     // The advisory agents (✨ summarize · 🔍 review) LEFT this column on 2026-09-20: the owner
@@ -2393,8 +2235,13 @@ export async function renderBoard() {
       if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
       return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
     })();
+    perfRebuild("renderBoard");
     boardBody.replaceChildren(...nodes);
+    drawRankeLines(boardBody);
     boardBody.scrollTop = y;
+    // the worktree field asked to be shown: bring its row into view once, then leave the scroll alone
+    const flashed = rankeScroll ? boardBody.querySelector<HTMLElement>(".zr.flash") : null;
+    if (flashed) { rankeScroll = false; flashed.scrollIntoView({ block: "nearest" }); }
     if (focusKey) {
       for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
         if (`${cand.tagName}\u0000${cand.className}\u0000${(cand.textContent ?? "").slice(0, 40)}` !== focusKey) continue;
@@ -2411,6 +2258,867 @@ export async function renderBoard() {
       boardAgain = false;
       void renderBoard();
     }
+  }
+}
+
+// --- ARBEITSORTE: the Ranke at the top of Info (cards e66909b1 and abe74821; docs/design/
+// rechter-tab-notiz.md §3b–§3d, Variante 3A, owner-Ja 2026-10-05; docs/design/ranke-notiz.md §0/§0a).
+// One table, one row per worktree, fixed columns: lines · address · name · ↑• · the check beads ·
+// the test-instance square. Everything comes from ONE read, GET /api/worktrees (src/protocol.ts#
+// Workplaces): the repos with their branches and worktrees, and the stand of every carrier (the
+// running server, the helper machines, linked instances, test copies, worktrees). A missing value is
+// drawn as unknown and never estimated. The read rides the board's existing repaint and is spaced to
+// one per WORKPLACES_EVERY_MS — no loop of its own; an owner gesture asks again at once.
+//
+// Owner additions of 2026-10-05, each one a choice made here:
+//  1. the test instance is a SQUARE in its worktree's row (green = it runs; a ring only under the
+//     pointer when there is none); a click on it opens the row's instance line with the deadline and
+//     Öffnen · Stoppen / Starten;
+//  2. the checks are five BEADS at the worktree, in the order they happen: local proofs · preview ·
+//     land check · in its target (a diamond, from WorkplaceRow.target) · check after the land;
+//  3. the state word left the row: the node says it (green works, brown waits on you, a ring is
+//     still), the word is in the tooltip; every graphic has a tooltip and a DOM claim;
+//  4. the own lane's block stays the session head below, without a second copy of a row value.
+export let workplaces: Workplaces | null = null;
+let workplacesErr: string | null = null;
+let workplacesAt = 0;
+let workplacesBusy = false;
+export const WORKPLACES_EVERY_MS = 10_000;
+export function loadWorkplaces(force = false): void {
+  if (workplacesBusy || (!force && Date.now() - workplacesAt < WORKPLACES_EVERY_MS)) return;
+  workplacesBusy = true;
+  workplacesAt = Date.now();
+  void api("/api/worktrees").then(async (r) => {
+    if (!r.ok) {
+      workplacesErr = ((await r.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${r.status}`;
+      return;
+    }
+    workplaces = (await r.json()) as Workplaces;
+    workplacesErr = null;
+  }).catch(() => { workplacesErr = "der Server war nicht erreichbar"; })
+    .finally(() => { workplacesBusy = false; void renderBoard(); });
+}
+
+// what the name column shows: the lane's name, its branch, or the commit its worktree stands on
+type RankeMode = "name" | "branch" | "stand";
+let rankeMode: RankeMode = "name";
+const RANKE_MODES: { mode: RankeMode; word: string; title: string }[] = [
+  { mode: "name", word: "Name", title: "Die Namen der Lanes zeigen" },
+  { mode: "branch", word: "Branch", title: "Statt der Namen die Branches zeigen — eine Zeile je Zweig bleibt" },
+  { mode: "stand", word: "Stand", title: "Statt der Namen den Commit zeigen, auf dem jeder Worktree steht, und wie weit er von seinem Ziel weg ist" },
+];
+// repos whose open/closed default (open = the focused session's repo) the owner flipped, and repos
+// whose worktrees without a session are unfolded — module state, so the repaint keeps them
+const rankeRepoFlip = new Set<string>();
+const rankeFoldOpen = new Set<string>();
+// ONE open line under a row: `wt:<path>` (a worktree without a session) or `ti:<path>` (its test instance)
+let rankeOpen: string | null = null;
+let rankeFlash: { path: string; until: number } | null = null;
+// the worktree field under the composer: show this worktree in Info and mark it for a moment
+let rankeScroll = false;
+export function flashWorkplace(path: string | null): void {
+  if (path) { rankeFlash = { path, until: Date.now() + 1600 }; rankeScroll = true; }
+  loadWorkplaces(true);
+  void renderBoard();
+}
+const tiBusy = new Set<string>();
+const tiErr = new Map<string, string>();
+
+const sha7 = (h: string | null | undefined): string | null => (h ? h.slice(0, 7) : null);
+const refShort = (ref: string): string => ref.replace(/^refs\/(heads|remotes)\//, "");
+// "fleet/261004-zeitleiste-c3d4" → "zeitleiste": the words of a branch without its date and hex
+// (owner 2026-10-04: the lane's name, not a hex tail)
+export function laneWords(branch: string | null): string {
+  if (!branch) return "ohne Branch";
+  const words = branch.replace(/^fleet\//, "").replace(/^\d{6,}-/, "").replace(/-[0-9a-f]{4,}$/, "")
+    .replace(/[-_/]+/g, " ").trim();
+  return words || branch;
+}
+const clockOf = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+export function agoDe(ms: number): string {
+  const min = Math.round(Math.max(0, ms) / 60_000);
+  if (min < 1) return "gerade eben";
+  if (min < 60) return `vor ${min} Min.`;
+  const h = Math.round(min / 60);
+  return h < 36 ? `vor ${h} Std.` : `vor ${Math.round(h / 24)} Tagen`;
+}
+
+// the five beads, in the order a lane goes through them
+const CHECK_STAGES: { stage: keyof WorkplaceChecks; word: string }[] = [
+  { stage: "local", word: "Lokale Beweise" },
+  { stage: "preview", word: "Vorschau" },
+  { stage: "gate", word: "Land-Prüfung" },
+  { stage: "audit", word: "Check nach dem Land" },
+];
+const CHECK_WORD: Record<WorkplaceCheck["state"], string> = {
+  green: "grün", red: "rot", running: "läuft", waiting: "wartet auf einen Lauf", skipped: "ausgelassen",
+};
+const CHECK_CLASS: Record<WorkplaceCheck["state"], string> = {
+  green: "ok", red: "bad", running: "run", waiting: "queue", skipped: "skip",
+};
+function checkBead(w: WorkplaceRow, stage: keyof WorkplaceChecks, word: string): HTMLElement {
+  const c = w.checks?.[stage] ?? null;
+  const i = el("i", "");
+  i.dataset.stage = stage;
+  if (!c) {
+    const why = w.reasons.find((r) => r.field === `checks.${stage}`)?.reason ?? "";
+    const unknown = /unreadable|malformed|capped|unmeasured/.test(why);
+    i.className = unknown ? "unk" : "none";
+    i.dataset.state = unknown ? "unknown" : "none";
+    i.title = `${word}: ${unknown ? "unbekannt — die Aufzeichnung ist nicht lesbar" : "noch keiner bekannt"}`;
+    return i;
+  }
+  // the check after the land names the INTEGRATION commit, never this worktree's HEAD: "stale" there
+  // says nothing about the lane and is not drawn
+  const stale = stage !== "audit" && c.stale === true;
+  i.className = `${CHECK_CLASS[c.state]}${stale ? " stale" : ""}`;
+  i.dataset.state = `${c.state}${stale ? "-stale" : ""}`;
+  const bits = [`${word}: ${CHECK_WORD[c.state]}`];
+  if (c.at) bits.push(agoDe(Date.now() - c.at));
+  if (stale) bits.push("auf einem älteren Stand als dieser Worktree");
+  if (c.fails.length) bits.push(c.fails.slice(0, 3).join(", "));
+  i.title = bits.join(" · ");
+  return i;
+}
+// IN ITS TARGET — the owner's question of 2026-10-04 („[Zitat entfernt]“
+// ), answered from WorkplaceRow.target only: a land note proves "yes", own commits
+// without one say "no", everything else is unknown or nothing to land
+function landedMark(w: WorkplaceRow): HTMLElement {
+  const b = el("b", "");
+  const t = w.target;
+  b.dataset.landed = t.landed ?? "null";
+  if (t.landed === "yes") {
+    b.className = "yes";
+    b.title = `gelandet als ${sha7(t.landedAs) ?? "unbekannt"} in ${t.branch}`;
+  } else if (t.landed === "no") {
+    b.className = "no";
+    b.title = `noch nicht auf ${t.branch}`;
+  } else if (w.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land")) {
+    b.className = "nil";
+    b.title = `nichts zu landen — keine eigenen Commits über ${t.branch}`;
+  } else {
+    b.className = "unk";
+    b.title = `unbekannt, ob auf ${t.branch} gelandet`;
+  }
+  return b;
+}
+function checkBeads(w: WorkplaceRow): HTMLElement {
+  const box = el("span", "pf");
+  box.setAttribute("role", "img");
+  const parts = CHECK_STAGES.map(({ stage, word }) => checkBead(w, stage, word));
+  const landed = landedMark(w);
+  box.append(parts[0], parts[1], parts[2], landed, parts[3]);
+  box.setAttribute("aria-label", [parts[0], parts[1], parts[2], landed, parts[3]].map((p) => p.title).join(" · "));
+  return box;
+}
+
+// THE TEST INSTANCE as a square in its worktree's row. "läuft" only where the server measured it up
+// (process identity AND an answer over HTTP, docs/self-api.md, Testinstanz) — never from a pid.
+type TiLook = { cls: string; state: string; word: string; expiresAt: number | null };
+function tiLook(w: WorkplaceRow): TiLook {
+  const inst = w.testinstanz?.instance as { expiresAt?: number | null } | undefined;
+  const expiresAt = typeof inst?.expiresAt === "number" ? inst.expiresAt : null;
+  if (w.template === "missing") return { cls: "tpl", state: "no-template", word: "keine Testinstanz-Vorlage in diesem Repo", expiresAt };
+  const st = w.testinstanz?.state ?? null;
+  if (st === "up") return { cls: "up", state: "up", word: `Testinstanz läuft${expiresAt ? ` bis ${clockOf(expiresAt)}` : ""}`, expiresAt };
+  if (st === "expired") return { cls: "exp", state: "expired", word: `Testinstanz abgelaufen${expiresAt ? ` ${agoDe(Date.now() - expiresAt)}` : ""}`, expiresAt };
+  if (st === "not-running") return { cls: "off", state: "not-running", word: "keine Testinstanz", expiresAt };
+  if (st === "http-failed" || st === "http-timeout") return { cls: "bad", state: st, word: "Testinstanz antwortet nicht", expiresAt };
+  return { cls: "unk", state: "unknown", word: "Testinstanz: unbekannt", expiresAt };
+}
+const tiRoute = (repo: string, w: WorkplaceRow, slot: number | null): string => slot !== null
+  ? `/api/slots/${slot}/testinstanz`
+  : `/api/worktrees/testinstanz?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(w.path)}`;
+async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action: "up" | "down" | "open" | "refresh"): Promise<void> {
+  if (tiBusy.has(w.path)) return;
+  // a new tab has to be opened inside the click, or the browser blocks it; it gets its address once
+  // the server has handed out the opening link (which carries the instance's own credential)
+  const tab = action === "open" ? window.open("about:blank", "_blank") : null;
+  if (tab) tab.opener = null; // the instance's page gets no handle on this one
+  tiBusy.add(w.path);
+  tiErr.delete(w.path);
+  void renderBoard();
+  try {
+    const r = await post(tiRoute(repo, w, slot), action === "up" ? { action, ttlMin: 240 } : { action });
+    const j = (await r.json().catch(() => ({}))) as { error?: string; refusal?: string; url?: string };
+    if (!r.ok) throw new Error(j.error ?? j.refusal ?? `HTTP ${r.status}`);
+    if (action === "open") {
+      if (!j.url) throw new Error("der Server hat keinen Link geliefert");
+      if (tab) tab.location.href = j.url; else window.open(j.url, "_blank", "noopener");
+    }
+  } catch (error) {
+    tab?.close();
+    tiErr.set(w.path, error instanceof Error ? error.message : String(error));
+  } finally {
+    tiBusy.delete(w.path);
+    loadWorkplaces(true);
+  }
+}
+function tiSquare(w: WorkplaceRow, here: boolean): HTMLElement {
+  const look = tiLook(w);
+  const box = el("button", `ti ${look.cls}${here ? " mine" : ""}${rankeOpen === `ti:${w.path}` ? " open" : ""}`) as HTMLButtonElement;
+  box.type = "button";
+  box.dataset.ti = look.state;
+  box.appendChild(el("span", "sq"));
+  const verb = look.cls === "up" ? "Klick: Öffnen, Stoppen" : look.cls === "off" ? "Klick: Starten"
+    : look.cls === "exp" ? "Klick: neu starten" : look.cls === "tpl" ? "" : "Klick: neu lesen";
+  box.title = verb ? `${look.word} — ${verb}` : look.word;
+  box.setAttribute("aria-label", box.title);
+  if (look.cls === "tpl") { box.disabled = true; return box; }
+  box.onclick = (e) => {
+    e.stopPropagation();
+    rankeOpen = rankeOpen === `ti:${w.path}` ? null : `ti:${w.path}`;
+    void renderBoard();
+  };
+  return box;
+}
+function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
+  const look = tiLook(w);
+  const line = el("div", "zd ti");
+  line.dataset.for = w.path;
+  const tx = el("span", `tx ${look.cls}`);
+  // running, the square and the deadline say it; otherwise the word names what the square stands for
+  tx.appendChild(el("span", `sq ${look.cls}`));
+  if (look.cls !== "up") tx.appendChild(el("span", "k", "Testinstanz"));
+  const busy = tiBusy.has(w.path);
+  const err = tiErr.get(w.path);
+  const inst = w.testinstanz?.instance as { recordedSource?: { before?: { head?: string | null } | null } | null; port?: number | null } | undefined;
+  const from = sha7(inst?.recordedSource?.before?.head ?? null);
+  const word = busy ? "wird ausgeführt…" : look.cls === "up" ? (look.expiresAt ? `bis ${clockOf(look.expiresAt)}` : "läuft")
+    : look.cls === "exp" ? "abgelaufen" : look.cls === "off" ? "keine" : look.cls === "bad" ? "antwortet nicht" : "unbekannt";
+  tx.appendChild(document.createTextNode(look.cls === "up" ? word : `· ${word}`));
+  // WHERE IT COMES FROM: the commit the copy was taken from, as recorded at the copy — not proof of
+  // what runs in it (copyHead stays null on the wire, docs/self-api.md)
+  const stand = standOf.get(`test-instance:${w.path}`);
+  tx.title = [look.word,
+    from ? `kopiert von ${from} — welcher Stand in der Kopie läuft, ist nicht belegt` : "Stand der Kopie nicht belegt",
+    stand && stand.head === null ? "läuft auf: unbekannt" : ""].filter(Boolean).join(" · ");
+  if (from && look.cls === "up") tx.appendChild(el("span", "mono", from));
+  line.appendChild(tx);
+  const acts = el("span", "r");
+  const act = (label: string, title: string, action: "up" | "down" | "open" | "refresh", primary = false) => {
+    const b = el("button", `rk-btn${primary ? " primary" : ""}`, label) as HTMLButtonElement;
+    b.type = "button";
+    b.title = title;
+    b.disabled = busy;
+    b.onclick = (e) => { e.stopPropagation(); void tiAct(repo, w, slot, action); };
+    acts.appendChild(b);
+  };
+  if (look.cls === "up") {
+    act("Öffnen", `Die Testinstanz in einem neuen Tab öffnen${typeof inst?.port === "number" ? ` (Port ${inst.port})` : ""}`, "open", true);
+    act("Stoppen", "Die Testinstanz beenden — die Kopie läuft dann nicht mehr", "down");
+  } else if (look.cls === "off") act("Starten", "Eine Testinstanz dieses Worktrees starten — eigene Kopie, eigener Port, für 4 Std.", "up", true);
+  else if (look.cls === "exp") {
+    act("Neu starten", "Die abgelaufene Testinstanz neu starten — für 4 Std.", "up", true);
+    act("Stoppen", "Die abgelaufene Testinstanz aufräumen", "down");
+  } else act("Neu lesen", "Den Zustand der Testinstanz neu messen — startet nichts", "refresh");
+  line.appendChild(acts);
+  if (err) line.appendChild(el("span", "err", err));
+  return line;
+}
+
+// the lane controls of a worktree no session holds — moved here unchanged from the former
+// "Lanes in ‹repo›" list: reopen, close (light confirm when clean, the read window when not), the
+// shelve note, the review candidate and the owner's notepad. Only for the repo whose lane list the
+// focused session read (`wts`), because only that list carries the risk facts close needs.
+function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const row = el("div", "rk-acts");
+  const open = el("button", "rk-btn primary", w.review ? "Wieder aufnehmen" : "Öffnen") as HTMLButtonElement;
+  open.title = w.review
+    ? `Prüf-Kandidat ${w.review.id} in einem freien Slot wieder aufnehmen — seine Aufträge binden zurück, Beweise von vor dem Parken gelten als veraltet`
+    : "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
+  open.onclick = async (e) => {
+    e.stopPropagation();
+    if (laneReqBusy) return;
+    laneReqBusy = true;
+    try {
+      const r = await post("/api/lanes", { repo: wts.repo, attach: w.path });
+      const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+      if (!r.ok) { alert(j.error ?? "open failed"); return; }
+      await refresh();
+      loadWorkplaces(true);
+      if (j.slot) showSlot(j.slot);
+    } finally {
+      laneReqBusy = false;
+    }
+  };
+  row.appendChild(open);
+  const close = el("button", "rk-btn del", "Schließen…") as HTMLButtonElement;
+  close.title = w.empty
+    ? "Diesen Worktree schließen — sauber, nichts geht verloren"
+    : "Dieser Worktree hat ungesicherte oder nicht gelandete Arbeit — zeigt zuerst, was verloren ginge";
+  close.onclick = async (e) => {
+    e.stopPropagation();
+    if (w.empty) {
+      const ok = await showRiskPreview(`Close lane ${w.branch}? — clean worktree, nothing to lose`, w, "close");
+      if (!ok) return;
+      const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        alert(j.error ?? "close failed");
+      }
+      loadWorkplaces(true);
+      void renderBoard();
+    } else {
+      discardArm = { path: w.path, at: Date.now() }; // deliberate destruction gate (read-window below)
+      void renderBoard();
+    }
+  };
+  row.appendChild(close);
+  out.push(row);
+  // shelve note: this orphan was set aside with "what's left" — show it so resuming has context
+  if (w.note != null) {
+    const nrow = el("div", "sweepv shelved");
+    nrow.appendChild(el("span", "sweepvbadge", w.review ? "⏸ review" : "⇲ shelved"));
+    nrow.appendChild(el("span", "sweepvreason", w.note || "(no note)"));
+    out.push(nrow);
+  }
+  // the review candidate's IDENTITY — a review record, not gate-green; the deadline removes nothing
+  if (w.review) {
+    const c = w.review;
+    const crow = el("div", "sweepv shelved");
+    crow.appendChild(el("span", "sweepvbadge", `candidate ${c.id}`));
+    crow.appendChild(el("span", "sweepvreason",
+      `head ${c.head.slice(0, 10)} · base ${c.base ?? "unknown"}${c.baseSha ? ` @ ${c.baseSha.slice(0, 10)}` : ""}`
+      + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
+      + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
+        : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
+    out.push(crow);
+  }
+  out.push(notepadBlock(wts.repo, w));
+  // the confirm panel is not a dialog: the consequences ARE the wait screen. The destructive button
+  // unlocks only after the read window, counted from the first click and re-derived on every
+  // repaint, so polling can't reset or skip the gate. Stale arms (>60s) auto-cancel.
+  if (discardArm?.path === w.path) {
+    if (Date.now() - discardArm.at > 60_000) { discardArm = null; return out; }
+    const arm = discardArm;
+    const box = el("div", "bdiscard");
+    box.appendChild(el("div", "bdtitle", `discard ${w.branch}?`));
+    if (w.dirtyFiles.length) {
+      box.appendChild(el("div", "bdline", `${w.dirtyFiles.length} uncommitted file${w.dirtyFiles.length === 1 ? "" : "s"} — DESTROYED, no undo:`));
+      for (const f of w.dirtyFiles.slice(0, 15)) box.appendChild(el("div", "riskfile", f));
+    } else {
+      box.appendChild(el("div", "bdline", "working tree clean — nothing uncommitted to lose"));
+    }
+    if (w.unpushedCommits.length) {
+      box.appendChild(el("div", "bdline", `${w.unpushedCommits.length} unmerged commit${w.unpushedCommits.length === 1 ? "" : "s"} — branch deleted; the undo line appears after:`));
+      for (const c of w.unpushedCommits.slice(0, 15)) box.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
+    } else {
+      box.appendChild(el("div", "bdline", `no commits beyond ${wts.main} — branch deleted`));
+    }
+    const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
+    cancel.onclick = () => { discardArm = null; void renderBoard(); };
+    const go = el("button", "bwtact del", "") as HTMLButtonElement;
+    const tick = () => {
+      const left = Math.ceil((arm.at + DISCARD_READ_MS - Date.now()) / 1000);
+      go.disabled = left > 0;
+      go.textContent = left > 0 ? `read the above … ${left}` : "☠ discard forever";
+    };
+    tick();
+    const iv = setInterval(() => { if (go.isConnected) tick(); else clearInterval(iv); }, 250);
+    go.onclick = async () => {
+      if (go.disabled) return;
+      go.disabled = true;
+      const r = await post("/api/worktrees/discard", { repo: wts.repo, path: w.path, branch: w.branch });
+      const j = (await r.json().catch(() => ({}))) as
+        { error?: string; branch?: string; head?: string | null };
+      discardArm = null;
+      if (!r.ok) alert(j.error ?? "discard failed");
+      else if (j.head) alert(j.branch === "(detached)"
+        ? `lane discarded.\nRecover until git gc from sha:\n  ${j.head}`
+        : `lane discarded.\nUndo until git gc:\n  git branch ${j.branch} ${j.head}`);
+      loadWorkplaces(true);
+      void renderBoard();
+    };
+    const btns = el("div", "bdbtns");
+    btns.append(cancel, go);
+    box.appendChild(btns);
+    out.push(box);
+  }
+  return out;
+}
+
+// --- STANDS (card abe74821): "auf welchem Stand jedes Gerät, jede Instanz und jeder Worktree läuft
+// und woher er kommt". One sentence per carrier: läuft auf <sha> · how far from its target · whether
+// that distance touches its own code. Unknown stays unknown, with the reason as a sentence.
+const SCOPE_WORD: Record<WorkplaceStand["codeScope"], string> = {
+  server: "betrifft den Server-Code", "helper-daemon": "betrifft den Helfer-Dienst", repository: "betrifft Code",
+};
+function standSentence(st: WorkplaceStand): { text: (Node | string)[]; title: string; node: string; behindCode: boolean } {
+  const parts: (Node | string)[] = [];
+  const titles: string[] = [];
+  const head = sha7(st.head);
+  parts.push("läuft auf ");
+  if (head) parts.push(el("span", "mono", head));
+  else parts.push(el("span", "q", "unbekannt"));
+  const t = st.target;
+  let behindCode = false;
+  if (head && t) {
+    const ref = refShort(t.ref);
+    const d = t.distance;
+    if (!d) parts.push(` · Abstand zu ${ref} unbekannt`);
+    else if (d.ahead === 0 && d.behind === 0) parts.push(` · neuester Stand von ${ref}`);
+    else {
+      parts.push(` · ${[d.behind ? `${d.behind} hinter` : "", d.ahead ? `${d.ahead} vor` : ""].filter(Boolean).join(", ")} ${ref}`);
+      if (d.behind) {
+        if (t.codeBehind === true) { parts.push(" · "); parts.push(el("span", "cb", SCOPE_WORD[st.codeScope])); behindCode = true; }
+        else if (t.codeBehind === false) parts.push(" · eigener Code aktuell");
+        else parts.push(" · ob eigener Code betroffen ist: unbekannt");
+      }
+    }
+    if (t.mergeBase) titles.push(`abgezweigt von ${ref} bei ${sha7(t.mergeBase)}`);
+  }
+  if (!head) {
+    if (st.basis === "link-only") parts.push(" · ihre Repos liest dieser Server nicht");
+    else if (st.basis === "checkout-unproven") {
+      if (st.reportedCheckout) { parts.push(" · Checkout "); parts.push(el("span", "mono", sha7(st.reportedCheckout.head) ?? "")); }
+      titles.push("die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses");
+    } else if (st.basis === "copy-unproven") titles.push("eine Testkopie meldet keinen belegten Stand");
+    else if (st.basis === "heartbeat") titles.push("der Helfer hat noch keinen Stand gemeldet");
+  }
+  if (st.basis === "heartbeat" && st.observedAt) titles.push(`zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)} — ein letzter Bericht, kein Beweis, dass er gerade erreichbar ist`);
+  if (st.update) titles.push(`Aktualisierung: ${st.update.state}${st.update.mainSha ? ` auf ${sha7(st.update.mainSha)}` : ""}`);
+  const node = st.kind === "live-server" ? (behindCode ? "wait" : "live") : head ? "" : "leer";
+  return { text: parts, title: titles.join(" · "), node, behindCode };
+}
+function standRow(label: string | null, st: WorkplaceStand): HTMLElement {
+  const s = standSentence(st);
+  const row = el("div", "zr stand");
+  row.dataset.kind = st.kind;
+  row.appendChild(el("span", `nd ${s.node}`));
+  const nm = el("span", "nm");
+  if (label) { nm.appendChild(el("b", "", label)); nm.appendChild(document.createTextNode(" · ")); }
+  nm.append(...s.text);
+  row.appendChild(nm);
+  row.title = [label ?? "", ...s.text.map((p) => (typeof p === "string" ? p : p.textContent ?? ""))].join("").trim()
+    + (s.title ? ` — ${s.title}` : "");
+  return row;
+}
+// THE TEST INSTANCE'S OWN ROW, in the machine group: the same words the band above the app paints
+// (src/protocol.ts#instanceBandText, minus the branch — the row sits under the machine's name), so
+// both sights of one fact cannot drift. Neutral square: the copy is neither live nor waiting.
+function testInstanceStandRow(source: InstanceSource): HTMLElement {
+  const row = el("div", "zr stand");
+  row.dataset.kind = "live-server";
+  row.appendChild(el("span", "nd leer"));
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const nm = el("span", "nm");
+  nm.appendChild(el("b", "", "Testinstanz"));
+  nm.appendChild(document.createTextNode(" · "));
+  band.segments.slice(1).forEach((seg, i) => {
+    if (i) nm.appendChild(document.createTextNode(" · "));
+    for (const run of seg) nm.appendChild(run.mono ? el("span", "mono", run.t) : document.createTextNode(run.t));
+  });
+  row.appendChild(nm);
+  row.title = band.title;
+  return row;
+}
+function machineHead(name: string, sub: string, title: string): HTMLElement {
+  const row = el("div", "zr mach");
+  const fx = el("span", "fx");
+  fx.appendChild(icon("screen"));
+  row.appendChild(fx);
+  const nm = el("span", "nm", name);
+  nm.appendChild(el("span", "cnt", sub));
+  row.appendChild(nm);
+  row.title = title;
+  return row;
+}
+
+// a row that acts on a click is a target for the keyboard too: Tab reaches it, Enter or Space act
+function rowTarget(row: HTMLElement, act: () => void): void {
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  row.onclick = act;
+  row.onkeydown = (e) => {
+    if (e.target !== row || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    act();
+  };
+}
+
+// one row of the Ranke: the node, the address, the name, ↑•, the beads and the square
+function rowCells(row: HTMLElement, node: string, ref: string, hue: number, name: HTMLElement): void {
+  row.appendChild(el("span", `nd ${node}`));
+  const r = el("span", "ref", ref);
+  r.style.setProperty("--proj-h", String(hue));
+  row.append(r, name);
+}
+
+export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null): HTMLElement {
+  loadWorkplaces();
+  const sec = el("div", "bsec ranke");
+  const hd = boardHead("Arbeitsorte", "fleet");
+  const seg = el("span", "rkseg");
+  seg.setAttribute("role", "group");
+  seg.setAttribute("aria-label", "Die Namensspalte zeigt");
+  for (const m of RANKE_MODES) {
+    const b = el("button", m.mode === rankeMode ? "on" : "", m.word) as HTMLButtonElement;
+    b.type = "button";
+    b.title = m.title;
+    b.dataset.mode = m.mode;
+    b.setAttribute("aria-pressed", String(m.mode === rankeMode));
+    b.onclick = () => { rankeMode = m.mode; void renderBoard(); };
+    seg.appendChild(b);
+  }
+  hd.appendChild(seg);
+  sec.appendChild(hd);
+  const wp = workplaces;
+  if (!wp) {
+    sec.appendChild(el("div", "bempty", workplacesErr ? `Die Arbeitsorte konnten nicht gelesen werden — ${workplacesErr}.` : "lese die Arbeitsorte…"));
+    return sec;
+  }
+  if (workplacesErr) sec.appendChild(el("div", "bstale", `Stand von ${clockOf(wp.measuredAt)} — neu lesen ging nicht: ${workplacesErr}`));
+  const focus = focusSlot ? fleet[focusSlot - 1] : undefined;
+  const bands = laneBandNames(stacksOf());
+  const standOf = new Map<string, WorkplaceStand>();
+  for (const st of wp.stands ?? []) if (st.path) standOf.set(`${st.kind}:${st.path}`, st);
+
+  // 1 — THIS MACHINE: its running server, then its repos
+  const here = el("div", "grp");
+  here.appendChild(machineHead(instanceName ?? "Dieser Rechner", instanceName ? "dieser Rechner" : "",
+    "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+  const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
+  if (instanceSource) {
+    // A TEST INSTANCE DOES NOT CALL ITSELF LIVE (owner, 2026-10-06): the copy has no .git, so its
+    // boot head is unreadable and standRow would read „[Zitat entfernt]“. It names itself
+    // and carries the stand measured BEFORE the copy (instance.source), in the band's own words.
+    here.appendChild(testInstanceStandRow(instanceSource));
+  } else {
+    for (const st of lives) here.appendChild(standRow("Live", st));
+    if (!lives.length && deployGapInfo) {
+      // an older server without stands: the deploy gap alone, said as plainly
+      const row = el("div", "zr stand");
+      row.dataset.kind = "live-server";
+      row.appendChild(el("span", `nd ${deployGapInfo.codeBehind ? "wait" : "live"}`));
+      const n = deployGapInfo.behindCount;
+      row.appendChild(el("span", "nm", `Live · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`));
+      here.appendChild(row);
+    }
+  }
+  sec.appendChild(here);
+
+  // the focused session's repo stands open; without a focused session, the first one the server reads
+  const focusRepo = focus?.cwd ? (focus.worktree?.repo ?? focus.repo ?? focus.cwd) : wp.repos[0]?.repo ?? null;
+  for (const R of wp.repos) sec.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+
+  // 2 — THE OTHER MACHINES: helpers by their fleet name, then each linked instance
+  const helpers = new Map<string, WorkplaceStand[]>();
+  for (const st of wp.stands ?? []) {
+    if (st.kind !== "helper-daemon" && st.kind !== "helper-instance") continue;
+    const key = st.name ?? "Helfer ohne Namen";
+    helpers.set(key, [...(helpers.get(key) ?? []), st]);
+  }
+  for (const [name, list] of helpers) {
+    const g = el("div", "grp");
+    g.appendChild(machineHead(name, "Helfer", "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht"));
+    for (const st of list) g.appendChild(standRow(st.kind === "helper-daemon" ? "Helfer-Dienst" : "Instanz", st));
+    sec.appendChild(g);
+  }
+  if (instanceSource && !helpers.size) {
+    // HELPER DEVICES NEVER VANISH SILENTLY (owner, 2026-10-06): a snapshot carries none (their data
+    // is stripped at the copy), so the group says so instead of being absent. The live fleet keeps
+    // its old picture: helpers stand when they report, and a fleet truly without any says nothing.
+    const g = el("div", "grp");
+    g.appendChild(machineHead("Helfer", "in der Testinstanz nicht gemeldet",
+      "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
+    sec.appendChild(g);
+  }
+  for (const st of (wp.stands ?? []).filter((x) => x.kind === "linked-instance")) {
+    const g = el("div", "grp");
+    g.appendChild(machineHead(st.name ?? "verlinkte Fleet", "verlinkt", "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));
+    g.appendChild(standRow(null, st));
+    sec.appendChild(g);
+  }
+  return sec;
+}
+
+function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string | null, wts: WtInfo | null,
+  bands: Map<number, string>, standOf: Map<string, WorkplaceStand>): HTMLElement {
+  const g = el("div", "grp");
+  g.dataset.repo = R.repo;
+  const hue = projectHue(R.repo);
+  const rows = R.worktrees ?? [];
+  const primary = rows.find((w) => w.primary) ?? null;
+  const lanes = rows.filter((w) => !w.primary);
+  const isOpen = (R.repo === focusRepo) !== rankeRepoFlip.has(R.repo);
+  const slotOf = (w: WorkplaceRow): SlotInfo | undefined => {
+    if (!w.session) return undefined;
+    const s = fleet[w.session.slot - 1];
+    return s?.cwd && (s.openedAt === undefined || s.openedAt === w.session.openedAt) ? s : undefined;
+  };
+  // the repo's head: chevron, name, how many branches, where it comes from, + Lane
+  const head = el("div", `zr repo ${isOpen ? "auf" : "zu"}`);
+  const fx = el("span", "fx");
+  fx.appendChild(icon("chevron"));
+  head.appendChild(fx);
+  const nm = el("span", "nm", baseName(R.repo));
+  const active = lanes.filter((w) => { const s = slotOf(w); return s && sessionActive(s.id); }).length;
+  const waiting = lanes.filter((w) => slotOf(w)?.awaiting === "owner").length;
+  nm.appendChild(el("span", "cnt", `${lanes.length} ${lanes.length === 1 ? "Zweig" : "Zweige"}`
+    + (isOpen ? "" : [active ? ` · ${active} arbeitet` : "", waiting ? ` · ${waiting} wartet auf dich` : ""].join(""))));
+  head.appendChild(nm);
+  const rt = el("span", "rt");
+  // WHERE IT COMES FROM: the repo's remotes as the local refs know them (no fetch, no network)
+  const pst = primary ? standOf.get(`worktree:${primary.path}`) : undefined;
+  if (pst?.remote === "none") {
+    const tag = el("span", "tag", "kein Remote");
+    tag.title = "Dieses Repo hat keinen Remote — ein eigener Zustand, kein Fehler";
+    tag.dataset.remote = "none";
+    rt.appendChild(tag);
+  } else if (Array.isArray(pst?.remote) && pst.remote.length) {
+    const r0 = pst.remote[0];
+    const d = r0.distance;
+    const tag = el("span", "tag", `${r0.name ?? ""}${d ? `${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}` : ""}`);
+    tag.dataset.remote = r0.name ?? "";
+    tag.title = pst.remote.map((r) => `${r.ref === null ? "unbekannt" : refShort(r.ref)}: ${r.head ? sha7(r.head) : "kein lokales Abbild"}`
+      + (r.distance ? ` · ${r.distance.ahead} vor, ${r.distance.behind} hinter` : "")
+      + (r.refAgeMs !== null ? ` · zuletzt abgeglichen ${agoDe(r.refAgeMs)}` : "")).join("\n")
+      + "\n— aus den lokalen Abbildern, ohne Netz";
+    rt.appendChild(tag);
+  }
+  const add = el("button", "rk-btn quiet ib") as HTMLButtonElement;
+  add.type = "button";
+  add.appendChild(icon("plus"));
+  add.title = "Neue Lane in diesem Repo — Name, Profil und Kontext im Gründungsfenster";
+  add.setAttribute("aria-label", add.title);
+  add.onclick = (e) => { e.stopPropagation(); openLaneFounding(R.repo); };
+  rt.appendChild(add);
+  head.appendChild(rt);
+  head.title = `${R.repo} — ${isOpen ? "zuklappen" : "aufklappen"}`;
+  rowTarget(head, () => { if (rankeRepoFlip.has(R.repo)) rankeRepoFlip.delete(R.repo); else rankeRepoFlip.add(R.repo); void renderBoard(); });
+  head.setAttribute("aria-expanded", String(isOpen));
+  g.appendChild(head);
+  if (!isOpen) return g;
+  if (R.worktrees === null) {
+    g.appendChild(el("div", "bstate", `Die Worktrees dieses Repos konnten nicht gelesen werden — ${R.reasons.map((r) => r.reason).join(", ") || "ohne Grund"}.`));
+    return g;
+  }
+  const rk = el("div", "rk");
+  const focusSession = focusSlot ? fleet[focusSlot - 1] : undefined;
+  const ownPath = focusSession?.worktree ? rows.find((w) => slotOf(w)?.id === focusSlot)?.path ?? null : null;
+  const branchOf = (name: string) => R.branches?.find((b) => b.branch === name) ?? null;
+  const targetOf = (w: WorkplaceRow) => w.target?.branch ?? w.base?.branch ?? "main";
+  const overhaul = branchOf("overhaul");
+  const hasOverhaul = !!overhaul || lanes.some((w) => targetOf(w) === "overhaul");
+  const onOver = hasOverhaul ? lanes.filter((w) => targetOf(w) === "overhaul") : [];
+  const onMain = lanes.filter((w) => !onOver.includes(w));
+  const wantsHere = (list: WorkplaceRow[]) => list.filter((w) => w.target.landed !== "yes").length;
+  const lands = (n: number) => {
+    const t = el("span", "tgt", `${n} ${n === 1 ? "landet" : "landen"} hier`);
+    t.title = `${n} ${n === 1 ? "Zweig will" : "Zweige wollen"} hierher landen`;
+    return t;
+  };
+  // the stem: main, its tip, the sessions in the main checkout as addresses, its test instance
+  const main = branchOf("main");
+  const mainHere = !!focusSession?.cwd && !focusSession.worktree && (focusSession.repo ?? focusSession.cwd) === R.repo;
+  const mrow = el("div", `zr base${mainHere ? " here path" : ownPath ? " path" : ""}`);
+  mrow.dataset.id = `${R.repo}#main`;
+  mrow.style.setProperty("--d", "0");
+  mrow.appendChild(el("span", "nd"));
+  mrow.appendChild(el("span", "nm", "main"));
+  const mrt = el("span", "rt");
+  const nMain = wantsHere(onMain) + (overhaul?.distance?.ahead ? 1 : 0);
+  if (nMain) mrt.appendChild(lands(nMain));
+  const msha = sha7(main?.head);
+  mrt.appendChild(el("span", "mono", msha ?? "?"));
+  if (!msha) (mrt.lastChild as HTMLElement).title = "Spitze von main nicht lesbar";
+  for (const s of fleet.filter((x) => x.cwd && !x.worktree && (x.repo ?? x.cwd) === R.repo)) {
+    const r = el("button", `ref${s.id === focusSlot ? " on" : ""}`, String(s.id)) as HTMLButtonElement;
+    r.type = "button";
+    r.style.setProperty("--proj-h", String(hue));
+    r.title = `Zu Session ${s.id} · ${laneLabel(s)} im Haupt-Checkout springen`;
+    r.onclick = (e) => { e.stopPropagation(); jumpTo(s.id); };
+    mrt.appendChild(r);
+  }
+  mrow.appendChild(mrt);
+  if (primary) mrow.appendChild(tiSquare(primary, false));
+  rk.appendChild(mrow);
+  const lines: HTMLElement[] = [];
+  if (primary && rankeOpen === `ti:${primary.path}`) lines.push(tiLine(R.repo, primary, null, standOf));
+  rk.append(...lines);
+  const sortKey = (w: WorkplaceRow): string => {
+    const s = slotOf(w);
+    const ref = s ? bands.get(s.id) ?? String(s.id) : "";
+    return s ? `0${ref.padStart(6, "0")}` : `1${w.branch ?? w.path}`;
+  };
+  const fold = lanes.length > 12 && !rankeFoldOpen.has(R.repo) ? lanes.filter((w) => !slotOf(w)) : [];
+  const branchRows = (list: WorkplaceRow[], d: number, parent: string) => {
+    for (const w of [...list].filter((x) => !fold.includes(x)).sort((a, b) => sortKey(a).localeCompare(sortKey(b))))
+      rk.append(...laneRow(R, w, slotOf(w), d, parent, focusSlot, bands, hue, standOf, wts));
+  };
+  branchRows(onMain, 1, `${R.repo}#main`);
+  if (hasOverhaul) {
+    const orow = el("div", `zr base${ownPath && onOver.some((w) => w.path === ownPath) ? " path" : ""}`);
+    orow.dataset.id = `${R.repo}#overhaul`;
+    orow.dataset.p = `${R.repo}#main`;
+    orow.style.setProperty("--d", "1");
+    orow.appendChild(el("span", "nd"));
+    orow.appendChild(el("span", "nm", "overhaul"));
+    const ort = el("span", "rt");
+    const nOver = wantsHere(onOver);
+    if (nOver) ort.appendChild(lands(nOver));
+    const d = overhaul?.distance;
+    if (d) {
+      const v = el("span", "", d.ahead || !d.behind ? `${d.ahead} vor main` : `${d.behind} hinter main`);
+      v.title = `overhaul: ${d.ahead} Commits vor main, ${d.behind} hinter · Spitze ${sha7(overhaul?.head) ?? "unbekannt"}`;
+      ort.appendChild(v);
+    }
+    // the tip's commit only where the column asks for stands — here the distance is the answer
+    if (rankeMode === "stand" || !d) ort.appendChild(el("span", "mono", sha7(overhaul?.head) ?? "?"));
+    orow.appendChild(ort);
+    rk.appendChild(orow);
+    branchRows(onOver, 2, `${R.repo}#overhaul`);
+  }
+  if (fold.length) {
+    const f = el("div", "zr zf");
+    f.dataset.id = `${R.repo}#fold`;
+    f.dataset.p = hasOverhaul ? `${R.repo}#overhaul` : `${R.repo}#main`;
+    f.style.setProperty("--d", hasOverhaul ? "2" : "1");
+    f.append(el("span", "nd leer"), el("span", ""), el("span", "nm leer", `${fold.length} ohne Session`));
+    const chev = el("span", "fc");
+    chev.appendChild(icon("chevron"));
+    f.appendChild(chev);
+    f.title = "Worktrees ohne Session aufklappen";
+    rowTarget(f, () => { rankeFoldOpen.add(R.repo); void renderBoard(); });
+    rk.appendChild(f);
+  }
+  g.appendChild(rk);
+  return g;
+}
+
+function jumpTo(slot: number): void {
+  if (!showSlot(slot)) return;
+  // on the phone Info is a page over the session: after a jump the session stands in the picture
+  // (rechter-tab-notiz.md §3d), as after a pick in the session list
+  if (isMobile()) setBoard(false);
+  else void renderBoard();
+}
+
+function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: number, parent: string,
+  focusSlot: number | null, bands: Map<number, string>, hue: number, standOf: Map<string, WorkplaceStand>,
+  wts: WtInfo | null): HTMLElement[] {
+  const here = !!s && s.id === focusSlot;
+  const ref = s ? bands.get(s.id) ?? String(s.id) : "";
+  const working = !!s && sessionActive(s.id);
+  const broken = !!s && (s.stalled || s.agent === "no-agent" || s.agent === "no-pane");
+  const node = !s ? "leer" : broken ? "bad" : s.awaiting === "owner" ? "wait" : working ? "live" : "";
+  const word = !s ? "kein Gespräch in diesem Worktree" : broken ? "hängt"
+    : s.awaiting === "owner" ? "wartet auf dich" : s.awaiting === "main" ? "wartet auf MAIN"
+    : working ? "arbeitet" : s.lastOutput > 0 ? `still seit ${agoDe(Date.now() - s.lastOutput).replace(/^vor /, "")}` : "still";
+  const open = !s && rankeOpen === `wt:${w.path}`;
+  const flash = rankeFlash && rankeFlash.path === w.path && rankeFlash.until > Date.now();
+  const row = el("div", `zr zw${here ? " here path" : ""}${open ? " open" : ""}${flash ? " flash" : ""}`);
+  row.dataset.id = w.path;
+  row.dataset.p = parent;
+  row.dataset.node = node || "still";
+  if (s) row.dataset.slot = String(s.id);
+  row.style.setProperty("--d", String(d));
+  const stand = standOf.get(`worktree:${w.path}`);
+  const headSha = sha7(w.head) ?? sha7(stand?.head);
+  let name: HTMLElement;
+  if (rankeMode === "branch") {
+    name = el("span", "nm mono br", w.branch ?? "(detached)");
+  } else if (rankeMode === "stand") {
+    name = el("span", "nm mono st");
+    name.appendChild(document.createTextNode(headSha ?? "unbekannt"));
+    const dist = w.distance;
+    if (dist?.behind) name.appendChild(el("span", "q", ` ↓${dist.behind}`));
+  } else {
+    // without a session the ring of the node says so; the words of the branch tell such worktrees apart
+    name = el("span", `nm${s ? "" : " leer"}`, s ? laneLabel(s) : laneWords(w.branch));
+  }
+  rowCells(row, node, ref, hue, name);
+  const up = el("span", "up", `${w.distance?.ahead ? `↑${w.distance.ahead}` : ""}${s?.git?.dirty ? ` •${s.git.dirty}` : ""}`.trim());
+  up.title = [w.distance ? `${w.distance.ahead} Commits vor ${w.base?.branch ?? "der Basis"}, ${w.distance.behind} hinter` : "Abstand zur Basis unbekannt",
+    s?.git ? `${s.git.dirty} ungesicherte Dateien` : ""].filter(Boolean).join(" · ");
+  row.appendChild(up);
+  row.appendChild(checkBeads(w));
+  row.appendChild(tiSquare(w, here));
+  const where = `${w.branch ?? "(detached)"} · läuft auf ${headSha ?? "unbekannt"}${w.target ? ` · landet in ${w.target.branch}` : ""}`;
+  row.title = !s ? `Kein Gespräch in diesem Worktree · ${where} — Klick zeigt Öffnen und Schließen`
+    : here ? `${ref} · ${laneLabel(s)} · ${word} — diese Session · ${where}`
+    : `${ref} · ${laneLabel(s)} · ${word} — Klick springt hin wie in der Leiste · ${where}`;
+  if (s && !here) rowTarget(row, () => jumpTo(s.id));
+  else if (!s) {
+    rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });
+    row.setAttribute("aria-expanded", String(open));
+  }
+  const out: HTMLElement[] = [row];
+  if (open) {
+    const line = el("div", "zd zx");
+    line.dataset.for = w.path;
+    const tx = el("span", "tx");
+    tx.appendChild(el("span", "mono", w.branch ?? "(detached)"));
+    const wr = wts && wts.repo === R.repo ? wts.worktrees.find((x) => x.path === w.path) : undefined;
+    tx.appendChild(document.createTextNode(` · ↑${w.distance?.ahead ?? "?"}${wr ? ` · ${wr.dirty ? `${wr.dirty} ungesichert` : "nichts ungesichert"}` : ""}`));
+    tx.title = w.path;
+    line.appendChild(tx);
+    out.push(line);
+    if (wr && wts) {
+      const box = el("div", "zd zx2");
+      box.append(...worktreeControls(wts, wr));
+      out.push(box);
+    } else {
+      // only the focused session's repo carries the risk facts closing needs; opening works anywhere
+      const box = el("div", "zd zx2");
+      const acts = el("div", "rk-acts");
+      const ob = el("button", "rk-btn primary", "Öffnen") as HTMLButtonElement;
+      ob.title = "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
+      ob.onclick = async (e) => {
+        e.stopPropagation();
+        if (laneReqBusy) return;
+        laneReqBusy = true;
+        try {
+          const r = await post("/api/lanes", { repo: R.repo, attach: w.path });
+          const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+          if (!r.ok) { alert(j.error ?? "open failed"); return; }
+          await refresh();
+          loadWorkplaces(true);
+          if (j.slot) showSlot(j.slot);
+        } finally { laneReqBusy = false; }
+      };
+      acts.appendChild(ob);
+      box.appendChild(acts);
+      box.appendChild(el("div", "hint", "Schließen und die Notiz: in einer Session dieses Repos, dort steht, was verloren ginge."));
+      out.push(box);
+    }
+  }
+  if (rankeOpen === `ti:${w.path}`) out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
+  return out;
+}
+
+// The Ranke's lines: only vertical in the parent's column and horizontal to the node, 1 px. The own
+// path (main → overhaul → the focused lane) in ink, everything else in the quiet edge. Drawn after
+// the column is in the document, since it needs the rows' positions.
+export function drawRankeLines(root: HTMLElement): void {
+  for (const rk of root.querySelectorAll<HTMLElement>(".rk")) {
+    rk.querySelector(":scope > svg")?.remove();
+    const tb = rk.getBoundingClientRect();
+    if (!tb.height) continue;
+    const mid = (row: Element): [number, number] | null => {
+      const n = row.querySelector(":scope > .nd")?.getBoundingClientRect();
+      return n ? [Math.round(n.left + n.width / 2 - tb.left) + 0.5, Math.round(n.top + n.height / 2 - tb.top)] : null;
+    };
+    let quiet = "", ink = "";
+    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr[data-p]")) {
+      const par = [...rk.querySelectorAll<HTMLElement>(":scope > .zr[data-id]")].find((x) => x.dataset.id === row.dataset.p);
+      const a = par ? mid(par) : null, b = mid(row);
+      if (!a || !b) continue;
+      const d = `M${a[0]} ${a[1] + 4}V${b[1]}H${b[0] - 4}`;
+      if (row.classList.contains("path") && par!.classList.contains("path")) ink += d; else quiet += d;
+    }
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    for (const [d, cls] of [[quiet, "q"], [ink, "i"]] as const) {
+      if (!d) continue;
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", d);
+      p.setAttribute("class", cls);
+      svg.appendChild(p);
+    }
+    rk.prepend(svg);
   }
 }
 

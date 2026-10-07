@@ -1,3 +1,4 @@
+import type { DeployGap as Gap } from "../src/protocol";
 // The two deploy facts on the OWNER's poll: is the running server the committed code, and is the
 // built bundle the committed client. Both existed before this family — but only on /api/steward/*,
 // so the one principal who can act on them could not see them.
@@ -21,10 +22,6 @@ const TMP = process.env.TMPDIR ?? "/tmp";
 const DEPLOY_FACTS_TICK_MS = "2000";
 const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 
-interface Gap {
-  bootHead: string | null; head: string | null; behindCount: number | null;
-  codeBehind: boolean | null; codeBehindUnknown: string[] | null;
-}
 interface Bundle {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
   hubJsMtime: number | null;
@@ -99,6 +96,8 @@ export async function run(): Promise<void> {
   const sideEffect = (spec: string): string => `import ${JSON.stringify(spec)};`;
   writeFileSync(`${FIX}/src/client.ts`, `${sideEffect(WAVES_SPEC)}\n// source`);
   git("init", "-q");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.invalid");
   commit("server.ts", "// v1");
 
   // ===== §1 the facts reach the owner's own poll at all — the whole point of this family =====
@@ -130,6 +129,8 @@ export async function run(): Promise<void> {
   // DOC-ONLY FIRST, on purpose: once a server-code commit is in the range it stays in it, so the
   // "a doc commit is not a deploy" claim can only be made while the range holds nothing else.
   commit("notes.md", "# just docs");
+  const firstLand = spawnSync("git", ["-C", FIX, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  git("notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "fleet/first", actor: { task: "aabbccdd" }, at: 1000 }), firstLand);
   {
     const f = await settle((x) => x.deployGap?.behindCount === 1);
     check("§2 a commit after boot is counted",
@@ -139,12 +140,35 @@ export async function run(): Promise<void> {
   }
   // the import is what makes merge-prompt.ts server code in §2b below; it resolves to nothing yet
   commit("server.ts", `${sideEffect(MERGE_SPEC)}\n// v2`);
+  const secondLand = spawnSync("git", ["-C", FIX, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  git("notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "fleet/second", actor: { task: "eeff0011" }, at: 2000, token: "SYNTHETIC_LAND_SECRET" }), secondLand);
   {
     const f = await settle((x) => x.deployGap?.codeBehind === true);
     check("§2 a server-code commit IS a deploy — this is the line the owner never saw",
       f.deployGap?.codeBehind === true && f.deployGap.behindCount === 2, JSON.stringify(f.deployGap));
+    const landed = await settle((x) => x.deployGap?.lands?.length === 2);
+    check("§2 deploy gap projects exactly the two fleet/land notes in newest-first order", JSON.stringify(landed.deployGap?.lands) === JSON.stringify([
+      { sha: secondLand, branch: "fleet/second", task: "eeff0011", at: 2000, reasons: [] },
+      { sha: firstLand, branch: "fleet/first", task: "aabbccdd", at: 1000, reasons: [] },
+    ]) && landed.deployGap?.truncated === false, JSON.stringify(landed.deployGap));
+    check("§2 deploy gap projection excludes unrelated raw note keys", !JSON.stringify(landed.deployGap).includes("SYNTHETIC_LAND_SECRET"));
     check("§2 the boot commit is still named, so the gap is attributable and not just a count",
       /^[0-9a-f]{40}$/.test(f.deployGap?.bootHead ?? ""), JSON.stringify(f.deployGap?.bootHead));
+  }
+
+  {
+    git("notes", "--ref=fleet/land", "add", "-f", "-m", "malformed fixture note", firstLand);
+    const malformed = await settle((x) => x.deployGap?.lands?.some((l) => l.sha === firstLand && l.branch === null) === true);
+    const row = malformed.deployGap?.lands?.find((l) => l.sha === firstLand);
+    check("§2 malformed land note stays a named SHA with null fields and reasons", row?.branch === null && row.task === null && row.at === null
+      && row.reasons.length === 3, JSON.stringify(row));
+    for (let i = 0; i < 21; i++) {
+      git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", `land fixture ${i}`);
+      git("notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "fleet/capped", task: "11223344", at: 3000 + i }), "HEAD");
+    }
+    const capped = await settle((x) => x.deployGap?.truncated === true);
+    check("§2 land list has a hard twenty-row cap and explicit truncation", capped.deployGap?.lands?.length === 20 && capped.deployGap.truncated === true,
+      JSON.stringify({ count: capped.deployGap?.lands?.length, truncated: capped.deployGap?.truncated }));
   }
 
   // ===== §2b the suites' own code is not the server's =====
@@ -249,6 +273,7 @@ export async function run(): Promise<void> {
     const f = await settle((x) => x.deployGap != null && x.deployGap.bootHead === null);
     check("§4 no git repo → the gap is UNKNOWN (null), never a reassuring false",
       f.deployGap?.bootHead === null && f.deployGap.codeBehind === null && f.deployGap.behindCount === null
+        && f.deployGap.lands === null && f.deployGap.truncated === null && f.deployGap.reasons.some((r) => r.reason === "boot-head-unreadable")
         // an unmeasured range names no unknown paths either: an EMPTY list would read as "we looked
         // and everything classified", which is the same reassuring lie one level down
         && f.deployGap.codeBehindUnknown === null,

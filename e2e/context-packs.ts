@@ -20,6 +20,7 @@ import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from ".
 import { CONTEXT_MANIFEST_PATH, planRepoContext, readContextManifest, taskContextTriggers } from "../context-manifest";
 import { planContext } from "../context-plan";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
+import { packIdFassung, standSincePreview, type FoundingPlanPack, type FoundingSessionAgents } from "../src/protocol";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -105,6 +106,22 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
     check("context packs: real seed manifest resolves", real.verdict === "pass" && real.issues.length === 0,
       issueSummary(real));
 
+    const metadataCases = [
+      { ...CONTEXT_PACKS[0], group: "unknown-group" },
+      { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], sorte: "prose" }] },
+      { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0], positions: { lane: "box", main: "elsewhere", orchestratorin: "ausleihe" } }] },
+      { ...CONTEXT_PACKS[0], sources: [CONTEXT_PACKS[0].sources[0], CONTEXT_PACKS[0].sources[0]] },
+      { ...CONTEXT_PACKS[0], sources: [{ path: "AGENTS.md", anchor: "## Portable operating contract" },
+        { ...CONTEXT_PACKS[0].sources[0], id: "source-1" }] },
+    ];
+    check("context packs: invalid group, sorte, position and duplicate part IDs are rejected",
+      metadataCases.every((pack) => validateContextPacks({ packs: [pack], repo: fixture.facts!, capabilities }).verdict === "fail"));
+    const arrayPosition = { ...CONTEXT_PACKS[0], sources: [{ ...CONTEXT_PACKS[0].sources[0],
+      positions: { ...CONTEXT_PACKS[0].sources[0].positions, lane: ["box"] } }] };
+    const arrayPositionResult = validateContextPacks({ packs: [arrayPosition], repo: fixture.facts, capabilities });
+    check("context packs: an array-valued position is refused without string coercion",
+      arrayPositionResult.verdict === "fail" && hasCode(arrayPositionResult, "SOURCE_SHAPE_INVALID"),
+      issueSummary(arrayPositionResult));
     const missingPath = clonePacks();
     missingPath[0].sources[0].path = "docs/not-a-tracked-context-source.md";
     const missingPathResult = validateContextPacks({ packs: missingPath, repo: fixture.facts, capabilities });
@@ -292,7 +309,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       check("context packs: a Jev lane gets the Verwendungsform anchor",
         jevTriggers.includes("jev-use") && jevPack !== undefined
           && Array.isArray(jevPack.sources)
-          && JSON.stringify(jevPack.sources) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
+          && JSON.stringify(jevPack.sources.map(({ path, anchor }) => ({ path, anchor }))) === JSON.stringify([{ path: "docs/jev.md", anchor: "## Verwendungsform" }]),
         `selected=[${jevPlan.selected.map((pack) => pack.id).join(",")}]`);
       check("context packs: a lane without Jev omits only the Jev trigger",
         !ordinaryTriggers.includes("jev-use")
@@ -329,6 +346,27 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         `selected=[${plan.selected.map((pack) => pack.id).join(",")}]`
           + ` omitted=[${plan.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`
           + ` sources=${JSON.stringify(selection?.sources ?? null)}`);
+
+      // THE REAL VERSIONED CODEX PACK (card 91b52b3a): its fassung is its id's suffix, its harness list
+      // is codex alone, and it states no model — a pack schema field for one does not exist. The anchor
+      // is the section f0081f9f corrected (7f2b334b), which the validator above already found present.
+      const CODEX_PACK = "codex-native-context-v1";
+      const codexDecl = manifest.packs.find((pack): pack is Record<string, unknown> =>
+        !!pack && typeof pack === "object" && (pack as Record<string, unknown>).id === CODEX_PACK);
+      check("context manifest: codex-native-context-v1 declares its fassung by id, codex alone as harness, and no model",
+        !!codexDecl && packIdFassung(CODEX_PACK) === 1
+          && JSON.stringify(codexDecl.harnesses) === JSON.stringify(["codex"])
+          && !["model", "models", "version", "provider"].some((key) => key in codexDecl)
+          && JSON.stringify(codexDecl.sources) === JSON.stringify([{ path: "AGENTS.md", anchor: "### Context self-management (§6, §8)" }]),
+        JSON.stringify(codexDecl ?? null));
+      const forHarness = (harness: string) => planRepoContext({ manifest, repo: { trackedPaths, sourceBytes },
+        facts: { ...repoFacts, harness, triggers: ordinaryTriggers } });
+      const codexPlan = forHarness("codex");
+      const others = ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container"].map((harness) => ({ harness,
+        why: forHarness(harness).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null }));
+      check("context manifest: a codex founding selects the Codex pack; claude, every pi and container omit it as harness-unsupported",
+        codexPlan.selected.some((pack) => pack.id === CODEX_PACK) && others.every((row) => row.why === "harness-unsupported"),
+        `codex=[${codexPlan.selected.map((pack) => pack.id).join(",")}] others=${JSON.stringify(others)}`);
     }
   }
 
@@ -394,11 +432,13 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
   writeFileSync(join(fixture, "AGENTS.md"), "# Target contract\n\n## Repo contract\nProve with the repo's own chain.\n");
   writeFileSync(join(fixture, "docs", "promise.md"), "# Promise\n\n## Product promise\nThe first minute must feel good.\n");
   writeFileSync(join(fixture, ".fleet", "context-packs.json"), JSON.stringify([
-    packEntry({ id: "promise-anchor", useWhen: "The repo's own contract, before the first act.", sources: [
-      { path: "AGENTS.md", anchor: "## Repo contract" },
-      { path: "docs/promise.md", anchor: "## Product promise" }] }),
+    packEntry({ id: "promise-anchor", group: "vor-arbeiten", useWhen: "The repo's own contract, before the first act.", sources: [
+      { id: "promise-anchor.contract", path: "AGENTS.md", anchor: "## Repo contract", sorte: "anleitung", positions: { lane: "box", main: "box", orchestratorin: "ausleihe" } },
+      { id: "promise-anchor.promise", path: "docs/promise.md", anchor: "## Product promise", sorte: "wissen", positions: { lane: "ausleihe", main: "box", orchestratorin: "ausleihe" } }] }),
     packEntry({ id: "broken-pointer", scope: "repo-contract",
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
+    packEntry({ id: "promise-codex-v1", useWhen: "The repo's own contract, as a Codex session reads it.", harnesses: ["codex"],
+      sources: [{ path: "AGENTS.md", anchor: "## Repo contract" }] }),
   ], null, 2));
   gitIn("init", "-q", "-b", "b2a-founding-packs");
   gitIn("config", "user.email", "t@t");
@@ -441,12 +481,41 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       `${noRepo.status}:${noRepoText} | ${badMode.status}:${badModeText} | ${badHarness.status}:${badHarnessText}`);
 
     const plan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude`);
-    const selected = Array.isArray(plan.body.selected) ? plan.body.selected as { id: string; bytes?: number; source?: string }[] : [];
+    const selected = Array.isArray(plan.body.selected) ? plan.body.selected as FoundingPlanPack[] : [];
     const omitted = Array.isArray(plan.body.omitted) ? plan.body.omitted as { id: string; reason?: string }[] : [];
     const promiseRow = selected.find((pack) => pack.id === "promise-anchor");
     check("founding plan: the repo pack is selected with its declared bytes and its source named",
       plan.status === 200 && !!promiseRow && promiseRow.bytes === 900 && promiseRow.source === "repo-manifest",
       JSON.stringify(plan.body).slice(0, 300));
+    const file = plan.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: the session file and repo part metadata reach the window with exact bytes",
+      !!file && file.bytes === Buffer.byteLength(file.text) && file.text.includes("## Rolle")
+      && file.text.includes("The first minute must feel good.") && promiseRow?.group === "vor-arbeiten"
+      && promiseRow.parts?.map((part) => part.id).join(",") === "promise-anchor.contract,promise-anchor.promise"
+      && promiseRow.parts.every((part) => part.ort === "box" && part.sha256?.length === 64 && part.bytes === Buffer.byteLength(part.content ?? "")));
+    const switched = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&parts=promise-anchor.contract`);
+    const switchedFile = switched.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: parts switches one source without losing the pack and refuses unknown IDs",
+      switched.status === 200 && !!switchedFile && !switchedFile.text.includes("The first minute must feel good.")
+      && switchedFile.parts.find((part) => part.id === "promise-anchor.promise")?.ort === "ausleihe"
+      && (await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&parts=unknown`)).status === 400);
+    // the window's pack switches (card 569f8bb5): packs= renders a subset of plan.selected, the size
+    // is the renderer's own, and an id the plan did not select is refused like an unknown part
+    const others = selected.filter((pack) => pack.id !== "promise-anchor").map((pack) => pack.id);
+    const without = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&packs=${others.join(",")}`);
+    const withoutFile = without.body.sessionAgents as FoundingSessionAgents | undefined;
+    const unknownPack = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&packs=unknown-pack`);
+    check("founding plan: packs= renders without a left-out pack, the file shrinks, and an unknown pack id is 400",
+      without.status === 200 && !!file && !!withoutFile && withoutFile.bytes === Buffer.byteLength(withoutFile.text)
+      && withoutFile.bytes < file.bytes && !withoutFile.text.includes("The first minute must feel good.")
+      && !withoutFile.parts.some((part) => part.packId === "promise-anchor")
+      && unknownPack.status === 400 && JSON.stringify(unknownPack.body).includes("packs contains an unknown pack id"),
+      `${without.status} ${file?.bytes}→${withoutFile?.bytes} unknown=${unknownPack.status}`);
+    const orchard = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&role=orchestratorin`);
+    const orchardFile = orchard.body.sessionAgents as FoundingSessionAgents | undefined;
+    check("founding plan: the orchestratorin role has its own card without a program footer",
+      orchard.status === 200 && orchardFile?.text.includes("--- ROLLE --- Orchestratorin") === true
+      && !orchardFile.text.includes("HOW THIS PROGRAM IS EXECUTED"));
     const manifestIds = ["promise-anchor", "broken-pointer"];
     const namedOnce = manifestIds.every((id) =>
       selected.filter((pack) => pack.id === id).length + omitted.filter((pack) => pack.id === id).length === 1);
@@ -457,6 +526,30 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
     check("founding plan: the broken pointer is an omitted row naming its own reason",
       !!brokenRow && brokenRow.reason === "manifest-invalid",
       JSON.stringify(brokenRow ?? null));
+    // THE PREVIEW'S FACTS (card 91b52b3a): what the window shows per pack is the plan's own — anchors
+    // and the observed source hash as the receipt will write them, the declared harnesses and triggers.
+    const previewRow = promiseRow as FoundingPlanPack | undefined;
+    check("founding plan: a selected row carries its anchors, its observed source hash, its allowed agents and triggers; the plan its HEAD and plannedAt",
+      !!previewRow && JSON.stringify(previewRow.anchors) === JSON.stringify([
+        { path: "AGENTS.md", anchor: "## Repo contract" }, { path: "docs/promise.md", anchor: "## Product promise" }])
+        && /^[a-f0-9]{64}$/.test(previewRow.sourceHash ?? "")
+        && JSON.stringify(previewRow.harnesses) === JSON.stringify(["claude", "codex", "pi"])
+        && JSON.stringify(previewRow.triggers) === JSON.stringify(["always"])
+        && /^[a-f0-9]{40}$/.test(String(plan.body.head)) && typeof plan.body.plannedAt === "number",
+      JSON.stringify({ previewRow, head: plan.body.head, plannedAt: plan.body.plannedAt }));
+    // AN AGENT CHANGE RE-PLANS: the codex-only pack is selected for codex and an explained omission for
+    // claude (naming whom it is for), and the shared pack keeps one source state across both — a harness
+    // is no fact about a source.
+    const codexPlan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=codex`);
+    const codexSelected = Array.isArray(codexPlan.body.selected) ? codexPlan.body.selected as FoundingPlanPack[] : [];
+    const codexRow = codexSelected.find((pack) => pack.id === "promise-codex-v1");
+    const claudeOmits = omitted.find((pack) => pack.id === "promise-codex-v1") as { reason?: string; harnesses?: string[] } | undefined;
+    check("founding plan: an agent change re-plans — the codex pack is selected for codex and omitted for claude naming codex",
+      codexPlan.status === 200 && !!codexRow && JSON.stringify(codexRow.harnesses) === JSON.stringify(["codex"])
+        && !selected.some((pack) => pack.id === "promise-codex-v1")
+        && claudeOmits?.reason === "harness-unsupported" && JSON.stringify(claudeOmits.harnesses) === JSON.stringify(["codex"])
+        && codexSelected.find((pack) => pack.id === "promise-anchor")?.sourceHash === previewRow?.sourceHash,
+      JSON.stringify({ codexRow, claudeOmits }));
     const seedOmissions = ["portable-core", "verify-e2e"].map((id) =>
       omitted.find((pack) => pack.id === id));
     check("founding plan: the Fleet seeds stay named omissions on a foreign target repo",
@@ -544,6 +637,12 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
           && row.deliveredBytes === new TextEncoder().encode(delivered).byteLength
           && row.repo === realpathSync(fixture) && row.renderer === "v2",
         JSON.stringify(row ?? null));
+      // PREVIEW -> START -> RECEIPT, nothing moved in between: the receipt names the same source state
+      const unmoved = row ? standSincePreview({ head: String(plan.body.head), packs: previewRow ? [previewRow] : [] }, row, ["promise-anchor"]) : null;
+      check("founding packs: preview -> start -> receipt with no source change in between is `same` on the pack and the HEAD",
+        !!unmoved && unmoved.head === "same" && unmoved.packs.length === 1 && unmoved.packs[0]!.stand === "same"
+          && row!.selected[0]!.sourceHash === previewRow?.sourceHash,
+        JSON.stringify(unmoved));
       check("founding packs: the delivered founding text carries the anchor block and the chosen pack id",
         delivered.includes("ContextPlan v2 anchors") && delivered.includes("promise-anchor")
           && delivered.includes("AGENTS.md | ## Repo contract"),
@@ -619,6 +718,41 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
           && !!wtRow && wtRow.selected.length === 1 && wtRow.selected[0]!.id === "promise-anchor"
           && wtRow.branch === wtBody.branch,
         `${wt.status} ${JSON.stringify(wtBody)} row=${JSON.stringify(wtRow)}`);
+    }
+
+    // --- SOURCE CHANGED between preview and start: the window previewed `plan`, then a commit moved
+    // the pack's source before the start was pressed. The receipt must name the NEW state the delivery
+    // stamped (== a fresh plan's), and the comparison must say `changed` — never the preview's state.
+    writeFileSync(join(fixture, "docs", "promise.md"), "# Promise\n\n## Product promise\nThe first minute must feel good, and the second.\n");
+    // only the one source: the lane foundings above may have left worktrees the fixture must not adopt
+    gitIn("add", "docs/promise.md");
+    const moved = gitIn("commit", "-qm", "move the promise between preview and start").status === 0;
+    // a plan read AFTER the move: what the delivery must now stamp
+    const afterMove = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude`);
+    const fresh = (Array.isArray(afterMove.body.selected) ? afterMove.body.selected as FoundingPlanPack[] : [])
+      .find((pack) => pack.id === "promise-anchor");
+    const changedSlot = await freeSlot();
+    if (!moved || changedSlot === null) {
+      check("founding packs — PROBE: the source moved by a commit and a free slot exists for the changed-source founding", false,
+        `moved=${moved} slot=${changedSlot}`);
+    } else {
+      opened.push(changedSlot);
+      const before = (await receipts()).receipts.filter((r) => r.slot === changedSlot).length;
+      const founding = await post(`/api/slots/${changedSlot}/open`, { cwd: fixture, packs: ["promise-anchor"] });
+      const body = await founding.json() as { packsDelivered?: boolean };
+      const rows = (await receipts()).receipts.filter((r) => r.slot === changedSlot);
+      const row = rows.length === before + 1 ? rows.at(-1)! : null;
+      const originalPreview = { head: String(plan.body.head),
+        packs: (Array.isArray(plan.body.selected) ? plan.body.selected as FoundingPlanPack[] : []).filter((pack) => pack.id === "promise-anchor") };
+      const stand = row ? standSincePreview(originalPreview, row, ["promise-anchor"]) : null;
+      check("founding packs: a source changed between preview and start — the receipt names the NEW state and the comparison says changed",
+        founding.ok && body.packsDelivered === true && !!row && !!stand && stand.head === "changed"
+          && stand.packs[0]?.stand === "changed" && stand.packs[0]?.preview === previewRow?.sourceHash
+          && row.selected[0]?.sourceHash === fresh?.sourceHash && fresh?.sourceHash !== previewRow?.sourceHash
+          && row.head === String(afterMove.body.head),
+        JSON.stringify({ stand, receiptHash: row?.selected[0]?.sourceHash, freshHash: fresh?.sourceHash, receiptHead: row?.head }));
+      await kill(changedSlot);
+      opened.splice(opened.indexOf(changedSlot), 1);
     }
   }
 

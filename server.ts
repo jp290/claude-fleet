@@ -1,5 +1,12 @@
+import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
+import { createSubscriptionReader } from "./codex-quota";
+import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
+import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
@@ -91,14 +98,15 @@ import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
+  type HelperReposReading, HELPER_REPOS_BYTES_MAX,
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, CODEX_CLI_VERSION_RE,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, instanceSourceFrom, CODEX_CLI_VERSION_RE,
   type CodexCliSnapshot, type CodexCliReason,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
-  normalizeRolePresets, type RolePresets,
+  normalizeRolePresets, type RolePresets, type FoundingPlanOmission, type FoundingPlanPack,
 } from "./src/protocol";
 import { opsPollRow, opsPollVisible } from "./src/opsevents";
 import { laneTitleOf } from "./src/suitemeter";
@@ -157,10 +165,12 @@ import {
   type ProgramInboxKind, type ProgramInboxEntry, type ProgramInbox,
   type ProgramFoundingMode, type ProgramFoundingProfileKind, type ProgramFoundingIdentity,
   type ProgramFoundingV2, type ProgramFounding, type ProgramFoundingRead, type ProgramContent,
-  type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext,
+  type ProgramValidation, type ProgramDigest, type DispatchSpawn, type SlotContext, type CodexPermissions, type SlotPermissions,
+  CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
+  type WorkplaceCheckObservation, type WorkplaceStandSource,
   type SlotStreamOccupant, type TaskCriterionPart,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, type MemoryGrant, type MemoryGrantView,
-  loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
+  helperReposFrom, loadReportDelegate, type ReportDelegate, type FleetReportDecider, remoteControlName,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -172,7 +182,7 @@ import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/aud
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
-import { STATIC, bundleV, staticResponse, finishHttp, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
+import { STATIC, bundleV, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
   TREE_CAP, fileWritePath, dirEntries, type DirEntry } from "./server/dir-explorer";
@@ -214,6 +224,11 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // every fleet-report, twice: one `open` row with the full text when it is filed and one `decision`
 // row when it is judged. Append-only — the live list in fleet.json is a bounded tail
 // (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
+const PERF_FILE = `${import.meta.dir}/perf.jsonl`;
+function rWithoutAt(r: PerfRecord & { at: number }): unknown {
+  const { at, ...record } = r;
+  return record;
+}
 const FLEET_REPORT_LEDGER_FILE = `${import.meta.dir}/fleet-reports.jsonl`;
 const RULEBOOK_AB_LEDGER_FILE = `${import.meta.dir}/rulebook/ab.jsonl`;
 // every queue row that went terminal or was evicted, WHOLE — the bound in capTasks retires terminal
@@ -462,6 +477,8 @@ interface HarnessCommand {
 
 interface Harness {
   id: string;
+  permissions?: { sandbox: CodexPermissions["sandbox"][]; approval: CodexPermissions["approval"][];
+    default: Readonly<CodexPermissions> };
   // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
   // time (modelOf/effortOf against THIS adapter's rules) — the same discipline slotCmd documents.
   // `container`/`containerContext` are ALREADY RESOLVED here — never null, never the slot's raw
@@ -469,13 +486,6 @@ interface Harness {
   // pair exactly once, so the spawn line and the row an owner reads on /api/sessions can never
   // disagree about which box and which daemon this session is in. Adapters with no container
   // concept ignore both, the same way an adapter with no effort concept ignores `effort`.
-  //
-  // `cwd` is the slot's OWN working directory, and it is here for one adapter only: codex
-  // persists per-path TRUST, so its spawn line writes the trust entry for exactly this path
-  // (CODEX_HARNESS.spawnCmd). It is the pane's real cwd — tmux is given the same value with `-c`,
-  // so the trust entry and the shell can never disagree about which directory this is. Adapters
-  // without that need ignore it, the same way every adapter but the container one ignores
-  // `container`.
   //
   // `browserMcp` is the lane's MCP profile, already resolved by ensureSlot: false only for a lane that
   // did not ask for a browser (Slot.browser). An adapter whose `browserProfile` is not "apply" ignores it.
@@ -485,8 +495,8 @@ interface Harness {
   // claude's, and a foreign harness never receives a name it could put on its line.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
-    context: SlotContext | null; rulebookRole: "main" | "orchestrator" | null;
-    remoteName: string | null; webSearch?: boolean;
+    context: SlotContext | null; permissions: SlotPermissions | null; rulebookRole: "main" | "orchestrator" | null;
+    remoteName: string | null; webSearch?: boolean; projectDocMaxBytes?: number;
     // the slot's lane branch from Fleet's own record (Slot.worktree.branch), null for a non-lane.
     // Only pi-zai reads it: its fence grants writing that ONE ref, never one read from the worktree.
     laneBranch?: string | null }): string;
@@ -1350,7 +1360,12 @@ const CONTAINER_CONTEXT = (() => {
 // real, checkable answers about a docker daemon on THIS box, while an invented instance name would
 // be a false identity claim on the one field a second instance is supposed to be told apart by.
 const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
-const INSTANCE: InstanceIdentity = { name: INSTANCE_NAME };
+// …AND, ON A TEST INSTANCE ONLY, WHICH BRANCH AND STAND IT SHOWS (ranke-notiz R11): measured by
+// testinstanz.sh before it copied the worktree and handed over as FLEET_INSTANCE_SOURCE. Unset on
+// the live fleet, so the wire carries no `source` there and the board paints no band
+// (src/protocol.ts#instanceSourceFrom carries the fold rules).
+const INSTANCE_SOURCE = instanceSourceFrom(process.env.FLEET_INSTANCE_SOURCE);
+const INSTANCE: InstanceIdentity = INSTANCE_SOURCE ? { name: INSTANCE_NAME, source: INSTANCE_SOURCE } : { name: INSTANCE_NAME };
 
 // …AND WHICH OTHER FLEETS THE BOARD MAY OFFER A LINK TO (dual-host S3). Read here, beside the name,
 // because "which fleet am I" and "which fleets exist" are one operator decision written in one env
@@ -1713,34 +1728,19 @@ const CODEX_HARNESS: Harness = {
   // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
   // (`codex exec` is the headless one and is NOT what a pane should run).
   //
-  // `--dangerously-bypass-approvals-and-sandbox` is the owner decision of 2026-08-12 made literal:
-  // full local access is the normal operating mode for local agent harnesses, the same reach this
-  // fleet's own `--dangerously-skip-permissions` grants claude. Its help-text warning is answered
-  // by POLICY next to it, not by a sandbox: what an unattended path may do to this pane is still
-  // gated by `automatable` below and canDeliver's alive gate.
-  //
-  // The grep/printf prelude is the TRUST handshake, and it exists because the bypass flag does NOT
-  // cover it (measured 2026-08-12): codex persists per-path trust in ~/.codex/config.toml, its TUI
-  // blocks on "Do you trust the contents of this directory?" for any cwd not listed there, and
-  // neither the bypass flag nor a `-c projects...` override suppresses that prompt — only the
-  // persisted entry does. The prelude appends exactly the entry codex itself writes when the owner
-  // answers yes, idempotently (`grep -qxF` guards the respawn), and only for a cwd that passes
-  // SPAWN_PATH_RE — the path lands inside a single-quoted shell word and a TOML double-quoted key,
-  // and the charset admits neither quote nor backslash. A cwd that fails the charset gets no
-  // prelude and codex asks its own question in the pane: attended fallback, never a mangled
-  // config line. The target is `${CODEX_HOME:-$HOME/.codex}` — the directory codex itself reads —
-  // so a pane without CODEX_HOME writes byte-for-byte where it always did, and a suite that sets it
-  // keeps its per-run temp paths out of the owner's config (measured: 9 883 entries, 8 502 of them
-  // suite temp dirs, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). The adjacent config
-  // override disables the startup update check on fresh and resumed panes: preselected
-  // "Update now" must never turn a brief into a global install.
+  permissions: { sandbox: ["read-only", "workspace-write", "danger-full-access"],
+    approval: ["on-request", "never"], default: CODEX_PERMISSIONS_DEFAULT },
   spawnCmd: (o) => {
     // SINGLE WRITER: the resume form is reachable only through ensureSlot after that function's
     // has-session miss. A live pane is never resumed beside itself; the owner restart route kills
     // its pane before entering the same seam. Discovery supplies the exact, UUID-validated id.
     let cmd = o.resume && o.sessionId
-      ? `codex resume '${o.sessionId}' --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false`
-      : "codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false";
+      ? `codex resume '${o.sessionId}'` : "codex";
+    const permissions = codexPermissionsFrom(o.permissions);
+    if (!permissions) throw new Error("invalid persisted Codex permissions — recycle with a valid profile");
+    cmd += ` --no-daemon --sandbox ${permissions.sandbox} --ask-for-approval ${permissions.approval}`;
+    cmd += ` -c check_for_update_on_startup=false -c ${shellSingleQuote('approvals_reviewer="user"')}`;
+    cmd += ` -c ${shellSingleQuote('sandbox_workspace_write={writable_roots=[],network_access=false,exclude_tmpdir_env_var=false,exclude_slash_tmp=false}')}`;
     // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
     // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
@@ -1748,6 +1748,7 @@ const CODEX_HARNESS: Harness = {
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
     if (o.webSearch) cmd += " --search";
+    if (o.projectDocMaxBytes) cmd += ` -c project_doc_max_bytes=${o.projectDocMaxBytes}`;
     // the slot's context budget (Slot.context), fresh AND resume form. Both numbers are integers judged
     // by contextOf, so no request text reaches this line; absent = no flag, today's line byte for byte.
     // The scope is `total`, the counting mode docs/messungen/2026-09-15-codex-kontextfenster-profile.md §4
@@ -1755,10 +1756,10 @@ const CODEX_HARNESS: Harness = {
     if (o.context) cmd += ` -c model_context_window=${o.context.window} -c model_auto_compact_token_limit=${o.context.compactAt} -c model_auto_compact_token_limit_scope='total'`;
     // a text lane (Slot.browser), fresh AND resume form — see CODEX_TEXT_LANE_MCP
     if (!o.browserMcp) cmd += ` -c ${CODEX_TEXT_LANE_MCP}`;
-    const trust = SPAWN_PATH_RE.test(o.cwd)
-      ? `grep -qxF '[projects."${o.cwd}"]' "\${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "\${CODEX_HOME:-$HOME/.codex}/config.toml"; `
-      : "";
-    return `${PATH_EXPORT}${trust}${cmd}; exec ${SHELL}`;
+    // Whole-table override is session-local; dotted trust overrides do not skip the 0.159.0 TUI dialog.
+    const trust = `projects={${JSON.stringify(realpathSync(o.cwd))}={trust_level="trusted"}}`;
+    cmd += ` -c ${shellSingleQuote(trust)}`;
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // NULL, and here it is over-determined — worth stating in full, because a reader who fixes only
   // the first reason would still have nothing. (1) `pinsSession: false`: Codex has no --session-id
@@ -1813,7 +1814,8 @@ const CODEX_HARNESS: Harness = {
   readiness: {
     accept: />_ OpenAI Codex \(v/,
     blocks: [
-      { re: /Do you trust the contents of this directory\?/, why: "codex trust prompt" },
+      { re: /Do you trust the contents of this directory\?|Trust this folder\?/, why: "codex trust prompt" },
+      { re: /Would you like to run the following command\?/, why: "codex permission prompt" },
       { re: /Sign in with ChatGPT|Welcome to Codex/, why: "codex sign-in screen" },
       { re: /Update available![\s\S]*Update now \(runs [\s\S]*Skip until next version/,
         why: "codex update prompt" },
@@ -2065,6 +2067,26 @@ function contextOf(body: Record<string, unknown> | null, h: Harness):
     : { ok: false, error: `bad context (expected {window, compactAt}: integers, 0 < compactAt < window <= ${CODEX_CONTEXT_WINDOW_MAX})` };
 }
 
+function permissionsOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; permissions: CodexPermissions | null } | { ok: false; error: string } {
+  if (body?.permissions === undefined)
+    return { ok: true, permissions: h.permissions ? { ...h.permissions.default } : null };
+  if (!h.permissions) return { ok: false, error: `harness ${h.id} permissions unsupported` };
+  const permissions = codexPermissionsFrom(body.permissions);
+  return permissions ? { ok: true, permissions }
+    : { ok: false, error: 'bad permissions (expected exactly {sandbox: read-only|workspace-write|danger-full-access, approval: on-request|never})' };
+}
+
+function persistedPermissions(value: unknown, h: Harness): SlotPermissions | null {
+  const chosen = permissionsOf(value === undefined ? null : { permissions: value }, h);
+  return chosen.ok ? chosen.permissions : { state: "invalid" };
+}
+
+function slotPermissionsOf(s: Pick<Slot, "harness" | "permissions">): ReturnType<typeof permissionsOf> {
+  const h = harnessOf(s.harness);
+  return permissionsOf(s.permissions === null && !h.permissions ? null : { permissions: s.permissions }, h);
+}
+
 // The lane's browser profile (Slot.browser). Absent/false/null = a text lane, the default; `true` only
 // for an adapter whose profile applies — refused, not dropped, for the others, for the reason effortOf
 // gives. `undefined` in the answer means "the body did not name it", so a door can fall back per field.
@@ -2111,9 +2133,11 @@ function taskSpawnFromBody(body: Record<string, unknown> | null):
   if (!b.ok) return b;
   const c = contextOf(body, harness);
   if (!c.ok) return c;
+  const p = permissionsOf(body, harness);
+  if (!p.ok) return p;
   return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null && !b.browser && !c.context
     ? undefined : { harness: h.harness, model: m.model, effort: e.effort, ...(b.browser ? { browser: true } : {}),
-      ...(c.context ? { context: c.context } : {}) } };
+      ...(c.context ? { context: c.context } : {}), ...(p.permissions ? { permissions: p.permissions } : {}) } };
 }
 
 // --- THE VARIANT GROUP (E4, docs/messungen/2026-09-14-queue-intelligenz-schichten.md §5 E4): one
@@ -2135,7 +2159,7 @@ function taskVariantsFromBody(body: Record<string, unknown> | null):
   if (raw === undefined) return { ok: true, variants: undefined };
   if (!Array.isArray(raw) || raw.length < TASK_VARIANTS_MIN || raw.length > TASK_VARIANTS_MAX)
     return { ok: false, error: `variants must be a list of ${TASK_VARIANTS_MIN} to ${TASK_VARIANTS_MAX} agent choices {harness, model, effort}` };
-  if (["harness", "model", "effort", "browser", "context"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
+  if (["harness", "model", "effort", "browser", "context", "permissions"].some((k) => body?.[k] !== undefined && body?.[k] !== null))
     return { ok: false, error: "variants and a row-level harness/model/effort are two answers to one question — name every agent inside variants" };
   const out: DispatchSpawn[] = [];
   for (const [i, v] of raw.entries()) {
@@ -2353,7 +2377,7 @@ const taskKindNote = (kind: TaskKind): string | null =>
 // all-null result degrades to ABSENT — the field never reloads as an empty choice.
 const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown; context?: unknown };
+  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown; browser?: unknown; context?: unknown; permissions?: unknown };
   const harness = typeof raw.harness === "string"
     && HARNESSES.some((h) => h.id === raw.harness && h !== CLAUDE_HARNESS) ? raw.harness : null;
   const h = harnessOf(harness);
@@ -2363,8 +2387,9 @@ const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
     && h.effortLevels.includes(raw.effort) ? raw.effort : null;
   const browser = raw.browser === true && h.browserProfile === "apply";
   const context = takesContext(h) ? slotContextFrom(raw.context) : null;
-  return harness === null && model === null && effort === null && !browser && !context ? undefined
-    : { harness, model, effort, ...(browser ? { browser: true } : {}), ...(context ? { context } : {}) };
+  const permissions = persistedPermissions(raw.permissions, h);
+  return harness === null && model === null && effort === null && !browser && !context && !permissions ? undefined
+    : { harness, model, effort, ...(browser ? { browser: true } : {}), ...(context ? { context } : {}), ...(permissions ? { permissions } : {}) };
 };
 // A GROUP'S `variants` off disk. A present-but-malformed value stays a GROUP (an array, possibly
 // empty) and never degrades to ABSENT: an absent field would turn the bracket into an ordinary
@@ -2483,6 +2508,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   webSearch: false,
   remote: false,
   context: null,
+  permissions: null,
   taskId: null,
   originId: null,
   programId: null,
@@ -3599,34 +3625,7 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   const refused = (refusal: string, error: string, status = 409) => ({ status, body: { refusal, error } });
   type BorrowSource = { path?: string; anchor?: string; privateSourceId?: string; version?: number;
     content: string; sha256: string; bytes: number };
-  const sectionAt = (text: string, path: string, anchor: string): string | null => {
-    const markdown = /\.(md|markdown)$/i.test(path);
-    const lines = [...text.matchAll(/[^\n]+\n?|\n/g)].map((match) => ({
-      text: match[0].replace(/\r?\n$/, ""), offset: match.index, level: 0, code: false,
-    }));
-    let fence: { char: string; length: number } | null = null;
-    if (markdown) for (const [index, line] of lines.entries()) {
-      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.text);
-      if (fence) {
-        line.code = true;
-        if (marker && marker[1]![0] === fence.char && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = null;
-        continue;
-      }
-      if (marker && (marker[1]![0] !== "`" || !marker[2]!.includes("`"))) {
-        fence = { char: marker[1]![0]!, length: marker[1]!.length }; line.code = true; continue;
-      }
-      if (/^(?: {4}|\t)/.test(line.text)) { line.code = true; continue; }
-      line.level = /^ {0,3}(#{1,6})(?:[ \t]+|$)/.exec(line.text)?.[1]?.length ?? 0;
-      const previous = lines[index - 1];
-      if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line.text) && previous?.text.trim() && !previous.code && !previous.level)
-        previous.level = line.text.trimStart()[0] === "=" ? 1 : 2;
-    }
-    const start = lines.findIndex((line) => !line.code && line.text.trimStart().startsWith(anchor));
-    if (start < 0) return null;
-    const first = lines[start]!;
-    const next = markdown ? lines.slice(start + 1).find((line) => line.level > 0 && (!first.level || line.level <= first.level)) : undefined;
-    return text.slice(first.offset, next?.offset ?? text.length);
-  };
+
   let sources: BorrowSource[] = [];
   let head: string | null = null;
   let repo: string | null = null;
@@ -3680,7 +3679,11 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   };
   let answer: { status: number; body: Record<string, unknown> };
   try { answer = await resolve(); }
-  catch { answer = refused("source-unavailable", "the context catalogue could not be resolved at HEAD"); }
+  catch (error) {
+    answer = error instanceof Error && error.name === "source-anchor-ambiguous"
+      ? refused(error.name, error.message)
+      : refused("source-unavailable", "the context catalogue could not be resolved at HEAD");
+  }
   const changed = () => json({ refusal: "occupant-changed", error: "the session binding changed during this read" }, 409);
   if (!unchanged()) return changed();
   const at = Date.now();
@@ -4675,35 +4678,215 @@ function dropShelved(path: string, why: string): void {
 }
 
 let retiredCandidateState: { lanePreviews?: unknown; candidateReviews?: unknown } = {};
-const testinstanzBusy = new Set<number>();
+const testinstanzBusy = new Set<string>();
+const TESTINSTANZ_FRESH_MS = 30_000;
+interface TestinstanzTarget {
+  repo: string; path: string; primary: boolean; identity: string;
+}
+interface TestinstanzSource {
+  repoKey: string; worktreeKey: string; path: string; mainCheckout: boolean;
+  branch: string | null; head: string | null; dirty: number | null;
+  fork: { base: string; head: string } | null; measuredAt: number;
+}
+const testinstanzSources = new Map<string, { identity: string; value: TestinstanzSource }>();
+const testinstanzPlaces = new Map<number, { cwd: string; openedAt: number; sessionId: string | null;
+  path: string; repo: string; identity: string; mainCheckout: boolean; measuredAt: number }>();
 
-async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string }> {
+function testinstanzPathIdentity(path: string): string | null {
+  try {
+    const st = statSync(path), g = lstatSync(`${path}/.git`);
+    if (!st.isDirectory()) return null;
+    return `${realpathSync(path)}:${st.dev}:${st.ino}:${st.birthtimeMs}:${g.dev}:${g.ino}:${g.birthtimeMs}`;
+  } catch { return null; }
+}
+
+async function testinstanzTarget(repo: string, path: string): Promise<TestinstanzTarget | null> {
+  try {
+    const canonicalRepo = realpathSync(repo), canonicalPath = realpathSync(path);
+    if (!knownRepos().some((r) => { try { return realpathSync(r) === canonicalRepo; } catch { return false; } })) return null;
+    const beforeRepo = testinstanzPathIdentity(canonicalRepo), beforePath = testinstanzPathIdentity(canonicalPath);
+    if (!beforeRepo || !beforePath) return null;
+    const rows = await listWorktrees(canonicalRepo);
+    const row = rows.find((w) => { try { return realpathSync(w.path) === canonicalPath; } catch { return false; } });
+    if (!row || testinstanzPathIdentity(canonicalRepo) !== beforeRepo || testinstanzPathIdentity(canonicalPath) !== beforePath) return null;
+    if (!knownRepos().some((r) => { try { return realpathSync(r) === canonicalRepo; } catch { return false; } })) return null;
+    return { repo: canonicalRepo, path: canonicalPath, primary: row.primary, identity: `${beforeRepo}\0${beforePath}` };
+  } catch { return null; }
+}
+
+// `target` is the lane's RECORDED base (Slot.worktree.base), handed to `up` as FLEET_TI_TARGET so the
+// instance's band can say what is not on it yet. Never a guess: no recorded base, no variable, and
+// the band says "Ziel unbekannt".
+async function testinstanzCommand(cwd: string, args: string[], timeoutMs: number, target?: string): Promise<{ code: number; out: string }> {
   const env: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"]) {
     const value = process.env[key];
     if (value) env[key] = value;
   }
-  const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (target) env.FLEET_TI_TARGET = target;
+  const child = Bun.spawn([`${cwd}/testinstanz.sh`, ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
-    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    return { code, out, err };
-  } finally {
-    clearTimeout(timer);
-  }
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return { code, out };
+  } finally { clearTimeout(timer); }
 }
 
-function testinstanzFact(out: string): { url: string; port: number; expiresAt: number } | null {
+function testinstanzFact(out: string): { url: string; port: number; expiresAt: number | null; state: "up" | "expired" } | null {
   const line = out.split("\n")[0] ?? "";
   const raw = /^up\s+pid\s+\d+\s+(https?:\/\/\S+)/.exec(line)?.[1];
   const expiry = /\bexpiresAt=(\d+)\b/.exec(out)?.[1];
-  if (!raw || !expiry) return null;
+  const expired = /\bttl: EXPIRED\b/.test(out);
+  if (!raw) return null;
   try {
-    const url = new URL(raw);
-    const port = Number(url.port);
-    const expiresAt = Number(expiry) * 1000;
-    return port >= 8900 && port <= 8999 && Number.isSafeInteger(expiresAt) ? { url: url.href, port, expiresAt } : null;
+    const url = new URL(raw), port = Number(url.port);
+    const expiresAt = expiry ? Number(expiry) * 1000 : null;
+    if (url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || url.hash
+      || !["127.0.0.1", HOST].includes(url.hostname) || port < 8900 || port > 8999
+      || (expiresAt !== null && !Number.isSafeInteger(expiresAt))) return null;
+    return { url: url.href, port, expiresAt, state: expired || (expiresAt !== null && expiresAt <= Date.now()) ? "expired" : "up" };
   } catch { return null; }
+}
+
+function testinstanzRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+function testinstanzGitFact(value: unknown): Record<string, unknown> | null {
+  const v = testinstanzRecord(value);
+  if (!v) return null;
+  return { head: typeof v.head === "string" && /^[0-9a-f]{40}$/.test(v.head) ? v.head : null,
+    branch: typeof v.branch === "string" ? v.branch : null,
+    dirty: typeof v.dirty === "number" && Number.isInteger(v.dirty) && v.dirty >= 0 ? v.dirty : null,
+    measuredAt: typeof v.measuredAt === "number" && Number.isSafeInteger(v.measuredAt) && v.measuredAt > 0 ? v.measuredAt : null };
+}
+function testinstanzObservation(out: string, target: TestinstanzTarget): Record<string, unknown> {
+  const observedAt = Date.now();
+  let v: Record<string, unknown> | null = null;
+  try { v = testinstanzRecord(JSON.parse(out)); } catch { /* legacy status has no recorded provenance */ }
+  const time = (key: string) => typeof v?.[key] === "number" && Number.isSafeInteger(v[key]) && (v[key] as number) > 0 ? v[key] as number : null;
+  if (v) {
+    const recorded = testinstanzRecord(v.recordedSource);
+    const expiresAt = time("expiresAt");
+    const states = ["up", "expired", "not-running", "unknown", "http-failed", "http-timeout"];
+    return { state: expiresAt !== null && expiresAt <= observedAt ? "expired" : typeof v.state === "string" && states.includes(v.state) ? v.state : "unknown",
+      recordedSource: recorded && recorded.path === target.path ? { path: target.path,
+        before: testinstanzGitFact(recorded.before), after: testinstanzGitFact(recorded.after) } : null,
+      copyHead: null, mode: v.mode === "mixed" || v.mode === "snapshot" ? v.mode : null,
+      copyStartedAt: time("copyStartedAt"), copyFinishedAt: time("copyFinishedAt"), builtAt: time("builtAt"),
+      startedAt: time("startedAt"), expiresAt, remainingTTL: expiresAt === null ? null : Math.max(0, expiresAt - observedAt),
+      port: typeof v.port === "number" && Number.isInteger(v.port) && v.port >= 8900 && v.port <= 8999 ? v.port : null,
+      procStatus: ["alive", "dead"].includes(String(v.procStatus)) ? v.procStatus : "unknown",
+      httpStatus: ["healthy", "failed", "timeout"].includes(String(v.httpStatus)) ? v.httpStatus : "unknown",
+      identity: v.identity === "matched" ? "matched" : "unknown", observedAt: time("observedAt") ?? observedAt };
+  }
+  const fact = testinstanzFact(out);
+  return { state: fact?.state ?? (out.startsWith("down ") ? "not-running" : "unknown"),
+    port: fact?.port ?? null, expiresAt: fact?.expiresAt ?? null,
+    remainingTTL: fact?.expiresAt === null || !fact ? null : Math.max(0, fact.expiresAt - observedAt),
+    recordedSource: null, copyHead: null, mode: null, copyStartedAt: null, copyFinishedAt: null, builtAt: null,
+    startedAt: null, procStatus: fact ? "alive" : "unknown", httpStatus: "unknown", identity: "unknown", observedAt };
+}
+
+async function testinstanzReadSource(target: TestinstanzTarget, s?: Slot): Promise<TestinstanzSource> {
+  const [branch, head, dirty] = await Promise.all([
+    gitRead(target.path, "symbolic-ref", "--short", "HEAD"), gitRead(target.path, "rev-parse", "HEAD"),
+    gitRead(target.path, "status", "--porcelain"),
+  ]);
+  let fork: TestinstanzSource["fork"] = null;
+  if (s?.worktree?.base && s.worktree.baseSha) {
+    const base = await gitRead(target.path, "rev-parse", "--verify", s.worktree.baseSha);
+    if (base.code === 0 && base.out === s.worktree.baseSha) fork = { base: s.worktree.base, head: base.out };
+  }
+  return { repoKey: target.repo, worktreeKey: target.path, path: target.path, mainCheckout: target.primary,
+    branch: branch.code === 0 ? branch.out : null, head: head.code === 0 ? head.out : null,
+    dirty: dirty.code === 0 ? dirty.out.split("\n").filter(Boolean).length : null, fork, measuredAt: Date.now() };
+}
+
+async function serveTestinstanz(req: Request, repo: string, path: string, s?: Slot): Promise<Response> {
+  const occupant = s ? { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, cwd: s.cwd,
+    repo: s.worktree?.repo ?? null, branch: s.worktree?.branch ?? null } : null;
+  const testinstanzOccupantMatches = () => !occupant || (slots[occupant.slot - 1]?.openedAt === occupant.openedAt
+    && slots[occupant.slot - 1]?.sessionId === occupant.sessionId && slots[occupant.slot - 1]?.cwd === occupant.cwd
+    && (slots[occupant.slot - 1]?.worktree?.repo ?? null) === occupant.repo
+    && (slots[occupant.slot - 1]?.worktree?.branch ?? null) === occupant.branch);
+  const changed = () => json({ error: "testinstanz target removed, moved or replaced", refusal: "target-changed", state: "unknown", nullSpawn: true }, 409);
+  const target = await testinstanzTarget(repo, path);
+  if (!testinstanzOccupantMatches()) return changed();
+  if (!target) return json({ error: "removedWorktree or unknown repo/worktree", refusal: "unknown-worktree", state: "unknown", nullSpawn: true }, 409);
+  const key = target.path;
+  const unchanged = async () => {
+    if (!testinstanzOccupantMatches()) return false;
+    const now = await testinstanzTarget(target.repo, target.path);
+    return testinstanzOccupantMatches() && now?.identity === target.identity && now.primary === target.primary;
+  };
+  let action: "status" | "refresh" | "up" | "down" | "open" = "status", ttlMin = 240, mode = "mixed";
+  if (req.method === "POST") {
+    const body = await readJson(req);
+    if (!await unchanged()) return changed();
+    if (!body || !["up", "down", "refresh", "open"].includes(String(body.action))
+      || Object.keys(body).some((k) => !["action", "ttlMin", "mode"].includes(k)))
+      return json({ error: 'expected { action: "up" | "down" | "refresh" | "open", ttlMin?, mode? }' }, 400);
+    if (body.ttlMin !== undefined && (typeof body.ttlMin !== "number" || !Number.isInteger(body.ttlMin) || body.ttlMin < 1 || body.ttlMin > 1440))
+      return json({ error: "invalidTTL: ttlMin must be a whole number from 1 to 1440" }, 400);
+    if (body.mode !== undefined && body.mode !== "mixed" && body.mode !== "snapshot")
+      return json({ error: "unavailable-mode" }, 400);
+    action = body.action as "up" | "down" | "refresh" | "open";
+    if (typeof body.ttlMin === "number") ttlMin = body.ttlMin;
+    if (typeof body.mode === "string") mode = body.mode;
+  }
+  let scriptIdentity: string;
+  try {
+    const st = lstatSync(`${target.path}/testinstanz.sh`);
+    if (!st.isFile() || (st.mode & 0o111) === 0) throw new Error("missing");
+    scriptIdentity = `${st.dev}:${st.ino}:${st.mtimeMs}:${st.size}`;
+  } catch { return json({ error: "missingScript: testinstanz.sh is missing or not executable", state: "unknown", nullSpawn: true }, 409); }
+  if (testinstanzBusy.has(key)) return json({ error: "testinstanz command already running for worktree", refusal: "busy", nullSpawn: true }, 409);
+  testinstanzBusy.add(key);
+  const ready = async () => {
+    if (!await unchanged()) return false;
+    try { const st = lstatSync(`${target.path}/testinstanz.sh`);
+      return `${st.dev}:${st.ino}:${st.mtimeMs}:${st.size}` === scriptIdentity && testinstanzOccupantMatches();
+    } catch { return false; }
+  };
+  try {
+    if (!await ready()) return changed();
+    if (action === "up" || action === "down") {
+      const args = action === "up" ? ["up", mode, "--ttl", String(ttlMin)] : ["down"];
+      const run = await testinstanzCommand(target.path, args, action === "up" ? 240_000 : 30_000,
+        action === "up" ? (s ?? workplaceSession(target.path))?.worktree?.base : undefined);
+      if (!await ready()) return changed();
+      if (run.code !== 0) return json({ error: `testinstanz ${action} failed`, refusal: "script-failed", state: "unknown" }, 409);
+      if (action === "down") return json({ ok: true, state: "not-running", worktree: target.path });
+    }
+    if (!await ready()) return changed();
+    const status = await testinstanzCommand(target.path, action === "open" ? ["status"] : ["status", "--json"], 15_000);
+    if (!await ready()) return changed();
+    if (status.code > 1 || status.code < 0) return json({ error: "testinstanz status failed", refusal: "script-failed", state: "unknown" }, 409);
+    if (action === "open") {
+      const fact = testinstanzFact(status.out);
+      if (!fact || fact.state !== "up") return json({ error: "testinstanz has no live opening endpoint", state: "unknown" }, 409);
+      return json({ ok: true, worktree: target.path, ...fact });
+    }
+    const instance = testinstanzObservation(status.out, target);
+    const cached = testinstanzSources.get(key);
+    let source = cached?.identity === target.identity ? cached.value : null;
+    if (!source || action === "refresh" || action === "up") {
+      source = await testinstanzReadSource(target, s);
+      if (!await ready()) return changed();
+      testinstanzSources.set(key, { identity: target.identity, value: source });
+    }
+    if (!await ready()) return changed();
+    if (s && testinstanzOccupantMatches()) testinstanzPlaces.set(s.id, { cwd: s.cwd!, openedAt: s.openedAt,
+      sessionId: s.sessionId ?? null, path: target.path, repo: target.repo, identity: target.identity, mainCheckout: target.primary, measuredAt: Date.now() });
+    const ageMs = Math.max(0, Date.now() - source.measuredAt);
+    return json({ ok: true, state: instance.state, port: instance.port, expiresAt: instance.expiresAt,
+      worktree: target.path, mainCheckout: target.primary, source: { ...source, ageMs,
+        freshness: source.head === null || source.dirty === null ? "unknown" : ageMs <= TESTINSTANZ_FRESH_MS ? "fresh" : "stale" },
+      instance: { ...instance, ageMs: typeof instance.observedAt === "number" ? Math.max(0, Date.now() - instance.observedAt) : null,
+        freshness: instance.state === "unknown" || typeof instance.observedAt !== "number" ? "unknown"
+          : Date.now() - instance.observedAt <= TESTINSTANZ_FRESH_MS ? "fresh" : "stale" } });
+  } catch { return json({ error: "testinstanz command could not run", state: "unknown" }, 409); }
+  finally { testinstanzBusy.delete(key); }
 }
 
 // `withOpenUrl` is the OWNER's open-ready link (owner 2026-10-05, from another Mac: „[Zitat entfernt]“
@@ -4741,10 +4924,10 @@ function testinstanzList(out: string, withOpenUrl = false): Array<{ worktree: st
     const url = parts.at(-1) ?? "";
     const worktree = parts.slice(3, -1).join("  ");
     if ((state !== "up" && state !== "down") || !Number.isInteger(port) || !worktree
-      || !/^rest /.test(parts[2] ?? "") || !/^https?:\/\/\S+\/$/.test(url))
-      throw new Error(`unrecognized testinstanz list row: ${line.slice(0, 200)}`);
-    const row = { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state };
-    const token = state === "up" ? tokenByInstance.get(`${worktree}\0${port}`) : undefined;
+      || !/^rest /.test(parts[2] ?? "") || !/^http:\/\/[^/?#@]+\/$/.test(url))
+      throw new Error("unrecognized testinstanz list row");
+    const row = { worktree, port, url, expiresAt: expiryByInstance.get(`${worktree}\0${port}`) ?? null, state: parts[2]?.includes("EXPIRED") || (expiryByInstance.get(`${worktree}\0${port}`) ?? Infinity) <= Date.now() ? "expired" : state };
+    const token = row.state === "up" ? tokenByInstance.get(`${worktree}\0${port}`) : undefined;
     return token ? { ...row, openUrl: `${url}?token=${encodeURIComponent(token)}` } : row;
   });
 }
@@ -5197,6 +5380,7 @@ function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
 const taskBaseTreeCache = new Map<string, TrackedSnapshot>();
 const taskBaseRefCache = new Map<string, { stamp: string; commit: string | null }>();
 const taskBaseGitDirs = new Map<string, { gitDir: string; commonDir: string }>();
+const taskBaseGitFailures = new Map<string, number>();
 const taskBaseFileStamp = (path: string): string => {
   try { const s = statSync(path); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return "-"; }
 };
@@ -5206,9 +5390,12 @@ function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapsh
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
   let dirs = taskBaseGitDirs.get(repo);
   if (!dirs) {
+    const failedAt = taskBaseGitFailures.get(repo);
+    if (failedAt !== undefined && Date.now() - failedAt < 5000) return null;
     const found = run("rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir");
     const [gitDir, commonDir] = found.success ? found.stdout.toString().trim().split("\n") : [];
-    if (!gitDir || !commonDir) return null;
+    if (!gitDir || !commonDir) { taskBaseGitFailures.set(repo, Date.now()); return null; }
+    taskBaseGitFailures.delete(repo);
     dirs = { gitDir, commonDir };
     taskBaseGitDirs.set(repo, dirs);
   }
@@ -5715,11 +5902,11 @@ function stateSnapshot(): string {
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
-    browser?: true; webSearch?: true; context?: SlotContext; sleeping?: SlotSleep; standingHandover?: StandingHandover }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -6906,6 +7093,14 @@ async function tickGit(): Promise<void> {
         const top = await gitRead(s.cwd, "rev-parse", "--show-toplevel");
         repoInfo.set(s.id, top.code === 0 && top.out ? repoCanon(top.out) : null);
       }
+      const placeCwd = s.cwd, placeOpenedAt = s.openedAt, placeSessionId = s.sessionId ?? null;
+      const placeRepo = repoInfo.get(s.id);
+      const place = placeRepo ? await testinstanzTarget(placeRepo, s.worktree ? placeCwd : placeRepo) : null;
+      if (s.cwd === placeCwd && s.openedAt === placeOpenedAt && (s.sessionId ?? null) === placeSessionId) {
+        if (place) testinstanzPlaces.set(s.id, { cwd: placeCwd, openedAt: placeOpenedAt, sessionId: placeSessionId,
+          path: place.path, repo: place.repo, identity: place.identity, mainCheckout: place.primary, measuredAt: Date.now() });
+        else testinstanzPlaces.delete(s.id);
+      }
       // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
       // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
       // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
@@ -7200,6 +7395,30 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
   } catch { /* see above: a dirty lane beats a spawn that throws */ }
 }
 
+async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents): Promise<void> {
+  const tracked = await git(lanePath, "ls-files", "--", "AGENTS.override.md", "CLAUDE.local.md");
+  if (tracked.code !== 0 || tracked.out) throw new Error("session rule paths must be untracked");
+  const exclude = await git(lanePath, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude");
+  if (exclude.code !== 0 || !exclude.out) throw new Error("could not resolve lane info/exclude");
+  const previous = existsSync(exclude.out) ? readFileSync(exclude.out, "utf8") : "";
+  const have = new Set(previous.split("\n").map((line) => line.trim()));
+  const missing = ["/AGENTS.override.md", "/CLAUDE.local.md"].filter((path) => !have.has(path));
+  if (missing.length) {
+    mkdirSync(dirname(exclude.out), { recursive: true });
+    appendFileSync(exclude.out, `${previous && !previous.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
+  }
+  const files = [["AGENTS.override.md", agents.text], ["CLAUDE.local.md", "@AGENTS.override.md\n"]] as const;
+  for (const [name] of files) {
+    const path = `${lanePath}/${name}`;
+    if (existsSync(path) && lstatSync(path).isSymbolicLink()) throw new Error("session rule path is a symlink");
+  }
+  for (const [name, text] of files) {
+    const path = `${lanePath}/${name}`;
+    writeFileSync(path, text, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  }
+}
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
@@ -7372,21 +7591,588 @@ async function laneRefsStale(w: LaneRef | null, cwd: string | null): Promise<boo
 // every open worktree of a repo, primary checkout first — `git worktree list` is the
 // single source of truth, so lanes whose slot was killed (worktree still on disk,
 // previously invisible anywhere in the UI) stay findable
-interface WtEntry { path: string; branch: string; primary: boolean }
-async function listWorktrees(root: string): Promise<WtEntry[]> {
-  const ls = await git(root, "worktree", "list", "--porcelain");
-  if (ls.code !== 0) return [];
+interface WtEntry { path: string; branch: string; primary: boolean; head?: string | null }
+async function listWorktrees(root: string, strict = false): Promise<WtEntry[]> {
+  if (strict && !existsSync(`${root}/.git`)) throw new Error("worktree-list-unreadable");
+  const ls = await gitRead(root, "worktree", "list", "--porcelain");
+  if (ls.code !== 0) { if (strict) throw new Error("worktree-list-unreadable"); return []; }
   const out: WtEntry[] = [];
-  let cur: { path?: string; branch?: string } = {};
+  let cur: { path?: string; branch?: string; head?: string } = {};
   for (const line of [...ls.out.split("\n"), ""]) {
     if (line.startsWith("worktree ")) cur = { path: line.slice(9) };
+    else if (line.startsWith("HEAD ")) cur.head = line.slice(5);
     else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
     else if (!line.trim() && cur.path) {
-      out.push({ path: cur.path, branch: cur.branch ?? "(detached)", primary: out.length === 0 });
+      out.push({ path: cur.path, branch: cur.branch ?? "(detached)", primary: out.length === 0, head: cur.head && /^[0-9a-f]{40}$/.test(cur.head) ? cur.head : null });
       cur = {};
     }
   }
   return out;
+}
+
+const WORKPLACES_CACHE_MS = 3000;
+const WORKPLACES_GRAPH_CAP = 100_000;
+const LAND_NOTES_CAP = 20;
+const LAND_NOTES_SCAN_CAP = 200;
+let workplacesCache: { key: string; value: Promise<Workplaces>; at: number } | null = null;
+function workplaceSession(path: string): Slot | undefined {
+  return slots.find((s) => { try { return !!s.cwd && realpathSync(s.cwd) === path; } catch { return false; } });
+}
+async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRow["testinstanz"]> {
+  const pathIdentity = testinstanzPathIdentity(target.path);
+  const script = lstatSync(`${target.path}/testinstanz.sh`);
+  if (!script.isFile() || (script.mode & 0o111) === 0 || testinstanzBusy.has(target.path)) return null;
+  const result = await testinstanzCommand(target.path, ["status", "--json"], 15_000);
+  const after = lstatSync(`${target.path}/testinstanz.sh`);
+  if (result.code < 0 || result.code > 1 || testinstanzPathIdentity(target.path) !== pathIdentity
+    || script.dev !== after.dev || script.ino !== after.ino || script.mtimeMs !== after.mtimeMs || script.size !== after.size) return null;
+  const instance = testinstanzObservation(result.out, target);
+  return { state: String(instance.state), instance };
+}
+interface WorkplaceLandNotes { rows: Array<{ sha: string; branch: string | null; at?: number; verify?: { ok: boolean | null; out: string; timedOut?: true; waitedOut?: true; serverDown?: true } }> | null; truncated: boolean | null }
+async function workplaceLandNotes(repo: string, heads: string[]): Promise<WorkplaceLandNotes> {
+  if (!heads.length) return { rows: null, truncated: null };
+  const r = await gitRead(repo, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
+    `--max-count=${LAND_NOTES_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", ...heads, "--");
+  if (r.code !== 0) return { rows: null, truncated: null };
+  const parts = r.out.split("\0"), rows: NonNullable<WorkplaceLandNotes["rows"]> = [];
+  let scanned = 0, truncated = false;
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const sha = parts[i].trim(), raw = parts[i + 1].trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    if (++scanned > LAND_NOTES_SCAN_CAP) { truncated = true; break; }
+    if (!raw) continue;
+    if (rows.length >= LAND_NOTES_CAP) { truncated = true; break; }
+    let note: Record<string, unknown> | null = null;
+    try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* the branch remains unreadable */ }
+    const verify = testinstanzRecord(note?.verify);
+    rows.push({ sha, branch: typeof note?.branch === "string" && note.branch ? note.branch : null,
+      ...(typeof note?.at === "number" ? { at: note.at } : {}),
+      ...(verify && (typeof verify.ok === "boolean" || verify.ok === null)
+        ? { verify: { ok: verify.ok, out: typeof verify.out === "string" ? verify.out : "",
+          ...(verify.timedOut === true ? { timedOut: true as const } : {}),
+          ...(verify.waitedOut === true ? { waitedOut: true as const } : {}),
+          ...(verify.serverDown === true ? { serverDown: true as const } : {}) } } : {}) });
+  }
+  return { rows, truncated };
+}
+
+const WORKPLACE_AUDIT_BYTES = 262_144;
+const WORKPLACE_AUDIT_ROWS = 200;
+interface WorkplaceAuditReading { rows: PostLandAuditRow[]; reason: string }
+async function workplaceAuditReading(): Promise<WorkplaceAuditReading> {
+  const rows: PostLandAuditRow[] = [];
+  let reason = "audit-not-retained";
+  for (const path of [POSTLAND_AUDIT_FILE, `${POSTLAND_AUDIT_FILE}.1`]) {
+    try {
+      const file = Bun.file(path);
+      if (!await file.exists()) continue;
+      const start = Math.max(0, file.size - WORKPLACE_AUDIT_BYTES);
+      const text = await file.slice(start).text();
+      const lines = text.split("\n");
+      if (start) { lines.shift(); reason = "audit-history-capped"; }
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        if (rows.length >= WORKPLACE_AUDIT_ROWS) return { rows, reason: "audit-history-capped" };
+        let row: PostLandAuditRow | null = null;
+        try { row = validAuditRow(JSON.parse(lines[i])); } catch { /* named below */ }
+        if (row && Number.isFinite(row.at)) rows.push(row);
+        else reason = "audit-history-malformed";
+      }
+    } catch { reason = "audit-history-unreadable"; }
+  }
+  return { rows, reason };
+}
+function workplaceGateState(v: { ok: boolean | null; timedOut?: true; waitedOut?: true; serverDown?: true } | undefined): WorkplaceCheckObservation["state"] {
+  return !v ? null : v.ok === true ? "green" : v.ok === false ? "red"
+    : v.timedOut || v.waitedOut || v.serverDown ? null : "skipped";
+}
+function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, audits: WorkplaceAuditReading): WorkplaceCheckObservation[] {
+  const out: WorkplaceCheckObservation[] = [];
+  const sameRepo = (value: string) => repoCanon(value) === repoCanon(repo);
+  const job = (j: CommandJob | LaneSuiteJob, stage: "local" | "preview") => {
+    if (!sameRepo(j.repo)) return;
+    const result = j.result;
+    const active = j.state === "claimed" && (j.claim ? j.claim.expiresAt > Date.now()
+      : "sharded" in j && j.sharded?.shards.some((s) => s.claim && s.claim.expiresAt > Date.now()));
+    const pendingShards = "sharded" in j && j.sharded && (!j.sharded.openUntil || j.sharded.openUntil > Date.now())
+      && j.sharded.shards.some((s) => !s.claim && !s.result && !s.closed);
+    const state = result ? result.result === "unknown" ? null : result.result
+      : active ? "running" : j.state === "open" || pendingShards ? "waiting" : null;
+    out.push({ repo, branch: j.branch, stage, state, head: result?.remote.clonedSha ?? j.commitSha,
+      at: result?.remote.reportedAt ?? j.claim?.claimedAt ?? j.offeredAt, order: j.offeredAt,
+      fails: result?.fails ?? [], ...(stage === "local" && "cmd" in j ? { command: j.cmd } : {}),
+      ...(!state ? { reason: "job-unmeasured" } : {}) });
+  };
+  for (const j of commandJobs.values()) job(j, "local");
+  for (const j of laneSuiteJobs.values()) job(j, "preview");
+  const merges = [...mergeLast.entries(), ...[...mergeParked.values()].map((m) => [null, m] as const)];
+  for (const [slot, m] of merges) {
+    const recordedRepo = "repo" in m && typeof m.repo === "string" && m.repo ? m.repo : null;
+    const holder = slot === null ? null : slots.find((s) => s.id === slot && s.worktree?.branch === m.branch && sameRepo(s.worktree.repo));
+    if (recordedRepo ? !sameRepo(recordedRepo) : !holder && !notes.rows?.some((n) => n.branch === m.branch && n.sha === m.candidateSha)) continue;
+    const v = m.verify;
+    out.push({ repo, branch: m.branch, stage: "gate", at: m.at, head: m.candidateSha ?? null,
+      state: workplaceGateState(v),
+      fails: v ? localFailNames(v.out) : [], reason: v ? "gate-unmeasured" : "gate-verify-unrecorded" });
+  }
+  for (const note of notes.rows ?? []) if (note.branch) {
+    const v = note.verify;
+    out.push({ repo, branch: note.branch, stage: "gate", at: note.at ?? 0, head: note.sha,
+      state: workplaceGateState(v),
+      fails: v ? localFailNames(v.out) : [], reason: "land-note-verify-unrecorded-or-unmeasured" });
+  }
+  for (const r of serverRuns.values()) if (r.repo && sameRepo(r.repo) && r.suite.includes("gate"))
+    out.push({ repo, branch: r.branch, stage: "gate", state: "running", head: null, at: r.at, fails: [] });
+  const addAudit = (cover: AuditCover, head: string | null, at: number, state: WorkplaceCheckObservation["state"], fails: string[] = []) =>
+    out.push({ repo, branch: cover.branch, stage: "audit", head, at, order: cover.at, state, fails, reason: "audit-unmeasured" });
+  for (const r of audits.rows) if (sameRepo(r.repo))
+    for (const c of r.covers) addAudit(c, r.mainSha, r.at,
+      r.result === "not-applicable" ? "skipped" : r.result === "unknown" ? null : r.result, r.fails ?? []);
+  const running = runningPostLandAudit;
+  if (running && sameRepo(running.repo)) for (const c of running.covers)
+    addAudit(c, running.mainSha, running.startedAt, "running");
+  const inflight = new Set((running?.covers ?? []).map(coverKey));
+  for (const c of helperClaims.values()) if (sameRepo(c.repo)) for (const cover of c.covers) {
+    inflight.add(coverKey(cover));
+    addAudit(cover, c.mainSha, c.claimedAt, c.expiresAt > Date.now() ? "running" : null);
+  }
+  for (const r of auditShardRuns.values()) if (sameRepo(r.repo)) {
+    const active = r.shards.some((s) => s.claim && s.claim.expiresAt > Date.now() && !s.result && !s.closed);
+    for (const c of r.covers) {
+      inflight.add(coverKey(c));
+      addAudit(c, r.mainSha, r.firstClaimAt, active ? "running" : r.openUntil > Date.now() ? "waiting" : null);
+    }
+  }
+  for (const [qRepo, q] of auditQueue) if (sameRepo(qRepo))
+    for (const g of auditQueueGroups(q)) for (const c of g.covers) if (!inflight.has(coverKey(c)))
+      addAudit(c, c.mainAfter, Math.max(c.at, auditClaimableSince.get(qRepo) ?? 0), auditCmdFor(qRepo) ? "waiting" : "skipped");
+  return out;
+}
+function workplaceChecks(repo: string, branch: string | null, head: string | null,
+  observations: WorkplaceCheckObservation[], auditReason: string, reasons: FactReason[]): WorkplaceChecks {
+  const checks: WorkplaceChecks = { local: null, preview: null, gate: null, audit: null };
+  for (const stage of ["local", "preview", "gate", "audit"] as const) {
+    const matches = observations.filter((o) => o.repo === repo && o.branch === branch && o.stage === stage)
+      .sort((a, b) => (b.order ?? b.at) - (a.order ?? a.at) || b.at - a.at);
+    const latest = matches[0];
+    if (!latest?.state) {
+      reasons.push({ field: `checks.${stage}`, reason: !branch ? "worktree-branch-unreadable"
+        : latest?.reason ?? (stage === "audit" ? auditReason : `${stage}-not-retained`) });
+      continue;
+    }
+    let selected = [latest];
+    if (stage === "local") {
+      const commands = new Set<string>();
+      selected = matches.filter((o) => {
+        if (commands.has(o.command ?? "")) return false;
+        commands.add(o.command ?? ""); return o.head === latest.head;
+      });
+    }
+    const states = selected.map((o) => o.state);
+    if (states.includes(null)) {
+      reasons.push({ field: `checks.${stage}`, reason: "job-unmeasured" }); continue;
+    }
+    const state = stage === "local" ? (["running", "waiting", "red", "skipped", "green"] as const).find((s) => states.includes(s))! : latest.state;
+    const fails = [...new Set(selected.flatMap((o) => o.fails))].slice(0, 20).map((name) =>
+      name.replace(/\b(?:x-fleet-self-token|token|secret|authorization)\s*[:=]\s*(?:[a-z][a-z0-9_-]*\s+)?[^\s&#]+|\bBearer\s+[^\s&#]+/gi, "[redacted]")
+        .replace(/\[(?:[a-f0-9.]*:){2,}[a-f0-9.]*(?:%[a-z0-9_.~-]+)?\](?::\d+)?|(?<![a-z0-9])(?:[a-f0-9]{0,4}:){2,}(?:(?:\d{1,3}\.){3}\d{1,3}|[a-f0-9]{0,4})(?:%[a-z0-9_.~-]+)?(?![a-z0-9:])/gi, "[redacted]")
+        .replace(/https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b/gi, "[redacted]")
+        .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160));
+    const sha = latest.head && /^[0-9a-f]{40,64}$/.test(latest.head) ? latest.head : null;
+    checks[stage] = { state, head: sha, at: Number.isFinite(latest.at) && latest.at > 0 ? latest.at : null,
+      fails, stale: sha && head ? sha !== head : null };
+    if (!sha) reasons.push({ field: `checks.${stage}.head`, reason: "checked-head-unrecorded" });
+    if (!sha || !head) reasons.push({ field: `checks.${stage}.stale`, reason: "checked-or-worktree-head-unreadable" });
+    if (!checks[stage]!.at) reasons.push({ field: `checks.${stage}.at`, reason: "check-time-unrecorded" });
+  }
+  return checks;
+}
+
+async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { rows: [], reason: "audit-not-retained" }): Promise<WorkplaceRepo> {
+  const reasons: FactReason[] = [];
+  let rows: WtEntry[];
+  try {
+    const top = await gitRead(repo, "rev-parse", "--show-toplevel");
+    if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");
+    rows = await listWorktrees(repo, true);
+  }
+  catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
+    reasons: [{ field: "repo", reason: "worktree-list-unreadable" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
+  const refs = await gitRead(repo, "show-ref", "--heads");
+  const heads = new Map<string, string>();
+  if (refs.code === 0) for (const line of refs.out.split("\n")) {
+    const m = /^([0-9a-f]{40}) refs\/heads\/(.+)$/.exec(line);
+    if (m) heads.set(m[2], m[1]);
+  }
+  const bindings = new Map(rows.map((w) => {
+    const holder = workplaceSession(w.path), baseBranch = holder?.worktree?.base ?? "main";
+    return [w.path, { session: holder ? { slot: holder.id, openedAt: holder.openedAt } : null,
+      baseBranch, baseHead: holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null }] as const;
+  }));
+  const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x),
+    ...[...bindings.values()].map((b) => b.baseHead).filter((x): x is string => !!x && /^[0-9a-f]{40}$/.test(x))]);
+  const targetHeads = [...new Set([...bindings.values()].map((b) => heads.get(b.baseBranch)).filter((x): x is string => !!x))];
+  const [graph, notes] = await Promise.all([
+    roots.size ? gitRead(repo, "rev-list", "--parents", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, ...roots, "--") : null,
+    workplaceLandNotes(repo, targetHeads),
+  ]);
+  if (notes.truncated === null) reasons.push({ field: "landNotes.truncated", reason: "land-notes-unreadable" });
+  const lines = graph?.out.split("\n").filter(Boolean) ?? [];
+  const parents = new Map<string, string[]>();
+  const graphReason = !graph || graph.code !== 0 ? "commit-graph-unreadable" : lines.length > WORKPLACES_GRAPH_CAP ? "commit-graph-capped" : null;
+  if (!graphReason) for (const line of lines) { const [sha, ...ps] = line.split(" "); parents.set(sha, ps); }
+  const reachable = new Map<string, Set<string>>();
+  const ancestors = (sha: string): Set<string> | null => {
+    if (graphReason || !parents.has(sha)) return null;
+    const cached = reachable.get(sha); if (cached) return cached;
+    const seen = new Set<string>(), stack = [sha];
+    while (stack.length) { const h = stack.pop()!; if (seen.has(h)) continue; seen.add(h); stack.push(...(parents.get(h) ?? [])); }
+    reachable.set(sha, seen); return seen;
+  };
+  const distance = (head: string | null, base: string | null): WorktreeDistance | null => {
+    const h = head ? ancestors(head) : null, b = base ? ancestors(base) : null;
+    if (!h || !b) return null;
+    let ahead = 0, behind = 0;
+    for (const sha of h) if (!b.has(sha)) ahead++;
+    for (const sha of b) if (!h.has(sha)) behind++;
+    return { ahead, behind };
+  };
+  const main = heads.get("main") ?? null;
+  const branches: WorkplaceRepo["branches"] = refs.code !== 0 && refs.code !== 1 ? null : (["main", ...(heads.has("overhaul") ? ["overhaul"] : [])] as Array<"main" | "overhaul">).map((branch) => {
+    const head = heads.get(branch) ?? null, d = distance(head, main), why: FactReason[] = [];
+    if (!head) why.push({ field: "head", reason: "branch-missing" });
+    if (!d) why.push({ field: "distance", reason: graphReason ?? "main-missing" });
+    return { branch, head, distance: d, reasons: why };
+  });
+  if (!branches) reasons.push({ field: "branches", reason: "branch-refs-unreadable" });
+  const observations = workplaceCheckObservations(repo, notes, audits);
+  const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
+    const why: FactReason[] = [];
+    const { session, baseBranch, baseHead } = bindings.get(w.path)!;
+    const branch = w.branch === "(detached)" ? null : w.branch;
+    const base = baseHead ? { branch: baseBranch, head: baseHead } : null;
+    const d = distance(w.head ?? null, base?.head ?? null);
+    if (!branch) why.push({ field: "branch", reason: "detached-head" });
+    if (!w.head) why.push({ field: "head", reason: "worktree-head-unreadable" });
+    if (!base) why.push({ field: "base", reason: "base-unreadable" });
+    if (!d) why.push({ field: "distance", reason: graphReason ?? "base-or-head-unreadable" });
+    const targetHead = heads.get(baseBranch) ?? null;
+    const behind = distance(targetHead, baseHead)?.ahead ?? null;
+    const targetAncestors = targetHead ? ancestors(targetHead) : null;
+    const onTarget = (sha: string) => sha === targetHead || targetAncestors?.has(sha) === true;
+    const landedAs = branch === null ? null : notes.rows?.find((note) => note.branch === branch && onTarget(note.sha))?.sha ?? null;
+    let landed: WorkplaceRow["target"]["landed"] = null, landedReason: string | null = null;
+    if (landedAs) landed = "yes";
+    else if (!branch) landedReason = "worktree-branch-unreadable";
+    else if (!targetHead) landedReason = "target-head-unreadable";
+    else if (!notes.rows) landedReason = "land-notes-unreadable";
+    else if (!targetAncestors) landedReason = graphReason ?? "target-lineage-unreadable";
+    else if (notes.rows.some((note) => note.branch === null && onTarget(note.sha))) landedReason = "land-note-branch-unreadable";
+    else if (notes.truncated) landedReason = "land-notes-truncated";
+    else if (!d) landedReason = "worktree-ahead-unreadable";
+    else if (d.ahead === 0) landedReason = "nothing-to-land";
+    else landed = "no";
+    const target: WorkplaceRow["target"] = { branch: baseBranch, head: targetHead, behind, landed, landedAs, basis: "land-note" };
+    if (!targetHead) why.push({ field: "target.head", reason: "target-head-unreadable" });
+    if (behind === null) why.push({ field: "target.behind", reason: graphReason ?? "base-or-target-unreadable" });
+    if (landedReason) why.push({ field: "target.landed", reason: landedReason });
+    if (!landedAs) why.push({ field: "target.landedAs", reason: landedReason ?? "no-matching-land-note" });
+    let template: WorkplaceRow["template"] = null, testinstanz: WorkplaceRow["testinstanz"] = null;
+    if (!testinstanzPathIdentity(w.path)) why.push({ field: "template", reason: "worktree-unreadable" });
+    else try {
+      const script = lstatSync(`${w.path}/testinstanz.sh`);
+      template = script.isFile() && (script.mode & 0o111) !== 0 ? "present" : "missing";
+    } catch (e: unknown) {
+      if (e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT") template = "missing";
+      else why.push({ field: "template", reason: "template-unreadable" });
+    }
+    if (template === "present") {
+      try { testinstanz = await workplaceInstance({ repo, path: w.path, primary: w.primary, identity: "" }); } catch { /* named below */ }
+    }
+    if (!testinstanz) why.push({ field: "testinstanz", reason: template === "missing" ? "missingScript" : "instance-unreadable-or-busy" });
+    else {
+      const nulls = (value: Record<string, unknown>, prefix: string) => {
+        for (const [key, v] of Object.entries(value)) {
+          if (v === null) why.push({ field: `${prefix}.${key}`, reason: key === "copyHead" ? "copy-version-unproven" : "instance-field-unrecorded" });
+          else if (v && typeof v === "object" && !Array.isArray(v)) nulls(v as Record<string, unknown>, `${prefix}.${key}`);
+        }
+      };
+      nulls(testinstanz.instance, "testinstanz.instance");
+      if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
+    }
+    return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
+      session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
+  };
+  const worktrees: WorkplaceRow[] = new Array(rows.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(6, rows.length) }, async () => {
+    for (;;) { const i = next++; if (i >= rows.length) return; worktrees[i] = await readRow(rows[i]); }
+  }));
+  return { repo, branches, worktrees, landNotes: { truncated: notes.truncated }, reasons };
+}
+const WORKPLACE_REMOTE_CAP = 20;
+const WORKPLACE_PATH_CAP = 2000;
+async function workplaceStandSources(repos: WorkplaceRepo[], observedAt: number): Promise<WorkplaceStandSource[]> {
+  const out: WorkplaceStandSource[] = [];
+  const canonical = (r: string) => { try { return realpathSync(r); } catch { return r; } };
+  const source = (s: WorkplaceStandSource) => out.push(s);
+  for (const r of repos) for (const w of r.worktrees ?? []) {
+    const branch = w.session ? w.target.branch : repoBases[r.repo] ?? r.worktrees?.find((row) => row.primary)?.branch ?? null;
+    source({ kind: "worktree", repo: r.repo, path: w.path, name: null, head: w.head,
+      basis: "worktree-head", codeScope: "repository", observedAt, branch,
+      headReason: "worktree-head-unreadable", update: null });
+    if (w.template === "present") source({ kind: "test-instance", repo: r.repo, path: w.path, name: null,
+      head: null, basis: "copy-unproven", codeScope: "server", observedAt,
+      branch, headReason: "copy-running-version-unproven", update: null });
+  }
+  for (const r of repos) if (r.worktrees === null) source({ kind: "worktree", repo: r.repo, path: r.repo,
+    name: null, head: null, basis: "worktree-head", codeScope: "repository", observedAt,
+    branch: repoBases[r.repo] ?? null, headReason: "repo-worktrees-unreadable", update: null });
+  const clones = slots.filter((s) => s.worktree?.form === "clone" && s.cwd).map((s) => ({
+    cwd: s.cwd!, repo: canonical(s.worktree!.repo), branch: s.worktree!.base ?? null }));
+  for (const clone of clones) {
+    const head = await gitRead(clone.cwd, "rev-parse", "HEAD");
+    source({ kind: "worktree", repo: clone.repo, path: clone.cwd, name: null,
+      head: head.code === 0 && /^[0-9a-f]{40}$/.test(head.out) ? head.out : null,
+      basis: "worktree-head", codeScope: "repository", observedAt, branch: clone.branch,
+      headReason: "clone-head-unreadable", update: null });
+  }
+  source({ kind: "live-server", repo: canonical(REPO_DIR), path: null, name: INSTANCE_NAME,
+    head: BOOT_HEAD, basis: "boot-head", codeScope: "server", observedAt,
+    branch: null, headReason: "boot-head-unreadable", update: null });
+  for (const d of helperDevices.values()) {
+    const update = helperUpdates.get(d.id);
+    const updateSha = update?.result?.mainSha ?? update?.claim?.mainSha ?? null;
+    source({ kind: "helper-daemon", repo: HELPER_UPDATE_REPO ? canonical(HELPER_UPDATE_REPO) : null,
+      path: null, name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: d.daemonSha ?? null,
+      basis: "heartbeat", codeScope: "helper-daemon", observedAt: d.lastSeen,
+      branch: HELPER_UPDATE_REPO ? repoBases[HELPER_UPDATE_REPO] ?? null : null, headReason: "daemon-sha-unreported",
+      update: update ? { state: update.state, main: typeof update.main === "string" && update.main ? update.main : null, mainSha: updateSha && /^[0-9a-f]{40}$/.test(updateSha) ? updateSha : null } : null });
+    if (d.repos === undefined) source({ kind: "helper-repo", repo: null, path: null,
+      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: null, basis: "heartbeat",
+      codeScope: "repository", observedAt: null, branch: null, headReason: "repos-unreported", update: null, repoReading: null });
+    else for (const r of d.repos.repos) source({ kind: "helper-repo", repo: r.name, path: null,
+      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: r.head, basis: "heartbeat",
+      codeScope: "repository", observedAt: r.reason === "invalid-report" && r.head === null ? null : r.at,
+      branch: r.branch, headReason: r.reason ?? "repo-head-unreadable",
+      update: null, repoReading: r });
+    if (d.instance) source({ kind: "helper-instance", repo: canonical(REPO_DIR), path: null,
+      name: /^[a-z0-9 _-]{1,64}$/i.test(d.name) ? d.name : null, head: null, basis: "checkout-unproven", codeScope: "server",
+      reportedCheckout: { head: d.instance.head, observedAt: d.instance.at },
+      observedAt: d.instance.at, branch: null, headReason: "helper-instance-running-sha-unreported", update: null });
+  }
+  for (const link of INSTANCE_LINKS) source({ kind: "linked-instance", repo: null, path: null, name: link.name,
+    head: null, basis: "link-only", codeScope: "server", observedAt: null, branch: null,
+    headReason: "linked-instance-sha-unreported", update: null });
+  return out;
+}
+function workplaceDaemonGraph(repo: string): Set<string> | null {
+  const paths = new Set<string>(), pending = ["helper-daemon/daemon.ts"], root = resolve(repo);
+  try {
+    while (pending.length) {
+      if (paths.size >= 4000) return null;
+      const path = pending.pop()!;
+      if (paths.has(path)) continue;
+      const source = readFileSync(`${root}/${path}`, "utf8"); paths.add(path);
+      for (const m of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["'](\.[^"'\n]*)["']/g)) {
+        const absolute = resolve(dirname(`${root}/${path}`), m[1]);
+        if (!absolute.startsWith(`${root}/`)) return null;
+        const stem = absolute.endsWith(".js") ? absolute.slice(0, -3) : absolute;
+        const next = [absolute, `${stem}.ts`, `${stem}.tsx`, `${absolute}/index.ts`]
+          .find((p) => /\.tsx?$/.test(p) && existsSync(p));
+        if (!next) return null;
+        pending.push(next.slice(root.length + 1));
+      }
+    }
+    return paths;
+  } catch { return null; }
+}
+async function workplaceStandReader(repo: string, primaryBranch: string | null, measuredAt: number) {
+  const [refs, remoteNames] = await Promise.all([
+    gitRead(repo, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(upstream)", "refs/heads/", "refs/remotes/"),
+    gitRead(repo, "remote"),
+  ]);
+  const tips = new Map<string, { head: string; upstream: string }>();
+  if (refs.code === 0) for (const line of refs.out.split("\n")) {
+    const [ref, head, upstream = ""] = line.split("\t");
+    if (/^[0-9a-f]{40}$/.test(head ?? "")) tips.set(ref, { head, upstream });
+  }
+  const names = remoteNames.out.split("\n").filter(Boolean);
+  const ages = new Map<string, Promise<number | null>>();
+  const comparisons = new Map<string, Promise<WorkplaceGitComparison>>();
+  const paths = new Map<string, Promise<string[] | null>>();
+  const daemonGraph = workplaceDaemonGraph(repo);
+  const compare = (head: string | null, ref: string, scope: WorkplaceStand["codeScope"]): Promise<WorkplaceGitComparison> => {
+    const key = JSON.stringify([head, ref, scope]);
+    const cached = comparisons.get(key); if (cached) return cached;
+    const value = (async (): Promise<WorkplaceGitComparison> => {
+      const target = tips.get(ref)?.head ?? null, reasons: FactReason[] = [];
+      const result: WorkplaceGitComparison = { ref, head: target, mergeBase: null, distance: null, codeBehind: null, reasons };
+      if (!target) reasons.push({ field: "head", reason: refs.code === 0 ? "local-ref-missing" : "refs-unreadable" });
+      if (!head || !target) {
+        for (const field of ["mergeBase", "distance", "codeBehind"]) reasons.push({ field, reason: "stand-or-ref-sha-unavailable" });
+        return result;
+      }
+      const [base, range] = await Promise.all([
+        gitRead(repo, "merge-base", "--all", head, target),
+        gitRead(repo, "rev-list", "--left-right", `--max-count=${WORKPLACES_GRAPH_CAP + 1}`, `${head}...${target}`, "--"),
+      ]);
+      const bases = base.out.split("\n").filter(Boolean), lines = range.out.split("\n").filter(Boolean);
+      if (base.code === 0 && bases.length === 1 && /^[0-9a-f]{40}$/.test(bases[0])) result.mergeBase = bases[0];
+      else reasons.push({ field: "mergeBase", reason: bases.length > 1 ? "merge-base-ambiguous" : "merge-base-unreadable-or-unrelated" });
+      if (range.code === 0 && lines.length <= WORKPLACES_GRAPH_CAP && lines.every((l) => /^[<>][0-9a-f]{40}$/.test(l)))
+        result.distance = { ahead: lines.filter((l) => l[0] === "<").length, behind: lines.filter((l) => l[0] === ">").length };
+      else reasons.push({ field: "distance", reason: lines.length > WORKPLACES_GRAPH_CAP ? "commit-range-capped" : "commit-range-unreadable" });
+      if (result.distance?.behind === 0) { result.codeBehind = false; return result; }
+      if (!result.distance || !result.mergeBase) {
+        reasons.push({ field: "codeBehind", reason: "behind-range-unreadable" }); return result;
+      }
+      const pathKey = `${result.mergeBase}..${target}`;
+      let reading = paths.get(pathKey);
+      if (!reading) {
+        reading = gitRead(repo, "diff", "--name-only", "-z", "--no-renames", result.mergeBase, target, "--")
+          .then((r) => {
+            const names = [...new Set(r.out.split("\0").filter(Boolean))];
+            return r.code === 0 && names.length <= WORKPLACE_PATH_CAP ? names : null;
+          });
+        paths.set(pathKey, reading);
+      }
+      const changed = await reading;
+      if (!changed) { reasons.push({ field: "codeBehind", reason: "changed-paths-unreadable-or-capped" }); return result; }
+      const graph = scope === "server" ? repoGraph(repo, target) : null;
+      const roles = changed.map((p): boolean | null => {
+        if (scope === "server") {
+          const role = roleOf(p, graph);
+          return role === "server" ? true : role === "non-server" || (graph !== null && p.startsWith("helper-daemon/")) ? false : null;
+        }
+        if (scope === "helper-daemon") {
+          if (daemonGraph?.has(p)) return true;
+          if (["package.json", "bun.lock", "bun.lockb", "tsconfig.json"].includes(p)) return true;
+          if (p.endsWith(".md") || p.startsWith("e2e/") || p.startsWith("public/")) return false;
+          return daemonGraph === null ? null : false;
+        }
+        return p.endsWith(".md") ? false : true;
+      });
+      result.codeBehind = roles.includes(true) ? true : roles.includes(null) ? null : false;
+      if (result.codeBehind === null) reasons.push({ field: "codeBehind", reason: "code-ownership-unproven" });
+      return result;
+    })();
+    comparisons.set(key, value); return value;
+  };
+  return async (source: WorkplaceStandSource): Promise<WorkplaceStand> => {
+    const { branch, headReason, ...stand } = source;
+    const reasons: FactReason[] = [];
+    if (!stand.head || !/^[0-9a-f]{40}$/.test(stand.head)) { stand.head = null; reasons.push({ field: "head", reason: headReason }); }
+    if (stand.name === null) reasons.push({ field: "name", reason: "fleet-name-unrecorded-or-not-applicable" });
+    if (stand.path === null) reasons.push({ field: "path", reason: "no-local-worktree-path" });
+    if (stand.observedAt === null) reasons.push({ field: "observedAt", reason: "observation-time-unreported" });
+    if (stand.update === null) reasons.push({ field: "update", reason: "no-update-record-or-not-applicable" });
+    else {
+      if (stand.update.main === null) reasons.push({ field: "update.main", reason: "update-target-unrecorded" });
+      if (stand.update.mainSha === null) reasons.push({ field: "update.mainSha", reason: "update-sha-unrecorded" });
+    }
+    const targetBranch = branch ?? repoBases[repo] ?? primaryBranch;
+    const target = targetBranch ? await compare(stand.head, `refs/heads/${targetBranch}`, stand.codeScope) : null;
+    if (!target) reasons.push({ field: "target", reason: "target-branch-unreadable" });
+    let remote: WorkplaceStand["remote"] = null;
+    if (remoteNames.code !== 0 || names.length > WORKPLACE_REMOTE_CAP) reasons.push({ field: "remote", reason: names.length > WORKPLACE_REMOTE_CAP ? "remote-list-capped" : "remote-config-unreadable" });
+    else if (names.length === 0) remote = "none";
+    else if (!targetBranch || names.some((n) => instanceNameFrom(n) === null)) reasons.push({ field: "remote", reason: !targetBranch ? "remote-target-unreadable" : "remote-name-not-displayable" });
+    else {
+      const upstream = tips.get(`refs/heads/${targetBranch}`)?.upstream;
+      remote = await Promise.all(names.map(async (name): Promise<WorkplaceRemote> => {
+        const ref = upstream?.startsWith(`refs/remotes/${name}/`) ? upstream : `refs/remotes/${name}/${targetBranch}`;
+        let reading = ages.get(ref);
+        if (!reading) {
+          reading = gitRead(repo, "reflog", "show", "-1", "--date=raw", "--format=%gD", ref)
+            .then((r) => { const m = /@\{(\d+) [+-]\d+\}/.exec(r.out); return r.code === 0 && m ? Number(m[1]) * 1000 : null; });
+          ages.set(ref, reading);
+        }
+        const [comparison, refUpdatedAt] = await Promise.all([compare(stand.head, ref, stand.codeScope), reading]);
+        return { ...comparison, name, refUpdatedAt, refAgeMs: refUpdatedAt === null ? null : Math.max(0, measuredAt - refUpdatedAt),
+          reasons: [...comparison.reasons, ...(refUpdatedAt === null ? [{ field: "refUpdatedAt/refAgeMs", reason: "ref-update-time-unrecorded" }] : [])] };
+      }));
+    }
+    return { ...stand, target, remote, reasons };
+  };
+}
+async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Promise<WorkplaceStand[]> {
+  await bootHeadReady;
+  const sources = await workplaceStandSources(repos, measuredAt), out: WorkplaceStand[] = [];
+  for (const s of sources.filter((s) => s.kind === "helper-repo")) {
+    const { branch, headReason, repoReading: r, ...stand } = s;
+    const reasons: FactReason[] = [{ field: "target", reason: "helper-target-unreported" },
+      { field: "path", reason: "no-local-worktree-path" }, { field: "update", reason: "not-applicable" }];
+    if (stand.name === null) reasons.push({ field: "name", reason: "fleet-name-unrecorded" });
+    if (!r) for (const field of ["repo", "head", "remote", "remotes", "reportedBranch", "observedAt", "coverage"])
+      reasons.push({ field, reason: "repos-unreported" });
+    else {
+      if (r.reason) reasons.push({ field: "coverage", reason: r.reason });
+      if (stand.observedAt === null) reasons.push({ field: "observedAt", reason: "invalid-report" });
+      if (r.name === null) reasons.push({ field: "repo", reason: "invalid-report" });
+      if (r.head === null) reasons.push({ field: "head", reason: headReason });
+      if (branch === null) reasons.push({ field: "reportedBranch", reason: r.remote === null && r.reason ? r.reason : r.head ? "detached-head" : headReason });
+      if (r.remote === null) for (const field of ["remote", "remotes"]) reasons.push({ field, reason: r.reason ?? "remote-unreadable" });
+    }
+    out.push({ ...stand, reportedBranch: branch, target: null,
+      remotes: r?.remotes ?? null, coverage: { state: r?.coverage ?? "unreported", reason: r?.reason ?? (r ? null : "repos-unreported") },
+      remote: r?.remote === "none" ? "none" : r?.remote === "present" ? r.refs.map((f): WorkplaceRemote => ({
+        name: f.ref?.split("/")[0] ?? null, ref: f.ref === null ? null : `refs/remotes/${f.ref}`, head: f.head, mergeBase: f.mergeBase,
+        distance: f.ahead === null || f.behind === null ? null : { ahead: f.ahead, behind: f.behind },
+        codeBehind: null, refUpdatedAt: f.updatedAt, refAgeMs: f.updatedAt === null ? null : Math.max(0, measuredAt - f.updatedAt),
+        reasons: [{ field: "codeBehind", reason: "helper-code-paths-unreported" },
+          ...(f.updatedAt === null ? [{ field: "refUpdatedAt/refAgeMs", reason: "ref-update-time-unrecorded" }] : []),
+          ...(f.reason ? ["mergeBase", "distance", ...(f.head === null ? ["head"] : []), ...(f.ref === null ? ["ref", "name"] : [])].map((field) => ({ field, reason: f.reason! })) : [])],
+      })) : null, reasons });
+  }
+  for (const repo of [...new Set(sources.filter((s) => s.kind !== "helper-repo").map((s) => s.repo))]) {
+    const selected = sources.filter((s) => s.repo === repo && s.kind !== "helper-repo");
+    if (repo === null) {
+      for (const { branch, headReason, ...stand } of selected) out.push({ ...stand, target: null, remote: null,
+        reasons: ["repo", "target", "remote", "observedAt", "path", "update"].map((field) => ({ field, reason: "linked-or-unmapped-repo-unobserved" }))
+          .concat(stand.head === null ? [{ field: "head", reason: headReason }] : [], stand.name === null ? [{ field: "name", reason: "fleet-name-unrecorded" }] : []) });
+      continue;
+    }
+    const primary = repos.find((r) => r.repo === repo)?.worktrees?.find((w) => w.primary)?.branch ?? null;
+    const read = await workplaceStandReader(repo, primary, measuredAt);
+    const values: WorkplaceStand[] = new Array(selected.length); let next = 0;
+    await Promise.all(Array.from({ length: Math.min(6, selected.length) }, async () => {
+      for (;;) { const i = next++; if (i >= selected.length) return; values[i] = await read(selected[i]); }
+    }));
+    out.push(...values);
+  }
+  return out;
+}
+async function workplaces(): Promise<Workplaces> {
+  const allRepos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): on a test instance the server's own
+  // directory is the snapshot copy — no .git, so its only possible repo row is an unreadable
+  // placeholder the owner reads as a second Arbeitsort the fleet works in. It leaves the list with
+  // INSTANCE_SOURCE, the one mark testinstanz.sh hands every instance it starts; the live fleet
+  // (unset) keeps REPO_DIR exactly as before.
+  const self = (() => { try { return realpathSync(REPO_DIR); } catch { return REPO_DIR; } })();
+  const repos = INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
+  const key = JSON.stringify([repos, [...helperDevices.values()].map((d) => [d.id, d.name, d.daemonSha, d.instance, d.repos, d.lastSeen, helperUpdates.get(d.id)]), slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
+  if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
+    const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
+      try { return await workplaceRepo(repo, audits); } catch { return { repo, branches: null, worktrees: null, landNotes: { truncated: null },
+        reasons: [{ field: "repo", reason: "repo-observation-failed" }, { field: "landNotes.truncated", reason: "land-notes-unreadable" }] }; }
+    })))
+      .then(async (rows) => {
+        const measuredAt = Date.now(), stands = await workplaceStands(rows, measuredAt);
+        entry.at = Date.now();
+        return { repos: rows, stands, measuredAt, cacheMs: WORKPLACES_CACHE_MS };
+      }) };
+    workplacesCache = entry;
+  }
+  const value = await workplacesCache.value;
+  return { ...value, repos: value.repos.map((r) => ({ ...r, worktrees: r.worktrees?.map((w) => {
+    const holder = workplaceSession(w.path);
+    const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;
+    return { ...w, session: sessionMatches && holder ? w.session : null,
+      reasons: sessionMatches ? w.reasons : [...w.reasons, { field: "session", reason: "session-changed-since-measurement" }] };
+  }) ?? null })) };
 }
 
 // the real risk behind a destructive action, computed once and shared by every surface
@@ -7476,6 +8262,10 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
     main: intb ?? b.main, // null = primary is detached; the computed fallback stands
     worktrees: await Promise.all(b.worktrees.map(async (w) => ({
       ...w,
+      workplace: await (async () => {
+        const target = await testinstanzTarget(b.repo, w.path);
+        return target ? { path: target.path, mainCheckout: target.primary, measuredAt: Date.now() } : null;
+      })(),
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
       notepad: worktreeNotes[w.path] ?? null,
@@ -8168,11 +8958,22 @@ const releaseLaneLetter = (band: number, letter: string): void => {
   laneLetterReservations.get(band)?.delete(letter);
 };
 
+function slotOpeningGuard(s: Slot): () => void {
+  const expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, permissions: JSON.stringify(s.permissions) };
+  return () => {
+    if (s.cwd !== expected.cwd || s.openedAt !== expected.openedAt || s.selfToken !== expected.selfToken
+      || JSON.stringify(s.permissions) !== expected.permissions) throw new Error("slot occupant changed before opening");
+  };
+}
+
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined, browser = false,
-  context: SlotContext | null = null): Promise<{ cwd: string; branch: string; modelSupport?: CodexModelSupport }> {
+  context: SlotContext | null = null, permissions: SlotPermissions | null | undefined = undefined): Promise<{ cwd: string; branch: string; modelSupport?: CodexModelSupport }> {
   const h = harnessOf(harness);
+  const guard = slotOpeningGuard(s);
+  const selected = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
+  if (!selected.ok) throw new Error(selected.error);
   if (SEPARATE_LANE_SLOTS && s.id <= BAND_SLOTS) throw new Error("lane requires a place above bands 1..16");
   if (SEPARATE_LANE_SLOTS && !s.cwd
     && slots.filter((other) => other.id !== s.id && (other.cwd || laneSpawn.has(other.id))).length >= FLEET_MAX_SESSIONS)
@@ -8181,10 +8982,15 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // side effect of discovering its policy too late.
   if (!h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
   const root = await repoRootOf(repo);
+  guard();
   const anchor = await decideLaneAnchor(root, parent);
+  guard();
   const wt = await createWorktree(root, branch, form, undefined, undefined, h);
+  guard();
   const base = await integrationBranch(wt.repo);
+  guard();
   const baseSha = await laneForkSha(wt.path, base);
+  guard();
   // reserve+construct is one synchronous step — see laneLetterReservations
   const { band: letterBand, letter } = reserveLaneLetter(anchor);
   const ref: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
@@ -8195,9 +9001,10 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
+  guard();
   let modelSupport: CodexModelSupport | null;
   try {
-    const opened = await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context);
+    const opened = await openSlot(s, wt.path, ref, model, null, harness, effort, box, null, browser, context, false, permissions);
     if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
       || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane open");
     modelSupport = opened.modelSupport;
@@ -8299,6 +9106,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   browser: boolean;
   remote: boolean;
   context: SlotContext | null;
+  permissions: SlotPermissions | null;
   container: string | null;
   containerContext: string | null;
   webSearch: boolean;
@@ -8307,7 +9115,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, remote: s.remote, context: s.context, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
   webSearch: s.webSearch,
 } : null;
 
@@ -8320,6 +9128,7 @@ const sameSlotSpawnOccupant = (s: Slot, expected: SlotSpawnOccupant): boolean =>
   && s.harness === expected.harness && s.effort === expected.effort && s.browser === expected.browser
   && s.webSearch === expected.webSearch
   && s.context?.window === expected.context?.window && s.context?.compactAt === expected.context?.compactAt
+  && JSON.stringify(s.permissions) === JSON.stringify(expected.permissions)
   && s.container === expected.container && s.containerContext === expected.containerContext;
 
 const SLOT_POST_CAPTURE_LATCH = process.env.FLEET_TEST_SLOT_POST_CAPTURE_LATCH ?? null;
@@ -8385,6 +9194,11 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
   if (s.sleeping) return;
   let occupant = slotSpawnOccupant(s);
   if (!occupant) return;
+  const po = slotPermissionsOf(occupant);
+  if (!po.ok) {
+    if (cause === "heal") return;
+    throw new Error(po.error);
+  }
   const entrySpawn = slotSpawnInflight.get(s.id);
   if (entrySpawn) { await entrySpawn; return; }
   const name = sess(s.id);
@@ -8405,6 +9219,29 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     // RESUME when the harness's own conversation evidence still exists (transcript .jsonl, pi's
     // create-or-attach id, codex's exact rollout file) — asking claude's question of another
     // harness loses work. Narrativ: server-narrativ-archiv.md#ensureslot
+    let projectDocMaxBytes: number | undefined;
+    try {
+      if (s.worktree && !existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
+        const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+        if (!planned.ok) throw new Error(planned.error);
+        const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
+        if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
+        const agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
+          occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+        await writeLaneSessionAgents(occupant.cwd, agents);
+        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      }
+      const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
+      projectDocMaxBytes = s.worktree && projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
+    } catch (e) {
+      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`slot ${s.id}: session rules unavailable; spawn refused (${cause}): ${message}`);
+      if (cause !== "heal") throw new Error(`session rules unavailable: ${message}`);
+      return;
+    }
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;
@@ -8458,8 +9295,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser, context: occupant.context, rulebookRole,
-          webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null,
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, rulebookRole,
+          webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null, projectDocMaxBytes,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
@@ -8578,8 +9415,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   harness: string | null = null, effort: string | null = null,
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
-  browser = false, context: SlotContext | null = null, remote = false, webSearch = false, preObservedSupport: CodexModelSupport | null = null,
+  browser = false, context: SlotContext | null = null, remote = false, permissions: SlotPermissions | null | undefined = undefined, webSearch = false, preObservedSupport: CodexModelSupport | null = null,
   onCandidate: (occupant: SlotStreamOccupant) => void = () => {}): Promise<SlotOpenResult> {
+  const h = harnessOf(harness);
+  const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
+  if (!po.ok) throw new Error(po.error);
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
@@ -8595,7 +9435,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     throw new Error("slot occupant changed during open");
   };
   await waitForSlotTeardown(s.id);
-  assertOpenOccupant(!!pendingTeardown && pendingTeardown.occupant.openedAt === expected.openedAt
+  assertOpenOccupant(!!pendingTeardown && expected.cwd !== null && pendingTeardown.occupant.slot === s.id
+    && pendingTeardown.occupant.openedAt === expected.openedAt
     && pendingTeardown.occupant.selfToken === expected.selfToken);
   await waitForSlotSpawn(s.id);
   assertOpenOccupant();
@@ -8605,7 +9446,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
   try {
-  const h = harnessOf(harness);
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
   const modelSupport: CodexModelSupport | null = preObservedSupport
@@ -8695,6 +9535,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
   s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
+  s.permissions = po.permissions;
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
@@ -8748,8 +9589,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
   expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
+  const published = slotSpawnOccupant(s);
   await rm(historyPath(s.id), { force: true });
   assertOpenOccupant();
+  if (!published || !sameSlotSpawnOccupant(s, published)) throw new Error("slot occupant changed during open");
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
   if (treeLease?.founding) {
@@ -8909,6 +9752,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.webSearch = false;
   s.remote = false;
   s.context = null;
+  s.permissions = null;
   s.taskId = null;
   s.originId = null;
   s.programId = null;
@@ -9844,6 +10688,8 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
   programEventId?: string; beforePaste?: (receiver: Slot) => void;
+  programEventId?: string;
+  timing?: (phase: string, ms: number) => void;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
 type QueuedDelivery = { text: string; submit: boolean; options: SendTextOptions;
@@ -9959,6 +10805,29 @@ function refreshDeliveryBundles(): void {
     bundle.dueAt = next;
     scheduleDeliveryBundle(key, bundle);
   }
+}
+// THE HELD BUNDLE, SHOWN (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4): what
+// deliveryBundles holds for this occupant, on the owner poll. A report, never a gate — it reads the
+// map and changes nothing; timing, order and text stay flushDeliveryBundle's. dueAt null = held
+// without a deadline (a cold fleet event waits for the next send, coldDeliveryHeld). An entry queued
+// for an earlier occupant of a slot address is dropped at the flush, never typed here, so it does
+// not count. Omitted (undefined) when nothing is held.
+function heldDeliveriesView(s: Slot): { count: number; dueAt: number | null; paths: SendPath[] } | undefined {
+  if (!s.cwd || !deliveryBundles.size) return undefined;
+  let count = 0, dueAt = Infinity;
+  const paths = new Set<SendPath>();
+  for (const bundle of deliveryBundles.values()) {
+    if (!bundle.entries.length) continue;
+    const r = deliveryRecipient(bundle.address);
+    if (r?.id !== s.id || r.openedAt !== s.openedAt) continue;
+    const held = bundle.entries.filter((entry) => bundle.address.kind !== "slot"
+      || (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt));
+    if (!held.length) continue;
+    count += held.length;
+    dueAt = Math.min(dueAt, bundle.dueAt);
+    for (const entry of held) paths.add(entry.options.path);
+  }
+  return count ? { count, dueAt: Number.isFinite(dueAt) ? dueAt : null, paths: [...paths] } : undefined;
 }
 // One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
 // Two or more share the `bundle` header, so each mark carries its entry's own sentence.
@@ -10113,7 +10982,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
           senders: ordered.flatMap((entry) => entry.options.senders ?? []),
           rollbackOwnPayload: true, requireAgent: true,
           deliveryClass: immediate ? "sofort" : "buendelbar", bypassQueue: true,
-          paneInboxNotice: bundleNotice(ordered),
+          paneInboxNotice: bundleNotice(ordered), timing: immediate?.options.timing,
           ...(immediate?.options.reportId ? { reportId: immediate.options.reportId } : {}),
           ...(immediate?.options.inboxId ? { inboxId: immediate.options.inboxId } : {}),
           ...(immediate?.options.programEventId ? { programEventId: immediate.options.programEventId } : {}) });
@@ -10183,6 +11052,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       ? slotStreamOccupant(sender) : null;
     options = { ...options, senders: stamp ? [stamp] : [] };
   }
+  let phaseAt = performance.now();
+  const phase = (name: string): void => {
+    const now = performance.now();
+    options.timing?.(name, now - phaseAt);
+    phaseAt = now;
+  };
   const origin = { slot: s.id, openedAt: s.openedAt };
   if (!options.bypassQueue) {
   const address = options.address ?? deliveryAddress(s);
@@ -10246,6 +11121,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes can interleave with them and reorder pty input
   const task = s.inputChain.then(async () => {
+    phase("queue");
     if (s.openedAt !== origin.openedAt)
       throw new DeliveryCancelled("slot occupant changed before paste");
     // every paste reaches a sleeping pane by waking it first; a failed wake types nothing, and the
@@ -10318,6 +11194,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send agent probe — nothing typed");
       if (state !== "alive") throw new SendAgentNotAlive(state);
     }
+    phase("ready");
     const buf = `fleetbuf${occupant.slot}-${occupant.openedAt}-${randomBytes(8).toString("hex")}`;
     let ownPasteQuiet = false;
     try {
@@ -10347,8 +11224,10 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       stuckDeliveries.delete(s.id);
       await waitForSendTestLatch(SEND_AFTER_PASTE_TEST_LATCH, "after-paste", bound, text);
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after paste");
+      phase("paste");
       if (!submit) return { acceptance: "not-applicable" as const };
       await Bun.sleep(150);
+      phase("settle");
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before submit");
       // ENTER IS THE DESTRUCTIVE HALF OF A PASTE: only "partial" (payload provably still arriving)
       // blocks it. "differs" leaves completeness UNPROVABLE, never disproven, so the send proceeds
@@ -10371,10 +11250,13 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
             + `payload after ${arrivalWaitMs}ms; no Enter was sent`);
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
+      phase("arrival");
       const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
+      phase("submit");
       if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
       if (!observes) return { acceptance: "not-applicable" as const };
       const after = await awaitComposer(s, bound, (r) => r === "");
+      phase("accept");
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after submit");
       if (after === "") {
         if (bound.comms.length > 0 && await paneAgentAt(bound.paneId, bound.comms) !== "alive")
@@ -10401,6 +11283,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     } finally {
       if (ownPasteQuiet) s.quietUntil = Date.now() + OWN_PASTE_QUIET_TAIL_MS;
       await tmux("delete-buffer", "-b", buf);
+      phase("cleanup");
     }
   });
   s.inputChain = task.catch(() => {});
@@ -11087,7 +11970,7 @@ interface SuccessionPredecessorIdentity {
 // what the successor is SPAWNED as. Resolved once in handleSelfSucceed (body override, else the
 // predecessor's record) and handed to all three succession paths, so none of them can quietly go
 // on reading s.model/s.effort and reintroduce the inheritance-only behaviour for one path.
-interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null }
+interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null; readonly permissions: CodexPermissions | null }
 
 const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
   !!s.cwd && s.id === expected.slot && s.openedAt === expected.openedAt
@@ -11918,7 +12801,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   // profile and Remote Control as the lane it continues; only model/effort may move (handleSelfSucceed).
   return await restartLaneSession(s, { cwd, ref, label, harness: s.harness, model: spawn.model,
     effort: spawn.effort, box: { container: s.container, containerContext: s.containerContext },
-    browser: s.browser, remote: s.remote, webSearch: s.webSearch, hold, brief, context, event: "lane_succession",
+    browser: s.browser, remote: s.remote, permissions: spawn.permissions, webSearch: s.webSearch, hold, brief, context, event: "lane_succession",
     detail: `${ref.branch} session=${session}`, succession: { successions: s.laneSuccessions + 1 },
     answer: { session } });
 }
@@ -11933,7 +12816,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
 interface LaneRestart {
   cwd: string; ref: LaneRef; label: string | null;
   harness: string | null; model: string | null; effort: string | null;
-  box: BoxPin; browser: boolean; remote: boolean; webSearch: boolean;
+  box: BoxPin; browser: boolean; remote: boolean; permissions: CodexPermissions | null; webSearch: boolean;
   hold: LaneRowHold[]; brief: string; context?: LaneContextDelivery;
   event: "lane_succession" | "lane_harness"; detail: string;
   succession: { successions: number } | null;
@@ -11955,7 +12838,9 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   laneSpawn.add(s.id);
   try {
     try {
-      await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.webSearch);
+      const opened = await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions, r.webSearch);
+      if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
+        || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane restart");
     } catch (e) {
       // The predecessor's pane is already gone at this point and its rows went back to the queue
       // with detachSlotTasks' reason, which is the recoverable state: the worktree and its commits
@@ -12078,7 +12963,9 @@ const spawnName = (harness: string | null, model: string | null, effort: string 
 async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   if (!s.worktree) return json({ error: "not a lane — a harness switch keeps a worktree, and this slot has none (open a session with the harness you want instead)" }, 409);
+  const guard = slotOpeningGuard(s);
   const body = await readJson(req);
+  guard();
   if (!body || body.harness === undefined)
     return json({ error: "expected { harness, model?, effort? }" }, 400);
   // harness FIRST — it is what the model and the effort are judged by (same order as open)
@@ -12092,6 +12979,8 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
   const bo = boxOf(body, hh);
   if (!bo.ok) return json({ error: bo.why }, 400);
+  const pe = body.permissions === undefined && hh.id === harnessOf(s.harness).id ? slotPermissionsOf(s) : permissionsOf(body, hh);
+  if (!pe.ok) return json({ error: pe.error }, 400);
   // the same reservations the baton honours: a merge/land owns this tree, and a restart already in
   // flight (a baton, a dispatch) owns this slot — recycling under either orphans its job.
   if (mergeInflight.has(s.id))
@@ -12128,6 +13017,7 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
     model: mo.model, effort: eo.effort,
     box: bo.box !== NO_BOX ? bo.box : hh.supports.container ? { container: s.container, containerContext: s.containerContext } : NO_BOX,
     browser: s.browser && hh.browserProfile === "apply", remote: s.remote && hh.id === CLAUDE_HARNESS.id,
+    permissions: pe.permissions,
     webSearch: s.webSearch && hh.id === CODEX_HARNESS.id,
     hold, brief, event: "lane_harness", detail: `${ref.branch} ${from} -> ${to} task=${s.taskId ?? "-"} `
       + `uncommitted=${status.code === 0 ? status.lines.length : "unknown"}`,
@@ -12168,7 +13058,16 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     if (!mo.ok) return json({ error: mo.error }, 400);
     const eo = effortOf(body, hh);
     if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+    const pe = slotPermissionsOf(s);
+    if (!pe.ok) return json({ error: pe.error }, 400);
+    if (body?.permissions !== undefined) {
+      const requested = permissionsOf(body, hh);
+      if (!requested.ok) return json({ error: requested.error }, 400);
+      if (JSON.stringify(requested.permissions) !== JSON.stringify(pe.permissions))
+        return json({ error: "succession keeps its permissions — owner recycle selects a new profile" }, 409);
+    }
     const spawn: SuccessionSpawn = {
+      permissions: pe.permissions,
       model: body?.model !== undefined ? mo.model : s.model,
       effort: body?.effort !== undefined ? eo.effort : s.effort,
     };
@@ -12314,7 +13213,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { brief, path: "succession", draft, label },
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
-        null, false, null, false, false, preObservedSupport, onCandidate),
+        null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -16613,10 +17512,10 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   // words the attended ▸ start button sends, validated below by the same validators. The refusal
   // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
   // separately because it is optional and travels as a unit, not three independent fields.
-  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo", "programId"];
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort", "permissions", "card", "variants", "files", "repo", "programId"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k)).filter((k) => k !== "base");
   if (extra.length)
-    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort), optional permissions, an optional card, optional variants, an optional files PROPOSAL, optional base and optional repo — [${extra.join(", ")}] is not read; a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -17566,8 +18465,8 @@ async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; op
   if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
   const body = await readJson(req);
   if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
-  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort");
-  if (extra.length) return json({ error: `this door reads harness, model and effort only — [${extra.join(", ")}] is not read` }, 400);
+  const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort" && k !== "permissions");
+  if (extra.length) return json({ error: `this door reads harness, model, effort and permissions only — [${extra.join(", ")}] is not read` }, 400);
   const choice = taskSpawnFromBody(body);
   if (!choice.ok) return json({ error: choice.error }, 400);
   if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
@@ -17864,7 +18763,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   // call answers to the same two conditions as every other unattended path, in the same order, so
   // the refusal reason is the specific one. The tick's own row gate refuses the same rows BEFORE a
   // slot is reserved; this lock stays for any caller that skips that gate (pinned in e2e/pins.ts).
+  const guard = slotOpeningGuard(free);
   const spawnH = harnessOf(spawn.harness);
+  const spawnPermissions = permissionsOf(spawn.permissions === undefined ? null : { permissions: spawn.permissions }, spawnH);
+  if (!spawnPermissions.ok) return { ok: false, error: spawnPermissions.error };
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
     return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
@@ -17887,20 +18789,26 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // the task's own target repo wins; the env default covers every unbound row. Resolve and choose
     // the parent BEFORE materialising the tree, exactly like openLaneInSlot.
     const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
+    guard();
     const anchor = await decideLaneAnchor(dispatchRepo, undefined);
+    guard();
     if (wave?.followers.some((t) => t.base !== next.base))
       throw new Error("one wave cannot mix task integration bases");
     const base = variantBase?.ref ?? await integrationBranch(dispatchRepo, next.base);
+    guard();
     const baseTip = variantBase?.sha ?? (base
       ? (await git(dispatchRepo, "rev-parse", `refs/heads/${base}`)).out
       : undefined);
+    guard();
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
     const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH);
+    guard();
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
     // its fallback in the normal case — all four open lanes on the live fleet.json, 2026-09-22.
     // Unresolvable → undefined → no key, so that record stays byte-identical to before.
     const baseSha = base ? await laneForkSha(wt.path, base) ?? baseTip : undefined;
+    guard();
     // same synchronous reserve as openLaneInSlot: the tick can open a lane while an owner click
     // opens another into the same band
     const { band: letterBand, letter } = reserveLaneLetter(anchor);
@@ -17914,10 +18822,23 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // A fresh clone's branch exists only in the clone — mirror it up NOW: until the root has the
     // ref, every root-side reader (drift, risk, the land path) reports an absence. No-op for a worktree.
     await syncLaneRefs(dRef, wt.path);
+    guard();
+    let prepared: ReturnType<typeof laneBrief> & { context: LaneContextDelivery };
     try {
-      await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
-        spawn.context ?? null, false, [next, ...(wave?.followers ?? [])].some((t) =>
+      const preparedBrief = laneBrief(next, clarify, wave);
+      const context = await laneContextDelivery({ ...free, cwd: wt.path, worktree: dRef,
+        harness: spawn.harness, model: spawn.model, effort: spawn.effort,
+        taskId: next.id, originId: next.originId ?? null, programId: next.programId ?? null }, wt,
+        preparedBrief.brief, preparedBrief.sourceRows, preparedBrief.briefSource, clarify);
+      guard();
+      await writeLaneSessionAgents(wt.path, context.sessionAgents);
+      guard();
+      prepared = { ...preparedBrief, context };
+      const opened = await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
+        spawn.context ?? null, false, spawn.permissions, [next, ...(wave?.followers ?? [])].some((t) =>
           t.card?.valid === true && t.card.web === "search"));
+      if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
+        || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during dispatch open");
     } finally {
       releaseLaneLetter(letterBand, letter);
     }
@@ -17957,7 +18878,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     free.awaiting = clarify ? "owner" : null;
     saveState();
     return { ok: true, slot: free.id, branch: wt.branch,
-      tail: briefAndSend(next, free, wt, ownerAct, clarify, wave) };
+      tail: briefAndSend(next, free, wt, ownerAct, clarify, wave, prepared) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
     next.status = wasStatus;
@@ -18170,8 +19091,7 @@ Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self
 `;
 }
 
-async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
-  ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null): Promise<void> {
+function laneBrief(next: Task, clarify: boolean, wave: WaveDispatch | null) {
   // THE ROWS THIS LANE CARRIES, head first — the wave's fixed order, and a one-element list for
   // every other dispatch. One list, so nothing below has to ask twice whether this is a wave.
   const waveRows: Task[] = wave ? [next, ...wave.followers] : [next];
@@ -18208,6 +19128,13 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
+  return { waveRows, sourceRows, brief, briefSource };
+}
+
+async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
+  ownerAct: boolean, clarify = false, wave: WaveDispatch | null = null,
+  prepared?: ReturnType<typeof laneBrief> & { context: LaneContextDelivery }): Promise<void> {
+  const { waveRows, sourceRows, brief, briefSource } = prepared ?? laneBrief(next, clarify, wave);
   // …and the counter-read's `atStart` is stamped at this same moment, so it says exactly whether the
   // let claude finish booting in the fresh pane before the first prompt lands
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
@@ -18325,18 +19252,14 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   const readiness = await waitForFoundingReadiness(free, () => !identityLost());
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`, readiness.screen ?? null); return; }
   try {
-    const context = await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
-    const { notesBlock, snippetBlock, studioLaneBlock, anchorBlock } = context;
+    const context = prepared?.context ?? await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
+    const { notesBlock, snippetBlock, studioLaneBlock } = context;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
-    // THE MEMORY POINTER (≤ 512 B): the reader and its limits, never a copy of the state it reads.
-    // AFTER the exit footer, never between brief and footer: the dispatch probes (e2e/tasks.ts (d),
-    // (d3), (d5), the manifest seam; the studio splice in e2e/programs.ts) measure everything in
-    // that span as the notes/source/studio/anchor region, and a pointer there moved all of their
-    // bytes (preview b546fb2cccdb, 7 red). Clarify gets none, like the notes and the footer.
-    const memoryBlock = clarify ? "" : `\n\n${memoryPointer("lane")}`;
-    const deliveredBrief = `${brief}${clarify ? "" : `\n\n${LANE_ROLE_CARD}`}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : laneExitFooter(free.harness, selfPosition(free).receiver)}${memoryBlock}`;
+    const deliveredBrief = clarify
+      ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${context.anchorBlock}`
+      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -18350,6 +19273,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 
 interface LaneContextDelivery {
   block: string;
+  sessionAgents: SessionAgents;
   notesBlock: string; snippetBlock: string; studioLaneBlock: string; anchorBlock: string;
   record: (deliveredBrief: string, at: number) => Promise<void>;
 }
@@ -18359,10 +19283,11 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   // The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
   // exist — derived from git, never assumed (the literal "fleet" once receipted foreign lanes untruly).
   const sourceTree = await dispatchSourceTree(wt.repo);
-  // Read the integration tip at the delivery seam; if it cannot be named, do not deliver a brief
-  // whose receipt would have to invent HEAD. THIS COMES BEFORE THE PLAN, and the order is the
-  // contract: the manifest is read AT this commit and the receipt asserts it.
-  const head = await integrationHead(wt.repo);
+  const laneHead = await gitRead(wt.path, "rev-parse", "--verify", "HEAD^{commit}");
+  if (laneHead.code !== 0 || !/^[0-9a-f]{40,64}$/.test(laneHead.out)) throw new Error("could not read lane HEAD for session rules");
+  // A detached source repo can fork a lane without an integration ref. Its actual lane commit
+  // still names the manifest and receipt source; Clarify retains its integration-only path.
+  const head = await integrationHead(wt.repo) ?? (clarify ? null : laneHead.out);
   if (!head) throw new Error("could not read integration HEAD for context receipt");
   const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
     triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES };
@@ -18452,9 +19377,11 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
-  const selected = contextReceiptSelections(plan.selected);
+  const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
+    free.harness, "lane", undefined, clarify ? "" : `${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
+  const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
+  return { sessionAgents, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
     block: `${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}`,
     record: async (deliveredBrief, at) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
@@ -18496,6 +19423,8 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
         // the named refs it could not deliver. 0/0/[] is "this brief carried no block".
         snippet: snippet.receipt,
         renderer: CONTEXT_ANCHOR_RENDERER,
+        sessionAgents: { path: "AGENTS.override.md", sha256: createHash("sha256").update(sessionAgents.text).digest("hex"),
+          bytes: sessionAgents.bytes, parts: sessionAgents.parts.map(({ content, ...part }) => part) },
         // The join key — the SAME function LaneOutcome.briefHash uses over the lane's first logged
         // prompt, so a receipt and the outcome it founded meet exactly. `hash` above keys a different question.
         briefHash: briefHashOf(deliveredBrief), briefSource,
@@ -18545,6 +19474,7 @@ type ContextReceiptSelection = {
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
   origin?: "program";
+  parts?: readonly Omit<SessionAgents["parts"][number], "content">[];
   // a private row only: the hash verdict and the fassung it was taken on — never the local path
   private?: { verdict: PrivatePackResolution["verdict"]; version: number | null };
 };
@@ -18610,8 +19540,9 @@ function renderContextAnchorBlock(input: ContextPlan): string {
   return `\n\n${lines.join("\n")}`;
 }
 
-function contextReceiptSelections(selected: readonly ContextPlanSelection[]): ContextReceiptSelection[] {
+function contextReceiptSelections(selected: readonly ContextPlanSelection[], agents?: SessionAgents): ContextReceiptSelection[] {
   return selected.map((selection) => {
+    const parts = agents ? { parts: agents.parts.filter((part) => part.packId === selection.id).map(({ content, ...part }) => part) } : {};
     const declared = declaredSourceHash(selection);
     const sourceHash = declared !== undefined ? { sourceHash: declared } : {};
     // useWhen is copied from the SELECTION, never re-read from the seed: the row must describe the
@@ -18620,11 +19551,12 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     // A Program pack says so on its row; every other row stays byte-identical to before the field.
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, hardness: selection.hardness, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash, ...origin };
+      return { id: selection.id, hardness: selection.hardness, ...parts, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin };
     const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
       hardness: selection.hardness,
+      ...parts,
       ...useWhen,
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,
@@ -20647,6 +21579,22 @@ function dropName(raw: string): string {
 // both images correctly and quoted the file's contents). One function, so the client and any later
 // caller cannot drift from what was measured.
 const dropMention = (path: string): string => `attached: ${path} — read it`;
+// THE READ SIDE, for the chat bubble that names a drop (card 7d9c5394, owner 2026-09-30: „[Zitat entfernt]“
+// ). The name is what dropName + the timestamp built, and
+// nothing looser: a name this pattern refuses was never written by the upload route.
+const DROP_NAME_RE = /^\d{13}-[A-Za-z0-9._-]{1,80}$/;
+// The bytes decide the type, never the name and never a stored claim: a drop is whatever the owner
+// pasted, and only a raster a browser draws without running anything is served. SVG is NOT here on
+// purpose (it is markup that can carry script); HEIC is not here because no browser on the board
+// draws it — the chat keeps the text line for both.
+function dropRasterType(b: Uint8Array): string | null {
+  const at = (i: number, ...v: number[]) => v.every((x, k) => b[i + k] === x);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return null;
+}
 // Read a request body to its end and throw it away, at flat memory cost. Only for the path that
 // REFUSES a request before consuming it — see the upload route's size pre-check for the failure
 // this prevents and the three variants that did not.
@@ -20853,7 +21801,10 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment") return null;
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
-  // A message typed while a turn runs is no user line: claude code queues it as an
+  // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
+  // sessionQueue below) and reaches the conversation in one of two measured forms
+  // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
+  // an ordinary type:user line; absorbed into a running tool turn it becomes an
   // attachment/queued_command (measured 2026-09-21, live transcript daccbb0e) — terminal typing
   // and chat-view sends alike, the chat view's prompt wrapped in its pasted_content envelope.
   // commandMode "prompt" is the owner's own words and renders as the user turn it is, through
@@ -20889,6 +21840,10 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
         else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
           blocks.push({ t: "text", text: cap(blk.text, 20_000) });
       }
+      // Esc mid-turn: Claude Code writes its own marker as a user text block (measured,
+      // docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The terminal shows it as a line under
+      // the answer; the chat view folds it instead of making it the owner's bubble.
+      if (blocks.length && blocks.every((x) => x.t === "text" && isInterruptMark(x.text))) meta = true;
       // a pure tool_result entry renders as part of the assistant's turn, not a user bubble
       if (blocks.length && blocks.every((x) => x.t === "tool_result"))
         return { n, role: "assistant", ts, blocks };
@@ -20912,6 +21867,50 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   }
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks, ...(meta && { meta: true }) };
+}
+
+// THE SESSION'S OWN QUEUE (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Fix 4). Claude Code
+// 2.1.288 writes every prompt it holds back as `{type:"queue-operation", operation:"enqueue",
+// content, timestamp}` and its leaving as `dequeue` (no content: the oldest goes, taken at the turn's
+// end) or `remove` (with content, reason absorbed_mid_turn / delivered_to_agent). Paired FIFO, what
+// is left open is what the session still holds — whoever sent it: the composer, the terminal, a
+// MAIN's /send, an auto. A `remove` whose content no longer matches (measured: a cross-session
+// message loses its hop-chain attribute in its opening tag between the two lines) takes the open
+// entry that ends the same way for longest, the oldest when none shares an ending. Two more rules keep
+// a prompt from waiting forever where Claude Code wrote no leaving line: a later real user turn
+// starts only after the queue was drained, and harness plumbing the chat view folds anyway
+// (task notifications, reminders) is never shown as waiting. Only the owner's live chat route asks.
+interface QueuedPrompt { text: string; at: string | null }
+function sharedTail(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
+  return n;
+}
+function sessionQueue(lines: readonly string[]): QueuedPrompt[] {
+  let open: QueuedPrompt[] = [];
+  for (const l of lines) {
+    const queueLine = l.includes('"queue-operation"');
+    if (!queueLine && !(open.length && l.includes('"user"'))) continue;
+    let d: { type?: unknown; operation?: unknown; content?: unknown; timestamp?: unknown; isMeta?: unknown; isSidechain?: unknown };
+    try { d = JSON.parse(l) as typeof d; } catch { continue; } // a torn last line — the next poll reads it whole
+    if (d.type === "queue-operation") {
+      const text = typeof d.content === "string" ? d.content : "";
+      if (d.operation === "enqueue") open = [...open, { text, at: typeof d.timestamp === "string" ? d.timestamp : null }];
+      else if (d.operation === "dequeue") open = open.slice(1);
+      else if (d.operation === "remove") {
+        const exact = open.findIndex((q) => q.text === text);
+        const tails = open.map((q) => sharedTail(q.text, text));
+        const hit = exact >= 0 ? exact : Math.max(0, tails.indexOf(Math.max(0, ...tails)));
+        open = open.filter((_, i) => i !== hit);
+      }
+    } else if (d.type === "user" && d.isMeta !== true && d.isSidechain !== true) {
+      // a real user turn (not a tool result, not a folded harness turn) means the queue was drained
+      const e = viewEntry(d, 0);
+      if (e && e.role === "user" && !e.meta) open = [];
+    }
+  }
+  return open.filter((q) => q.text.trim() !== "" && !q.text.startsWith("<system-reminder") && !q.text.startsWith("<task-notification"))
+    .map((q) => ({ text: trim(q.text, 20_000), at: q.at }));
 }
 
 // the conversation view's data source, shared by the owner chat view and the guest
@@ -20946,7 +21945,7 @@ function nativeOf(req: NativeReq, s: Slot, before: ReadSeat, read: { found: bool
     binding: transcriptBinding({ history: false, questions: read.questions, pinned: read.pinned, fileSession: read.fileSession, before, after }) };
 }
 async function transcriptPayload(s: Slot, afterRaw: number, full = false, native?: NativeReq):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript; queued?: QueuedPrompt[] }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw, native);
   const before: ReadSeat = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
@@ -20993,7 +21992,9 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
   }
   const entries: TEntry[] = [];
   const { model, effort } = transcriptModel(lines);
-  const tail = nat ? { native: nat } : {};
+  // the session's queue rides only on the owner's LIVE route: a past session's file holds no queue
+  // anyone still waits on, and share, steward and the export keep their payloads as they were
+  const tail = { ...(nat && { native: nat }), ...(native && !native.history && claude && { queued: sessionQueue(lines) }) };
   for (let i = after; i < lines.length; i++) {
     try {
       const parsed: unknown = JSON.parse(lines[i]);
@@ -27006,6 +28007,7 @@ interface HelperDevice {
   desiredMode?: DeviceMode;  // the OWNER's wish. Never written by the helper principal
   daemonSha?: string;        // the commit the daemon says it RUNS FROM (40 hex) — measured there, or absent
   instance?: HelperInstance;
+  repos?: HelperReposReading;
   // THE TWO CAPACITY NUMBERS, and neither is this server's reading of anything: both are the
   // DEVICE's own words about its own machine, echoed back to the board. `load` says how busy the
   // box is; these say how much of that is the fleet's and how much more it will take.
@@ -27026,7 +28028,7 @@ const helperDevices = new Map<string, HelperDevice>();
 // so a plain lastSeen touch (the claim paths) can spread this over the stored row without erasing
 // the last real report.
 type HelperHeartbeat = { mode?: DeviceMode; load?: number; capabilities?: string[]; daemonSha?: string;
-  maxParallelSuites?: number; running?: number; features?: string[]; instance?: HelperInstance };
+  maxParallelSuites?: number; running?: number; features?: string[]; instance?: HelperInstance; repos?: HelperReposReading };
 function validHelperInstance(value: unknown): value is HelperInstance {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
@@ -27707,7 +28709,7 @@ function auditStats(repo: string): { n: number; p50: number; p90: number } | nul
 function nearestRankStats(d: number[] | undefined): { n: number; p50: number; p90: number } | null {
   if (!d || d.length < AUDIT_DURATION_MIN_N) return null;
   const s = [...d].sort((a, b) => a - b);
-  const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
+  const at = (q: number): number => nearestRank(s, q)!;
   return { n: s.length, p50: at(0.5), p90: at(0.9) };
 }
 // THE LAND GATE'S DISTRIBUTION, the same bookkeeping one surface over: the board's land-check row
@@ -30720,6 +31722,14 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
         return json({ error: "daemonSha must be 40 hex digits" }, 400);
       reported.daemonSha = body.daemonSha;
     }
+    if (body && Object.prototype.hasOwnProperty.call(body, "repos")) {
+      if (Buffer.byteLength(JSON.stringify(body)) > HELPER_REPOS_BYTES_MAX + 4096)
+        return json({ error: "repo heartbeat exceeds 36 KiB" }, 400);
+      const repos = helperReposFrom(body.repos);
+      const at = Date.now();
+      reported.repos = repos ?? { at, repos: [{ name: null, at, head: null, branch: null,
+        remote: null, remotes: null, refs: [], coverage: "incomplete", reason: "invalid-report" }] };
+    } else reported.repos = undefined;
     if (body && Object.prototype.hasOwnProperty.call(body, "instance")) {
       const instance = body.instance;
       if (!instance || typeof instance !== "object" || Array.isArray(instance))
@@ -35615,6 +36625,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
 // while the rest of the auth surface (tokenFrom, secretEq, the share gates, guard) is imported
 // from server/auth.ts above.
 let TOKEN = "";
+const subscriptionReader = createSubscriptionReader();
+async function subscriptionUsage(target?: "local" | "provider"): Promise<SubscriptionUsage> {
+  const codex = target ? await subscriptionReader.refresh(target) : await subscriptionReader.get();
+  return { schema: "fleet.subscription-usage/v1", generatedAt: Date.now(), codex,
+    otherSubscriptions: { status: "unknown", reason: "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract" },
+    model: { ownerPreference: { status: "unknown", reason: "no dated owner preference source with scope and validity" },
+      registerDefaults: MODEL_DEFAULTS,
+      selected: slots.filter(s => s.cwd !== null).map(s => ({ slot: s.id, harness: s.harness,
+        model: s.model, source: "slot-state", decisionSource: "unknown", usedTurnModel: null })) } };
+}
 const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
 // throttled wrapper for the two request paths that check a caller-supplied token: a flat
 // per-attempt cost, same precedent as share auth (failStrike in server/auth.ts), but deliberately no
@@ -35943,6 +36963,8 @@ type FoundingPlan = {
   readonly mode: ContextPackMode;
   readonly triggers: readonly ContextPackTrigger[];
   readonly plan: ContextPlan;
+  /** the repo manifest as read at `head` — the plan route reads a repo pack's declared rule facts off it */
+  readonly manifest: ContextManifestRead;
 };
 async function foundingPlanOf(repo: string, harness: string | null,
   foundingMode: FoundingPlanMode): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
@@ -35967,14 +36989,54 @@ async function foundingPlanOf(repo: string, harness: string | null,
         capabilities: DISPATCH_CONTEXT_CAPABILITIES }
     : programMainContextFacts(frame, harness);
   const base = planContext(facts);
-  const { repoPlan, blobShas } = await repoManifestContextPlan(repoRoot, head, facts);
+  const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
   return { ok: true, value: { repoRoot, head,
     branch: branchRead.code === 0 && branchRead.out ? branchRead.out : null,
-    mode: facts.mode, triggers: facts.triggers,
+    mode: facts.mode, triggers: facts.triggers, manifest,
     plan: {
       selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected], blobShas),
       omitted: [...base.omitted, ...repoPlan.omitted],
     } } };
+}
+
+async function foundingSessionAgents(fp: Pick<FoundingPlan, "repoRoot" | "head" | "plan">, harness: string | null,
+  position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>, footer?: string): Promise<SessionAgents> {
+  const sourceBytes = new Map<string, string>();
+  const paths = new Set(fp.plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [] : pack.sources.map((source) => source.path)));
+  if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi")) paths.add("AGENTS.md");
+  for (const path of paths) {
+    const entry = await gitRead(fp.repoRoot, "ls-tree", fp.head, "--", path);
+    if (entry.code !== 0 || !/^100(?:644|755) blob /.test(entry.out)) continue;
+    const size = await gitRead(fp.repoRoot, "cat-file", "-s", `${fp.head}:${path}`);
+    if (size.code !== 0 || !/^\d+$/.test(size.out) || Number(size.out) > CONTEXT_MANIFEST_MAX_SOURCE_BYTES) continue;
+    const blob = await gitReadRaw(fp.repoRoot, "show", `${fp.head}:${path}`);
+    if (blob.code === 0 && !blob.out.includes("\0") && Buffer.byteLength(blob.out) === Number(size.out)) sourceBytes.set(path, blob.out);
+  }
+  const role = position === "lane" ? { text: LANE_ROLE_CARD, anchor: "LANE_ROLE_CARD" }
+    : position === "main" ? { text: MAIN_ROLE_CARD, anchor: "MAIN_ROLE_CARD" }
+    : { text: orchestratorRoleCard(harness), anchor: "ORCHESTRATOR_ROLE_CARD" };
+  const pointerLines = new Map<string, readonly string[]>();
+  for (const pack of fp.plan.selected) if ("privateSourceId" in pack.sources)
+    pointerLines.set(pack.id, footer !== undefined && position === "lane"
+      ? renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId))
+      : [`  private source ${pack.sources.privateSourceId} (resolved at delivery)`]);
+  return renderSessionAgents({ role: { ...role, path: "server.ts" }, position, harness, plan: fp.plan,
+    sourceBytes, selection, pointerLines,
+    footer: footer ?? (position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "") });
+}
+
+// A planned pack's DECLARED rule facts, for the founding window: a Fleet seed's from its code entry, a
+// repo pack's from the manifest the plan read at its head. Only arrays of strings are carried — the
+// ladder already judged this declaration, and a shape it could not have read is no fact to show.
+function declaredPackRule(id: string, manifest: ContextManifestRead): { harnesses: string[]; triggers: string[] } | null {
+  const strings = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? [...v] : null;
+  const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
+  const raw: Record<string, unknown> | undefined = seed ?? (manifest.kind === "packs"
+    ? manifest.packs.find((pack): pack is Record<string, unknown> =>
+      !!pack && typeof pack === "object" && !Array.isArray(pack) && (pack as Record<string, unknown>).id === id)
+    : undefined);
+  const harnesses = strings(raw?.harnesses), triggers = strings(raw?.triggers);
+  return harnesses && triggers ? { harnesses, triggers } : null;
 }
 
 // THE `packs` FIELD at the three founding doors (owner answer F4): the name is `packs`, never
@@ -37166,7 +38228,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
         (preObservedSupport, onCandidate) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
-          false, null, false, false, preObservedSupport, onCandidate),
+          false, null, false, spawn.permissions, false, preObservedSupport, onCandidate),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -37454,6 +38516,8 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   if (!mo.ok) return json({ error: mo.error }, 400);
   const eo = effortOf(body, hh);
   if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+  const pe = permissionsOf(body, hh);
+  if (!pe.ok) return json({ error: pe.error }, 400);
   if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
@@ -37514,8 +38578,10 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         ? body.label.trim() || null
         : `Program-MAIN: ${program.title}`.slice(0, MAX_LABEL);
       try {
-        await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
-          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease);
+        const opened = await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
+          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease, false, null, false, pe.permissions);
+        if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
+          || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during Program founding");
       } catch (e) {
         if (e instanceof TmuxNewSessionUnavailable)
           return unavailableFoundingResponse(program, founding, e);
@@ -38387,6 +39453,7 @@ if (existsSync(STATE_FILE)) {
             ...(isDeviceMode(d.desiredMode) ? { desiredMode: d.desiredMode } : {}),
             ...(typeof d.daemonSha === "string" && /^[0-9a-f]{40}$/.test(d.daemonSha) ? { daemonSha: d.daemonSha } : {}),
             ...(validHelperInstance(d.instance) ? { instance: d.instance } : {}),
+            ...(helperReposFrom(d.repos) ? { repos: helperReposFrom(d.repos)! } : {}),
             // the CAP survives a restart (it is a property of that machine's config, and the board
             // should not go blank over a deploy); the COUNT does not, and that asymmetry is the
             // point. `running` is a live fact about another machine's processes, and a restored one
@@ -39042,6 +40109,7 @@ if (existsSync(STATE_FILE)) {
         // ...and the context budget, re-judged by the same shape check as the doors: a broken or
         // hand-edited value loads as absent (today's spawn line), the slot itself stays
         if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
+        s.permissions = persistedPermissions((v as { permissions?: unknown }).permissions, hOf);
         // Queue provenance survives a server restart with the lane. Old slot rows omit both and
         // therefore retain the initialized nulls; no branch-name or git inference fills them in.
         const pti = (v as { taskId?: unknown }).taskId;
@@ -41393,37 +42461,64 @@ let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
   .catch(() => { BOOT_HEAD = null; }); // a boot-time throw must leave the fact unknown, not kill the server
-interface DeployGap {
-  bootHead: string | null; head: string | null; behindCount: number | null;
-  codeBehind: boolean | null;
-  // the third value made visible: paths in the range that the import graph could place on NEITHER
-  // side. They are counted in codeBehind (unknown is never an all-clear) but are not claimed to be
-  // server code. `null` wherever codeBehind itself is null — an unmeasured range names nothing.
-  codeBehindUnknown: string[] | null;
+const DEPLOY_LANDS_CACHE_MS = 3000;
+let deployLandsCache: { head: string; at: number; value: Pick<DeployGap, "lands" | "truncated" | "reasons"> } | null = null;
+async function deployLands(head: string): Promise<Pick<DeployGap, "lands" | "truncated" | "reasons">> {
+  if (deployLandsCache?.head === head && Date.now() - deployLandsCache.at < DEPLOY_LANDS_CACHE_MS) return deployLandsCache.value;
+  const r = await gitRead(REPO_DIR, "log", "--no-color", "--no-show-signature", "--notes=fleet/land",
+    `--max-count=${LAND_NOTES_SCAN_CAP + 1}`, "--format=%H%x00%N%x00", `${BOOT_HEAD}..${head}`, "--");
+  if (r.code !== 0) return { lands: null, truncated: null, reasons: [{ field: "lands", reason: "land-notes-unreadable" }] };
+  const parts = r.out.split("\0"), lands: DeployLand[] = [];
+  let scanned = 0, truncated = false;
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const sha = parts[i].trim(), raw = parts[i + 1].trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    if (++scanned > LAND_NOTES_SCAN_CAP) { truncated = true; break; }
+    if (!raw) continue;
+    if (lands.length >= LAND_NOTES_CAP) { truncated = true; break; }
+    let note: Record<string, unknown> | null = null;
+    try { note = testinstanzRecord(JSON.parse(raw)); } catch { /* unreadable note remains a named land */ }
+    const actor = testinstanzRecord(note?.actor);
+    const branch = typeof note?.branch === "string" && /^[a-zA-Z0-9/_.-]+$/.test(note.branch) ? note.branch : null;
+    const taskValue = note?.task ?? actor?.task;
+    const task = typeof taskValue === "string" && /^[0-9a-f]{8,64}$/.test(taskValue) ? taskValue : null;
+    const at = typeof note?.at === "number" && Number.isSafeInteger(note.at) && note.at > 0 ? note.at : null;
+    const reasons: FactReason[] = [];
+    if (branch === null) reasons.push({ field: "branch", reason: "land-branch-unreadable" });
+    if (task === null) reasons.push({ field: "task", reason: "land-task-unrecorded-or-unreadable" });
+    if (at === null) reasons.push({ field: "at", reason: "land-time-unreadable" });
+    lands.push({ sha, branch, task, at, reasons });
+  }
+  const value = { lands, truncated, reasons: [] };
+  deployLandsCache = { head, at: Date.now(), value };
+  return value;
 }
 async function deployGap(): Promise<DeployGap> {
   await bootHeadReady;
   const unknown: DeployGap = {
     bootHead: BOOT_HEAD, head: null, behindCount: null, codeBehind: null, codeBehindUnknown: null,
+    lands: null, truncated: null, reasons: [{ field: "deployGap", reason: "boot-head-unreadable" }],
   };
   if (!BOOT_HEAD) return unknown;
   const hd = await git(REPO_DIR, "rev-parse", "HEAD");
-  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return unknown;
+  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return { ...unknown, reasons: [{ field: "deployGap", reason: "head-unreadable" }] };
   const head = hd.out;
   if (head === BOOT_HEAD) {
-    return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false, codeBehindUnknown: [] };
+    return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false, codeBehindUnknown: [], lands: [], truncated: false, reasons: [] };
   }
   const [cnt, names] = await Promise.all([
     git(REPO_DIR, "rev-list", "--count", `${BOOT_HEAD}..${head}`),
     git(REPO_DIR, "diff", "--name-only", BOOT_HEAD, head),
   ]);
   const n = Number(cnt.out);
-  if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head };
+  const lands = await deployLands(head);
+  if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head, ...lands,
+    reasons: [...lands.reasons, { field: "behindCount/codeBehind", reason: "deploy-range-unreadable" }] };
   // keyed on `head`, so the graph is walked once per land and not once per 10 s git tick
   const graph = repoGraph(REPO_DIR, head);
   const roles = names.out.split("\n").filter(Boolean).map((p) => [p, roleOf(p, graph)] as const);
   return {
-    bootHead: BOOT_HEAD, head, behindCount: n,
+    bootHead: BOOT_HEAD, head, behindCount: n, ...lands,
     codeBehind: roles.some(([, role]) => role !== "non-server"),
     codeBehindUnknown: roles.filter(([, role]) => role === "unknown")
       .map(([p]) => p).slice(0, CODE_BEHIND_UNKNOWN_CAP),
@@ -42627,6 +43722,7 @@ Bun.serve<WSData>({
     return new Response("internal error", { status: 500 });
   },
   async fetch(req, server) {
+    startHttpTiming(req);
     // Every response leaves through finishHttp — the only place that sees the finished body AND the
     // accept-encoding (json() sees neither). Nested on purpose: a top-level extraction would reindent
     // ~1200 lines for no behavioural difference. Narrativ: server-narrativ-archiv.md#fetch-entry
@@ -42712,7 +43808,7 @@ Bun.serve<WSData>({
         cwd: s.cwd,
         mission: s.mission,
         awaiting: s.awaiting,
-        lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch } : null,
+        lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch, base: s.worktree.base ?? null } : null,
         // idleMs and `observed` carry the same honesty rule laneSignalView states: lastOutput 0
         // means this pane's output was never observed, NOT that it has been idle since the epoch.
         // Serving idleMs alone would hand a fresh session a ~1.79e12 and read as "long idle".
@@ -44154,6 +45250,23 @@ Bun.serve<WSData>({
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
+    if (url.pathname === "/api/worktrees" && req.method === "GET") {
+      if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
+      return json(await workplaces());
+    }
+
+    if (url.pathname === "/api/subscription-usage" && req.method === "GET") {
+      if (url.search) return json({ error: "subscription usage accepts no query parameters" }, 400);
+      return json(await subscriptionUsage());
+    }
+    if (url.pathname === "/api/subscription-usage/refresh" && req.method === "POST") {
+      const body = await readJson(req);
+      if (url.search || !body || Object.keys(body).length !== 1 || (body.target !== "local" && body.target !== "provider"))
+        return json({ error: "body must contain only target: local or provider" }, 400);
+      if (subscriptionReader.busy()) return json({ error: "subscription read in progress" }, 409);
+      return json(await subscriptionUsage(body.target));
+    }
+
     if (url.pathname === "/api/operational-view" && req.method === "GET")
       return json(operationalView?.read() ?? { schema: "fleet.operational-view/v1", freshness: "unknown", unknown: ["boot"] });
 
@@ -44382,12 +45495,18 @@ Bun.serve<WSData>({
           const inb = s.cwd ? inboundToday(s.id, pollNow) : null;
           const paneModel = s.cwd ? paneModelInfo.get(s.id) : undefined;
           const parked = parkedSendView(s);
+          const held = heldDeliveriesView(s);
           const modelSuperseded = s.cwd ? supersededModel(harnessOf(s.harness).id, s.model) : undefined;
           return {
             id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
             // Canonical checkout identity, separate from cwd: a main session may live in a
             // subdirectory. Older clients ignore it; a null before the slow git tick is UNKNOWN.
             repo: s.cwd ? (s.worktree?.repo ?? repoInfo.get(s.id) ?? null) : null,
+            workplace: (() => {
+              const p = testinstanzPlaces.get(s.id);
+              return p && p.cwd === s.cwd && p.openedAt === s.openedAt && p.sessionId === (s.sessionId ?? null)
+                && `${testinstanzPathIdentity(p.repo)}\0${testinstanzPathIdentity(p.path)}` === p.identity ? { path: p.path, mainCheckout: p.mainCheckout, measuredAt: p.measuredAt } : null;
+            })(),
             lastOutput: s.lastOutput,
             // `model` is the slot RECORD (rank 3 of the ONE precedence rule,
             // src/running.ts#runningModel — docs/harness-adapter.md describes it); `paneModel` below
@@ -44430,6 +45549,8 @@ Bun.serve<WSData>({
             // an owner /send waiting for an empty composer (THE PARKED SEND); omitted when none waits
             ...(parked ? { parkedSend: parked } : {}),
             ...(stuckDeliveryFor(s) ? { stuckDelivery: stuckDeliveryFor(s) } : {}),
+            // Fleet deliveries a bundle holds for this occupant (heldDeliveriesView); omitted when none
+            ...(held ? { heldDeliveries: held } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             ...(s.worktree && s.webSearch ? { webSearch: true } : {}),
@@ -44437,6 +45558,7 @@ Bun.serve<WSData>({
             ...(s.remote ? { remote: true } : {}),
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
+            ...(s.permissions ? { permissions: s.permissions } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
             ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
             // when this occupant last wrote its standing handover (handleSelfHandover); omitted when none
@@ -44885,6 +46007,58 @@ Bun.serve<WSData>({
     // the transport ledger (server/transport.ts). Its OWN route on purpose: /api/sessions is the endpoint
     // being shrunk, and a counter inside it would inflate what it measures. Owner-only, read-only.
     if (url.pathname === "/api/transport" && req.method === "GET") return json(transportReport());
+    if (url.pathname === "/api/perf") {
+      if (!tokenOk(cookieToken(req))) return json({ error: "Owner cookie required" }, 403);
+      if (req.method === "POST") {
+        if (Number(req.headers.get("content-length") ?? 0) > PERF_BODY_MAX)
+          return json({ error: "perf batch too large" }, 413);
+        const reader = req.body?.getReader();
+        if (!reader) return json({ error: "invalid perf JSON" }, 400);
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > PERF_BODY_MAX) { await reader.cancel(); return json({ error: "perf batch too large" }, 413); }
+          chunks.push(part.value);
+        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        let raw: unknown;
+        try { raw = JSON.parse(text); } catch { return json({ error: "invalid perf JSON" }, 400); }
+        if (!Array.isArray(raw) || !raw.length || raw.length > PERF_BATCH_MAX || !raw.every(validPerfRecord))
+          return json({ error: "invalid perf records" }, 400);
+        const at = Date.now();
+        const lines = raw.map((r: PerfRecord) => JSON.stringify({ ...r, at }) + "\n").join("");
+        if (existsSync(PERF_FILE) && statSync(PERF_FILE).size + Buffer.byteLength(lines) > PERF_ROTATE_BYTES)
+          renameSync(PERF_FILE, `${PERF_FILE}.1`);
+        appendFileSync(PERF_FILE, lines, { mode: 0o600 });
+        chmodSync(PERF_FILE, 0o600);
+        return json({ accepted: raw.length });
+      }
+      if (req.method === "GET") {
+        const since = Number(url.searchParams.get("since") ?? 0), until = Number(url.searchParams.get("until") ?? Date.now());
+        if (!Number.isFinite(since) || !Number.isFinite(until) || since < 0 || until < since)
+          return json({ error: "invalid perf time range" }, 400);
+        const { rows } = await readLedger<PerfRecord & { at: number }>(PERF_FILE);
+        const records = rows.filter((r) => validPerfRecord(rWithoutAt(r)) && Number.isFinite(r.at) && r.at >= since && r.at <= until);
+        const groups = new Map<string, { j: PerfRecord["j"]; dev: PerfRecord["dev"]; v: number; values: number[]; failed: number; hidden: number }>();
+        for (const r of records) {
+          const key = `${r.j}/${r.dev}/${r.v}`;
+          let g = groups.get(key);
+          if (!g) { g = { j: r.j, dev: r.dev, v: r.v, values: [], failed: 0, hidden: 0 }; groups.set(key, g); }
+          if (r.attrs?.hidden) g.hidden++;
+          if (!r.ok) g.failed++;
+          else if (!r.attrs?.hidden && r.ms !== null) g.values.push(r.ms);
+        }
+        return json({ n: records.length, hidden: records.filter((r) => r.attrs?.hidden).length, since, until, groups: [...groups.values()].map((g) => {
+          const sorted = g.values.sort((a, b) => a - b);
+          return { j: g.j, dev: g.dev, v: g.v, n: sorted.length, failed: g.failed, hidden: g.hidden,
+            p50: nearestRank(sorted, 0.5), p75: nearestRank(sorted, 0.75), p95: nearestRank(sorted, 0.95) };
+        }), records });
+      }
+      return json({ error: "method not allowed" }, 405);
+    }
     // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
     // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's
     // self token is rejected with 403 before the owner gate (see the block above /api/self/autos),
@@ -45217,6 +46391,8 @@ Bun.serve<WSData>({
       if (!laneBrowser.ok) return json({ error: laneBrowser.error }, 400);
       const laneContext = contextOf(body, laneHarness);
       if (!laneContext.ok) return json({ error: laneContext.error }, 400);
+      const lanePermissions = permissionsOf(body, harnessOf(laneH.harness));
+      if (!lanePermissions.ok) return json({ error: lanePermissions.error }, 400);
       const laneBox = boxOf(body, laneHarness);
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
@@ -45270,6 +46446,7 @@ Bun.serve<WSData>({
       if (attachPath && laneParent.parent)
         return json({ error: "parent cannot be set when attaching an existing worktree" }, 400);
       if (attachPath && attachBusy.has(attachPath)) return json({ error: "worktree is being attached" }, 409);
+      const guard = slotOpeningGuard(free);
       laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
       if (attachPath) attachBusy.add(attachPath);
       try {
@@ -45290,14 +46467,18 @@ Bun.serve<WSData>({
           // an attached lane is adopted without a parent — its band is 0, same reserve as every open
           const { band: attachLetterBand, letter: attachLetter } = reserveLaneLetter(null);
           const resumedAt = Date.now();
+          guard();
           let modelSupport: CodexModelSupport | null;
           try {
-            modelSupport = (await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
+            const opened = await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
               baseSha: attachSha ?? undefined, letter: attachLetter,
               ...(parked ? { resumedFrom: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
                 parkedAt: parked.parkedAt, resumedAt, verify: "stale" as const } } : {}) },
               laneModel.model, null, laneH.harness, laneEffort.effort,
-              NO_BOX, null, laneBrowser.browser === true, laneContext.context)).modelSupport;
+              NO_BOX, null, laneBrowser.browser === true, laneContext.context, false, lanePermissions.permissions);
+            if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
+              || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane attach");
+            modelSupport = opened.modelSupport;
           } finally {
             releaseLaneLetter(attachLetterBand, attachLetter);
           }
@@ -45332,7 +46513,7 @@ Bun.serve<WSData>({
             ...(parked ? { resumed: { candidate: parked.id, head: parked.head, reportId: parked.reportId,
               taskIds: rebound, verify: "stale" } } : {}) });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent, laneBrowser.browser === true, laneContext.context, lanePermissions.permissions);
         const lanePacksResult = laneFounding
           ? await deliverFoundingPacks(free, laneFounding, laneChosen)
           : lanePo.packs !== null ? { packsDelivered: true } : null;
@@ -45418,61 +46599,27 @@ Bun.serve<WSData>({
         const st = lstatSync(script);
         if (!st.isFile() || (st.mode & 0o111) === 0) return json({ error: "testinstanz.sh is missing or not executable" }, 409);
         const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
-        if (run.code !== 0) return json({ error: `testinstanz list failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
+        if (run.code !== 0) return json({ error: "testinstanz list failed" }, 409);
         // owner-only by POSITION (below the tokenGate): the one place a test instance's token
         // leaves its file — steward, self and share credentials all stop at the gate with a 401
         return json({ testinstanzen: testinstanzList(run.out, true) });
       } catch (error) {
-        return json({ error: `testinstanz list could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
+        return json({ error: "testinstanz list could not run" }, 409);
       }
     }
     const tiMatch = /^\/api\/slots\/(\d+)\/testinstanz$/.exec(url.pathname);
     if (tiMatch && (req.method === "GET" || req.method === "POST")) {
       const s = slotFrom(tiMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      if (!s.worktree || !s.cwd) return json({ error: `slot ${s.id} has no lane worktree` }, 409);
-      const cwd = s.cwd;
-      const script = `${cwd}/testinstanz.sh`;
-      let ready = false;
-      try {
-        const st = lstatSync(script);
-        ready = st.isFile() && (st.mode & 0o111) !== 0;
-      } catch { /* absent script is a named refusal below */ }
-      if (!ready) return json({ error: `testinstanz.sh is missing or not executable in slot ${s.id}'s worktree` }, 409);
-      if (testinstanzBusy.has(s.id)) return json({ error: `testinstanz command already running for slot ${s.id}` }, 409);
-      let action: "up" | "down" | "status" = "status";
-      let ttlMin = 240;
-      if (req.method === "POST") {
-        const body = await readJson(req);
-        if (!body || (body.action !== "up" && body.action !== "down"))
-          return json({ error: 'expected { action: "up" | "down", ttlMin?: number }' }, 400);
-        if (body.ttlMin !== undefined && (typeof body.ttlMin !== "number" || !Number.isInteger(body.ttlMin) || body.ttlMin < 1 || body.ttlMin > 1440))
-          return json({ error: "ttlMin must be a whole number from 1 to 1440" }, 400);
-        action = body.action;
-        if (typeof body.ttlMin === "number") ttlMin = body.ttlMin;
-      }
-      testinstanzBusy.add(s.id);
-      try {
-        if (action !== "status") {
-          const args = action === "up" ? ["up", "mixed", "--ttl", String(ttlMin)] : ["down"];
-          const run = await testinstanzCommand(cwd, args, action === "up" ? 240_000 : 30_000);
-          if (run.code !== 0)
-            return json({ error: `testinstanz ${action} failed (${run.code}): ${(run.err.trim() || run.out.trim()).slice(-500)}` }, 409);
-          if (action === "down") return json({ ok: true });
-        }
-        const status = await testinstanzCommand(cwd, ["status"], 15_000);
-        const fact = testinstanzFact(status.out);
-        if (!fact) {
-          if (action === "status" && status.out.startsWith("down ")) return json({ ok: true, state: "down" });
-          if (status.code !== 0) return json({ error: `testinstanz status failed (${status.code}): ${status.err.trim().slice(-500)}` }, 409);
-          return json({ error: "testinstanz did not report a live URL, port and expiry" }, 409);
-        }
-        return json(action === "status" ? { ok: true, state: "up", ...fact } : fact);
-      } catch (error) {
-        return json({ error: `testinstanz command could not run: ${String(error instanceof Error ? error.message : error).slice(0, 300)}` }, 409);
-      } finally {
-        testinstanzBusy.delete(s.id);
-      }
+      if (!s.cwd) return json({ error: `slot ${s.id} has no lane worktree`, state: "unknown", nullSpawn: true }, 409);
+      const repo = s.worktree?.repo ?? repoInfo.get(s.id) ?? s.cwd;
+      const path = s.worktree ? s.cwd : repoInfo.get(s.id) ?? s.cwd;
+      return await serveTestinstanz(req, repo, path, s);
+    }
+    if (url.pathname === "/api/worktrees/testinstanz" && (req.method === "GET" || req.method === "POST")) {
+      const repo = url.searchParams.get("repo"), path = url.searchParams.get("path");
+      if (!repo || !path) return json({ error: "expected known repo and path query parameters" }, 400);
+      return await serveTestinstanz(req, repo, path);
     }
 
     // set/clear a repo's integration branch — the branch lanes land into. Setting it lets the
@@ -45992,7 +47139,8 @@ Bun.serve<WSData>({
           // `chat`: whether the conversation view (💬) has something to read — a Claude Code
           // transcript, or an adapter's own conversation reader (codex, pi). Derived, so it can
           // never disagree with the two facts it is made of.
-          id: h.id, supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
+          id: h.id, permissions: h.permissions ? { status: "supported", ...h.permissions } : { status: "unsupported" },
+          supports: { ...h.supports, chat: h.supports.transcript || !!h.conversation }, models: h.models, effortLevels: h.effortLevels, note: h.note,
           // the TUI's safely-sendable slash commands (Harness.commands) — the ⌘-overlay's third
           // list, read from this same one-shot catalogue, never from the 2 s slot poll
           commands: h.commands,
@@ -46283,6 +47431,46 @@ Bun.serve<WSData>({
       audit("file_drop", s.id, `${rel} · ${file.size}b`);
       return json({ ok: true, path: target, name: rel.split("/").pop(), size: file.size, mention: dropMention(target) });
     }
+    // --- the READ side of a drop: the bytes behind one `attached: <path> — read it` line, so the chat
+    // bubble shows the picture instead of the path (card 7d9c5394). NOT a general file reader: the
+    // path must be EXACTLY `<realpath(slot cwd)>/drops/<a name the upload route builds>` — the same
+    // string dropMention printed — so a pasted foreign path, a traversal or another slot's drop is
+    // refused before any filesystem read. Owner cookie only (a share guest never reaches this block);
+    // the bytes are served only when they ARE a raster (dropRasterType), with nosniff, so a renamed
+    // HTML or SVG file can never execute under the board's origin.
+    const dropRead = /^\/api\/slots\/(\d+)\/drop$/.exec(url.pathname);
+    if (dropRead && req.method === "GET") {
+      const s = slotFrom(dropRead[1]);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      const cwd = s.cwd, openedAt = s.openedAt;
+      const raw = url.searchParams.get("path") ?? "";
+      const name = raw.slice(raw.lastIndexOf("/") + 1);
+      if (!raw.startsWith("/") || raw.length > 4096 || raw.includes("\0") || !DROP_NAME_RE.test(name))
+        return json({ error: "not a drop path" }, 400);
+      let root: string;
+      try { root = realpathSync(cwd); } catch { return json({ error: "this session's directory is gone" }, 404); }
+      const target = `${root}/${DROP_DIR}/${name}`;
+      // equality, not a prefix test: `/x/drops/../../etc/drops/<name>` and every other spelling of
+      // a path outside this slot's own drops/ is simply not this string
+      if (raw !== target) return json({ error: "not one of this session's drops" }, 404);
+      let resolved = "";
+      try { resolved = realpathSync(target); } catch { return json({ error: "no such drop" }, 404); }
+      // a symlinked drops/ or a symlink planted inside it resolves elsewhere: refused, not followed
+      if (resolved !== target) return json({ error: "not one of this session's drops" }, 404);
+      let st;
+      try { st = lstatSync(target); } catch { return json({ error: "no such drop" }, 404); }
+      if (!st.isFile() || st.size === 0 || st.size > UPLOAD_CAP) return json({ error: "not a readable drop" }, 404);
+      const buf = await Bun.file(target).arrayBuffer().catch(() => null);
+      // the read awaited: the slot may have been recycled meanwhile, and its new occupant's request
+      // must not be answered with the old occupant's bytes
+      if (s.cwd !== cwd || s.openedAt !== openedAt) return json({ error: "slot changed during this request" }, 409);
+      if (buf === null) return json({ error: "this drop could not be read" }, 404);
+      const bytes = new Uint8Array(buf);
+      const type = dropRasterType(bytes);
+      if (!type) return json({ error: "not an image this board shows" }, 415);
+      return new Response(bytes, { headers: { "content-type": type, "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox", "cache-control": "private, max-age=86400" } });
+    }
     // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
     // route above and for the same reason: the hash must be one the list THIS ROUTE computes just
     // offered, so no crafted rev can steer it at an object outside the repos Fleet has open.
@@ -46315,19 +47503,55 @@ Bun.serve<WSData>({
       if (mode !== "main" && mode !== "lane") return json({ error: "mode must be 'main' or 'lane'" }, 400);
       const ho = harnessIdOf({ harness: url.searchParams.get("harness") ?? undefined });
       if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      const position = url.searchParams.get("role") ?? mode;
+      if (!["lane", "main", "orchestratorin"].includes(position)) return json({ error: "role must be lane, main or orchestratorin" }, 400);
       const fp = await foundingPlanOf(repo, ho.harness, mode);
       if (!fp.ok) return json({ error: fp.error }, 400);
       const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
-      const { plan } = fp.value;
-      return json({
-        repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
-        mode, harness: resolveContextHarness(ho.harness),
-        selected: plan.selected.map((pack) => ({
+      const { plan, manifest } = fp.value;
+      const plannedAt = Date.now();
+      const partIds = new Set(plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [`${pack.id}.private`]
+        : pack.sources.map((source, index) => contextPartId(pack.id, source, index))));
+      const requested = url.searchParams.get("parts");
+      const chosen = requested === null ? undefined : requested.split(",").filter(Boolean);
+      if (chosen?.some((id) => !partIds.has(id))) return json({ error: "parts contains an unknown part id" }, 400);
+      const selection = chosen ? Object.fromEntries([...partIds].map((id) => [id, chosen.includes(id) ? "box" as const : "ausleihe" as const])) : undefined;
+      // packs= is the window's pack switches: the file renders only these of plan.selected (empty = none),
+      // so its size is the renderer's own; absent renders every selected pack, as before the parameter
+      const packsParam = url.searchParams.get("packs");
+      const packIds = packsParam === null ? null : packsParam.split(",").filter(Boolean);
+      if (packIds?.some((id) => !plan.selected.some((pack) => pack.id === id))) return json({ error: "packs contains an unknown pack id" }, 400);
+      const rendered = packIds === null ? fp.value
+        : { ...fp.value, plan: { ...plan, selected: plan.selected.filter((pack) => packIds.includes(pack.id)) } };
+      const sessionAgents = await foundingSessionAgents(rendered, ho.harness, position as "lane" | "main" | "orchestratorin", selection);
+      // Every field below is the PLAN'S OWN: anchors and sourceHash exactly as the receipt would write
+      // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
+      // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at
+      // delivery, and the window says so instead of reading the private root for a preview.
+      const selected: FoundingPlanPack[] = plan.selected.map((pack) => {
+        const rule = declaredPackRule(pack.id, manifest);
+        const sourceHash = declaredSourceHash(pack);
+        return {
           id: pack.id, bytes: pack.estimatedBytes,
+          group: pack.group ?? contextPackGroup(pack.id),
+          parts: sessionAgents.parts.filter((part) => part.packId === pack.id),
           source: seedIds.has(pack.id) ? "fleet-seed" : "repo-manifest",
           ...(pack.useWhen !== undefined ? { useWhen: pack.useWhen } : {}),
-        })),
-        omitted: plan.omitted.map((entry) => ({ id: entry.id, reason: entry.why })),
+          ...(rule ? { harnesses: rule.harnesses, triggers: rule.triggers } : {}),
+          anchors: "privateSourceId" in pack.sources ? { privateSourceId: pack.sources.privateSourceId }
+            : pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
+          ...(sourceHash !== undefined ? { sourceHash } : {}),
+        };
+      });
+      // harness-unsupported says WHICH agents the pack is for — the window explains a switched-off
+      // pack after an agent change with it; no other omission carries a fact the ladder trusted
+      const omitted: FoundingPlanOmission[] = plan.omitted.map((entry) => {
+        const rule = entry.why === "harness-unsupported" ? declaredPackRule(entry.id, manifest) : null;
+        return { id: entry.id, reason: entry.why, ...(rule ? { harnesses: rule.harnesses } : {}) };
+      });
+      return json({
+        repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
+        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted, role: position, sessionAgents,
       });
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:
@@ -46688,6 +47912,8 @@ Bun.serve<WSData>({
       if (!wBrowser.ok) return json({ error: wBrowser.error }, 400);
       const wContext = contextOf(wBody?.context !== undefined ? wBody : { context: wRowSpawn.context }, wHarness);
       if (!wContext.ok) return json({ error: wContext.error }, 400);
+      const wPermissions = permissionsOf(wBody?.permissions !== undefined ? wBody : { permissions: wRowSpawn.permissions }, wHarness);
+      if (!wPermissions.ok) return json({ error: wPermissions.error }, 400);
       const wFree = freeSessionSlot("lane");
       if (!wFree) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // captured BEFORE dispatchTask mutates anything, for the reason its own `wasStatus` is: a
@@ -46696,7 +47922,7 @@ Bun.serve<WSData>({
       const wWas = new Map(wFollowers.map((t) => [t.id, t.status] as const));
       const wr = await dispatchTask(wHead, wFree, true, false,
         { harness: wHarnessId, model: wModel.model, effort: wEffort.effort, ...(wBrowser.browser ? { browser: true } : {}),
-          ...(wContext.context ? { context: wContext.context } : {}) },
+          ...(wContext.context ? { context: wContext.context } : {}), ...(wPermissions.permissions ? { permissions: wPermissions.permissions } : {}) },
         { followers: wFollowers, wasStatus: wWas, sharedFiles: wWave.sharedFiles, klasse: wWave.klasse,
           units: wWave.units });
       if (!wr.ok) return json({ error: wr.error }, 500);
@@ -46723,7 +47949,7 @@ Bun.serve<WSData>({
       if (t.variantOf) return json({ error: `a variant starts only with its whole group — start the group row ${t.variantOf}` }, 409);
       if (t.variants) {
         const gBody = await readJson(req);
-        if (gBody && ["harness", "model", "effort", "browser", "context", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
+        if (gBody && ["harness", "model", "effort", "browser", "context", "permissions", "clarify"].some((k) => gBody[k] !== undefined && gBody[k] !== null && gBody[k] !== false))
           return json({ error: "a variant group runs the agents it was filed with — name no harness, model, effort, browser, context or clarify here" }, 400);
         const g = await startVariantGroup(t, true);
         if (!g.started) return json({ error: g.why }, 409);
@@ -46775,6 +48001,8 @@ Bun.serve<WSData>({
       // ...and the context budget the same way, re-judged against the EFFECTIVE harness
       const dContext = contextOf(dBody?.context !== undefined ? dBody : { context: dRowSpawn.context }, dHarness);
       if (!dContext.ok) return json({ error: dContext.error }, 400);
+      const dPermissions = permissionsOf(dBody?.permissions !== undefined ? dBody : { permissions: dRowSpawn.permissions }, dHarness);
+      if (!dPermissions.ok) return json({ error: dPermissions.error }, 400);
       const free = freeSessionSlot("lane");
       if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot") }, 409);
       // A RAW START is one where the lane receives the owner's DRAFT rather than a brief — the
@@ -46787,7 +48015,7 @@ Bun.serve<WSData>({
       const rawAck = dBody?.acknowledged === true && !t.brief;
       const r = await dispatchTask(t, free, true, clarify,
         { harness: dHarnessId, model: dModel.model, effort: dEffort.effort, ...(dBrowser.browser ? { browser: true } : {}),
-          ...(dContext.context ? { context: dContext.context } : {}) });
+          ...(dContext.context ? { context: dContext.context } : {}), ...(dPermissions.permissions ? { permissions: dPermissions.permissions } : {}) });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode and the EFFECTIVE harness ride in the audit detail, never a second event name: one "an
@@ -46797,7 +48025,7 @@ Bun.serve<WSData>({
       // WHICH AGENT this start handed the lane, per field with its origin, so a hand start says what
       // it ran instead of leaving the footer to tell (ctl.sh dispatch prints it). An absent model is
       // resolved the way the slot's own records resolve it (resolvedModel: the harness's default).
-      const dSpawn = { harness: dHarness.id, model: dModel.model ?? harnessDefaultModel(dHarness), effort: dEffort.effort,
+      const dSpawn = { harness: dHarness.id, model: dModel.model ?? harnessDefaultModel(dHarness), effort: dEffort.effort, ...(dPermissions.permissions ? { permissions: dPermissions.permissions } : {}),
         from: { harness: dFrom("harness"), model: dFrom("model"), effort: dFrom("effort") } };
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck, spawn: dSpawn });
     }
@@ -47333,7 +48561,9 @@ Bun.serve<WSData>({
       // its own executor would be a session widening its own grant.
       if (slotMatch[2] === "lane-harness") return await switchLaneHarness(s, req);
       if (slotMatch[2] === "open") {
+        const guard = slotOpeningGuard(s);
         const body = await readJson(req);
+        guard();
         if (!body) return json({ error: "expected application/json" }, 400);
         // harness FIRST — it is what the model and the effort are judged by
         const ho = harnessIdOf(body);
@@ -47347,6 +48577,8 @@ Bun.serve<WSData>({
         if (!bo.ok) return json({ error: bo.why }, 400);
         const co = contextOf(body, hh);
         if (!co.ok) return json({ error: co.error }, 400);
+        const pe = permissionsOf(body, hh);
+        if (!pe.ok) return json({ error: pe.error }, 400);
         const po = packsOf(body);
         if (!po.ok) return json({ error: po.error }, 400);
         const ro = remoteOf(body, hh);
@@ -47367,6 +48599,7 @@ Bun.serve<WSData>({
           ? { packsDelivered: true } : null;
         if (po.packs !== null && po.packs.length > 0) {
           const fp = await foundingPlanOf(typeof body.cwd === "string" ? body.cwd : "~", ho.harness, "main");
+          guard();
           if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
           const pick = chooseFoundingPacks(fp.value.plan, po.packs);
           if (!pick.ok) return json({ error: pick.error }, pick.code);
@@ -47375,8 +48608,11 @@ Bun.serve<WSData>({
         }
         let modelSupport: CodexModelSupport | null = null;
         try {
-          modelSupport = (await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context, ro.remote)).modelSupport;
+          const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
+            null, false, co.context, ro.remote, pe.permissions);
+          if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
+            || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
+          modelSupport = opened.modelSupport;
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),
@@ -47391,7 +48627,7 @@ Bun.serve<WSData>({
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s) : null;
         if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
-        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
+        return json({ ok: true, cwd: s.cwd, label: s.label, ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(roleCard ? { roleCard } : {}),
           ...roleConflictFor(s),
           ...(modelSupport ? { modelSupport } : {}),
           ...(packsResult ? packsResult : {}),
@@ -47399,7 +48635,9 @@ Bun.serve<WSData>({
             resend: `POST /api/succession-debts/${adopted.id}/resend` } } : {}) });
       }
       if (slotMatch[2] === "open-worktree") {
+        const guard = slotOpeningGuard(s);
         const body = await readJson(req);
+        guard();
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
         const parent = laneParentOf(body);
@@ -47417,6 +48655,8 @@ Bun.serve<WSData>({
         if (!wo.ok) return json({ error: wo.error }, 400);
         const co = contextOf(body, hh);
         if (!co.ok) return json({ error: co.error }, 400);
+        const pe = permissionsOf(body, hh);
+        if (!pe.ok) return json({ error: pe.error }, 400);
         const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         const po = packsOf(body);
@@ -47431,6 +48671,7 @@ Bun.serve<WSData>({
           ? { packsDelivered: true } : null;
         if (po.packs !== null && po.packs.length > 0) {
           const fp = await foundingPlanOf(body.repo, ho.harness, "lane");
+          guard();
           if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
           const pick = chooseFoundingPacks(fp.value.plan, po.packs);
           if (!pick.ok) return json({ error: pick.error }, pick.code);
@@ -47439,7 +48680,7 @@ Bun.serve<WSData>({
         }
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context, pe.permissions);
           if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form,
             ...(r.modelSupport ? { modelSupport: r.modelSupport } : {}),
@@ -47475,25 +48716,36 @@ Bun.serve<WSData>({
         return json({ ok: true, resumed: w.resumed, sessionId: s.sessionId });
       }
       if (slotMatch[2] === "restart") {
+        const guard = slotOpeningGuard(s);
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         if (s.sleeping || slotWakeInflight.has(s.id)) return json({ error: "slot is asleep — POST /api/slots/:id/wake brings it back" }, 409);
         if (slotTeardownInflight.has(s.id)) return json({ error: "slot is stopping" }, 409);
         if (restarting.has(s.id)) return json({ error: "a restart is already in flight" }, 409);
+        const body = await readJson(req);
+        guard();
+        const selected = slotPermissionsOf(s);
+        if (!selected.ok) return json({ error: selected.error }, 400);
+        if (body?.permissions !== undefined) {
+          const requested = permissionsOf(body, harnessOf(s.harness));
+          if (!requested.ok) return json({ error: requested.error }, 400);
+          if (JSON.stringify(requested.permissions) !== JSON.stringify(selected.permissions))
+            return json({ error: "restart keeps its permissions — recycle selects a new profile" }, 409);
+        }
         const pinned = s.sessionId;
-        const occupant = slotStreamOccupant(s);
+        const occupant = slotSpawnOccupant(s);
         if (!occupant) return json({ error: "slot not active" }, 409);
         restarting.add(s.id);
         try {
           const target = await existingTmuxTarget(sess(occupant.slot));
-          if (!target || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (!target || !sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot pane unavailable or changed during restart" }, 409);
           const stopped = await tmux("kill-pane", "-t", target.paneId);
-          if (stopped.code !== 0 || !sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (stopped.code !== 0 || !sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart stopped its pane" }, 409);
           // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session that is
           // back, and a route that only kills cannot say whether it is.
           await ensureSlot(s, "restart");
-          if (!sameSlotStreamOccupant(s, occupant) || slotTeardownInflight.has(s.id))
+          if (!sameSlotSpawnOccupant(s, { ...occupant, sessionId: s.sessionId }) || slotTeardownInflight.has(s.id))
             return json({ error: "slot changed while restart rebuilt its pane" }, 409);
         } catch (e) {
           if (e instanceof TmuxNewSessionUnavailable)
@@ -47504,7 +48756,7 @@ Bun.serve<WSData>({
         }
         // read off what ensureSlot DID rather than re-deriving its resume formula (two copies drift): a fresh
         // uuid (pin, no transcript) and no pin at all both answer false, which is the truth in both cases.
-        return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned });
+        return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned, ...(s.permissions ? { permissions: s.permissions } : {}) });
       }
       if (slotMatch[2] === "land") {
         const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerLandActor(req, s) });
@@ -47629,7 +48881,7 @@ Bun.serve<WSData>({
       const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
       let acceptance: Acceptance;
       try {
-        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true }));
+        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true, timing: (name, ms) => httpPhase(req, name, ms) }));
       } catch (e) {
         // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
         // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor

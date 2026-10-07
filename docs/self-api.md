@@ -50,6 +50,10 @@ ist es die eindeutig gelabelte lebende Orchestratorin. Ohne eindeutig auflösbar
 steht `receiver:null`, nie `owner`. `taskId` und `programId` kommen aus dem Lane-Slot;
 die MAIN erhält ihre `programId` aus der aktiven Bindung. Fehlende Werte bleiben `null`.
 `harness` und `model` sind die gespeicherten Spawn-Werte; `null` bedeutet Fleet-Default.
+`lane` ist `{repo,branch,base}` oder `null`; `base` ist die beim Lane-Start aufgezeichnete Basis
+(`Slot.worktree.base`, das Landziel), `null` wenn keine aufgezeichnet ist — nie abgeleitet.
+`testinstanz.sh#ti_measure` liest sie als Ziel des Testinstanz-Bands, wenn es von Hand in einer
+Lane-Pane läuft.
 
 `waitingOnMe` enthält offene Einträge `{kind,id,slot}` für ungelesene eingehende Nachrichten,
 fremde bewaffnete Watches auf die aktuelle Lane, geparkte Sends an ihre Occupation, offene Clarifications, unentschiedene
@@ -684,6 +688,16 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Steward, Export und Puls übergeben kein `native` und bleiben byte-gleich. Gemessen in
   `e2e/history.ts#runNativeQuestions` (anonyme Sentinel-Fixture in der gemessenen Feldstruktur,
   ungepinnt → gepinnt mit gepflanzter Linie, Share-Gegenprobe) und `e2e/history.ts#runForeignConversations`.
+- **Ein gesendeter Drop als Bild** (Owner-Route, seit 2026-10-03, Zeile 7d9c5394): `GET
+  /api/slots/:id/drop?path=<abs>` liefert die Bytes hinter einer `attached: <path> — read it`-Zeile
+  (`server.ts#dropMention`), damit die Chat-Blase das Bild zeigt (`src/client.ts#dropStrip`). Kein
+  Dateileser: `path` muss GLEICH `<realpath(cwd)>/drops/<Name aus dem Upload>` sein
+  (`server.ts#DROP_NAME_RE`), sonst 400/404 vor jedem Lesen; ein Symlink in `drops/` ist 404;
+  ausgeliefert wird nur, was die Bytes als PNG/JPEG/GIF/WebP ausweisen (`server.ts#dropRasterType`,
+  sonst 415 — SVG und HEIC nie), mit `nosniff`. Nach dem Lesen wird der Occupant neu geprüft (409).
+  Owner-Cookie, kein Token in der URL; ein Share-Gast bekommt 401, die Share-API hat kein Gegenstück.
+  Gemessen in `e2e/drops.ts#run` (echte Lane, Gegenproben, Share-Gast desselben Slots) und
+  `e2e/drops.ts#runDropChatDom` (Chromium-DOM 1200/390 gegen Fixtures).
 - **Die WARTESCHLANGE am Suite-Mutex ist seit 2026-09-20 dieselbe Frage wie der Lock:** `gate.queue`
   auf `/api/sessions` (`server.ts#suiteQueueView`) liest die Ticket-Verzeichnisse
   `t<n>.<pid>` unter `$FLEET_SUITE_LOCK.q`, die `e2e-stage.sh#_st_queue_scan` schreibt — in DEREN
@@ -1966,6 +1980,36 @@ Owner-Token, **keine** Self-Route; Entwurf B aus `docs/messungen/2026-09-15-frei
   Route lässt Status, Hold, Karte, Program und Kommentare stehen; `sent` und Variantengruppen sind 409.
   Jede tatsächliche Änderung schreibt `task_spawn` mit alter und neuer Wahl ins Audit.
 
+## Codex permissions — Gründung und Wiederanlauf
+
+`permissions:{sandbox,approval}` ist eine optionale Ausführungsauswahl an den bestehenden Türen:
+Owner `POST /api/slots/:id/open` (auch Recycle), `…/open-worktree`, `/api/lanes` (auch Attach),
+Program-MAIN-Gründung und Task-`spawn` bei Create/Dispatch. Genau zwei Schlüssel sind erlaubt:
+`sandbox: "read-only"|"workspace-write"|"danger-full-access"` und `approval: "on-request"|"never"`.
+Absenz wählt für Codex explizit `{sandbox:"danger-full-access",approval:"never"}`; jeder andere
+Harness verweigert eine explizite Auswahl mit 400 `permissions unsupported` vor Spawn.
+Ungültige Form oder Enum wird mit 400 verweigert; kein Null-Reset, kein Schema-Enum-Passthrough.
+
+`GET /api/sessions` zeigt die gewählte Auswahl als Slot-`permissions`; `GET /api/harnesses` zeigt
+`permissions:{status:"supported",sandbox:[…],approval:[…],default:{…}}` für Codex und
+`{status:"unsupported"}` für andere Harnesses. Persistenz, Fresh, exakter Resume, Heal, Wake und
+Restart halten dasselbe normalisierte Profil. `POST /api/slots/:id/restart` und Self-Succession
+akzeptieren optional nur das identische Profil; ein anderes ist 409, Auswahländerung benötigt
+Owner-Recycle. Der Owner-Harnesswechsel nimmt bei gleichem Harness ohne Feld dessen Profil mit,
+bei neuem Harness validiert er die neue Auswahl; keine Profilübertragung auf neue Worker.
+
+Alte Codex-Slotdaten ohne das Feld werden mit dem bisherigen Vollzugriffsprofil migriert.
+Vorhandene fehlerhafte Daten bleiben sichtbar/persistiert als `permissions:{state:"invalid"}` und
+verhindern Spawn/Restart, bis ein Owner-Recycle eine gültige Auswahl liefert. Recycle validiert
+vor Teardown und übernimmt ausschließlich den neuen Request. Nach externem await muss der exakte
+Occupant weiter gelten, bevor Profil oder Spawn publiziert wird.
+
+Die Auswahl steuert nur Codex-Ausführung, keine Fleet-Datensicht, MemoryGrants, Rollen oder Packs.
+Kein CLI-`--profile` und keine globale Konfigurationsänderung: Sandbox/Approval und CWD-Trust
+laufen über sitzungsbezogene CLI-Overrides. Supported/Refusal und die begrenzten Werte sind in
+`docs/harness-adapter.md` beim Codex-Profil beschrieben; ein unerwarteter Trust-Dialog bleibt ein
+Readiness-Refusal, kein automatisches Ja.
+
 ## spawn — `POST /api/self/tasks/:id/spawn`
 
 Die exakt gebundene MAIN eines aktiven Programs kann die Worker-Wahl einer eigenen `pending`- oder
@@ -3051,6 +3095,463 @@ Die Antwort bleibt an die Program- oder Rollenadresse des ursprünglichen Absend
 `GET /api/self/messages`, `waitingOnMe` und der bestehende Nachrichten-Tick lösen sie beim
 jeweiligen Lesen/Zustellen auf die dann gebundene Session auf. Die Owner-Route quittiert den
 Elterneintrag nicht. Fragen an den Owner laufen weiterhin über die Rückfrage-Kette.
+
+## Arbeitsorte — `GET /api/worktrees` (Owner)
+
+Eine reine Leseroute ohne Slot-Auswahl: `repos` kommt aus `server.ts#knownRepos`
+(Dispatch-Repo plus Repos belegter Slots), kanonische Duplikate werden zusammengeführt.
+Repos ohne diese Registrierung werden nicht durchsucht. Query-Selektoren, insbesondere freie
+`repo`/`path`-Werte, werden mit 400 verweigert; der vorhandene Owner-Auth-Kanal bleibt gültig.
+Self-, Share- und Steward-Credentials geben keine Leseberechtigung.
+
+Wire-Typ: `src/protocol.ts#Workplaces`. Die Antwort trägt `measuredAt` und `cacheMs:3000`.
+Je Repo stehen `branches` (immer main, overhaul nur bei vorhandenem lokalen Ref) und alle
+`worktrees` aus `listWorktrees`, einschließlich Haupt-Checkout, Detached- und slotloser Einträge.
+Branch-`distance` zählt `{ahead,behind}` exklusiv erreichbare Commits gegen main, keine
+Zeit- oder First-Parent-Schätzung. Worktree-`base` ist die gespeicherte Lane-Basis samt `baseSha`,
+sonst main; `distance` misst HEAD gegen genau diese Spitze. Eine fehlende Basis bleibt null.
+Eine aus Ref oder gespeicherter `baseSha` bekannte Basis bleibt auch bei Graphfehlern erhalten;
+nur der Abstand hängt vom Graph ab. `session:{slot,openedAt}` wird zusammen mit der Basis vor
+dem Status-Await festgehalten und beim Antworten nur übernommen, wenn der aktuelle Occupant
+beide Identitätswerte unverändert trägt. Sonst session:null mit session-changed-since-measurement.
+`target:{branch,head,behind,landed,landedAs,basis}` nennt das aktuelle Lane-Ziel (gespeichertes
+base, sonst main) und dessen Ref-Spitze. behind zählt Ziel-Commits seit der gespeicherten Basis,
+unabhängig vom Abstand Worktree-HEAD..Basis. basis ist land-note: landed:yes braucht eine
+fleet/land-Note mit dem Worktree-Branch auf einem Commit in der Ziel-Historie; landedAs ist
+dieser Commit. Das beweist die genannte Land-Notiz, keine Gleichheit mit dem heutigen HEAD.
+landed:no setzt bekannte eigene Commits (ahead>0), lesbare vollständige Notizen und keinen
+Treffer voraus. Ohne eigene Commits bleibt landed:null mit nothing-to-land. Unlesbare,
+malformierte oder gedeckelte Notizen, unbekanntes ahead oder unbekannte Ziel-Historie liefern
+null mit benanntem Grund. Positive Notizbelege bleiben auch bei Deckel gültig, wenn ihre
+Zugehörigkeit zum Ziel belegbar ist. `landNotes:{truncated}` benennt je Repo den Notizdeckel;
+unlesbar ist truncated:null mit land-notes-unreadable.
+`checks:{local,preview,gate,audit}` sitzt auf jeder Worktree-Zeile. Jede Stufe ist null oder
+`{state,head,at,fails,stale}`. state ist running|green|red|skipped|waiting; head ist die
+auf der Quelle aufgezeichnete Commit-SHA, at deren Ergebnis-/Start-/Angebotszeit (Millisekunden).
+`stale:true` heißt head ungleich dem gemessenen Worktree-HEAD, false heißt Gleichheit. Eine
+fehlende SHA oder Zeit bleibt null mit `checks.<stufe>.head|at|stale` in reasons; insbesondere
+hält ein laufender Land-Gate heute keine gemessene Kandidaten-SHA und erfindet keine.
+Zuordnung geschieht nach kanonischem Repo und Branch, niemals allein nach Slot. Historische
+Ergebnisse bleiben bei abweichender SHA sichtbar und werden stale, auch nach Slot-Recycling.
+
+- local: die jeweils neuesten `/api/self/jobs`-Beweise pro Kommando auf der SHA des neuesten
+  Angebots. running/waiting geht vor red, danach skipped/green. Grün behauptet nur diese
+  gehaltenen Kommandos, keine vollständige lokale Verify-Kette. Vor-Ort-Kommandos ohne Job
+  sind nicht gehalten und fehlen hier. Ein später eintreffendes altes Ergebnis ersetzt kein
+  neueres Angebot.
+- preview: das neueste Suite-Angebot nach offeredAt, einschließlich geteilter Läufe und
+  Ergebnis. Eine gemessene remote.clonedSha hat Vorrang vor der angebotenen commitSha.
+- gate: letzter zuordenbarer Merge-Versuch aus mergeLast/mergeParked oder dessen fleet/land-Note;
+  ein laufender branchgebundener Server-Gate kann running melden. candidateSha trägt die
+  Kandidatenidentität. Ein im Merge-Eintrag selbst gehaltenes repo hat Vorrang. Ohne dieses
+  Legacy-Feld nimmt die Projektion an, dass der aktuelle Slot-Inhaber mit demselben Branch und
+  Repo den Eintrag zuordnet; alternativ belegt eine Land-Note Branch und candidateSha.
+  verify.mainSha ist die Integrationsbasis und wird nicht als Kandidat
+  ausgegeben. Ein explizites ok:null ohne Timeout-/Wait-/Server-Ausfall ist skipped;
+  diese drei Ausfälle und eine fehlende Verify-Quittung bleiben null mit Grund.
+- audit: neuestes gehaltenes Audit mit covers für diesen Branch, oder sein laufender/geplanter
+  Audit, einschließlich ungeteilter und geteilter Helper-Claims. Alle Audit-Beobachtungen
+  werden nach covers[].at, dem Landzeitpunkt, geordnet, bei Gleichheit nach Beobachtungszeit
+  (Abschluss oder Start). Wartende Arbeit nutzt den vorhandenen auditClaimableSince-Zeitpunkt,
+  falls später als der Cover; ohne diese flüchtige Quelle bleibt ihre Zeit die Cover-Zeit.
+  Die angezeigte at ist diese Ergebnis-, Start- oder Claimability-/Cover-Zeit; ein spät
+  abgeschlossenes älteres Audit verdeckt deshalb keine Arbeit für ein neueres Land. head ist mainSha beziehungsweise das wartende mainAfter; diese Integrations-SHA
+  ersetzt nicht die Lane-SHA. not-applicable und eine geparkte Queue ohne Audit-Kommando
+  sind skipped. unknown wird null mit audit-unmeasured.
+
+Fehlende/entfallene Angebote heißen local-not-retained beziehungsweise preview-not-retained,
+ein fehlender Gate gate-not-retained. Das Audit nennt audit-not-retained oder die eingeschränkte
+Lesung audit-history-capped|malformed|unreadable. Diese Gründe beweisen keine historische
+Abwesenheit. Fail-Namen sind auf 20 Einträge und je 160 Zeichen gedeckelt und redigiert:
+Credential-Schlüssel einschließlich x-fleet-self-token entfernen auch einen Wert nach einem
+Leerzeichen-Schema; allein stehendes Bearer und token-Queryparameter ohne URL-Schema ebenfalls.
+IPv6-Adressen, auch geklammert in URLs und mit eingebettetem IPv4, werden ebenfalls geschwärzt.
+Keine rohen Tails, Helper-Namen, Netzwerkadressen oder Zugangsdaten werden übernommen.
+
+Fixture-Ausschnitt bei Worktree-HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:
+
+```json
+{"checks":{
+  "local":{"state":"green","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","at":300,"fails":[],"stale":false},
+  "preview":{"state":"red","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","at":300,"fails":["fixture rejection"],"stale":true},
+  "gate":null,
+  "audit":{"state":"waiting","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","at":100,"fails":[],"stale":false}
+},"reasons":[{"field":"checks.gate","reason":"gate-not-retained"}]}
+```
+
+Die zusätzliche Liste `stands` (`src/protocol.ts#WorkplaceStand`) beschreibt die Git-Version
+jedes Trägers. `repo` ist der kanonische **lokale Vergleichs-Checkout**, bei Helfern die Quelle
+für Daemon-Updates beziehungsweise diesen Fleet-Server; er behauptet keinen Pfad auf dem Helfer.
+Die Antwort ergänzt die Boot- und Daemon-Quellrepos, falls sie nicht in `knownRepos` stehen.
+Sie bleibt auf registrierte Repos und diese beiden Quellen begrenzt, ohne Dateisystemsuche.
+
+| kind | head / basis | Zuordnung |
+| --- | --- | --- |
+| worktree | HEAD / worktree-head | alle Git-Worktrees; aktive Clone-Lanes zusätzlich mit direkt lokal gelesener HEAD |
+| live-server | BOOT_HEAD / boot-head | laufender Prozess, unabhängig von heutiger Checkout-HEAD; INSTANCE_NAME oder null |
+| test-instance | null / copy-unproven | je vorhandenem testinstanz.sh, Zustand weiterhin in der Worktree-Zeile |
+| helper-daemon | daemonSha / heartbeat | je helperDevices-Eintrag, nur Fleet-Name; letzter gespeicherter Bericht |
+| helper-repo | Checkout-HEAD / heartbeat | explizite Repo-Liste; Repo-Name und Fleet-Maschinenname, keine Helferpfade |
+| helper-instance | null / checkout-unproven | wenn der vorhandene Heartbeat eine Instanz meldet; reportedCheckout separat |
+| linked-instance | null / link-only | je FLEET_INSTANCES-Link, nur Name, repo:null; keine Verbindung zur Instanz |
+
+`observedAt` nennt den lokalen Messbeginn, beim Daemon die vorhandene lastSeen-Zeit (auch Claim-
+Touches können sie erneuern), bei Helferinstanzen deren gemeldetes at; eine unbekannte Zeit ist
+null. Eine Heartbeat-SHA ist ein letzter Bericht, kein Beweis aktueller Erreichbarkeit.
+`update:{state,main,mainSha}` zeigt den vorhandenen Update-Auftrag separat. main nennt dessen
+Bundle-Ref; er beeinflusst niemals das Daemon-Vergleichsziel, das wie bei den übrigen Trägern
+aus repoBases bzw. dem Haupt-Checkout-Branch kommt. mainSha ist dessen
+Ergebnis-/Claim-SHA, niemals Ersatz für daemonSha; ohne Auftrag bleibt update:null mit Grund.
+Testkopien melden bisher keine belegte laufende Git-Version: weder recordedSource.before noch
+heutige Worktree-HEAD beweisen sie. Daher bleibt ihre head:null mit copy-running-version-unproven.
+Helferinstanzen melden bislang nur Checkout-HEAD (helper-daemon/daemon.ts#instanceOf), keine
+Boot-SHA ihres Prozesses. Daher head:null mit helper-instance-running-sha-unreported;
+`reportedCheckout:{head,observedAt}` hält ihre gemessene Checkout-Version separat, ohne sie als
+laufende Version auszugeben. Auch verlinkte Instanzen bleiben head:null mit linked-instance-sha-unreported; ihr Repo ist
+unbekannt. Geräte-/Instanznamen fehlen nur mit benanntem Grund. Keine Netzwerkadresse, Geräte-ID,
+Remote-URL oder Zugangsdaten werden in stands übernommen.
+
+**Repos auf Helfer-Maschinen.** Die optionale Daemon-Konfiguration
+`repos:[{"name":"example-repo","path":"~/example-repo"}]` erweitert ausschließlich den vorhandenen
+`POST /api/helper/device`-Heartbeat um `repos:{at,repos:[...]}`. Der Pfad bleibt in der lokalen
+Konfiguration; der Bericht trägt nur den eindeutigen Repo-Namen. Kein Suchen nach Repos,
+kein fetch oder zusätzlicher Netzaufruf. Ohne Konfiguration bleiben die Daemon-Heartbeat-Bytes
+unverändert. Ein explizites `repos:[]` meldet keine konfigurierten Repos; fehlendes `repos`
+bedeutet **unberichtet**, löscht auf einem echten Heartbeat die vorherige Repo-Meldung und
+wird in stands als `helper-repo` mit `repo:null, head:null, remote:null`,
+`coverage:{state:"unreported",reason:"repos-unreported"}` sichtbar. Ein bloßer Claim-Touch
+löscht die letzte Meldung nicht und erneuert deren Messzeit nicht.
+
+Je gemeldetem Repo erscheint ein eigener `helper-repo`-Träger mit `repo` als Repo-Name,
+`name` als Fleet-Maschinenname, `path:null`, `basis:"heartbeat"`, `codeScope:"repository"`,
+`observedAt` als Daemon-Messzeit, `reportedBranch`, `remotes` und
+`coverage:{state:"complete"|"incomplete",reason:null|<Grund>}`. `head` ist die gemessene
+Checkout-SHA, kein laufender Prozess. Unlesbares Repo: head/Branch/Remotes null, reason
+`unreadable`; ein konfiguriertes Unterverzeichnis statt der Repo-Wurzel nennt `not-repo-root`
+mit head/Branch/Remotes null (Git-Wurzel und Konfiguration werden nach realpath verglichen).
+Ein abgebrochener Messlauf nennt `budget`. `target:null` mit
+`helper-target-unreported`: ein fremdes Repo wird niemals über einen lokalen Namensgleichstand
+zugeordnet oder auf diesem Server gelesen. `remote:"none"` bezeichnet keine konfigurierten
+Remotes; sonst führt `remote` die lokal gespeicherten Remote-Refs mit Name, SHA, eindeutiger
+Merge-base und `distance:{ahead,behind}`. `remotes` führt auch konfigurierte Namen ohne lokale
+Refs. Remote-URLs, Helferpfade, Geräte-IDs, Adressen und rohe Git-Fehler werden nicht getragen.
+`codeBehind:null` mit `helper-code-paths-unreported`, da der Bericht keine Änderungspfade misst.
+`refUpdatedAt` kommt nur aus dem letzten lokalen Reflog-Eintrag des jeweiligen Refs;
+`refAgeMs` misst dessen Alter bei Antwort-Messbeginn. Ohne Reflog sind beide null mit Grund.
+Das Alter beweist keinen aktuellen Remote-Stand. Detached HEAD hat reportedBranch:null mit
+Grund; die SHA bleibt gemessen. Ein Repo-Bericht ist keine vollständige Platteninventur.
+
+Deckel dieser Erweiterung: **32 KiB für repos**, **36 KiB für einen Heartbeat mit repos**,
+8 Repos (größere Config wird verweigert), je Repo 8 Remote-Namen und 8 Remote-Refs;
+512 exklusive Commits je SHA/Ref-Vergleich. Überschreitungen bleiben sichtbar als
+`remote-cap`, `ref-cap` oder `commit-cap`, mit incomplete coverage und unbekannten betroffenen
+Vergleichen. Kein Wert wird als null ohne Grund ausgegeben. Ganze Messung höchstens 5 Sekunden,
+je Git-Prozess 750 ms und 32 KiB stdout; Cache 60 Sekunden ab Messbeginn, auch für Fehler.
+Cache-Treffer behalten die Messzeit. Der stands-Cache-Schlüssel enthält die Repo-Meldung.
+Die Eingangsprüfung isoliert falsche Repo-/Ref-Formen, doppelte Namen, unsafe labels,
+zusätzliche Felder und ungültige/null-widersprüchliche Distanzen je betroffener Zeile: deren
+unbelegte Felder werden null mit `invalid-report`, die Abdeckung incomplete. Gesunde Nachbarzeilen
+und andere Heartbeat-Felder einschließlich daemonSha bleiben erhalten. Eine kaputte/über 32 KiB
+liegende Repo-Hülle ergibt eine unbekannte Repo-Zeile; nur die Gesamtüberschreitung von 36 KiB
+verweigert den Heartbeat mit 400. Persistierte Meldungen durchlaufen dieselbe Zeilenprüfung.
+Der Daemon liest vollständige `refs/remotes/...`-Namen und entfernt ausschließlich dieses Präfix;
+ein gleichnamiger lokaler Branch verändert weder Ref-Identität noch Vergleich.
+
+Fixture-Wire (Repo ohne konfigurierten Remote):
+
+```json
+{"kind":"helper-repo","repo":"example-repo","name":"workhorse","path":null,
+ "head":"1111111111111111111111111111111111111111","basis":"heartbeat",
+ "codeScope":"repository","observedAt":1700000000000,"reportedBranch":"main",
+ "remotes":[],"coverage":{"state":"complete","reason":null},"target":null,"remote":"none","update":null}
+```
+
+`target:{ref,head,mergeBase,distance,codeBehind,reasons}` vergleicht die Träger-SHA mit dem
+lokalen Zielbranch: bei belegten Lanes ihre aufgezeichnete Basisbranch, sonst repoBases, sonst
+der Branch des Haupt-Checkouts. `distance:{ahead,behind}` zählt die exklusiv erreichbaren
+Commits in beiden Richtungen. mergeBase ist der einzige gemeinsame Abzweigpunkt; bei mehreren
+besten Basen, fehlenden Objekten oder unverbundener Geschichte bleibt er null mit Grund.
+Eine Clone-SHA, deren Objekt in der Quellrepo fehlt, bleibt trotzdem sichtbar; der Vergleich
+bleibt unbekannt. Es werden keine Clone-Refs gespiegelt.
+
+`remote` ist **"none"**, wenn das Repo keine konfigurierten Remotes besitzt: ein eigener Zustand,
+kein Fehler und kein null. Sonst nennt die Liste jeden konfigurierten Remote-Namen und dessen
+lokal vorhandene Zielspitze. Ein vorhandenes Upstream-Ref des Zielbranches bestimmt den
+Branch-Namen beim zugehörigen Remote; sonst gilt refs/remotes/<name>/<zielbranch>. Jede Zeile
+trägt denselben Git-Vergleich sowie `name,refUpdatedAt,refAgeMs`. Ein konfigurierter Remote ohne
+passendes Ref bleibt eine Zeile mit head:null und local-ref-missing. refUpdatedAt ist die Zeit
+des letzten **lokalen Reflog-Eintrags** für genau dieses Ref, refAgeMs der Abstand zum
+Antwort-Messbeginn measuredAt. Fehlendes/abgelaufenes Reflog liefert null mit
+ref-update-time-unrecorded. Das Alter beweist keinen aktuellen Remote-Stand; kein fetch,
+ls-remote oder Netzaufruf erfolgt. Nicht darstellbare Remote-Namen liefern remote:null mit Grund.
+
+`codeScope` benennt die Zuordnung von `codeBehind`: server verwendet denselben lokalen
+Importgraph und roleOf wie deployGap, zusätzlich sind nicht server-importierte helper-daemon/
+Dateien anderer Laufzeitcode; helper-daemon verwendet den lokalen Importgraph ab helper-daemon/daemon.ts und
+Runtime-Manifeste; Dokumentation und Test-/Bundle-Dateien bleiben fremd. Ein unlesbarer oder
+auf 4000 Dateien gedeckelter Daemon-Graph lässt andere Pfade unbekannt. repository zählt alle Änderungen außer Markdown als betroffen. Geprüft werden die
+Netto-Änderungspfade zwischen mergeBase und Zielspitze (`git diff --name-only -z
+--no-renames <mergeBase> <target> --`), einschließlich Änderungen aus Merge-Auflösungen.
+Zwischenzeitlich vollständig zurückgenommene Änderungen zählen nicht als Code-Rückstand. Kein Rückstand ergibt false; sicher betroffener Code true; nur bekannte fremde
+Pfade false; ungeklärte Zuordnung ohne positiven Treffer null mit code-ownership-unproven.
+Beide Laufzeit-Zuordnungen lesen den lokalen Checkout-Importgraph, keinen historisch ausgeführten
+Prozessgraph; dieselbe Grenze wie deployGap. Unbekannte Werte tragen immer benannte reasons.
+
+Kosten: weiterhin Nachfrage-Cache 3000 ms ohne Tick. Zwei lokale Git-Lesungen je Vergleichsrepo
+(Refs und Remote-Namen); gleiche SHA/Ref/Scope-Vergleiche und Pfadbereiche werden innerhalb der
+Messung zusammengeführt. Je einzigartigem Vergleich höchstens merge-base + rev-list, bei
+Rückstand eine geteilte Pfadlesung; je Remote-Ref einmal Reflog. Repos werden für stands seriell,
+Träger je Repo mit höchstens sechs Arbeitern gelesen. Deckel: 20 Remotes (darüber remote:null),
+100000 exklusive Commits (darüber distance:null), 2000 verschiedene Änderungspfade (darüber
+codeBehind:null), jeweils mit Grund; Git-Lesungen nutzen den bestehenden Timeout. Repos und
+Träger werden nicht still gekürzt. Helferberichte verändern den Cache-Schlüssel; Antworten
+zeigen measuredAt, nicht vermeintliche Netzwerkfrische. Die bestehende Statusprobe einer
+Testkopie bleibt lokal; fremde Instanzen oder Helfer werden nie angesprochen.
+
+Fixture-Wire-Ausschnitt (SHAs als Fixture-Werte):
+
+```json
+{"kind":"helper-daemon","repo":"/fixture/fleet","name":"workhorse","path":null,
+ "head":null,"basis":"heartbeat","codeScope":"helper-daemon","observedAt":1000,
+ "target":{"ref":"refs/heads/main","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "mergeBase":null,"distance":null,"codeBehind":null,"reasons":[
+ {"field":"mergeBase","reason":"stand-or-ref-sha-unavailable"},
+ {"field":"distance","reason":"stand-or-ref-sha-unavailable"},
+ {"field":"codeBehind","reason":"stand-or-ref-sha-unavailable"}]},
+ "remote":"none","update":{"state":"reported","main":"main","mainSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+ "reasons":[{"field":"head","reason":"daemon-sha-unreported"},
+ {"field":"path","reason":"no-local-worktree-path"}]}
+```
+
+Clone-Lanes gehören nicht zur Git-Worktree-Liste; stands enthält ihre lokale SHA zusätzlich.
+
+```json
+{"repos":[{"repo":"/fixture/repo","branches":[
+  {"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","distance":{"ahead":0,"behind":0},"reasons":[]},
+  {"branch":"overhaul","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","distance":{"ahead":1,"behind":0},"reasons":[]}
+],"worktrees":[{"path":"/fixture/worktree","primary":false,"branch":"overhaul",
+  "head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "base":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "distance":{"ahead":1,"behind":0},"session":null,
+  "target":{"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","behind":0,
+    "landed":"no","landedAs":null,"basis":"land-note"},
+  "checks":{"local":null,"preview":null,"gate":null,"audit":null},"template":"missing","testinstanz":null,
+  "reasons":[{"field":"testinstanz","reason":"missingScript"},{"field":"target.landedAs","reason":"no-matching-land-note"},
+    {"field":"checks.local","reason":"local-not-retained"},{"field":"checks.preview","reason":"preview-not-retained"},
+    {"field":"checks.gate","reason":"gate-not-retained"},{"field":"checks.audit","reason":"audit-not-retained"}]}],"landNotes":{"truncated":false},"reasons":[]}],
+ "measuredAt":2000000000000,"cacheMs":3000}
+```
+
+`template` ist present bei einer ausführbaren regulären `testinstanz.sh`, missing bei fehlender
+oder nicht ausführbarer Vorlage, null bei nicht lesbarer Metadatenmessung. `testinstanz`
+enthält `{state,instance}` aus demselben `status --json` und `testinstanzObservation` wie der
+bestehende Testinstanz-Vertrag unten. `recordedSource.before/after` bleibt der damalige Stand;
+Worktree-HEAD ersetzt ihn nicht, `copyHead` bleibt null. Ablauf bleibt expired. Die Liste misst
+keine zusätzliche aktuelle Dirty-/Source-Beobachtung; dafür dient der vorhandene Read/Refresh.
+Sie startet, öffnet, stoppt und bereinigt keine Instanz. URLs und rohe Script-Ausgaben fehlen.
+Nicht lesbare Werte sind null mit `reasons:[{field,reason}]`, etwa worktree-list-unreadable,
+branch-refs-unreadable, commit-graph-unreadable, commit-graph-capped, base-unreadable,
+template-unreadable, missingScript, instance-unreadable-or-busy oder instance-field-unrecorded.
+`session:null` ohne Grund ist beobachtete Nichtbelegung; ein Wechsel nennt seinen Grund.
+`branch:null` mit detached-head bezeichnet einen Detached-HEAD.
+
+Kosten: maximal fünf lockfreie Git-Aufrufe je bekanntem Repo bei einer Cache-Neuberechnung:
+rev-parse --show-toplevel, worktree list, show-ref, ein gemeinsamer rev-list --parents für
+Ref-/Worktree-/Basis-Spitzen und EIN git log --notes=fleet/land für alle Ziel-Spitzen gemeinsam.
+Der Toplevel muss dem kanonischen Repo-Pfad entsprechen; ein fehlendes eigenes Git-Verzeichnis
+liest dadurch niemals Worktrees eines Elternrepos. Notizen werden höchstens einmal je Repo
+und Neuberechnung gelesen, mit denselben Deckeln wie deployGap (20 Notizen, 200 Commits).
+Der Graph hat einen Deckel von 100000 Commits; bei Überschreitung bleiben alle Abstände null.
+Instanzstatus benötigt höchstens einen begrenzten status-Aufruf je vorhandener Vorlage,
+mit maximal sechs gleichzeitig je Repo. Der 3-s-Cache teilt gleichzeitige Reads und bindet sich
+an Repo- und Occupant-/Basis-Auswahl; Git-/Script-Werte behalten ihre Messzeit bis zum Ablauf.
+Die Prüfstände werden im selben Cache aus den bestehenden, bereits gedeckelten Job-Registern,
+Merge-Verdikten, Server-Läufen und der Audit-Queue gelesen. Ein gemeinsamer Ledger-Read je
+Neuberechnung liest nur die letzten 256 KiB aus active und .1 von post-land-audits.jsonl,
+höchstens 200 valide Zeilen insgesamt; angeschnittene Zeilen werden verworfen. Keine zusätzlichen
+Git-Aufrufe für checks, keine neue Speicherung. Es gibt keinen neuen Tick und keine
+Hintergrund-Pollschleife.
+
+`deployGap` trägt zusätzlich `lands:[{sha,branch,task,at,reasons}]` und `truncated`.
+Die Lands sind ausschließlich Commits mit einer `fleet/land`-Note im Bereich bootHead..head,
+neueste zuerst; branch und at kommen aus der Note, task aus task oder actor.task.
+Fehlende Legacy-Taskbindung bleibt null mit land-task-unrecorded-or-unreadable. Unlesbare JSON-
+Notizen behalten ihre Commit-Sha und nennen die unlesbaren Felder. Andere Notizfelder fehlen.
+Deckel: 20 Lands und 200 untersuchte Commits; `truncated:true` bedeutet, dass mindestens einer
+der Deckel die vollständige Aufzählung verhindert. Ein zusätzlicher lockfreier git log liest
+Notizen und Bereich gemeinsam; Cache 3 Sekunden, an head gebunden. Fehlende Notiz ist kein
+Land. Unlesbarer Bereich/Notizref: lands und truncated null mit land-notes-unreadable; ein
+unlesbarer Boot-/Head-Stand nennt boot-head-unreadable/head-unreadable. Beim leeren Deploy-
+Abstand stehen lands:[], truncated:false. Land-, Verify- und Deploy-Aktionen bleiben getrennt.
+
+## Testinstanz — bekannte Arbeitsorte, Lesen und ausdrückliche Gesten
+
+Eine Testinstanz ist eine isolierte Vorschau, kein Verify-Signal. Haupt-Checkout und slotlose
+Git-Worktrees sind als **Quelle einer Kopie** erlaubt. Der laufende Quellserver, Quellrefs und
+Quellinhalt werden dadurch nicht gestartet, gestoppt oder verändert. Ein Klon außerhalb des
+Git-Worktree-Registers ist hier unsupported. Client und DOM gehören zur Arbeitsort-Karte A.
+
+Alle folgenden Türen stehen hinter dem bestehenden **Owner-Authvertrag**. Ohne Auth, mit
+Lane-Self-Token oder Share-Cookie: 401. Metadata enthält keine Tokens oder credentialhaltigen
+URLs; erst die getrennte POST-Geste `open` liefert den Öffnungslink. Ein GET öffnet nichts.
+
+| Ziel | Read | ausdrückliche Aktion |
+|---|---|---|
+| belegter Slot-Arbeitsort | `GET /api/slots/:id/testinstanz` | `POST /api/slots/:id/testinstanz` |
+| bekannter Haupt-Checkout oder slotloser Worktree | `GET /api/worktrees/testinstanz?repo=<repo>&path=<path>` | `POST` derselben URL |
+| bestehender Maschinenindex | `GET /api/testinstanzen` | keine Aktion über den Index |
+
+`repo`/`path` sind URL-kodierte Auswahlwerte aus bekannten Repos und deren `git worktree list`,
+keine freie Pfadvollmacht. Die Query wählt auch bei POST das Ziel **vor** dem Body-Await. Die
+kanonischen Pfade müssen existieren; der Haupt-Checkout wird über den primary-Eintrag gemessen.
+Der Body ist exakt `{action:"up"|"down"|"refresh"|"open", ttlMin?:number,
+mode?:"mixed"|"snapshot"}`. `ttlMin`: ganze Zahl 1–1440, Default 240. `mode`: Default mixed;
+snapshot nutzt die vorhandene bereinigte historische Kopie. Andere Modi (auch full) werden
+verweigert, ohne Rückfall. Pfad, Shell, Command, URL und zusätzliche Bodyfelder: 400.
+
+Read und Refresh liefern beispielsweise:
+
+```json
+{
+  "ok": true,
+  "state": "up",
+  "worktree": "/known/repo/worktree",
+  "mainCheckout": false,
+  "port": 8912,
+  "expiresAt": 2000000000000,
+  "source": {
+    "repoKey": "/known/repo",
+    "worktreeKey": "/known/repo/worktree",
+    "path": "/known/repo/worktree",
+    "mainCheckout": false,
+    "branch": "feature",
+    "head": "0123456789012345678901234567890123456789",
+    "dirty": 2,
+    "fork": null,
+    "measuredAt": 1999999000000,
+    "ageMs": 500,
+    "freshness": "fresh"
+  },
+  "instance": {
+    "state": "up",
+    "recordedSource": {
+      "path": "/known/repo/worktree",
+      "before": {"head": "0123456789012345678901234567890123456789", "branch": "feature", "dirty": 1, "measuredAt": 1999998000000},
+      "after": {"head": "0123456789012345678901234567890123456789", "branch": "feature", "dirty": 1, "measuredAt": 1999998001000}
+    },
+    "copyHead": null,
+    "mode": "mixed",
+    "copyStartedAt": 1999998000000,
+    "copyFinishedAt": 1999998001000,
+    "builtAt": 1999998002000,
+    "startedAt": 1999998003000,
+    "expiresAt": 2000000000000,
+    "remainingTTL": 1997000,
+    "port": 8912,
+    "procStatus": "alive",
+    "httpStatus": "healthy",
+    "identity": "matched",
+    "observedAt": 1999998003000,
+    "ageMs": 0,
+    "freshness": "fresh"
+  }
+}
+```
+
+Zeitangaben im Wire sind Unix-Millisekunden; `remainingTTL` ist Millisekunden, bei Ablauf 0.
+`source` und `instance` sind getrennte Beobachtungen. Source-HEAD **jetzt** ersetzt niemals die
+beim Kopieren gemessenen `recordedSource.before`/`after`. Die Kopie enthält keine Git-Metadaten,
+und zwei HEAD/dirty-Messungen beweisen keine bytegleiche Version während der Kopie: `copyHead`
+bleibt deshalb null. Copy- und Buildzeiten stammen aus getrennten Scriptmessungen (Sekunden,
+im Wire zu Millisekunden umgerechnet). Dirty ist die Anzahl der Porcelain-Zeilen. Ein belegter
+Lane-Fork wird nur bei auflösbarer gespeicherter `base`/`baseSha` ausgegeben; sonst `fork:null`.
+Null bedeutet **unknown**, niemals sauber, identisch oder kein Fork.
+
+GET misst den bekannten Instanzstatus neu und verwendet die zum identischen Ziel gehörende
+Quellbeobachtung aus dem Speicher. Beim ersten Read wird Git gemessen; `refresh` liest Git neu,
+setzt `measuredAt` neu und startet keine History-, Suite-, Modell- oder Automationsaktion.
+Source-Cache: bis 30 000 ms fresh, danach stale; fehlender HEAD/Dirty unknown. Instanzstatus:
+frisch gemessen, bei unbestimmtem Zustand unknown. Alte Statefiles ohne Herkunft/Zeiten liefern
+null, keine erfundenen Fakten. Read schreibt weder Expiry/Cleanup noch State, TTL, Instanzinhalt
+oder Quellrefs; Gitreads laufen mit `GIT_OPTIONAL_LOCKS=0`.
+
+| `state` | Bedeutung |
+|---|---|
+| `not-running` | keine bekannte Instanz oder gemessener Prozess beendet |
+| `up` | bekannte Prozessidentität und erfolgreiche HTTP-Messung |
+| `expired` | Ablauf beobachtet; Aufräumen ist ein anderer Akt |
+| `http-failed` | Prozessidentität bestätigt, HTTP-Messung fehlgeschlagen |
+| `http-timeout` | Prozessidentität bestätigt, begrenzte HTTP-Messung abgelaufen |
+| `unknown` | Messung, Identität oder alter State nicht belegt |
+
+`procStatus`: alive/dead/unknown; `httpStatus`: healthy/failed/timeout/unknown.
+Legacy-Scriptstatus `up pid …` liefert Prozessbehauptung, aber keine belegte Prozessidentität
+oder HTTPgesundheit (`identity`/`httpStatus`: unknown). `ttl: EXPIRED` ohne `expiresAt` liefert
+`state:"expired",expiresAt:null`; das ist kein fehlender Worktree. Der Maschinenindex führt
+expired ebenfalls getrennt. Sein bare URL ist credentialfrei und keine Öffnungsgeste.
+
+`up` liefert dieselben Metadaten; `down` liefert `{ok:true,state:"not-running",worktree}`.
+`open` liefert `{ok:true,worktree,state:"up",url,port,expiresAt}` nur für ein gültiges
+HTTP-Origin mit eigenem Host/Port 8900–8999, Pfad `/`, ohne Userinfo/Fragment. Öffnungslinks
+enthalten das Instanzcredential und gehören weder in Metadata noch Logs oder Bilder.
+Die HTTP-Gesundheitsmessung verwendet ausschließlich den gespeicherten, lokal validierten Host
+und Port, festen `/api/sessions`-Pfad und das eigene Token; Timeout 1 s, Redirects werden nicht
+verfolgt. Fehlende Eigentums-/Endpointbelege ergeben unknown, keine fremde HTTP-Messung.
+
+Beide Routen binden vor/nach Awaits die kanonische Repo-/Register-/Worktree-Identität
+(inklusive Inode/Geburt), Slot zusätzlich `slot+openedAt+sessionId+cwd` und Lanezuordnung.
+Entfernt, ersetzt, moved oder fremd: 409 `refusal:"target-changed",state:"unknown",nullSpawn:true`;
+kein altes Resultat wird an den neuen Occupant geschrieben. `nullSpawn` bezeichnet hier keinen
+weiteren Spawn nach dem verworfenen Ziel; eine bereits begonnene isolierte Scriptaktion kann
+vor der späteren Revalidierung gelaufen sein. Busy ist pro kanonischem Worktree, auch ohne Slot.
+Weitere benannte Refusals: 409 unknown-worktree/removedWorktree, missingScript, busy,
+script-failed; 400 invalidTTL/unavailable-mode. Raw Scriptfehler werden nicht ausgeliefert.
+
+`GET /api/sessions` enthält je Slot `workplace:null` oder
+`{path,mainCheckout,measuredAt}`. Null ist noch nicht belegt oder Occupant/Checkout gewechselt.
+Die Worktree-Board-Zeilen tragen dasselbe `workplace`-Objekt, aus dem Register gemessen;
+der Client braucht Haupt-Checkout oder Quellpfad nicht aus Namen zu raten.
+
+Die Scriptkopie schließt `.git`, `node_modules`, `.env*`, `fleet.pid`, `fleet.json*` und
+`*.jsonl` aus. Vor dem Serverstart wird die Quellidentität nochmals geprüft. Eigenes HOME,
+Socket, Token, Harness-Shims und `FLEET_CMD=true` bleiben erhalten; snapshot hält Dispatch und
+Autos aus und bereinigt historische Slot-/Task-/Program-/Report-/Attentiondaten. `down` und
+Patch signalisieren nur den eigenen gespeicherten PID mit passender Prozessgeburt (Locale C)
+und belegtem Portbesitz. Führende/nachlaufende Format-Leerzeichen werden bei beiden Geburtswerten entfernt; der Zeitwert wird exakt verglichen. Fremder/al­ter State oder unbekannter Socketbesitz wird verweigert.
+Keine Live-Bindings, Helper-/Job-/Watch-Übertragung, Merge/Land/Deploy/Undo oder neuen Grants.
+
+### Das Band in der Testinstanz (ranke-notiz R11)
+
+Eine mit `testinstanz.sh up` gestartete Instanz zeigt oben eine ruhige Zeile: Zweig, Stand beim
+Start (kurze Sha) und was davon noch nicht im Ziel ist — „3 Commits noch nicht auf overhaul“,
+„1 Commit und 2 Dateien ohne Commit noch nicht auf overhaul“, „alles schon auf overhaul“; fehlt
+eine Angabe, steht „unbekannt“ („Stand unbekannt“, „Ziel unbekannt“; ohne gemessene Ziel-Sha oder
+Zählung „Abgleich mit ‹ziel› unbekannt“). Eine Zeile, solange sie passt; lange Namen brechen in jeder
+Breite um, nichts wird abgeschnitten. Die Live-Instanz zeigt kein Band.
+
+- **Messung vor dem Kopieren:** `testinstanz.sh#ti_measure` liefert
+  `{head,branch,dirty,measuredAt,target:{branch,head,ahead}|null}` und wird unverändert als
+  `sourceBefore=` gespeichert (die vier bisherigen Felder bleiben, `status --json` und
+  `recordedSource.before` lesen weiter nur diese). `./testinstanz.sh source` druckt dieselbe
+  Messung, ohne etwas zu starten. `ahead` zählt Commits von `head`, deren Änderung nicht auf dem
+  Ziel liegt (`git rev-list --count --no-merges --cherry-pick --right-only ziel...head`): eine per
+  Rebase gelandete Lane zählt 0, ein Merge des Ziels in die Lane zählt nicht mit. Grenze, bewusst
+  hingenommen: auch ein Merge mit eigener Konfliktauflösung zählt nicht mit (Lanes landen per Rebase,
+  das ist der seltene Rand). `dirty` ist die Zahl der Porcelain-Zeilen.
+- **Ziel, nie geraten:** `FLEET_TI_TARGET`; der Server setzt es bei `up` auf die aufgezeichnete
+  Basis des Slots, der den Arbeitsort belegt (`Slot.worktree.base`), ein Arbeitsort ohne Session
+  bekommt keins. Von Hand in einer Lane-Pane liest das Script `lane.base` aus `GET /api/self`
+  (Token nur im Prozess, nie auf einer Kommandozeile). Sonst `target:null` → „Ziel unbekannt“.
+- **An die Instanz:** `ti_serve` übergibt die gespeicherte Zeile als `FLEET_INSTANCE_SOURCE`
+  (fehlt sie, `{}`). Der Server faltet sie mit `src/protocol.ts#instanceSourceFrom` und trägt sie
+  als `instance.source` in `GET /api/sessions` — **nur wenn gesetzt**; ungesetzt oder leer (live)
+  fehlt das Feld. Gesetzt, aber unlesbar: alle Felder null, das Band sagt „Stand unbekannt“.
+- **Stand beim Start:** gemessen wird einmal bei `up`; spätere Commits im Worktree ändern das Band
+  nicht, der Tooltip sagt das. Kein neuer Poll — der Client liest das Feld aus dem bestehenden
+  Sessions-Poll (`src/client.ts#renderInstanceBand`), die Wörter kommen aus
+  `src/protocol.ts#instanceBandText`.
+
+Claims samt Mutationsprobe: `e2e/lanes-lifecycle.ts#instanceBandChecks`.
 
 ## jobs — `POST /api/self/jobs`, `GET /api/self/jobs/:id`, `POST /api/self/jobs/:id/withdraw`
 
@@ -4267,6 +4768,20 @@ Das Tripel ist aus `.fleet/klassen.json` aufgelöst; ein gültiges `ROLLE:`-Trip
 im Receipt Vorrang. Der Spawn liest weiterhin ausschließlich die bestehende Wahl aus
 `Task.spawn`. Legacy-Receipts ohne Klasse tragen keines der beiden Felder.
 
+**Vorschau gegen Beleg im Gründungsfenster (seit 2026-10-03, Karte 91b52b3a).** Die Owner-Route
+`GET /api/founding-plan` nennt je gewähltem Pack zusätzlich `anchors` und `sourceHash` — genau so,
+wie das Receipt sie schreiben würde (`server.ts#declaredSourceHash` über dem gestempelten Plan) —,
+die deklarierten `harnesses` und `triggers` und je Plan `plannedAt`; eine Auslassung
+`harness-unsupported` nennt ihre `harnesses`. Ein privater Pack trägt dort nur `privateSourceId` und
+den deklarierten Hash: sein Urteil fällt erst bei der Zustellung, die Vorschau liest die private
+Wurzel nicht. Die Receipt-Zeile selbst ist unverändert. Das Fenster hält nach dem Start seine
+Vorschau gegen sie (`src/protocol.ts#standSincePreview`: `same` · `changed` · `unknown` · `drift` ·
+`not-delivered` · `extra`); fehlt einer Seite `head` oder `sourceHash` (Altbeleg, älterer Server),
+ist der Stand `unknown`, nie `same`. „Zugestellt" heißt, der Zeiger stand im Brief — gelesen ist
+unbekannt. Eine Fassung nennt das Fenster nur aus dem Suffix `-v<N>` der Paket-ID
+(`src/protocol.ts#packIdFassung`, erstes echtes: `codex-native-context-v1`); kein Pack nennt ein
+Modell, die Harness-Liste ist erlaubt, nicht Herkunft.
+
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 
 `server.ts#capTasks` verdrängt ab `MAX_TASKS` terminale Zeilen (`done`/`archived`) aus
@@ -4997,6 +5512,66 @@ Eintrag). Der Backfill gilt nur für Zeilen, die den Key nie hatten.
 `sessionIdMatch` und der Rest von `authority` sind unverändert. `GET /api/programs` trägt den Record
 im Program-Row mit (`publicProgram` spreizt das Program); der 4-Feld-`ProgramDigest` bleibt.
 
+## subscription usage — Owner `GET /api/subscription-usage`, `POST /api/subscription-usage/refresh`
+
+Beide Türen verlangen die bestehende Owner-Credential. Self-Credentials erhalten keine neuen
+Rechte (401); Steward-Credentials sind außerhalb ihres Scope (403). GET akzeptiert keine
+Queryparameter. POST akzeptiert ausschließlich `{"target":"local"}` oder
+`{"target":"provider"}`; kaputtes JSON, weitere Felder, freie URL/Pfad/Shell und andere Ziele
+sind 400. Während eines Reads ist POST 409. Ein unsupported Ziel antwortet 200 mit seinem
+expliziten Zustand; es führt keinen Ersatzread aus.
+
+Die Antwort `fleet.subscription-usage/v1` trägt `generatedAt` (Server-Uhr, Unixmillisekunden),
+`codex`, `otherSubscriptions` und `model`. `codex.primary` und `codex.secondary` sind getrennt
+`{used_percent,window_minutes,resets_at}` oder null/unknown. `resets_at` ist Unixsekunden;
+Millisekunden in diesem Feld werden abgelehnt. Gemessene 0 bleibt 0. Beide Fenster stammen aus
+demselben validierten Ereignis; Dauer und Reset werden nicht aus der Fensterposition geraten.
+
+`codex.source` enthält `kind:"local-rollout"`, Ereigniszeit `measuredAt`, Readabschluss
+`fetchedAt` (beide Unixmillisekunden), `ageMs`, `staleAfterMs:900000`, `reason`,
+`limitId:"codex"|null`, `accountBound:false` und eine opaque SHA-256-`provenance` der validierten
+Ereignisfelder. Sie belegt weder Account noch Session. Ein unbeschriftetes historisches
+Codex-Ereignis hat `limitId:null`; ein ausdrücklich anderer Bucket wird ausgeschlossen.
+Der feste lokale Sensor liest `$CODEX_HOME/sessions` bzw. `~/.codex/sessions` read-only.
+Die lokale Beobachtung ist begrenzt: `source.selection` nennt `kind:"recent-file-tails"`,
+`maxFiles:16`, `maxBytesPerFile:262144`, `historyComplete:false`. mtime wählt nur die 16 jüngsten
+Dateien; pro Datei werden höchstens 256 KiB vom Ende gelesen. Unter diesen beobachteten
+Ereignissen gewinnt die neueste validierte Ereigniszeit. mtime liefert weder Messzeit noch
+Account-/Sessionidentität; außerhalb dieser Enden wird keine vollständige Historie behauptet.
+Eine am Anfang abgeschnittene Zeile gehört nicht zur Beobachtung. Eine unvollständige letzte
+Zeile darf fehlen; kaputte vollständige/innere Zeilen innerhalb der Beobachtung, invalide Fenster,
+fehlende Messzeit oder Ereigniszeit nach der Server-Uhr machen die Quelle error/unknown mit null Fenstern.
+Fehlende/unlesbare Quellen werden nicht zu 0. Ereignisse älter als 15 Minuten bleiben `stale`
+mit ihren gemessenen Werten und Altersgrund, auch nach erneutem lokalen Lesen.
+
+GET beobachtet beim ersten Read die lokale Quelle; weitere GETs projizieren den zuletzt gelesenen
+Snapshot und berechnen sein Alter mit der Server-Uhr neu. POST local liest dieselbe gespeicherte
+Quelle erneut, begrenzt auf fünf Sekunden, und prüft die Dateidentität vor/nach dem await.
+Späte Resultate nach Timeout werden verworfen. Rohfehler, Rollouts, Pfade, Accountdaten, Tokens
+und Prompt-/Antworttexte werden nie ausgegeben. `refresh` benennt `target`,
+`status:not-requested|refreshing|ok|error|timeout|unsupported`, `startedAt`, `finishedAt`, `reason`.
+Während des Reads kann GET den vorigen Snapshot mit `refreshing` sehen. `ok` bezeichnet einen
+beendeten lokalen Read, keine neue Provider-Messung; stale bleibt sichtbar.
+
+POST provider ist **unsupported**: Die installierten Schemata belegen
+`account/rateLimits/read`, aber keinen gebundenen Account-Reader oder autorisierten Anschluss
+(`docs/messungen/2026-09-30-codex-app-session-bridge.md`, Subscription-Vertrag). `codex.provider`
+und `refresh.reason` nennen genau diese Grenze. Kein Account-/Providerrequest wird gestartet.
+Ein reines Importieren des Sensors startet weder CLI-main noch Resetfeed, Netzwerk oder Seen-Cache.
+Die bestehende CLI-Ausgabe, Exitcodes und `quotaPosition`-Berechnung bleiben bestehen.
+
+Andere Subscriptions sind `unknown` mit Grund: kein gemessener Sensor und kein maschinenlesbarer
+Quellen-/Geltungsvertrag für datierte Owner-Verfügbarkeitsmeldungen. Die GLM/z.ai-Meldung ist
+keine Providerprobe. `model.ownerPreference` bleibt aus demselben Grund unknown;
+`registerDefaults` projiziert ausschließlich `MODEL_DEFAULTS`. `selected` zeigt aktive
+`slot`/`harness`/`model` aus `slot-state`, `decisionSource:"unknown"`, `usedTurnModel:null`.
+Slot-Auswahl ist kein Beweis eines tatsächlich ausgeführten Turnmodells und kein Owner-Entscheid.
+Quota löst keine Modellwahl aus; es gibt keine neue Policy-Persistenz.
+
+Flächen: wire/server/docs/probes **apply**; reverse-state **not-applicable** (keine persistierten
+Subscription-Felder); aktiver Provideranschluss **unsupported**; Client **not-applicable** in
+diesem Schnitt, eine eigene Nachfolgekarte besitzt seine Darstellung.
+
 ## model — `POST /api/slots/:id/model` (OWNER-Route, nicht `/api/self/*`)
 
 Schreibt Modell und/oder Effort eines LEBENDEN Slots **in den Datensatz** — ohne Respawn. Der Datensatz
@@ -5716,3 +6291,60 @@ Dispatch ist `lane.opened`; Kommunikation außerhalb von Report und `send` (Inbo
 Clarifications als Inhalt), Session-Profil, Datenschicht-Antworten und Tool-Calls (T1–T3, T6–T8) sind
 spätere Schnitte. Kosten gemessen am 2026-09-26 gegen die echten Ledger (≈ 27 MB): 120–350 ms je Aufruf,
 auf Abruf, nie aus einem Poll. Owner-only durch POSITION (unter dem Token-Gate wie `/api/lane`).
+
+
+## Owner performance ledger — `/api/perf`
+
+`POST /api/perf` accepts a JSON array (also a `sendBeacon` Blob of type `application/json`),
+1–50 records, at most 64,000 bytes. Both methods require the existing Owner cookie; a bearer,
+query token, self token or share credential alone cannot write or read this ledger. The host and
+Origin guards still apply. Each record contains `j` (`J1`–`J4`), `ms`, `clientMs`, `serverMs`,
+`netMs`, `dev` (`mobile`/`desktop`), `saver`, numeric bundle `v`, active `slots` and `ok`.
+Failures have all four duration fields `null`, never zero. Unknown server/network components
+are `null`; optional `attrs.serverMs` names `ws-seed-unmeasured` or `timing-unavailable`.
+Only the declared numeric/boolean/enum attributes are accepted, never text, paths or content.
+The server supplies `at`; a client cannot choose the ledger timestamp.
+
+The client buffers at most 100 records, flushes every 60 seconds and when hidden, using only
+same-origin `/api/perf`. A failed beacon queue operation retains the buffer. The private
+`perf.jsonl` rotates before an append would exceed 1,000,000 bytes into `perf.jsonl.1`, replacing
+the previous generation. Both are gitignored; no archive grows indefinitely. A read failure
+is an error, not an empty measurement. A beacon accepted by the browser is not a server receipt.
+
+`GET /api/perf?since=<epoch-ms>&until=<epoch-ms>` reads both generations within the inclusive
+interval (defaults: 0 through now). It returns total `n`, background `hidden`, `since`, `until`,
+`records` and `groups` by `j × dev × v`. Groups report successful foreground `n`, `failed`,
+`hidden`, and p50/p75/p95 of successful foreground `ms`, using
+nearest rank (`ceil(q*n)-1` in the sorted array). An empty interval returns `n:0`, `records:[]`,
+`groups:[]`; an error-only group has `n:0`, `failed>0` and null percentiles.
+
+J1 runs from the navigation origin to the first paint after server-backed sidebar rendering and
+an enabled composer. If disabled at the first data paint, measurement alone observes its disabled
+attribute until the first enabled paint; after 30 seconds it fails with
+`attrs.reason:"composer-timeout"`. A thrown initial fetch fails once with `fetch-error`, and an
+HTTP refusal with `http-error`. A tab hidden at any point from start through the final paint marks
+`attrs.hidden:true`; these records remain in the ledger and raw response, but their durations are
+excluded from the default percentiles. `hidden` counts all such records and can overlap `failed`.
+No duration is corrected for background time. J2 runs from the row event timestamp to a painted chat (shelf or initial
+fetch), or the completed first xterm seed write and paint. Terminal J2 has no server/network
+breakdown: its seed arrives after upgrade; this slice adds no WebSocket frame. J4 starts at the
+chat toggle or an assigned chat's shelf miss; it ends after the initial `after=0` render and paint.
+An already loaded chat records the visible shelf hit. Periodic refreshes and delta polls create
+no additional journey rows. Superseded/failed starts produce one failed row.
+
+J3 records the send response duration as `ms`; `attrs.bubbleMs` measures the pending bubble's
+first paint separately (`null` in terminal view), and `attrs.responseMs` names the response.
+`attrs.transcriptMs` is separate and remains null if the transcript has not arrived before the
+buffer is sent. It never delays sending or creates another journey record. `clientMs` is the
+remaining total after server and network components, not the bubble measurement. Resource
+Timing supplies fetch duration, encoded bytes and `serverTiming`; the header is the fallback
+when Resource Timing is unavailable (network time then remains null). J1 also records HTML/bundle bytes and cold/warm cache state.
+
+`/api/sessions`, `/api/slots/:id/transcript`, `/api/slots/:id/brief` and `/send` expose
+`Server-Timing: total;dur=<ms>` through the existing HTTP finish path (including compression).
+Send additionally exposes exclusive `queue`, `ready`, `paste`, `settle`, `arrival`, `submit`,
+`accept`, `cleanup` phases when reached. No timing header includes paths, tokens or contents.
+Request/body semantics, delays, acceptance checks, render paths and poll cadence are unchanged.
+Surfaces: HTTP wire/server/client/reverse-state apply; dashboard display and WebSocket wire are
+not applicable; guests and non-Owner telemetry are unsupported. Checks live in `e2e/slots.ts`
+and `e2e/transport.ts`.

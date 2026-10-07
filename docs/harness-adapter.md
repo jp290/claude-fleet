@@ -4,6 +4,29 @@
 Inventar: `docs/rulebook-inventar-2026-08-18.md`). Die Betriebs-Regeln und Gefahrensätze stehen
 weiter in `CLAUDE.md`; hier liegt die Tiefe. **Bei Widerspruch gilt der Code, nie dieses Dokument.**
 
+## Sitzungseigene Lane-Regeln
+
+Vor dem Lane-Spawn schreibt Fleet `AGENTS.override.md` aus `renderSessionAgents`
+und `CLAUDE.local.md` mit der ungequoteten Importzeile `@AGENTS.override.md`.
+Beide Wurzelpfade werden vorher idempotent in `git rev-parse --git-path info/exclude`
+ausgeschlossen. Linked Worktrees teilen den Ausschluss, jede Lane hat ihre eigenen
+Dateibytes; Clone-Lanes haben ein eigenes Git-Verzeichnis. Getrackte Zieldateien
+und Symlinks werden verweigert.
+
+Claude importiert die Datei nativ aus `CLAUDE.local.md` und laedt weiterhin den
+privaten Lane-Render der Repo-`CLAUDE.md`. Codex, Pi und pi-zai waehlen nativ
+`AGENTS.override.md` vor `AGENTS.md`. Nur Codex bekommt bei mehr als 32 KiB
+`-c project_doc_max_bytes=<UTF-8-Bytes der Renderdatei>`; Pi braucht keinen Zusatz.
+Der pi-zai-Lesezaun laesst die lokale Regeldatei im Lane-Verzeichnis lesen.
+Loadergrundlage: `docs/messungen/2026-10-03-sitzungseigene-agents-md.md` und
+`docs/messungen/2026-10-03-claude-import-agents-md.md`.
+
+Der erste Brief enthaelt den Auftrag samt Aufgabenquellen und den Dateiverweis.
+Rollenkarte, Pack-Anker, Abschluss und Memory-Zeiger stehen in der Datei.
+Das Lane-Receipt nennt Dateihash und Bytes sowie je Renderer-Teil Pfad, Anker,
+SHA-256, Bytes und Ladeort; fehlende Quellen bleiben explizit unbekannt.
+MAIN und Orchestratorin im gemeinsamen Haupt-Checkout behalten ihren Ladeweg.
+
 ## PATH (launchd-Spawn-Umgebung)
 
 - launchd-Kontext hat weder ~/.local/bin (claude) noch ~/.bun/bin (bun) noch brew im PATH — watchdog.sh muss
@@ -684,10 +707,36 @@ Netzwerkkosten werden nicht als null behauptet.
     weder `~/.claude/settings.json` noch `~/.codex/config.toml` (Pin in `e2e/pins.ts`). Gemessen am
     2026-09-14 auf eigenem tmux-Socket, Kinder nach Executable-/Skriptposition gezählt: claude ambient 2 →
     strict 0; codex frisch ambient 2 → Override 0; `codex resume <id>` mit Override 0.
+  - **Codex-Ausführungsrechte: `permissions:{sandbox,approval}`.** Genau zwei Schlüssel;
+    `sandbox` ist `read-only|workspace-write|danger-full-access`, `approval` ist `on-request|never`.
+    Alle sechs Kombinationen sind unterstützt. Absenz bei einer neuen Codex-Gründung nimmt explizit
+    `{sandbox:"danger-full-access",approval:"never"}`; andere Harnesses behalten ihre Defaults und
+    verweigern jede explizite Auswahl als `unsupported` vor Spawn. Dies sind Fleet-Sessiondaten,
+    kein CLI-`--profile`, kein MemoryGrant, keine Rollen-, Pack- oder Accountberechtigung.
+    Open/Recycling, Lane-Gründung/Attach, Task.spawn/Dispatch und Program-Gründung benutzen dieselbe
+    Validierung. Slot-Persistenz und `GET /api/sessions` zeigen die normalisierte Auswahl.
+    Fresh, exakter Resume, Heal, Wake und Restart geben immer `--sandbox` und `--ask-for-approval`
+    weiter, ohne Bypass; Succession übernimmt das Profil. Restart/Succession verweigern eine andere
+    explizite Auswahl; ein Owner-Recycle wählt ein neues Profil und verwirft das Vorgängerprofil.
+    Ein alter Codex-Datensatz ohne Feld übernimmt den bisherigen Vollzugriffsdefault; ein vorhandenes
+    ungültiges Feld bleibt `{state:"invalid"}`, wird so persistiert/angezeigt und darf nicht spawnen.
+    `untrusted`, `on-failure`, granular, null, Arrays, Zusatzschlüssel und unbekannte Werte sind Refusals.
+    Die CLI-Flags gelten für codex-cli 0.159.0; dessen Offline-Schema enthält weitere Werte und ist
+    allein kein TUI-Supportbeweis. Referenz: [OpenAI Config Reference](https://developers.openai.com/codex/config-reference).
+    Die TUI läuft mit `--no-daemon`. Workspace-write überschreibt ambientes `writable_roots` mit `[]`
+    und `network_access` mit `false`, TMP-Ausnahmen mit den CLI-Defaults; `approvals_reviewer="user"`
+    verhindert eine ambiente Auto-Review-Umschaltung. Trust kommt als shell-quotierter vollständiger
+    `projects`-Inline-TOML-Override für das reale CWD, ausschließlich für diese Ausführung: kein
+    grep/printf-Prelude und kein Schreiben globaler `config.toml`. Dotted Trust-Overrides überspringen
+    den 0.159.0-Dialog nicht. Falls trotzdem Trust/Sign-in/Update blockiert, verweigert die Readiness-Naht
+    die Zustellung; sie bestätigt oder umgeht keinen Dialog. Managed CLI-Refusals bleiben Refusals.
+    `GET /api/harnesses` trägt `permissions:{status:"supported",sandbox:[…],approval:[…],default:{…}}`
+    bzw. `{status:"unsupported"}`. Client-Fläche sind nur Wire-Typen, keine Setup-Formulare.
   - **Web-Recherche je Queue-Karte: `WEB: search`.** Optionale Kopfzeile neben `NACH:`;
     `search` ist der einzige gültige Wert. Die strukturierten Create-Türen nehmen entsprechend
     `card.web: "search"` als explizite Autor-Deklaration. Eine Rechercheabsicht in Prosa aktiviert
-    nichts. Parser und Validator bewahren das Feld; ein anderer Wert verweigert die Karte.
+    nichts. Websuche verändert weder Sandbox noch Approval; sie ist kein Rechte-Upgrade.
+    Parser und Validator bewahren das Feld; ein anderer Wert verweigert die Karte.
     **Codex `apply`**: Dispatch reicht die gültige Karte bis `CODEX_HARNESS.spawnCmd` weiter;
     frische UND exakt-ID-resumierte Kommandozeilen erhalten `--search`. Ohne Deklaration bleibt
     die Kommandozeile bytegleich. Bei einer Welle genügt eine deklarierende Karte. Die Auswahl

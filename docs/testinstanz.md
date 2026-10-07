@@ -45,8 +45,11 @@ echte Queue-, Programm- und Reportzeilen lässt sich die overhaul-Oberfläche ni
 Die Quelle ist der Haupt-Checkout, ermittelt über `git rev-parse --git-common-dir`; für eine
 synthetische Probe kann `FLEET_TI_SNAPSHOT_SRC` ein anderes Verzeichnis setzen. Der Kopiervorgang
 liest die Quelle nur. Zugangswerte, Shares und Helper-Geräte werden ausgelassen, Slot-Pfade
-zeigen ausschließlich in die Instanz, `dispatch` und `autosOn` sind aus. Die isolierte Kopie
-bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`.
+zeigen ausschließlich in die Instanz, `dispatch` und `autosOn` sind aus. Program-Bindungen werden
+mitgenommen (`main` mit `slot`/`openedAt`/`boundAt`), nur die Session-Id der Bindung wird auf
+`null` gesetzt — der Loader des Servers würde einen `main`-Datensatz ohne dieses Feld ganz
+verwerfen und die Kopie hätte stille „unbekannt“-Bindungen, wo sie den wahren Stand trägt. Die
+isolierte Kopie bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`.
 
 1. **Beim Kopieren:** das rsync trägt `.env`, `fleet.json*` und `*.jsonl` nicht über — keine
    private Konfiguration, keine fremden Sessions, keine Transkripte im Klon.
@@ -62,7 +65,10 @@ bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`.
    Port-Identität — und `tmux -L <socket> kill-server`, nie über ein Namensmuster.
 
 Dazu: `FLEET_CMD=true`, also wird nie ein Agent gespawnt; die Harness-CLI in den Panes ist ein
-stand-in (siehe den Kopf von `testinstanz.sh`). Die State-Datei trägt den Token nicht — der
+stand-in (siehe den Kopf von `testinstanz.sh`). Im Modus `snapshot` heißt der Stellvertreter
+`cat`: `true` endet sofort, die Pane fällt auf die Shell zurück, und jede Zustellung stünde dort
+als „command not found“ — die Instanz sähe kaputt aus. `cat` liest das tty und gibt Eingefügtes
+als Text wieder, es führt nichts aus. Die State-Datei trägt den Token nicht — der
 bleibt in `.testinstanz.token`, und `list` druckt die URL OHNE Token.
 
 Von einem anderen Gerät kommt der Owner an den Link über das Board: die Testinstanz-Karte listet
@@ -70,6 +76,15 @@ jede Instanz der Maschine mit „öffnen", dahinter `openUrl` aus `GET /api/test
 Server nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der `.testinstanz.token` der Instanz
 liest (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential und anonym enden vorher mit
 401/403 und sehen nie ein Token.
+
+Was die Snapshot-Instanz über sich selbst sagt (Owner-Befund 2026-10-06): die Kopie hat kein
+`.git`, ihr Boot-Head ist unlesbar — sie nennt sich in den Arbeitsorten deshalb nicht „Live“,
+sondern „Testinstanz“ mit dem vor dem Kopieren gemessenen Stand (`instance.source`, dieselben
+Worte wie das Band). Die eigene Kopie erscheint nicht als weiterer Arbeitsort. Helfer-Geräte
+fehlen nicht still: die Gruppe steht als „in der Testinstanz nicht gemeldet“. Eine Session, deren
+Program-Bindung sich nicht lesen lässt, sagt unter Rechte „Im Snapshot nicht belegt“ statt
+„An keinen Auftrag, kein Program gebunden“ — eine unbekannte Bindung darf nirgends als „Keine"
+erscheinen.
 
 ## Bauen, TTL, Abräumen
 

@@ -9,6 +9,7 @@ import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, t
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { observedSourceHash } from "../context-manifest";
 import { fleetEventFrom, loadMessageAddress, loadMessages } from "../server/types";
+import type { SessionAgentsPart } from "../session-agents";
 import { CONTEXT_PACKS } from "../context-packs";
 import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
@@ -230,10 +231,11 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
+  selected: { id: string; parts?: Omit<SessionAgentsPart, "content">[]; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
     private?: { verdict: string; version: number | null } }[];
   omitted: { id: string; why: string; reason?: string | null }[];
   deliveredBytes: number; truncated: boolean;
+  sessionAgents?: { path: string; sha256: string; bytes: number; parts?: Omit<SessionAgentsPart, "content">[] };
   // absent on a row written before the renderer was named — that row's block is v1 by date
   renderer?: string;
   // optional because rows written before this field exist and are served unchanged (the legacy
@@ -8835,7 +8837,9 @@ export async function run(ctx: Ctx): Promise<void> {
   await post("/api/dispatch", { on: false });
   await post("/api/autos/switch", { on: false });
 
-  // (1) A MAIN filing stores a VALID triple, validated at set time and persisted on the row.
+  // (1) A MAIN filing stores a VALID triple, validated at set time and persisted on the row. A Codex
+  // choice that names no permissions stores the normalized default profile it will actually spawn
+  // with (server.ts#taskSpawnFromBody), so the expected row names that exact object, not a wildcard.
   const spawnOkRes = await spawnFile({ text: "task-spawn: main files a codex triple", kind: "auftrag",
     harness: "codex", model: "gpt-5.5", effort: "high" });
   const spawnOkBody = await spawnOkRes.json() as { ok?: boolean; task?: SpawnRow };
@@ -8843,7 +8847,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOkRow = spawnOkBody.task?.id ? await spawnRowOf(spawnOkBody.task.id) : undefined;
   check("task-spawn (1): a MAIN filing persists the validated harness/model/effort triple on a still-pending row",
     spawnOkRes.status === 200 && spawnOkBody.ok === true
-      && JSON.stringify(spawnOkRow?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+      && JSON.stringify(spawnOkRow?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high", permissions: { sandbox: "danger-full-access", approval: "never" } })
       && spawnOkRow?.status === "pending",
     `${spawnOkRes.status} ${JSON.stringify(spawnOkRow ?? null)}`);
 
@@ -8877,7 +8881,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOwnerRow = await spawnOwnerMake({ text: "task-spawn owner codex row",
     harness: "codex", model: "gpt-5.5", effort: "low" });
   check("task-spawn (1d): the owner create door persists the same validated triple",
-    JSON.stringify(spawnOwnerRow.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "low" }),
+    JSON.stringify(spawnOwnerRow.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "low", permissions: { sandbox: "danger-full-access", approval: "never" } }),
     JSON.stringify(spawnOwnerRow));
 
   // (1e) the choice SURVIVES a restart byte-for-byte, and the legacy row stays legacy-shaped —
@@ -8886,7 +8890,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnOkAfterRestart = await spawnRowOf(spawnOkBody.task!.id);
   const spawnPlainAfterRestart = await spawnRowOf(spawnPlainBody.task!.id);
   check("task-spawn (1e): a stored choice survives restart unchanged and an absent one is not backfilled",
-    JSON.stringify(spawnOkAfterRestart?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+    JSON.stringify(spawnOkAfterRestart?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high", permissions: { sandbox: "danger-full-access", approval: "never" } })
       && !!spawnPlainAfterRestart && !("spawn" in spawnPlainAfterRestart),
     `ok=${JSON.stringify(spawnOkAfterRestart?.spawn)} plain=${JSON.stringify(spawnPlainAfterRestart ?? null)}`);
   // the restart reloads persisted switch state — re-assert the stops for the release half below
@@ -9379,13 +9383,31 @@ export async function run(ctx: Ctx): Promise<void> {
     "PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack");
   const cpProgramReceipt = cpProgramLane.receipt;
   const cpBlob = cpProgramReceipt ? gitIn(cpProgramReceipt.repo, "rev-parse", `${cpProgramReceipt.head}:AGENTS.md`).stdout.trim() : "";
-  const cpExpectedRow = { id: cpPack.id, hardness: "guidance", useWhen: cpPack.useWhen, anchors: cpPack.sources,
+  const cpDelivered = (await plogRead()).findLast((row) => row.slot === cpProgramReceipt?.slot
+    && row.text.startsWith("PROGRAM-CONTEXT-PACKS FIXTURE — a lane of the Program that carries a pack"));
+  const cpRules = cpDelivered?.cwd ? readFileSync(`${cpDelivered.cwd}/AGENTS.override.md`, "utf8") : "";
+  const cpSource = cpDelivered?.cwd ? readFileSync(`${cpDelivered.cwd}/AGENTS.md`, "utf8") : "";
+  const cpPart = { id: `${cpPack.id}.source-1`, packId: cpPack.id, path: "AGENTS.md", anchor: cpHeading,
+    sorte: "wissen", ort: "ausleihe", sha256: createHash("sha256").update(cpSource).digest("hex"), bytes: Buffer.byteLength(cpSource), refusal: null };
+  const cpExpectedRow = { id: cpPack.id, hardness: "guidance", parts: [cpPart], useWhen: cpPack.useWhen, anchors: cpPack.sources,
     sourceHash: observedSourceHash(cpPack.sources, new Map([["AGENTS.md", cpBlob]])), origin: "program" };
   check("program-context-packs (4a): the Program's dispatched lane receipts the pack with origin:\"program\" and its observed source version — and no other row claims that origin",
     cpProgramLane.status === 200 && !!cpProgramReceipt && cpProgramReceipt.programId === mainProgram.id
       && JSON.stringify(cpProgramReceipt.selected.filter((row) => row.id === cpPack.id)) === JSON.stringify([cpExpectedRow])
       && cpProgramReceipt.selected.filter((row) => "origin" in row).length === 1,
     `${cpProgramLane.status} ${JSON.stringify(cpProgramReceipt ?? null)}`);
+  check("program-context-packs (4a-native): the actual file receipts its source part and carries the pack once, absent from the order",
+    cpProgramReceipt?.sessionAgents?.path === "AGENTS.override.md"
+      && cpProgramReceipt.sessionAgents.bytes === Buffer.byteLength(cpRules)
+      && cpProgramReceipt.sessionAgents.sha256 === createHash("sha256").update(cpRules).digest("hex")
+      && JSON.stringify(cpProgramReceipt.sessionAgents.parts?.filter((part) => part.packId === cpPack.id)) === JSON.stringify([cpPart])
+      && cpSource.startsWith(`${cpHeading}\n`) && !/\n# /.test(cpSource)
+      && cpRules.includes(cpPack.useWhen) && cpRules.includes(`AGENTS.md | ${cpHeading}`)
+      && cpRules.split(`- ${cpPack.id} —`).length === 2
+      && cpDelivered?.text.endsWith("\n\nSession-Regeln: ./AGENTS.override.md") === true
+      && !cpDelivered.text.includes(cpPack.id) && !cpDelivered.text.includes("--- ROLLE ---")
+      && !cpDelivered.text.includes("ContextPlan v2 anchors") && !cpDelivered.text.includes("HOW THIS LANE ENDS"),
+    JSON.stringify({ receipt: cpProgramReceipt?.sessionAgents, fileBytes: Buffer.byteLength(cpRules), part: cpPart, prompt: cpDelivered?.text }));
 
   // (1a) the Program's OWN lane may not write its Program's packs — its token is the one credential
   // that is closest to the MAIN's without being it
@@ -10619,10 +10641,32 @@ export async function run(ctx: Ctx): Promise<void> {
         if (hit) { text = hit.text ?? ""; break; }
         await Bun.sleep(250);
       }
+      const pointerMark = "\n\nSession-Regeln: ";
+      const laneCwd = (await sessions()).slots.find((slot) => slot.id === body.slot)?.cwd;
+      const pointerPath = `${laneCwd}/${text.slice(text.lastIndexOf(pointerMark) + pointerMark.length)}`;
+      const dispatchRules = text.includes(pointerMark) && existsSync(pointerPath) ? readFileSync(pointerPath, "utf8") : "";
+      const receiptBefore = await contextReceipts();
+      const nativeReceipt = receiptBefore.receipts.findLast((r) => r.slot === body.slot && r.taskId === taskId);
+      check("studio lane dispatch: native rules receipt matches the exact file, with no role, anchors, exit or memory copied into the brief",
+        nativeReceipt?.sessionAgents?.path === "AGENTS.override.md"
+          && nativeReceipt.sessionAgents.bytes === Buffer.byteLength(dispatchRules)
+          && nativeReceipt.sessionAgents.sha256 === createHash("sha256").update(dispatchRules).digest("hex")
+          && dispatchRules.includes("--- ROLLE --- Lane:") && dispatchRules.includes("HOW THIS LANE ENDS")
+          && !text.includes("--- ROLLE --- Lane:") && !text.includes("ContextPlan v2 anchors")
+          && !text.includes("HOW THIS LANE ENDS") && !text.includes("YOUR MEMORY"));
       if (succession && typeof body.slot === "number" && text) {
         const slot = body.slot;
         const before = await contextReceipts();
         const dispatchReceipt = before.receipts.findLast((r) => r.slot === slot && r.taskId === taskId);
+        const dispatchAnchorLines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
+        for (const pack of dispatchReceipt?.selected ?? []) {
+          dispatchAnchorLines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
+          if (Array.isArray(pack.anchors)) for (const source of pack.anchors) dispatchAnchorLines.push(`  ${source.path} | ${source.anchor}`);
+        }
+        const dispatchAnchors = dispatchReceipt?.selected.length ? `\n\n${dispatchAnchorLines.join("\n")}` : "";
+        check("studio lane dispatch: every receipted public source anchor appears in its native rule file",
+          !!dispatchReceipt && dispatchReceipt.selected.length > 0 && dispatchReceipt.selected.every((pack) => Array.isArray(pack.anchors)
+            && pack.anchors.every((source) => dispatchRules.includes(source.path) && dispatchRules.includes(source.anchor))));
         const token = slotToken(slot);
         const predecessorAt = readState().slots?.[String(slot)]?.openedAt;
         const handoffText = "SUCCESSION CONTEXT: predecessor claims the next cut is still open.";
@@ -10655,8 +10699,8 @@ export async function run(ctx: Ctx): Promise<void> {
             selected: successorReceipt.selected, omitted: successorReceipt.omitted },
         })).digest("hex") : "";
         check("Lane succession context: same row delivers dispatch anchors and source excerpt, labels the predecessor claim, and writes one exact receipt",
-          report.ok && succeeded.ok && anchors(text).length > 0 && snippets(text).includes("function buildProgramMainBrief(")
-            && anchors(successorBrief) === anchors(text) && snippets(successorBrief) === snippets(text)
+          report.ok && succeeded.ok && dispatchAnchors.length > 0 && snippets(text).includes("function buildProgramMainBrief(")
+            && anchors(successorBrief) === dispatchAnchors && snippets(successorBrief) === snippets(text)
             && successorBrief.includes(handoffText) && successorBrief.includes("Behauptung deiner Vorgängerin")
             && !!dispatchReceipt && !!successorReceipt && after.total === before.total + 1
             && successorReceipt.id !== dispatchReceipt.id && successorReceipt.hash === receiptedHash
@@ -10664,7 +10708,7 @@ export async function run(ctx: Ctx): Promise<void> {
             && successorReceipt.deliveredBytes === new TextEncoder().encode(successorBrief).byteLength
             && JSON.stringify(successorReceipt.selected) === JSON.stringify(dispatchReceipt.selected)
             && JSON.stringify(successorReceipt.omitted) === JSON.stringify(dispatchReceipt.omitted),
-          `report=${report.status} succeed=${succeeded.status} anchors=${anchors(text).length}/${anchors(successorBrief).length} snippets=${snippets(text).length}/${snippets(successorBrief).length} receipts=${before.total}/${after.total}`);
+          `report=${report.status} succeed=${succeeded.status} anchors=${dispatchAnchors.length}/${anchors(successorBrief).length} snippets=${snippets(text).length}/${snippets(successorBrief).length} receipts=${before.total}/${after.total}`);
       } else if (succession) {
         check("Lane succession context fixture: dispatch must deliver before its successor can be measured", false,
           `${res.status} slot=${body.slot ?? "none"} briefBytes=${text.length}`);
@@ -10679,15 +10723,17 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const laneFree = await laneBriefOf(laneFreeRow.task.id);
     const laneBound = await laneBriefOf(laneBoundRow.task.id, true);
-    const laneFreePrompt = laneFree.text;
-    const laneBoundPrompt = laneBound.text;
+    const lanePromptShape = (prompt: string): string => {
+      const at = prompt.lastIndexOf("\n\nSession-Regeln: ");
+      return at >= 0 ? `${prompt.slice(0, at)}\n\nSession-Regeln: <lane>/AGENTS.override.md` : prompt;
+    };
+    const laneFreePrompt = lanePromptShape(laneFree.text);
+    const laneBoundPrompt = lanePromptShape(laneBound.text);
     // the lane seam: the block sits before the anchors for the rail's reason (the context receipt
     // hashes the anchor block alone), and before the exit footer, whose three acts stay last
     const laneSeam = (prompt: string): number => {
-      const anchors = prompt.indexOf("\n\nContextPlan v2 anchors");
-      if (anchors >= 0) return anchors;
-      const footer = prompt.indexOf("\n\n--- HOW THIS LANE ENDS");
-      return footer >= 0 ? footer : prompt.length;
+      const pointer = prompt.indexOf("\n\nSession-Regeln: ");
+      return pointer >= 0 ? pointer : prompt.length;
     };
     const expectedLaneBlock = [...expectedHead("Brief Studio v2", 2, 2),
       "", "STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):",

@@ -304,6 +304,8 @@ the "no known flakes" premise it rests on is not.
 
 ## 6. Pre-land gate vs post-land audit — what each buys that the other cannot
 
+### 6.0 gate-vs-audit — What each buys
+
 The interesting question, and the two are **not substitutes**. They answer different questions, and
 each has a class the other structurally cannot see.
 
@@ -351,6 +353,13 @@ each has a class the other structurally cannot see.
   `unknown` rather than blocking work — the inverse fail direction their classification block argues
   for, and it is the right one for something that gates nothing.
 
+**The honest statement:** tier 2 is not a stronger tier 1. It is the only place a 5.6-minute suite
+can live, and tier 1 is the only place prevention and attribution can live. Building tier 2 does not
+retire the question "what does a green gate guarantee" — it answers a *different* question, and
+leaves §3's answer (types, plus 25 checks about `claudeAlive`) exactly where it was.
+
+### 6.0a Environment asymmetry — measured 2026-09-04, closed 2026-09-05
+
 **And one asymmetry that WAS neither — measured 2026-09-04, closed 2026-09-05.** The two tiers used
 to hand their command *different environments*, and only one of them said so.
 `server.ts#runPostLandAudit` has always spawned through `server.ts#auditChildEnv`, which drops
@@ -388,6 +397,8 @@ guard: `e2e-stage.sh` exports `FLEET_LANE_AUTOCLOSE=0`, `e2e-isolated.sh` names 
 `e2e/watch.ts`'s `D2 setup` reads the value back off the srv process, so an inherited value would
 fail as a wrong premise instead of as a broken feature.
 
+### 6.0b proportion — Docs-only gate and audit
+
 **Proportion, added 2026-09-04 (owner).** Tier 2 no longer runs the full suite over a tree whose
 every new land was docs-only. `server.ts#drainPostLandAudits` asks `entryRunsShortChain` of the
 COALESCED entry — every cover must carry the land gate's own `proportional` stamp, and the repo must
@@ -416,10 +427,33 @@ hand-copied at those four sites and had already drifted both ways — the wake r
 awake for a short-chain job the door then refused, and the drain held a repo-worker entry for the
 full `AUDIT_HELPER_GRACE_MS` waiting on an offer that structurally never comes.
 
-**The honest statement:** tier 2 is not a stronger tier 1. It is the only place a 5.6-minute suite
-can live, and tier 1 is the only place prevention and attribution can live. Building tier 2 does not
-retire the question "what does a green gate guarantee" — it answers a *different* question, and
-leaves §3's answer (types, plus 25 checks about `claudeAlive`) exactly where it was.
+The gate response's `classifiedAs` explains which rule each changed file selected. Local proof and the land gate use the same classification source.
+
+Since 2026-08-25, a docs-only land in this repo runs the short `install` + `pins` proof; since 2026-09-04 a docs-only land gets that same short chain in the post-land audit as well.
+
+An empty `localProof.steps` is served only in a repo that does not run this chain at all, and
+always carries `localProof.note`, which names that repo's own verify command.
+
+The short proof is this repo's own chain — `bun e2e/pins.ts` is a file only this tree has — so
+since 2026-08-26 it is only ever chosen here: a land in another repo runs that repo's configured
+chain unchanged, docs-only or not. Its note stamps no step names at all: the step names are lines
+of this chain, and the note's `cmd` is the only honest record of what a foreign chain ran.
+The guard inside the short proof stays as a second line: a tree it does not recognise makes it
+decline out loud — verdict SKIPPED, never a red gate over a tree nothing looked at.
+
+The gate response's `isolatedPreview: true` recommends the preview; `"self-assess"` refers to the
+merge-/land-path self-assessment in `AGENTS.md` §Verify, Lane. `localProof.offerBody` is present
+unless `isolatedPreview` is `false`: `{}` is the full run, `{"modules":[…]}` the narrowed run of
+`localProof.modules`, which needs `helper.takesModules`.
+
+A suite offer's terminal verdict is delivered into the lane's pane: green, red, or `unknown` when
+a claim lapses. An unclaimed offer whose budget runs out sends nothing.
+A claimed suite offer answers 409 to withdrawal unless `{"abandon":true}`. A lane may not subscribe
+to a command job and reads `GET /api/self/jobs/<jobId>`. The runner `bun fleet-e2e*.ts` survives its
+wrapper and respawns its tmux server; `<SOCK>` in the stop command is the wrapper's `SOCK=` prefix,
+e.g. `fleettest`. Local suite logs are block-buffered. Suites take a shared mutex, and the server
+runs the same scripts for its post-land audit: a pattern kill can record a red audit that measured
+nothing.
 
 ### 6.1 Die Suite, die Tier 2 beweist, wird von keinem Gate gefahren — und war darum zwei Tage DETERMINISTISCH ROT (`4c562e7` → `a1f8b65`)
 
@@ -5254,13 +5288,13 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 36 der 52 Module sind nach
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 37 der 53 Module sind nach
 DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`, `security`).
 
 **Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren sind bisher zwei Auswahlen mit Lauf:
 `slots,tasks` (§16d) und die Handauswahl `ctl,land-durability,tasks` (§16c.1, Land-Receipt) — drei
-der 36 „allein“-Zeilen haben damit einen Lauf hinter sich (`slots`, `ctl`, `land-durability`). Für
-die anderen 33 „allein“-Zeilen steht kein Lauf dahinter, sondern nur die Abwesenheit einer Kante
+der 37 „allein“-Zeilen haben damit einen Lauf hinter sich (`slots`, `ctl`, `land-durability`). Für
+die anderen 34 „allein“-Zeilen steht kein Lauf dahinter, sondern nur die Abwesenheit einer Kante
 in dieser Tabelle — und die Tabelle modelliert, was ein Modul HERSTELLT, nicht was es voraussetzt,
 ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist ihr erster Messpunkt.
 
@@ -5273,6 +5307,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `prompts` | — | — | allein |
 | `briefstats` | — | — | allein |
 | `tmux-locale` | — | — | allein |
+| `bytes` | — | — | allein |
 | `auth` | — | — | allein |
 | `dirs-pins` | — | — | allein |
 | `slots` | — | `server:slots-1-2-open` `server:slots-1-2-driven` | allein |

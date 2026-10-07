@@ -1,5 +1,6 @@
 import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
+import { perfRebuild } from "./perfmarks";
 import { Shell, ShellRow, openShell } from "./shell";
 import { askRisk } from "./dialog";
 import { attachEntityCards } from "./entcard";
@@ -4450,6 +4451,7 @@ export function renderQueue() {
     shell.setSubtitle(`${placed} with no known collision · ${projection.unresolved.length} unresolved outside`);
   }
 
+  perfRebuild("renderQueue");
   shell.list.replaceChildren();
   const rows: ShellRow[] = [];
   let selIdx = -1;

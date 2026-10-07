@@ -1,16 +1,1419 @@
+import { loadConfig, reposOf } from "../helper-daemon/daemon";
+import { helperReposFrom } from "../server/types";
+import { HELPER_REPO_COMMITS_MAX, type HelperReposReading, instanceNameFrom, instanceSourceFrom, instanceBandText, type WorkplaceStand, type WorkplaceChecks, type Workplaces, type WorkplaceRepo } from "../src/protocol";
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
+import type { WorkplaceCheckObservation } from "../server/types";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { request as httpRequest } from "node:http";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
+import { repoGraph, roleOf } from "../server/deploy-classify";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
+// THE TESTINSTANZ BAND (ranke-notiz R11): a test instance says which branch and stand it shows and
+// what of it is not on its target yet; the live fleet says nothing. One claim per statement, each
+// with the mutation that must turn it red, stated next to it and RUN:
+//   words   — the three DONE sentences come out of src/protocol.ts#instanceBandText; mutation: a
+//             missing count reads "alles schon" → the "never guessed" row is red; a process word
+//             planted in a text → the vocabulary row is red.
+//   measure — testinstanz.sh `source` (the very function `up` records as sourceBefore) against a
+//             real git fixture; mutation: the change of one lane commit put on the target by
+//             cherry-pick must leave the count (a plain rev-list would not drop it).
+//   order   — `up` measures BEFORE rsync and hands that record to the instance; mutation: the same
+//             predicate over a copy with the two lines swapped / the env name removed is false.
+//   wire    — the suite server (no FLEET_INSTANCE_SOURCE, like the live fleet) carries no
+//             `instance.source`; restarted WITH it, it does — and the "no band" predicate, run
+//             over that answer, is false (the mutation is the real server with the variable set).
+//   client  — the band paints only from `instance.source`, hidden otherwise; mutation: the same
+//             anchors over a copy without the hidden line are false.
+async function instanceBandChecks(): Promise<void> {
+  const clock = () => "12:00";
+  const H = "a".repeat(40), T = "b".repeat(40);
+  const words = (o: unknown) => { const src = instanceSourceFrom(JSON.stringify(o)); return src ? instanceBandText(src, clock) : null; };
+  const lane = (ahead: number | null, dirty: number | null) =>
+    ({ head: H, branch: "fleet/r11-fixture", dirty, measuredAt: 1, target: { branch: "overhaul", head: T, ahead } });
+  const three = words(lane(3, 0)), all = words(lane(0, 0)), none = words({});
+  check("band words: branch, stand at start and '3 Commits noch nicht auf overhaul'",
+    three?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul", three?.text);
+  check("band words: both counts measured zero read 'alles schon auf overhaul'",
+    all?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · alles schon auf overhaul", all?.text);
+  check("band words: an instance without a readable record reads 'Stand unbekannt', set-but-garbage likewise",
+    none?.text === "Zweig unbekannt · Stand unbekannt"
+      && instanceBandText(instanceSourceFrom("not json")!, clock).text === "Zweig unbekannt · Stand unbekannt", none?.text);
+  const guessed = [words(lane(null, 0)), words(lane(0, null)), words({ ...lane(0, 0), target: null })];
+  const neverGuessed = (b: ReturnType<typeof words>) => !!b && !b.text.includes("alles schon") && b.text.includes("unbekannt");
+  check("band words: a missing count or target is 'unbekannt', never 'alles schon'",
+    guessed.every(neverGuessed), JSON.stringify(guessed.map((b) => b?.text)));
+  check("band words MUTATION: the never-guessed predicate is red on a text that claims 'alles schon' without a count",
+    !neverGuessed({ segments: [], title: "", text: "Zweig x · Stand beim Start aaaaaaa · alles schon auf overhaul" }));
+  // a count is a comparison only when the target's sha was measured with it. Mutation: the text a
+  // band would show if it ignored the missing sha ("3 Commits …") → the predicate is red.
+  const unmatched = words({ ...lane(3, 0), target: { branch: "overhaul", head: null, ahead: 3 } });
+  const noBlindCount = (text: string | undefined) => !!text && text.endsWith("Abgleich mit overhaul unbekannt") && !/Commit|alles schon/.test(text.split(" · ")[2] ?? "");
+  check("band words: without a measured target sha the band says 'Abgleich mit overhaul unbekannt', no count",
+    noBlindCount(unmatched?.text) && noBlindCount(words(lane(null, 0))?.text), unmatched?.text);
+  check("band words MUTATION: the no-blind-count predicate is red on a count shown without the target sha",
+    !noBlindCount("Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul"));
+  const PROCESS = /\b(baton|audit|gate|suite|deploy)\b/i;
+  const every = [three, all, none, ...guessed, words(lane(1, 2)), words(lane(0, 1))];
+  check("band words: no process word in any band text or tooltip (G0.5)",
+    every.every((b) => !!b && !PROCESS.test(b.text) && !PROCESS.test(b.title)), JSON.stringify(every.map((b) => b?.text)));
+  check("band words MUTATION: the vocabulary predicate is red on a planted process word", PROCESS.test(`${three?.text} · gate`));
+  check("band words: the source is folded to null when unset or empty — no band on an instance without the variable",
+    instanceSourceFrom(undefined) === null && instanceSourceFrom("") === null);
+  // the branch charset is git's (check-ref-format), not a positive list. Mutation: the earlier list
+  // /^(?!-)[A-Za-z0-9._/-]{1,200}$/ as the fold — "+" and the umlaut read "unbekannt" → red.
+  const charset = (shown: (b: string) => boolean) => shown("fleet/feature+x") && shown("fleet/überarbeitung") && shown("fix/a#b@c")
+    && !shown("fleet/a..b") && !shown("-x") && !shown("x.lock") && !shown("a b");
+  const folded = (b: string) => instanceSourceFrom(JSON.stringify({ head: H, branch: b, target: { branch: b, ahead: 0 } }))?.branch === b
+    && words({ head: H, branch: b, dirty: 0, target: null })?.text.startsWith(`Zweig ${b} ·`) === true;
+  check("band words: a branch with '+', '#', '@' or an umlaut is shown, one with '..' stays 'unbekannt' (git check-ref-format)",
+    charset(folded) && words({ head: H, branch: "fleet/a..b" })?.text.startsWith("Zweig unbekannt") === true);
+  check("band words MUTATION: the old positive-list fold is red on the same branches",
+    !charset((b) => /^(?!-)[A-Za-z0-9._/-]{1,200}$/.test(b)));
+
+  // measure — a real repository: overhaul + a lane branch three commits ahead
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const fx = mkdtempSync(`${ROOT}/ti-band-`);
+  const git = (...a: string[]) => spawnSync("git", ["-C", fx, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...a], { encoding: "utf8" });
+  const measure = (target?: string, script = `${fx}/testinstanz.sh`) => {
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: process.env.TMPDIR ?? "/tmp" };
+    if (target !== undefined) env.FLEET_TI_TARGET = target;
+    const r = spawnSync("sh", [script, "source"], { env, encoding: "utf8" });
+    try { return { code: r.status, json: JSON.parse(r.stdout) as Record<string, unknown> & { target?: { branch?: string; head?: string | null; ahead?: number | null } | null }, raw: r.stdout }; }
+    catch { return { code: r.status, json: null, raw: r.stdout + r.stderr }; }
+  };
+  try {
+    writeFileSync(`${fx}/testinstanz.sh`, readFileSync(`${src}/testinstanz.sh`));
+    chmodSync(`${fx}/testinstanz.sh`, 0o700);
+    const setup = [git("init", "-q", "-b", "overhaul"), git("add", "-A"), git("commit", "-qm", "base"), git("checkout", "-qb", "fleet/r11-fixture")];
+    for (const f of ["one", "two", "three"]) { writeFileSync(`${fx}/${f}.txt`, `${f}\n`); setup.push(git("add", "-A"), git("commit", "-qm", f)); }
+    check("band measure SETUP: fixture repository with overhaul and a lane three commits ahead", setup.every((r) => r.status === 0),
+      setup.map((r) => r.stderr).join("").slice(0, 200));
+    const head = git("rev-parse", "HEAD").stdout.trim(), overhaul = git("rev-parse", "overhaul").stdout.trim();
+    const m3 = measure("overhaul");
+    check("band measure: source reports head, branch, clean tree and 3 commits not on overhaul",
+      m3.code === 0 && m3.json?.head === head && m3.json.branch === "fleet/r11-fixture" && m3.json.dirty === 0
+        && m3.json.target?.branch === "overhaul" && m3.json.target.head === overhaul && m3.json.target.ahead === 3
+        && instanceBandText(instanceSourceFrom(m3.raw.trim())!, clock).text.endsWith("3 Commits noch nicht auf overhaul"), m3.raw);
+    const first = git("rev-list", "--reverse", "overhaul..HEAD").stdout.split("\n")[0];
+    const picked = [git("checkout", "-q", "overhaul"), git("cherry-pick", first), git("checkout", "-q", "fleet/r11-fixture")];
+    writeFileSync(`${fx}/scratch.txt`, "uncommitted\n");
+    const m2 = measure("overhaul");
+    check("band measure MUTATION: a lane change already on the target (cherry-picked) leaves the count, an uncommitted file joins it",
+      picked.every((r) => r.status === 0) && m2.json?.target?.ahead === 2 && m2.json.dirty === 1
+        && instanceBandText(instanceSourceFrom(m2.raw.trim())!, clock).text.endsWith("2 Commits und 1 Datei ohne Commit noch nicht auf overhaul"), m2.raw);
+    rmSync(`${fx}/scratch.txt`);
+    const ff = git("branch", "-f", "overhaul", "fleet/r11-fixture"), m0 = measure("overhaul");
+    check("band measure: a lane fully on overhaul with a clean tree reads 'alles schon auf overhaul'",
+      ff.status === 0 && m0.json?.target?.ahead === 0 && m0.json.dirty === 0
+        && instanceBandText(instanceSourceFrom(m0.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"), m0.raw);
+    // a merge of the target into the lane brings the target's content, it is not lane work: the
+    // count stays 0. Mutation: the same measurement by a copy of the script without --no-merges
+    // counts the merge commit (1) → red.
+    writeFileSync(`${fx}/four.txt`, "four\n");
+    const merged = [git("checkout", "-q", "overhaul"), git("add", "-A"), git("commit", "-qm", "four on target"),
+      git("checkout", "-q", "fleet/r11-fixture"), git("merge", "--no-ff", "-qm", "merge overhaul", "overhaul")];
+    const mMerge = measure("overhaul");
+    // inside the fixture: the script measures the directory it lives in (untracked, so `dirty` moves, the count does not)
+    const noMergesGone = `${fx}/testinstanz-nomerges.sh`;
+    writeFileSync(noMergesGone, readFileSync(`${fx}/testinstanz.sh`, "utf8").replace('"--no-merges",', ""));
+    const mMutant = measure("overhaul", noMergesGone);
+    rmSync(noMergesGone, { force: true });
+    check("band measure: a merge of overhaul into the lane counts 0 and reads 'alles schon auf overhaul'",
+      merged.every((r) => r.status === 0) && mMerge.json?.target?.ahead === 0 && mMerge.json.dirty === 0
+        && instanceBandText(instanceSourceFrom(mMerge.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"),
+      `${merged.map((r) => r.stderr).join("").slice(0, 200)} ${mMerge.raw}`);
+    check("band measure MUTATION: the script without --no-merges counts the merge commit",
+      mMutant.json?.target?.ahead === 1, mMutant.raw);
+    const unset = measure(), bogus = measure("no-such-branch");
+    check("band measure: no target given is target null (never a guessed branch), an unknown branch has no count",
+      unset.code === 0 && unset.json?.target === null && bogus.json?.target?.branch === "no-such-branch"
+        && bogus.json.target.head === null && bogus.json.target.ahead === null, `${unset.raw} | ${bogus.raw}`);
+  } finally { rmSync(fx, { recursive: true, force: true }); }
+
+  // order — measured before the copy, handed to the instance (comment lines stripped first)
+  const code = (text: string) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  const ordered = (script: string) => {
+    const c = code(script), measured = c.indexOf("TI_SOURCE_BEFORE=$(ti_measure)"), copied = c.indexOf("rsync -a ");
+    return measured >= 0 && copied > measured && /FLEET_INSTANCE_SOURCE="\$TI_SHOWN"/.test(c)
+      && /TI_SHOWN=\$\(sed -n 's\/\^sourceBefore=\/\/p' "\$STATE"/.test(c) && /\bFLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX\b/.test(c);
+  };
+  const tiScript = readFileSync(`${src}/testinstanz.sh`, "utf8");
+  check("band order: up measures the source before rsync and launches the instance with that record (env name listed)", ordered(tiScript));
+  const measuredAfterCopy = tiScript.replace("  TI_SOURCE_BEFORE=$(ti_measure)\n", "")
+    .replace(/(  rsync -a [^\n]*\n)/, "$1  TI_SOURCE_BEFORE=$(ti_measure)\n");
+  check("band order MUTATION: measuring after the copy, or launching without the variable, is red",
+    !ordered(measuredAfterCopy) && !ordered(tiScript.replace('FLEET_INSTANCE_SOURCE="$TI_SHOWN" ', "")));
+
+  // wire — the suite server runs like the live fleet: no FLEET_INSTANCE_SOURCE
+  type SessionsInstance = { instance?: { name?: string | null; source?: unknown } };
+  type WorktreesRepos = { repos?: { repo: string }[]; stands?: { kind: string }[] };
+  const sessions = async () => await (await get("/api/sessions")).json() as SessionsInstance;
+  const noBand = (b: SessionsInstance) => !!b.instance && !("source" in b.instance);
+  const plain = await sessions();
+  check("band wire: a server without FLEET_INSTANCE_SOURCE (the live fleet) sends no instance.source", noBand(plain), JSON.stringify(plain.instance));
+  // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): with the variable the server's own
+  // checkout leaves the Arbeitsorte repo list (its only possible row there is an unreadable
+  // placeholder), without it the list is unchanged. Same server, one restart, both sides.
+  // the server's OWN checkout is ROOT (the staged tree this run executes in), never REPO — REPO is
+  // FLEET_E2E_REPO, the throwaway fixture repo the lane checks spawn (harness.ts 41 vs 43)
+  const selfRepo = realpathSync(ROOT);
+  const plainWp = await (await get("/api/worktrees")).json() as WorktreesRepos;
+  check("band wire: the live fleet lists its own checkout as a workplace (the unchanged live picture)",
+    (plainWp.repos ?? []).some((r) => r.repo === selfRepo), JSON.stringify((plainWp.repos ?? []).map((r) => r.repo)));
+  const sample = lane(3, 0);
+  try {
+    await restartSrv({ FLEET_INSTANCE_SOURCE: JSON.stringify(sample) });
+    const shown = await sessions();
+    check("band wire: a test instance carries its recorded stand as instance.source, folded by the shared parser",
+      JSON.stringify(shown.instance?.source) === JSON.stringify(instanceSourceFrom(JSON.stringify(sample))), JSON.stringify(shown.instance));
+    check("band wire MUTATION: the no-band predicate is red on the answer of a server started WITH the variable", !noBand(shown));
+    const markedWp = await (await get("/api/worktrees")).json() as WorktreesRepos;
+    check("band wire: a test instance does not list its own copy as a workplace, the live-server stand stays",
+      !(markedWp.repos ?? []).some((r) => r.repo === selfRepo) && (markedWp.stands ?? []).some((s) => s.kind === "live-server"),
+      JSON.stringify((markedWp.repos ?? []).map((r) => r.repo)));
+    check("band wire MUTATION: the no-copy predicate is red on the live fleet's own answer", (plainWp.repos ?? []).some((r) => r.repo === selfRepo));
+    await restartSrv({ FLEET_INSTANCE_SOURCE: "{not json" });
+    const garbled = await sessions();
+    const garbledText = garbled.instance?.source ? instanceBandText(instanceSourceFrom(JSON.stringify(garbled.instance.source))!, clock).text : null;
+    check("band wire: an unreadable record still marks the test instance and reads 'Stand unbekannt'",
+      garbledText === "Zweig unbekannt · Stand unbekannt", JSON.stringify(garbled.instance));
+  } finally { await restartSrv(); }
+  check("band wire: back on the plain server, no instance.source again", noBand(await sessions()));
+
+  // client — painted only from instance.source
+  const client = readFileSync(`${src}/src/client.ts`, "utf8").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  const html = readFileSync(`${src}/public/index.html`, "utf8");
+  // the wire since 7caecc0b extracts tiSource once and feeds BOTH the band and the board's
+  // instanceSource from it (src/client.ts#loadSessions) — anchor that shape, not an older inline one
+  const wired = (c: string, h: string) => c.includes("const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));")
+    && c.includes("renderInstanceBand(tiSource);") && c.includes("setInstanceSource(tiSource);")
+    && c.includes('document.documentElement.classList.toggle("tiband", !!source);') && c.includes("tiBand.hidden = !source;")
+    && c.includes("instanceBandText(source,") && h.includes('<div id="tiband" hidden></div>') && h.includes("#tiband[hidden] { display: none; }");
+  check("band client: the band paints only from instance.source and is hidden (no html.tiband) without it", wired(client, html));
+  check("band client MUTATION: the wiring predicate is red without the hidden toggle",
+    !wired(client.replace("tiBand.hidden = !source;", ""), html) && !wired(client, html.replace('<div id="tiband" hidden></div>', '<div id="tiband"></div>')));
+
+  // DOM — the real client bundle in Chromium at 900 × 700 and 390 × 844 with a long branch and a long
+  // target: nothing clipped in either width, the target sentence whole. Mutation: segments that may not
+  // shrink below their text (`flex: none` in the review's words).
+  try {
+    const dom = await instanceBandDom(src);
+    for (const v of dom.views) {
+      check(`band DOM SETUP ${v.size}: Chromium paints the band from a fixture instance.source`, v.real.shown && v.real.text === dom.expected,
+        JSON.stringify(v.real).slice(0, 600));
+      check(`band DOM ${v.size}: with a long branch and target no segment overflows and the target sentence stands whole in the band`,
+        v.real.shown && v.real.clipped.length === 0 && v.real.bandOverflow === false && v.real.lastWhole, JSON.stringify(v.real).slice(0, 900));
+      check(`band DOM ${v.size} MUTATION: with unshrinkable segments (flex:none / nowrap) the same claim is red`,
+        v.mutant.shown && (v.mutant.clipped.length > 0 || v.mutant.bandOverflow || !v.mutant.lastWhole), JSON.stringify(v.mutant).slice(0, 900));
+      check(`band DOM ${v.size}: without instance.source (the live fleet) the band is hidden and the app starts at the top`,
+        v.live.shown === false && v.live.htmlClass === false && v.live.appTop === 0, JSON.stringify(v.live));
+    }
+  } catch (error) {
+    check("band DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+// THE SNAPSHOT TELLS THE TRUTH ABOUT ITSELF (owner, 2026-10-06): a snapshot copy has no .git, so
+// without help it reads „[Zitat entfernt]“, loses its helper devices silently and — via
+// the strip's old sessionId drop — every Program binding, whose card then said "An keinen Auftrag,
+// kein Program gebunden" about a session that IS a Program-MAIN. One claim per statement, each
+// with the mutation that must turn it red, stated next to it and RUN:
+//   script  — testinstanz.sh keeps a Program's binding (sessionId inside main becomes null, never
+//             dropped) and snapshot panes run `cat` as the stand-in; mutation: the exception or the
+//             binding replaced by the old lines is red.
+//   source  — the machine group paints the test-instance row and the helper placeholder only from
+//             instance.source; mutation: the placeholder condition removed is red.
+//   wire    — covered in instanceBandChecks above (same restarts): the copy leaves /api/worktrees'
+//             repo list only when the variable is set.
+//   DOM     — the real client bundle in Chromium at 1200×900 and 390×844 against a fixture wire:
+//             snapshot pages paint the Testinstanz row, the helper placeholder, the carried binding
+//             (or "Im Snapshot nicht belegt" when the binding cannot be read) and the brief-fail
+//             sentence; the live page paints the old picture and none of the snapshot lines.
+async function snapshotTruthChecks(): Promise<void> {
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  const stripped = (text: string) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+
+  // script — the strip's binding exception and the pane stand-in
+  const tiScript = readFileSync(`${src}/testinstanz.sh`, "utf8");
+  const code = stripped(tiScript);
+  const keepsBinding = (t: string) => /k==='sessionId'&&parent==='main'/.test(t) && /\[k,null\]/.test(t)
+    && /FLEET_CMD="\$TI_AGENT_CMD"/.test(t);
+  check("snapshot script: the strip keeps a Program's main binding — sessionId inside main becomes null, not dropped",
+    keepsBinding(code), code.slice(code.indexOf("const strip="), code.indexOf("const strip=") + 120));
+  check("snapshot script MUTATION: the old strip (exception removed, drop without parent) loses every binding",
+    !keepsBinding(code.replace(/if\(k==='sessionId'&&parent==='main'\)return \[\[k,null\]\];/, ""))
+    && !keepsBinding(code.replace(/\[k,null\]/, "[k,'gone']")));
+  const snapshotCat = (t: string) => /= snapshot \]; then/.test(t) && /TI_AGENT_CMD='cat'/.test(t)
+    && /TI_AGENT_CMD='true'/.test(t) && t.indexOf("TI_AGENT_CMD='cat'") < t.indexOf("TI_AGENT_CMD='true'");
+  check("snapshot script: snapshot panes run the cat stand-in, mixed keeps true (its painters type shell loops)",
+    snapshotCat(code), "");
+  check("snapshot script MUTATION: the old FLEET_CMD=true for the snapshot is red",
+    !snapshotCat(code.replace("TI_AGENT_CMD='cat'", "TI_AGENT_CMD='true'")));
+
+  // source — the board paints the snapshot rows only from instance.source (comments stripped first)
+  const boardCode = stripped(readFileSync(`${src}/src/board.ts`, "utf8"));
+  const wired = (c: string) => c.includes("here.appendChild(testInstanceStandRow(instanceSource))")
+    && c.includes('el("b", "", "Testinstanz")')
+    && /instanceSource && !helpers\.size/.test(c)
+    && c.includes('machineHead("Helfer", "in der Testinstanz nicht gemeldet"');
+  check("snapshot board: the machine group paints the Testinstanz row and the helper placeholder only from instance.source",
+    wired(boardCode), "");
+  check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
+    !wired(boardCode.replace(/instanceSource && !helpers\.size/, "false")));
+
+  // DOM — three pages per width: carried binding, unreadable binding, live fleet
+  try {
+    const dom = await snapshotBoardDom(src);
+    for (const v of dom.views) {
+      const p = v.pages;
+      check(`snapshot DOM ${v.size}: the machine group says "Testinstanz · Stand beim Start" and never "Live · läuft auf unbekannt"`,
+        p.carried.rowText.startsWith("Testinstanz · Stand beim Start ") && !p.carried.rowText.includes("Live · läuft auf"),
+        JSON.stringify(p.carried.rowText));
+      check(`snapshot DOM ${v.size}: the helper devices stand as "in der Testinstanz nicht gemeldet"`,
+        p.carried.helperText === "in der Testinstanz nicht gemeldet", JSON.stringify(p.carried.helperText));
+      check(`snapshot DOM ${v.size}: the copy is no workplace — no repo group row under the machine`,
+        p.carried.repoRows === 0, JSON.stringify(p.carried.repoRows));
+      check(`snapshot DOM ${v.size}: a carried binding reads "Ihr Program", never "An keinen Auftrag, kein Program gebunden"`,
+        p.carried.rights.includes("Ihr Program") && !p.carried.rights.includes("An keinen Auftrag"),
+        JSON.stringify(p.carried.rights).slice(0, 300));
+      check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Im Snapshot nicht belegt", never "Keine"`,
+        p.unknown.rights.includes("Im Snapshot nicht belegt") && !p.unknown.rights.includes("An keinen Auftrag"),
+        JSON.stringify(p.unknown.rights).slice(0, 300));
+      check(`snapshot DOM ${v.size}: a git:none brief stands as the board's calm sentence, the column is not empty`,
+        p.carried.brief?.includes("Kein Git in diesem Ordner") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
+      check(`snapshot DOM ${v.size} MUTATION: without the sentence the painted calm is gone and the claim is red`,
+        p.mutant.brief !== null && !p.mutant.brief.includes("Kein Git in diesem Ordner"), JSON.stringify(p.mutant.brief));
+      check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — "Live" row, no placeholder, "Keine" rights`,
+        p.live.rowText.startsWith("Live · läuft auf") && p.live.helperText === null
+        && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
+        JSON.stringify({ row: p.live.rowText, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
+    }
+  } catch (error) {
+    check("snapshot DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+// THE SNAPSHOT BOARD IN A REAL BROWSER (the rig of instanceBandDom, fed with the board's wire):
+// the built bundle behind a fixture origin; three loads per width (1200×900, 390×844) — a snapshot
+// with a carried binding, a snapshot whose carried binding cannot be read, and the live fleet.
+interface SnapshotPageFacts { rowText: string; helperText: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
+async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  // the board's two brief sentences, both German (UI-MAIN 2026-10-06): this fixture's pages answer
+  // git:none, so the painted card is the calm one — the MUTANT must kill THAT sentence, a mutation
+  // of the failed-read sentence could never turn the brief claim red on a git:none page.
+  const CALM = "Kein Git in diesem Ordner";
+  const FAILED = "Der Session-Brief konnte nicht gelesen werden";
+  if (!appJs.includes(CALM) || !appJs.includes(FAILED)) throw new Error("brief sentences not found in the built bundle");
+  const mutantJs = appJs.replaceAll(CALM, "aus diesem Bundle genommen");
+  const S = "e".repeat(40);
+  const workPlaces = { repos: [], measuredAt: 1, cacheMs: 10000, stands: [{ kind: "live-server", repo: "/x", name: null, path: null,
+    head: null, basis: "boot-head", codeScope: "server", observedAt: 1, branch: null, target: null, remote: null, reasons: [] }] };
+  const slots = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: i === 10 ? "/x" : null,
+    label: i === 10 ? "Elektrowerkstatt · MAIN" : null, openedAt: i === 10 ? 1000 : null, lastOutput: 0 }));
+  const program = (main: unknown) => ({ id: "a".repeat(24), status: "active", title: "Elektrowerkstatt", createdAt: 1,
+    ...(main === undefined ? {} : { main }) });
+  const digest = [{ id: "a".repeat(24), status: "active", title: "Elektrowerkstatt", createdAt: 1 }];
+  const scratch = mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-snapshot-dom-"));
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("snapshot DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let log = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      Bun.sleep(45000).then(() => { throw new Error("browser CDP startup timeout: " + log); }),
+    ]);
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let wire = { source: undefined as unknown, programs: [] as unknown[] };
+    let serveMutant = false;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timer = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timer); ok(v); }, bad });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, body: string, type: string, status = 200) => send("Fetch.fulfillRequest", { requestId, responseCode: status,
+      responseHeaders: [{ name: "content-type", value: type }], body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string } };
+      const p = new URL(request.url).pathname;
+      if (p === "/") return void reply(requestId, indexHtml, "text/html");
+      if (p === "/app.js") return void reply(requestId, serveMutant ? mutantJs : appJs, "text/javascript");
+      if (p === "/api/sessions") return void reply(requestId, JSON.stringify({ now: 1, chips: [], tasks: [], programs: digest, slots,
+        instance: wire.source === undefined ? { name: null } : { name: null, source: wire.source } }), "application/json");
+      if (p === "/api/worktrees") return void reply(requestId, JSON.stringify(workPlaces), "application/json");
+      if (p === "/api/programs") return void reply(requestId, JSON.stringify({ programs: wire.programs }), "application/json");
+      if (p === "/api/slots/11/brief") return void reply(requestId, JSON.stringify({ error: "not a git repository", git: "none",
+        sessionStart: null, setup: {}, succession: null }), "application/json", 400);
+      return void reply(requestId, JSON.stringify({ error: "fixture: not served" }), "application/json", 404);
+    };
+    const target = await send("Target.createTarget", { url: "about:blank" });
+    sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
+    await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+    await send("Runtime.enable");
+    const evaluate = async <T>(expression: string): Promise<T> =>
+      ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
+    const load = async (source: unknown, programs: unknown[], mutant = false): Promise<SnapshotPageFacts> => {
+      wire = { source, programs };
+      serveMutant = mutant;
+      await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
+      await evaluate(`new Promise((ok) => { const until = Date.now() + 10000; const tick = () => {
+        if (document.readyState === 'complete' && document.querySelectorAll('.slot').length) return ok(true);
+        if (Date.now() > until) return ok(true); setTimeout(tick, 60); }; tick(); })`);
+      return await evaluate(`(async () => {
+        const until = Date.now() + 12000;
+        const open = () => { const b = document.querySelector('.boardtoggle'); if (b) b.dispatchEvent(new MouseEvent('click', { bubbles: true })); return document.body.classList.contains('board'); };
+        while (Date.now() < until) {
+          const el = document.querySelector('.slot[data-slot="11"]');
+          if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          if (document.body.classList.contains('board') || open()) break;
+          await new Promise(r => setTimeout(r, 120));
+        }
+        const until2 = Date.now() + 12000;
+        while (Date.now() < until2) {
+          if (document.querySelectorAll('#board .rgv').length) break;
+          await new Promise(r => setTimeout(r, 120));
+        }
+        await new Promise(r => setTimeout(r, 900));
+        const row = document.querySelector('#board .zr.stand');
+        // .nm's textContent INCLUDES the .cnt child (machineHead appends the sub into it), so the
+        // name must be read from the first text node — exact equality on textContent never matches
+        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helfer');
+        const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');
+        const brief = document.querySelector('#board .bfail .bstate, #board .bempty');
+        return { rowText: row ? row.textContent : '(no row)', helperText: helper ? helper.querySelector('.cnt')?.textContent ?? null : null,
+          repoRows: document.querySelectorAll('#board .zd').length, rights,
+          brief: brief ? brief.textContent : null, briefLen: (document.getElementById('board')?.textContent ?? '').length };
+      })()`);
+    };
+    const carriedMain = { slot: 11, openedAt: 1000, sessionId: null, boundAt: 2 };
+    const views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] = [];
+    for (const [width, height, mobile] of [[1200, 900, false], [390, 844, true]] as const) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+      const source = { head: S, branch: "fleet/snapshot", dirty: 0, measuredAt: 1, target: { branch: "overhaul", head: "d".repeat(40), ahead: 2 } };
+      const carried = await load(source, [program(carriedMain)]);
+      const unknown = await load(source, [program({ sessionId: null })]);
+      const mutant = await load(source, [program(carriedMain)], true);
+      const live = await load(undefined, [program(undefined)]);
+      views.push({ size: `${width}x${height}`, pages: { carried, unknown, mutant, live } });
+    }
+    return { views };
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE BAND IN A REAL BROWSER: the real client bundle behind a fixture origin (the rig of
+// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Three loads per width
+// (900 × 700, 390 × 844): the band with long names, the same with segments that cannot shrink
+// (nowrap), and an /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
+interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][] }
+async function instanceBandDom(sourceRoot: string): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[]; expected: string }> {
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) throw new Error(built.logs.join("\n"));
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const segmentRule = "#tiband .tiseg { display: inline-block; max-width: 100%; vertical-align: top; overflow-wrap: anywhere; }";
+  if (!indexHtml.includes(segmentRule)) throw new Error("segment rule for #tiband .tiseg not found in public/index.html");
+  // the mutation: a segment that may not shrink below its own text (the `flex: none` of the review)
+  const mutantHtml = indexHtml.replace(segmentRule, "#tiband .tiseg { display: inline-block; white-space: nowrap; }");
+  const source = { head: "c".repeat(40), branch: "fleet/261006-ein-sehr-langer-zweigname-der-ueber-die-breite-eines-telefons-hinausgeht-2b6c",
+    dirty: 2, measuredAt: 1, target: { branch: "integration/ueberarbeitung-mit-einem-sehr-langen-zielnamen-der-auch-am-desktop-nicht-in-eine-zeile-passt", head: "d".repeat(40), ahead: 12 } };
+  const expected = instanceBandText(instanceSourceFrom(JSON.stringify(source))!, () => "").text;
+  const scratch = mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-band-dom-"));
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("band DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let log = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { log += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(log); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + log); })(),
+      Bun.sleep(45000).then(() => { throw new Error("browser CDP startup timeout: " + log); }),
+    ]);
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, page = { html: indexHtml, source: source as unknown };
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timer = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timer); ok(v); }, bad: (e) => { clearTimeout(timer); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, body: string, type: string, status = 200) => send("Fetch.fulfillRequest", { requestId, responseCode: status,
+      responseHeaders: [{ name: "content-type", value: type }], body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string } };
+      const p = new URL(request.url).pathname;
+      if (p === "/") return void reply(requestId, page.html, "text/html");
+      if (p === "/app.js") return void reply(requestId, appJs, "text/javascript");
+      if (p === "/api/sessions") return void reply(requestId, JSON.stringify({ now: 1, chips: [], tasks: [],
+        slots: Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: null })),
+        instance: page.source === undefined ? { name: null } : { name: null, source: page.source } }), "application/json");
+      return void reply(requestId, JSON.stringify({ error: "fixture: not served" }), "application/json", 404);
+    };
+    const target = await send("Target.createTarget", { url: "about:blank" });
+    sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
+    await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+    await send("Runtime.enable");
+    const evaluate = async <T>(expression: string): Promise<T> =>
+      ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
+    const load = async (html: string, src: unknown): Promise<BandDomFacts> => {
+      page = { html, source: src };
+      await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
+      await evaluate(`new Promise((ok) => { const until = Date.now() + 8000; const tick = () => {
+        const b = document.getElementById('tiband'); if ((b && document.readyState === 'complete' && (${src === undefined} ? Date.now() > until - 6000 : !b.hidden)) || Date.now() > until) return ok(true); setTimeout(tick, 50); }; tick(); })`);
+      return await evaluate<BandDomFacts>(`(() => { const b = document.getElementById('tiband'), cs = getComputedStyle(b), o = b.getBoundingClientRect();
+        const r = { left: o.left + parseFloat(cs.paddingLeft), right: o.right - parseFloat(cs.paddingRight), top: o.top, bottom: o.bottom - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth) };
+        const segs = [...b.querySelectorAll('.tiseg')], last = segs[segs.length - 1];
+        const lr = last ? last.getBoundingClientRect() : null;
+        return { shown: !b.hidden && getComputedStyle(b).display !== 'none', htmlClass: document.documentElement.classList.contains('tiband'),
+          appTop: Math.round(document.getElementById('app').getBoundingClientRect().top), text: b.textContent,
+          clipped: segs.filter((s) => s.scrollWidth > s.clientWidth || s.getBoundingClientRect().right > r.right + 0.5).map((s) => s.textContent.slice(0, 40)),
+          bandOverflow: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth,
+          lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth,
+          boxes: [r, lr].filter(Boolean).map((x) => [x.left, x.right, x.top, x.bottom].map((n) => Math.round(n * 100) / 100)) }; })()`);
+    };
+    const views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[] = [];
+    for (const [width, height, mobile] of [[900, 700, false], [390, 844, true]] as const) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+      const real = await load(indexHtml, source), mutant = await load(mutantHtml, source), live = await load(indexHtml, undefined);
+      views.push({ size: `${width}x${height}`, real, mutant, live });
+    }
+    return { views, expected };
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+async function testinstanzWorktreeChecks(slot: number): Promise<void> {
+  const repo = realpathSync(REPO), dir = mkdtempSync(`${ROOT}/ti-api-`);
+  const a = `${dir}/a`, b = `${dir}/b`, trace = `${dir}/actions`, hold = `${dir}/hold`, started = `${dir}/started`;
+  const mainScript = `${repo}/testinstanz.sh`;
+  const original = exists(mainScript) ? { bytes: readFileSync(mainScript), mode: lstatSync(mainScript).mode & 0o777 } : null;
+  const cmd = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  const suffix = String(Date.now()), branchA = `ti-a-${suffix}`, branchB = `ti-b-${suffix}`;
+  const route = (path: string) => `/api/worktrees/testinstanz?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+  const states = new Map<string, string>();
+  const script = (path: string, index: number) => {
+    const state = `${dir}/state-${index}`; states.set(path, state);
+    const data = JSON.stringify({ state: "up", port: 8912 + index, expiresAt: 2_000_000_000_000,
+      procStatus: "alive", httpStatus: "healthy", identity: "matched", mode: "mixed", startedAt: 1000,
+      copyStartedAt: 2000, copyFinishedAt: 3000, builtAt: 4000, copyHead: "a".repeat(40),
+      recordedSource: { path, before: { head: "a".repeat(40), branch: "old", dirty: 1, measuredAt: 1 }, after: null } });
+    writeFileSync(`${path}/testinstanz.sh`, `#!/bin/sh
+case "$1" in
+up)
+  printf 'up\n' >> '${trace}'
+  printf '%s' "\${FLEET_TI_TARGET-unset}" > '${state}.target'
+  if [ -f '${hold}' ]; then : > '${started}'; while [ -f '${hold}' ]; do sleep 0.05; done; fi
+  printf '%s' '${data}' > '${state}' ;;
+down) printf 'down\n' >> '${trace}'; rm -f '${state}' ;;
+status)
+  if [ "$2" = --json ]; then
+    if [ -f '${state}' ]; then cat '${state}'; else echo '{"state":"not-running","procStatus":"dead"}'; fi
+  else echo 'up pid 123 http://127.0.0.1:${8912 + index}/?token=SYNTHETIC_TI_SECRET'; echo 'ttl: 45 min left (expiresAt=2000000000)'; fi ;;
+esac
+`); chmodSync(`${path}/testinstanz.sh`, 0o700);
+  };
+  const read = async (path: string, refresh = false) => {
+    const r = refresh ? await post(route(path), { action: "refresh" }) : await get(route(path));
+    return { status: r.status, body: await r.json() as { state?: string; url?: string; mainCheckout?: boolean;
+      source?: { head?: string; dirty?: number; measuredAt?: number; fork?: unknown; freshness?: string };
+      instance?: { copyHead?: string | null; httpStatus?: string; procStatus?: string; recordedSource?: unknown }; refusal?: string; nullSpawn?: boolean } };
+  };
+  try {
+    const createdA = cmd("worktree", "add", "-q", "-b", branchA, a, "HEAD");
+    const createdB = cmd("worktree", "add", "-q", "-b", branchB, b, "HEAD");
+    const commitB = spawnSync("git", ["-C", b, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "distinct copy source"], { encoding: "utf8" });
+    check("testinstanz known main and two slotless worktree fixtures exist", createdA.status === 0 && createdB.status === 0 && commitB.status === 0);
+    if (createdA.status !== 0 || createdB.status !== 0 || commitB.status !== 0) return;
+    script(repo, 0); script(a, 1); script(b, 2);
+    writeFileSync(`${b}/dirty`, "uncommitted fixture\n");
+    const sourceRefs = () => cmd("for-each-ref", "--format=%(refname) %(objectname)").stdout;
+    const beforeRefs = sourceRefs();
+    const missingAuth = await fetch(BASE + route(a));
+    check("testinstanz slotless read refuses absent auth", missingAuth.status === 401);
+    const laneToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> }).slots?.[slot]?.selfToken;
+    const laneRead = await fetch(BASE + route(a), { headers: { "x-fleet-self-token": laneToken ?? "missing" } });
+    check("testinstanz slotless read refuses lane auth", !!laneToken && laneRead.status === 401);
+    const share = await post(`/api/slots/${slot}/share`, { mode: "view", password: "ti-fixture-password" });
+    const shareBody = await share.json() as { id?: string };
+    const shareAuth = await post(`/s/${shareBody.id}/auth`, { password: "ti-fixture-password" });
+    const shareCookie = (shareAuth.headers.get("set-cookie") ?? "").split(";")[0];
+    const shareRead = await fetch(BASE + route(a), { headers: { cookie: shareCookie } });
+    check("testinstanz Read refuses a real authenticated Share", share.status === 200 && shareAuth.status === 200 && shareCookie.startsWith("share_") && shareRead.status === 401);
+    const unknown = await post(route(dir), { action: "up" });
+    check("testinstanz refuses a foreign path without spawn", unknown.status === 409 && !exists(trace));
+    const badTTL = await post(route(a), { action: "up", ttlMin: 1441 });
+    const badMode = await post(route(a), { action: "up", mode: "full" });
+    const injection = await post(route(a), { action: "up", command: "touch foreign" });
+    check("testinstanz rejects TTL, unavailable mode and arbitrary command before spawn", badTTL.status === 400 && badMode.status === 400 && injection.status === 400 && !exists(trace));
+    const none = await read(a);
+    check("testinstanz absent copy reads not-running and unmeasured fork is null", none.status === 200 && none.body.state === "not-running" && none.body.source?.fork === null && !exists(trace));
+    const main = await post(route(repo), { action: "up" });
+    const upA = await post(route(a), { action: "up", ttlMin: 12 });
+    const upB = await post(route(b), { action: "up", mode: "snapshot" });
+    check("testinstanz starts known main and two slotless targets separately", main.status === 200 && upA.status === 200 && upB.status === 200
+      && [...states.values()].every(exists), `HTTP ${main.status}/${upA.status}/${upB.status}`);
+    const handed = [a, b].map((p) => { const f = `${states.get(p)}.target`; return exists(f) ? readFileSync(f, "utf8") : "missing"; });
+    check("testinstanz up of a worktree without a session hands no target — the band says 'Ziel unbekannt' instead of a guess",
+      handed.every((t) => t === "unset"), handed.join(","));
+    const mainRead = await read(repo), readA = await read(a), readB = await read(b);
+    check("testinstanz reports measured main/worktree identity and distinct HEAD/dirty", mainRead.body.mainCheckout === true && readA.body.mainCheckout === false
+      && readB.body.mainCheckout === false && readA.body.source?.head !== readB.body.source?.head
+      && readA.body.source?.dirty === 1 && readB.body.source?.dirty === 2);
+    check("testinstanz never promotes recorded source HEAD to an exact copy version", readA.body.instance?.copyHead === null);
+    const actionBefore = readFileSync(trace, "utf8"), stateBefore = readFileSync(states.get(a)!, "utf8");
+    const dirtyBefore = spawnSync("git", ["-C", a, "status", "--porcelain"], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).stdout;
+    const metadata = await read(a), refresh = await read(a, true);
+    check("testinstanz readspy observes exactly zero up/open/down/suite/model/serverstart", readFileSync(trace, "utf8") === actionBefore
+      && readFileSync(states.get(a)!, "utf8") === stateBefore && sourceRefs() === beforeRefs
+      && spawnSync("git", ["-C", a, "status", "--porcelain"], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).stdout === dirtyBefore
+      && !JSON.stringify(metadata.body).includes("SYNTHETIC_TI_SECRET") && !JSON.stringify(refresh.body).includes("SYNTHETIC_TI_SECRET"));
+    const updated = spawnSync("git", ["-C", a, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "updated source"], { encoding: "utf8" });
+    writeFileSync(`${a}/dirty`, "new dirty fixture\n");
+    const cached = await read(a), fresh = await read(a, true);
+    check("testinstanz explicit Refresh advances measuredAt, HEAD and dirty; GET keeps cached source", updated.status === 0
+      && cached.body.source?.head === refresh.body.source?.head && fresh.body.source?.head !== cached.body.source?.head
+      && fresh.body.source?.dirty === 2 && (fresh.body.source?.measuredAt ?? 0) > (cached.body.source?.measuredAt ?? 0));
+    // t | event | owner: 0 Refresh cache | server; +30010ms Read | test. Freshness uses server Date.now and its 30000ms cache limit.
+    await Bun.sleep(30_010);
+    const stale = await read(a);
+    check("testinstanz cached source honestly becomes stale without renewing measuredAt", stale.body.source?.freshness === "stale"
+      && stale.body.source.measuredAt === fresh.body.source?.measuredAt);
+    for (const [http, state] of [["failed", "http-failed"], ["timeout", "http-timeout"]] as const) {
+      writeFileSync(states.get(a)!, JSON.stringify({ state, procStatus: "alive", httpStatus: http }));
+      const observation = await read(a);
+      check(`testinstanz procAlive plus HTTP ${http} stays separate`, observation.body.state === state
+        && observation.body.instance?.procStatus === "alive" && observation.body.instance.httpStatus === http);
+    }
+    writeFileSync(states.get(a)!, JSON.stringify({ state: "unknown" }));
+    const old = await read(a);
+    check("testinstanz old state has unknown provenance, copy and HTTP", old.body.state === "unknown" && old.body.instance?.recordedSource === null
+      && old.body.instance.copyHead === null && old.body.instance.httpStatus === "unknown");
+    const downA = await post(route(a), { action: "down" });
+    check("testinstanz stop targets only its own instance", downA.status === 200 && !exists(states.get(a)!) && exists(states.get(b)!) && exists(states.get(repo)!));
+    writeFileSync(hold, "hold"); rmSync(started, { force: true });
+    const delayed = post(route(a), { action: "up" });
+    await until(() => exists(started), { timeoutMs: 5000, what: "testinstanz delayed script accepted work" });
+    const busy = await post(route(a), { action: "down" });
+    const independent = await post(route(b), { action: "down" });
+    check("testinstanz busy is per known worktree, slotless neighbours remain independent", busy.status === 409 && independent.status === 200);
+    const moved = `${a}-moved`;
+    const move = cmd("worktree", "move", a, moved);
+    rmSync(hold, { force: true });
+    const late = await delayed;
+    const lateBody = await late.json() as { refusal?: string; nullSpawn?: boolean; state?: string };
+    check("testinstanz late result cannot attach to a moved target", move.status === 0 && late.status === 409 && lateBody.refusal === "target-changed" && lateBody.state === "unknown" && lateBody.nullSpawn === true);
+    cmd("worktree", "move", moved, a);
+    rmSync(`${a}/testinstanz.sh`);
+    const missing = await post(route(a), { action: "up" });
+    check("testinstanz missingScript refuses before spawn", missing.status === 409 && (await missing.json() as { error?: string }).error?.startsWith("missingScript") === true);
+    writeFileSync(`${a}/testinstanz.sh`, "#!/bin/sh\necho 'SYNTHETIC_RAW_ERROR_TOKEN' >&2\necho 'http://127.0.0.1:8912/?token=SYNTHETIC_RAW_ERROR_TOKEN'\nexit 2\n");
+    chmodSync(`${a}/testinstanz.sh`, 0o700);
+    const failure = await get(route(a));
+    const errorText = await failure.text();
+    check("testinstanz raw script errors and status URLs never escape Metadata", failure.status === 409 && !errorText.includes("SYNTHETIC_RAW_ERROR_TOKEN") && errorText.includes("script-failed"));
+    cmd("worktree", "remove", "--force", a);
+    const removed = await post(route(a), { action: "up" });
+    check("testinstanz removedWorktree refuses without fallback", removed.status === 409 && (await removed.json() as { nullSpawn?: boolean }).nullSpawn === true);
+  } finally {
+    rmSync(hold, { force: true });
+    if (original) { writeFileSync(mainScript, original.bytes); chmodSync(mainScript, original.mode); } else rmSync(mainScript, { force: true });
+    for (const path of [a, `${a}-moved`, b]) cmd("worktree", "remove", "--force", path);
+    for (const branch of [branchA, branchB]) cmd("branch", "-D", branch);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export async function helperRepoChecks(): Promise<void> {
+  const dir = mkdtempSync("/tmp/fleet-helper-repos-");
+  const current = `${dir}/current`, local = `${dir}/local`, missing = `${dir}/missing`;
+  const git = (repo: string, ...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=Fixture",
+    "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
+  try {
+    for (const repo of [current, local]) {
+      mkdirSync(repo); git(repo, "init", "-qb", "main"); git(repo, "commit", "--allow-empty", "-qm", "fixture");
+    }
+    const subdir = `${current}/subdir`, alias = `${dir}/alias`;
+    mkdirSync(subdir); symlinkSync(current, alias);
+    const head = git(current, "rev-parse", "HEAD").stdout.trim();
+    git(current, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REPO_SECRET");
+    git(current, "update-ref", "--create-reflog", "refs/remotes/origin/main", head);
+    git(current, "branch", "origin/main", head);
+    const cfgBase = { fleetUrl: "http://fixture.invalid", token: "SYNTHETIC_REPO_SECRET", deviceId: "fixturedevice",
+      name: "workhorse", workDir: dir };
+    const config = loadConfig("fixture", { ...cfgBase, repos: [
+      { name: "current", path: current }, { name: "example-repo", path: local }, { name: "missing", path: missing },
+      { name: "subdir", path: subdir }, { name: "alias", path: alias },
+    ] }, 0o600);
+    check("helper repos absent config preserves the serialized legacy config", JSON.stringify(loadConfig("fixture", cfgBase, 0o600))
+      === JSON.stringify(loadConfig("fixture", { ...cfgBase, repos: undefined }, 0o600))
+      && !Object.hasOwn(loadConfig("fixture", cfgBase, 0o600), "repos"));
+    for (const repos of [[{ name: "bad/path", path: local }], Array(9).fill({ name: "cap", path: local }),
+      [{ name: "duplicate", path: local }, { name: "duplicate", path: local }]]) {
+      let refused = false;
+      try { loadConfig("fixture", { ...cfgBase, repos }, 0o600); } catch { refused = true; }
+      check("helper repos rejects unsafe, over-cap or duplicate configuration", refused);
+    }
+    const report = await reposOf(config.repos!);
+    const [now, noRemote, unreadable, notRoot, symlinkRoot] = report.repos;
+    check("helper configured subdirectory never reports its parent repo HEAD", notRoot.head === null
+      && notRoot.branch === null && notRoot.remote === null && notRoot.refs.length === 0
+      && notRoot.coverage === "incomplete" && notRoot.reason === "not-repo-root"
+      && helperReposFrom(report)?.repos[3].reason === "not-repo-root");
+    check("helper configured symlink to repo root measures the actual repo", symlinkRoot.head === head
+      && symlinkRoot.coverage === "complete" && symlinkRoot.reason === null);
+    check("helper repo full ref remains exact despite same-named local branch", now.refs[0]?.ref === "origin/main"
+      && git(current, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/main").stdout.trim() === "remotes/origin/main");
+    check("helper repo current reading names exact HEAD branch merge-base and zero distance", now.head === head
+      && now.branch === "main" && now.remote === "present" && now.remotes?.join() === "origin"
+      && now.refs[0]?.head === head && now.refs[0]?.mergeBase === head && now.refs[0]?.ahead === 0
+      && now.refs[0]?.behind === 0 && now.coverage === "complete" && now.refs[0]?.updatedAt !== null);
+    check("helper repo without remotes is explicitly none", noRemote.head === git(local, "rev-parse", "HEAD").stdout.trim()
+      && noRemote.remote === "none" && noRemote.remotes?.length === 0 && noRemote.refs.length === 0 && noRemote.coverage === "complete");
+    check("helper unreadable repo retains null with fixed reason", unreadable.head === null && unreadable.branch === null
+      && unreadable.remote === null && unreadable.coverage === "incomplete" && unreadable.reason === "unreadable");
+    check("helper repo reports are validated and contain no path address URL or token", helperReposFrom(report) !== null
+      && !JSON.stringify(report).includes(dir) && !JSON.stringify(report).includes("fixture.invalid")
+      && !JSON.stringify(report).includes("SYNTHETIC_REPO_SECRET"));
+    git(current, "commit", "--allow-empty", "-qm", "changed");
+    check("helper repo repeated heartbeat reuses its bounded measurement cache", await reposOf(config.repos!) === report);
+    const advanced = await reposOf([{ name: "current", path: current }]);
+    check("helper repo distance direction is HEAD ahead of local remote", advanced.repos[0].refs[0].ahead === 1
+      && advanced.repos[0].refs[0].behind === 0 && advanced.repos[0].refs[0].mergeBase === head);
+    const advancedHead = advanced.repos[0].head!;
+    git(current, "update-ref", "refs/remotes/origin/main", advancedHead);
+    git(current, "reset", "--soft", head);
+    const behind = await reposOf([{ name: "current", path: current }]);
+    check("helper repo distance direction is remote ahead of HEAD", behind.repos[0].refs[0].ahead === 0
+      && behind.repos[0].refs[0].behind === 1 && behind.repos[0].refs[0].mergeBase === head);
+    git(current, "update-ref", "refs/remotes/origin/main", head);
+    check("helper repo invalid envelope is identified without copying unknown fields", helperReposFrom({ ...report, absolutePath: dir }) === null);
+    for (const mutation of [{ ...now, name: "bad/path" }, { ...now, refs: [{ ...now.refs[0], ahead: -1 }] },
+      { ...now, refs: Array(9).fill(now.refs[0]) }, { ...noRemote, remotes: ["origin"] },
+      { ...unreadable, coverage: "complete", reason: null }]) {
+      const sanitized = helperReposFrom({ ...report, repos: [mutation, { ...noRemote, name: "healthy" }] });
+      check("helper repo wire isolates invalid row while preserving healthy neighbours", sanitized?.repos[0].coverage === "incomplete"
+        && sanitized.repos[0].reason === "invalid-report" && sanitized.repos[1].head === noRemote.head
+        && !JSON.stringify(sanitized).includes("bad/path"));
+    }
+    const server = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const block = (from: string, to: string) => {
+      const start = server.indexOf(from), end = server.indexOf(to, start);
+      if (start < 0 || end <= start) throw new Error(`helper repos source anchor missing: ${from}`);
+      return server.slice(start, end);
+    };
+    const functions = block("async function workplaceStandSources(", "function workplaceDaemonGraph(")
+      + block("async function workplaceStands(", "async function workplaces(");
+    const project = (code: string, reading: HelperReposReading | undefined): Promise<WorkplaceStand[]> => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+      return new Function("context", `const { helperDevices, realpathSync } = context;
+        const helperUpdates = new Map(), slots = [], INSTANCE_LINKS = [], repoBases = {},
+          REPO_DIR = "fixture-fleet", INSTANCE_NAME = "fixture", HELPER_UPDATE_REPO = null,
+          BOOT_HEAD = null, bootHeadReady = Promise.resolve();
+        async function workplaceStandReader() { return async (s) => ({...s, target:null,remote:null,reasons:[]}); }
+        ${js}; return workplaceStands([], Date.now());`)(
+        { helperDevices: new Map([["fixturedevice", { id: "fixturedevice", name: "workhorse", lastSeen: Date.now(), repos: reading }]]),
+          realpathSync: (p: string) => { if (p !== "fixture-fleet") throw new Error("foreign repo touched locally"); return p; } });
+    };
+    const wire = await project(functions, report);
+    const carrier = wire.find((r) => r.kind === "helper-repo" && r.repo === "current");
+    const remote = Array.isArray(carrier?.remote) ? carrier.remote[0] : null;
+    check("helper repo stand belongs to Fleet machine with exact timestamp and coverage", carrier?.name === "workhorse"
+      && carrier.path === null && carrier.head === head && carrier.observedAt === now.at
+      && carrier.coverage?.state === "complete" && carrier.reportedBranch === "main"
+      && remote?.mergeBase === head && remote.distance?.ahead === 0 && remote.distance.behind === 0);
+    check("helper remote ref age names the local reflog clock", remote?.refUpdatedAt === now.refs[0].updatedAt
+      && typeof remote.refAgeMs === "number" && remote.refAgeMs >= 0);
+    check("helper repo stands preserve none and unreadable measurements", wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "example-repo" && r.remote === "none") && wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "missing" && r.head === null && r.coverage?.reason === "unreadable"));
+    check("helper subdirectory stand retains null and not-repo-root reason", wire.some((r) => r.kind === "helper-repo"
+      && r.repo === "subdir" && r.head === null && r.remote === null && r.coverage?.reason === "not-repo-root"));
+    const absent = await project(functions, undefined);
+    check("helper heartbeat without repos is unreported rather than empty", absent.some((r) => r.kind === "helper-repo"
+      && r.repo === null && r.head === null && r.remote === null && r.observedAt === null
+      && r.coverage?.state === "unreported" && r.reasons.some((x) => x.reason === "repos-unreported")));
+    const begin = functions.indexOf('    if (d.repos === undefined) source(');
+    const end = functions.indexOf('    else for (const r of d.repos.repos)', begin);
+    const mutation = functions.slice(0, begin) + '    if (d.repos === undefined) {}\n' + functions.slice(end);
+    if (mutation === functions) throw new Error("helper repos mutation anchor missing");
+    const mutated = await project(mutation, undefined);
+    check("helper repos mutation proves omitted measurement is detected", !mutated.some((r) => r.kind === "helper-repo")
+      && absent.some((r) => r.coverage?.state === "unreported"));
+    const setter = new Bun.Transpiler({ loader: "ts" }).transformSync(block("function setHelperDevice(", "// Build the bundle"));
+    const devices = new Map();
+    const set = new Function("helperDevices", `const HELPER_DEVICE_KEEP=24, helperClaims=new Map(),auditShardRuns=new Map();
+      ${setter}; return setHelperDevice;`)(devices) as (id: string, name: string, report?: Record<string, unknown>) => { repos?: HelperReposReading; daemonSha?: string };
+    set("fixturedevice", "workhorse", { repos: report });
+    check("helper claim touch retains the last repo measurement", set("fixturedevice", "workhorse").repos === report);
+    const heartbeat = block('    if (body && Object.prototype.hasOwnProperty.call(body, "repos"))',
+      '    if (body && Object.prototype.hasOwnProperty.call(body, "instance"))');
+    const ingest = new Function("body", "reported", "helperReposFrom", "HELPER_REPOS_BYTES_MAX", "json",
+      new Bun.Transpiler({ loader: "ts" }).transformSync(heartbeat)) as (...args: unknown[]) => unknown;
+    const legacy: Record<string, unknown> = {};
+    ingest({}, legacy, helperReposFrom, 32768, (v: unknown) => v);
+    check("legacy heartbeat clears previously reported repos instead of claiming fresh data", Object.hasOwn(legacy, "repos")
+      && set("fixturedevice", "workhorse", legacy).repos === undefined);
+    const envelopeFallback: Record<string, unknown> = { daemonSha: head };
+    const envelopeResponse = ingest({ repos: { ...report, path: dir } }, envelopeFallback, helperReposFrom, 32768, (v: unknown) => v);
+    const fallback = set("fixturedevice", "workhorse", envelopeFallback);
+    check("helper heartbeat malformed envelope preserves daemonSha with typed unknown repo", envelopeResponse === undefined
+      && fallback.daemonSha === head && fallback.repos?.repos[0].head === null && fallback.repos.repos[0].reason === "invalid-report");
+    const mixed: Record<string, unknown> = { daemonSha: head };
+    const response = ingest({ repos: { ...report, repos: [{ ...now, refs: [now.refs[0],
+      { ...now.refs[0], ref: "origin/broken", head: "broken", path: dir }] }, noRemote,
+      { ...unreadable, name: "bad/path" }] } }, mixed, helperReposFrom, 32768, (v: unknown) => v);
+    const received = set("fixturedevice", "workhorse", mixed);
+    check("helper heartbeat bad ref and repo retain healthy rows and daemonSha", response === undefined
+      && received.daemonSha === head && received.repos?.repos[0].head === head
+      && received.repos.repos[0].refs[0].mergeBase === head && received.repos.repos[0].refs[1].head === null
+      && received.repos.repos[0].refs[1].reason === "invalid-report" && received.repos.repos[1].head === noRemote.head
+      && received.repos.repos[2].name === null && received.repos.repos[2].reason === "invalid-report"
+      && !JSON.stringify(received).includes(dir) && !JSON.stringify(received).includes("bad/path"));
+    const partialWire = await project(functions, received.repos);
+    const partial = partialWire.find((r) => r.kind === "helper-repo" && r.repo === "current");
+    check("helper stand isolates broken ref as null with reason", Array.isArray(partial?.remote)
+      && partial.remote[0].mergeBase === head && partial.remote[1].head === null && partial.remote[1].distance === null
+      && partial.remote[1].reasons.some((r) => r.field === "head" && r.reason === "invalid-report")
+      && partialWire.some((r) => r.kind === "helper-repo" && r.repo === null && r.observedAt === null
+        && r.coverage?.reason === "invalid-report" && r.reasons.some((x) => x.field === "observedAt" && x.reason === "invalid-report")));
+    check("sanitized helper partial readings survive persistence unchanged", JSON.stringify(helperReposFrom(received.repos)) === JSON.stringify(received.repos));
+    const oversized = ingest({ repos: report, junk: "x".repeat(37000) }, {}, helperReposFrom, 32768, (v: unknown) => v);
+    check("helper repo heartbeat enforces the total size cap", !!oversized && typeof oversized === "object" && "error" in oversized);
+    git(current, "-c", "core.logAllRefUpdates=false", "update-ref", "refs/remotes/origin/no-reflog", head);
+    const noAge = await reposOf([{ name: "current", path: current }]);
+    check("helper ref without reflog has unknown age", noAge.repos[0].refs.find((r) => r.ref?.endsWith("no-reflog"))?.updatedAt === null);
+    git(current, "reset", "--soft", head);
+    git(current, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    const symbolic = await reposOf([{ name: "current", path: current }]);
+    const symbolicRef = symbolic.repos[0].refs.find((r) => r.ref === "origin/HEAD");
+    check("helper repo coverage includes symbolic remote refs with exact SHA and distance", symbolic.repos[0].coverage === "complete"
+      && symbolicRef?.head === head && symbolicRef.mergeBase === head && symbolicRef.ahead === 0 && symbolicRef.behind === 0);
+    const bulk = Array.from({ length: HELPER_REPO_COMMITS_MAX + 1 }, (_, i) => `commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfixture\n${i === 0 ? `from ${head}\n` : ""}\n`).join("");
+    const many = spawnSync("git", ["-C", current, "fast-import", "--quiet"], { input: bulk, encoding: "utf8" });
+    const capped = await reposOf([{ name: "current", path: current }]);
+    check("helper commit cap keeps measured HEAD with unknown distance and reason", many.status === 0
+      && capped.repos[0].refs[0].ahead === null && capped.repos[0].refs[0].reason === "commit-cap"
+      && capped.repos[0].coverage === "incomplete");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function workplacesChecks(): Promise<void> {
+  const dir = mkdtempSync(`${ROOT}/workplaces-`), a = `${dir}/a`, b = `${dir}/b`, orphan = `${dir}/orphan`;
+  const git = (repo: string, ...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" });
+  const commit = (repo: string) => { git(repo, "commit", "--allow-empty", "-qm", "fixture"); return git(repo, "rev-parse", "HEAD").stdout.trim(); };
+  const opened: Array<{ slot: number; cwd: string }> = [];
+  try {
+    for (const repo of [a, b]) { mkdirSync(repo); git(repo, "init", "-qb", "main"); commit(repo); }
+    const aMain = git(a, "rev-parse", "HEAD").stdout.trim();
+    git(a, "worktree", "add", "-qb", "overhaul", orphan, "main");
+    const aOverhaul = commit(orphan);
+    const bOverhaul = git(b, "rev-parse", "HEAD").stdout.trim();
+    git(b, "branch", "overhaul"); const bMain = commit(b);
+    for (const repo of [a, b]) {
+      const response = await post("/api/lanes", { repo });
+      const lane = await response.json() as { slot: number; cwd: string };
+      check("workplaces fixture repo is represented by its own occupied lane", response.status === 200 && !!lane.slot);
+      if (lane.slot) opened.push(lane);
+    }
+    if (opened.length !== 2) return;
+    const state = { state: "expired", expiresAt: 1000, procStatus: "alive", httpStatus: "healthy", identity: "matched",
+      recordedSource: { path: realpathSync(orphan), before: { head: aMain, branch: "overhaul", dirty: 1, measuredAt: 100 }, after: null },
+      token: "SYNTHETIC_WORKPLACES_SECRET", url: "http://fixture.invalid/" };
+    const trace = `${dir}/trace`;
+    writeFileSync(`${orphan}/testinstanz.sh`, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${trace}'\nprintf '%s' '${JSON.stringify(state)}'\n`);
+    chmodSync(`${orphan}/testinstanz.sh`, 0o700);
+    const anonymous = await fetch(BASE + "/api/worktrees");
+    check("workplaces owner reader refuses anonymous callers", anonymous.status === 401);
+    const laneToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> }).slots?.[opened[0].slot]?.selfToken;
+    const laneRead = await fetch(BASE + "/api/worktrees", { headers: { "x-fleet-self-token": laneToken ?? "" } });
+    check("workplaces owner reader refuses a self principal", !!laneToken && laneRead.status === 401);
+    const selector = await get("/api/worktrees?repo=/arbitrary/path");
+    check("workplaces refuses request paths rather than selecting arbitrary repositories", selector.status === 400);
+    const response = await get("/api/worktrees");
+    const text = await response.text(), value = JSON.parse(text) as Workplaces;
+    const first = value.repos.find((r) => r.repo === realpathSync(a)), second = value.repos.find((r) => r.repo === realpathSync(b));
+    check("workplaces covers two known repos with their actual main tips", response.status === 200
+      && first?.branches?.find((r) => r.branch === "main")?.head === aMain
+      && second?.branches?.find((r) => r.branch === "main")?.head === bMain, text.slice(0, 1000));
+    const up = first?.branches?.find((r) => r.branch === "overhaul"), down = second?.branches?.find((r) => r.branch === "overhaul");
+    check("workplaces overhaul ahead is exclusive reachability against main", up?.head === aOverhaul && up.distance?.ahead === 1 && up.distance.behind === 0, JSON.stringify(up));
+    check("workplaces overhaul behind is exclusive reachability against main", down?.head === bOverhaul && down.distance?.ahead === 0 && down.distance.behind === 1, JSON.stringify(down));
+    const row = first?.worktrees?.find((w) => w.path === realpathSync(orphan));
+    check("workplaces wire carries all four missing check stages with reasons", !!row && ["local", "preview", "gate", "audit"].every((stage) =>
+      stage in row.checks && row.checks[stage as keyof WorkplaceChecks] === null && row.reasons.some((r) => r.field === `checks.${stage}`)));
+    check("workplaces slotless row includes its actual HEAD and measured main basis", row?.session === null && row.head === aOverhaul
+      && row.branch === "overhaul" && row.base?.head === aMain && row.distance?.ahead === 1 && row.distance.behind === 0, JSON.stringify(row));
+    const sessions = await (await get("/api/sessions")).json() as { slots: Array<{ id: number; openedAt: number }> };
+    const occupied = first?.worktrees?.find((w) => w.path === realpathSync(opened[0].cwd));
+    check("workplaces occupant joins slot plus exact openedAt", occupied?.session?.slot === opened[0].slot
+      && occupied.session.openedAt === sessions.slots.find((s) => s.id === opened[0].slot)?.openedAt, JSON.stringify(occupied?.session));
+    check("workplaces summary retains expired and recorded source without substituting current HEAD", row?.template === "present"
+      && row.testinstanz?.state === "expired" && row.testinstanz.instance.copyHead === null
+      && (row.testinstanz.instance.recordedSource as { before?: { head?: string } } | null)?.before?.head === aMain, JSON.stringify(row));
+    const foreign = second?.worktrees?.find((w) => w.primary);
+    check("workplaces foreign missing template is typed and instance unknown has a named reason", foreign?.template === "missing" && foreign.testinstanz === null
+      && foreign.reasons.some((r) => r.field === "testinstanz" && r.reason === "missingScript"), JSON.stringify(foreign));
+    check("workplaces summary emits no raw token, URL or host", !text.includes("SYNTHETIC_WORKPLACES_SECRET") && !text.includes("fixture.invalid") && !text.includes('"url"'));
+    const again = await (await get("/api/worktrees")).json() as Workplaces;
+    check("workplaces short cache avoids repeated status and carries measurement time", again.measuredAt === value.measuredAt
+      && again.cacheMs === 3000 && readFileSync(trace, "utf8") === "status --json\n");
+    const source = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const blocks = [
+      ["function knownRepos()", "async function slotCommits("],
+      ["function testinstanzPathIdentity(", "async function testinstanzTarget("],
+      ["function testinstanzFact(", "async function testinstanzReadSource("],
+      ["interface WtEntry {", "// the real risk behind a destructive action"],
+    ];
+    const functions = "const testinstanzBusy = new Set<string>();\n" + blocks.map(([from, to]) => {
+      const first = source.indexOf(from), last = source.indexOf(to, first);
+      if (first < 0 || last <= first) throw new Error(`workplaces source fixture cannot resolve ${from}`);
+      return source.slice(first, last);
+    }).join("\n");
+    type FixtureOccupant = { id: number; openedAt: number; cwd: string; worktree: { repo: string; base: string; baseSha: string; branch?: string } };
+    const holderFixture = (): FixtureOccupant => ({ id: 42, openedAt: 100, cwd: realpathSync(b),
+      worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } });
+    const compile = (code: string, occupants: FixtureOccupant[], graphFails = false, statusAwait?: () => Promise<void>, notesFail = false, gitCalls?: string[], sources: Record<string, unknown> = {}) => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+      return new Function("slots", "DISPATCH_REPO", "gitRead", "testinstanzCommand", "existsSync", "realpathSync", "statSync", "lstatSync", "HOST", "commandJobs", "laneSuiteJobs", "mergeLast", "mergeParked", "serverRuns",
+        "runningPostLandAudit", "auditQueue", "auditQueueGroups", "auditCmdFor", "repoCanon", "localFailNames", "POSTLAND_AUDIT_FILE", "validAuditRow", "helperClaims", "auditShardRuns", "coverKey", "auditClaimableSince", "standContext",
+        `const { REPO_DIR, HELPER_UPDATE_REPO, BOOT_HEAD, bootHeadReady, INSTANCE_NAME, INSTANCE_LINKS, INSTANCE_SOURCE, helperDevices, helperUpdates, repoBases, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname } = standContext;\n${js}\nreturn { repo: workplaceRepo, read: workplaces, observations: workplaceCheckObservations, checks: workplaceChecks, audits: workplaceAuditReading };`)(occupants, realpathSync(b),
+        async (repo: string, ...args: string[]) => {
+          gitCalls?.push(args[0]);
+          if (notesFail && args[0] === "log") return { code: 128, out: "" };
+          if (graphFails && args[0] === "rev-list") return { code: 128, out: "" };
+          const r = git(repo, ...args); return { code: r.status, out: r.stdout.trim() };
+        }, async (path: string, args: string[]) => {
+          await statusAwait?.();
+          const r = spawnSync(`${path}/testinstanz.sh`, args, { cwd: path, encoding: "utf8" });
+          return { code: r.status, out: r.stdout };
+        }, existsSync, realpathSync, statSync, lstatSync, "", sources.jobs ?? new Map(), sources.previews ?? new Map(), sources.merges ?? new Map(), sources.parked ?? new Map(),
+        sources.runs ?? new Map(), sources.running ?? null, sources.queue ?? new Map(),
+        (q: unknown) => [q], () => sources.configured !== false, (r: string) => r,
+        (text: string) => text.split("\n").filter((l) => l.startsWith("FAIL  ")).map((l) => l.slice(6).split("  (")[0]),
+        sources.auditFile ?? `${dir}/absent-audits`, (row: unknown) => {
+          if (!row || typeof row !== "object" || !("covers" in row) || !Array.isArray(row.covers)) return null;
+          return row;
+        }, sources.claims ?? new Map(), sources.auditShards ?? new Map(),
+        (c: { branch: string; mainAfter: string; at: number }) => JSON.stringify([c.branch, c.mainAfter, c.at]), sources.claimableSince ?? new Map(), { REPO_DIR: realpathSync(b), HELPER_UPDATE_REPO: realpathSync(b), BOOT_HEAD: bOverhaul, bootHeadReady: Promise.resolve(),
+          INSTANCE_NAME: "fixture", INSTANCE_LINKS: [{ name: "other", url: "http://fixture.invalid/" }], INSTANCE_SOURCE: null, helperDevices: new Map(), helperUpdates: new Map(), repoBases: {}, instanceNameFrom, repoGraph, roleOf, readFileSync, resolve, dirname, ...sources.stands as object }) as { observations: (repo: string, notes: { rows: unknown[] }, audits: { rows: unknown[]; reason: string }) => WorkplaceCheckObservation[];
+          checks: (repo: string, branch: string | null, head: string | null, observations: WorkplaceCheckObservation[], auditReason: string,
+            reasons: Array<{ field: string; reason: string }>) => WorkplaceChecks;
+          audits: () => Promise<{ rows: unknown[]; reason: string }>;
+          repo: (repo: string) => Promise<WorkplaceRepo>; read: () => Promise<Workplaces> };
+    };
+    const versionRepo = `${dir}/versions`, versionWorktree = `${dir}/version-worktree`;
+    mkdirSync(versionRepo); git(versionRepo, "init", "-qb", "main");
+    mkdirSync(`${versionRepo}/helper-daemon`); mkdirSync(`${versionRepo}/src`);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 1;\n");
+    writeFileSync(`${versionRepo}/helper-daemon/daemon.ts`, "export const daemon = 1;\n");
+    writeFileSync(`${versionRepo}/src/client.ts`, "export const client = 1;\n");
+    writeFileSync(`${versionRepo}/package.json`, JSON.stringify({ scripts: { build: "bun build src/client.ts" } }));
+    git(versionRepo, "add", "."); const versionBase = commit(versionRepo);
+    writeFileSync(`${versionRepo}/README.md`, "documentation\n");
+    git(versionRepo, "add", "."); const docsHead = commit(versionRepo);
+    git(versionRepo, "worktree", "add", "-qb", "old-docs", versionWorktree, versionBase);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 2;\n");
+    git(versionRepo, "add", "."); const serverHead = commit(versionRepo);
+    writeFileSync(`${versionRepo}/helper-daemon/daemon.ts`, "export const daemon = 2;\n");
+    git(versionRepo, "add", "."); const daemonHead = commit(versionRepo);
+    git(versionRepo, "remote", "add", "origin", "http://fixture.invalid/?token=SYNTHETIC_REMOTE_SECRET");
+    git(versionRepo, "update-ref", "--create-reflog", "refs/remotes/origin/main", serverHead);
+    const standSources = { REPO_DIR: versionRepo, HELPER_UPDATE_REPO: versionRepo, BOOT_HEAD: docsHead,
+      helperDevices: new Map([
+        ["current", { id: "current", name: "current", lastSeen: 1000, daemonSha: daemonHead, instance: { head: serverHead, at: 900 } }],
+        ["old", { id: "old", name: "old", lastSeen: 1000, daemonSha: serverHead }],
+        ["missing", { id: "missing", name: "missing", lastSeen: 1000 }],
+      ]), helperUpdates: new Map([["missing", { state: "reported", main: "main", result: { mainSha: daemonHead } }]]) };
+    const standCalls: string[] = [];
+    const versions = await compile(functions, [], false, undefined, false, standCalls, { stands: standSources }).read();
+    const stand = (wire: Workplaces, kind: WorkplaceStand["kind"], name?: string) => wire.stands.find((s) => s.repo === realpathSync(versionRepo) && s.kind === kind && (name === undefined || s.name === name));
+    const live = stand(versions, "live-server"), current = stand(versions, "helper-daemon", "current"), old = stand(versions, "helper-daemon", "old");
+    check("workplace versions current daemon has exact zero distance and merge-base", current?.head === daemonHead
+      && current.target?.head === daemonHead && current.target.mergeBase === daemonHead
+      && current.target.distance?.ahead === 0 && current.target.distance.behind === 0 && current.target.codeBehind === false, JSON.stringify(current));
+    check("workplace versions behind live code uses boot SHA and target merge-base", live?.head === docsHead
+      && live.target?.mergeBase === docsHead && live.target.distance?.ahead === 0 && live.target.distance.behind === 2
+      && live.target.codeBehind === true, JSON.stringify(live));
+    check("workplace versions helper owns daemon code and has an independent server-instance stand", old?.target?.distance?.behind === 1
+      && old.target.codeBehind === true && stand(versions, "helper-instance", "current")?.head === null
+      && stand(versions, "helper-instance", "current")?.reportedCheckout?.head === serverHead
+      && stand(versions, "helper-instance", "current")?.reasons.some((r) => r.field === "head" && r.reason === "helper-instance-running-sha-unreported") === true, JSON.stringify(old));
+    const withoutOwnCode = await compile(functions, [], false, undefined, false, undefined,
+      { stands: { ...standSources, BOOT_HEAD: serverHead } }).read();
+    const serverOnly = stand(withoutOwnCode, "live-server");
+    check("workplace versions behind without own code keeps behind count and false codeBehind", serverOnly?.target?.distance?.behind === 1
+      && serverOnly.target.codeBehind === false, JSON.stringify(serverOnly));
+    const missing = stand(versions, "helper-daemon", "missing");
+    check("workplace versions missing daemon SHA stays null despite successful update", missing?.head === null
+      && missing.target?.mergeBase === null && missing.target.distance === null && missing.target.codeBehind === null
+      && missing.update?.mainSha === daemonHead && missing.reasons.some((r) => r.field === "head" && r.reason === "daemon-sha-unreported"), JSON.stringify(missing));
+    const noRemote = versions.stands.find((s) => s.repo === realpathSync(b) && s.kind === "worktree");
+    check("workplace versions repo without remote has typed none rather than null or error", noRemote?.remote === "none"
+      && !noRemote.reasons.some((r) => r.field === "remote"), JSON.stringify(noRemote));
+    const withDaemonUpdate = { ...standSources, helperUpdates: new Map([["current", {
+      state: "open", main: "update-bundle", claim: { mainSha: serverHead },
+    }]]) };
+    const defaultUpdated = await compile(functions, [], false, undefined, false, undefined, { stands: withDaemonUpdate }).read();
+    const defaultDaemon = stand(defaultUpdated, "helper-daemon", "current");
+    check("workplace versions daemon default target is independent of update job", current?.target?.ref === "refs/heads/main"
+      && JSON.stringify(defaultDaemon?.target) === JSON.stringify(current.target)
+      && defaultDaemon?.update?.main === "update-bundle", JSON.stringify(defaultDaemon));
+    git(versionRepo, "branch", "integration", serverHead);
+    const configuredSources = { ...standSources, repoBases: { [versionRepo]: "integration" } };
+    const configuredWithoutJob = await compile(functions, [], false, undefined, false, undefined, { stands: configuredSources }).read();
+    const configuredWithJob = await compile(functions, [], false, undefined, false, undefined,
+      { stands: { ...withDaemonUpdate, repoBases: configuredSources.repoBases } }).read();
+    const configuredDaemon = stand(configuredWithoutJob, "helper-daemon", "current");
+    const updatedDaemon = stand(configuredWithJob, "helper-daemon", "current");
+    const sameConfiguredTarget = (left: Workplaces, right: Workplaces) => {
+      const target = stand(left, "helper-daemon", "current")?.target;
+      return target?.ref === "refs/heads/integration" && target.head === serverHead
+        && JSON.stringify(target) === JSON.stringify(stand(right, "helper-daemon", "current")?.target);
+    };
+    check("workplace versions daemon configured repo target is identical with and without job", sameConfiguredTarget(configuredWithoutJob, configuredWithJob)
+      && updatedDaemon?.update?.main === "update-bundle" && updatedDaemon.update.mainSha === serverHead, JSON.stringify(configuredDaemon));
+    const jobTargetLie = functions.replace('branch: HELPER_UPDATE_REPO ? repoBases[HELPER_UPDATE_REPO] ?? null : null, headReason: "daemon-sha-unreported"',
+      'branch: update?.main ?? null, headReason: "daemon-sha-unreported"');
+    const jobTargetLieWire = await compile(jobTargetLie, [], false, undefined, false, undefined,
+      { stands: { ...withDaemonUpdate, repoBases: configuredSources.repoBases } }).read();
+    check("workplace versions mutation rejects daemon target borrowed from update bundle", jobTargetLie !== functions
+      && !sameConfiguredTarget(configuredWithoutJob, jobTargetLieWire)
+      && stand(jobTargetLieWire, "helper-daemon", "current")?.target?.ref === "refs/heads/update-bundle");
+    const remote = Array.isArray(live?.remote) ? live.remote[0] : null;
+    check("workplace versions remote names local ref tip merge-base distance and logged age", remote?.name === "origin"
+      && remote.ref === "refs/remotes/origin/main" && remote.head === serverHead && remote.mergeBase === docsHead
+      && remote.distance?.ahead === 0 && remote.distance.behind === 1 && remote.codeBehind === true
+      && remote.refUpdatedAt !== null && remote.refAgeMs !== null, JSON.stringify(remote));
+    const future = stand(versions, "helper-daemon", "current"), futureRemote = Array.isArray(future?.remote) ? future.remote[0] : null;
+    check("workplace versions remote ahead and behind directions stay independent", futureRemote?.distance?.ahead === 1
+      && futureRemote.distance.behind === 0 && futureRemote.mergeBase === serverHead, JSON.stringify(futureRemote));
+    check("workplace versions links and test instances name unobserved running SHA", versions.stands.some((s) => s.kind === "linked-instance"
+      && s.name === "other" && s.repo === null && s.head === null && s.reasons.some((r) => r.field === "head"))
+      && value.stands.some((s) => s.kind === "test-instance" && s.path === realpathSync(orphan) && s.head === null && s.reasons.some((r) => r.field === "head")));
+    const versionWire = JSON.stringify(versions);
+    check("workplace versions never reads network or emits remote endpoints or credentials", !standCalls.some((c) => c === "fetch" || c === "push" || c === "ls-remote")
+      && !versionWire.includes("fixture.invalid") && !versionWire.includes("SYNTHETIC_REMOTE_SECRET"));
+    const lie = functions.replace('result.codeBehind = roles.includes(true) ? true : roles.includes(null) ? null : false;', 'result.codeBehind = false;');
+    const lied = await compile(lie, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects suppressed own-code backlog", lie !== functions && stand(lied, "live-server")?.target?.codeBehind !== true);
+    const reversed = functions.replace('ahead: lines.filter((l) => l[0] === "<").length, behind: lines.filter((l) => l[0] === ">").length',
+      'behind: lines.filter((l) => l[0] === "<").length, ahead: lines.filter((l) => l[0] === ">").length');
+    const reversedWire = await compile(reversed, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects reversed commit distance", reversed !== functions && stand(reversedWire, "live-server")?.target?.distance?.behind !== 2);
+    git(versionRepo, "remote", "add", "unseen", "http://fixture.invalid/");
+    const noRefWire = await compile(functions, [], false, undefined, false, undefined, { stands: standSources }).read();
+    const noRef = stand(noRefWire, "live-server")?.remote;
+    check("workplace versions configured remote with missing ref is unknown with reason", Array.isArray(noRef)
+      && noRef.find((r) => r.name === "unseen")?.head === null
+      && noRef.find((r) => r.name === "unseen")?.reasons.some((r) => r.field === "head" && r.reason === "local-ref-missing") === true);
+    git(versionRepo, "update-ref", "--create-reflog", "refs/remotes/origin/upstream-target", versionBase);
+    git(versionRepo, "config", "branch.main.remote", "origin");
+    git(versionRepo, "config", "branch.main.merge", "refs/heads/upstream-target");
+    const upstreamWire = await compile(functions, [], false, undefined, false, undefined, { stands: standSources }).read();
+    const upstream = stand(upstreamWire, "live-server")?.remote;
+    check("workplace versions configured upstream selects its remote branch rather than assuming main", Array.isArray(upstream)
+      && upstream.find((r) => r.name === "origin")?.ref === "refs/remotes/origin/upstream-target"
+      && upstream.find((r) => r.name === "origin")?.head === versionBase);
+    const checkoutLie = functions.replace('head: null, basis: "checkout-unproven"', 'head: d.instance.head, basis: "checkout-unproven"');
+    const checkoutLieWire = await compile(checkoutLie, [], false, undefined, false, undefined, { stands: standSources }).read();
+    check("workplace versions mutation rejects checkout SHA claimed as running helper instance", checkoutLie !== functions
+      && stand(checkoutLieWire, "helper-instance", "current")?.head !== null);
+    git(versionRepo, "checkout", "-qb", "merge-docs", daemonHead);
+    writeFileSync(`${versionRepo}/branch.md`, "branch docs\n"); git(versionRepo, "add", "."); const mergeDocsHead = commit(versionRepo);
+    git(versionRepo, "checkout", "-q", "main");
+    writeFileSync(`${versionRepo}/main.md`, "main docs\n"); git(versionRepo, "add", "."); const mergeMainHead = commit(versionRepo);
+    const mergeStarted = git(versionRepo, "merge", "--no-ff", "--no-commit", "merge-docs");
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 3;\n"); git(versionRepo, "add", "."); const mergeHead = commit(versionRepo);
+    const mergeParents = git(versionRepo, "rev-list", "--parents", "-1", mergeHead).stdout.trim().split(" ");
+    const mergeHasNoLoggedServer = !git(versionRepo, "log", "--format=", "--name-only", `${daemonHead}..${mergeHead}`, "--").stdout.split("\n").includes("server.ts");
+    check("workplace versions merge fixture changes server only in merge resolution", mergeStarted.status === 0
+      && mergeParents.join(" ") === [mergeHead, mergeMainHead, mergeDocsHead].join(" ") && mergeHasNoLoggedServer);
+    const mergeSources = { ...standSources, BOOT_HEAD: daemonHead };
+    const mergedWire = await compile(functions, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    const mergeStand = stand(mergedWire, "live-server");
+    const seesMergeCode = (wire: Workplaces) => {
+      const target = stand(wire, "live-server")?.target;
+      return target?.mergeBase === daemonHead && target.head === mergeHead && target.distance?.ahead === 0
+        && target.distance.behind === 3 && target.codeBehind === true;
+    };
+    check("workplace versions merge resolution reports true own-code backlog", seesMergeCode(mergedWire), JSON.stringify(mergeStand));
+    const mergeBlind = functions.replace('gitRead(repo, "diff", "--name-only", "-z", "--no-renames", result.mergeBase, target, "--")',
+      'gitRead(repo, "log", "--format=", "--name-only", "-z", "--no-renames", pathKey, "--")');
+    const mergeBlindWire = await compile(mergeBlind, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    check("workplace versions mutation rejects log missing merge-resolution paths", mergeBlind !== functions
+      && !seesMergeCode(mergeBlindWire) && stand(mergeBlindWire, "live-server")?.target?.codeBehind === false);
+    writeFileSync(`${versionRepo}/server.ts`, "export const value = 2;\n"); git(versionRepo, "add", "."); const revertedHead = commit(versionRepo);
+    const revertedWire = await compile(functions, [], false, undefined, false, undefined, { stands: mergeSources }).read();
+    const revertedTarget = stand(revertedWire, "live-server")?.target;
+    check("workplace versions reverted server edits leave no net own-code backlog", revertedTarget?.head === revertedHead
+      && revertedTarget.distance?.behind === 4 && revertedTarget.codeBehind === false, JSON.stringify(revertedTarget));
+    const checkHead = "a".repeat(40), oldHead = "b".repeat(40), checkBranch = "fixture-lane", checkRepo = realpathSync(b);
+    const checkHolder = { ...holderFixture(), worktree: { ...holderFixture().worktree, branch: checkBranch } };
+    const fixtureSources = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead): Record<string, unknown> => {
+      const result = state === "green" || state === "red" ? { result: state, fails: state === "red" ? ["fixture rejection"] : [], remote: { reportedAt: 300 } } : null;
+      const j = { repo: checkRepo, branch: checkBranch, slot: 99, slotOpenedAt: 1, cmd: "bun run build", commitSha: sha,
+        offeredAt: 100, state: result ? "reported" : state === "running" ? "claimed" : "open",
+        claim: state === "running" ? { claimedAt: 200, expiresAt: Number.MAX_SAFE_INTEGER } : null, result };
+      if (stage === "local") return { jobs: new Map([["fixture", j]]) };
+      if (stage === "preview") return { previews: new Map([["fixture", j]]) };
+      if (stage === "gate") return state === "running" ? { runs: new Map([["land:42", { repo: checkRepo, branch: checkBranch, suite: "land gate", at: 200 }]]) }
+        : { merges: new Map([[42, { branch: checkBranch, candidateSha: sha, at: 300,
+          verify: { ok: state === "green", out: state === "red" ? "FAIL  fixture rejection" : "" } }]]) };
+      const covers = [{ branch: checkBranch, mainAfter: sha, at: 100 }];
+      return state === "running" ? { running: { repo: checkRepo, mainSha: sha, startedAt: 200, covers } }
+        : state === "waiting" || state === "skipped" ? { queue: new Map([[checkRepo, { covers }]]), configured: state !== "skipped" }
+        : {};
+    };
+    const observe = (stage: keyof WorkplaceChecks, state: "green" | "red" | "running" | "waiting" | "skipped", sha = checkHead,
+      override: Record<string, unknown> = {}, code = functions) => {
+      const fixture = compile(code, [checkHolder], false, undefined, false, undefined, { ...fixtureSources(stage, state, sha), ...override });
+      const auditRows = stage === "audit" && (state === "green" || state === "red") ? [{ repo: checkRepo, mainSha: sha, at: 300, result: state,
+        covers: [{ branch: checkBranch, mainAfter: sha, at: 100 }], fails: state === "red" ? ["fixture rejection"] : [] }] : [];
+      const observations = fixture.observations(checkRepo, { rows: [] }, { rows: auditRows, reason: "audit-not-retained" });
+      const reasons: Array<{ field: string; reason: string }> = [];
+      return { checks: fixture.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", reasons), reasons, observations };
+    };
+    for (const stage of ["local", "preview", "gate", "audit"] as const) {
+      const green = observe(stage, "green"), red = observe(stage, "red"), running = observe(stage, "running"), stale = observe(stage, "green", oldHead);
+      check(`workplaces checks ${stage} green retains measured SHA and time`, green.checks[stage]?.state === "green"
+        && green.checks[stage]?.head === checkHead && green.checks[stage]?.at === 300 && green.checks[stage]?.stale === false);
+      check(`workplaces checks ${stage} red names the failed fixture`, red.checks[stage]?.state === "red" && red.checks[stage]?.fails[0] === "fixture rejection");
+      check(`workplaces checks ${stage} running is distinct from a prior result`, running.checks[stage]?.state === "running" && running.checks[stage]?.at === 200);
+      check(`workplaces checks ${stage} stale compares the recorded SHA to worktree HEAD`, stale.checks[stage]?.stale === true && stale.checks[stage]?.head === oldHead);
+      const missing = compile(functions, []).checks(checkRepo, checkBranch, checkHead, [], "audit-not-retained", []);
+      const why: Array<{ field: string; reason: string }> = [];
+      compile(functions, []).checks(checkRepo, checkBranch, checkHead, [], "audit-not-retained", why);
+      check(`workplaces checks ${stage} missing stays null with a named reason`, missing[stage] === null && why.some((r) => r.field === `checks.${stage}` && r.reason === `${stage}-not-retained`));
+      const staleMutant = functions.replace("sha !== head", "false");
+      check(`workplaces checks ${stage} mutation rejects masking stale evidence`, staleMutant !== functions && observe(stage, "green", oldHead, {}, staleMutant).checks[stage]?.stale !== true);
+      const branchMutant = functions.replace("o.branch === branch &&", "");
+      const other = { ...green.observations[0], branch: "another-branch" };
+      const rejectsOther = (code: string) => compile(code, []).checks(checkRepo, checkBranch, checkHead, [other], "audit-not-retained", [])[stage] === null;
+      check(`workplaces checks ${stage} branch mutation rejects another lane's evidence`, rejectsOther(functions) && !rejectsOther(branchMutant));
+    }
+    for (const stage of ["local", "preview", "audit"] as const)
+      check(`workplaces checks ${stage} waiting names queued work`, observe(stage, "waiting").checks[stage]?.state === "waiting");
+    check("workplaces checks parked audit is skipped rather than waiting", observe("audit", "skipped").checks.audit?.state === "skipped");
+    const recycled = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: "previous-lane", candidateSha: checkHead, at: 300, verify: { ok: true, out: "" } }]]) });
+    check("workplaces checks recycled slot never lends its old gate to the current branch", recycled.checks.gate === null);
+    const remoteCovers = [{ branch: checkBranch, mainAfter: checkHead, at: 100 }];
+    const remoteClaim = { repo: checkRepo, mainSha: checkHead, claimedAt: 200, expiresAt: Number.MAX_SAFE_INTEGER, covers: remoteCovers };
+    const remoteAudit = observe("audit", "waiting", checkHead, { claims: new Map([[checkRepo, remoteClaim]]) });
+    check("workplaces checks remote audit claim masks its queued cover by value", remoteAudit.checks.audit?.state === "running" && remoteAudit.checks.audit.at === 200);
+    const remoteShard = { repo: checkRepo, mainSha: checkHead, firstClaimAt: 200, openUntil: Number.MAX_SAFE_INTEGER,
+      covers: remoteCovers, shards: [{ claim: { expiresAt: Number.MAX_SAFE_INTEGER } }] };
+    const shardedAudit = observe("audit", "waiting", checkHead, { auditShards: new Map([[checkRepo, remoteShard]]) });
+    check("workplaces checks sharded remote audit running masks its queued cover", shardedAudit.checks.audit?.state === "running");
+    const expiredAudit = observe("audit", "waiting", checkHead, { claims: new Map([[checkRepo, { ...remoteClaim, expiresAt: 1 }]]) });
+    check("workplaces checks expired remote audit cannot claim running or queued measurement", expiredAudit.checks.audit === null);
+    const missingSha = observe("gate", "running");
+    check("workplaces checks live gate never invents a candidate SHA", missingSha.checks.gate?.head === null && missingSha.checks.gate?.stale === null
+      && missingSha.reasons.some((r) => r.field === "checks.gate.head" && r.reason === "checked-head-unrecorded"));
+    const noteFixture = compile(functions, []);
+    const noteObservations = noteFixture.observations(checkRepo, { rows: [{ branch: checkBranch, sha: checkHead, at: 300, verify: { ok: true, out: "" } }] }, { rows: [], reason: "audit-not-retained" });
+    check("workplaces checks land-note gate survives a slotless lane", noteFixture.checks(checkRepo, checkBranch, checkHead, noteObservations, "audit-not-retained", []).gate?.state === "green");
+    const unownedMerge = compile(functions, [{ ...checkHolder, worktree: { ...checkHolder.worktree, repo: a } }], false, undefined, false, undefined, fixtureSources("gate", "green"));
+    const mismatchedMerge = unownedMerge.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" });
+    check("workplaces checks merge slot with matching branch in another repo cannot join", unownedMerge.checks(checkRepo, checkBranch, checkHead, mismatchedMerge, "audit-not-retained", []).gate === null);
+    const mergeWithRepo = { branch: checkBranch, candidateSha: checkHead, at: 300, repo: checkRepo, verify: { ok: true, out: "" } };
+    const recordedRepoClaim = (code: string) => {
+      const f = compile(code, [{ ...checkHolder, worktree: { ...checkHolder.worktree, repo: a } }], false, undefined, false, undefined,
+        { merges: new Map([[42, mergeWithRepo]]) });
+      return f.checks(checkRepo, checkBranch, checkHead, f.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" }), "audit-not-retained", []).gate?.state === "green";
+    };
+    check("workplaces checks recorded merge repo survives occupant repo changes", recordedRepoClaim(functions));
+    const repoMutant = functions.replace('"repo" in m && typeof m.repo === "string" && m.repo ? m.repo : null', 'null');
+    check("workplaces checks merge repo mutation cannot substitute the current occupant", repoMutant !== functions && !recordedRepoClaim(repoMutant));
+    const recordedOtherRepo = observe("gate", "green", checkHead, { merges: new Map([[42, { ...mergeWithRepo, repo: a }]]) });
+    check("workplaces checks recorded other merge repo overrides a matching current holder", recordedOtherRepo.checks.gate === null);
+    const lateAuditClaim = (code: string, state: "waiting" | "running") => {
+      const newer = { branch: checkBranch, mainAfter: checkHead, at: 400 };
+      const f = compile(code, [], false, undefined, false, undefined, state === "waiting"
+        ? { queue: new Map([[checkRepo, { covers: [newer] }]]) }
+        : { running: { repo: checkRepo, mainSha: checkHead, startedAt: 450, covers: [newer] } });
+      const observations = f.observations(checkRepo, { rows: [] }, { rows: [{ repo: checkRepo, mainSha: oldHead,
+        at: 500, result: "green", covers: [{ branch: checkBranch, mainAfter: oldHead, at: 100 }] }], reason: "audit-not-retained" });
+      const value = f.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", []).audit;
+      return value?.state === state && value.head === checkHead && value.at === (state === "waiting" ? 400 : 450);
+    };
+    const auditOrderMutant = functions.replace('order: cover.at', 'order: at');
+    for (const state of ["waiting", "running"] as const) {
+      check(`workplaces checks old audit finishing late cannot hide newer ${state} cover`, lateAuditClaim(functions, state));
+      check(`workplaces checks completion-order mutation hides newer ${state} cover`, auditOrderMutant !== functions && !lateAuditClaim(auditOrderMutant, state));
+    }
+    const retryAuditClaim = (code: string, state: "waiting" | "running") => {
+      const cover = { branch: checkBranch, mainAfter: checkHead, at: 100 };
+      const f = compile(code, [], false, undefined, false, undefined, state === "waiting"
+        ? { queue: new Map([[checkRepo, { covers: [cover] }]]), claimableSince: new Map([[checkRepo, 400]]) }
+        : { running: { repo: checkRepo, mainSha: checkHead, startedAt: 400, covers: [cover] } });
+      const observations = f.observations(checkRepo, { rows: [] }, { rows: [{ repo: checkRepo, mainSha: checkHead,
+        at: 300, result: "red", fails: ["previous attempt"], covers: [cover] }], reason: "audit-not-retained" });
+      const value = f.checks(checkRepo, checkBranch, checkHead, observations, "audit-not-retained", []).audit;
+      return value?.state === state && value.head === checkHead && value.at === 400 && value.fails.length === 0;
+    };
+    const auditRetryMutant = functions.replace(" || b.at - a.at", "");
+    for (const state of ["waiting", "running"] as const) {
+      check(`workplaces checks red audit yields to newer ${state} retry of the same cover`, retryAuditClaim(functions, state));
+      check(`workplaces checks observation-time mutation hides ${state} retry behind old red`, auditRetryMutant !== functions && !retryAuditClaim(auditRetryMutant, state));
+    }
+    const skipGate = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300, verify: { ok: null, out: "" } }]]) });
+    check("workplaces checks explicit gate skip is skipped", skipGate.checks.gate?.state === "skipped");
+    for (const flag of ["timedOut", "waitedOut", "serverDown"] as const) {
+      const unmeasured = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: checkBranch, candidateSha: checkHead, at: 300,
+        verify: { ok: null, out: "", [flag]: true } }]]) });
+      check(`workplaces checks gate ${flag} is null with a reason`, unmeasured.checks.gate === null && unmeasured.reasons.some((r) => r.field === "checks.gate"));
+    }
+    const projection = compile(functions, []);
+    const localBase = observe("local", "green").observations[0];
+    const aggregated = projection.checks(checkRepo, checkBranch, checkHead, [localBase, { ...localBase, command: "bun test", state: "red", fails: ["reject case"], at: 299 }], "audit-not-retained", []);
+    check("workplaces checks local aggregates latest distinct command proofs at one SHA", aggregated.local?.state === "red" && aggregated.local.fails[0] === "reject case");
+    const replacement = projection.checks(checkRepo, checkBranch, checkHead, [localBase, { ...localBase, state: "green", head: oldHead, at: 310, order: 50 },
+      { ...localBase, state: "waiting", head: null, at: 250, order: 250 }], "audit-not-retained", []);
+    check("workplaces checks newest offer supersedes older late-arriving verdict", replacement.local?.state === "waiting" && replacement.local.head === null);
+    const fixture = compile(functions, []), reasons: Array<{ field: string; reason: string }> = [];
+    const leakNames = Array.from({ length: 30 }, (_, i) => `fixture ${i} ` + "x".repeat(200));
+    const capped = fixture.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+      state: "red", at: 300, fails: leakNames }], "audit-not-retained", reasons);
+    check("workplaces checks failure names have both count and character caps", capped.preview?.fails.length === 20 && capped.preview.fails.every((n) => n.length === 160));
+    const otherRepo = observe("local", "green").observations.map((o) => ({ ...o, repo: a }));
+    check("workplaces checks equal branch and SHA in another repo cannot join", fixture.checks(checkRepo, checkBranch, checkHead, otherRepo, "audit-not-retained", []).local === null);
+    const protectedNames = fixture.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+      state: "red", at: 300, fails: ["fixture https://fixture.invalid/ 192.0.2.1 token=SYNTHETIC_CHECK_SECRET"] }], "audit-not-retained", []);
+    check("workplaces checks redacts network addresses and credential-shaped fail details", protectedNames.preview?.fails[0] === "fixture [redacted] [redacted] [redacted]");
+    const credentialForms = [
+      ["authorization scheme", "authorization: Bearer SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["self header", "x-fleet-self-token: SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["bare bearer", "Bearer SYNTHETIC_CREDENTIAL_VALUE", "[redacted]"],
+      ["schemaless query", "/fixture/path?token=SYNTHETIC_CREDENTIAL_VALUE&next=okay", "/fixture/path?[redacted]&next=okay"],
+      ["compressed IPv6", "fixture 2001:db8::1", "fixture [redacted]"],
+      ["expanded IPv6", "fixture 2001:db8:0:0:0:0:0:1", "fixture [redacted]"],
+      ["bracketed IPv6 URL", "[2001:db8::1]:8790/fixture", "[redacted]/fixture"],
+      ["HTTP bracketed IPv6 URL", "http://[2001:db8::1]:8790/fixture", "[redacted]"],
+      ["IPv4-mapped IPv6", "fixture ::ffff:192.0.2.1", "fixture [redacted]"],
+    ] as const;
+    const credentialScrub = functions.match(/name\.replace\([^\n]+/u)?.[0];
+    if (!credentialScrub) throw new Error("workplaces credential mutation cannot resolve scrub expression");
+    const ipv6Scrub = functions.split("\n").find((line) => line.includes(".replace(/") && line.includes("(?<!"))?.trim();
+    const addressScrub = functions.split("\n").find((line) => line.trim().startsWith(".replace(/https?:"))?.trim();
+    if (!ipv6Scrub || !addressScrub) throw new Error("workplaces redaction mutation cannot resolve address scrubs");
+    const credentialMutant = functions.replace(credentialScrub, "name").replace(ipv6Scrub, "").replace(addressScrub, "");
+    const protectsCredential = (code: string, input: string, expected: string) => {
+      const f = compile(code, []);
+      const value = f.checks(checkRepo, checkBranch, checkHead, [{ repo: checkRepo, branch: checkBranch, stage: "preview", head: checkHead,
+        state: "red", at: 300, fails: [input] }], "audit-not-retained", []).preview?.fails[0];
+      return value === expected && !value.includes("SYNTHETIC_CREDENTIAL_VALUE");
+    };
+    for (const [form, input, expected] of credentialForms) {
+      check(`workplaces checks sensitive redaction removes value in ${form}`, protectsCredential(functions, input, expected));
+      check(`workplaces checks redaction mutation exposes value in ${form}`, credentialMutant !== functions && !protectsCredential(credentialMutant, input, expected));
+    }
+    const unknownReason: Array<{ field: string; reason: string }> = [];
+    const unknown = fixture.checks(checkRepo, checkBranch, checkHead, [{ ...localBase, state: null, reason: "job-unmeasured" }], "audit-not-retained", unknownReason);
+    check("workplaces checks unknown result never becomes red or green", unknown.local === null && unknownReason.some((r) => r.reason === "job-unmeasured"));
+    const auditFile = `${dir}/audit-fixture`;
+    const auditRow = { repo: checkRepo, mainSha: checkHead, result: "green", at: 300, covers: [{ branch: checkBranch, mainAfter: checkHead, at: 100 }] };
+    writeFileSync(auditFile, JSON.stringify(auditRow) + "\n");
+    const readAudit = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks reads retained audit fixture from its existing ledger", readAudit.rows.length === 1);
+    writeFileSync(auditFile, "x".repeat(270_000) + "\n" + JSON.stringify(auditRow) + "\n");
+    const boundedAudit = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks audit byte cap keeps complete latest rows and names the history limit", boundedAudit.rows.length === 1 && boundedAudit.reason === "audit-history-capped");
+    writeFileSync(auditFile, Array.from({ length: 210 }, () => JSON.stringify(auditRow)).join("\n") + "\n");
+    const boundedRows = await compile(functions, [], false, undefined, false, undefined, { auditFile }).audits();
+    check("workplaces checks audit row cap is observable", boundedRows.rows.length === 200 && boundedRows.reason === "audit-history-capped");
+    const distanceMutant = functions.replace("return { ahead, behind };", "return { ahead: behind, behind: ahead };");
+    const claim = (r: WorkplaceRepo) => { const d = r.branches?.find((x) => x.branch === "overhaul")?.distance; return d?.ahead === 0 && d.behind === 1; };
+    const baseline = await compile(functions, []).repo(b), mutated = await compile(distanceMutant, []).repo(b);
+    check("workplaces mutation probe catches swapped ahead/behind on the fixture graph", functions !== distanceMutant && claim(baseline) && !claim(mutated), JSON.stringify({ baseline: baseline.branches, mutated: mutated.branches }));
+    const retainsBasis = (repo: WorkplaceRepo, head: string) => {
+      const row = repo.worktrees?.find((w) => w.primary);
+      return row?.base?.head === head && row.distance === null
+        && row.reasons.some((r) => r.field === "distance" && r.reason === "commit-graph-unreadable")
+        && !row.reasons.some((r) => r.field === "base");
+    };
+    const graphFailed = await compile(functions, [holderFixture()], true).repo(b);
+    const refGraphFailed = await compile(functions, [], true).repo(b);
+    check("workplaces failed graph preserves the readable stored basis, only distance becomes unknown", retainsBasis(graphFailed, bOverhaul), JSON.stringify(graphFailed.worktrees));
+    check("workplaces failed graph preserves the readable main ref basis", retainsBasis(refGraphFailed, bMain), JSON.stringify(refGraphFailed.worktrees));
+    const baseMutant = functions.replace("const base = baseHead ?", "const base = baseHead && ancestors(baseHead) ?");
+    const lostBasis = await compile(baseMutant, [holderFixture()], true).repo(b);
+    check("workplaces basis mutation probe rejects hiding a readable base on graph failure", baseMutant !== functions && !retainsBasis(lostBasis, bOverhaul), JSON.stringify(lostBasis.worktrees));
+    const instanceScript = `${b}/testinstanz.sh`;
+    writeFileSync(instanceScript, "#!/bin/sh\nprintf '%s' '{\"state\":\"not-running\",\"procStatus\":\"dead\"}'\n"); chmodSync(instanceScript, 0o700);
+    try {
+      const steady = await compile(functions, [holderFixture()]).read();
+      const steadyRow = steady.repos[0]?.worktrees?.find((w) => w.primary);
+      check("workplaces captures an unchanged occupant together with its stored basis", steadyRow?.session?.slot === 42
+        && steadyRow.session.openedAt === 100 && steadyRow.base?.head === bOverhaul, JSON.stringify(steadyRow));
+      const race = async (code: string, changedSlot: boolean): Promise<Workplaces> => {
+        const occupants = [holderFixture()];
+        let accepted = false, release = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        // t | event | exclusive owner
+        // 0 | identity and basis captured | read
+        // 1 | status accepted and held | script boundary
+        // 2 | occupant identity and basis replaced | test
+        // 3 | status released, response joins identity | read
+        const pending = compile(code, occupants, false, async () => { accepted = true; await held; }).read();
+        try {
+          await until(() => accepted, { timeoutMs: 5000, what: "workplaces status boundary accepted the cached read" });
+          if (changedSlot) occupants[0] = { ...occupants[0], id: 43, worktree: { repo: realpathSync(b), base: "main", baseSha: bMain } };
+          else { occupants[0].openedAt = 200; occupants[0].worktree = { repo: realpathSync(b), base: "main", baseSha: bMain }; }
+        } finally { release(); }
+        return pending;
+      };
+      const refusesPairing = (value: Workplaces) => {
+        const row = value.repos[0]?.worktrees?.find((w) => w.primary);
+        return row?.session === null && row.base?.head === bOverhaul
+          && row.reasons.some((r) => r.field === "session" && r.reason === "session-changed-since-measurement");
+      };
+      const identityGuard = "const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;";
+      const occupantMutant = functions.replace(identityGuard, "const sessionMatches = true;");
+      for (const changedSlot of [false, true]) {
+        const raced = await race(functions, changedSlot), wronglyPaired = await race(occupantMutant, changedSlot);
+        check(`workplaces ${changedSlot ? "slot" : "openedAt"} change during status cannot pair the new occupant with the old basis`, refusesPairing(raced), JSON.stringify(raced.repos[0]?.worktrees));
+        check(`workplaces ${changedSlot ? "slot" : "openedAt"} mutation probe rejects dropping the occupant guard`, occupantMutant !== functions && !refusesPairing(wronglyPaired), JSON.stringify(wronglyPaired.repos[0]?.worktrees));
+      }
+    } finally { rmSync(instanceScript, { force: true }); }
+
+    const targetPaths = ["wp-landed", "wp-unlanded", "wp-empty"].map((branch) => ({ branch, path: `${dir}/${branch}` }));
+    for (const [i, fixture] of targetPaths.entries()) {
+      git(b, "worktree", "add", "-qb", fixture.branch, fixture.path, bOverhaul);
+      if (i < 2) git(fixture.path, "commit", "--allow-empty", "-qm", fixture.branch);
+    }
+    git(b, "update-ref", "refs/heads/overhaul", bMain);
+    git(b, "notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "wp-landed", task: "aabbccdd", at: 1000 }), bMain);
+    git(b, "notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "wp-unlanded", task: "eeff0011", at: 2000 }), git(targetPaths[0].path, "rev-parse", "HEAD").stdout.trim());
+    git(b, "branch", "side-target", git(targetPaths[0].path, "rev-parse", "HEAD").stdout.trim());
+    const targetHolders = targetPaths.map((fixture, i): FixtureOccupant => ({ id: 50 + i, openedAt: 100,
+      cwd: realpathSync(fixture.path), worktree: { repo: realpathSync(b), base: "overhaul", baseSha: bOverhaul } }));
+    targetHolders.push({ id: 53, openedAt: 100, cwd: realpathSync(b), worktree: { repo: realpathSync(b), base: "side-target", baseSha: bOverhaul } });
+    const gitCalls: string[] = [];
+    const targetRepo = await compile(functions, targetHolders, false, undefined, false, gitCalls).repo(b);
+    check("workplaces notes are read once per repo within the five Git call budget", gitCalls.length === 5
+      && gitCalls.filter((cmd) => cmd === "log").length === 1 && (targetRepo.worktrees?.length ?? 0) > 3, JSON.stringify(gitCalls));
+    const targetRow = (repo: WorkplaceRepo, i: number) => repo.worktrees?.find((row) => row.path === realpathSync(targetPaths[i].path));
+    const yes = (repo: WorkplaceRepo) => { const row = targetRow(repo, 0); return row?.target.branch === "overhaul" && row.target.head === bMain
+      && row.target.behind === 1 && row.target.landed === "yes" && row.target.landedAs === bMain && row.target.basis === "land-note"; };
+    const no = (repo: WorkplaceRepo) => { const row = targetRow(repo, 1); return row?.distance?.ahead === 1 && row.target.landed === "no"
+      && row.target.landedAs === null && row.reasons.some((r) => r.field === "target.landedAs" && r.reason === "no-matching-land-note"); };
+    const empty = (repo: WorkplaceRepo) => { const row = targetRow(repo, 2); return row?.distance?.ahead === 0 && row.target.landed === null
+      && row.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land"); };
+    check("workplaces target yes names the overhaul tip and its exact land-note SHA", yes(targetRepo), JSON.stringify(targetRow(targetRepo, 0)));
+    check("workplaces target no excludes matching notes on another branch of history", no(targetRepo), JSON.stringify(targetRow(targetRepo, 1)));
+    check("workplaces target with no own commits is unknown with nothing-to-land reason", empty(targetRepo), JSON.stringify(targetRow(targetRepo, 2)));
+    const targetMutants = [
+      ["land-note branch", functions.replace("note.branch === branch && onTarget(note.sha)", "onTarget(note.sha)"), no],
+      ["land-note lineage", functions.replace("note.branch === branch && onTarget(note.sha)", "note.branch === branch"), no],
+      ["nothing to land", functions.replace('else if (d.ahead === 0) landedReason = "nothing-to-land";', ''), empty],
+      ["target advancement", functions.replace("distance(targetHead, baseHead)?.ahead ?? null", "0"), yes],
+    ] as const;
+    for (const [name, code, predicate] of targetMutants) {
+      const mutantRepo = await compile(code, targetHolders).repo(b);
+      check(`workplaces target mutation rejects dropping ${name}`, code !== functions && !predicate(mutantRepo), JSON.stringify(mutantRepo.worktrees));
+    }
+    const failedTarget = await compile(functions, targetHolders, true).repo(b);
+    check("workplaces target graph failure retains its readable target tip and nulls only unprovable facts", targetRow(failedTarget, 1)?.target.head === bMain
+      && targetRow(failedTarget, 1)?.target.behind === null && targetRow(failedTarget, 1)?.target.landed === null
+      && targetRow(failedTarget, 1)?.reasons.some((r) => r.field === "target.behind" && r.reason === "commit-graph-unreadable") === true, JSON.stringify(targetRow(failedTarget, 1)));
+    const unreadNotes = await compile(functions, targetHolders, false, undefined, true).repo(b);
+    check("workplaces unreadable target notes cannot claim an unlanded branch", targetRow(unreadNotes, 1)?.target.landed === null
+      && targetRow(unreadNotes, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-unreadable") === true, JSON.stringify(targetRow(unreadNotes, 1)));
+    const cappedNotes = functions.replace("return { rows, truncated };", "return { rows, truncated: true };");
+    const limited = await compile(cappedNotes, targetHolders).repo(b);
+    check("workplaces truncated target notes keep positive evidence but refuse negative claims", limited.landNotes.truncated === true
+      && targetRow(limited, 0)?.target.landed === "yes" && targetRow(limited, 1)?.target.landed === null
+      && targetRow(limited, 1)?.reasons.some((r) => r.field === "target.landed" && r.reason === "land-notes-truncated") === true, JSON.stringify(limited.worktrees));
+    const scanCapped = await compile(functions.replace("const LAND_NOTES_SCAN_CAP = 200;", "const LAND_NOTES_SCAN_CAP = 1;"), targetHolders).repo(b);
+    check("workplaces note scan cap exposes truncation and never claims no from a partial scan", scanCapped.landNotes.truncated === true
+      && targetRow(scanCapped, 1)?.target.landed === null, JSON.stringify(scanCapped.worktrees));
+    await Bun.sleep(3100);
+    const targetWire = await (await get("/api/worktrees")).json() as Workplaces;
+    const wireRepo = targetWire.repos.find((repo) => repo.repo === realpathSync(b));
+    check("workplaces owner wire carries yes no and nothing-to-land from one repo note scan", !!wireRepo
+      && targetRow(wireRepo, 0)?.target.landed === "yes" && no(wireRepo) && empty(wireRepo)
+      && wireRepo.landNotes.truncated === false, JSON.stringify(wireRepo));
+
+    renameSync(`${b}/.git`, `${b}/.git-hidden`);
+    try {
+      const escaped = git(b, "rev-parse", "--show-toplevel");
+      check("workplaces unreadable fixture proves Git would discover the enclosing repo", escaped.status === 0
+        && realpathSync(escaped.stdout.trim()) === realpathSync(ROOT), escaped.stdout.trim());
+      const withoutBoundary = functions.replace('if (strict && !existsSync(`${root}/.git`)) throw new Error("worktree-list-unreadable");', '')
+        .replace('if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");', '');
+      const guarded = await compile(functions, []).repo(b), escapedRepo = await compile(withoutBoundary, []).repo(b);
+      check("workplaces pre-fix red/post-fix green rejects reading an enclosing repo when its own Git boundary disappears", withoutBoundary !== functions
+        && guarded.worktrees === null && guarded.reasons.some((r) => r.reason === "worktree-list-unreadable")
+        && escapedRepo.worktrees !== null, JSON.stringify({ guarded, escapedRepo: escapedRepo.repo }));
+      await Bun.sleep(3100);
+      const unreadable = await (await get("/api/worktrees")).json() as Workplaces;
+      const broken = unreadable.repos.find((r) => r.repo === realpathSync(b));
+      check("workplaces unreadable repo is null with its reason, never an empty worktree list", broken?.worktrees === null && broken.branches === null
+        && broken.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(broken));
+      const other = `${dir}/other`;
+      mkdirSync(other); git(other, "init", "-qb", "main"); commit(other);
+      git(other, "config", "core.worktree", realpathSync(other));
+      writeFileSync(`${b}/.git`, `gitdir: ${realpathSync(other)}/.git\n`);
+      try {
+        const topMutant = functions.replace('if (top.code !== 0 || realpathSync(top.out) !== realpathSync(repo)) throw new Error("repo-toplevel-mismatch");', '');
+        const mismatch = await compile(functions, []).repo(b), wrongRepo = await compile(topMutant, []).repo(b);
+        check("workplaces rejects an existing Git pointer whose explicit toplevel is another repo", mismatch.worktrees === null
+          && mismatch.reasons.some((r) => r.reason === "worktree-list-unreadable"), JSON.stringify(mismatch));
+        check("workplaces toplevel mutation probe rejects substituting another repo", topMutant !== functions && wrongRepo.worktrees !== null, JSON.stringify(wrongRepo.repo));
+      } finally { rmSync(`${b}/.git`, { force: true }); }
+    } finally { renameSync(`${b}/.git-hidden`, `${b}/.git`); }
+
+  } finally {
+    for (const lane of opened) await post(`/api/slots/${lane.slot}/kill`, {});
+    git(a, "worktree", "remove", "--force", orphan);
+    for (const lane of opened) git(lane.cwd.startsWith(a) ? a : b, "worktree", "remove", "--force", lane.cwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function run(lc: LaneCtx): Promise<void> {
+  await helperRepoChecks();
+  await workplacesChecks();
+  await instanceBandChecks();
+  await snapshotTruthChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.
   // opened before the list block: its share is the guest credential probed there, and the share
@@ -71,6 +1474,123 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
   }
   {
+    const lane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
+    const pointer = `${lane.cwd}/.git`, original = readFileSync(pointer);
+    await stopSrv();
+    await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
+    rmSync(`${lane.cwd}/AGENTS.override.md`);
+    rmSync(`${lane.cwd}/CLAUDE.local.md`);
+    writeFileSync(pointer, `gitdir: ${ROOT}/native-missing-git\n`);
+    const before = readFileSync(`${ROOT}/server.log`).length;
+    try {
+      const unreadable = spawnSync("git", ["-C", lane.cwd, "rev-parse", "HEAD"], { encoding: "utf8" });
+      check("native rules restart fixture has an unreadable lane HEAD", unreadable.status !== 0, unreadable.stderr.trim());
+      await restartSrv();
+      const api = await get("/api/sessions"), pane = await tmuxOut("has-session", "-t", `=s${lane.slot}`);
+      const log = readFileSync(`${ROOT}/server.log`).subarray(before).toString("utf8");
+      check("native rules restart keeps the server available and names the failed slot", api.ok
+        && log.includes(`slot ${lane.slot}: session rules unavailable`)
+        && log.includes("could not read lane HEAD for session rules"), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
+      check("native rules restart refuses a lane spawn without its rules", pane.code !== 0
+        && !existsSync(`${lane.cwd}/AGENTS.override.md`) && !existsSync(`${lane.cwd}/CLAUDE.local.md`), `pane=${pane.code}`);
+    } finally {
+      writeFileSync(pointer, original);
+      await post(`/api/slots/${lane.slot}/kill`, {}).catch(() => undefined);
+    }
+  }
+  for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
+    const lane = harness === "claude" ? emptyBranch
+      : await (await post("/api/lanes", { repo: REPO, harness })).json() as { slot: number; cwd: string; branch: string };
+    const agents = lane.cwd && existsSync(`${lane.cwd}/AGENTS.override.md`) ? readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") : "";
+    const local = lane.cwd && existsSync(`${lane.cwd}/CLAUDE.local.md`) ? readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") : "";
+    const status = spawnSync("git", ["-C", lane.cwd ?? REPO, "status", "--porcelain"], { encoding: "utf8" });
+    const ignored = spawnSync("git", ["-C", lane.cwd ?? REPO, "check-ignore", "AGENTS.override.md", "CLAUDE.local.md"], { encoding: "utf8" });
+    check(`native lane start: ${harness} has its role file and exact Claude import`, agents.startsWith("## Rolle\n\n--- ROLLE --- Lane:")
+      && agents.includes("/api/self/fleet-report") && local === "@AGENTS.override.md\n");
+    check(`native lane start: ${harness} ignores both files and keeps git clean`, ignored.status === 0
+      && ignored.stdout.trim() === "AGENTS.override.md\nCLAUDE.local.md" && status.status === 0 && status.stdout === "");
+    if (harness !== "claude" && lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
+  for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
+    const marker = `native-lane-receipt-${harness}-${Date.now()}`;
+    const task = await (await post("/api/tasks", { text: marker, queue: false, repo: ROOT })).json() as { task: { id: string } };
+    const opened = await (await post(`/api/tasks/${task.task.id}/dispatch`, { harness })).json() as
+      { ok?: boolean; slot?: number; error?: string };
+    check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
+    if (typeof opened.slot !== "number") continue;
+    if (harness === "claude" || harness === "codex") {
+      await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› " : "❯", "native lane receipt");
+    } else {
+      await until(async () => {
+        const frame = await tmuxOut("capture-pane", "-t", `s${opened.slot}`, "-p", "-J");
+        return frame.code === 0 && frame.out.includes("────────")
+          && (harness === "pi" || frame.out.includes("0.0%/1.0M"));
+      }, { timeoutMs: 15000, what: `native ${harness} stand-in composer` });
+    }
+    type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
+    type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
+    let receipt: Receipt | undefined, prompt = "";
+    await until(async () => {
+      const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
+        .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Receipt) : [];
+      receipt = rows.findLast((row) => row.taskId === task.task.id);
+      const prompts = await (await get("/api/prompts?limit=100")).json() as { prompts: { slot: number; text: string }[] };
+      prompt = prompts.prompts.find((row) => row.slot === opened.slot && row.text.startsWith(marker))?.text ?? "";
+      return !!receipt && !!prompt;
+    }, { timeoutMs: 15000, what: `native ${harness} delivery receipt` });
+    const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] };
+    const cwd = sessions.slots.find((row) => row.id === opened.slot)?.cwd;
+    const agents = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+    const roleStart = agents.indexOf("## Rolle\n\n") + "## Rolle\n\n".length;
+    const roleEnd = agents.indexOf("\n\n## Anleitung", roleStart);
+    const role = agents.slice(roleStart, roleEnd);
+    const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
+    check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
+      prompt.startsWith(`${marker}\n\nSession-Regeln: ./AGENTS.override.md`)
+        && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
+    check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
+      && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")
+      && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
+      && part.sha256 === createHash("sha256").update(role).digest("hex") && part.ort === "box"
+      && meta.parts.some((row) => row.id === "footer" && typeof row.bytes === "number" && row.bytes > 0));
+    await post(`/api/slots/${opened.slot}/kill`, {});
+    await post(`/api/tasks/${task.task.id}/delete`, {});
+  }
+  {
+    const repo = mkdtempSync(`${ROOT}/native-detached-`);
+    const git = (...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x", ...args], { encoding: "utf8" });
+    const setup = [git("init", "-q"), git("commit", "-q", "--allow-empty", "-m", "native detached source"), git("checkout", "-q", "--detach")];
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const marker = "native-detached-lane-receipt";
+    const task = await (await post("/api/tasks", { text: marker, queue: false, repo })).json() as { task: { id: string } };
+    const started = await post(`/api/tasks/${task.task.id}/dispatch`, {});
+    const opened = await started.json() as { ok?: boolean; slot?: number; error?: string };
+    check("native detached source dispatches without inventing an integration base", setup.every((row) => row.status === 0)
+      && started.ok && opened.ok === true && typeof opened.slot === "number", `${started.status} ${JSON.stringify(opened)}`);
+    if (typeof opened.slot === "number") {
+      await plantScreen(opened.slot, "❯", "native detached receipt");
+      let receipt: { taskId?: string; head?: string } | undefined;
+      await until(async () => {
+        const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
+          .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { taskId?: string; head?: string }) : [];
+        receipt = rows.findLast((row) => row.taskId === task.task.id);
+        return !!receipt;
+      }, { timeoutMs: 15000, what: "native detached lane receipt" });
+      const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null; worktree?: Record<string, unknown> | null }[] };
+      const lane = sessions.slots.find((row) => row.id === opened.slot);
+      const agents = lane?.cwd ? readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") : "";
+      const local = lane?.cwd ? readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") : "";
+      const status = spawnSync("git", ["-C", lane?.cwd ?? repo, "status", "--porcelain"], { encoding: "utf8" });
+      check("native detached receipt names the actual commit and keeps both native files clean", receipt?.head === head
+        && !!lane?.worktree && !("base" in lane.worktree) && !("baseSha" in lane.worktree)
+        && agents.includes("--- ROLLE --- Lane:") && agents.includes("HOW THIS LANE ENDS")
+        && local === "@AGENTS.override.md\n" && status.status === 0 && status.stdout === "");
+      await post(`/api/slots/${opened.slot}/kill`, {});
+    }
+    await post(`/api/tasks/${task.task.id}/delete`, {});
+  }
+  {
     const route = `/api/slots/${emptyBranch.slot}/testinstanz`;
     const script = `${emptyBranch.cwd}/testinstanz.sh`;
     const missing = await post(route, { action: "up" });
@@ -84,9 +1604,9 @@ export async function run(lc: LaneCtx): Promise<void> {
     writeFileSync(script, [
       "#!/bin/sh",
       "case $1 in",
-      "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args ;;",
-      "  down) rm -f ti-cwd ti-args ;;",
-      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://100.64.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
+      "  up) pwd > ti-cwd; printf '%s' \"$*\" > ti-args; printf '%s' \"${FLEET_TI_TARGET-unset}\" > ti-target ;;",
+      "  down) rm -f ti-cwd ti-args ti-target ;;",
+      "  status) if [ -f ti-cwd ]; then echo 'up pid 123 http://127.0.0.1:8912/?token=fixture'; echo 'ttl: 45 min left (expiresAt=2000000000)'; else echo 'down (fixture)'; fi; exit 1 ;;",
       "esac",
       "",
     ].join("\n"));
@@ -98,12 +1618,27 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("testinstanz rejects an invalid TTL before running the script", badTtl.status === 400 && !exists(`${emptyBranch.cwd}/ti-cwd`));
     const up = await post(route, { action: "up", ttlMin: 45 });
     const upBody = (await up.json().catch(() => ({}))) as { url?: string; port?: number; expiresAt?: number };
-    check("testinstanz up runs the slot worktree script in its own cwd and returns the phone URL, port and expiry",
+    check("testinstanz up runs the slot worktree script in its own cwd and returns credential-free metadata",
       up.ok && exists(`${emptyBranch.cwd}/ti-cwd`) && exists(`${emptyBranch.cwd}/ti-args`)
       && readFileSync(`${emptyBranch.cwd}/ti-cwd`, "utf8").trim() === emptyBranch.cwd
       && readFileSync(`${emptyBranch.cwd}/ti-args`, "utf8") === "up mixed --ttl 45"
-      && upBody.url === "http://100.64.0.1:8912/?token=fixture" && upBody.port === 8912
-      && upBody.expiresAt === 2_000_000_000_000, JSON.stringify(upBody));
+      && upBody.url === undefined && upBody.port === 8912
+      && upBody.expiresAt === 2_000_000_000_000, `HTTP ${up.status}; metadata credential-free=${!upBody.url}`);
+    // the band's target (ranke-notiz R11): the lane's RECORDED base reaches the script, and the lane
+    // reads the same value as its own `lane.base` — the fallback testinstanz.sh#ti_measure uses by hand
+    const recordedBase = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { worktree?: { base?: string }; selfToken?: string }> }).slots?.[String(emptyBranch.slot)];
+    const laneSelf = await (await fetch(BASE + "/api/self", { headers: { "x-fleet-self-token": recordedBase?.selfToken ?? "" } }))
+      .json().catch(() => ({})) as { lane?: { base?: string | null } | null };
+    check("testinstanz up hands the lane's recorded base to the script as FLEET_TI_TARGET, and /api/self names it as lane.base",
+      !!recordedBase?.worktree?.base && exists(`${emptyBranch.cwd}/ti-target`)
+        && readFileSync(`${emptyBranch.cwd}/ti-target`, "utf8") === recordedBase.worktree.base
+        && laneSelf.lane?.base === recordedBase.worktree.base,
+      `recorded=${recordedBase?.worktree?.base} handed=${exists(`${emptyBranch.cwd}/ti-target`) ? readFileSync(`${emptyBranch.cwd}/ti-target`, "utf8") : "-"} self=${laneSelf.lane?.base}`);
+    const opened = await post(route, { action: "open" });
+    const openedBody = await opened.json() as { url?: string };
+    check("testinstanz opening needs its own explicit owner gesture", opened.status === 200
+      && openedBody.url === "http://127.0.0.1:8912/?token=fixture", `HTTP ${opened.status}`);
     const status = (await (await get(route)).json().catch(() => ({}))) as { state?: string; port?: number };
     check("testinstanz status serves the running state for a second device", status.state === "up" && status.port === 8912);
     const down = await post(route, { action: "down" });
@@ -113,7 +1648,66 @@ export async function run(lc: LaneCtx): Promise<void> {
     const downStatus = await get(route);
     check("testinstanz status keeps the script's down fact when its final lock diagnostic exits 1",
       downStatus.status === 200
-      && ((await downStatus.json()) as { state?: string }).state === "down");
+      && ((await downStatus.json()) as { state?: string }).state === "not-running");
+    writeFileSync(script, "#!/bin/sh\necho 'up pid 123 http://127.0.0.1:8912/?token=fixture'\necho 'ttl: EXPIRED 2 min ago'\n");
+    const expired = await get(route);
+    const expiredBody = await expired.json() as { state?: string; expiresAt?: unknown; url?: unknown; mainCheckout?: boolean; worktree?: string };
+    check("testinstanz EXPIRED without expiresAt remains an expired worktree fact", expired.status === 200
+      && expiredBody.state === "expired" && expiredBody.expiresAt === null && expiredBody.url === undefined
+      && expiredBody.mainCheckout === false && expiredBody.worktree === realpathSync(emptyBranch.cwd), `HTTP ${expired.status}; state=${expiredBody.state}`);
+    await testinstanzWorktreeChecks(emptyBranch.slot);
+    const race = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string; branch: string };
+    const raceSpy = `${ROOT}/ti-occupant-spy-${race.slot}`;
+    writeFileSync(`${race.cwd}/testinstanz.sh`, `#!/bin/sh\n[ "$1" = up ] && echo spawned > '${raceSpy}'\necho 'down (fixture)'\n`);
+    chmodSync(`${race.cwd}/testinstanz.sh`, 0o700);
+    const requestBody = JSON.stringify({ action: "up" });
+    let finishBody: (() => void) | undefined;
+    const delayedBody = new Promise<{ code: number; body: { refusal?: string; nullSpawn?: boolean } }>((resolveResult, reject) => {
+      const req = httpRequest(BASE + `/api/slots/${race.slot}/testinstanz`, { method: "POST", headers: {
+        authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "content-length": Buffer.byteLength(requestBody),
+      } }, (response) => { let text = ""; response.on("data", (part) => text += part.toString());
+        response.on("end", () => { try { resolveResult({ code: response.statusCode ?? 0, body: JSON.parse(text) }); } catch (error) { reject(error); } }); });
+      req.on("error", reject); req.write(requestBody.slice(0, 1)); finishBody = () => req.end(requestBody.slice(1));
+    });
+    // t | event | owner: headers+one byte | request; kill+new open | test; remaining body | request. No up may cross this replacement.
+    await Bun.sleep(250);
+    const kill = await post(`/api/slots/${race.slot}/kill`, {});
+    const replacement = await post(`/api/slots/${race.slot}/open`, { cwd: REPO, label: "testinstanz-replacement" });
+    finishBody?.();
+    const delayedResult = await delayedBody;
+    check("testinstanz delayedBody reproves exact Slot occupant and has nullSpawn", kill.status === 200 && replacement.status === 200
+      && delayedResult.code === 409 && delayedResult.body.refusal === "target-changed" && delayedResult.body.nullSpawn === true && !exists(raceSpy));
+    const projection = await (await get("/api/sessions")).json() as { slots?: Array<{ id: number; workplace?: { path?: string; mainCheckout?: boolean } | null }> };
+    const projectionScript = `${REPO}/testinstanz.sh`;
+    const projectionOriginal = exists(projectionScript) ? { bytes: readFileSync(projectionScript), mode: lstatSync(projectionScript).mode & 0o777 } : null;
+    writeFileSync(projectionScript, "#!/bin/sh\necho 'down (fixture)'\n"); chmodSync(projectionScript, 0o700);
+    await get(`/api/slots/${race.slot}/testinstanz`);
+    if (projectionOriginal) { writeFileSync(projectionScript, projectionOriginal.bytes); chmodSync(projectionScript, projectionOriginal.mode); }
+    else rmSync(projectionScript, { force: true });
+    const measuredProjection = await (await get("/api/sessions")).json() as typeof projection;
+    const place = measuredProjection.slots?.find((row) => row.id === race.slot)?.workplace;
+    check("testinstanz Slot projection measures main checkout identity", place?.path === realpathSync(REPO) && place.mainCheckout === true);
+    await post(`/api/slots/${race.slot}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", race.cwd]);
+    spawnSync("git", ["-C", REPO, "branch", "-D", race.branch]);
+    rmSync(raceSpy, { force: true });
+    const lateSlot = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string; branch: string };
+    const lateHold = `${ROOT}/ti-slot-hold`, lateReady = `${ROOT}/ti-slot-ready`;
+    writeFileSync(lateHold, "hold");
+    writeFileSync(`${lateSlot.cwd}/testinstanz.sh`, `#!/bin/sh\necho ready > '${lateReady}'\nwhile [ -f '${lateHold}' ]; do sleep 0.05; done\necho 'up pid 123 http://127.0.0.1:8912/?token=SYNTHETIC_OLD_SLOT_TOKEN'\necho 'ttl: 5 min left (expiresAt=2000000000)'\n`);
+    chmodSync(`${lateSlot.cwd}/testinstanz.sh`, 0o700);
+    const lateRead = get(`/api/slots/${lateSlot.slot}/testinstanz`);
+    await until(() => exists(lateReady), { timeoutMs: 5000, what: "testinstanz old Slot status entered script" });
+    const lateKill = await post(`/api/slots/${lateSlot.slot}/kill`, {});
+    const lateReplacement = await post(`/api/slots/${lateSlot.slot}/open`, { cwd: REPO, label: "testinstanz-late-result" });
+    rmSync(lateHold, { force: true });
+    const lateResponse = await lateRead, lateText = await lateResponse.text();
+    check("testinstanz late status result never reaches a new Slot occupant", lateKill.status === 200 && lateReplacement.status === 200
+      && lateResponse.status === 409 && lateText.includes("target-changed") && !lateText.includes("SYNTHETIC_OLD_SLOT_TOKEN"));
+    await post(`/api/slots/${lateSlot.slot}/kill`, {});
+    spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lateSlot.cwd]);
+    spawnSync("git", ["-C", REPO, "branch", "-D", lateSlot.branch]);
+    rmSync(lateReady, { force: true });
     rmSync(script);
   }
   const emptyRemove = await post(`/api/slots/${emptyBranch.slot}/land`, {});
@@ -139,6 +1733,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       && spawnSync("git", ["-C", REPO, "branch", "--list", keptBranch.branch]).stdout.toString().trim() !== "",
     `${keepCommit.status}/${keepPush.status}/${keptRemove.status} ${keptBranch.branch}`);
   const landedBranch = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  check("native lane rules remain present before a real script land", existsSync(`${landedBranch.cwd}/AGENTS.override.md`)
+    && existsSync(`${landedBranch.cwd}/CLAUDE.local.md`));
   await Bun.write(`${landedBranch.cwd}/branch-landed.txt`, "landed lane work\n");
   spawnSync("git", ["-C", landedBranch.cwd, "add", "branch-landed.txt"]);
   const landedCommit = spawnSync("git", ["-C", landedBranch.cwd, "commit", "-qm", "branch preservation after land"]);
@@ -1376,9 +2972,13 @@ export async function run(lc: LaneCtx): Promise<void> {
           && lhAfter.worktree?.branch === batonBranch && lhAfter.taskId === batonTaskId && lhAfter.programId === batonProgramId
           && lhAfter.laneSuccessions === 1 && lhAfter.openedAt !== lhBefore?.openedAt && lhAfter.selfToken !== heirTok,
         JSON.stringify(lhAfter).slice(0, 300));
-      check("(lane-harness) the pane was spawned as codex with the chosen model",
-        /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox/.test(lhCmd) && lhCmd.includes("--model 'gpt-6.1-sol'"),
-        lhCmd.slice(-220));
+      const lhCodexDefault = (cmd: string): boolean =>
+        /(^|\s|;)codex --no-daemon --sandbox danger-full-access --ask-for-approval never(?:\s|$)/.test(cmd)
+          && cmd.includes("--model 'gpt-6.1-sol'") && !cmd.includes("--dangerously-bypass-approvals-and-sandbox");
+      check("(lane-harness) the pane was spawned as codex with the explicit full-access default and chosen model, without bypass",
+        lhCodexDefault(lhCmd), lhCmd.slice(-220));
+      check("(lane-harness) the start-form claim rejects a bypass added to the actual command",
+        lhCodexDefault(lhCmd) && !lhCodexDefault(`${lhCmd} --dangerously-bypass-approvals-and-sandbox`));
       const statusAfter = spawnSync("git", ["-C", batonCwd, "status", "--porcelain"]).stdout.toString();
       check("(lane-harness) the uncommitted edit and the untracked file survive BYTE for byte, on the same HEAD",
         readFileSync(`${batonCwd}/baton.txt`, "utf8") === dirtyTracked
@@ -1544,7 +3144,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     for (const row of rpPlant.tasks ?? [])
       if (rpIds.includes(row.id)) { row.status = "sent"; row.slot = rpSlot; row.programId = rpProgramId; }
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpPlant, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     const rpTok = rpState().slots?.[String(rpSlot)]?.selfToken ?? "";
     const rpMainTok = rpState().slots?.[String(rpMainSlot)]?.selfToken ?? "";
     check("review park setup: a committed lane carries two sent rows and a Program",
@@ -1582,7 +3182,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       openedAt: rpMain?.openedAt ?? 0, sessionId: rpMain?.sessionId ?? null },
       reason: null, fulfilled: null };
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpDecide, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     writeFileSync(`${rpCwd}/review-park-dirty.txt`, "uncommitted\n");
     const dirty = await park({});
     const dirtyText = await dirty.text();
@@ -1631,13 +3231,14 @@ export async function run(lc: LaneCtx): Promise<void> {
 
     // THE PARK
     const parkRes = await selfPark(rpMainTok, rpIds[0] ?? "", { hours: 2 });
-    const parked = ((await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate }).candidate;
+    const parkBody = (await parkRes.json()) as { ok?: boolean; candidate?: RpCandidate; error?: string };
+    const parked = parkBody.candidate;
     check("(review park) an accepted, clean lane parks as ONE candidate with rows, branch, head, base, report and deadline",
       parkRes.ok && !!parked && /^[0-9a-f]{12}$/.test(parked.id) && parked.branch === rpLane.branch && parked.head === rpHead
         && typeof parked.base === "string" && parked.base !== "" && /^[0-9a-f]{40}$/.test(parked.baseSha ?? "")
         && JSON.stringify([...parked.taskIds].sort()) === JSON.stringify([...rpIds].sort()) && parked.taskId === rpIds[0]
         && parked.reportId === rpReportId && parked.expiresAt - parked.parkedAt === 2 * 3_600_000,
-      JSON.stringify(parked));
+      `${parkRes.status} ${parkBody.error ?? ""} ${JSON.stringify(parked)}`);
     check("(review park) the slot is free and the worktree with its commit stays on disk",
       (await rpSessions()).find((x) => x.id === rpSlot)?.cwd === null && exists(`${rpCwd}/review-park.txt`));
     check("(review park) the rows stay SENT with no slot — not handed back to pending or queued",
@@ -1689,7 +3290,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const rpShelf = rpAge.shelved?.[rpCwd]?.review;
     if (rpShelf) rpShelf.expiresAt = Date.now() - 1000;
     writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(rpAge, null, 2), { mode: 0o600 });
-    await restartSrv();
+    await restartSrv({ FLEET_AUTO_REVIEW_MS: "0" });
     check("(review park) across a restart the rows stay parked — no boot requeue, no second dispatch",
       (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === null), JSON.stringify((await rpRows(rpIds))));
     const board2 = await rpBoard();

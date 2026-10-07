@@ -38,11 +38,15 @@
 // `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
 // left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
 // parse never becomes the link's target — check first, swap second, and the daemon keeps running.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync,
   statSync, symlinkSync } from "node:fs";
-import { loadavg } from "node:os";
+import { homedir, loadavg } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { retryResult } from "./result-retry";
+import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX,
+  HELPER_REPOS_CACHE_MS, HELPER_REPOS_BUDGET_MS, HELPER_REPO_NAME_RE, helperGitLabel,
+  type HelperRepoReading, type HelperReposReading } from "../src/protocol";
+
 
 // --- config ------------------------------------------------------------------------------------
 export interface HelperConfig {
@@ -52,6 +56,7 @@ export interface HelperConfig {
   name: string;          // what the ledger row will say produced the verdict
   workDir: string;
   instanceDir?: string;
+  repos?: { name: string; path: string }[];
   checkoutLink: string;  // the symlink the unit's ExecStart runs through; a daemon-update moves it
   pollSec: number;
   offRecheckSec: number;
@@ -126,9 +131,24 @@ export function loadConfig(path: string, raw: unknown, mode: number): HelperConf
   const workDir = str(c.workDir, "workDir");
   if (c.instanceDir !== undefined && (typeof c.instanceDir !== "string" || !isAbsolute(c.instanceDir)))
     throw new ConfigFault("instanceDir must be an absolute path");
+  let repos: HelperConfig["repos"];
+  if (c.repos !== undefined) {
+    if (!Array.isArray(c.repos) || c.repos.length > HELPER_REPOS_MAX)
+      throw new ConfigFault("repos must be an array of at most 8 named repositories");
+    repos = c.repos.map((v: unknown) => {
+      if (!v || typeof v !== "object" || Array.isArray(v)) throw new ConfigFault("invalid repos entry");
+      const r = v as Record<string, unknown>;
+      if (typeof r.name !== "string" || !HELPER_REPO_NAME_RE.test(r.name)
+        || typeof r.path !== "string" || !(isAbsolute(r.path) || r.path.startsWith("~/")))
+        throw new ConfigFault("repos entries require a safe name and a local path");
+      return { name: r.name, path: r.path.startsWith("~/") ? join(homedir(), r.path.slice(2)) : r.path };
+    });
+    if (new Set(repos.map((r) => r.name)).size !== repos.length) throw new ConfigFault("repos names must be unique");
+  }
   return {
     fleetUrl, token: str(c.token, "token"), deviceId, name: str(c.name, "name"),
     workDir,
+    ...(repos === undefined ? {} : { repos }),
     ...(typeof c.instanceDir === "string" ? { instanceDir: c.instanceDir } : {}),
     checkoutLink: typeof c.checkoutLink === "string" && c.checkoutLink ? c.checkoutLink : `${workDir}/current`,
     // the floors are TYPO GUARDS (a 0 or a NaN would spin this loop), not policy — the same
@@ -408,6 +428,109 @@ async function clonedHeadOf(dir: string): Promise<string | undefined> {
 // other machine — and, like `clonedSha`, it is measured or absent: a daemon started from a plain
 // copy outside any git checkout sends no field rather than a guess.
 let daemonSha: string | undefined;
+
+const repoCache = new WeakMap<NonNullable<HelperConfig["repos"]>, { reading: HelperReposReading; pending?: Promise<HelperReposReading> }>();
+export async function reposOf(repos: NonNullable<HelperConfig["repos"]>): Promise<HelperReposReading> {
+  const cached = repoCache.get(repos);
+  if (cached?.pending) return cached.pending;
+  if (cached && Date.now() - cached.reading.at < HELPER_REPOS_CACHE_MS) return cached.reading;
+  const at = Date.now();
+  const deadline = at + HELPER_REPOS_BUDGET_MS;
+  const git = async (dir: string, ...args: string[]): Promise<string | undefined> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return undefined;
+    try {
+      const p = Bun.spawn(["git", "--no-optional-locks", "-C", dir, ...args],
+        { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: childEnv() });
+      const timer = setTimeout(() => p.kill(), Math.min(750, remaining));
+      try {
+        const reader = p.stdout.getReader();
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          bytes += next.value.byteLength;
+          if (bytes > 32768) { p.kill(); await reader.cancel(); await p.exited; return undefined; }
+          chunks.push(next.value);
+        }
+        return await p.exited === 0 ? Buffer.concat(chunks).toString("utf8").trim() : undefined;
+      } finally { clearTimeout(timer); }
+    } catch { return undefined; }
+  };
+  const measure = async (): Promise<HelperReposReading> => {
+    const readings: HelperRepoReading[] = [];
+    for (const repo of repos) {
+      const r: HelperRepoReading = { name: repo.name, at: Date.now(), head: null, branch: null,
+        remote: null, remotes: null, refs: [], coverage: "incomplete", reason: "unreadable" };
+      readings.push(r);
+      const root = await git(repo.path, "rev-parse", "--show-toplevel");
+      if (!root) {
+        if (Date.now() >= deadline) r.reason = "budget";
+        continue;
+      }
+      try {
+        if (realpathSync(repo.path) !== realpathSync(root)) { r.reason = "not-repo-root"; continue; }
+      } catch { continue; }
+      const head = await git(repo.path, "rev-parse", "HEAD");
+      if (!head || !/^[0-9a-f]{40}$/.test(head)) {
+        if (Date.now() >= deadline) r.reason = "budget";
+        continue;
+      }
+      r.head = head;
+      const branch = await git(repo.path, "branch", "--show-current");
+      if (branch === undefined) { r.reason = "budget"; continue; }
+      if (branch && !helperGitLabel(branch)) { r.reason = "unsafe-label"; continue; }
+      r.branch = branch || null;
+      const remotes = await git(repo.path, "remote");
+      if (remotes === undefined) { r.reason = "budget"; continue; }
+      const names = remotes ? remotes.split("\n") : [];
+      if (names.some((n) => !HELPER_REPO_NAME_RE.test(n))) { r.reason = "unsafe-label"; continue; }
+      r.remote = names.length ? "present" : "none";
+      r.remotes = names.slice(0, HELPER_REPO_REMOTES_MAX);
+      r.coverage = names.length > HELPER_REPO_REMOTES_MAX ? "incomplete" : "complete";
+      r.reason = names.length > HELPER_REPO_REMOTES_MAX ? "remote-cap" : null;
+      const refs = names.length ? await git(repo.path, "for-each-ref", `--count=${HELPER_REPO_REFS_MAX + 1}`,
+        "--format=%(refname) %(objectname) %(symref)", ...r.remotes.map((n) => `refs/remotes/${n}/`)) : "";
+      if (refs === undefined) { r.coverage = "incomplete"; r.reason = "budget"; continue; }
+      const allRows = refs ? refs.split("\n") : [];
+      const rows = allRows;
+      if (allRows.length > HELPER_REPO_REFS_MAX) { r.coverage = "incomplete"; r.reason = "ref-cap"; }
+      for (const line of rows.slice(0, HELPER_REPO_REFS_MAX)) {
+        const [fullRef, sha] = line.trim().split(" ");
+        if (!fullRef?.startsWith("refs/remotes/")) { r.coverage = "incomplete"; r.reason = "unsafe-label"; continue; }
+        const ref = fullRef.slice("refs/remotes/".length);
+        if (!helperGitLabel(ref) || !sha || !/^[0-9a-f]{40}$/.test(sha)) {
+          r.coverage = "incomplete"; r.reason = "unsafe-label"; continue;
+        }
+        const updated = await git(repo.path, "reflog", "show", "-1", "--format=%gD", "--date=unix", fullRef);
+        const stamp = updated?.match(/@\{(\d+)\}/)?.[1];
+        const row: HelperRepoReading["refs"][number] = { ref, head: sha,
+          updatedAt: stamp ? Number(stamp) * 1000 : null, mergeBase: null, ahead: null, behind: null, reason: null };
+        r.refs.push(row);
+        const range = await git(repo.path, "rev-list", "--left-right",
+          `--max-count=${HELPER_REPO_COMMITS_MAX + 1}`, `${head}...${sha}`, "--");
+        const commits = range ? range.split("\n") : [];
+        if (range === undefined) row.reason = "budget";
+        else if (commits.length > HELPER_REPO_COMMITS_MAX) row.reason = "commit-cap";
+        else if (commits.some((c) => !/^[<>][0-9a-f]{40}$/.test(c))) row.reason = "unreadable";
+        else {
+          const base = await git(repo.path, "merge-base", "--all", head, sha);
+          if (!base || !/^[0-9a-f]{40}$/.test(base)) row.reason = Date.now() >= deadline ? "budget" : "no-merge-base";
+          else { row.mergeBase = base; row.ahead = commits.filter((c) => c[0] === "<").length;
+            row.behind = commits.filter((c) => c[0] === ">").length; }
+        }
+        if (row.reason) { r.coverage = "incomplete"; r.reason ??= row.reason; }
+      }
+    }
+    return { at, repos: readings };
+  };
+  const pending = measure();
+  repoCache.set(repos, { reading: cached?.reading ?? { at: 0, repos: [] }, pending });
+  const reading = await pending;
+  repoCache.set(repos, { reading });
+  return reading;
+}
 
 export interface InstanceReading {
   head: string; bundleStale: boolean; behindCount: number; syncExit: number; at: number;
@@ -1043,6 +1166,7 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
       running: runningJobs, maxParallelSuites: cfg.maxParallelSuites,
       ...(daemonSha ? { daemonSha } : {}),
       ...(cfg.instanceDir ? { instance: await instanceOf(cfg.instanceDir) } : {}),
+      ...(cfg.repos === undefined ? {} : { repos: await reposOf(cfg.repos) }),
       features: DAEMON_FEATURES,
     }),
   });

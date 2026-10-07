@@ -1,11 +1,19 @@
 // THE FOUNDING WINDOW — what a click on a free place in the bar opens, and what ⎇+ on a session
-// opens (Neuentwurf 2026-10-01 with the owner, Program Oberflaeche 0d51b4d4: „[Zitat entfernt]“
-// ). It replaces the place-list window of 2026-09-29.
+// opens. Since 2026-10-04 it is the PROFILE WINDOW of design v3 (docs/design/rollenkarten-notiz.md,
+// Program fe44f11a, owner: „[Zitat entfernt]“): the place on top,
+// then three numbered steps — ① Profil wählen (Lane, MAIN, Orchestratorin, Leer, each with the size
+// of its file), ② Anpassen (Agent, Modell, Effort as switches, rights as a placeholder, the packs as
+// ONE TREE Gruppe → Pack → Teil, never a card list) and ③ Was der Agent liest, the largest field: the
+// session file the server renders (GET /api/founding-plan, sessionAgents) in its fixed order Rolle,
+// Auftrag, Anleitung, Wissen, Packs auf Abruf, Schluss. Every switch on the left re-reads the file
+// on the right; every byte shown is the route's or measured on the route's text, none is estimated.
 //
-// ONE COLUMN, FOUR FIELDS, read top to bottom: ORT (the repo, or the worktree a lane gets — named
-// or auto-named), ROLLE (Leer, Lane, Orchestratorin, MAIN), PROFIL (agent, model, effort,
-// container) and KONTEXT (what the agent is handed). The foot says in one sentence what will start
-// and holds the one button. Nothing replaces the page: a state change repaints its field.
+// A DEVIATION FROM THE PROFILE CARRIES A DOT. A role is a profile: its agent, model and effort
+// (ROLE_PROFILE), its pack preset and the parts' default place per position. What the owner changes
+// here is a deviation for this session only, counted in the foot; „[Zitat entfernt]“ takes every one back
+// and "Als Profil sichern" stores the pack choice over the existing preset door (/api/role-presets).
+// Technical facts — ids, sources, hashes — show only on hover or keyboard focus of their row, and
+// in the flow where there is no hover (grammatik.md §1 Mobil, G4.1, G6.1).
 //
 // MAIN REPLACES THE STEWARD CARD (owner 2026-10-02: „[Zitat entfernt]“). A MAIN is
 // founded for exactly one ACTIVE Program over its existing owner door, POST
@@ -15,11 +23,6 @@
 // The door takes cwd (the Ort), harness, model and effort; no packs and no container — the
 // server builds the Program's own founding brief and picks the free MAIN place itself.
 //
-// THE ROLE PRESELECTS THE CONTEXT, VISIBLY. Each role carries a preset over the founding plan
-// (all fitting packs, none, or none plus a few). Choosing a role applies it, and the packs that
-// arrive light up while the ones that leave strike through, with one line naming the difference.
-// "Rollen vergleichen" lays the presets side by side and lets the owner redraw them.
-//
 // A LANE IS A WORKTREE. The Lane role and the "Neuer Worktree"/"Worktree fortsetzen" places are
 // one choice seen from two fields: picking one moves the other, and the window says so.
 //
@@ -27,9 +30,9 @@
 // brings the dimmed backdrop and Esc/✕/click-beside closing. Enter outside a control starts; the
 // start button holds the focus when the window opens, so "open, Enter" is a plain founding.
 //
-// Doors, all existing: /api/dirs, /api/dirinfo, /api/founding-plan, POST /api/slots/:id/open and
-// /open-worktree for a clicked free place, POST /api/lanes for ⎇+ (with its parent) and for an
-// attach.
+// Doors, all existing: /api/dirs, /api/dirinfo, /api/founding-plan (packs= and parts= pick what the
+// file renders), /api/role-presets, POST /api/slots/:id/open and /open-worktree for a clicked free
+// place, POST /api/lanes for ⎇+ (with its parent) and for an attach.
 import {
   agentHarnesses, api, baseName, containerDefaults, defaultModel, el, fleet, harnesses, isMobile,
   laneBandNames, loadHarnesses, modelNotice, post, revealStartedSlot, setDrawer, showSlot, SKEW_NOTE, stacksOf,
@@ -41,7 +44,9 @@ import { Flakes } from "./flakes";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import { normalizeRolePresets, type FoundingRole, type LaneAnchor, type RolePreset } from "./protocol";
+import { normalizeRolePresets, packIdFassung, standSincePreview, type FoundingPlanOmission, type FoundingPlanPack,
+  type FoundingPlanPart, type FoundingRole, type FoundingSessionAgents, type LaneAnchor, type PackAnchors, type PackStand,
+  type RolePreset } from "./protocol";
 import { openShell, type Shell } from "./shell";
 import { dropGrantMount, foundingRights, proofGrantRow } from "./rights";
 
@@ -51,16 +56,12 @@ type Role = Exclude<FoundingRole, "steward"> | "main";
 const isWindowRole = (r: string): r is Role => r === "leer" || r === "lane" || r === "orch" || r === "main";
 type Mode = "repo" | "new" | "old";
 
-// `say` is the card's sentence (G0.5, owner words); `why` is the compare table's last row
-const ROLES: { id: Role; name: string; glyph: string; say: string; why: string }[] = [
-  { id: "leer", name: "Leer", glyph: "○", say: "Ohne Rolle. Nur Ort, Agent und was du selbst mitgibst.",
-    why: "Nichts vorgewählt." },
-  { id: "lane", name: "Lane", glyph: "⎇", say: "Arbeitet einen Auftrag im eigenen Worktree ab und beweist ihn.",
-    why: "Alles, was zu diesem Start passt." },
-  { id: "orch", name: "Orchestratorin", glyph: "◎", say: "Hält das Portfolio, schärft Aufträge, verteilt Arbeit. Landet nicht selbst.",
-    why: "Ihre Rollenkarte trägt die Zeiger — Packs wären doppelt." },
-  { id: "main", name: "MAIN", glyph: "◆", say: "Führt ein aktives Program: schneidet Karten, treibt Lanes, landet.",
-    why: "Der Server baut ihren Gründungsbrief — Packs gehen nicht mit." },
+// `say` is the card's sentence (G0.5, owner words), in the order of design v3
+const ROLES: { id: Role; name: string; glyph: string; say: string }[] = [
+  { id: "lane", name: "Lane", glyph: "⎇", say: "Arbeitet einen Auftrag im eigenen Worktree ab und beweist ihn." },
+  { id: "main", name: "MAIN", glyph: "◆", say: "Führt ein Program: schneidet Karten, treibt Lanes, landet." },
+  { id: "orch", name: "Orchestratorin", glyph: "◎", say: "Hält das Portfolio, schärft Aufträge, verteilt Arbeit." },
+  { id: "leer", name: "Leer", glyph: "○", say: "Ohne Rolle. Agent und Modell wählst du frei." },
 ];
 
 // A ROLE'S OWN PROFILE (owner 02.10.: Effort stood on „[Zitat entfernt]“ for a MAIN). The MAIN card
@@ -121,8 +122,13 @@ const OMIT_SAY: Record<string, string> = {
 type Entry = { kind: "slot"; slot: number } | { kind: "lane"; repo: string; parent?: LaneAnchor; from: string };
 
 interface Repo { repo: string; name: string; slots: SlotInfo[] }
-interface PlanPack { id: string; bytes: number; source: string; useWhen?: string }
-interface Plan { selected: PlanPack[]; omitted: { id: string; reason: string }[] }
+// the plan route's answer (shapes: src/protocol.ts#FoundingPlanPack); head and plannedAt are the
+// PREVIEW's source state, which the start receipt is later held against
+interface Plan {
+  head?: string; branch?: string | null; harness?: string; plannedAt?: number; selected: FoundingPlanPack[]; omitted: FoundingPlanOmission[];
+  // the session file the server renders for this plan (c2a97f12); absent on an older server
+  sessionAgents?: FoundingSessionAgents;
+}
 interface DirList { path: string; parent: string | null; dirs: string[]; repos?: string[]; capped?: boolean; total?: number }
 interface FindHit { path: string; name: string; repo: boolean }
 // one Program as the MAIN choice reads it off GET /api/programs. `state` is the server's own
@@ -130,7 +136,7 @@ interface FindHit { path: string; name: string; repo: boolean }
 // marker stands, or that carries no readable occupancy, is "unknown" — never guessed free.
 type ProgState = "free" | "stale" | "live" | "unknown";
 interface ProgRow { id: string; title: string; state: ProgState; slot: number | null }
-type Pop = "place" | "harness" | "model" | "effort" | "container" | "add";
+type Pop = "place" | "model" | "container";
 
 interface State {
   shell: Shell;
@@ -145,15 +151,22 @@ interface State {
   place: string | null;
   info: DirInfoResp | null; infoErr: string | null; infoSeq: number;
   plan: Plan | null; planErr: string | null; planFor: string | null; planSeq: number;
+  planHarness: string | null;           // the agent the last read plan was made for — a change re-plans visibly
   packs: Set<string>;                   // switched-on pack ids — empty sends no packs at all
   touched: Map<string, boolean>;        // the owner's own switches against the role's preset
   presetDue: boolean;                   // a role change waits for the plan it applies to
-  fresh: Set<string>; gone: string[];   // the last change, for one paint of light and strike
   delta: { plus: string[]; minus: string[]; why: string } | null;
-  compare: boolean;
-  listOpen: boolean;                    // every pack of this start as a row, on demand
+  dropped: { id: string; why: string }[]; // packs the last plan switched off, each with the plan's reason
+  parts: Map<string, PartOrt>;          // the owner's part switches against the profile's default place
+  open: Set<string>;                    // the tree's unfolded groups and packs
+  // the file on screen and the query it answers; a newer query in flight is `filePending`
+  file: FoundingSessionAgents | null; fileErr: string | null; fileFor: string | null; filePending: string | null; fileSeq: number;
+  shown: Map<string, number> | null;    // the section sizes last painted, so a change lights up once
+  flash: Set<string>;
+  sizes: Partial<Record<Role, number | null>>; sizesFor: string | null; sizesSeq: number; // each profile's file alone
   presetState: "idle" | "saving" | "saved" | "error";
   presetNote: string | null;            // why the stored presets could not be read or written
+  tech: boolean;                        // touch only: the technical lines shown in the flow — off at every open, never stored
   orphan: string | null;
   progs: ProgRow[] | null; progOther: number; progErr: string | null; progSeq: number;
   program: string | null;               // the Program the MAIN is founded for
@@ -169,8 +182,8 @@ interface State {
   pop: Pop | null;
   restore: HTMLElement | null;
   teardown: () => void;
-  // the four fields and the foot, each repainted on its own
-  fPlace: HTMLElement; fRole: HTMLElement; fProfile: HTMLElement; fContext: HTMLElement;
+  // the place, the three steps and the foot, each repainted on its own: ② is settings + tree
+  fPlace: HTMLElement; fRole: HTMLElement; fProfile: HTMLElement; fPacks: HTMLElement; fFile: HTMLElement;
 }
 let S: State | null = null;
 
@@ -311,21 +324,28 @@ function open(entry: Entry) {
   const flakes = new Flakes();
   shell.root.querySelector(".shellwin")?.prepend(flakes.canvas);
   flakes.setActive(true);
-  const fPlace = el("section", "fdsec"), fRole = el("section", "fdsec"),
-    fProfile = el("section", "fdsec"), fContext = el("section", "fdsec");
-  shell.detail.replaceChildren(fPlace, fRole, fProfile, fContext);
+  // the place, ① the profiles, then ② beside ③: the file is the widest field (design v3)
+  const fPlace = el("section", "fdsec"), fRole = el("section", "fdstep fdstep1"),
+    fProfile = el("div", "fdset"), fPacks = el("div", "fdpacks"), fFile = el("section", "fdstep fdfile");
+  const left = el("section", "fdstep fdleft");
+  left.append(stepHead(2, "Anpassen", "gilt nur für diese Session, das Profil bleibt"), fProfile, fPacks);
+  const cols = el("div", "fdcols");
+  cols.append(left, fFile);
+  shell.detail.replaceChildren(fPlace, fRole, cols);
   // focusable without a tab stop: a click on empty space lands here, and Enter then starts
   shell.detail.tabIndex = -1;
   const repos = repoList();
   S = {
     shell, flakes, entry, role: laneEntry ? "lane" : "leer", mode: laneEntry ? "new" : "repo", name: "", note: null,
     repos, view: repos.length ? "repos" : "folders", place: null,
-    info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0,
-    packs: new Set(), touched: new Map(), presetDue: true, fresh: new Set(), gone: [], delta: null, compare: false, listOpen: false, presetState: "idle", presetNote: null,
+    info: null, infoErr: null, infoSeq: 0, plan: null, planErr: null, planFor: null, planSeq: 0, planHarness: null,
+    packs: new Set(), touched: new Map(), presetDue: true, delta: null, dropped: [], presetState: "idle", presetNote: null, tech: false,
+    parts: new Map(), open: new Set(), file: null, fileErr: null, fileFor: null, filePending: null, fileSeq: 0, shown: null, flash: new Set(),
+    sizes: {}, sizesFor: null, sizesSeq: 0,
     orphan: null, progs: null, progOther: 0, progErr: null, progSeq: 0, program: null, harness: null, model: "", effort: "", container: "", containerContext: "",
     profileFill: null, dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
-    fPlace, fRole, fProfile, fContext,
+    fPlace, fRole, fProfile, fPacks, fFile,
   };
   // the popovers own Escape, the arrows and Enter while one is open. WINDOW capture runs before
   // the shell's document-capture handler, so an Escape here closes the popover and never the window.
@@ -371,7 +391,8 @@ function open(entry: Entry) {
     const t = e.target instanceof HTMLElement ? e.target : null;
     // the window is modal: an Enter with the focus nowhere (on body) is still its Enter
     if (t && t !== document.body && !s.shell.root.contains(t)) return;
-    const inControl = !!t?.closest("button, input, select, textarea, [contenteditable]");
+    // a focusable row of the file shows its details on focus; its Enter is not the window's
+    const inControl = !!t?.closest("button, input, select, textarea, [contenteditable], .fdrow[tabindex]");
     if (inControl && !(e.metaKey || e.ctrlKey)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -381,20 +402,24 @@ function open(entry: Entry) {
   shell.root.addEventListener("pointerdown", onDown, true);
   // capture: the app's own keyboard (the composer, the panes) must not see an Enter this window took
   window.addEventListener("keydown", onWinKey, true);
-  // the pack line folds against its width, so a resized window refits it
-  const onResize = () => { const line = S?.fContext.querySelector<HTMLElement>(".fdctx:not(.all)"); if (line) fitLine(line); };
-  window.addEventListener("resize", onResize);
+  // on a phone a field's popover stands fixed above the foot, and the foot grows with its sentence and
+  // its deviation line: the popover reads the foot's real distance from the bottom, never a guess
+  const footGap = () => shell.root.style.setProperty("--fdfootgap", `${Math.max(0, Math.round(innerHeight - shell.foot.getBoundingClientRect().top))}px`);
+  const footSeen = new ResizeObserver(footGap);
+  footSeen.observe(shell.foot);
+  window.addEventListener("resize", footGap);
   S.teardown = () => {
     window.removeEventListener("keydown", onKey, true);
     window.removeEventListener("keydown", onWinKey, true);
-    window.removeEventListener("resize", onResize);
+    window.removeEventListener("resize", footGap);
+    footSeen.disconnect();
   };
   if (entry.kind === "lane") choosePlace(entry.repo);
   else if (repos.length) choosePlace(repos[0]!.repo);
   else { renderAll(); void loadDir("~"); }
   void loadPresets();
   // fetch-once: the catalogue is needed exactly when a founding is being composed
-  void loadHarnesses().then(() => { if (S) { renderProfile(); renderContext(); renderFoot(); } });
+  void loadHarnesses().then(() => { if (S) renderAll(); });
   if (!isMobile()) S.shell.foot.querySelector<HTMLElement>(".fdgo")?.focus({ preventScroll: true });
 }
 
@@ -403,12 +428,13 @@ export function closeFounding() {
 }
 
 function renderAll() {
-  // after a start the window shows its receipt; the four fields are no longer on screen
+  // after a start the window shows its receipt; the steps are no longer on screen
   if (S?.proof) { renderProof(); return; }
   renderPlace();
   renderRole();
   renderProfile();
-  renderContext();
+  renderPacks();
+  renderFile();
   renderFoot();
 }
 
@@ -417,6 +443,39 @@ function fieldHead(sec: HTMLElement, title: string, hint: string) {
   h.append(el("span", "fdlabt", title), el("span", "fdlabh", hint));
   sec.append(h);
 }
+
+// a numbered step's head: the reading order 1 → 2 → 3 (design v3)
+function stepHead(n: number, title: string, hint: string): HTMLElement {
+  const h = el("div", "fdsteph");
+  h.append(el("span", "fdstepn", String(n)), el("span", "fdstept", title), el("span", "fdsteph2", hint));
+  return h;
+}
+
+// THE TECHNICAL LINE of a row: on hover or keyboard focus a card under the row that pushes nothing,
+// in the flow where there is no hover (CSS: .fdhv). Ids, sources and short hashes live only here.
+function hv(row: HTMLElement, ...lines: string[]): HTMLElement {
+  row.classList.add("fdrow");
+  const card = el("div", "fdhv");
+  for (const line of lines.filter(Boolean)) card.append(el("div", "", line));
+  row.append(card);
+  return row;
+}
+
+// A REPAINT THAT ANSWERS LATE (the file, the plan, the sizes) keeps the keyboard where it was: the
+// focused control is found again by its data key after the field is rebuilt
+const FOCUS_KEYS = ["pack", "group", "part", "fold", "agent", "effort", "role", "sec"];
+function keepFocus(paint: () => void) {
+  const a = document.activeElement;
+  const key = a instanceof HTMLElement && S?.shell.root.contains(a) ? FOCUS_KEYS.find((k) => a.dataset[k] !== undefined) : undefined;
+  const value = key && a instanceof HTMLElement ? a.dataset[key] : undefined;
+  paint();
+  if (key && value !== undefined && !(document.activeElement instanceof HTMLElement && S?.shell.root.contains(document.activeElement) && document.activeElement !== document.body))
+    S?.shell.root.querySelector<HTMLElement>(`[data-${key}="${CSS.escape(value)}"]`)?.focus({ preventScroll: true });
+}
+
+// sizes the way design v3 says them: one decimal in KB (1 KB = 1000 B), a comma, never an estimate
+const kb = (bytes: number): string => `${(bytes / 1000).toFixed(1).replace(".", ",")} KB`;
+const bytesOf = (text: string): number => new TextEncoder().encode(text).byteLength;
 
 // --- ORT ------------------------------------------------------------------------------------------
 
@@ -718,10 +777,18 @@ function renderRole() {
   if (!s) return;
   const sec = s.fRole;
   sec.replaceChildren();
-  fieldHead(sec, "Rolle", "Wählt den Kontext vor — du kannst alles ändern.");
+  const head = stepHead(1, "Profil wählen", "Rolle, Einstellungen und Packs in einem");
+  if (ROLES.some((r) => customized(r.id))) {
+    const reset = btn("fdghost fdright", "Auf Standard zurücksetzen");
+    reset.title = "Jede Rolle wieder auf ihre eingebaute Pack-Vorauswahl, für alle künftigen Starts.";
+    reset.onclick = resetPresets;
+    head.append(reset);
+  }
+  sec.append(head);
+  if (s.presetNote) sec.append(el("div", "fdnote warn", s.presetNote));
   const grid = el("div", "fdroles");
   grid.setAttribute("role", "radiogroup");
-  grid.setAttribute("aria-label", "Rolle");
+  grid.setAttribute("aria-label", "Profil");
   for (const r of ROLES) {
     const on = s.role === r.id;
     const b = btn(`fdrole${on ? " on" : ""}`);
@@ -729,15 +796,63 @@ function renderRole() {
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(on));
     b.disabled = isLaneEntry(s) && r.id !== "lane";
-    b.title = b.disabled ? "⎇+ startet eine Lane — andere Rollen über einen freien Slot." : r.say;
-    const head = el("span", "fdrn");
-    head.append(el("span", "fdglyph", r.glyph), el("span", "", r.name));
-    b.append(head, el("span", "fdrs", r.say), el("span", "fdrk mono", `${roleBrings(r.id)}${customized(r.id) ? " · angepasst" : ""}`));
+    if (b.disabled) b.title = "⎇+ startet eine Lane — andere Rollen über einen freien Slot.";
+    const text = el("span", "fdrt");
+    const size = s.sizes[r.id];
+    const meta = r.id === "leer" ? "nichts geladen" : size === undefined ? (s.info?.git === false ? "kein Git-Repo" : "liest …")
+      : size === null ? "Größe nicht lesbar" : kb(size);
+    text.append(el("span", "fdrn", r.name), el("span", "fdrs", r.say),
+      el("span", "fdrk", `${meta}${customized(r.id) ? " · angepasst" : ""}`));
+    b.append(el("span", "fdglyph", r.glyph), text);
     b.onclick = () => setRole(r.id);
+    hv(b, presetSay(r.id), size ? `Datei ${size.toLocaleString("de-DE")} B, Auftrag nicht mitgezählt` : "");
     grid.append(b);
   }
   sec.append(grid);
   if (s.role === "main") sec.append(progList());
+  if (s.sizesFor !== sizesKey()) void loadSizes();
+}
+
+// what a profile hands over besides its role text, said in the tile's detail
+function presetSay(r: Role): string {
+  if (r === "main") return "Packs: der Plan der MAIN · bootstrap-main nimmt keine Auswahl mit";
+  const p = presets[r];
+  const n = p.base === "all" ? p.minus.length : p.plus.length;
+  return p.base === "all" ? `Packs: alle passenden${n ? ` außer ${n}` : ""}` : n ? `Packs: ${n} gewählte` : "Packs: keine";
+}
+
+// THE PROFILES' OWN SIZES, read from the route as each would start here with its own agent and
+// preset — the file alone, before any deviation of this session. Leer loads no file.
+const sizesKey = (): string => `${S?.place ?? ""}|${JSON.stringify(presets)}|${agentHarnesses().map((h) => h.id).join()}`;
+async function loadSizes() {
+  const s = S;
+  if (!s?.place || !s.info?.git) return;
+  const key = sizesKey();
+  const seq = ++s.sizesSeq;
+  s.sizesFor = key;
+  s.sizes = {};
+  const place = s.place;
+  const one = async (r: Role): Promise<number | null> => {
+    const prof = profileOf(r);
+    const harness = prof.harness ?? agentHarnesses().find((h) => h.default)?.id ?? "";
+    const base = `/api/founding-plan?repo=${encodeURIComponent(place)}&harness=${encodeURIComponent(harness)}&mode=${r === "lane" ? "lane" : "main"}&role=${positionOf(r, r === "lane" ? "new" : "repo")}`;
+    const read = async (q: string): Promise<Plan | null> => {
+      const res = await api(q).catch(() => null);
+      const j: unknown = res?.ok ? await res.json().catch(() => null) : null;
+      return validPlan(j) ? j : null;
+    };
+    const full = await read(base);
+    if (!full?.sessionAgents) return null;
+    if (r === "main") return full.sessionAgents.bytes;
+    const want = full.selected.filter((p) => presetHas(presets[r], p.id)).map((p) => p.id);
+    if (want.length === full.selected.length) return full.sessionAgents.bytes;
+    return (await read(`${base}&packs=${want.map(encodeURIComponent).join(",")}`))?.sessionAgents?.bytes ?? null;
+  };
+  const roles: Role[] = ["lane", "main", "orch"];
+  const got = await Promise.all(roles.map(one));
+  if (S !== s || seq !== s.sizesSeq) return; // latest-wins
+  roles.forEach((r, i) => { s.sizes[r] = got[i] ?? null; });
+  keepFocus(() => { renderRole(); renderFile(); });
 }
 
 // --- the MAIN's Program -----------------------------------------------------------------------------
@@ -848,17 +963,6 @@ function progRow(x: unknown): ProgRow | "inactive" | null {
   return { id: r.id, title, state, slot };
 }
 
-// the card's foot: what the role hands over HERE, counted against this start's plan
-function roleBrings(r: Role): string {
-  const s = S!;
-  if (r === "orch") return "Rollenkarte";
-  if (r === "main") return "Gründungsbrief";
-  const p = presets[r];
-  if (!s.plan) return p.base === "all" ? "alle passenden Packs" : p.plus.length ? `${p.plus.length} Packs` : "keine Packs";
-  const n = s.plan.selected.filter((x) => presetHas(p, x.id)).length;
-  return n ? `${n} ${n === 1 ? "Pack" : "Packs"}` : "keine Packs";
-}
-
 function setRole(r: Role, why?: string) {
   const s = S;
   if (!s || (s.role === r && why === undefined)) return;
@@ -866,6 +970,7 @@ function setRole(r: Role, why?: string) {
   s.role = r;
   s.error = null;
   s.touched.clear();
+  s.parts.clear();
   s.note = why ?? null;
   // the lane role and a worktree are one choice: choosing one moves the other, said out loud
   if (r === "lane" && s.mode === "repo") { s.mode = "new"; s.note = "Ort → Neuer Worktree: eine Lane arbeitet im eigenen Worktree."; }
@@ -886,15 +991,30 @@ function fillProfile() {
     }
     s.profileFill = null;
   }
-  const want = ROLE_PROFILE[s.role];
-  const h = want ? agentHarnesses().find((a) => a.id === want.harness) : undefined;
-  if (!want || !h) return;
+  if (!ROLE_PROFILE[s.role] || !agentHarnesses().some((a) => a.id === ROLE_PROFILE[s.role]?.harness)) return;
   const before = { harness: s.harness, model: s.model, effort: s.effort };
-  s.harness = h.default ? null : h.id;
-  s.model = h.supports.model ? want.id : "";
-  s.effort = h.supports.effort && want.effort && h.effortLevels.includes(want.effort) ? want.effort : "";
+  const want = profileOf(s.role);
+  s.harness = want.harness;
+  s.model = want.model;
+  s.effort = want.effort;
   s.profileFill = { harness: s.harness, model: s.model, effort: s.effort, before };
 }
+
+// A ROLE'S PROFILE VALUES: what ROLE_PROFILE fills where this machine runs that agent, else the
+// door's defaults (no agent, model or effort named). A field off these is a deviation (design v3).
+function profileOf(r: Role): Profile {
+  const want = ROLE_PROFILE[r];
+  const h = want ? agentHarnesses().find((a) => a.id === want.harness) : undefined;
+  if (!want || !h) return { harness: null, model: "", effort: "" };
+  return { harness: h.default ? null : h.id, model: h.supports.model ? want.id : "",
+    effort: h.supports.effort && want.effort && h.effortLevels.includes(want.effort) ? want.effort : "" };
+}
+
+// the position the server renders the file for (context-packs.ts#CONTEXT_POSITIONS); Leer has none of
+// its own and reads as its place does
+type Position = "lane" | "main" | "orchestratorin";
+const positionOf = (r: Role, m: Mode): Position =>
+  r === "lane" ? "lane" : r === "main" ? "main" : r === "orch" ? "orchestratorin" : m === "repo" ? "main" : "lane";
 // "MAIN-Standard" where a profile field still holds what the role filled
 function filled(which: "model" | "effort"): boolean {
   const s = S;
@@ -931,8 +1051,10 @@ function applyPreset(why: string) {
   s.packs = next;
   const plus = [...next].filter((x) => !before.has(x));
   const minus = [...before].filter((x) => !next.has(x));
-  s.fresh = new Set(plus);
-  s.gone = minus;
+  s.dropped = minus.flatMap((id) => {
+    const o = s.plan!.omitted.find((x) => x.id === id);
+    return o ? [{ id, why: `${OMIT_SAY[o.reason] ?? o.reason}${o.harnesses?.length ? ` (nur ${o.harnesses.join(", ")})` : ""}` }] : [];
+  });
   const label = why || s.delta?.why || "";
   s.delta = plus.length || minus.length ? { plus, minus, why: label } : null;
 }
@@ -944,32 +1066,111 @@ function renderProfile() {
   if (!s) return;
   const sec = s.fProfile;
   sec.replaceChildren();
-  fieldHead(sec, "Profil", "Wie der Agent läuft.");
-  const body = el("div", "fdbody");
-  const row = el("div", "fdprof");
+  sec.append(el("div", "fdgl", "Einstellungen"));
   const h = chosenHarness();
-  if (h) {
-    row.append(profField("harness", "Agent", h.id, false, agentHarnesses().length < 2,
-      agentHarnesses().length < 2 ? "Auf diesem Rechner ist nur dieser Agent eingerichtet." : "Welcher Agent in dieser Session läuft."));
-    if (h.supports.model)
-      row.append(profField("model", "Modell", s.model ? modelLabel(s.model) : modelShown(h), !s.model, false,
-        s.model ? `Modell ${s.model}${filled("model") ? " — der MAIN-Standard aus dem Modellregister" : ""}` : "Ohne Angabe startet der Adapter sein eigenes."));
-    if (h.supports.effort && h.effortLevels.length)
-      row.append(profField("effort", "Effort", s.effort || "Adapter wählt", !s.effort, false,
-        filled("effort") ? "Der MAIN-Standard aus dem Modellregister — ein Klick ändert ihn." : "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter."));
-    if (h.supports.container && s.role === "main")
-      row.append(profField("container", "Container", "ohne", true, true,
-        "Eine MAIN läuft ohne Container — bootstrap-main nimmt keinen."));
-    else if (h.supports.container)
-      row.append(profField("container", "Container", s.container || containerDefaults?.container || "Fleet-Standard", !s.container, false,
-        "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
-  } else row.append(el("div", "fdnote", "Agenten werden gelesen …"));
-  // WHAT SHE MAY DO AND READ (G6.6, E35): execution, her own work and the project views, per role —
-  // the start grants no project view (foundingBody carries no grant field); assigning one is its
-  // own step after the start, in the receipt or later in the session's Info (src/rights.ts)
+  const prof = profileOf(s.role);
+  if (!h) { sec.append(el("div", "fdnote", "Agenten werden gelesen …")); return; }
+  const agents = agentHarnesses();
+  // a value off the profile carries a dot and the profile's value; a click on it takes it back
+  const was = (label: string, back: () => void): HTMLElement => {
+    const b = btn("fdwas");
+    b.append(el("i", "fddot2"), el("span", "", `Profil: ${label}`));
+    b.title = "Zurück auf den Wert des Profils";
+    b.onclick = () => { back(); s.error = null; renderAll(); };
+    return b;
+  };
+  const harnessOf = (x: string | null): string => x ?? agents.find((a) => a.default)?.id ?? "";
+  // Agent: one switch per agent this machine runs
+  const agentRow = settingRow("Agent", "Welcher Agent in dieser Session läuft.");
+  const seg = el("div", "fdsw2");
+  seg.setAttribute("role", "radiogroup");
+  seg.setAttribute("aria-label", "Agent");
+  for (const a of agents) {
+    const on = h.id === a.id;
+    const b = btn(`fdsw2b${on ? " on" : ""}`, a.id);
+    b.dataset.agent = a.id;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(on));
+    b.title = [a.allowsLanes === false ? "keine Lanes" : "", a.supports.container ? "im Container" : ""].filter(Boolean).join(" · ") || a.id;
+    b.onclick = () => { pickHarness(a); renderAll(); };
+    seg.append(b);
+  }
+  agentRow.v.append(seg);
+  if (harnessOf(s.harness) !== harnessOf(prof.harness)) agentRow.v.append(was(harnessOf(prof.harness), () => {
+    const back = agents.find((a) => a.id === harnessOf(prof.harness));
+    if (back) pickHarness(back);
+  }));
+  sec.append(agentRow.row);
+  if (h.supports.model) {
+    const row = settingRow("Modell", s.model ? `Modell ${s.model}${filled("model") ? " — der MAIN-Standard aus dem Modellregister" : ""}` : "Ohne Angabe startet der Adapter sein eigenes.");
+    row.v.append(profField("model", "Modell", s.model ? modelLabel(s.model) : modelShown(h), !s.model, false,
+      s.model ? `Modell ${s.model}${filled("model") ? " — der MAIN-Standard aus dem Modellregister" : ""}` : "Ohne Angabe startet der Adapter sein eigenes."));
+    if (s.model !== prof.model) row.v.append(was(prof.model ? modelLabel(prof.model) : "Adapter wählt", () => { s.model = prof.model; }));
+    sec.append(row.row);
+  }
+  if (h.supports.effort && h.effortLevels.length) {
+    const row = settingRow("Effort", filled("effort") ? "Der MAIN-Standard aus dem Modellregister." : "Wie gründlich der Agent denkt — ohne Angabe wählt der Adapter.");
+    const eseg = el("div", "fdsw2");
+    eseg.setAttribute("role", "radiogroup");
+    eseg.setAttribute("aria-label", "Effort");
+    for (const [v, label] of [["", "Adapter"], ...h.effortLevels.map((lv) => [lv, lv])] as [string, string][]) {
+      const on = s.effort === v;
+      const b = btn(`fdsw2b${on ? " on" : ""}`, label);
+      b.dataset.effort = v;
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(on));
+      if (!v) b.title = "Ohne Angabe wählt der Adapter.";
+      b.onclick = () => { s.effort = v; s.error = null; renderAll(); };
+      eseg.append(b);
+    }
+    row.v.append(eseg);
+    if (s.effort !== prof.effort) row.v.append(was(prof.effort || "Adapter", () => { s.effort = prof.effort; }));
+    sec.append(row.row);
+  }
+  if (h.supports.container && s.role === "main") {
+    const row = settingRow("Container", "Eine MAIN läuft ohne Container — bootstrap-main nimmt keinen.");
+    row.v.append(el("span", "fdsoon", "ohne"));
+    sec.append(row.row);
+  } else if (h.supports.container) {
+    const row = settingRow("Container", "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard.");
+    row.v.append(profField("container", "Container", s.container || containerDefaults?.container || "Fleet-Standard", !s.container, false,
+      "Container und Docker-Daemon dieser Session — leer heißt der Fleet-Standard."));
+    if (s.container || s.containerContext) row.v.append(was("Fleet-Standard", () => { s.container = ""; s.containerContext = ""; }));
+    sec.append(row.row);
+  }
+  // RIGHTS ARE A PLACEHOLDER in design v3 (their own card); what holds today stays one hover away —
+  // execution, her own work and the project views per role (G6.6, src/rights.ts#foundingRights)
   const prog = s.role === "main" ? s.progs?.find((x) => x.id === s.program)?.title ?? null : null;
-  body.append(row, foundingRights(s.role, prog));
-  sec.append(body);
+  const rights = settingRow("Rechte", "");
+  rights.row.tabIndex = 0;
+  rights.v.append(el("span", "fdsoon", "kommen mit einer eigenen Karte"));
+  const card = el("div", "fdhv fdhvrights");
+  card.append(foundingRights(s.role, prog));
+  rights.row.classList.add("fdrow");
+  rights.row.append(card);
+  sec.append(rights.row);
+}
+
+// one line of the settings: its name, then its switch; the tip is the line's own title
+function settingRow(label: string, tip: string): { row: HTMLElement; v: HTMLElement } {
+  const row = el("div", "fdsetrow");
+  if (tip) row.title = tip;
+  const v = el("div", "fdsetv");
+  row.append(el("span", "fdsetk", label), v);
+  return { row, v };
+}
+
+// the agent switch: what belongs to the agent being left never rides along to the next one
+function pickHarness(a: HarnessInfo) {
+  const s = S!;
+  // a model the role filled belongs to the role's agent, and never rides to another one
+  const pf = s.profileFill;
+  if (pf && filled("model") && (a.default ? null : a.id) !== pf.harness) s.model = "";
+  s.harness = a.default ? null : a.id;
+  if (!a.supports.effort || !a.effortLevels.includes(s.effort)) s.effort = "";
+  if (!a.supports.model) s.model = "";
+  if (!a.supports.container) { s.container = ""; s.containerContext = ""; }
+  s.error = null;
 }
 
 function profField(which: Pop, label: string, value: string, dim: boolean, fixed: boolean, tip: string): HTMLElement {
@@ -1002,22 +1203,7 @@ function popBody(which: Pop): HTMLElement {
   const s = S!;
   const pop = el("div", "fdpop");
   const h = chosenHarness();
-  if (which === "harness") {
-    for (const a of agentHarnesses()) {
-      const on = (s.harness ?? agentHarnesses().find((x) => x.default)?.id) === a.id;
-      const facts = [a.allowsLanes === false ? "keine Lanes" : "", a.supports.container ? "im Container" : ""].filter(Boolean).join(" · ");
-      pop.append(popRow(a.id, facts, on, () => {
-        // a model the role filled belongs to the role's agent, and never rides to another one
-        const pf = s.profileFill;
-        if (pf && filled("model") && (a.default ? null : a.id) !== pf.harness) s.model = "";
-        s.harness = a.default ? null : a.id;
-        // a value of the harness being left behind must not ride along
-        if (!a.supports.effort || !a.effortLevels.includes(s.effort)) s.effort = "";
-        if (!a.supports.model) s.model = "";
-        if (!a.supports.container) { s.container = ""; s.containerContext = ""; }
-      }));
-    }
-  } else if (which === "model" && h) {
+  if (which === "model" && h) {
     pop.append(popRow(modelShown(h), "ohne Angabe", s.model === "", () => { s.model = ""; }));
     for (const m of h.models ?? []) if (m) {
       // two ids can share a display name, so the row carries the id under the name
@@ -1036,9 +1222,6 @@ function popBody(which: Pop): HTMLElement {
     inp.onchange = () => { s.model = inp.value.trim(); closePop(true); renderAll(); };
     w.append(inp);
     pop.append(w);
-  } else if (which === "effort" && h) {
-    pop.append(popRow("Adapter wählt", "ohne Angabe", s.effort === "", () => { s.effort = ""; }));
-    for (const lv of h.effortLevels) pop.append(popRow(lv, "", s.effort === lv, () => { s.effort = lv; }));
   } else if (which === "container") {
     const field = (label: string, v: string, ph: string, set: (x: string) => void, tip: string) => {
       const w = el("label", "fdpin");
@@ -1089,14 +1272,16 @@ function closePop(refocus: boolean) {
   if (refocus) s.shell.root.querySelector<HTMLElement>(`[data-pop="${which}"]`)?.focus();
 }
 
-// --- KONTEXT --------------------------------------------------------------------------------------
+// --- ② PACKS and ③ THE FILE ------------------------------------------------------------------------
 
-// the plan hangs off (place, harness, mode); a change of any of the three reads it again
+// the plan hangs off (place, harness, mode, position); a change of any of them reads it again
 function planKey(): string {
   const s = S!;
-  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${s.mode === "repo" ? "main" : "lane"}`;
+  return `${s.place ?? ""}|${s.harness ?? harnesses.find((h) => h.default)?.id ?? ""}|${s.mode === "repo" ? "main" : "lane"}|${positionOf(s.role, s.mode)}`;
 }
 
+// THE FULL PLAN: every pack this start can carry, each with its parts and their default place — the
+// tree's source. It is read without packs= and parts=, so a part's size is known while it is off.
 async function loadPlan() {
   const s = S;
   if (!s?.place) return;
@@ -1108,8 +1293,9 @@ async function loadPlan() {
   s.planErr = null;
   const harness = s.harness ?? harnesses.find((h) => h.default)?.id ?? "";
   const mode = s.mode === "repo" ? "main" : "lane";
+  const role = positionOf(s.role, s.mode);
   try {
-    const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}`);
+    const res = await api(`/api/founding-plan?repo=${encodeURIComponent(path)}&harness=${encodeURIComponent(harness)}&mode=${mode}&role=${role}`);
     if (S !== s || seq !== s.planSeq || s.place !== path || key !== planKey()) return; // latest-wins
     if (res.status === 404) { s.planErr = SKEW_NOTE; return; }
     const j: unknown = await res.json().catch(() => null);
@@ -1123,294 +1309,515 @@ async function loadPlan() {
     if (S === s && seq === s.planSeq) {
       // a plan that cannot be read switches everything off: the start then carries no packs
       if (s.planErr) { s.packs = new Set(); s.presetDue = true; }
-      else if (s.plan) applyPreset("");
-      renderRole(); renderContext(); renderFoot();
+      else if (s.plan) {
+        // AN AGENT CHANGE RE-PLANS, and says so: what leaves for a reason of the plan is named
+        // with that reason (s.dropped) — never a silent swap
+        const now = s.plan.harness ?? null;
+        const moved = s.planHarness !== null && now !== null && now !== s.planHarness;
+        s.planHarness = now;
+        applyPreset(moved ? `Agent → ${now}` : "");
+        // a part the plan no longer has is no deviation any more
+        const known = new Set(planParts(s.plan).map((x) => x.part.id));
+        for (const id of [...s.parts.keys()]) if (!known.has(id)) s.parts.delete(id);
+      }
+      keepFocus(() => { renderRole(); renderPacks(); renderFile(); renderFoot(); });
     }
   }
 }
 
+// the newer fields are OPTIONAL: an older server omits them, and the window then says "nicht gemeldet";
+// a field that is present in a wrong shape makes the whole plan unreadable, never half-believed
+const strs = (v: unknown): boolean => Array.isArray(v) && v.every((x) => typeof x === "string");
+const optional = (o: object, k: string, ok: (v: unknown) => boolean): boolean =>
+  !(k in o) || (o as Record<string, unknown>)[k] === undefined || ok((o as Record<string, unknown>)[k]);
+function validAnchors(v: unknown): v is PackAnchors {
+  if (Array.isArray(v)) return v.every((a: unknown) => !!a && typeof a === "object"
+    && typeof (a as Record<string, unknown>).path === "string" && typeof (a as Record<string, unknown>).anchor === "string");
+  return !!v && typeof v === "object" && typeof (v as Record<string, unknown>).privateSourceId === "string";
+}
+const nullable = (ok: (v: unknown) => boolean) => (v: unknown): boolean => v === null || ok(v);
+const isStr = (v: unknown): boolean => typeof v === "string";
+const isNum = (v: unknown): boolean => typeof v === "number" && Number.isFinite(v) && v >= 0;
+function validPart(p: unknown): p is FoundingPlanPart {
+  if (!p || typeof p !== "object") return false;
+  const r = p as Record<string, unknown>;
+  return isStr(r.id) && nullable(isStr)(r.packId) && nullable(isStr)(r.path) && nullable(isStr)(r.anchor)
+    && (r.sorte === "anleitung" || r.sorte === "wissen") && (r.ort === "box" || r.ort === "ausleihe")
+    && nullable(isStr)(r.sha256) && nullable(isNum)(r.bytes) && nullable(isStr)(r.content)
+    && (r.refusal === null || r.refusal === "source-unavailable" || r.refusal === "source-anchor-missing"
+      || r.refusal === "source-anchor-ambiguous");
+}
+function validFile(v: unknown): v is FoundingSessionAgents {
+  if (!v || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  return isStr(r.text) && isNum(r.bytes) && Array.isArray(r.parts) && r.parts.every(validPart);
+}
 function validPlan(j: unknown): j is Plan {
   if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
   return Array.isArray(j.selected) && Array.isArray(j.omitted)
+    && optional(j, "head", (v) => typeof v === "string") && optional(j, "plannedAt", (v) => typeof v === "number" && Number.isFinite(v))
+    && optional(j, "sessionAgents", validFile)
     && j.selected.every((p: unknown) => !!p && typeof p === "object"
       && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
       && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p
       && (p.source === "fleet-seed" || p.source === "repo-manifest")
-      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string"))
+      && (!("useWhen" in p) || p.useWhen === undefined || typeof p.useWhen === "string")
+      && optional(p, "harnesses", strs) && optional(p, "triggers", strs) && optional(p, "anchors", validAnchors)
+      && optional(p, "sourceHash", (v) => typeof v === "string") && optional(p, "group", isStr)
+      && optional(p, "parts", (v) => Array.isArray(v) && v.every(validPart)))
     && j.omitted.every((p: unknown) => !!p && typeof p === "object"
-      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string");
+      && "id" in p && typeof p.id === "string" && "reason" in p && typeof p.reason === "string"
+      && optional(p, "harnesses", strs));
 }
 
-function renderContext() {
+// THE FOUR GROUPS of design v3, keyed by when a pack is needed (context-packs.ts#CONTEXT_PACK_GROUPS).
+// The pack's own `group` decides; a server without the field puts nothing in a guessed group.
+const GROUPS: { id: string; name: string; say: string }[] = [
+  { id: "grundlagen", name: "Grundlagen", say: "Was jede Session immer bindet." },
+  { id: "pruefen-landen", name: "Prüfen und Landen", say: "Wann eine Änderung bewiesen ist und was beim Landen geschieht." },
+  { id: "sessions-fuehren", name: "Sessions führen", say: "Agent-Programme anbinden, Watches setzen, Nachfolge." },
+  { id: "vor-arbeiten", name: "Vor bestimmten Arbeiten", say: "Was gilt, bevor du das Regelbuch änderst, misst oder Jev einsetzt." },
+];
+const UNGROUPED = { id: "ohne", name: "Ohne Gruppe", say: "Der Server nennt für diese Packs keine Gruppe." };
+const groupOf = (p: FoundingPlanPack) => GROUPS.find((g) => g.id === p.group) ?? UNGROUPED;
+
+// the words of the view for the packs and parts this tree has (design v3 §0, "Wörter der Ansicht");
+// a pack or part without words here is named by its own declaration, never by a guess
+const PACK_WORDS: Record<string, { name: string; say: string }> = {
+  "portable-core": { name: "Grundregeln", say: "Begriffe und feste Regeln, die jede Session bindet." },
+  "konzept-claude-fleet": { name: "Was Claude Fleet ist", say: "Das Konzept und seine Prinzipien." },
+  "verify-e2e": { name: "Prüfen", say: "Wann eine Änderung als bewiesen gilt." },
+  "land-mechanics": { name: "Landen", say: "Was beim Landen einer Lane wirklich passiert." },
+  "harness-adapter": { name: "Agent-Anbindung", say: "Wie ein Agent-Programm angebunden wird." },
+  "orchestrator-eigenarten": { name: "Eigenarten der Orchestrierung", say: "Watches und Nachfolge, zwei bezahlte Lektionen." },
+  "rulebook-generat": { name: "Regelbuch ändern", say: "Das Regelbuch wird erzeugt, nicht von Hand bearbeitet." },
+  "messnotiz-index": { name: "Frühere Messungen", say: "Erst nachsehen, ob es schon gemessen wurde." },
+  "jev-use": { name: "Jev", say: "Wie Jev verwendet wird." },
+  "owner-instanzweg": { name: "Weg zum Owner", say: "Wie eine Session den Owner erreicht." },
+};
+const PART_WORDS: Record<string, string> = {
+  "portable-core.contract": "ganzer Abschnitt",
+  "verify-e2e.kern": "Grundregeln des Prüfens", "verify-e2e.lane": "Schritte einer Lane", "verify-e2e.main": "Schritt einer MAIN",
+  "verify-e2e.more": "Sonderfälle", "verify-e2e.gate-vs-audit": "Was vor und was nach dem Landen geprüft wird",
+  "verify-e2e.proportion": "Wie viel Prüfung eine Änderung braucht",
+  "land-mechanics.landing": "Kurzfassung", "land-mechanics.doc": "Was beim Landen geschieht",
+  "harness-adapter.harnesses": "Liste der Agent-Programme", "harness-adapter.container": "Der Container-Harness",
+  "jev-use.verwendungsform": "Verwendungsform", "konzept-claude-fleet.private": "ganze Fassung, privat",
+};
+const packName = (p: FoundingPlanPack): string => PACK_WORDS[p.id]?.name ?? p.id;
+const packSay = (p: FoundingPlanPack): string => PACK_WORDS[p.id]?.say ?? p.useWhen ?? "";
+function partName(x: FoundingPlanPart): string {
+  if (PART_WORDS[x.id]) return PART_WORDS[x.id]!;
+  if (x.privateSourceId) return "ganze Fassung, privat";
+  // a whole-file anchor (one #) is the file; a heading is its words without the hashes
+  if (!x.anchor || /^# /.test(x.anchor)) return x.path ? `ganze Datei ${baseName(x.path)}` : "ganzer Abschnitt";
+  return x.anchor.replace(/^#+\s*/, "").replace(/\s*[—–-].*$/, "").trim() || x.anchor;
+}
+
+// every part of the plan with its pack; a part's DEFAULT place is the one the full plan rendered
+function planParts(plan: Plan): { pack: FoundingPlanPack; part: FoundingPlanPart }[] {
+  return plan.selected.flatMap((pack) => (pack.parts ?? []).map((part) => ({ pack, part })));
+}
+type PartOrt = "box" | "ausleihe";
+const partOrt = (x: FoundingPlanPart): PartOrt => S?.parts.get(x.id) ?? x.ort;
+// a part whose source this plan could not cut cannot be put whole into the file
+const partFixed = (x: FoundingPlanPart): string | null =>
+  x.privateSourceId ? "Privat: der Text dieser Quelle kommt nie in die Datei, nur ihr Hinweis."
+  : x.refusal === "source-unavailable" ? "Die Quelle liegt an diesem Stand nicht im Repo."
+  : x.refusal === "source-anchor-missing" ? "Die Überschrift der Quelle fehlt an diesem Stand."
+  : x.refusal === "source-anchor-ambiguous" ? "Anker nicht eindeutig." : null;
+
+// whether this start can change its packs at all: a MAIN's door takes none, a continued worktree gets none
+const packsFixed = (): string | null => {
+  const s = S!;
+  if (s.role === "main") return "Die Gründungstür einer MAIN nimmt keine Packs — sie liest den Plan der MAIN.";
+  if (s.mode === "old") return "Ein fortgesetzter Worktree bekommt keine Packs — sie gehen nur bei einer frischen Gründung mit.";
+  return null;
+};
+
+function renderPacks() {
   const s = S;
   if (!s) return;
-  const sec = s.fContext;
+  const sec = s.fPacks;
   sec.replaceChildren();
-  fieldHead(sec, "Kontext", "Was der Agent beim Start mitbekommt.");
-  const body = el("div", "fdbody");
-  sec.append(body);
-  if (s.role === "main") {
-    const line = el("div", "fdctx");
-    const card = el("span", "fdcx fix srv", "Gründungsbrief des Programs");
-    card.title = "bootstrap-main baut den Brief aus dem Program und hängt die Kontext-Anker an — der Startbeleg zeigt sie.";
-    line.append(card);
-    body.append(line, el("div", "fdnote", "Packs gehen hier nicht mit: die Gründungstür einer MAIN nimmt keine."));
-    // the door decides; the window only says ahead what dirinfo already read
-    if (s.info && !s.info.git) body.append(el("div", "fdnote warn", "Kein Git-Repo — bootstrap-main wird diesen Ordner voraussichtlich ablehnen."));
-    return;
-  }
+  const head = el("div", "fdgl", "Packs");
+  sec.append(head);
   if (!s.info?.git) {
-    body.append(el("div", "fdnote", s.info ? "Kein Git-Repo — hier gibt es keine Packs." : "Wird gelesen, sobald der Ort feststeht."));
+    sec.append(el("div", "fdnote", s.info ? "Kein Git-Repo — hier gibt es keine Packs." : "Wird gelesen, sobald der Ort feststeht."));
     return;
   }
   if (s.planFor !== planKey()) void loadPlan();
-  const line = el("div", "fdctx");
-  if (s.role === "orch") {
-    const card = el("span", "fdcx fix srv", "Rollenkarte");
-    card.title = "Der Server stellt der Orchestratorin beim Start ihre Karte mit Kontext-Ankern zu.";
-    line.append(card);
-  }
-  if (s.planErr) { body.append(line, el("div", "fdnote warn", `${s.planErr} Der Start geht dann ohne Packs.`)); return; }
-  if (!s.plan || s.planFor !== planKey()) { line.append(el("span", "fdnote", "Plan wird gelesen …")); body.append(line); return; }
+  if (s.planErr) { sec.append(el("div", "fdnote warn", `${s.planErr} Der Start geht dann ohne Packs.`)); return; }
+  if (!s.plan || s.planFor !== planKey()) { sec.append(el("div", "fdnote", "Plan wird gelesen …")); return; }
   const plan = s.plan;
-  if (s.mode === "old") {
-    body.append(line, el("div", "fdnote", "Ein fortgesetzter Worktree bekommt keine Packs — sie gehen nur bei einer frischen Gründung mit."));
-    return;
-  }
-  const byId = new Map(plan.selected.map((p) => [p.id, p]));
-  for (const id of [...s.packs]) {
-    const p = byId.get(id);
-    if (!p) continue;
-    const mine = s.touched.has(id);
-    const chip = el("span", `fdcx${s.fresh.has(id) ? " in" : ""}${mine ? " mine" : ""}`);
-    chip.title = `${p.useWhen ?? "Zweck im Plan nicht angegeben."}\n${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}${mine ? " · von dir dazugenommen" : ""}`;
-    chip.append(el("span", "fdcxid mono", id));
-    const rm = btn("fdcxrm");
-    rm.append(icon("x"));
-    rm.setAttribute("aria-label", `${id} weglassen`);
-    rm.onclick = () => togglePack(id, false);
-    chip.append(rm);
-    line.append(chip);
-  }
-  for (const id of s.gone) line.append(el("span", "fdcx out mono", id));
-  // ONE LINE, however many packs: what does not fit folds into "+N", which opens the list
-  const more = btn("fdmore mono");
-  more.hidden = true;
-  more.title = "Alle Packs dieses Starts zeigen";
-  more.onclick = () => { s.listOpen = true; renderContext(); };
-  if (!s.listOpen) line.append(more);
-  const rest = plan.selected.length - s.packs.size;
-  const add = btn(`fdadd${s.pop === "add" ? " open" : ""}`);
-  add.dataset.pop = "add";
-  add.setAttribute("aria-expanded", String(s.pop === "add"));
-  add.append(icon("plus"), el("span", "", "Pack"));
-  if (rest) add.append(el("span", "fdaddn", String(rest)));
-  add.title = rest ? `${rest} weitere passen zu diesem Start` : "Alle passenden Packs sind schon dabei.";
-  add.onclick = () => togglePop("add");
-  line.append(add);
-  if (!plan.selected.length && !s.packs.size) line.append(el("span", "fdnote", "Dieses Repo erklärt keine Packs, die hier passen."));
-  body.append(line);
-  if (s.listOpen) line.classList.add("all"); else fitLine(line);
-  if (s.pop === "add") body.append(addPop(plan));
-
-  const foot = el("div", "fdctxfoot");
-  const d = el("div", "fddelta mono");
-  if (s.delta) {
-    // a few names are said by name; more than three by their number, the names in the tooltip
-    if (s.delta.why) d.append(el("span", "", `${s.delta.why}: `));
-    const said = (xs: string[], sign: string, cls: string) => {
-      if (xs.length > 3) { const n = el("span", cls, `${sign}${xs.length} Packs `); n.title = xs.join(", "); d.append(n); }
-      else for (const x of xs) d.append(el("span", cls, `${sign}${x} `));
-    };
-    said(s.delta.plus, "+", "add");
-    said(s.delta.minus, "−", "del");
-  }
-  const list = btn("fdghost", s.listOpen ? "Liste schließen" : "Alle Packs");
-  list.setAttribute("aria-expanded", String(s.listOpen));
-  list.onclick = () => { s.listOpen = !s.listOpen; renderContext(); };
-  const cmp = btn("fdghost", s.compare ? "Vergleich schließen" : "Rollen vergleichen");
-  cmp.setAttribute("aria-expanded", String(s.compare));
-  cmp.onclick = () => { s.compare = !s.compare; renderContext(); };
-  foot.append(d, list, cmp);
-  body.append(foot);
-  if (s.listOpen) body.append(packList(plan));
-  if (s.compare) body.append(compareTable(plan));
-  // light and strike are one paint long
-  if (s.fresh.size || s.gone.length) {
-    const fresh = s.fresh, gone = s.gone;
-    setTimeout(() => {
-      if (S !== s || s.fresh !== fresh || s.gone !== gone) return;
-      s.fresh = new Set();
-      s.gone = [];
-      renderContext();
-    }, 1400);
-  }
-}
-
-// hide chips from the end until the line fits; the "+N" counts what it took in
-function fitLine(line: HTMLElement) {
-  const more = line.querySelector<HTMLElement>(".fdmore");
-  if (!more) return;
-  const chips = [...line.querySelectorAll<HTMLElement>(".fdcx:not(.fix)")];
-  for (const c of chips) c.hidden = false;
-  more.hidden = true;
-  if (line.scrollWidth <= line.clientWidth) return;
-  more.hidden = false;
-  let folded = 0;
-  for (let i = chips.length - 1; i >= 0 && line.scrollWidth > line.clientWidth; i--) {
-    chips[i]!.hidden = true;
-    folded++;
-    more.textContent = `+${folded}`;
-  }
-  more.setAttribute("aria-label", `${folded} weitere Packs zeigen`);
-}
-
-// THE LIST — every pack of this start as one row with its switch, its purpose and where it comes
-// from; on demand only, the line above stays the resting state
-function packList(plan: Plan): HTMLElement {
-  const s = S!;
-  const box = el("div", "fdlist");
-  for (const p of plan.selected) {
-    const on = s.packs.has(p.id);
-    const row = el("div", `fdlrow${on ? " on" : ""}`);
-    const sw = btn(`fdsw${on ? " on" : ""}`);
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("aria-checked", String(on));
-    sw.setAttribute("aria-label", `${p.id} mitgeben`);
-    sw.dataset.pack = p.id;
-    // the list repaints on every switch; the switch that was pressed keeps the focus
-    sw.onclick = () => {
-      togglePack(p.id, !on);
-      S?.fContext.querySelector<HTMLElement>(`.fdsw[data-pack="${CSS.escape(p.id)}"]`)?.focus();
-    };
-    const t = el("div", "fdlt");
-    const head = el("div", "fdlh");
-    head.append(el("span", "mono", p.id), el("span", "fdlsrc", p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"));
-    if (s.touched.has(p.id)) head.append(el("span", "fdlmine", on ? "von dir dazu" : "von dir weggelassen"));
-    else if (presetHas(presets[s.role], p.id)) head.append(el("span", "fdlrole", ROLES.find((r) => r.id === s.role)!.name));
-    t.append(head, el("div", "fdluse", p.useWhen ?? "Zweck im Plan nicht angegeben."));
-    row.append(sw, t);
-    box.append(row);
-  }
-  for (const o of plan.omitted) {
-    const row = el("div", "fdlrow off");
-    row.title = `intern: ${o.reason}`;
-    const t = el("div", "fdlt");
-    const head = el("div", "fdlh");
-    head.append(el("span", "mono", o.id));
-    t.append(head, el("div", "fdluse", `Nicht dabei: ${OMIT_SAY[o.reason] ?? o.reason}`));
-    row.append(el("span", "fdsw off"), t);
-    box.append(row);
-  }
-  return box;
-}
-
-function addPop(plan: Plan): HTMLElement {
-  const s = S!;
-  const pop = el("div", "fdpop fdaddpop");
-  const off = plan.selected.filter((p) => !s.packs.has(p.id));
-  for (const p of off) {
-    const r = btn("fdprow");
-    r.append(el("span", "fdprn mono", p.id), el("span", "fdmeta", p.useWhen ?? ""));
-    r.title = `${p.useWhen ?? ""}\n${p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo"}`;
-    r.onclick = () => { togglePack(p.id, true); if (S) { S.pop = plan.selected.length - S.packs.size ? "add" : null; renderContext(); focusPop(); } };
-    pop.append(r);
-  }
-  if (!off.length) pop.append(el("div", "fdnote", "Alle passenden Packs sind dabei."));
-  if (plan.omitted.length) {
-    pop.append(el("div", "fdpopsep", "Passen nicht zu diesem Start"));
-    for (const o of plan.omitted) {
-      const row = el("div", "fdprow off");
-      row.title = `intern: ${o.reason}`;
-      row.append(el("span", "fdprn mono", o.id), el("span", "fdmeta", OMIT_SAY[o.reason] ?? o.reason));
-      pop.append(row);
+  const fixed = packsFixed();
+  const tree = el("div", "fdtree");
+  const groups = [...GROUPS, UNGROUPED].filter((g) => g !== UNGROUPED || plan.selected.some((p) => groupOf(p) === UNGROUPED));
+  for (const g of groups) {
+    const packs = plan.selected.filter((p) => groupOf(p) === g);
+    const on = packs.filter((p) => packOn(p.id));
+    const node = el("div", "fdnode");
+    const open = s.open.has(g.id);
+    const line = el("div", "fdline");
+    line.append(chevron(g.id, open, packs.length > 0, `${g.name} ${open ? "zuklappen" : "aufklappen"}`));
+    const tx = el("div", "fdtx");
+    const nm = el("div", "fdnm");
+    if (packs.some((p) => s.touched.has(p.id))) nm.append(dotBack(`${g.name}: Packs wie Profil`, () => { for (const p of packs) s.touched.delete(p.id); applyPreset(""); }));
+    nm.append(el("b", "", g.name), el("span", "fdcnt", packs.length ? `${on.length} von ${packs.length}` : "keine für diesen Start"));
+    tx.append(nm, el("div", "fdgsay", g.say));
+    line.append(tx, el("span", `fdkb${on.length ? "" : " off"}`, on.length ? contribution(on) : "aus"));
+    const sw = switchBtn(on.length === packs.length && packs.length > 0 ? "on" : on.length ? "mixed" : "off", `Gruppe ${g.name}`);
+    sw.dataset.group = g.id;
+    sw.disabled = !packs.length || !!fixed;
+    if (fixed) sw.title = fixed;
+    // a group that is not all on switches all on; one that is all on switches all off (design v3 §0.3)
+    sw.onclick = () => { const all = on.length === packs.length; for (const p of packs) setPack(p.id, !all); afterPackChange(`[data-group="${CSS.escape(g.id)}"]`); };
+    line.append(sw);
+    node.append(hv(line, packs.length ? `${packs.map((p) => p.id).join(", ")}` : ""));
+    if (open) {
+      const kids = el("div", "fdkids");
+      for (const p of packs) kids.append(packNode(p, plan, fixed));
+      node.append(kids);
     }
+    tree.append(node);
   }
-  return pop;
+  sec.append(tree);
+  for (const d of s.dropped) sec.append(el("div", "fdnote warn", `${packNameById(d.id)} fällt mit diesem Plan weg: ${d.why}.`));
+  if (plan.omitted.length) {
+    const off = el("div", "fdnote fdrow");
+    off.tabIndex = 0;
+    off.append(el("span", "", `${plan.omitted.length} ${plan.omitted.length === 1 ? "weiteres Pack passt" : "weitere Packs passen"} nicht zu diesem Start.`));
+    hv(off, ...plan.omitted.map((o) => `${o.id} · ${OMIT_SAY[o.reason] ?? o.reason}${o.harnesses?.length ? ` (nur ${o.harnesses.join(", ")})` : ""} · intern: ${o.reason}`));
+    sec.append(off);
+  }
+  const note = el("div", "fdpknote");
+  note.append(document.createTextNode(`${plan.selected.length} ${plan.selected.length === 1 ? "Pack" : "Packs"} in ${groups.length} Gruppen. `),
+    el("b", "", "Gruppe und Pack"), document.createTextNode(" an: ein Hinweis in der Datei. "),
+    el("b", "", "Teil"), document.createTextNode(" an: sein Text ganz in der Datei — heute in dieser Vorschau; der Start trägt die Packs."));
+  sec.append(note);
+  if (fixed) sec.append(el("div", "fdnote", fixed));
+}
+// a MAIN's file renders her whole plan (her door takes no choice), so every pack of it reads as on
+const packOn = (id: string): boolean => S?.role === "main" || !!S?.packs.has(id);
+const packNameById = (id: string): string => { const p = S?.plan?.selected.find((x) => x.id === id); return p ? packName(p) : PACK_WORDS[id]?.name ?? id; };
+
+function packNode(p: FoundingPlanPack, plan: Plan, fixed: string | null): HTMLElement {
+  const s = S!;
+  const node = el("div", "fdnode fdlv1");
+  const parts = p.parts ?? [];
+  const isOn = packOn(p.id);
+  const open = s.open.has(p.id);
+  const line = el("div", "fdline");
+  line.append(chevron(p.id, open, parts.length > 0, `${packName(p)} ${open ? "zuklappen" : "aufklappen"}`));
+  const tx = el("div", "fdtx");
+  const nm = el("div", "fdnm");
+  if (s.touched.has(p.id)) nm.append(dotBack(`${packName(p)}: wie Profil`, () => { s.touched.delete(p.id); applyPreset(""); }));
+  const whole = parts.filter((x) => partOrt(x) === "box").length;
+  nm.append(el("span", "fdn2", packName(p)));
+  if (whole) nm.append(el("span", "fdcnt", `${whole} von ${parts.length} ganz darin`));
+  tx.append(nm);
+  line.append(tx, el("span", `fdkb${isOn ? "" : " off"}`, isOn ? contribution([p]) : "aus"));
+  const sw = switchBtn(isOn ? "on" : "off", `Pack ${packName(p)}`);
+  sw.dataset.pack = p.id;
+  sw.disabled = !!fixed;
+  if (fixed) sw.title = fixed;
+  sw.onclick = () => { setPack(p.id, !isOn); afterPackChange(`[data-pack="${CSS.escape(p.id)}"]`); };
+  line.append(sw);
+  const src = isPrivate(p.anchors) ? `privat · ${p.anchors.privateSourceId}` : p.source === "fleet-seed" ? "aus der Fleet" : "aus dem Repo";
+  const hint = s.file ? hintBytes(s.file.text).get(p.id) : undefined;
+  node.append(hv(line, packSay(p), `${p.id} · ${src}${hint !== undefined ? ` · Hinweis ${hint} B` : ""}${p.sourceHash ? ` · ${short(p.sourceHash, 8)}` : ""}`));
+  if (open) {
+    const kids = el("div", "fdkids");
+    for (const x of parts) kids.append(partNode(p, x, isOn));
+    node.append(kids);
+  }
+  return node;
 }
 
-function togglePack(id: string, on: boolean) {
-  const s = S;
-  if (!s) return;
+function partNode(p: FoundingPlanPack, x: FoundingPlanPart, packOn: boolean): HTMLElement {
+  const s = S!;
+  const node = el("div", "fdnode fdlv2");
+  const line = el("div", "fdline");
+  const ort = partOrt(x);
+  const tx = el("div", "fdtx");
+  const nm = el("div", "fdnm");
+  if (s.parts.has(x.id)) nm.append(dotBack(`${partName(x)}: wie Profil`, () => { s.parts.delete(x.id); }));
+  nm.append(el("span", "fdn2", partName(x)));
+  tx.append(nm);
+  line.append(el("span", "fdchev none"), tx, el("span", `fdkb${ort === "box" && packOn ? "" : " off"}`, x.bytes === null ? "—" : kb(x.bytes)));
+  const sw = switchBtn(ort === "box" && packOn ? "on" : "off", `Teil ${partName(x)} ganz in die Datei`);
+  sw.dataset.part = x.id;
+  const why = partFixed(x) ?? (packOn ? null : "Das Pack ist aus — schalte es an, dann kann der Teil ganz hinein.");
+  sw.disabled = !!why;
+  if (why) sw.title = why;
+  sw.onclick = () => {
+    const next: PartOrt = ort === "box" ? "ausleihe" : "box";
+    if (next === x.ort) s.parts.delete(x.id); else s.parts.set(x.id, next);
+    afterPackChange(`[data-part="${CSS.escape(x.id)}"]`);
+  };
+  line.append(sw);
+  const where = x.privateSourceId ? `privat · ${x.privateSourceId}` : `${x.path ?? "?"} | ${x.anchor ?? "?"}`;
+  node.append(hv(line, `${x.sorte === "anleitung" ? "Anleitung" : "Wissen"} · ${where}`,
+    `${x.id}${x.sha256 ? ` · ${x.sha256.slice(0, 8)}` : ""}${x.bytes !== null ? ` · ${x.bytes.toLocaleString("de-DE")} B` : ""}`));
+  return node;
+}
+
+function chevron(id: string, open: boolean, has: boolean, label: string): HTMLElement {
+  const s = S!;
+  if (!has) return el("span", "fdchev none");
+  const b = btn("fdchev");
+  b.dataset.fold = id;
+  b.setAttribute("aria-expanded", String(open));
+  b.setAttribute("aria-label", label);
+  b.append(icon("chevron"));
+  b.onclick = () => {
+    if (open) s.open.delete(id); else s.open.add(id);
+    renderPacks();
+    s.fPacks.querySelector<HTMLElement>(`[data-fold="${CSS.escape(id)}"]`)?.focus();
+  };
+  return b;
+}
+function switchBtn(state: "on" | "off" | "mixed", label: string): HTMLButtonElement {
+  const b = btn(`fdsw ${state}`);
+  b.setAttribute("role", "switch");
+  b.setAttribute("aria-checked", state === "mixed" ? "mixed" : String(state === "on"));
+  b.setAttribute("aria-label", label);
+  return b;
+}
+// the deviation dot: a click takes this one deviation back (design v3: "Punkt mit Rücksetzen")
+function dotBack(label: string, back: () => void): HTMLElement {
+  const b = btn("fddvb");
+  b.setAttribute("aria-label", label);
+  b.title = "Weicht vom Profil ab — ein Klick setzt zurück";
+  b.append(el("i", "fddot2"));
+  b.onclick = (e) => { e.stopPropagation(); back(); afterPackChange(null); };
+  return b;
+}
+
+// the packs' share of the file: their parts that stand whole in it plus their hint lines, measured
+// on the file the route rendered — "…" while that file is being read
+function contribution(packs: FoundingPlanPack[]): string {
+  const s = S!;
+  if (fileKey() === null) return "an";
+  if (!s.file || s.fileFor !== fileKey()) return "…";
+  const hints = hintBytes(s.file.text);
+  const ids = new Set(packs.map((p) => p.id));
+  const bytes = s.file.parts.filter((x) => x.packId !== null && ids.has(x.packId) && x.ort === "box" && x.content !== null)
+    .reduce((n, x) => n + (x.bytes ?? 0), 0) + packs.reduce((n, p) => n + (hints.get(p.id) ?? 0), 0);
+  return kb(bytes);
+}
+
+function setPack(id: string, on: boolean) {
+  const s = S!;
   const preset = presetHas(presets[s.role], id);
   if (on === preset) s.touched.delete(id); else s.touched.set(id, on);
-  const before = new Set(s.packs);
   if (on) s.packs.add(id); else s.packs.delete(id);
-  s.fresh = on && !before.has(id) ? new Set([id]) : new Set();
-  s.gone = !on && before.has(id) ? [id] : [];
-  s.delta = { plus: on ? [id] : [], minus: on ? [] : [id], why: on ? "von dir dazu" : "von dir weggelassen" };
+  s.delta = null;
   s.error = null;
-  renderRole();
-  renderContext();
-  renderFoot();
 }
-
-// THE ROLES SIDE BY SIDE, over the packs of THIS start: a dot is a role's preset, a click redraws
-// it. The column of the chosen role re-applies at once, so the switches above follow the table.
-function compareTable(plan: Plan): HTMLElement {
-  const s = S!;
-  const box = el("div", "fdcmp");
-  const t = el("table", "");
-  const head = el("tr", "");
-  head.append(el("th", "", "Pack"));
-  for (const r of ROLES) head.append(el("th", r.id === s.role ? "cur" : "", r.name));
-  t.append(head);
-  for (const p of plan.selected) {
-    const tr = el("tr", "");
-    const name = el("td", "mono", p.id);
-    name.title = p.useWhen ?? "";
-    tr.append(name);
-    for (const r of ROLES) {
-      const td = el("td", r.id === s.role ? "cur" : "");
-      if (r.id === "orch") { td.append(el("span", "fdcmpx", "—")); td.title = "Die Rollenkarte trägt ihre Zeiger."; tr.append(td); continue; }
-      if (r.id === "main") { td.append(el("span", "fdcmpx", "—")); td.title = "bootstrap-main nimmt keine Packs."; tr.append(td); continue; }
-      const on = presetHas(presets[r.id], p.id);
-      const pip = btn(`fdpip${on ? " on" : ""}`);
-      pip.setAttribute("role", "switch");
-      pip.setAttribute("aria-checked", String(on));
-      pip.setAttribute("aria-label", `${p.id} für ${r.name}`);
-      pip.onclick = () => { redrawPreset(r.id, p.id, !on); };
-      td.append(pip);
-      tr.append(td);
-    }
-    t.append(tr);
-  }
-  const why = el("tr", "fdcmpwhy");
-  why.append(el("td", "", "Wozu"));
-  for (const r of ROLES) why.append(el("td", r.id === s.role ? "cur" : "", r.why));
-  t.append(why);
-  const foot = el("div", "fdcmpfoot");
-  const said = s.presetNote ?? (s.presetState === "saving" ? "Wird gesichert …"
-    : s.presetState === "saved" ? "Gesichert — gilt für alle künftigen Starts."
-    : "Ein Punkt ist die Vorauswahl einer Rolle — ein Klick ändert sie, für alle künftigen Starts.");
-  foot.append(el("span", s.presetNote ? "warn" : "", said));
-  if (ROLES.some((r) => customized(r.id))) {
-    const reset = btn("fdghost", "Auf Standard zurücksetzen");
-    reset.title = "Jede Rolle wieder auf ihre eingebaute Vorauswahl.";
-    reset.onclick = resetPresets;
-    foot.append(reset);
-  }
-  box.append(t, foot);
-  return box;
+function togglePack(id: string, on: boolean) {
+  setPack(id, on);
+  afterPackChange(`[data-pack="${CSS.escape(id)}"]`);
 }
-
-function redrawPreset(r: Role, id: string, on: boolean) {
+// one repaint after a switch; the switch that was pressed keeps the focus
+function afterPackChange(focus: string | null) {
   const s = S;
   if (!s) return;
-  const p = presets[r];
-  const list = p.base === "all" ? p.minus : p.plus;
-  const want = p.base === "all" ? !on : on;
-  const next = want ? [...new Set([...list, id])] : list.filter((x) => x !== id);
-  presets = { ...presets, [r]: p.base === "all" ? { ...p, minus: next } : { ...p, plus: next } };
-  if (r === s.role) { s.touched.delete(id); applyPreset(`Vorauswahl ${ROLES.find((x) => x.id === r)!.name}`); }
-  renderRole();
-  renderContext();
+  renderPacks();
+  renderFile();
   renderFoot();
-  void savePresets();
+  if (focus) s.fPacks.querySelector<HTMLElement>(focus)?.focus();
 }
 
+// --- ③ the file --------------------------------------------------------------------------------------
+
+// the file hangs off the plan and every switch: the packs that are on and the parts that stand whole
+function fileQuery(): string | null {
+  const s = S!;
+  if (!s.place || !s.plan || s.planFor !== planKey() || s.role === "leer" || s.mode === "old") return null;
+  const harness = s.harness ?? harnesses.find((h) => h.default)?.id ?? "";
+  const mode = s.mode === "repo" ? "main" : "lane";
+  const box = planParts(s.plan).filter(({ part }) => partOrt(part) === "box").map(({ part }) => part.id);
+  // a MAIN's door builds her plan itself: her file renders the whole plan, never a pack choice
+  const packs = s.role === "main" ? "" : `&packs=${[...s.packs].filter((id) => s.plan!.selected.some((p) => p.id === id)).map(encodeURIComponent).join(",")}`;
+  return `/api/founding-plan?repo=${encodeURIComponent(s.place)}&harness=${encodeURIComponent(harness)}&mode=${mode}&role=${positionOf(s.role, s.mode)}${packs}&parts=${box.map(encodeURIComponent).join(",")}`;
+}
+const fileKey = (): string | null => S ? fileQuery() : null;
+
+async function loadFile() {
+  const s = S;
+  const q = fileKey();
+  if (!s || !q) return;
+  const seq = ++s.fileSeq;
+  s.filePending = q;
+  let err: string | null = null, file: FoundingSessionAgents | null = null;
+  try {
+    const res = await api(q);
+    const j: unknown = await res.json().catch(() => null);
+    if (S !== s || seq !== s.fileSeq) return; // latest-wins
+    if (res.status === 404) err = SKEW_NOTE;
+    else if (!res.ok || !validPlan(j)) err = `Die Datei ist nicht lesbar (Antwort ${res.status}).`;
+    else if (!j.sessionAgents) err = "Dieser Server rendert die Datei noch nicht.";
+    else file = j.sessionAgents;
+  } catch {
+    if (S !== s || seq !== s.fileSeq) return;
+    err = "Die Datei konnte nicht geladen werden.";
+  }
+  // the answer belongs to its query: the file and its key move together, an error keeps neither
+  s.filePending = null;
+  s.fileErr = err;
+  s.fileFor = q;
+  if (file) s.file = file;
+  keepFocus(() => { renderPacks(); renderFile(); });
+}
+
+// THE HINT LINES under "## Packs auf Abruf", measured on the rendered text: one entry per pack,
+// starting with "- <pack id>" (session-agents.ts#renderSessionAgents). The section ends where the
+// fixed close begins, the last heading the renderer writes.
+const POINTER_HEAD = "## Packs auf Abruf\n\n";
+function pointerBlock(text: string): string | null {
+  const ends = ["\n\n## Lane-Ende\n\n", "\n\n## Program-Schiene\n\n"].map((h) => text.lastIndexOf(h)).filter((i) => i >= 0);
+  const end = ends.length ? Math.max(...ends) : text.replace(/\n$/, "").length;
+  const start = text.lastIndexOf(POINTER_HEAD, end);
+  return start < 0 ? null : text.slice(start + POINTER_HEAD.length, end);
+}
+function hintBytes(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const block = pointerBlock(text);
+  if (!block) return out;
+  for (const entry of block.split(/\n(?=- )/)) {
+    const id = /^- (\S+)/.exec(entry)?.[1];
+    if (id) out.set(id, bytesOf(entry) + 1);
+  }
+  return out;
+}
+
+interface FileSection { k: string; h: string; say: string; bytes: number | null; label?: string; items: { name: string; names?: string; bytes: number | null; dev: boolean; hv: string[] }[]; hv: string[]; dev: boolean }
+
+function renderFile() {
+  const s = S;
+  if (!s) return;
+  const sec = s.fFile;
+  sec.replaceChildren();
+  sec.append(stepHead(3, "Was der Agent liest", "jede Änderung links erscheint hier sofort"));
+  const none = (text: string) => { sec.append(el("div", "fdnofile", text)); };
+  if (s.role === "leer") return none("Ohne Rolle lädt dieses Profil keine Datei. Was du links anschaltest, geht als Pack mit.");
+  if (s.mode === "old") return none("Ein fortgesetzter Worktree bekommt keine neue Datei — er arbeitet weiter mit dem, was er hat.");
+  if (!s.info?.git) return none(s.info ? "Kein Git-Repo — hier gibt es keine Datei." : "Wird gelesen, sobald der Ort feststeht.");
+  if (s.planErr) return none(s.planErr);
+  const q = fileKey();
+  if (q && s.fileFor !== q && s.filePending !== q) void loadFile();
+  if (s.fileErr && s.fileFor === q) return none(s.fileErr);
+  const file = s.file;
+  if (!file) return none("Die Datei wird gelesen …");
+  const stale = s.fileFor !== q;
+  const h = chosenHarness();
+  const role = file.parts.find((x) => x.id === "role");
+  const footer = file.parts.find((x) => x.id === "footer");
+  const packOf = (x: FoundingPlanPart) => s.plan?.selected.find((p) => p.id === x.packId);
+  const whole = (sorte: "anleitung" | "wissen") => file.parts.filter((x) => x.packId !== null && x.sorte === sorte && x.ort === "box" && x.content !== null);
+  const item = (x: FoundingPlanPart) => ({ name: partName(x), bytes: x.bytes, dev: s.parts.has(x.id),
+    hv: [`${packOf(x) ? packName(packOf(x)!) : x.packId ?? ""} · ${x.path ?? ""} | ${x.anchor ?? ""}`, `${x.id}${x.sha256 ? ` · ${x.sha256.slice(0, 8)}` : ""}`] });
+  const sum = (xs: FoundingPlanPart[]) => xs.reduce((n, x) => n + (x.bytes ?? 0), 0);
+  const anl = whole("anleitung"), wis = whole("wissen");
+  const block = pointerBlock(file.text);
+  const hints = hintBytes(file.text);
+  const hinted = [...hints.keys()];
+  const groupsHinted = [...GROUPS, UNGROUPED].map((g) => {
+    const packs = (s.plan?.selected ?? []).filter((p) => groupOf(p) === g && hints.has(p.id));
+    return { g, packs };
+  }).filter((x) => x.packs.length);
+  const pos = positionOf(s.role, s.mode);
+  const secs: FileSection[] = [
+    { k: "rolle", h: "Rolle", say: "Wer der Agent ist, was er selbst entscheidet und an wen er meldet.", bytes: role?.bytes ?? null, items: [], dev: false,
+      hv: role ? [`${role.path ?? ""} · ${role.anchor ?? ""}${role.sha256 ? ` · ${role.sha256.slice(0, 8)}` : ""}`] : [] },
+    { k: "auftrag", h: "Auftrag", say: `${s.role === "main" ? "Das Program, das sie führt." : "Die Karte dieses Starts."} Kommt beim Start dazu.`, bytes: null, label: "beim Start", items: [], dev: false, hv: [] },
+    { k: "anl", h: "Anleitung", say: anl.length ? "Regeln und Schritte, die er bei jeder Arbeit befolgt, ganz in der Datei." : "Keine Schritte ganz in der Datei.",
+      bytes: anl.length ? sum(anl) : null, items: anl.map(item), dev: anl.some((x) => s.parts.has(x.id)) || planDeviates("anleitung"), hv: [] },
+    { k: "wis", h: "Wissen", say: wis.length ? "Hintergrund, der die Schritte erklärt, ganz in der Datei." : "Nichts ganz in der Datei. Hintergrund liest er bei Bedarf nach.",
+      bytes: wis.length ? sum(wis) : null, items: wis.map(item), dev: wis.some((x) => s.parts.has(x.id)) || planDeviates("wissen"), hv: [] },
+    { k: "abruf", h: "Packs auf Abruf", say: hinted.length ? `Wo er bei Bedarf nachliest: ${hinted.length} ${hinted.length === 1 ? "Hinweis" : "Hinweise"}, nicht der Text.` : "Keine Hinweise.",
+      bytes: block === null || !hinted.length ? null : bytesOf(block),
+      items: groupsHinted.map(({ g, packs }) => ({ name: g.name, names: packs.map(packName).join(", "), dev: packs.some((p) => s.touched.has(p.id)),
+        bytes: packs.reduce((n, p) => n + (hints.get(p.id) ?? 0), 0), hv: packs.map((p) => `${p.id} · Hinweis ${hints.get(p.id)} B`) })),
+      dev: s.touched.size > 0, hv: [] },
+    { k: "ende", h: "Schluss", say: pos === "lane" ? "Wie sie am Ende abgibt: committen, melden, still werden."
+        : footer ? "Wie sie ihr Program führt und berichtet." : "Dieses Profil hat keinen festen Schluss.",
+      bytes: footer?.bytes ?? null, items: [], dev: false,
+      hv: footer ? [`${footer.path ?? ""} · ${footer.anchor ?? ""}${footer.sha256 ? ` · ${footer.sha256.slice(0, 8)}` : ""}`] : [] },
+  ];
+  // what changed since the last paint lights up once (design v3: "kurzes Aufleuchten")
+  const now = new Map(secs.map((x) => [x.k, x.bytes ?? -1]));
+  if (s.shown && !stale) for (const [k, v] of now) if (s.shown.get(k) !== v) s.flash.add(k);
+  if (!stale) s.shown = now;
+
+  const head = el("div", "fdfh");
+  const name = el("div", "fdfn");
+  name.append(icon("file"), el("span", "", "AGENTS.md dieser Session"));
+  head.append(name, el("span", "fdtot", kb(file.bytes)));
+  const where = { claude: "CLAUDE.local.md", codex: "AGENTS.override.md" }[h?.id ?? ""] ?? "eine eigene Datei für den Agenten";
+  sec.append(hv(head, `So rendert der Server die Datei dieser Session · ${file.bytes.toLocaleString("de-DE")} B, Überschriften mitgezählt`,
+    `Ort beim Agenten laut Messung 2026-10-03: ${where} · zugestellt wird heute der Gründungsbrief, das Receipt sagt, was ankam`));
+  const sub = el("div", "fdfsub");
+  const prof = [h?.id ?? "", s.model ? modelLabel(s.model) : h ? modelShown(h) : "", s.effort].filter(Boolean).join(" · ");
+  sub.append(el("span", "", `Startet mit ${prof}`));
+  const alone = s.sizes[s.role];
+  if (typeof alone === "number") sub.append(el("span", "fdvs", `Profil ${ROLES.find((r) => r.id === s.role)!.name} allein: ${kb(alone)}`));
+  sec.append(sub);
+  const doc = el("div", `fddoc${stale ? " stale" : ""}`);
+  secs.forEach((x, i) => {
+    const row = el("div", `fdsec2${x.bytes === null && !x.label ? " empty" : ""}${x.dev ? " dev" : ""}${s.flash.has(x.k) ? " flash" : ""}`);
+    row.dataset.sec = x.k;
+    row.append(el("span", "fdno", String(i + 1)), el("span", "fdh", x.h),
+      el("span", "fdskb", x.label ?? (x.bytes === null ? "—" : kb(x.bytes))), el("span", "fdsay2", x.say));
+    if (x.items.length) {
+      const items = el("div", "fditems");
+      for (const it of x.items) {
+        const r = el("div", "fdit");
+        r.tabIndex = 0;
+        if (it.dev) r.append(el("i", "fddot2"));
+        r.append(el("span", "fdinm", it.name));
+        if (it.names) r.append(el("span", "fdnames", it.names));
+        r.append(el("span", "fdx", it.bytes === null ? "—" : kb(it.bytes)));
+        items.append(hv(r, ...it.hv));
+      }
+      row.append(items);
+    }
+    if (x.bytes !== null) {
+      const bar = el("span", "fdbar");
+      const fill = el("i", "");
+      fill.style.setProperty("--w", `${Math.min(100, (x.bytes / Math.max(1, file.bytes)) * 100).toFixed(1)}%`);
+      bar.append(fill);
+      row.append(bar);
+    }
+    if (x.hv.length) { row.tabIndex = 0; hv(row, ...x.hv); }
+    doc.append(row);
+  });
+  sec.append(doc);
+  sec.append(el("div", "fdffoot", "Die Reihenfolge ist fest, jede Aussage steht nur einmal darin. Der Auftrag zählt nicht mit, er kommt beim Start dazu."));
+  if (file.projectDocMaxBytes) sec.append(el("div", "fdnote warn", `Die Datei ist größer als 32 KB (${file.projectDocMaxBytes.toLocaleString("de-DE")} B) — ein Agent liest dann womöglich nicht alles.`));
+  if (s.flash.size) {
+    const flash = s.flash;
+    setTimeout(() => { if (S === s && s.flash === flash) { s.flash = new Set(); s.fFile.querySelectorAll(".flash").forEach((e) => e.classList.remove("flash")); } }, 900);
+  }
+}
+// a part of this sorte the owner moved out of the file still marks its section as changed
+function planDeviates(sorte: "anleitung" | "wissen"): boolean {
+  const s = S!;
+  return !!s.plan && planParts(s.plan).some(({ part }) => part.sorte === sorte && s.parts.get(part.id) === "ausleihe");
+}
+
+// WHAT A PACK IS, in the words the receipt shares: a fassung only where the id declares one
+// (src/protocol.ts#packIdFassung)
+const isPrivate = (a: PackAnchors | undefined): a is { privateSourceId: string } => !!a && !Array.isArray(a);
+const fassungSay = (id: string): string => {
+  const n = packIdFassung(id);
+  return n === null ? "keine Fassung deklariert" : `Fassung v${n} · laut Paket-ID`;
+};
+const short = (sha: string | undefined | null, n: number): string => sha ? sha.slice(0, n) : "nicht gemeldet";
+
 // THE STORE. Read once per window; a role the store does not name keeps its built-in preset. A
-// store that cannot be read is SAID next to the table — the built-in presets then apply, which is
+// store that cannot be read is SAID under the profiles — the built-in presets then apply, which is
 // never the same claim as "you changed nothing".
 async function loadPresets() {
   const s = S;
@@ -1431,7 +1838,7 @@ async function loadPresets() {
   } catch {
     if (S === s) s.presetNote = "Die gesicherte Vorauswahl konnte nicht geladen werden — es gilt die eingebaute.";
   } finally {
-    if (S === s) { renderRole(); renderContext(); renderFoot(); }
+    if (S === s) { renderRole(); renderPacks(); renderFile(); renderFoot(); }
   }
 }
 
@@ -1442,7 +1849,7 @@ async function savePresets() {
   if (!s) return;
   const changed = { ...presetsForeign, ...Object.fromEntries(ROLES.filter((r) => customized(r.id)).map((r) => [r.id, presets[r.id]])) };
   s.presetState = "saving";
-  renderContext();
+  renderFoot();
   const res = await post("/api/role-presets", { presets: Object.keys(changed).length ? changed : null }).catch(() => null);
   if (S !== s) return;
   if (res?.ok) { s.presetState = "saved"; s.presetNote = null; }
@@ -1451,7 +1858,9 @@ async function savePresets() {
     s.presetState = "error";
     s.presetNote = `Nicht gesichert: ${j?.error ?? (res ? `Antwort ${res.status}` : "der Server ist nicht erreichbar")}. Für dieses Fenster gilt die Änderung trotzdem.`;
   }
-  renderContext();
+  s.sizesFor = null;
+  renderRole();
+  renderFoot();
 }
 
 function resetPresets() {
@@ -1460,13 +1869,63 @@ function resetPresets() {
   presets = clonePresets(PRESET_DEFAULT);
   s.touched.clear();
   applyPreset("Vorauswahl zurückgesetzt");
-  renderRole();
-  renderContext();
-  renderFoot();
+  renderAll();
   void savePresets();
 }
 
-// --- the foot: one sentence, and the one button ---------------------------------------------------
+// "ALS PROFIL SICHERN": the pack switches of this session become the role's preset, over the existing
+// preset door, for every later start. The preset holds packs only (src/protocol.ts#RolePreset) — the
+// parts and the settings stay this session's, and the button's title says so.
+function saveAsProfile() {
+  const s = S;
+  if (!s?.plan || s.role === "main") return;
+  const ids = s.plan.selected.map((p) => p.id);
+  const p = presets[s.role];
+  presets = { ...presets, [s.role]: p.base === "all"
+    ? { base: "all", plus: [], minus: [...new Set([...p.minus.filter((id) => !ids.includes(id)), ...ids.filter((id) => !s.packs.has(id))])] }
+    : { base: "none", plus: [...new Set([...p.plus.filter((id) => !ids.includes(id)), ...ids.filter((id) => s.packs.has(id))])], minus: [] } };
+  s.touched.clear();
+  applyPreset("");
+  renderAll();
+  void savePresets();
+}
+
+// EVERY DEVIATION of this session from its profile, in words: the settings, the packs, the parts
+function deviations(): string[] {
+  const s = S!;
+  const out: string[] = [];
+  const prof = profileOf(s.role);
+  const def = agentHarnesses().find((h) => h.default)?.id ?? "";
+  if ((s.harness ?? def) !== (prof.harness ?? def)) out.push(`Agent ${s.harness ?? def}`);
+  if (s.model !== prof.model) out.push(`Modell ${s.model ? modelLabel(s.model) : "Adapter wählt"}`);
+  if (s.effort !== prof.effort) out.push(`Effort ${s.effort || "Adapter"}`);
+  if (s.container || s.containerContext) out.push(`Container ${s.container || s.containerContext}`);
+  for (const [id, on] of s.touched) {
+    const p = s.plan?.selected.find((x) => x.id === id);
+    out.push(`${p ? `${groupOf(p).name} › ` : ""}${packNameById(id)} ${on ? "dazu" : "weggelassen"}`);
+  }
+  for (const [id, ort] of s.parts) {
+    const hit = s.plan ? planParts(s.plan).find((x) => x.part.id === id) : undefined;
+    out.push(`${hit ? `${packName(hit.pack)} › ${partName(hit.part)}` : id} ${ort === "box" ? "ganz darin" : "nur als Hinweis"}`);
+  }
+  return out;
+}
+
+// "WIE PROFIL": every deviation back at once — settings, packs and parts
+function likeProfile() {
+  const s = S;
+  if (!s) return;
+  const prof = profileOf(s.role);
+  s.harness = prof.harness; s.model = prof.model; s.effort = prof.effort;
+  s.container = ""; s.containerContext = "";
+  s.touched.clear();
+  s.parts.clear();
+  s.error = null;
+  applyPreset("");
+  renderAll();
+}
+
+// --- the foot: one sentence, the deviations, and the one button --------------------------------------
 
 function renderFoot() {
   const s = S;
@@ -1488,12 +1947,43 @@ function renderFoot() {
   const prof = [body.harness ?? h?.id ?? "", body.model ? modelLabel(body.model) : h ? modelShown(h) : "", body.effort ?? ""].filter(Boolean).join(" · ");
   const ctx = s.role === "main" ? "Gründungsbrief" : s.packs.size ? `${s.packs.size} ${s.packs.size === 1 ? "Pack" : "Packs"}` : "ohne Packs";
   say.append(el("b", "", who), document.createTextNode(` ${where}`), el("span", "fdsaym", ` · ${prof} · ${ctx}${s.role === "orch" ? " · Rollenkarte" : ""} · ohne Projektsicht`));
+  // the deviations from the profile, counted; their words on hover, and the way back
+  const devs = deviations();
+  const dev = el("div", "fddev");
+  if (devs.length) {
+    const n = el("span", "fddevn fdrow");
+    n.tabIndex = 0;
+    n.append(el("i", "fddot2"), el("span", "", `Diese Session weicht in ${devs.length} ${devs.length === 1 ? "Punkt" : "Punkten"} vom Profil ab`));
+    hv(n, ...devs);
+    const back = btn("fdghost fdlike", "Wie Profil");
+    back.prepend(icon("reload"));
+    back.title = "Alle Abweichungen zurück auf das Profil";
+    back.onclick = likeProfile;
+    dev.append(n, back);
+  } else dev.append(el("span", "fddevn quiet", `Wie Profil ${ROLES.find((r) => r.id === s.role)!.name}`));
+  // a touch screen has no hover: its technical lines rest hidden as on the desktop, and this one switch
+  // shows them all in the flow — off at every open, never stored; the CSS shows it only at (hover: none)
+  const tech = btn(`fdghost fdtechb${s.tech ? " on" : ""}`, "Technik zeigen");
+  tech.setAttribute("aria-pressed", String(s.tech));
+  tech.title = "Ids, Quellen und Größen jeder Zeile im Fluss zeigen";
+  tech.onclick = () => { s.tech = !s.tech; renderFoot(); s.shell.foot.querySelector<HTMLElement>(".fdtechb")?.focus({ preventScroll: true }); };
+  dev.append(tech);
+  s.shell.root.classList.toggle("fdtech", s.tech);
+  if (s.presetState === "saved" || s.presetState === "saving")
+    dev.append(el("span", "fdmeta", s.presetState === "saving" ? "Wird gesichert …" : "Gesichert — gilt für alle künftigen Starts."));
   // a plan nobody could read starts without packs — allowed, but never silently
   const planGone = !!s.planErr && s.mode !== "old" && !!s.info?.git && s.role !== "main";
   // bootstrap-main picks the free MAIN place itself — the clicked one is a likely answer, not a promise
   const seat = s.role === "main" && s.entry.kind === "slot" ? `Den Platz wählt der Server — nicht unbedingt Slot ${s.entry.slot}.` : null;
   const why = s.error ?? blocker() ?? (planGone ? "Der Plan für diesen Start ist nicht lesbar — er startet ohne Packs." : seat);
   const note = el("div", `fdfootnote${s.error || planGone ? " warn" : ""}`, why ?? "");
+  const keep = btn("fdghost fdkeep", "Als Profil sichern");
+  const packsChanged = s.touched.size > 0;
+  keep.disabled = s.role === "main" || !packsChanged || !s.plan;
+  keep.title = s.role === "main" ? "Eine MAIN hat keine Pack-Vorauswahl — ihre Gründungstür nimmt keine Packs."
+    : packsChanged ? "Die Pack-Auswahl dieser Session wird die Vorauswahl dieser Rolle, für alle künftigen Starts. Teile und Einstellungen bleiben bei dieser Session."
+    : "Erst eine Pack-Auswahl ändern — dann kann sie die Vorauswahl dieser Rolle werden.";
+  keep.onclick = saveAsProfile;
   const go = btn("fdgo");
   const label = s.busy ? (s.role === "main" ? "MAIN wird gegründet …" : s.packs.size ? "Packs werden zugestellt …" : "Startet …")
     : s.role === "main" ? "MAIN gründen" : s.mode === "old" ? "Fortsetzen" : s.mode === "new" ? "Lane starten" : "Starten";
@@ -1503,9 +1993,11 @@ function renderFoot() {
   go.title = s.place ? `${label}: ${tilde(s.place)} (Enter)` : label;
   go.onclick = () => { void start(); };
   const text = el("div", "fdsaycol");
-  text.append(say);
+  text.append(say, dev);
   if (why) text.append(note);
-  foot.append(text, go);
+  const acts = el("div", "fdacts");
+  acts.append(keep, go);
+  foot.append(text, acts);
   if (hadGo) go.focus({ preventScroll: true });
 }
 
@@ -1526,6 +2018,11 @@ async function start() {
     const before = new Map(fleet.map((row) => [row.id, row.openedAt]));
     const requestedRole = s.role, requestedMode = s.mode;
     const requestedPlace = s.mode === "old" ? s.orphan! : s.place;
+    // THE PREVIEW the owner saw for the chosen packs: the receipt is held against it after the start
+    const plan = s.plan && s.planFor === planKey() ? s.plan : null;
+    const preview: StartPreview | null = plan && body.packs?.length
+      ? { head: plan.head ?? null, plannedAt: plan.plannedAt ?? null, packs: plan.selected.filter((p) => body.packs!.includes(p.id)) }
+      : null;
     let result: StartResult;
     let bound: number | null = null;
     if (s.role === "main") {
@@ -1565,7 +2062,7 @@ async function start() {
     } else {
       result = await startSession(s.place, roleLabel(s.role), onError, { slot: s.entry.slot, body });
     }
-    if (result.ok && S === s) await captureProof(s, s.role === "main" ? mainSpawn() : body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace, bound);
+    if (result.ok && S === s) await captureProof(s, s.role === "main" ? mainSpawn() : body, before.get(result.slot), result, requestedRole, requestedMode, requestedPlace, bound, preview);
   } finally {
     // a start answers seconds later (packs: boot grace plus readiness); by then the owner may have
     // closed this window and opened the next — only the window that asked shows the receipt
@@ -1607,20 +2104,22 @@ interface ReceiptPack {
   anchors: { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string; private?: { verdict: string; version: number | null };
 }
+interface StartPreview { head: string | null; plannedAt: number | null; packs: FoundingPlanPack[] }
 interface StartProof {
   result: Extract<StartResult, { ok: true }>;
   body: SpawnBody; role: Role; mode: Mode; place: string;
   bound: number | null;                 // a MAIN: the slot the Program's binding names after the door
+  preview: StartPreview | null;         // the plan's state of the chosen packs when the start was pressed
   occupant: SlotInfo | null;
-  receipt: { slot: number; at: number; selected: ReceiptPack[] } | null;
+  receipt: { slot: number; at: number; head?: string; selected: ReceiptPack[]; omitted?: { id: string; why?: string; reason?: string | null }[] } | null;
   receiptCount: number; receiptError: string | null; stale: boolean;
 }
 
-async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string, bound: number | null) {
+async function captureProof(s: State, body: SpawnBody, before: number | undefined, result: Extract<StartResult, { ok: true }>, role: Role, mode: Mode, place: string, bound: number | null, preview: StartPreview | null) {
   const row = fleet.find((r) => r.id === result.slot);
   const occupant = row?.cwd && Number.isFinite(row.openedAt) && row.openedAt! > 0 && row.openedAt !== before
     ? structuredClone(row) : null;
-  const proof: StartProof = { result, body, role, mode, place, bound, occupant,
+  const proof: StartProof = { result, body, role, mode, place, bound, preview, occupant,
     receipt: null, receiptCount: 0, receiptError: null, stale: false };
   s.proof = proof;
   closePop(false);
@@ -1661,6 +2160,24 @@ async function captureProof(s: State, body: SpawnBody, before: number | undefine
       }
     } catch (error) { proof.receiptError = error instanceof Error ? error.message : String(error); }
     if (S === s) renderProof();
+  }
+}
+
+// the receipt's HEAD against the preview's, said as a fact of each side
+function headSay(stand: PackStand | null, head: string | undefined): string {
+  const h = `HEAD ${short(head, 8)}`;
+  if (!stand || stand.head === "unknown")
+    return `${h} · Vergleich mit der Vorschau unbekannt${stand?.previewHead ? ` (Vorschau HEAD ${short(stand.previewHead, 8)})` : ""}`;
+  return stand.head === "same" ? `${h} · wie in der Vorschau` : `${h} · seit der Vorschau bewegt (dort HEAD ${short(stand.previewHead, 8)})`;
+}
+function standSay(stand: PackStand["packs"][number]["stand"], before: string | null, now: string | null): string {
+  switch (stand) {
+    case "same": return "Stand wie in der Vorschau";
+    case "changed": return `Stand seit der Vorschau geändert: ${short(before, 12)} → ${short(now, 12)} — zugestellt ist der neue`;
+    case "drift": return "Urteil drift: die Datei bei der Zustellung ist nicht die deklarierte Fassung";
+    case "not-delivered": return "nicht zugestellt";
+    case "extra": return "nicht angefragt";
+    default: return `Stand unbekannt: ${before === null && now === null ? "weder Vorschau noch Beleg nennen" : before === null ? "die Vorschau nennt" : "der Beleg nennt"} keinen Hash`;
   }
 }
 
@@ -1729,6 +2246,12 @@ function renderProof() {
   if (p.result.packsDelivered === false) packCell.classList.add("warn");
   else if (p.receipt) {
     packCell.replaceChildren();
+    // THE RECEIPT AGAINST THE PREVIEW (src/protocol.ts#standSincePreview): the receipt's hash and HEAD
+    // are what the delivery stamped; where they moved since the plan, the delivered one is shown as
+    // the fact and the preview's beside it. Where either side names nothing, the stand is unknown.
+    const stand = p.body.packs ? standSincePreview(p.preview, p.receipt, p.body.packs) : null;
+    const standOf = (id: string) => stand?.packs.find((r) => r.id === id);
+    packCell.append(el("div", "fdproofnote", `zugestellt ${new Date(p.receipt.at).toLocaleTimeString("de-DE")} · ${headSay(stand, p.receipt.head)}`));
     for (const pack of p.receipt.selected) {
       const item = el("div", "fdreceiptpack");
       item.append(el("div", "mono", pack.id));
@@ -1738,13 +2261,26 @@ function renderProof() {
       for (const anchor of anchors) item.append(el("div", "mono", anchor));
       item.append(el("div", "mono", pack.sourceHash ? `Hash: ${pack.sourceHash.slice(0, 12)}` : "Hash: nicht gemeldet"));
       if (!anchors.length || !pack.sourceHash) item.classList.add("warn");
+      // the receipt names a fassung only where the id declares one; the private line's "Fassung" is
+      // the konzept ledger's count, said in its existing words and never mixed with this one
+      if (packIdFassung(pack.id) !== null) item.append(el("div", "fdproofnote", fassungSay(pack.id)));
       if (pack.private) item.append(el("div", "fdproofnote", `Urteil: ${pack.private.verdict} · Fassung: ${pack.private.version ?? "nicht gemeldet"}`));
+      const r = standOf(pack.id);
+      if (r) {
+        const line = el("div", `fdproofnote${r.stand === "same" ? "" : " warn"}`, standSay(r.stand, r.preview, r.delivered));
+        // only the stand line warns: the anchors and the hash above it are the delivered facts, not a gap
+        item.append(line);
+      }
       packCell.append(item);
     }
-    const missing = p.body.packs?.filter((id) => !p.receipt!.selected.some((pack) => pack.id === id));
-    if (missing?.length) { packCell.append(el("div", "warn", `Beleg fehlt: ${missing.join(", ")}`)); packCell.classList.add("warn"); }
-    const extra = p.body.packs ? p.receipt.selected.filter((pack) => !p.body.packs!.includes(pack.id)) : [];
-    if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((pack) => pack.id).join(", ")}`)); packCell.classList.add("warn"); }
+    // requested and not in the receipt: the receipt's own omission reason where it has one
+    for (const r of stand?.packs.filter((x) => x.stand === "not-delivered") ?? []) {
+      packCell.append(el("div", "warn", `nicht zugestellt: ${r.id}${r.why ? ` — ${r.why}` : " — der Beleg nennt keinen Grund"}`));
+      packCell.classList.add("warn");
+    }
+    const extra = stand?.packs.filter((x) => x.stand === "extra") ?? [];
+    if (extra.length) { packCell.append(el("div", "warn", `Abweichung: zusätzliche Packs ${extra.map((x) => x.id).join(", ")}`)); packCell.classList.add("warn"); }
+    if (p.body.packs?.length) packCell.append(el("div", "fdproofnote", "Zugestellt heißt: der Zeiger stand im Brief. Ob er gelesen wurde, sagt kein Beleg."));
     if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Startbelege — der jüngste gilt.`));
   }
   if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));

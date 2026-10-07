@@ -14,6 +14,41 @@
 // with a single reader belongs next to that reader, where its comment can say why it has its value.
 import { MODEL_DEFAULTS, MODEL_REGISTER } from "../model-register";
 
+export interface SubscriptionWindow {
+  used_percent: number;
+  window_minutes: number;
+  resets_at: number;
+}
+export interface SubscriptionSnapshot {
+  status: "measured" | "stale" | "unknown" | "error";
+  primary: SubscriptionWindow | null;
+  secondary: SubscriptionWindow | null;
+  source: { kind: "local-rollout"; measuredAt: number | null; fetchedAt: number | null;
+    ageMs: number | null; staleAfterMs: number; reason: string | null;
+    selection: { kind: "recent-file-tails"; maxFiles: 16; maxBytesPerFile: 262144; historyComplete: false };
+    limitId: "codex" | null; accountBound: false; provenance: string | null };
+}
+export interface SubscriptionRefresh {
+  target: "local" | "provider" | null;
+  status: "not-requested" | "refreshing" | "ok" | "error" | "timeout" | "unsupported";
+  startedAt: number | null;
+  finishedAt: number | null;
+  reason: string | null;
+}
+export interface SubscriptionUsage {
+  schema: "fleet.subscription-usage/v1";
+  generatedAt: number;
+  codex: SubscriptionSnapshot & { refresh: SubscriptionRefresh;
+    provider: { status: "unsupported"; reason: string } };
+  otherSubscriptions: { status: "unknown"; reason: string };
+  model: {
+    ownerPreference: { status: "unknown"; reason: string };
+    registerDefaults: typeof MODEL_DEFAULTS;
+    selected: { slot: number; harness: string | null; model: string | null; source: "slot-state";
+      decisionSource: "unknown"; usedTurnModel: null }[];
+  };
+}
+
 // --- WS input frame cap -------------------------------------------------------------------------
 // The server drops any keystroke frame larger than this, silently (there is no error path to a
 // terminal). The client's paste chunker sizes itself from the SAME number, so lowering the cap can
@@ -26,6 +61,30 @@ export const WS_INPUT_MAX_BYTES = 1024;
 // caches one extra field (`head`) that never goes on the wire — it extends this rather than
 // redeclaring it, so a field added for the client cannot be forgotten on the server and vice versa.
 export interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
+
+export const HELPER_REPOS_MAX = 8;
+export const HELPER_REPO_REMOTES_MAX = 8;
+export const HELPER_REPO_REFS_MAX = 8;
+export const HELPER_REPO_COMMITS_MAX = 512;
+export const HELPER_REPOS_BYTES_MAX = 32768;
+export const HELPER_REPOS_CACHE_MS = 60000;
+export const HELPER_REPOS_BUDGET_MS = 5000;
+export const HELPER_REPO_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+export const helperGitLabel = (v: unknown): v is string => typeof v === "string"
+  && /^[a-zA-Z0-9][a-zA-Z0-9_./-]{0,95}$/.test(v) && !v.includes("..")
+  && !/\d+\.\d+\.\d+\.\d+|\.[a-zA-Z]{2,}(?:$|\/)/.test(v);
+export type HelperRepoReason = "unreadable" | "not-repo-root" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
+  | "commit-cap" | "no-merge-base" | "invalid-report";
+export interface HelperRepoRef {
+  ref: string | null; head: string | null; updatedAt: number | null;
+  mergeBase: string | null; ahead: number | null; behind: number | null; reason: HelperRepoReason | null;
+}
+export interface HelperRepoReading {
+  name: string | null; at: number; head: string | null; branch: string | null;
+  remote: "none" | "present" | null; remotes: string[] | null; refs: HelperRepoRef[];
+  coverage: "complete" | "incomplete"; reason: HelperRepoReason | null;
+}
+export interface HelperReposReading { at: number; repos: HelperRepoReading[] }
 
 // --- worker result rail ------------------------------------------------------------------------
 // The route, persisted row and FleetEvent payload share this CLOSED vocabulary. Keeping the value
@@ -71,9 +130,87 @@ export interface FleetReportEventPayload {
 // response. They never substitute for each other, and this one is deliberately not per slot — see
 // the payload budget probe in e2e/tasks.ts.
 export const INSTANCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
-export interface InstanceIdentity { name: string | null }
+export interface InstanceIdentity { name: string | null; source?: InstanceSource }
 export function instanceNameFrom(value: unknown): string | null {
   return typeof value === "string" && INSTANCE_NAME_RE.test(value) ? value : null;
+}
+
+// --- what a test instance shows (ranke-notiz R11) ------------------------------------------------
+// WHICH BRANCH AND WHICH STAND THIS COPY IS, and what of it is not in its target yet. Measured by
+// testinstanz.sh BEFORE it copies (git of the source worktree; the copy itself has no .git) and
+// handed to the instance as FLEET_INSTANCE_SOURCE. It is the stand AT START: a later commit in the
+// worktree changes nothing here, which is why the band says "beim Start".
+//
+// PRESENCE IS THE TEST-INSTANCE MARK. Unset or empty → null → no `source` on the wire and no band:
+// the live fleet never sets it. Set but unreadable → every field null, never dropped: an instance
+// that was meant to say its stand and cannot says "unbekannt", it does not fall silent.
+// `target.ahead` counts commits of `head` whose change is not on `target` (git rev-list --no-merges
+// --cherry-pick --right-only, so a lane already landed by rebase reads 0, not its old count, and a
+// merge of the target into the lane adds nothing).
+export interface InstanceSource {
+  branch: string | null; head: string | null; dirty: number | null; measuredAt: number | null;
+  target: { branch: string; head: string | null; ahead: number | null } | null;
+}
+// A BRANCH NAME AS GIT ALLOWS IT, not a positive list: `+`, `@`, `#` and umlauts are valid branch
+// names and must not read "unbekannt". Refused are exactly git check-ref-format's rules — control
+// characters and space, ~ ^ : ? * [ \, "..", "@{", "//", a lone "@", a leading "-", a leading or
+// trailing "/", a trailing "." or ".lock", a component starting with "." or ending in ".lock" —
+// plus a length cap. The band renders it as text (textContent), never as markup.
+const INSTANCE_BRANCH_MAX = 200;
+const instanceBranch = (v: unknown): string | null => {
+  if (typeof v !== "string" || v.length === 0 || v.length > INSTANCE_BRANCH_MAX || v === "@") return null;
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(v) || /\.\.|@\{|\/\//.test(v)) return null;
+  if (v.startsWith("-") || v.startsWith("/") || v.endsWith("/") || v.endsWith(".")) return null;
+  return v.split("/").some((c) => c.startsWith(".") || c.endsWith(".lock")) ? null : v;
+};
+const instanceCount = (v: unknown): number | null => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+const instanceSha = (v: unknown): string | null => typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? v : null;
+export function instanceSourceFrom(value: unknown): InstanceSource | null {
+  if (typeof value !== "string" || value === "") return null;
+  let v: Record<string, unknown> = {};
+  try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) v = parsed; }
+  catch { /* unreadable: every field below folds to null */ }
+  const t = v.target && typeof v.target === "object" && !Array.isArray(v.target) ? v.target as Record<string, unknown> : null;
+  const targetBranch = instanceBranch(t?.branch);
+  const measuredAt = instanceCount(v.measuredAt);
+  return { branch: instanceBranch(v.branch), head: instanceSha(v.head), dirty: instanceCount(v.dirty),
+    measuredAt: measuredAt && measuredAt > 0 ? measuredAt : null,
+    target: targetBranch ? { branch: targetBranch, head: instanceSha(t?.head), ahead: instanceCount(t?.ahead) } : null };
+}
+
+// THE BAND'S WORDS, one pure function so the claim is checkable without a browser. A run marked
+// `mono` is a branch or a sha (G0.3). Nothing is guessed: a missing value is the word "unbekannt",
+// a count needs the target's sha measured with it ("Abgleich mit ‹ziel› unbekannt" otherwise), and
+// "alles schon auf ‹ziel›" needs BOTH counts measured as zero.
+export interface InstanceBandRun { t: string; mono?: boolean }
+export interface InstanceBandText { segments: InstanceBandRun[][]; text: string; title: string }
+export function instanceBandText(s: InstanceSource, clock: (ms: number) => string): InstanceBandText {
+  const segments: InstanceBandRun[][] = [];
+  segments.push(s.branch ? [{ t: "Zweig " }, { t: s.branch, mono: true }] : [{ t: "Zweig unbekannt" }]);
+  if (!s.head) segments.push([{ t: "Stand unbekannt" }]);
+  else {
+    segments.push([{ t: "Stand beim Start " }, { t: s.head.slice(0, 7), mono: true }]);
+    const target = s.target;
+    if (!target) segments.push([{ t: "Ziel unbekannt" }]);
+    else {
+      const on = { t: target.branch, mono: true };
+      const commits = target.ahead === null ? null : target.ahead === 1 ? "1 Commit" : `${target.ahead} Commits`;
+      const files = s.dirty === null ? null : s.dirty === 1 ? "1 Datei ohne Commit" : `${s.dirty} Dateien ohne Commit`;
+      // a count is only a comparison when the target's own sha was measured with it
+      if (target.head === null || target.ahead === null) segments.push([{ t: "Abgleich mit " }, on, { t: " unbekannt" }]);
+      else if (target.ahead === 0 && s.dirty === 0) segments.push([{ t: "alles schon auf " }, on]);
+      else if (s.dirty === null) segments.push([{ t: target.ahead === 0 ? "alle Commits schon auf " : `${commits} noch nicht auf ` }, on, { t: ", Dateien ohne Commit: unbekannt" }]);
+      else segments.push([{ t: `${[target.ahead ? commits : null, s.dirty ? files : null].filter(Boolean).join(" und ")} noch nicht auf ` }, on]);
+    }
+  }
+  const text = segments.map((seg) => seg.map((r) => r.t).join("")).join(" · ");
+  const when = s.measuredAt ? clock(s.measuredAt) : "unbekannt";
+  const title = s.head
+    ? `Diese Testinstanz zeigt ${s.branch ?? "einen unbekannten Zweig"} so, wie er beim Start war (${when}, Commit ${s.head}). `
+      + "Was danach im Worktree geändert wurde, ist hier nicht enthalten."
+      + (s.target ? ` Verglichen mit ${s.target.branch}${s.target.head ? ` (${s.target.head.slice(0, 7)})` : ""} zum selben Zeitpunkt.` : "")
+    : "Diese Testinstanz konnte beim Start nicht messen, welchen Stand sie zeigt.";
+  return { segments, text, title };
 }
 
 // --- the instance switcher's list ----------------------------------------------------------------
@@ -621,4 +758,215 @@ export function normalizeRolePresets(x: unknown): RolePresets | null {
     out[role as FoundingRole] = { base, plus: p, minus: m };
   }
   return out;
+}
+
+// --- the founding plan's pack rows, and the preview held against the receipt ---------------------
+// GET /api/founding-plan writes one row per selected pack (server.ts, the route) and the founding
+// window reads it (src/founding.ts#validPlan); after a start the window holds that PREVIEW against the
+// receipt the delivery wrote (GET /api/context-receipts). The fields come from the plan itself — the
+// stamped source hash and the declared rule facts — never from a second read of a source.
+// `harnesses` is the pack's ALLOWED list, never a claim about who wrote it or which model fits: the
+// pack schema has no model field (context-pack-validator.ts refuses one), so no row names a model.
+export type PackAnchors = readonly { readonly path: string; readonly anchor: string }[] | { readonly privateSourceId: string };
+export interface FoundingPlanPart {
+  id: string; packId: string | null; path: string | null; anchor: string | null; privateSourceId?: string;
+  sorte: "anleitung" | "wissen"; ort: "box" | "ausleihe";
+  sha256: string | null; bytes: number | null; content: string | null;
+  refusal: "source-unavailable" | "source-anchor-missing" | "source-anchor-ambiguous" | null;
+}
+export interface FoundingSessionAgents {
+  text: string; bytes: number; parts: readonly FoundingPlanPart[]; projectDocMaxBytes?: number;
+}
+export interface FoundingPlanPack {
+  id: string; bytes: number; source: "fleet-seed" | "repo-manifest"; useWhen?: string;
+  // absent on a server older than these fields — the window says "nicht gemeldet", never guesses
+  harnesses?: string[]; triggers?: string[]; anchors?: PackAnchors; sourceHash?: string;
+  group?: "grundlagen" | "pruefen-landen" | "sessions-fuehren" | "vor-arbeiten"; parts?: readonly FoundingPlanPart[];
+}
+export interface FoundingPlanOmission { id: string; reason: string; harnesses?: string[] }
+
+// A pack's FASSUNG exists only where its id declares one, by the suffix `-v<N>` (codex-native-context-v1).
+// A source hash is the version of the bytes a pointer points INTO, a konzept ledger version is the
+// private file's own count — neither is a pack fassung, and an id without the suffix has none.
+const PACK_ID_FASSUNG_RE = /-v([1-9]\d{0,3})$/;
+export function packIdFassung(id: string): number | null {
+  const m = PACK_ID_FASSUNG_RE.exec(id);
+  return m ? Number(m[1]) : null;
+}
+
+// PREVIEW AGAINST RECEIPT. The preview is the source state when the window PLANNED; the receipt is the
+// state the delivery seam stamped when it SENT. Per requested pack:
+//  same          both sides name a hash and the anchors, and they agree
+//  changed       both sides name them and they differ — the receipt's is what was delivered
+//  unknown       one side names no hash (an old receipt, an old server, an unobservable source)
+//  drift         a private pack whose file at delivery is not the declared fassung
+//  not-delivered requested, but the receipt carries it as omitted, or not at all
+//  extra         in the receipt without having been requested
+// `unknown` is never `same`: a missing fact is never a compatibility pass. Delivered says the pointer
+// was in the brief — whether the agent read it is not a fact either side has.
+export type PackStandKind = "same" | "changed" | "unknown" | "drift" | "not-delivered" | "extra";
+export interface PackStandRow { id: string; stand: PackStandKind; preview: string | null; delivered: string | null; why: string | null }
+export interface PackStandPreview {
+  head: string | null;
+  packs: readonly { id: string; anchors?: PackAnchors; sourceHash?: string }[];
+}
+export interface PackStandReceipt {
+  head?: unknown;
+  selected: readonly { id: string; anchors?: unknown; sourceHash?: unknown; private?: { verdict?: unknown; version?: unknown } }[];
+  omitted?: readonly { id: string; why?: unknown; reason?: unknown }[];
+}
+export interface PackStand { head: "same" | "changed" | "unknown"; previewHead: string | null; deliveredHead: string | null; packs: PackStandRow[] }
+
+export function standSincePreview(preview: PackStandPreview | null, receipt: PackStandReceipt, requested: readonly string[]): PackStand {
+  const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
+  const previewHead = preview?.head ?? null;
+  const deliveredHead = str(receipt.head);
+  const head = previewHead === null || deliveredHead === null ? "unknown" : previewHead === deliveredHead ? "same" : "changed";
+  const packs: PackStandRow[] = [];
+  for (const id of requested) {
+    const got = receipt.selected.find((p) => p.id === id);
+    const before = preview?.packs.find((p) => p.id === id);
+    const was = before?.sourceHash ?? null;
+    if (!got) {
+      const o = receipt.omitted?.find((p) => p.id === id);
+      const why = o ? [str(o.why), str(o.reason)].filter(Boolean).join(": ") || null : null;
+      packs.push({ id, stand: "not-delivered", preview: was, delivered: null, why });
+      continue;
+    }
+    const now = str(got.sourceHash);
+    if (got.private && typeof got.private === "object") {
+      const verdict = str(got.private.verdict);
+      const stand: PackStandKind = verdict === "match" ? "same" : verdict === "drift" ? "drift"
+        : verdict === "missing" ? "not-delivered" : "unknown";
+      packs.push({ id, stand, preview: was, delivered: now, why: verdict });
+      continue;
+    }
+    if (was === null || now === null) { packs.push({ id, stand: "unknown", preview: was, delivered: now, why: null }); continue; }
+    const anchorsMoved = before?.anchors !== undefined && got.anchors !== undefined
+      && JSON.stringify(before.anchors) !== JSON.stringify(got.anchors);
+    packs.push({ id, stand: was !== now || anchorsMoved ? "changed" : "same", preview: was, delivered: now,
+      why: anchorsMoved ? "anchors" : was !== now ? "sourceHash" : null });
+  }
+  for (const got of receipt.selected)
+    if (!requested.includes(got.id)) packs.push({ id: got.id, stand: "extra", preview: null, delivered: str(got.sourceHash), why: null });
+  return { head, previewHead, deliveredHead, packs };
+}
+
+export interface FactReason { field: string; reason: string }
+export interface WorktreeDistance { ahead: number; behind: number }
+export interface WorkplaceBranch {
+  branch: "main" | "overhaul"; head: string | null;
+  distance: WorktreeDistance | null; reasons: FactReason[];
+}
+export interface WorkplaceCheck {
+  state: "running" | "green" | "red" | "skipped" | "waiting";
+  head: string | null; at: number | null; fails: string[]; stale: boolean | null;
+}
+export type WorkplaceChecks = Record<"local" | "preview" | "gate" | "audit", WorkplaceCheck | null>;
+export interface WorkplaceRow {
+  path: string; primary: boolean; branch: string | null; head: string | null;
+  base: { branch: string; head: string } | null; distance: WorktreeDistance | null;
+  session: { slot: number; openedAt: number } | null;
+  target: { branch: string; head: string | null; behind: number | null;
+    landed: "yes" | "no" | null; landedAs: string | null; basis: "land-note" };
+  checks: WorkplaceChecks;
+  template: "present" | "missing" | null;
+  testinstanz: { state: string; instance: Record<string, unknown> } | null;
+  reasons: FactReason[];
+}
+export interface WorkplaceRepo {
+  repo: string; branches: WorkplaceBranch[] | null;
+  worktrees: WorkplaceRow[] | null; landNotes: { truncated: boolean | null }; reasons: FactReason[];
+}
+export interface WorkplaceGitComparison {
+  ref: string; head: string | null; mergeBase: string | null; distance: WorktreeDistance | null;
+  codeBehind: boolean | null; reasons: FactReason[];
+}
+export interface WorkplaceRemote extends Omit<WorkplaceGitComparison, "ref"> {
+  ref: string | null; name: string | null; refUpdatedAt: number | null; refAgeMs: number | null;
+}
+export interface WorkplaceStand {
+  kind: "worktree" | "live-server" | "test-instance" | "helper-daemon" | "helper-instance" | "helper-repo" | "linked-instance";
+  repo: string | null; name: string | null; path: string | null; head: string | null;
+  basis: "worktree-head" | "boot-head" | "copy-unproven" | "checkout-unproven" | "heartbeat" | "link-only";
+  reportedCheckout?: { head: string; observedAt: number };
+  reportedBranch?: string | null;
+  remotes?: string[] | null;
+  coverage?: { state: "complete" | "incomplete" | "unreported"; reason: string | null };
+  codeScope: "server" | "helper-daemon" | "repository";
+  observedAt: number | null; target: WorkplaceGitComparison | null;
+  remote: "none" | WorkplaceRemote[] | null;
+  update: { state: string; main: string | null; mainSha: string | null } | null; reasons: FactReason[];
+}
+export interface Workplaces { repos: WorkplaceRepo[]; stands: WorkplaceStand[]; measuredAt: number; cacheMs: number }
+export interface DeployLand {
+  sha: string; branch: string | null; task: string | null; at: number | null;
+  reasons: FactReason[];
+}
+export interface DeployGap {
+  bootHead: string | null; head: string | null; behindCount: number | null;
+  codeBehind: boolean | null; codeBehindUnknown: string[] | null;
+  lands: DeployLand[] | null; truncated: boolean | null; reasons: FactReason[];
+}
+
+
+export type PerfJourney = "J1" | "J2" | "J3" | "J4";
+export interface PerfAttrs {
+  view?: "chat" | "term";
+  shelf?: boolean;
+  bytes?: number;
+  entries?: number;
+  htmlBytes?: number;
+  bundleBytes?: number;
+  cold?: boolean;
+  hidden?: boolean;
+  reason?: "composer-timeout" | "fetch-error" | "http-error";
+  bubbleMs?: number | null;
+  responseMs?: number | null;
+  transcriptMs?: number | null;
+  serverMs?: "ws-seed-unmeasured" | "timing-unavailable";
+}
+export interface PerfRecord {
+  j: PerfJourney;
+  ms: number | null;
+  clientMs: number | null;
+  serverMs: number | null;
+  netMs: number | null;
+  dev: "mobile" | "desktop";
+  saver: boolean;
+  v: number;
+  slots: number;
+  ok: boolean;
+  attrs?: PerfAttrs;
+}
+export const PERF_BATCH_MAX = 50;
+export const PERF_BODY_MAX = 64_000;
+export const PERF_ROTATE_BYTES = 1_000_000;
+const perfMs = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 86_400_000;
+export function validPerfRecord(raw: unknown): raw is PerfRecord {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["j", "ms", "clientMs", "serverMs", "netMs", "dev", "saver", "v", "slots", "ok", "attrs"].includes(k))) return false;
+  if (!["J1", "J2", "J3", "J4"].includes(r.j as string) || !["mobile", "desktop"].includes(r.dev as string)
+    || typeof r.saver !== "boolean" || typeof r.ok !== "boolean"
+    || !Number.isSafeInteger(r.v) || Number(r.v) < 0 || !Number.isSafeInteger(r.slots) || Number(r.slots) < 0 || Number(r.slots) > 1000) return false;
+  if (![r.ms, r.clientMs, r.serverMs, r.netMs].every((n) => n === null || perfMs(n))) return false;
+  if (r.ok ? !perfMs(r.ms) || !perfMs(r.clientMs) : r.ms !== null || r.clientMs !== null || r.serverMs !== null || r.netMs !== null) return false;
+  if (r.attrs !== undefined) {
+    if (!r.attrs || typeof r.attrs !== "object" || Array.isArray(r.attrs)) return false;
+    const a = r.attrs as Record<string, unknown>;
+    for (const [k, v] of Object.entries(a)) {
+      if (["bytes", "entries", "htmlBytes", "bundleBytes"].includes(k)) { if (!Number.isSafeInteger(v) || Number(v) < 0) return false; }
+      else if (["bubbleMs", "responseMs", "transcriptMs"].includes(k)) { if (v !== null && !perfMs(v)) return false; }
+      else if (["shelf", "cold", "hidden"].includes(k)) { if (typeof v !== "boolean") return false; }
+      else if (k === "reason") { if (v !== "composer-timeout" && v !== "fetch-error" && v !== "http-error") return false; }
+      else if (k === "view") { if (v !== "chat" && v !== "term") return false; }
+      else if (k === "serverMs") { if (v !== "ws-seed-unmeasured" && v !== "timing-unavailable") return false; }
+      else return false;
+    }
+  }
+  return true;
+}
+export function nearestRank(sorted: readonly number[], q: number): number | null {
+  return sorted.length ? sorted[Math.ceil(q * sorted.length) - 1] : null;
 }

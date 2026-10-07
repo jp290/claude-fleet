@@ -2134,7 +2134,23 @@ export async function run(): Promise<void> {
   }
 
   // Owner sends and machine bundles share transport, but each keeps its own safety gates.
-  {
+  ownerSendFixture: {
+    let compiled: string;
+    try {
+      const client = readFileSync(resolve(realpathSync(`${ROOT}/node_modules`), "..", "src", "client.ts"), "utf8");
+      const start = /^export (?:async )?function deliver\(/m.exec(client)?.index;
+      const end = start === undefined ? -1 : client.indexOf("\nasync function doSend(", start);
+      if (start === undefined || end <= start) throw new Error("deliver or doSend source boundary missing");
+      const deliverSource = client.slice(start, end);
+      compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(deliverSource.replace(/^export /, ""));
+      if (new Function(`${compiled}; return typeof deliver;`)() !== "function")
+        throw new Error("extracted source does not define deliver");
+    } catch (error) {
+      check("owner send replay fixture: client deliver source is extractable", false,
+        error instanceof Error ? error.message : String(error));
+      break ownerSendFixture;
+    }
+    check("owner send replay fixture: client deliver source is extractable", true);
     const modeFile = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
     const stateFile = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
     const turnsFile = `${stateFile}.turns`;
@@ -2238,17 +2254,14 @@ export async function run(): Promise<void> {
         return body.slots.find((s) => s.id === slot)?.agent === "alive" && stateText() === "";
       }, { timeoutMs: 8000, what: "owner fixture's live agent and empty composer" });
 
-      const client = readFileSync(resolve(realpathSync(`${ROOT}/node_modules`), "..", "src", "client.ts"), "utf8");
-      const deliverSource = client.slice(client.indexOf("export async function deliver("), client.indexOf("async function doSend()"));
-      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(deliverSource.replace("export ", ""));
       const replay = async (response: Response, expected: string | null,
         formatter: typeof sendFailureMessage = sendFailureMessage): Promise<boolean> => {
         let calls = 0;
         let flashes = 0;
         const notices: string[] = [];
-        const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage",
+        const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage", "perfDeliveries",
           `${compiled}; return deliver;`)(async () => { calls++; return response.clone(); },
-          (text: string) => notices.push(text), () => { flashes++; }, formatter) as
+          (text: string) => notices.push(text), () => { flashes++; }, formatter, new WeakMap()) as
           (slot: number, text: string) => Promise<boolean>;
         const outgoing = "local text retained on rejection";
         let localText = outgoing;

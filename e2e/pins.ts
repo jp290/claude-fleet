@@ -1,3 +1,4 @@
+import { sourceSection } from "../context-sections";
 // e2e/pins.ts — the must-agree pairs whose OTHER SIDE IS NOT TYPESCRIPT.
 //
 // `bun e2e/pins.ts` from the repo root. No server, no tmux, no network: it reads files and
@@ -52,20 +53,20 @@ import {
   harnessBlockMessage, laneReviewMessage,
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
-import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName } from "../server/types";
+import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName, codexPermissionsFrom, CODEX_PERMISSIONS_DEFAULT } from "../server/types";
 import { modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
-import { quotaPosition, newResetEntries } from "../codex-quota";
+import { quotaPosition, newResetEntries, parseQuotaRollout, readLocalQuota, readIdentityBound, createSubscriptionReader, SUBSCRIPTION_STALE_MS, PROVIDER_UNSUPPORTED } from "../codex-quota";
 import {
   readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, sizeStampOrJoin,
   type LandRow,
 } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
-import { DraftBook } from "../src/drafts";
+import { BoxDraft, DraftBook } from "../src/drafts";
 import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
 import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
@@ -81,7 +82,7 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
-import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
+import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackSource } from "../context-packs";
 import { SESSION_BLOCKS } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -196,6 +197,31 @@ pin("the server universe is derived and holds its entry module",
 pin("the client universe is derived and holds its bundle entry",
   clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
   `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
+
+{
+  const sources: ContextPackSource[] = CONTEXT_PACKS.flatMap<ContextPackSource>((pack) => "sources" in pack ? [...pack.sources] : [])
+    .filter((source) => source.sorte === "wissen");
+  const manifest = readContextManifest(read(".fleet/context-packs.json"));
+  if (manifest.kind === "packs") for (const raw of manifest.packs) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !("sources" in raw) || !Array.isArray(raw.sources)) continue;
+    for (const source of raw.sources) {
+      if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+      if ((source.sorte === "wissen" || (source.sorte === undefined && "hardness" in raw && raw.hardness === "guidance"))
+        && typeof source.path === "string" && typeof source.anchor === "string") sources.push({ path: source.path, anchor: source.anchor, sorte: "wissen" });
+    }
+  }
+  const parts = sources.map((source) => {
+    try { return sourceSection(read(source.path), source.path, source.anchor); } catch { return null; }
+  });
+  const overlaps: string[] = [];
+  for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+    const a = parts[i], b = parts[j];
+    if (a && b && a.path === b.path && a.start < b.end && b.start < a.end)
+      overlaps.push(`${a.path}: ${a.anchor} / ${b.anchor}`);
+  }
+  pin("knowledge parts resolve at their home without overlapping bytes", parts.every(Boolean) && overlaps.length === 0,
+    `${parts.length} parts; overlaps=[${overlaps.join(", ")}]`);
+}
 
 {
   const doc = read("docs/rollenkarten.md");
@@ -1621,26 +1647,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       `nach=${readsNach} validated=${validatesRow}`);
   }
 
-  // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
-  // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
-  // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2
-  // harness with no type coverage at all. Scoped to the fenced ```sh block so that prose ABOUT a
-  // suite (this file names ./e2e-isolated.sh in the paragraph below it, correctly, as NOT a gate)
-  // is not read as a claim to run it.
-  // AND "EXACTLY" NOW MEANS THE WHOLE CHAIN, not two of its subsets. Until 2026-08-15 this rule
-  // compared the SUITE names and the tsc entry list and nothing else, so the two steps that are
-  // neither — `bun install` and `bun run build` — were unpinned in a rule whose name said
-  // "exactly". `bun run build` had drifted out of VERIFY_CMD and stayed green here for as long as
-  // anyone had looked: a break only the bundler can see (src/client.ts, src/share.ts) walked
-  // through the land gate untouched, and AGENTS.md meanwhile told every lane to run it. A pin that
-  // claims more than it compares is worse than none, because it makes the hole look guarded.
-  //
-  // The fix is to compare the ORDERED STEP SEQUENCE, and to do it against a THIRD side that
-  // already had the answer: verify-proportion.ts's LOCAL_PROOF_STEPS is the vocabulary the server
-  // hands a lane in `localProof.steps`, so it was recommending `build` to lanes the gate never ran.
-  // Steps are located by first occurrence of an unambiguous marker and sorted by position, which
-  // is why VERIFY_CMD's repo guard, its `|| { echo … }` handlers and its `;`/`&&` mix need no
-  // parsing: what is compared is which steps appear and in what order, in all three files.
+  // The ordered step names in AGENTS.md §Verify, Lane are the reader's view of the live
+  // command. Compare all three sides: documentation, watchdog.sh and LOCAL_PROOF_STEPS.
   const STEP_MARKERS: readonly [string, string][] = [
     ["install", "bun install"],
     ["pins", "bun e2e/pins.ts"],
@@ -1665,38 +1673,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   })();
 
   const RULE_VERIFY = "AGENTS.md, watchdog.sh's VERIFY_CMD and LOCAL_PROOF_STEPS are the same ordered chain";
-  const fence = agents === null ? null : /```sh\n([\s\S]*?)```/.exec(agents)?.[1] ?? null;
-  if (fence === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no ```sh verify block");
+  const verifySection = agents === null ? null : /\n## Verify\n([\s\S]*?)(?=\n## |$)/.exec(agents)?.[1] ?? null;
+  const laneSection = verifySection === null ? null : /\n### Lane\n([\s\S]*?)(?=\n### |$)/.exec(verifySection)?.[1] ?? null;
+  const names = laneSection === null ? null : /The names are links of `verify\.cmd` in the same answer:\s*((?:`[a-z-]+`\s*)+)\./.exec(laneSection)?.[1] ?? null;
+  if (names === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no step names in §Verify, Lane");
   else {
     const same = (a: string[], b: string[]): string =>
       [...new Set(a.filter((x) => !b.includes(x)))].sort().join(",");
-    const docSuites = [...fence.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
-    // the tsc invocation only: from `bunx tsc` to the end of its backslash continuation, so a future
-    // `bun something.ts` line elsewhere in the block is not mistaken for a type-gate entry
-    const tscLines = ((): string => {
-      const ls = fence.split("\n");
-      const at = ls.findIndex((l) => l.includes("bunx tsc"));
-      if (at < 0) return "";
-      let to = at;
-      while (to < ls.length - 1 && ls[to].trimEnd().endsWith("\\")) to++;
-      return ls.slice(at, to + 1).join(" ");
-    })();
-    const docTsc = tscLines.split(/\s+/).filter((t) => /\.ts$/.test(t));
-    // recomputed rather than borrowed from the block above: these rows must keep working whoever
-    // edits the neighbouring family, and the expression is the same one line either way
+    const docSteps = [...names.matchAll(/`([a-z-]+)`/g)].map((m) => m[1]);
+    const docSuites = docSteps.flatMap((step) => {
+      const marker = STEP_MARKERS.find(([name]) => name === step)?.[1];
+      return marker?.startsWith("./e2e-") ? [marker.slice(2)] : [];
+    });
+    // The command owns the tsc entries; the tree-coverage rule above holds their completeness.
+    // Keep the effective deployment's entry list and suites held to that same command below.
     const gateTsc = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
     const missSuite = same(gateSuites, docSuites), extraSuite = same(docSuites, gateSuites);
-    const missTsc = same(gateTsc, docTsc), extraTsc = same(docTsc, gateTsc);
-    // the step sequences, as strings so a failure names the drift instead of a boolean
-    const docChain = stepsOf(fence).join(">");
+    const docChain = docSteps.join(">");
     const gateChain = stepsOf(verifyCmd).join(">");
     const proofChain = proportion.join(">");
     pin(RULE_VERIFY,
-      docSuites.length > 0 && docTsc.length > 0
-      && !missSuite && !extraSuite && !missTsc && !extraTsc
+      docSuites.length > 0 && gateTsc.length > 0
+      && !missSuite && !extraSuite
       && proofChain.length > 0 && docChain === gateChain && docChain === proofChain,
       `chain doc=[${docChain}] gate=[${gateChain}] localProof=[${proofChain}]; `
-      + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
+      + `suites missing=[${missSuite}] extra=[${extraSuite}]`);
 
     // THE CHAIN THAT ACTUALLY RUNS. The rule above holds three FILES together, but the server
     // resolves a repo's gate entry-then-global (server.ts#VERIFY_CMD_REPOS): an entry for this repo
@@ -1732,8 +1733,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
         const effChain = stepsOf(effective).join(">");
         const diffs = [
           effChain !== docChain ? `chain effective=[${effChain}] doc=[${docChain}]` : "",
-          same(docTsc, effTsc) ? `tsc the doc names but the gate does not check=[${same(docTsc, effTsc)}]` : "",
-          same(effTsc, docTsc) ? `tsc the gate checks beyond the doc=[${same(effTsc, docTsc)}]` : "",
+          same(gateTsc, effTsc) ? `tsc watchdog.sh names but the effective gate does not check=[${same(gateTsc, effTsc)}]` : "",
+          same(effTsc, gateTsc) ? `tsc the effective gate checks beyond watchdog.sh=[${same(effTsc, gateTsc)}]` : "",
           same(docSuites, effSuites) ? `suites the doc names but the gate does not run=[${same(docSuites, effSuites)}]` : "",
           same(effSuites, docSuites) ? `suites the gate runs beyond the doc=[${same(effSuites, docSuites)}]` : "",
         ].filter(Boolean);
@@ -2824,6 +2825,115 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 }
 
 {
+  // t (ms) | event | exclusive owner
+  // now-900001 | stale stored quota | local source; now | read/refresh | server clock
+  // read pending -> 10 ms timeout -> late result | one acquisition | reader generation
+  const now = Date.parse("2026-10-03T12:00:00Z");
+  const window = { used_percent: 27, window_minutes: 300, resets_at: now / 1000 + 7200 };
+  const limits = { limit_id: "codex", primary: window,
+    secondary: { used_percent: 61, window_minutes: 10080, resets_at: now / 1000 + 604800 } };
+  const event = (at = now, rate_limits: unknown = limits) => JSON.stringify({ timestamp: new Date(at).toISOString(), payload: { rate_limits } });
+  const measured = parseQuotaRollout(event(), now);
+  pin("subscription: unequal primary/secondary windows come from one event in seconds", measured.primary?.used_percent === 27
+    && measured.primary.window_minutes === 300 && measured.primary.resets_at === now / 1000 + 7200
+    && measured.secondary?.used_percent === 61 && measured.secondary.window_minutes === 10080
+    && measured.source.measuredAt === now && measured.source.ageMs === 0 && measured.source.accountBound === false);
+  const missing = parseQuotaRollout(event(now, { primary: window }), now);
+  pin("subscription: absent secondary and legacy limit id remain null", missing.secondary === null && missing.source.limitId === null);
+  const zero = parseQuotaRollout(event(now, { primary: { ...window, used_percent: 0 } }), now);
+  pin("subscription: measured zero is retained", zero.status === "measured" && zero.primary?.used_percent === 0);
+  const old = parseQuotaRollout(event(now - SUBSCRIPTION_STALE_MS - 1), now);
+  pin("subscription: stale is event age, never read time", old.status === "stale" && old.source.ageMs === SUBSCRIPTION_STALE_MS + 1
+    && old.source.fetchedAt === now && old.source.reason === "event-older-than-15-minutes");
+  pin("subscription: torn last line is ignored", parseQuotaRollout(event() + '\n{"payload":', now).primary?.used_percent === 27);
+  for (const text of ['{broken}\n' + event(), event() + '\n{broken}\n']) {
+    const value = parseQuotaRollout(text, now);
+    pin("subscription: malformed complete/interior line invalidates source", value.status === "error" && value.primary === null
+      && value.secondary === null && value.source.reason === "invalid-json-line");
+  }
+  for (const bad of [{ ...limits, primary: { ...window, resets_at: window.resets_at * 1000 } },
+    { ...limits, secondary: { ...window, used_percent: 101 } }, { ...limits, primary: { ...window, window_minutes: 0 } }]) {
+    const value = parseQuotaRollout(event(now, bad), now);
+    pin("subscription: invalid window fails without fallback to old event", value.status === "error" && value.primary === null
+      && value.source.reason === "invalid-window");
+  }
+  const foreign = parseQuotaRollout(event(now, { ...limits, limit_id: "other" }), now);
+  pin("subscription: foreign limit id cannot masquerade as codex", foreign.status === "unknown" && foreign.primary === null);
+  const future = parseQuotaRollout(event(now + 1), now);
+  pin("subscription: server clock rejects future event time", future.status === "unknown" && future.source.reason === "event-time-ahead-of-server");
+  const noTime = parseQuotaRollout(JSON.stringify({ payload: { rate_limits: limits } }), now);
+  pin("subscription: event time is required, not inferred from mtime", noTime.status === "unknown" && noTime.source.measuredAt === null);
+  const dir = mkdtempSync(join(tmpdir(), "subscription-quota-"));
+  try {
+    const day = join(dir, "2026", "10", "03");
+    mkdirSync(day, { recursive: true });
+    writeFileSync(join(day, "a.jsonl"), event(now));
+    writeFileSync(join(day, "z.jsonl"), event(now - 60_000));
+    const local = await readLocalQuota(dir, () => now);
+    pin("subscription: newest event wins over later-written other session", local.source.measuredAt === now && local.primary?.used_percent === 27);
+    const absent = await readLocalQuota(join(dir, "absent"), () => now);
+    pin("subscription: missing source is unknown with null windows", absent.status === "unknown" && absent.primary === null
+      && absent.secondary === null && absent.source.reason === "missing-source");
+    writeFileSync(join(day, "a.jsonl"), JSON.stringify({ payload: { fixture: "x".repeat(300_000) } }) + '\n' + event());
+    const bounded = await readLocalQuota(dir, () => now);
+    pin("subscription: bounded tail skips only its incomplete leading fragment and retains the event",
+      bounded.primary?.used_percent === 27 && bounded.source.selection.historyComplete === false
+      && bounded.source.measuredAt === now);
+    writeFileSync(join(day, "z.jsonl"), '{bad}\n' + event());
+    const corrupt = await readLocalQuota(dir, () => now);
+    pin("subscription: corrupt file cannot fall back to another session", corrupt.status === "error" && corrupt.primary === null);
+    const probe = spawnSync(process.execPath, ["-e", `
+      let calls = 0;
+      globalThis.fetch = () => { calls++; throw new Error("network-forbidden"); };
+      Bun.write = () => { calls++; throw new Error("write-forbidden"); };
+      const fs = await import("node:fs/promises");
+      for (const name of ["mkdir", "rename", "unlink"]) fs.default[name] = () => { calls++; throw new Error("cache-forbidden"); };
+      await import(${JSON.stringify(resolve(ROOT, "codex-quota.ts"))});
+      console.log(JSON.stringify({calls, cache: (await import("node:fs")).existsSync(${JSON.stringify(join(dir, ".cache"))})}));
+    `], { env: { ...process.env, HOME: dir, CODEX_HOME: dir }, encoding: "utf8", timeout: 10_000 });
+    pin("subscription: import causes no CLI, network, feed or cache action", probe.status === 0
+      && probe.stdout.trim() === '{"calls":0,"cache":false}', `status=${probe.status}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  let identity = "own";
+  const rejected = await readIdentityBound(async () => identity, async () => { identity = "foreign"; return measured; })
+    .then(() => "accepted", (error: unknown) => error instanceof Error ? error.message : "other");
+  pin("subscription: identity replacement after await rejects foreign result", rejected === "source-identity-changed");
+  const accepted = await readIdentityBound(async () => "own", async () => measured);
+  pin("subscription: unchanged identity admits exact result", accepted.primary?.used_percent === 27);
+  const reader = createSubscriptionReader(async () => old, () => now, 100);
+  await reader.get();
+  const reread = await reader.refresh("local");
+  pin("subscription: local refresh never clears stale", reread.status === "stale" && reread.refresh.status === "ok"
+    && reread.source.measuredAt === old.source.measuredAt);
+  const unsupported = await reader.refresh("provider");
+  pin("subscription: provider request is explicitly unsupported, keeps local provenance", unsupported.refresh.status === "unsupported"
+    && unsupported.refresh.target === "provider" && unsupported.refresh.reason === PROVIDER_UNSUPPORTED
+    && unsupported.source.measuredAt === old.source.measuredAt);
+  let forbiddenReads = 0;
+  const providerOnly = createSubscriptionReader(async () => { forbiddenReads++; return measured; }, () => now);
+  const providerResult = await providerOnly.refresh("provider");
+  pin("subscription: unsupported provider performs no local fallback read", forbiddenReads === 0
+    && providerResult.primary === null && providerResult.refresh.status === "unsupported");
+  let calls = 0;
+  let release: ((value: typeof measured) => void) | undefined;
+  const pending = createSubscriptionReader(async () => { calls++; return new Promise(resolve => { release = resolve; }); }, () => now, 10);
+  const refreshing = pending.refresh("local");
+  await Promise.resolve();
+  const inFlight = await pending.get();
+  pin("subscription: active refresh is visible without a second read", inFlight.refresh.status === "refreshing" && calls === 1);
+  const timedOut = await refreshing;
+  pin("subscription: read timeout has null windows and sanitized error", timedOut.refresh.status === "timeout"
+    && timedOut.primary === null && timedOut.secondary === null && timedOut.source.reason === "read-timeout");
+  release?.(measured);
+  await Promise.resolve();
+  pin("subscription: late read cannot overwrite timeout", (await pending.get()).refresh.status === "timeout" && (await pending.get()).primary === null);
+  const failed = createSubscriptionReader(async () => { throw new Error("token/private/path/prompt"); }, () => now, 100);
+  const failure = await failed.refresh("local");
+  pin("subscription: unexpected source errors cannot leak raw details", failure.refresh.status === "error"
+    && failure.source.reason === "read-failed" && !JSON.stringify(failure).includes("token/private"));
+}
+
+{
   // A LANE THAT HANDED OVER KEEPS ITS PEAK. Since the lane baton went live, a worktree's transcript
   // directory holds the full session AND its successor, and `endContext` (the last request over all
   // files) read Slot 7's 403 568-token lane as 78 729 — the successor's twelve seconds. A session the
@@ -3376,10 +3486,10 @@ await import(pathToFileURL(process.argv[2]).href);
   // field, `browser?: true` (2026-09-14), is the exception by design: its absence already HAS its
   // meaning — a text lane, the default — so DEFAULT_SPAWN carries none and the tick spawns text lanes.
   // `context?` (2026-09-15) follows the same rule: absent = no context flag, today's spawn line.
-  pin("the attended dispatch carries model+harness+effort+browser+context, while the tick default keeps all three null and no browser or context",
-    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext \};/.test(server)
+  pin("the attended dispatch carries model+harness+effort+browser+context+permissions, while the tick default keeps all three null and no browser or context",
+    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext; permissions\?: SlotPermissions \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, \[next, \.\.\.\(wave\?\.followers \?\? \[\]\)\]\.some\(\(t\) =>\s+t\.card\?\.valid === true && t\.card\.web === "search"\)\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, spawn\.permissions, \[next, \.\.\.\(wave\?\.followers \?\? \[\]\)\]\.some\(\(t\) =>\s+t\.card\?\.valid === true && t\.card\.web === "search"\)\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -3875,7 +3985,7 @@ await import(pathToFileURL(process.argv[2]).href);
       && /repo: targetRepo,/.test(crBody)
       && /landWaveProjectionNow\(\)\.repos/.test(crBody)
       && /dispatchRepos\.has\(requested\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "card", "variants", "files", "repo", "programId"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort", "permissions", "card", "variants", "files", "repo", "programId"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
   // …and the `files` the set above admits is a PROPOSAL, held over the source because nothing at
@@ -4271,59 +4381,54 @@ await import(pathToFileURL(process.argv[2]).href);
   // it silently changed.
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
-  pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
-    /codex --dangerously-bypass-approvals-and-sandbox/.test(xCode) && !/--sandbox workspace-write/.test(xCode),
-    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
-  pin("the codex spawn disables startup update checks through the documented config override",
-    (xCode.match(/-c check_for_update_on_startup=false/g) ?? []).length === 2,
-    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
-  // The trust prelude is what keeps that spawn UNATTENDED-bootable: codex blocks on its per-path
-  // trust prompt for any cwd absent from ~/.codex/config.toml, and the bypass flag does NOT skip
-  // it (measured 2026-08-12). Losing the prelude or the charset guard is invisible at runtime on a
-  // suite fleet, so both are rules over the source.
-  pin("the codex spawn writes its idempotent trust entry, guarded by the spawn-path charset",
-    /grep -qxF '\[projects\."\$\{o\.cwd\}"\]'/.test(xCode) && /trust_level = "trusted"/.test(xCode)
-    && /SPAWN_PATH_RE\.test\(o\.cwd\)/.test(xCode),
-    xCode.match(/const trust = [^\n]*/)?.[0] ?? "no trust prelude");
-  // ...and it writes where codex READS: `${CODEX_HOME:-$HOME/.codex}`. A suite exports CODEX_HOME
-  // into its instance, so its temp cwds stop piling into the owner's config (9 883 entries, 8 502
-  // of them suite temp paths, docs/messungen/2026-09-14-codex-lane-verdrahtung.md). Executed, not
-  // just matched: the prelude as the source spells it runs under each available shell, and without
-  // CODEX_HOME it must leave exactly the bytes the old `$HOME/.codex` prelude left, once.
-  const trustSrc = xBody.match(/\? `(grep -qxF [^`]*)`\n\s*: "";/)?.[1] ?? "";
-  pin("the codex trust prelude reads and appends ${CODEX_HOME:-$HOME/.codex}/config.toml, never a bare $HOME path",
-    (trustSrc.match(/"\\\$\{CODEX_HOME:-\$HOME\/\.codex\}\/config\.toml"/g) ?? []).length === 2
-    && !trustSrc.includes('"$HOME/.codex/config.toml"'), trustSrc.slice(0, 200) || "no trust prelude");
-  {
-    const trustCwd = "/tmp/fleet-pin-trust/repo.worktrees/x-1";
-    const trustRun = trustSrc.replaceAll("${o.cwd}", trustCwd).replaceAll("\\${", "${").replaceAll("\\n", "\n");
-    const want = `\n[projects."${trustCwd}"]\ntrust_level = "trusted"\n`;
-    const shells = ["/bin/sh", "/bin/zsh"].filter((s) => existsSync(s));
-    const seen: string[] = [];
-    let ok = trustSrc !== "" && shells.length > 0;
-    for (const sh of shells) {
-      const home = mkdtempSync(`${tmpdir()}/fleet-pin-trust-`);
-      try {
-        mkdirSync(`${home}/.codex`);
-        mkdirSync(`${home}/codex-home`);
-        const run = (env: Record<string, string>) =>
-          spawnSync(sh, ["-c", trustRun], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, ...env } }).status;
-        const cfg = (p: string) => existsSync(p) ? readFileSync(p, "utf8") : "";
-        const s1 = run({}); const s2 = run({});
-        const bare = cfg(`${home}/.codex/config.toml`);
-        const s3 = run({ CODEX_HOME: `${home}/codex-home` });
-        const scoped = cfg(`${home}/codex-home/config.toml`);
-        const bareAfter = cfg(`${home}/.codex/config.toml`);
-        const shOk = s1 === 0 && s2 === 0 && s3 === 0 && bare === want && scoped === want && bareAfter === want;
-        ok &&= shOk;
-        seen.push(`${sh}:${shOk ? "ok" : JSON.stringify({ s1, s2, s3, bare, scoped, bareAfter })}`);
-      } finally {
-        rmSync(home, { recursive: true, force: true });
+  pin("Codex permission defaults and the documented six forms agree without a bypass flag",
+    JSON.stringify(CODEX_PERMISSIONS_DEFAULT) === JSON.stringify({ sandbox: "danger-full-access", approval: "never" })
+      && !xCode.includes("--dangerously-bypass-approvals-and-sandbox")
+      && xCode.includes("--sandbox ${permissions.sandbox} --ask-for-approval ${permissions.approval}")
+      && read("docs/harness-adapter.md").includes("permissions:{sandbox,approval}"),
+    "explicit sandbox/approval and documented profile");
+  pin("the Codex spawn disables startup update checks once after the fresh/resume choice",
+    (xCode.match(/-c check_for_update_on_startup=false/g) ?? []).length === 1
+      && xCode.indexOf("check_for_update_on_startup=false") > xCode.indexOf("let cmd = o.resume"), "shared override");
+  pin("Codex trust is a whole-table, shell-quoted session override, never a global config prelude",
+    xCode.includes('const trust = `projects={${JSON.stringify(realpathSync(o.cwd))}={trust_level="trusted"}}`;')
+      && xCode.includes("shellSingleQuote(trust)") && !/config\.toml|grep -qxF|printf/.test(xCode)
+      && xCode.includes("--no-daemon"), "session-only trust with isolated execution");
+  const spawnStart = xCode.indexOf("  spawnCmd: (o) => {") + "  spawnCmd: (o) => {".length;
+  const spawnEnd = xCode.indexOf("\n  },", spawnStart);
+  type Permissions = { sandbox: string; approval: string };
+  const spawnCmd = new Function("codexPermissionsFrom", "shellSingleQuote", "realpathSync", "PATH_EXPORT",
+    "CODEX_TEXT_LANE_MCP", "SHELL", `return (o) => {${xCode.slice(spawnStart, spawnEnd)}}`)(
+    codexPermissionsFrom, (v: string) => `'${v.replaceAll("'", "'\\''")}'`, realpathSync, "", "", "/usr/bin/true") as
+    (o: { permissions: Permissions; resume: boolean; sessionId: string; cwd: string; browserMcp: boolean; webSearch?: boolean }) => string;
+  const home = mkdtempSync(`${tmpdir()}/fleet-pin-permissions-`);
+  try {
+    mkdirSync(`${home}/.codex`); mkdirSync(`${home}/codex-home`); mkdirSync(`${home}/bin`);
+    writeFileSync(`${home}/.codex/config.toml`, "owner config\n");
+    writeFileSync(`${home}/codex-home/config.toml`, "scoped config\n");
+    writeFileSync(`${home}/bin/codex`, '#!/bin/sh\nprintf "%s\\n" "$@" > "$PERMISSIONS_ARGV"\n');
+    chmodSync(`${home}/bin/codex`, 0o700);
+    const fixtureReady = existsSync("/usr/bin/true") && (statSync("/usr/bin/true").mode & 0o111) !== 0;
+    pin("Codex argv fixture precondition: the shell completion executable exists and is executable", fixtureReady, "/usr/bin/true");
+    if (fixtureReady) for (const sandbox of ["read-only", "workspace-write", "danger-full-access"]) for (const approval of ["on-request", "never"]) {
+      const profile = { sandbox, approval };
+      for (const resume of [false, true]) for (const webSearch of [false, true]) {
+        const line = spawnCmd({ permissions: profile, resume, sessionId: "10000000-0000-4000-8000-000000000001",
+          cwd: home, browserMcp: true, webSearch });
+        const env = { PATH: `${home}/bin:/usr/bin:/bin`, HOME: home, CODEX_HOME: `${home}/codex-home`, PERMISSIONS_ARGV: `${home}/argv` };
+        const run = spawnSync("/bin/sh", ["-c", line], { env });
+        const argv = existsSync(`${home}/argv`) ? readFileSync(`${home}/argv`, "utf8").trimEnd().split("\n") : [];
+        pin(`Codex ${sandbox}/${approval} ${resume ? "resume" : "fresh"} webSearch=${webSearch}: exact flags, no bypass and config bytes unchanged`,
+          run.status === 0 && argv[argv.indexOf("--sandbox") + 1] === sandbox
+            && argv[argv.indexOf("--ask-for-approval") + 1] === approval
+            && (resume ? argv[0] === "resume" && argv[1] === "10000000-0000-4000-8000-000000000001" : argv[0] === "--no-daemon")
+            && argv.filter((arg) => arg === "--search").length === (webSearch ? 1 : 0)
+            && !line.includes("bypass") && argv.includes(`projects={${JSON.stringify(realpathSync(home))}={trust_level="trusted"}}`)
+            && readFileSync(`${home}/.codex/config.toml`, "utf8") === "owner config\n"
+            && readFileSync(`${home}/codex-home/config.toml`, "utf8") === "scoped config\n", `status=${run.status} stderr=${run.stderr.toString().trim()} argv=${JSON.stringify(argv)}`);
       }
     }
-    pin("the codex trust prelude, executed: no CODEX_HOME -> exactly the old $HOME/.codex bytes once; CODEX_HOME set -> there, $HOME untouched",
-      ok, seen.join(" ") || "no shell ran");
-  }
+  } finally { rmSync(home, { recursive: true, force: true }); }
   // The suite half: e2e-isolated.sh opens codex slots on temp cwds, so it must EXPORT an instance
   // CODEX_HOME before its tmux server exists (a pane's env is that server's global env), and must
   // not bend HOME, which claude and bun caches live under.
@@ -5285,7 +5390,7 @@ await import(pathToFileURL(process.argv[2]).href);
     cxTernary > 0 && cxAppend > cxTernary && (cxCode.match(/CODEX_TEXT_LANE_MCP/g) ?? []).length === 1,
     `ternary@${cxTernary} append@${cxAppend}`);
   pin("ensureSlot resolves the profile for LANES only — a slot without a worktree keeps its ambient MCPs",
-    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
+    /browserMcp: !s\.worktree \|\| occupant\.browser, context: occupant\.context, permissions: po\.permissions, rulebookRole[,\s}]/.test(server), "browserMcp: !s.worktree || occupant.browser");
   // the context ceiling is the measured catalog maximum as a literal, never an env knob
   // (docs/messungen/2026-09-15-codex-kontextfenster-profile.md §2)
   pin("CODEX_CONTEXT_WINDOW_MAX is the literal 872_000 and no env read names it",
@@ -5294,9 +5399,6 @@ await import(pathToFileURL(process.argv[2]).href);
   const applies = [...server.matchAll(/\n  browserProfile: "(apply|not-applicable|unsupported)",/g)].map((m) => m[1]);
   pin("exactly claude and codex apply the browser profile; the other adapter literals dispose it explicitly",
     applies.filter((a) => a === "apply").length === 2 && applies.length === 6, applies.join(",") || "no browserProfile literal");
-  // THE NEGATIVE PROMISE. Code lines only (comments explain these files and may name them). The one
-  // config.toml writer that exists is codex's per-path TRUST prelude, and it may append nothing but a
-  // `[projects."…"]` table with `trust_level` — no `plugins`, no `mcp_servers`, no `enabled` key.
   const codeLines = server.split("\n").filter((l) => !l.trim().startsWith("//"));
   const settingsJson = codeLines.filter((l) => /settings\.json/.test(l));
   const providerReadAt = server.indexOf("function codexDefaultProviderBound(");
@@ -5311,10 +5413,8 @@ await import(pathToFileURL(process.argv[2]).href);
     "bounded TOML reader only");
   pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
     settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
-  pin("Fleet writes no global plugin settings: the only config.toml writer is the codex trust prelude",
-    configToml.length === 1 && /printf '\\n\[projects\."%s"\]\\ntrust_level = "trusted"\\n'/.test(configToml[0] ?? "")
-    && !/plugins|mcp_servers|enabled/.test(configToml[0] ?? ""),
-    configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
+  pin("Fleet writes no global Codex configuration: no code line names config.toml",
+    configToml.length === 0, configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
   pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
     !codeLines.some((l) => /enabledPlugins/.test(l)), "");
 }
@@ -7754,23 +7854,14 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       `tasksCapAt=${tasksCapAt} programsCapAt=${programsCapAt}`);
   }
 
-  // THREE call sites since the codex-exit cut (2026-09-18), still one construction: the
-  // declaration, the dispatch seam, and the LANE SUCCESSION brief (server.ts#buildLaneSuccessionBrief).
-  // The count is still pinned because the rule it enforces is unchanged — a lane's ending is
-  // appended at a seam, never retyped. Since the same cut the footer is a FUNCTION of the harness
-  // and the receiver resolved from the lane's current occupant:
-  // a codex lane compacts its own window, so its copy of act 2 must not teach the baton door
-  // (Fremdrepo-Befund 4) — but both exits must come from this one body, or the two drift.
-  // FOUR since the owner's harness switch (2026-10-02, server.ts#buildLaneHarnessBrief): its
-  // continuation brief appends the same footer at the same kind of seam, resolved for the NEW
-  // harness (`ho.harness`), because the session that reads it runs on that one.
-  pin(`${RULE_RECEIVER} — the exit footer is appended to mutating briefs only, clarify exempted at the seam`,
-    /const deliveredBrief = `\$\{brief\}\$\{clarify \? "" : `\\n\\n\$\{LANE_ROLE_CARD\}`\}\$\{notesBlock\}\$\{snippetBlock\}\$\{studioLaneBlock\}\$\{anchorBlock\}\$\{clarify \? "" : laneExitFooter\(free\.harness, selfPosition\(free\)\.receiver\)\}\$\{memoryBlock\}`;/.test(server)
-      && /\]\.join\("\\n"\) \+ facts\.footer;/.test(server)
-      && /footer: laneExitFooter\(s\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && /footer: laneExitFooter\(ho\.harness, selfPosition\(s\)\.receiver\)/.test(server)
-      && (server.split("laneExitFooter(").length - 1) === 4,
-    `laneExitFooter call sites=${server.split("laneExitFooter(").length - 1}`);
+  const foundingBrief = server.match(/const deliveredBrief = clarify[\s\S]*?;/)?.[0] ?? "";
+  pin(`${RULE_RECEIVER} — founding lane instructions live in the native file, with one brief pointer`,
+    foundingBrief.includes("Session-Regeln:") && foundingBrief.includes("AGENTS.override.md")
+      && !/LANE_ROLE_CARD|laneExitFooter|memoryBlock/.test(foundingBrief)
+      && foundingBrief.includes("${context.anchorBlock}")
+      && /footer: footer \?\? \(position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
+      && server.includes('await writeLaneSessionAgents(wt.path, context.sessionAgents);'), foundingBrief);
+
 }
 
 // --- THE PROGRAM-MAIN EXECUTION RAIL ↔ THE TWO PROSE CONTRACTS. The block is the only text a
@@ -8008,12 +8099,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     bootstrapBody.indexOf("reserveProgramFounding") >= 0
       && bootstrapBody.indexOf("reserveProgramFounding") < bootstrapBody.indexOf("await preflightProgramMain")
       && bootstrapBody.indexOf("canonicalizeGameMakerTreeLease") > bootstrapBody.indexOf("await preflightProgramMain")
-      && /openSlot\([\s\S]*?treeLease\)/.test(bootstrapBody)
+      && /openSlot\([\s\S]*?treeLease(?:, false, null, false, (?:pe|spawn)\.permissions)?\)/.test(bootstrapBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(bootstrapBody)
       && succeedBody.indexOf("reserveProgramFounding") >= 0
       && succeedBody.indexOf("reserveProgramFounding") < succeedBody.indexOf("await preflightProgramMain")
       && succeedBody.indexOf("canonicalizeGameMakerTreeLease") > succeedBody.indexOf("await preflightProgramMain")
-      && /openSlot\([\s\S]*?treeLease\)/.test(succeedBody)
+      && /openSlot\([\s\S]*?treeLease(?:, false, null, false, (?:pe|spawn)\.permissions)?\)/.test(succeedBody)
       && /releaseGameMakerTreeLease\(treeLease\)/.test(succeedBody),
     `bootstrap=${bootstrapBody.length} succession=${succeedBody.length}`);
   pin(`${RULE_GM_TREE} — openSlot checks the shared Game-Maker gate and holds one intent until its finally`,
@@ -11705,6 +11796,52 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("drafts: focusPane swaps the draft before it writes the placeholder, and doSend refuses a draft of another slot",
     /switchDraft\(slot \?\? 0\);[\s\S]*ta\.placeholder =/.test(focusBody) && /if \(slot !== draftSlot\)/.test(sendBody),
     `focus=${focusBody.includes("switchDraft(")} send=${sendBody.includes("draftSlot")}`);
+}
+
+// --- the draft IN the box is bound to its session too (card "Ein Entwurf geht nie still an eine
+// Session, fuer die er nicht geschrieben wurde") ---------------------------------------------------
+// The rest of the misdelivery: the FOCUSED slot recycled (new openedAt) while the box held text —
+// the target repainted to the new session (src/composer.ts#renderTarget) and Enter sent the text
+// there. src/drafts.ts#BoxDraft is the fix; the replay holds its behaviour, the source rows the wiring.
+// Measured in a browser with /send intercepted: e2e/slots.ts#runComposerTargetDom, section 8.
+{
+  const box = new BoxDraft();
+  box.reset(1000);
+  const typed = box.observe(1000, true);
+  const recycled = box.observe(5000, true);
+  pin("box draft: text typed for openedAt 1000 is the ended session's draft once the slot reads 5000 (send refuses on this answer)",
+    typed === false && recycled === true && box.orphan && box.boundTo === 1000, JSON.stringify({ typed, recycled, bound: box.boundTo }));
+  const unread = box.observe(undefined, true), again = box.observe(5000, true), back = box.observe(1000, true);
+  pin("box draft: an unread row, another poll, even the old value coming back never free it",
+    unread && again && back && box.boundTo === 1000, JSON.stringify({ unread, again, back }));
+  const cleared = box.observe(5000, false), rebound = box.observe(5000, true);
+  pin("box draft: an empty box frees it, and the next text binds to what runs now (5000)",
+    !cleared && !rebound && box.boundTo === 5000, JSON.stringify({ cleared, rebound, bound: box.boundTo }));
+  box.observe(6000, true);
+  box.adopt(undefined);
+  const stillHeld = box.orphan;
+  box.adopt(6000);
+  pin("box draft: übernehmen addresses it to the session running now (6000); an adopt without a read row changes nothing",
+    stillHeld && !box.orphan && box.boundTo === 6000 && !box.observe(6000, true), JSON.stringify({ stillHeld, bound: box.boundTo }));
+  const late = new BoxDraft();
+  late.reset(undefined);
+  const firstRead = late.observe(2000, true);
+  const emptied = late.observe(0, true);
+  pin("box draft: text typed before the row was read binds on the first read; the session ending (0, empty slot) makes it an orphan",
+    !firstRead && emptied && late.boundTo === 2000, JSON.stringify({ firstRead, emptied, bound: late.boundTo }));
+  const client = clientU.text;
+  const sendBody = client.slice(client.indexOf("async function doSend("), client.indexOf("send.onclick = () => void doSend();"));
+  const titleBody = client.slice(client.indexOf("function updateTitle() {"), client.indexOf("function updateTitle() {") + 700);
+  const switchBody = client.slice(client.indexOf("function switchDraft(slot: number)"), client.indexOf("function switchDraft(slot: number)") + 700);
+  pin("box draft: doSend asks the binding before deliver(), every poll re-reads it before the target paints, a focus swap parks an orphan under its own session",
+    /if \(syncBox\(\)\) \{[\s\S]*return;[\s\S]*deliver\(slot, outgoing\)/.test(sendBody)
+      && /syncBox\(\);[^\n]*\n\s*renderTarget\(\);/.test(titleBody)
+      && switchBody.includes("drafts.swap(draftSlot, parkedAt(),") && switchBody.includes("box.reset(occupation(slot));")
+      && client.includes("const parkedAt = (): number | undefined => box.orphan ? box.boundTo : fleet[draftSlot - 1]?.openedAt;"),
+    `send=${sendBody.includes("syncBox()")} title=${titleBody.includes("syncBox()")} switch=${switchBody.includes("parkedAt()")}`);
+  pin("box draft: the target paints the mark and the übernehmen button from the same binding (src/composer.ts#renderTarget)",
+    client.includes('const orphan = !!slot && boxOrphan();') && client.includes('"Entwurf für beendete Session"')
+      && client.includes('el("button", "ctadopt", "übernehmen")') && client.includes("adopt.onclick = () => adoptBox();"));
 }
 
 // --- the switches name what the session RUNS, not what its record says (eighteenth cut) ----------

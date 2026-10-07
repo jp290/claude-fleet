@@ -35,6 +35,40 @@ export class DraftBook<A> {
   }
 }
 
+// THE DRAFT IN THE BOX (card "Ein Entwurf geht nie still an eine Session, fuer die er nicht
+// geschrieben wurde"). The book binds a PARKED draft to its occupation; the draft the box holds was
+// bound to nothing — when the FOCUSED slot was recycled, the target repainted to the new session
+// (src/composer.ts#renderTarget) while the text stayed, and Enter sent it there. The box's draft is
+// bound here: to the occupation it was written for (a session's openedAt; 0 = the slot was empty),
+// taken when the box holds something on a known occupation and kept while it holds. A different
+// live occupation makes it the ended session's draft (`orphan`), and only adopt() or an empty box
+// frees it — a returning value never does. `undefined` = the slot row is not read: nothing is learned.
+export class BoxDraft {
+  private bound: number | undefined = undefined;
+  private orphaned = false;
+
+  // the box now shows `occupation`'s own draft (a focus swap): the binding restarts there
+  reset(occupation: number | undefined): void { this.bound = occupation; this.orphaned = false; }
+
+  // on every poll, input, focus and send: what the slot holds now, and whether the box holds anything.
+  // Returns whether the box's draft belongs to an occupation that is over.
+  observe(live: number | undefined, holds: boolean): boolean {
+    if (live === undefined) return this.orphaned;
+    if (!holds) { this.reset(live); return false; }
+    if (this.bound === undefined) this.bound = live;
+    else if (!this.orphaned && this.bound !== live) this.orphaned = true;
+    return this.orphaned;
+  }
+
+  // the owner's explicit „[Zitat entfernt]“: the draft is now written for what runs there
+  adopt(live: number | undefined): void { if (live !== undefined) this.reset(live); }
+
+  get orphan(): boolean { return this.orphaned; }
+  // the occupation the draft was written for — where a focus swap parks an orphan, so the book's own
+  // rule (a recycled slot never inherits an earlier session's draft) applies to it unchanged
+  get boundTo(): number | undefined { return this.bound; }
+}
+
 export interface HistoryEntry { text: string; ts: number; source?: string }
 
 export function historySource(entry: Pick<HistoryEntry, "text" | "source">): "owner" | "fleet" | "unknown" {

@@ -56,6 +56,9 @@ const PATHS = {
   // THE PHONE'S TOOLS SHEET (docs/design/mobil-insel-notiz.md §4): the loupe of "Referenzen erklären",
   // which the corner group still draws as a CSS circle (.loupe) — here as a glyph of this set
   search: ["M10.5 17a6.5 6.5 0 1 0 0-13a6.5 6.5 0 1 0 0 13z", "M15.5 15.5l4.5 4.5"],
+  // THE RANKE (card e66909b1): a stem with two branches leaving it at right angles — the worktree
+  // field under the composer and the Arbeitsorte in Info draw the same figure
+  ranke: ["M6 3.5v17", "M6 8.5h7a3 3 0 0 0 3-3v-1", "M6 15.5h11", "M16 5.5h.01", "M19.5 15.5h.01"],
 } as const;
 
 export type IconName = keyof typeof PATHS;

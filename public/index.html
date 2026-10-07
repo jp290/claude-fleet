@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Claude Fleet</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#141414">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -52,6 +52,28 @@
      edge. Red = the suite failed on the integration tip; amber = nothing was measured. Green
      never renders, and the “seen” receipt is the same card at its quietest. */
   #plaudit { display: none; }
+  /* THE TESTINSTANZ BAND (ranke-notiz R11, grammatik G2.3): which branch and stand a test instance
+     shows and what of it is not on its target yet. One quiet line (it wraps rather than clips) IN FLOW above everything — it
+     pushes the app down, never covers it. Material G0.1 (void ground, soft lower edge, mute ink,
+     shas and branches in mono); no signal colour, because nothing here is wrong or waiting (G0.2).
+     Only a test instance ever shows it: src/client.ts#renderInstanceBand sets html.tiband from
+     instance.source, which the live fleet never sends. */
+  #tiband { display: block; min-height: 24px; padding: 3px 12px; box-sizing: border-box;
+    background: var(--chat-void); border-bottom: 1px solid var(--chat-edge-soft); color: var(--chat-mute);
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 400; line-height: 1.4; }
+  #tiband[hidden] { display: none; }
+  #tiband svg { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -2px; color: var(--chat-faint); }
+  /* ONE line while it fits; a long branch or target name breaks onto the next line in EVERY width,
+     never clipped. Plain text flow, not flex: a wrapped flex line was sized ~4 px short of its
+     two-line segment (measured 900 × 700), so the band's own height would not hold it. Each segment
+     is an inline-block no wider than the band and wraps inside itself
+     (claim: e2e/lanes-lifecycle.ts#instanceBandDom at 900 × 700 and 390 × 844) */
+  #tiband .tiseg { display: inline-block; max-width: 100%; vertical-align: top; overflow-wrap: anywhere; }
+  #tiband .timono { font-family: var(--chat-mono); color: var(--chat-prose); }
+  #tiband .tisep { white-space: pre; vertical-align: top; color: var(--chat-faint); }
+  html.tiband body { display: flex; flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+  html.tiband #tiband { flex: none; } /* the band keeps its full height; only #app gives way */
+  html.tiband #app { flex: 1 1 auto; min-height: 0; height: auto; }
   .plasec { display: block;
     padding: 10px 12px; border-radius: var(--r2); color: var(--chat-ink); line-height: 1.45;
     background: color-mix(in srgb, var(--danger) 13%, var(--chat-void));
@@ -429,7 +451,20 @@
     /* PURE BLACK, the owner's call for the reading grounds (2026-09-18 for the chat view, again
        2026-09-20 for the right column): one definition here, so no surface invents its own. */
     --chat-void: #000;
-    --chat-col: 780px; }
+    --chat-col: 780px;
+    /* GLASS (Grammatik G0.8): the one material a floating control over the content may wear — today
+       only the phone's top island. Values and why: docs/design/liquid-glass.md §2. --glas-dicht is
+       the raised-contrast / reduced-transparency face, fully opaque: no text shows through it. */
+    --glas-scrim: rgba(20, 20, 24, .42); --glas-blur: 18px; --glas-sat: 1.6;
+    --glas-licht: rgba(255, 255, 255, .22); --glas-kante-o: rgba(255, 255, 255, .55);
+    --glas-kante-u: rgba(255, 255, 255, .08); --glas-ring: rgba(255, 255, 255, .16);
+    --glas-schatten: 0 8px 24px rgba(0, 0, 0, .28); --glas-dicht: rgb(12, 12, 14); --glas-ohne: rgba(23, 23, 26, .72);
+    --glas-text: 0 1px 2px rgba(0, 0, 0, .55); --glas-glyphe: drop-shadow(0 1px 1px rgba(0, 0, 0, .5));
+    --glas-druck: rgba(255, 255, 255, .16); --glas-fokus: rgba(255, 255, 255, .7);
+    /* THE SPRING (G0.4 addendum): positions and sizes of a floating control move as a spring.
+       src/client.ts#springCurve writes both from response 0.38 s / dampingFraction 0.72 as a linear()
+       curve; this cubic-bezier is the fallback for an engine without linear() */
+    --feder: cubic-bezier(.2, .9, .3, 1.1); --feder-ms: 600ms; }
   .chatflakes { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; z-index: 0; }
   /* the chat language's scrollbar tokens. index.html has TWO design languages but ONE :root
      element, so a second same-name pair down in the board :root would shadow this one — the chat
@@ -538,7 +573,21 @@
   .msend.wait .msenddot { background: var(--q-wait); }
   .msend.done { color: var(--chat-faint); }
   .msend.done .msenddot { background: var(--q-live); }
-  .msg.user.pending .mbody { opacity: 0.7; }
+  .msg.user.pending .mbody, .msg.user.pending .mimgs { opacity: 0.7; }
+  /* a sent drop as its picture (src/client.ts#dropStrip): one fixed-height row above YOUR bubble,
+     right-aligned like the bubble, the bubble's edge and a softer radius. The height is set before
+     the bytes arrive, so a loading picture never moves the reading position; the width follows the
+     picture up to a cap. A prompt that was only pictures has an empty bubble, which is not drawn. */
+  .mimgs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: min(80%, 640px);
+    margin-bottom: 6px; }
+  .mimg { flex: none; display: block; height: 120px; min-width: 48px; padding: 0; overflow: hidden; cursor: zoom-in;
+    border: 1px solid var(--chat-edge); border-radius: 14px; background: var(--chat-raised); }
+  .mimg img { display: block; height: 100%; width: auto; max-width: 240px; object-fit: cover; }
+  .mimg:hover img { opacity: 0.88; }
+  .mimg:focus-visible { outline: 2px solid var(--chat-mute); outline-offset: 2px; }
+  .mimgline { max-width: 100%; font: 12px var(--chat-mono); color: var(--chat-mute); overflow-wrap: anywhere;
+    text-align: right; }
+  .msg.user .mbody:empty { display: none; }
   /* a bundle part Fleet wrote, not you (Pane#addFleetLine): one quiet line in the faint ink, its
      first line only — a click opens the rest, the tooltip names the mark (G0.1, G0.3, G2.2) */
   .msys { margin: 0 0 8px; padding: 0 2px; font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
@@ -687,11 +736,14 @@
   .termcopy { display: none; position: absolute; z-index: 6; width: 96px; height: 40px; border-radius: var(--r1);
     border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
     font: 500 14px var(--chat-sans); cursor: pointer; }
-  /* the scrollback search (Pane#openSearch, card K8): one bar at the terminal's top left, the past
-     bar's material; the corner group keeps the right. Terminal view only. */
+  /* the scrollback search (Pane#openSearch, card K8): one bar, the past bar's material, terminal view
+     only. TOP RIGHT, where browsers and editors keep their find (card 746e381b): right-aligned with
+     the corner group and just UNDER its two rows (8 + 26 + 6 + 26 px, then 8 px air), so it covers
+     no corner button and the terminal's left columns — the start of every line — stay readable.
+     At the top left it lay over the first ~50 columns of the top rows (measured 1200 px). */
   .termfind { display: none; }
-  .pane:not(.chat) .termfind.open { position: absolute; z-index: 7; top: 8px; left: 10px; display: flex;
-    align-items: center; gap: 4px; max-width: calc(100% - 120px); padding: 4px 6px; background: var(--chat-raised);
+  .pane:not(.chat) .termfind.open { position: absolute; z-index: 7; top: 74px; right: 10px; display: flex;
+    align-items: center; gap: 4px; width: min(360px, calc(100% - 20px)); padding: 4px 6px; background: var(--chat-raised);
     border: 1px solid var(--chat-edge); border-radius: var(--r1); font-family: var(--chat-sans);
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   .termfindin { flex: 1 1 180px; min-width: 0; width: 180px; font: inherit; color: var(--chat-ink);
@@ -752,6 +804,9 @@
   /* an owner send parked behind a draft (src/composer.ts#renderParkHint): the chat view's quiet ink */
   #comppark { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
   #comppark[hidden] { display: none; }
+  /* a held Fleet bundle (src/composer.ts#renderHeldHint): the same quiet ink as the parked line */
+  #compheld { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
+  #compheld[hidden] { display: none; }
   #compspace { flex: 1; }
   #mobmore { display: none; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
@@ -781,6 +836,16 @@
   #comptarget.none .ctaddr { color: var(--chat-faint); }
   #comptarget.none .ctname { color: var(--chat-faint); }
   #comp.bar #comptarget { order: 1; }
+  /* a draft written for the session that ran here before (src/drafts.ts#BoxDraft): the word in
+     --q-wait (it waits for you), and the one G1.2 word button that addresses it to what runs now */
+  #comptarget.orphan { max-width: none; flex-shrink: 1; }
+  #comptarget.orphan .ctaddr { border-color: var(--q-wait); }
+  #comptarget.orphan .ctname { color: var(--q-wait); }
+  #comptarget .ctadopt { flex: none; padding: 1px 8px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+    background: var(--chat-raised); color: var(--chat-ink); font: 500 var(--chat-ui-fs) / 1.4 var(--chat-sans);
+    cursor: pointer; transition: background var(--t), border-color var(--t); }
+  #comptarget .ctadopt:hover { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #comptarget .ctadopt:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 1px; }
   .ico { display: block; flex: none; width: 16px; height: 16px; }
   .tricon { flex: none; display: grid; place-items: center; }
   #dropbtn { flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
@@ -846,6 +911,17 @@
   #comptray > #live { display: none; }
   @media (any-pointer: coarse) { #comptray > #live { display: flex; } }
   #comptray > #live.on { color: var(--chat-ink); background: var(--c-hover); }
+  /* THE WORKTREE FIELD (card e66909b1): the tray's last entry, right-aligned after Files · History ·
+     Schedule — the Ranke's figure, the address, the lane's name, and the green square while its test
+     instance runs (src/composer.ts#renderWorkplaceField). On the phone it fills the island's #mort. */
+  #comptray > .wtfield { margin-left: auto; max-width: 46%; min-width: 0; }
+  .wtfield .wtref { font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-prose); flex: none; }
+  .wtfield .wtname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wtfield .wtsq { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--q-live); }
+  #mort .wtfield { display: flex; align-items: center; gap: 6px; width: 100%; height: 100%; padding: 0 12px; border: 0;
+    background: none; color: var(--chat-ink); font: 500 var(--chat-ui-fs) var(--chat-sans); min-width: 0; cursor: pointer; }
+  #mort .wtfield .ico { width: 14px; height: 14px; flex: none; }
+  #mort:has(.wtfield) { border-style: solid; border-color: var(--chat-edge); }
   /* the model/effort switch: plain text in the surface's bottom row, conversation view only
      (a terminal strip stays a strip) */
   #compopts { display: none; }
@@ -1768,7 +1844,7 @@
     :is(.riskbtn, .shrbtn, .qbtn, .bbtn) { min-height: 40px; }
     .rgbtn:not(.link) { min-height: 40px; padding: 6px 14px; }
     .rgopt { min-height: 44px; padding: 8px 6px; }
-    #shell-found .fdrights .rgrow { grid-template-columns: 100px minmax(0, 1fr); }
+    #shell-found .fdhvrights .rgrow { grid-template-columns: 100px minmax(0, 1fr); }
     .tabrow { overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
     .tabrow button { min-height: 40px; flex: none; }
     .shell { align-items: stretch; justify-content: stretch; }
@@ -1868,7 +1944,7 @@
      three --chat-*-fs (G0.3/G0.4). One fixed size: a state change never moves the window. */
   #shell-found { background: color-mix(in srgb, var(--chat-void) 72%, transparent);
     font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
-  #shell-found .shellwin { position: relative; width: min(880px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px));
+  #shell-found .shellwin { position: relative; width: min(1180px, calc(100vw - 32px)); height: min(920px, calc(100vh - 32px));
     background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r3);
     box-shadow: 0 24px 64px color-mix(in srgb, var(--chat-void) 80%, transparent); }
   #shell-found .chatflakes { display: block; z-index: 0; }
@@ -1944,23 +2020,31 @@
   #shell-found .fdradio { flex: none; width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--chat-faint); }
   #shell-found .fdorph.on .fdradio { border-color: var(--chat-ink); background: radial-gradient(var(--chat-ink) 0 3px, transparent 3.5px); }
 
-  /* ROLLE — four cards; the chosen one in ink */
-  #shell-found .fdroles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-  #shell-found .fdrole { display: flex; flex-direction: column; gap: 6px; min-height: 116px; padding: 12px 12px 11px; border-radius: var(--r2);
-    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t), background var(--t), transform var(--t); }
-  #shell-found .fdrole:not(:disabled):hover { border-color: var(--c-edge-hi); transform: translateY(-1px); }
-  #shell-found .fdrole.on { border-color: var(--chat-ink); background: var(--chat-raised);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--chat-ink) 7%, transparent); }
+  /* ① PROFIL WÄHLEN — four tiles, the chosen one in ink; each names its file's size (design v3) */
+  #shell-found .fdstep { padding: 16px 22px 18px; min-width: 0; }
+  #shell-found .fdstep1 { border-bottom: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdsteph { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; min-width: 0; }
+  #shell-found .fdstepn { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--chat-ink); color: var(--chat-void); font-size: var(--chat-ui-fs); font-weight: 600; }
+  #shell-found .fdstept { font-weight: 600; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdsteph2 { min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-found .fdright { margin-left: auto; }
+  #shell-found .fdroles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  #shell-found .fdrole { display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; border-radius: var(--r2);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); transition: border-color var(--t), background var(--t); }
+  #shell-found .fdrole:not(:disabled):hover { border-color: var(--c-edge-hi); }
+  #shell-found .fdrole.on { border-color: var(--chat-ink); background: var(--chat-raised); }
   #shell-found .fdrole:disabled { opacity: .35; }
-  #shell-found .fdrn { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--chat-ink); }
-  #shell-found .fdglyph { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: var(--r1);
-    background: var(--c-hover); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdrole.on .fdglyph { background: var(--chat-ink); color: var(--chat-void); }
-  #shell-found .fdrs { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
-  #shell-found .fdrk { margin-top: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  /* MAIN — the Program she is founded for, under the cards: active Programs only, the ones with a
+  #shell-found .fdrt { display: flex; flex-direction: column; min-width: 0; }
+  #shell-found .fdrn { font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdglyph { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: var(--r1);
+    background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-mute); }
+  #shell-found .fdrole.on .fdglyph { color: var(--chat-ink); }
+  #shell-found .fdrs { margin-top: 2px; font-size: var(--chat-ui-fs); line-height: 1.4; color: var(--chat-mute); }
+  #shell-found .fdrk { margin-top: 6px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  /* MAIN — the Program she is founded for, under the tiles: active Programs only, the ones with a
      living MAIN greyed with their slot, an unknown one greyed with "unbekannt" */
-  #shell-found .fdprogs { grid-column: -2; min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
+  #shell-found .fdprogs { min-width: 0; margin-top: 12px; animation: fdrise var(--t); }
   #shell-found .fdproghead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
   #shell-found .fdproghead .fdmeta { flex: 1; }
   #shell-found .fdproglist { display: flex; flex-direction: column; gap: 6px; max-height: 232px; overflow-y: auto; scrollbar-width: thin; }
@@ -1976,26 +2060,134 @@
   #shell-found .fdpst { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #shell-found .fdpst.stale, #shell-found .fdpst.unknown { color: var(--amber); }
 
-  /* PROFIL — fields with their name above the value */
-  #shell-found .fdprof { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-  #shell-found .fdpfw { position: relative; min-width: 0; }
-  #shell-found .fdpf { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 11px 8px; border-radius: var(--r2);
-    background: var(--chat-surface); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
+  /* ② beside ③: the file is the widest field */
+  #shell-found .fdcols { display: grid; grid-template-columns: 430px minmax(0, 1fr); }
+  #shell-found .fdfile { border-left: 1px solid var(--chat-edge-soft); background: var(--chat-void); }
+  #shell-found .fdleft { background: color-mix(in srgb, var(--chat-surface) 60%, transparent); }
+  #shell-found .fdgl { margin: 2px 0 8px; font-size: var(--chat-ui-fs); font-weight: 500; letter-spacing: .03em; text-transform: uppercase; color: var(--chat-faint); }
+  #shell-found .fdpacks { margin-top: 18px; }
+
+  /* ② Einstellungen: a name, then its switch; a deviation names the profile's value beside it */
+  #shell-found .fdsetrow { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 0 12px; align-items: center; padding: 6px 0; }
+  #shell-found .fdsetk { color: var(--chat-prose); }
+  #shell-found .fdsetv { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  /* a switch row: one pill per value, wrapping when a machine runs many agents */
+  #shell-found .fdsw2 { display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%; padding: 2px; border-radius: var(--r1);
+    border: 1px solid var(--chat-edge); background: var(--chat-void); }
+  #shell-found .fdsw2b { min-height: 24px; padding: 2px 9px; border-radius: 4px; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #shell-found .fdsw2b:not(.on):hover { color: var(--chat-ink); background: var(--c-hover); }
+  #shell-found .fdsw2b.on { background: var(--chat-ink); color: var(--chat-void); }
+  /* a value with a list (Modell, Container): one field, its popover under it */
+  #shell-found .fdpfw { position: relative; min-width: 0; flex: 0 1 220px; }
+  #shell-found .fdpf { display: flex; align-items: center; width: 100%; min-height: 28px; padding: 3px 10px; border-radius: var(--r1);
+    background: var(--chat-void); border: 1px solid var(--chat-edge); transition: border-color var(--t); }
   #shell-found .fdpf:not(:disabled):hover, #shell-found .fdpf.open { border-color: var(--c-edge-hi); }
-  #shell-found .fdpfl { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-found .fdpfv { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdpfl { display: none; }
+  #shell-found .fdpfv { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: var(--chat-ui-fs); color: var(--chat-ink); white-space: nowrap; }
   #shell-found .fdpfv span { overflow: hidden; text-overflow: ellipsis; }
   #shell-found .fdpf.dim .fdpfv { color: var(--chat-mute); }
-  #shell-found .fdpmeta { margin-top: 8px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  /* what she may do and read (src/rights.ts#foundingRights, G6.6) — under the profile switches */
-  #shell-found .fdrights { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--chat-edge-soft); }
-  #shell-found .fdrights .rgrow { display: grid; grid-template-columns: 118px minmax(0, 1fr); column-gap: 10px; padding: 3px 0; align-items: baseline; }
-  #shell-found .fdrights .rgkey { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #shell-found .fdrights .rgv { font-size: var(--chat-ui-fs); }
+  #shell-found .fdwas { display: inline-flex; align-items: center; gap: 6px; padding: 1px 4px; border-radius: var(--r1); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdwas:hover { color: var(--chat-ink); background: var(--c-hover); }
+  #shell-found .fddot2 { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--chat-ink); }
+  #shell-found .fdsoon { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+
+  /* ② Packs: ONE tree Gruppe → Pack → Teil (owner 01.10.: no card list; v3: groups so it scales) */
+  #shell-found .fdtree { border: 1px solid var(--chat-edge-soft); border-radius: var(--r2); background: var(--chat-void); }
+  #shell-found .fdtree > .fdnode + .fdnode { border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdline { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 5px 10px 5px 6px; border-radius: var(--r1); }
+  #shell-found .fdline:hover { background: color-mix(in srgb, var(--chat-ink) 3%, transparent); }
+  #shell-found .fdlv1 > .fdline { padding-left: 24px; min-height: 34px; }
+  #shell-found .fdlv2 > .fdline { padding-left: 46px; min-height: 32px; }
+  #shell-found .fdchev { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: var(--r1); color: var(--chat-faint); }
+  #shell-found .fdchev:hover { color: var(--chat-ink); }
+  #shell-found .fdchev svg { width: 13px; height: 13px; transform: rotate(-90deg); transition: transform var(--t); }
+  #shell-found .fdchev[aria-expanded="true"] svg { transform: none; }
+  #shell-found .fdchev.none { visibility: hidden; }
+  #shell-found .fdtx { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #shell-found .fdnm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #shell-found .fdnm b { font-weight: 600; color: var(--chat-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #shell-found .fdn2 { font-size: var(--chat-code-fs); color: var(--chat-prose); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #shell-found .fdcnt { font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fdgsay { margin-top: 1px; font-size: var(--chat-ui-fs); line-height: 1.35; color: var(--chat-faint); }
+  #shell-found .fdkb { flex: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #shell-found .fdkb.off { color: var(--chat-faint); }
+  #shell-found .fddvb { display: grid; place-items: center; flex: none; width: 14px; height: 14px; }
+  #shell-found .fddvb .fddot2 { transition: transform var(--t); }
+  #shell-found .fddvb:hover .fddot2 { transform: scale(1.4); }
+  #shell-found .fdsw { flex: none; position: relative; width: 30px; height: 17px; border-radius: 9px; background: var(--chat-edge); transition: background var(--t); }
+  #shell-found .fdsw:not(:disabled):hover { background: var(--c-edge-hi); }
+  #shell-found .fdsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--chat-mute); transition: transform var(--t), background var(--t); }
+  #shell-found .fdsw.on { background: var(--chat-ink); }
+  #shell-found .fdsw.on::after { transform: translateX(13px); background: var(--chat-void); }
+  #shell-found .fdsw.mixed { background: var(--c-edge-hi); }
+  #shell-found .fdsw.mixed::after { transform: translateX(6.5px); background: var(--chat-prose); }
+  #shell-found .fdsw:disabled { opacity: .35; }
+  #shell-found .fdpknote { margin-top: 8px; font-size: var(--chat-ui-fs); line-height: 1.45; color: var(--chat-faint); }
+  #shell-found .fdpknote b { color: var(--chat-mute); font-weight: 500; }
+
+  /* the technical line of a row: a card under it on hover or focus that pushes nothing (G4.1, G6.1);
+     without hover it stands in the flow (grammatik.md §1 Mobil, the .slotact precedent) */
+  #shell-found .fdrow { position: relative; }
+  #shell-found .fdhv { display: none; font-family: var(--chat-mono); font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-faint); overflow-wrap: anywhere; }
+  @media (hover: hover) {
+    #shell-found .fdrow > .fdhv { position: absolute; z-index: 6; top: calc(100% - 3px); left: 12px; width: max-content;
+      max-width: min(520px, calc(100% - 20px)); padding: 5px 9px; color: var(--chat-mute); background: var(--chat-raised);
+      border: 1px solid var(--chat-edge); border-radius: var(--r2);
+      box-shadow: 0 10px 28px color-mix(in srgb, var(--chat-void) 70%, transparent); pointer-events: none; }
+    /* keyboard focus shows it, a mouse click does not pin it open */
+    #shell-found .fdrow:hover > .fdhv, #shell-found .fdrow:focus-visible > .fdhv, #shell-found .fdrow:has(:focus-visible) > .fdhv { display: block; }
+  }
+  /* without hover the details rest hidden too, and one switch in the foot shows them all in the flow */
+  #shell-found .fdghost.fdtechb { display: none; }
+  @media (hover: none) {
+    #shell-found .fdhv { display: none; }
+    #shell-found.fdtech .fdhv { display: block; }
+    #shell-found .fdghost.fdtechb { display: inline-flex; }
+    #shell-found .fdtechb.on { color: var(--chat-ink); border-color: var(--c-edge-hi); background: var(--chat-raised); }
+    #shell-found .fdline, #shell-found .fdfh, #shell-found .fddevn { flex-wrap: wrap; }
+    #shell-found .fdline > .fdhv { flex-basis: 100%; padding: 0 0 4px 30px; }
+    #shell-found .fdfh > .fdhv, #shell-found .fddevn > .fdhv { flex-basis: 100%; }
+  }
+  #shell-found .fdhvrights { font-family: var(--chat-sans); }
+  #shell-found .fdhvrights .rgrow { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: 10px; padding: 2px 0; align-items: baseline; }
+  #shell-found .fdhvrights .rgkey { color: var(--chat-mute); }
+  @media (hover: none) { #shell-found .fdsetrow > .fdhv { grid-column: 2; margin-top: 4px; } }
   /* the receipt's optional step: the same block as in the session's Info */
   #shell-found .fdproofgrant { margin-top: 16px; }
 
-  /* the popovers: place, profile values, more packs — one material */
+  /* ③ WAS DER AGENT LIEST — the session file in its fixed order, its size the route's */
+  #shell-found .fdfh { display: flex; align-items: flex-end; gap: 12px; margin: 2px 0 4px; }
+  #shell-found .fdfn { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdfn svg { width: 15px; height: 15px; color: var(--chat-mute); }
+  #shell-found .fdtot { font-size: 22px; font-weight: 600; line-height: 1; color: var(--chat-ink); white-space: nowrap; }
+  #shell-found .fdfsub { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #shell-found .fdvs { margin-left: auto; color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fddoc { border: 1px solid var(--chat-edge); border-radius: var(--r2); background: var(--chat-surface); transition: opacity var(--t); }
+  #shell-found .fddoc.stale { opacity: .6; }
+  #shell-found .fdsec2 { position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline; padding: 12px 14px; outline: none; }
+  #shell-found .fdsec2 + .fdsec2 { border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdno { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdh { font-weight: 600; color: var(--chat-ink); }
+  #shell-found .fdskb { font-size: var(--chat-code-fs); color: var(--chat-prose); text-align: right; white-space: nowrap; }
+  #shell-found .fdsay2 { grid-column: 2 / 4; font-size: var(--chat-code-fs); line-height: 1.45; color: var(--chat-mute); }
+  #shell-found .fdsec2.empty .fdh, #shell-found .fdsec2.empty .fdskb { color: var(--chat-faint); font-weight: 500; }
+  #shell-found .fdsec2.dev::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--chat-ink); }
+  #shell-found .fdsec2.flash { animation: fdflash 900ms ease-out; }
+  #shell-found .fditems { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+  #shell-found .fdit { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--chat-code-fs); color: var(--chat-prose); outline: none; }
+  #shell-found .fdinm { white-space: nowrap; }
+  #shell-found .fdnames { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fdx { margin-left: auto; font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; }
+  #shell-found .fdbar { grid-column: 2 / 4; display: block; height: 3px; margin-top: 8px; overflow: hidden; border-radius: 2px; background: var(--chat-edge-soft); }
+  #shell-found .fdbar i { display: block; width: var(--w, 0); height: 100%; border-radius: 2px; background: var(--chat-mute); transition: width 260ms ease; }
+  @media (hover: none) { #shell-found .fdsec2 > .fdhv { grid-column: 2 / 4; margin-top: 6px; } #shell-found .fdit { flex-wrap: wrap; } #shell-found .fdit > .fdhv { flex-basis: 100%; padding-left: 14px; } }
+  #shell-found .fdffoot { margin-top: 12px; font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-faint); }
+  #shell-found .fdnofile { padding: 28px 18px; border: 1px dashed var(--chat-edge); border-radius: var(--r2); text-align: center; color: var(--chat-mute); }
+  @keyframes fdflash { from { background: color-mix(in srgb, var(--chat-ink) 7%, transparent); } to { background: transparent; } }
+
+  /* the popovers: place and profile values — one material */
   #shell-found .fdpop { position: relative; z-index: 3; display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding: 5px;
     max-height: 300px; overflow-y: auto; border-radius: var(--r2); background: var(--chat-surface); border: 1px solid var(--chat-edge);
     box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: fdrise var(--t); }
@@ -2027,70 +2219,11 @@
   #shell-found .fdinto svg { width: 14px; height: 14px; transform: rotate(-90deg); }
   #shell-found .fdpin { display: flex; flex-direction: column; gap: 4px; padding: 6px 9px; font-size: var(--chat-ui-fs); color: var(--chat-faint); }
 
-  /* KONTEXT — ONE line of chips (owner 2026-10-01: a card per pack takes too much room and does not
-     scale); what a pack is stands in its tooltip, the rest is one click away */
-  #shell-found .fdctx { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow: hidden; }
-  #shell-found .fdctx.all { flex-wrap: wrap; }
-  #shell-found .fdctx > * { flex: none; }
-  #shell-found .fdctx > [hidden] { display: none; }
-  #shell-found .fdmore { height: 28px; padding: 0 10px; border-radius: var(--r1); background: var(--chat-raised);
-    border: 1px solid var(--chat-edge); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdmore:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
-  #shell-found .fdcx { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 10px; border-radius: var(--r1);
-    background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-ink); font-size: var(--chat-code-fs); cursor: help;
-    transition: background .6s, border-color .6s, opacity .3s; }
-  #shell-found .fdcx.fix { padding-right: 10px; color: var(--chat-mute); background: var(--chat-surface); border-style: dashed; }
-  #shell-found .fdcx.srv { color: var(--chat-prose); border-style: solid; border-color: var(--c-edge-hi); }
-  #shell-found .fdcx.mine { border-color: color-mix(in srgb, var(--amber) 55%, var(--chat-edge)); }
-  #shell-found .fdcx.in { animation: fdpop .5s ease; background: color-mix(in srgb, var(--add) 16%, var(--chat-raised));
-    border-color: color-mix(in srgb, var(--add) 70%, transparent); }
-  #shell-found .fdcx.out { padding-right: 10px; opacity: .4; text-decoration: line-through; border-color: color-mix(in srgb, var(--del) 60%, transparent); }
-  #shell-found .fdcxrm { display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r1); color: var(--chat-faint); }
-  #shell-found .fdcxrm:hover { background: var(--c-hover); color: var(--chat-ink); }
-  #shell-found .fdcxrm svg { width: 11px; height: 11px; }
-  #shell-found .fdadd { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r1);
-    border: 1px dashed var(--c-edge-hi); color: var(--chat-mute); font-size: var(--chat-ui-fs); }
-  #shell-found .fdadd:hover, #shell-found .fdadd.open { color: var(--chat-ink); border-color: var(--chat-mute); }
-  #shell-found .fdadd svg { width: 12px; height: 12px; }
-  #shell-found .fdaddn { font-family: var(--chat-mono); color: var(--chat-faint); }
-  #shell-found .fdaddpop .fdprow .fdmeta { flex: 1; }
-  #shell-found .fdctxfoot { display: flex; align-items: center; gap: 12px; margin-top: 10px; min-height: 24px; }
-  #shell-found .fddelta { flex: 1; min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-faint); line-height: 1.5; }
-  #shell-found .fddelta .add { color: var(--add); }
-  #shell-found .fddelta .del { color: var(--del); }
-  #shell-found .fdghost { flex: none; padding: 5px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
+  #shell-found .fdghost { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: var(--r1); border: 1px solid var(--chat-edge);
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #shell-found .fdghost:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
-  #shell-found .fdlist { display: flex; flex-direction: column; margin-top: 10px; border-radius: var(--r2);
-    border: 1px solid var(--chat-edge); background: var(--chat-surface); animation: fdrise var(--t); }
-  #shell-found .fdlrow { display: flex; align-items: flex-start; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--chat-edge-soft); }
-  #shell-found .fdlrow:last-child { border-bottom: 0; }
-  #shell-found .fdlrow.off { opacity: .5; }
-  #shell-found .fdlt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  #shell-found .fdlh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--chat-ink); font-size: var(--chat-code-fs); }
-  #shell-found .fdlsrc, #shell-found .fdlrole, #shell-found .fdlmine { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
-  #shell-found .fdlrole { color: var(--chat-mute); }
-  #shell-found .fdlmine { color: var(--amber); }
-  #shell-found .fdluse { font-size: var(--chat-ui-fs); line-height: 1.5; color: var(--chat-mute); }
-  #shell-found .fdsw { flex: none; position: relative; width: 28px; height: 17px; margin-top: 2px; border-radius: 9px; background: var(--chat-edge); }
-  #shell-found .fdsw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
-    background: var(--chat-faint); transition: transform var(--t), background var(--t); }
-  #shell-found .fdsw.on { background: var(--chat-ink); }
-  #shell-found .fdsw.on::after { transform: translateX(11px); background: var(--chat-void); }
-  #shell-found .fdsw.off { opacity: .4; }
-  #shell-found .fdcmp { margin-top: 10px; border-radius: var(--r2); border: 1px solid var(--chat-edge); background: var(--chat-surface);
-    overflow-x: auto; animation: fdrise var(--t); }
-  #shell-found .fdcmp table { width: 100%; border-collapse: collapse; font-size: var(--chat-ui-fs); }
-  #shell-found .fdcmp th, #shell-found .fdcmp td { padding: 7px 10px; text-align: center; border-bottom: 1px solid var(--chat-edge-soft); }
-  #shell-found .fdcmp th { font-weight: 600; color: var(--chat-mute); white-space: nowrap; }
-  #shell-found .fdcmp th:first-child, #shell-found .fdcmp td:first-child { text-align: left; color: var(--chat-prose); white-space: nowrap; }
-  #shell-found .fdcmp .cur { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); color: var(--chat-ink); }
-  #shell-found .fdcmpwhy td { vertical-align: top; color: var(--chat-faint); line-height: 1.4; border-bottom: 0; }
-  #shell-found .fdcmpx { color: var(--chat-faint); }
-  #shell-found .fdpip { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--c-edge-hi); vertical-align: middle; }
-  #shell-found .fdpip.on { background: var(--chat-ink); border-color: var(--chat-ink); }
-  #shell-found .fdcmpfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px;
-    font-size: var(--chat-ui-fs); color: var(--chat-faint); border-top: 1px solid var(--chat-edge-soft); }
+  #shell-found .fdghost:not(:disabled):hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #shell-found .fdghost:disabled { opacity: .38; }
+  #shell-found .fdghost svg { width: 12px; height: 12px; }
 
   /* the foot: one sentence of what starts, and the one button */
   #shell-found .shellfoot { display: flex; align-items: center; gap: 14px; padding: 12px 14px 12px 22px; border-top: 1px solid var(--chat-edge); }
@@ -2098,6 +2231,12 @@
   #shell-found .fdsay { color: var(--chat-mute); line-height: 1.45; }
   #shell-found .fdsay b { color: var(--chat-ink); font-weight: 600; }
   #shell-found .fdsaym { color: var(--chat-faint); }
+  #shell-found .fddev { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+  #shell-found .fddevn { display: inline-flex; align-items: center; gap: 8px; color: var(--chat-prose); outline: none; }
+  #shell-found .fddevn.quiet { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+  #shell-found .fddevn > .fdhv { top: auto; bottom: calc(100% + 4px); }
+  #shell-found .fdlike { border-color: transparent; }
+  #shell-found .fdacts { display: flex; align-items: center; gap: 8px; flex: none; }
   #shell-found .fdfootnote { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #shell-found .fdfootnote.warn { color: var(--amber); }
   #shell-found .fdgo { flex: none; display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px 10px 16px; border-radius: var(--r2);
@@ -2115,7 +2254,13 @@
     #shell-found .fdsec { grid-template-columns: minmax(0, 1fr); padding: 16px; }
     #shell-found .fdlab { flex-direction: row; align-items: baseline; gap: 10px; padding: 0 0 10px; }
     #shell-found .fdroles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    #shell-found .fdrole { min-height: 0; }
+    #shell-found .fdrole { min-height: 0; flex-direction: column; gap: 8px; }
+    #shell-found .fdstep { padding: 16px; }
+    #shell-found .fdcols { grid-template-columns: minmax(0, 1fr); }
+    #shell-found .fdfile { border-left: 0; border-top: 1px solid var(--chat-edge-soft); }
+    #shell-found .fdsteph2 { white-space: normal; }
+    #shell-found .fdsw2 { flex-wrap: wrap; }
+    #shell-found .fdsetrow { grid-template-columns: 64px minmax(0, 1fr); }
     #shell-found .fdprog { flex-wrap: wrap; row-gap: 2px; }
     #shell-found .fdpst { flex-basis: 100%; padding-left: 23px; }
     #shell-found .fdseg { align-self: stretch; }
@@ -2501,13 +2646,15 @@
     .fxkeys { display: none; }
     /* the founding window on a phone (G0.7): the shell's fullscreen, one column; touch heights
        40 px, fields 16 px (no iOS zoom), the button full width under its sentence */
-    #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph { min-height: 40px; }
-    #shell-found .fdcx, #shell-found .fdadd, #shell-found .fdmore { height: 34px; }
-    #shell-found .fdcxrm { width: 28px; height: 28px; }
+    #shell-found .fdsegb, #shell-found .fdprow, #shell-found .fdnavb, #shell-found .fdghost, #shell-found .fdorph, #shell-found .fdsw2b { min-height: 40px; }
+    #shell-found .fdline { min-height: 44px; }
+    #shell-found .fdchev, #shell-found .fddvb { width: 32px; height: 32px; }
     #shell-found .fdfind, #shell-found .fdpin input, #shell-found .fdname input { font-size: 16px; }
     #shell-found .shellfoot { flex-wrap: wrap; }
-    #shell-found .fdgo { flex: 1 1 100%; justify-content: center; min-height: 44px; }
-    #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: 132px; max-height: 50vh; }
+    #shell-found .fdsaycol { flex: 1 1 100%; }
+    #shell-found .fdacts { flex: 1 1 100%; }
+    #shell-found .fdgo { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+    #shell-found .fdpfw .fdpop { position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(var(--fdfootgap, 124px) + 8px); max-height: 50vh; }
     #shell-found.fdproved .fdgo { align-self: stretch; flex: none; }
     .fdproofrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
     .fdproofheadrow > span:first-child { display: none; }
@@ -2683,6 +2830,167 @@
   #board .rbfail .bfile { color: var(--b-ink2); cursor: default; }
   #board .bfail h3 { color: var(--amber); }
   #board .bfail .bstate { color: var(--amber); }
+
+  /* ARBEITSORTE — the Ranke as a table (cards e66909b1 + abe74821; docs/design/rechter-tab-notiz.md
+     §3b, Variante 3A). Every row has the same columns: lines · address · name · ↑• · the check beads
+     · the test-instance square, so a sign stands at the same x in every repo. The sizes are the
+     third version's tokens; colour only as a signal (G0.2): --q-live works / runs by itself,
+     --q-wait waits on you, --danger is red, --amber is unmeasured. Motion is colour only (G0.4). */
+  #board .ranke { --rk-row: 24px; --rk-sub: 20px; --rk-grp: 8px; --rk-lvl: 10px; --rk-rail: 28px;
+    --rk-cols: var(--rk-rail) 22px minmax(0, 1fr) 30px 42px 14px; }
+  #board .ranke h3 { display: flex; align-items: center; gap: 6px; min-height: 24px; margin-bottom: 4px; }
+  #board .rkseg { margin-left: auto; display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
+  #board .rkseg button { border: 0; border-radius: 0; min-height: 20px; padding: 0 6px; background: transparent;
+    color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; transition: color var(--t), background-color var(--t); }
+  #board .rkseg button.on { background: var(--c-hover); color: var(--chat-ink); }
+  #board .ranke .grp + .grp { margin-top: var(--rk-grp); }
+  #board .ranke .rk { position: relative; }
+  #board .ranke .rk > svg { position: absolute; left: 0; top: 0; width: var(--rk-rail); height: 100%; pointer-events: none; overflow: visible; }
+  #board .ranke .rk > svg path { fill: none; stroke-width: 1; }
+  #board .ranke .rk > svg path.q { stroke: var(--c-edge-hi); }
+  #board .ranke .rk > svg path.i { stroke: var(--chat-ink); }
+  #board .zr { position: relative; display: grid; grid-template-columns: var(--rk-cols); column-gap: 4px; align-items: center;
+    min-height: var(--rk-row); font-size: 12px; border-radius: 4px; transition: background-color var(--t); }
+  #board .zr > .nd { grid-column: 1; justify-self: start; width: 7px; height: 7px; border-radius: 50%; margin-left: calc(var(--d, 0) * var(--rk-lvl));
+    background: var(--chat-void); box-shadow: inset 0 0 0 1.25px var(--chat-mute); position: relative; z-index: 1; }
+  #board .zr > .nd.live { background: var(--q-live); box-shadow: none; }
+  #board .zr > .nd.wait { background: var(--q-wait); box-shadow: none; }
+  #board .zr > .nd.bad { box-shadow: inset 0 0 0 1.5px var(--danger); }
+  #board .zr > .nd.leer { box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
+  #board .zr .ref { font: 500 10.5px/1 var(--chat-mono); color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l)); white-space: nowrap;
+    background: none; border: 0; padding: 0; }
+  #board .zr .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-prose); }
+  #board .zr .nm.leer { color: var(--chat-faint); }
+  #board .zr .nm.mono { font: 10.5px var(--chat-mono); color: var(--chat-mute); }
+  #board .zr .nm.br { direction: rtl; text-align: left; } /* a branch is cut from the front: its end tells lanes apart */
+  #board .zr .nm .q { color: var(--chat-faint); }
+  #board .zr .up { font: 10.5px var(--chat-mono); color: var(--chat-faint); text-align: right; white-space: nowrap; }
+  /* the five beads: local proofs · preview · land check · in its target (the diamond) · check after the land */
+  #board .zr .pf { display: flex; align-items: center; gap: 3px; height: 100%; }
+  #board .zr .pf i { width: 6px; height: 6px; border-radius: 1.5px; display: block; flex: none; box-shadow: inset 0 0 0 1px var(--chat-faint); }
+  #board .zr .pf i.none { width: 4px; height: 4px; margin: 1px; border-radius: 50%; box-shadow: none; background: var(--chat-edge); }
+  #board .zr .pf i.ok { background: var(--chat-mute); box-shadow: none; }
+  #board .zr .pf i.run { background: var(--q-live); box-shadow: none; }
+  #board .zr .pf i.queue { box-shadow: inset 0 0 0 1px var(--q-live); }
+  #board .zr .pf i.bad { background: var(--danger); box-shadow: none; }
+  #board .zr .pf i.skip { box-shadow: none; background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 6px 1px no-repeat; }
+  #board .zr .pf i.unk { box-shadow: inset 0 0 0 1px var(--amber); }
+  #board .zr .pf i.stale.ok { background: transparent; box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  #board .zr .pf i.stale.bad { background: transparent; box-shadow: inset 0 0 0 1px var(--danger); }
+  #board .zr .pf i.stale.run { background: transparent; box-shadow: inset 0 0 0 1px var(--q-live); }
+  #board .zr .pf b { width: 6px; height: 6px; display: block; flex: none; margin: 0 1px; transform: rotate(45deg);
+    box-shadow: inset 0 0 0 1px var(--chat-mute); }
+  #board .zr .pf b.yes { background: var(--chat-ink); box-shadow: none; }
+  #board .zr .pf b.nil { box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #board .zr .pf b.unk { box-shadow: inset 0 0 0 1px var(--amber); }
+  /* the test instance: a square in its worktree's row — green while it runs */
+  #board .zr .ti { display: grid; place-items: center; width: 14px; height: 18px; padding: 0; border: 0; background: none;
+    border-radius: 4px; cursor: pointer; }
+  #board .zr .ti:disabled { cursor: default; }
+  #board .zr .ti.open { background: var(--c-hover); }
+  #board .sq { width: 10px; height: 10px; border-radius: 2px; display: block; box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
+  #board .ti.up .sq, #board .sq.up { background: var(--q-live); box-shadow: none; }
+  #board .ti.exp .sq, #board .sq.exp { box-shadow: inset 0 0 0 1.25px var(--chat-mute); }
+  #board .ti.bad .sq, #board .sq.bad { box-shadow: inset 0 0 0 1.25px var(--danger); }
+  #board .ti.unk .sq, #board .sq.unk { box-shadow: inset 0 0 0 1.25px var(--amber); }
+  #board .zr .ti.tpl .sq { visibility: hidden; }
+  /* no instance: the square shows only under the pointer (a click offers Starten) — and always at the own lane */
+  #board .zr .ti.off:not(.mine):not(.open) .sq { visibility: hidden; }
+  #board .zr:hover .ti.off .sq, #board .zr .ti.off:focus-visible .sq { visibility: visible; }
+  /* a row with a session is a target like a row of the session list: a click jumps there */
+  #board .zr.zw { cursor: pointer; }
+  #board .zr.zw:hover { background: var(--c-hover); }
+  #board .zr.here { background: var(--chat-surface); cursor: default; }
+  #board .zr.here .nm { color: var(--chat-ink); font-weight: 500; }
+  #board .zr.open { background: var(--chat-surface); }
+  #board .zr.flash { background: var(--c-hover); }
+  #board .zr[role="button"]:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -1px; }
+  /* stem and branch rows: the branch itself in mono, right what hangs on it */
+  #board .zr.base { cursor: default; grid-template-columns: var(--rk-rail) auto minmax(0, 1fr) var(--rk-tiw, 14px); }
+  #board .zr.base .nm { grid-column: 2; font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
+  #board .zr.base .rt { grid-column: 3; justify-self: end; display: flex; gap: 6px; align-items: center;
+    font-size: var(--chat-ui-fs); color: var(--chat-faint); white-space: nowrap; min-width: 0; overflow: hidden; }
+  #board .zr.base .rt .tgt { color: var(--chat-mute); }
+  #board .zr.base .rt .mono { font: 10.5px var(--chat-mono); }
+  #board .zr.base .rt .ref { cursor: pointer; }
+  #board .zr.base .rt .ref.on { color: var(--chat-ink); text-decoration: underline; text-underline-offset: 3px; }
+  #board .zr.base .ti { grid-column: 4; }
+  /* the repo's head */
+  #board .zr.repo { cursor: pointer; grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto; }
+  #board .zr.repo .fx { grid-column: 1; color: var(--chat-faint); display: grid; place-items: center start; }
+  #board .zr.repo .fx .ico { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--t); }
+  #board .zr.repo.auf .fx .ico { transform: none; }
+  #board .zr.repo .nm { grid-column: 2; font-weight: 500; color: var(--chat-prose); }
+  #board .zr.repo.zu .nm { color: var(--chat-mute); font-weight: 400; }
+  #board .zr .cnt { color: var(--chat-faint); font-weight: 400; font-size: var(--chat-ui-fs); margin-left: 6px; }
+  #board .zr .tag { font-size: 10px; color: var(--chat-faint); border: 1px solid var(--chat-edge); border-radius: 4px; padding: 0 4px;
+    margin-left: 6px; font-weight: 400; }
+  #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 4px; }
+  #board .zr.repo .rt .tag { margin-left: 0; }
+  /* the fold of worktrees without a session (from 13 branches on) */
+  #board .zr.zf { cursor: pointer; }
+  #board .zr.zf .fc { grid-column: 6; color: var(--chat-faint); display: grid; place-items: center; }
+  #board .zr.zf .fc .ico { width: 12px; height: 12px; transform: rotate(-90deg); }
+  /* machines and the stand of every carrier on them */
+  #board .zr.mach, #board .zr.stand { grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
+  #board .zr.mach .fx { grid-column: 1; color: var(--chat-mute); display: grid; place-items: center start; }
+  #board .zr.mach .fx .ico { width: 13px; height: 13px; }
+  #board .zr.mach .nm { grid-column: 2; font-weight: 500; color: var(--chat-prose); }
+  #board .zr.stand .nd { margin-left: 1px; }
+  #board .zr.stand .nm { grid-column: 2; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: normal; line-height: 1.35; padding: 3px 0; }
+  #board .zr.stand .nm b { color: var(--chat-ink); font-weight: 500; }
+  #board .zr .mono { font-family: var(--chat-mono); font-size: 10.5px; }
+  #board .zr.stand .nm .q { color: var(--chat-faint); }
+  #board .zr.stand .nm .cb { color: var(--q-wait); }
+  /* the line under a row: its test instance, or a worktree without a session opened up */
+  #board .zd { display: grid; grid-template-columns: var(--rk-cols); column-gap: 4px; align-items: center; min-height: var(--rk-sub);
+    font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .zd > .tx { grid-column: 3 / 5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+  #board .zd > .tx .sq { width: 8px; height: 8px; }
+  #board .zd > .tx .k { color: var(--chat-prose); }
+  #board .zd > .tx .mono { color: var(--chat-faint); }
+  #board .zd > .r { grid-column: 5 / -1; justify-self: end; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+  #board .zd > .err { grid-column: 3 / -1; color: var(--danger); white-space: normal; }
+  /* the instance's line is a row of its own under the branch: words from the name column on, the
+     buttons at the right end, and nothing overlaps when they need more room than a column */
+  #board .zd.ti { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-left: calc(var(--rk-rail) + 30px); }
+  #board .zd.ti > .tx { flex: 1 1 auto; min-width: 0; }
+  #board .zd.ti > .r { flex: none; margin-left: auto; }
+  #board .zd.ti > .err { flex-basis: 100%; }
+  #board .zd.zx > .tx { grid-column: 3 / -1; }
+  #board .zd.zx2 { display: block; padding: 2px 0 6px calc(var(--rk-rail) + 26px); }
+  #board .zd.zx2 .hint { color: var(--chat-faint); margin-top: 4px; }
+  #board .rk-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #board .rk-btn { min-height: 20px; padding: 0 7px; border: 1px solid var(--chat-edge); border-radius: var(--r1); background: var(--chat-surface);
+    color: var(--chat-ink); font: 500 var(--chat-ui-fs) var(--chat-sans); display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    transition: color var(--t), background-color var(--t), border-color var(--t); }
+  #board .rk-btn:hover:not(:disabled) { background: var(--c-hover); border-color: var(--c-edge-hi); }
+  #board .rk-btn:disabled { color: var(--chat-faint); cursor: default; }
+  #board .rk-btn.quiet { border-color: transparent; background: transparent; color: var(--chat-mute); }
+  #board .rk-btn.quiet:hover { color: var(--chat-ink); }
+  #board .rk-btn.del:hover { color: var(--danger); }
+  #board .rk-btn .ico { width: 12px; height: 12px; }
+  #board .rk-btn.ib { width: 22px; padding: 0; justify-content: center; }
+  @media (prefers-reduced-motion: reduce) { #board .zr, #board .rk-btn, #board .rkseg button { transition: none; } }
+  /* the phone: what one taps is 40 px high (G0.7) */
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    #board .ranke { --rk-row: 40px; --rk-sub: 32px; --rk-grp: 12px; --rk-lvl: 12px; --rk-rail: 34px;
+      --rk-cols: var(--rk-rail) 26px minmax(0, 1fr) 36px 48px 40px; }
+    #board .zr { font-size: 13px; }
+    #board .zr .ref { font-size: 11px; }
+    #board .zr.stand, #board .zr.mach { min-height: 32px; }
+    #board .zr .ti { width: 40px; height: 40px; }
+    #board .zr .pf i { width: 7px; height: 7px; } #board .zr .pf b { width: 7px; height: 7px; }
+    #board .rkseg button, #board .rk-btn { min-height: 40px; padding: 0 12px; }
+    #board .ranke { --rk-tiw: 40px; }
+    #board .zr.zw:hover { background: transparent; }
+    #board .zr.here, #board .zr.here:hover, #board .zr.open { background: var(--chat-surface); }
+    /* the instance's line: its words over the full width, the 40-px buttons on a row of their own */
+    #board .zd.ti { row-gap: 2px; padding-top: 2px; padding-bottom: 6px; }
+    #board .zd.ti > .tx { flex-basis: 100%; }
+    #board .zd.ti > .r { margin-left: 0; }
+    #board .rk-btn.ib { width: 40px; padding: 0; justify-content: center; }
+  }
 
   /* machine alarms — only drawn when something is due */
   #board .balert { margin-top: 14px; padding: 9px 11px; border-radius: 8px; background: rgba(224,175,104,.07); }
@@ -3172,6 +3480,8 @@
   /* --- mobile: phones in any orientation (short landscape counts too) --- */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #app { flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+    /* the test-instance band on a phone: a little more air around its (usually two) lines */
+    #tiband { padding: 6px 12px; }
 
     /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
        instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */
@@ -3190,6 +3500,10 @@
       border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); cursor: pointer; }
     #mset .ico { width: 16px; height: 16px; }
     #mset:active { background: var(--c-hover); color: var(--chat-ink); border-color: var(--c-edge-hi); }
+    /* a sent picture on the phone: a lower row, so two still sit side by side in a 390-px column */
+    .mimgs { max-width: 100%; }
+    .mimg { height: 96px; }
+    .mimg img { max-width: 132px; }
 
     #side { position: fixed; z-index: 30; top: 0; bottom: 0; left: 0;
       width: min(80vw, 300px); border-right: 1px solid var(--line);
@@ -3280,7 +3594,7 @@
     .paneterm { top: 48px; }
     .pane:not(.chat) .panetools { flex-direction: row-reverse; align-items: center; top: 4px; right: 6px; }
     /* the search lies in that same strip and covers the group while it is open (✕ gives it back) */
-    .pane:not(.chat) .termfind.open { top: 4px; left: 6px; right: 6px; max-width: none; height: 40px; }
+    .pane:not(.chat) .termfind.open { top: 4px; left: 6px; right: 6px; width: auto; max-width: none; height: 40px; }
     .termfindin { font-size: 16px; }
     .termfindbtn { width: 40px; height: 40px; }
 
@@ -3374,66 +3688,119 @@
        BOTTOM: #bar itself is the island, in flow (so the terminal ends above it by construction):
        + field send in one row, the grip over it folds #chips and #keys in. Live line, a dropped
        socket (.panedown) and the alarm stay in flow as before; #mhead only keeps the alarm. */
-    @media not all and ((pointer: coarse) and (max-height: 500px)) {
+    @media not all and ((pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5)) {
       #mhead { display: none; }
       #mhead:has(> #malarm:not([hidden])) { display: flex; justify-content: flex-end; padding: env(safe-area-inset-top) 6px 0;
         background: none; border: 0; }
       #mhead > #menu, #mhead > #mtitle, #mhead > #mset, #mhead > #mdot { display: none; }
       #panes { padding: 0; gap: 0; }
-      .paneterm { top: calc(44px + env(safe-area-inset-top)); }
+      /* the terminal starts 6 px under the glass (8 + 28 + 6 on screen; the pane sits 1 px down, so
+         41 here); the conversation runs on UNDER the
+         glass with no fade — the glass takes its colour from what passes beneath (liquid-glass.md §1) */
+      .paneterm { top: calc(41px + env(safe-area-inset-top)); }
       .panechat { padding-top: calc(56px + env(safe-area-inset-top)); padding-right: max(18px, calc((100% - var(--chat-col)) / 2)); }
-      /* calm above the conversation: it runs on under the pill and fades out there */
-      .pane.chat::after { content: ""; position: absolute; z-index: 2; left: 0; right: 0; top: 0;
-        height: calc(54px + env(safe-area-inset-top)); pointer-events: none;
-        background: linear-gradient(to bottom, var(--chat-void) calc(100% - 16px), transparent); }
-      .pane:not(.chat) .termfind.open { top: calc(44px + env(safe-area-inset-top)); }
+      .pane:not(.chat) .termfind.open { top: calc(42px + env(safe-area-inset-top)); }
 
-      #mtop { display: flex; flex-direction: column; align-items: center; position: absolute; z-index: 8;
-        top: calc(6px + env(safe-area-inset-top)); left: 6px; right: 6px; pointer-events: none;
-        font-family: var(--chat-sans); }
-      #mpill { position: relative; pointer-events: auto; display: inline-flex; align-items: center; justify-content: center;
-        gap: 8px; min-width: 120px; max-width: 100%; height: 32px; padding: 0 16px 0 14px; border: 0;
-        border-radius: var(--r3); background: var(--chat-raised); color: var(--chat-ink); cursor: pointer;
-        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent);
-        font: 500 var(--chat-fs) / 1.2 var(--chat-sans); letter-spacing: -0.01em; transition: box-shadow var(--t); }
-      #mpill::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px; }
-      #mpill:active, #mpill:focus-visible { outline: none;
-        box-shadow: inset 0 0 0 1px var(--chat-mute), 0 8px 24px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      #mtop .mnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      #mopen { display: none; }
-      body.mopen #mpill { display: none; }
-      body.mopen #mtop { pointer-events: auto; align-items: stretch; padding: 4px; border-radius: var(--r3);
-        background: var(--chat-raised);
-        box-shadow: inset 0 0 0 1px var(--chat-edge), 0 10px 30px color-mix(in srgb, var(--chat-void) 70%, transparent); }
-      body.mopen #mopen { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; grid-template-rows: 40px 40px; gap: 2px; }
-      #mopen button { padding: 0; border: 0; background: none; color: var(--chat-mute); font-family: var(--chat-sans);
-        cursor: pointer; }
-      #mopen button:active, #mopen button:focus-visible { outline: none; background: var(--c-hover); color: var(--chat-ink); }
-      #mslot, #minfo { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r2); }
-      #mslot { grid-column: 1; grid-row: 1; position: relative; }
-      #minfo { grid-column: 3; grid-row: 1; }
-      #minfo .ico { width: 18px; height: 18px; }
-      #mslot .maddr, #msheet .maddr { flex: none; min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
+      /* THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen
+         Entwurf gebaut", docs/design/insel-glas-notiz.md §1–§3, Grammatik G0.8). #mtop is the hit
+         zone: 8 px above and below the glass, so the pill shows 28 px and hits 44. It gives way
+         to a horizontal drag by --mdx (35 %, at most 24 px; src/client.ts#islandSwipe) and takes
+         every horizontal move itself (touch-action: pan-y). #mglas is the glass: closed as wide as
+         the name (96–168 px, --mpw from src/client.ts#fitPill), opened --maw × 96, both as the
+         spring (--feder). Closed: the state shape and the name, as a band (two copies, 40 px/s,
+         after 1.2 s, soft edges) only when it overflows. Open: Sessions · name · Info, then the
+         view's tools as icon buttons and the named empty place Arbeitsort; they spring in 22 ms apart. */
+      #mtop { display: block; position: absolute; z-index: 8; left: 50%; top: env(safe-area-inset-top); padding: 8px 0;
+        --maw: min(370px, calc(100vw - 20px)); transform: translateX(-50%) translateX(var(--mdx, 0px));
+        touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent; font-family: var(--chat-sans); }
+      #mglas { position: relative; width: var(--mpw, 120px); height: 28px; border-radius: 14px; overflow: hidden;
+        background: linear-gradient(180deg, var(--glas-licht), transparent 42%), var(--glas-scrim);
+        -webkit-backdrop-filter: blur(var(--glas-blur)) saturate(var(--glas-sat));
+        backdrop-filter: blur(var(--glas-blur)) saturate(var(--glas-sat));
+        box-shadow: inset 0 1px 0 var(--glas-kante-o), inset 0 -1px 0 var(--glas-kante-u), inset 0 0 0 1px var(--glas-ring), var(--glas-schatten);
+        transition: width var(--feder-ms) var(--feder), height var(--feder-ms) var(--feder),
+          border-radius var(--feder-ms) var(--feder), scale 180ms var(--feder); }
+      /* a press shows itself (iOS has no navigator.vibrate) */
+      #mtop.mpress #mglas { scale: .97; }
+      /* the highlight follows the drag: its own layer, transform only — the glass is not repainted */
+      #mglas::after { content: ""; position: absolute; top: -40%; left: 50%; width: 60%; height: 80%; pointer-events: none;
+        background: radial-gradient(closest-side, var(--glas-ring), transparent);
+        transform: translateX(calc(-50% + var(--mdx, 0px) * 1.6)); }
+      body.mopen #mglas { width: var(--maw); height: 96px; border-radius: 26px; }
+      #mtop button { padding: 0; border: 0; background: none; color: var(--chat-ink); font-family: var(--chat-sans); cursor: pointer; }
+      #mtop button:focus-visible { outline: 2px solid var(--glas-fokus); outline-offset: -4px; }
+      #mpill { position: absolute; inset: 0; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 11px;
+        border-radius: inherit; font: 500 min(var(--chat-fs), 15px) / 28px var(--chat-sans); letter-spacing: -0.01em;
+        transition: opacity 140ms linear; }
+      #mpill .act { width: 6px; height: 6px; }
+      .mband { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-align: center; }
+      .mband.mover { text-align: left;
+        -webkit-mask-image: linear-gradient(90deg, transparent 0, var(--chat-void) 8px, var(--chat-void) calc(100% - 14px), transparent);
+        mask-image: linear-gradient(90deg, transparent 0, var(--chat-void) 8px, var(--chat-void) calc(100% - 14px), transparent); }
+      .mspur { display: inline-flex; }
+      #mtop .mnm { color: var(--chat-ink); text-shadow: var(--glas-text); }
+      .mband.mover .mnm { padding-right: 32px; }
+      .mspur.mrun { will-change: transform; animation: mtick var(--mtick, 8s) linear 1.2s infinite; }
+      /* the band holds while the island is open or the page is hidden */
+      body.mopen .mspur.mrun, body.mhidden .mspur.mrun { animation-play-state: paused; }
+      @keyframes mtick { to { transform: translateX(-50%); } }
+      #mopen { display: none; position: absolute; left: 0; top: 0; width: var(--maw); padding: 4px; }
+      body.mopen #mopen { display: block; }
+      body.mopen #mpill { opacity: 0; pointer-events: none; }
+      .mz1, #mtools { display: flex; align-items: center; height: 44px; }
+      #mtools { gap: 2px; }
+      .mib { position: relative; flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 22px; }
+      .mib::before { content: ""; position: absolute; inset: 4px; border-radius: 18px; background: transparent;
+        transition: background-color 120ms linear, scale 180ms var(--feder); }
+      .mib:active::before { background: var(--glas-druck); scale: .92; }
+      .mib .ico { position: relative; width: 20px; height: 20px; filter: var(--glas-glyphe); }
+      #mtop .mib[hidden] { display: none; }
+      #mname { flex: 1; min-width: 0; height: 44px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+        padding: 0 6px; text-align: center; }
+      #mname .ml1 { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+      #mname .mnm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 500 min(var(--chat-fs), 15px) / 1.25 var(--chat-sans); letter-spacing: -0.01em; }
+      #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 400 var(--chat-ui-fs) / 1.3 var(--chat-sans); color: var(--chat-mute); }
+      #mname .mrp:empty { display: none; }
+      /* the named empty place: the Ranke card's worktree field fills it (insel-glas-notiz.md §4);
+         its word is drawn only while it is empty */
+      #mort { flex: 1; min-width: 64px; height: 36px; margin-left: 4px; display: grid; place-items: center;
+        border: 1px dashed var(--chat-faint); border-radius: 18px; color: var(--chat-faint);
+        font: 500 var(--chat-ui-fs) / 1 var(--chat-sans); letter-spacing: .02em; }
+      #mort:empty::before { content: "Arbeitsort"; }
+      /* the contents spring in one after another (--i from src/client.ts#renderIsland); closing
+         takes them away at once and only the glass springs */
+      #mopen .mib, #mopen #mname, #mopen #mort { opacity: 0; transform: translateY(-6px) scale(.6); }
+      body.mopen.mda #mopen .mib, body.mopen.mda #mopen #mname, body.mopen.mda #mopen #mort { opacity: 1; transform: none;
+        transition: opacity 160ms linear calc(60ms + var(--i, 0) * 22ms), transform var(--feder-ms) var(--feder) calc(60ms + var(--i, 0) * 22ms); }
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        #mglas { background: linear-gradient(180deg, var(--glas-licht), transparent 42%), var(--glas-ohne); }
+      }
+      /* raised contrast or reduced transparency: no blur, the opaque face with a firm edge, no
+         highlight and no shadows on text — nothing shows through the island */
+      @media (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+        #mglas { background: var(--glas-dicht); -webkit-backdrop-filter: none; backdrop-filter: none;
+          box-shadow: inset 0 0 0 1px var(--c-edge-hi), var(--glas-schatten); }
+        #mglas::after { display: none; }
+        #mtop .mnm { text-shadow: none; }
+        .mib .ico { filter: none; }
+      }
+      /* still: no spring (states jump), no band — a long name (#mtop.mlong, the pill overflows) stands
+         cut with a soft edge in the pill and in two lines when open, in place of model · effort. NOT a
+         sideways scroller: it would take the swipe (liquid-glass.md §5) */
+      @media (prefers-reduced-motion: reduce) {
+        #mglas, #mpill, #mopen .mib, #mopen #mname, #mopen #mort, .mib::before { transition: none !important; }
+        .mspur.mrun { animation: none; }
+        #mglas::after { transform: translateX(-50%); }
+        #mtop.mlong #mname .mnm { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.2; }
+        #mtop.mlong #mname .mrp { display: none; }
+      }
+
+      #msheet .maddr { flex: none; min-width: 26px; padding: 1px 5px; border-radius: var(--r1); background: var(--chat-surface);
         box-shadow: inset 0 0 0 1px var(--chat-edge); color: var(--chat-ink); font: 400 var(--chat-code-fs) / 1.45 var(--chat-mono);
         font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
-      #mslot .act { position: absolute; right: 3px; top: 5px; box-shadow: 0 0 0 2px var(--chat-raised); }
-      #mslot .act.rest { box-shadow: inset 0 0 0 1.5px var(--chat-mute), 0 0 0 2px var(--chat-raised); }
-      #mopen #mname { grid-column: 2; grid-row: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center;
-        align-items: flex-start; gap: 1px; padding: 0 8px; border-radius: 14px; text-align: left; }
-      #mname .ml1 { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
-      #mname .mnm { font-size: var(--chat-fs); font-weight: 500; line-height: 1.25; letter-spacing: -0.01em; color: var(--chat-ink); }
-      #mname .mrp { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font-size: var(--chat-ui-fs); line-height: 1.2; color: var(--chat-faint); }
-      #mname .mrp:empty { display: none; }
-      /* the tools row runs on under ℹ, and ⋯ sticks to its right end: with a wide font or a large
-         Aa the words scroll under it, ⋯ itself never leaves the screen */
-      #mtools { grid-column: 2 / 4; grid-row: 2; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-      #mtools button { flex: none; display: inline-flex; align-items: center; height: 40px; padding: 0 10px;
-        border-radius: var(--r1); font-size: var(--chat-fs); white-space: nowrap; }
-      #mopen #mtools #mmore { position: sticky; right: 0; width: 40px; justify-content: center; padding: 0; margin-left: auto;
-        background: var(--chat-raised); }
-      #mtools #mmore .ico { width: 18px; height: 18px; }
-      #mtools [hidden], #minfo[hidden] { display: none; }
 
       /* the pane's corner group: its view toggle and ℹ live in the island; the rest is a row of the
          sheet behind ⋯ — only the end mark stays, resting over the bottom island while the
@@ -3487,7 +3854,10 @@
       /* the send target (G2.4) stays, as its address between field and send — the pill above names
          the session; a target that takes nothing keeps its word ("leer", "liest nur") */
       #main #comp #comptarget { order: 1; align-self: center; max-width: 30%; }
-      #main #comp #comptarget:not(.none) .ctname { display: none; }
+      #main #comp #comptarget:not(.none):not(.orphan) .ctname { display: none; }
+      /* an orphaned draft says so on its own line above the field, the button at 40 px (G0.7) */
+      #main #comp #comptarget.orphan { order: -2; flex-basis: 100%; max-width: 100%; padding: 0 2px 4px; }
+      #main #comp #comptarget .ctadopt { min-height: 40px; padding: 0 14px; margin-left: auto; }
       #main #comp #send { order: 3; width: 40px; height: 40px; }
       /* model/effort and Live are rows of the sheet behind ⋯; the switches' row comes back into the
          island only while one of its popovers is open — the sheet's Übernehmen opens the switch's
@@ -3547,12 +3917,29 @@
       #msheet .mshapply { flex: none; margin-left: auto; min-height: 40px; padding: 0 12px; border-radius: var(--r1); background: var(--chat-ink);
         color: var(--chat-void); font-weight: 500; font-size: var(--chat-ui-fs); }
       #msheet .mshapply:disabled { background: var(--chat-edge); color: var(--chat-faint); }
+
+      /* THE TWO SIDES (insel-glas-notiz.md §1, §7): the swipe on the island opens Sessions from the
+         left and Info from the right — so both change their FORM here, not their content. Solid
+         (--chat-surface family, never glass), 86 % wide, over a shade. --mside-p is the opening,
+         0 shut … 1 open; src/client.ts#sideTo writes it per frame as the spring or the finger moves
+         it, and with no inline value the side simply stands open. */
+      #msheetwrap.mside #msheet { position: absolute; left: 0; top: 0; bottom: 0; width: 86%; max-height: none;
+        padding: calc(8px + env(safe-area-inset-top)) 6px calc(8px + env(safe-area-inset-bottom));
+        border-radius: 0 var(--r2) var(--r2) 0; transform: translateX(calc((var(--mside-p, 1) - 1) * 100%));
+        box-shadow: inset -1px 0 0 var(--chat-edge), 8px 0 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+      #msheetwrap.mside #msheetshade { opacity: var(--mside-p, 1); }
+      /* while a finger drags the side in, the side and its shade take no pointer: the touch stays on
+         the island (src/client.ts#islandRelease, body.mdrag) */
+      body.mdrag #msheetwrap, body.mdrag #shell-board { pointer-events: none; }
+      #shell-board { justify-content: flex-end; background: color-mix(in srgb, var(--chat-void) calc(66% * var(--mside-p, 1)), transparent); }
+      #shell-board .shellwin { width: 86%; transform: translateX(calc((1 - var(--mside-p, 1)) * 100%));
+        box-shadow: inset 1px 0 0 var(--chat-edge), -8px 0 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
     }
   }
 
   /* --- mobile LANDSCAPE: the reading mode (Richtung B, owner's pick 2026-09-24; measured and drawn
      in docs/messungen/2026-09-22-mobil-querformat-entwurf.md, mockup docs/design/querformat/
-     b-lesemodus.html). Exactly the SECOND arm of MOBILE_MQ — no width limit of its own (G0.7): a phone
+     b-lesemodus.html). The SECOND arm of MOBILE_MQ on a wide page — no width limit of its own (G0.7): a phone
      on its side has 286 px of page without the keyboard and 122 with it, and the portrait treatment
      left 6 transcript rows of that. Here #mhead, #keys and the tray fold away and the transcript runs
      edge to edge (21 rows); #mread floats ☰ + title, ⌨ and ✎ over it in a see-through material.
@@ -3561,8 +3948,11 @@
      column-reverse: the composer stands IN FLOW at the top, clear of iOS's accessory bar (page
      y 64–108), and the pane shrinks under it. ⋯ brings back the tray as a second row there — never
      #mhead, whose settings gear moves into the pane's corner group instead (G5: one gear). After
-     the mobile block on purpose: it inherits all of it and overrides by order. */
-  @media (pointer: coarse) and (max-height: 500px) {
+     the mobile block on purpose: it inherits all of it and overrides by order. The 8/5 keeps it
+     to a phone on its side: upright with the keyboard up, a browser that shrinks the layout
+     viewport with the keyboard (a phone browser) is under 500 px as well, and this block's
+     `#comp { display: none }` took the focused field away (src/client.ts#LANDSCAPE_MQ). */
+  @media (pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5) {
     :root { --read-glass: color-mix(in srgb, var(--chat-raised) 72%, transparent);
       --read-glass-edge: color-mix(in srgb, var(--c-edge-hi) 60%, transparent); }
     #mhead, #keys, #chips, #comp { display: none; }
@@ -3630,14 +4020,15 @@
   .autostatusline { margin: 8px 0; color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   .autostatusline .shrbtn { margin-top: 8px; }
 
-  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2): four
+  /* THE SETTINGS WINDOW (src/client.ts#openSettings, Grammatik G5, cards K2+K8+3e6342e2+038d2694): five
      sections — "Dieses Gerät" (the src/prefs.ts registry rows, G5.1), "Schrift" (the size panel's
      one home, G5.3), "Fleet" (five server switches over existing routes, G5.2, card D-3 — a changed
      value is staged with an ink edge until Übernehmen, G4.4 — and the parallelism block), "Diese
-     Maschine" (read-only start values). Rows: label left, control right, value in mono, hint under
+     Maschine" (read-only start values), "Verbrauch" (subscription usage, its explicit refresh and the
+     model facts kept apart). Rows: label left, control right, value in mono, hint under
      (G5.3). The window reads in Sans (G0.3: the page body is mono); values, paths and ids stay mono.
-     The four section targets stand at the top at every width and stick while the sections scroll;
-     on the phone each shows its one section (G3.1), on the desktop all four stack. */
+     The five section targets stand at the top at every width and stick while the sections scroll;
+     on the phone each shows its one section (G3.1), on the desktop all five stack. */
   #shell-settings .shellwin { font-family: var(--chat-sans); }
   #shell-settings :focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; } /* G0.2: the composer's ring */
   #shell-settings .shellclose:focus-visible { outline: 1px solid var(--chat-mute); }
@@ -3693,6 +4084,25 @@
   .setwhy summary:hover { color: var(--chat-ink); }
   .setfoot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 0 2px; }
   .setfoot .setnote { flex: 1; margin: 0; }
+  /* "Verbrauch" (card 038d2694): the share of a window is the number; the thin bar beside it is only
+     its shape, and where nothing was measured there is no bar at all (never a 0-wide "0"). A stale
+     window reads faint. The refresh target is a native radio group; the button is aria-disabled,
+     not disabled, so the focus stays on it while it reads and its reason stays reachable. */
+  .usebar { display: inline-block; width: 64px; height: 4px; margin-left: 8px; vertical-align: middle;
+    border-radius: 2px; background: var(--chat-edge-soft); overflow: hidden; }
+  .usebar > i { display: block; height: 100%; background: var(--chat-prose); }
+  .setstat.stale .setstatv { color: var(--chat-mute); }
+  .setstat.stale .usebar > i { background: var(--chat-faint); }
+  .usetarget { margin: 0; padding: 8px 0; border: 0; border-bottom: 1px solid var(--chat-edge-soft); min-width: 0;
+    font-size: var(--chat-ui-fs); }
+  .usetarget legend { padding: 0; font-weight: 500; color: var(--chat-ink); }
+  .useradios { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; }
+  .useradio { display: inline-flex; align-items: center; gap: 6px; color: var(--chat-prose); cursor: pointer; }
+  .useradio input { margin: 0; accent-color: var(--chat-ink); }
+  .usectl { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; }
+  .usectl .usestatus { flex: 1; min-width: 0; margin: 0; color: var(--chat-prose); }
+  .usebtn[aria-disabled="true"] { color: var(--chat-faint); cursor: default; }
+  .usebtn[aria-busy="true"] { cursor: progress; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #shell-settings .settabs { overflow-x: auto; }
     #shell-settings .settab { flex: none; }
@@ -3701,6 +4111,7 @@
     #shell-settings .setsec > h3 { display: none; } /* the pressed target already names the one section shown */
     .settoggle, .settab, .setreset, .setin, .setfoot .cmdapply, .setchoice .cmdlevel { min-height: 40px; } /* finger targets, G0.7 */
     .setin { font-size: 16px; } /* no iOS zoom, G0.7 */
+    .useradio { min-height: 40px; }
     .fleetrow .setmain { flex-basis: 100%; }
     .fleetrow .setval { flex: 1; max-width: none; }
     .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
@@ -3710,6 +4121,7 @@
 </head>
 <body>
 <div id="plaudit" class="plaudit"></div>
+<div id="tiband" hidden></div>
 <div id="app">
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>
@@ -3779,6 +4191,7 @@
            twice — src/composer.ts#mountComposer moves this node. -->
       <div id="comp" class="bar">
         <div id="comppark" hidden></div>
+        <div id="compheld" hidden></div>
         <div id="compsurface">
           <div id="compfiles"></div>
           <textarea id="input" rows="1" placeholder="Prompt for the selected session…"
@@ -3806,21 +4219,33 @@
       <div id="mreadtl"><button id="mreadmenu" type="button" title="Sessions"></button><span id="mreadtitle"></span></div>
       <div id="mreadbr"><button id="mreadkeys" type="button" title="Tastenreihe einblenden" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Prompt schreiben"></button></div>
     </div>
-    <!-- the phone upright only (index.html, the island block): the top island in two steps — the
-         pill to read (state + name), opened to act. Every button hands over to a control the board
-         already has (src/client.ts#renderIsland): the pane's ℹ and view toggle, the tray's History
-         and Schedule; the slot button and ⋯ open the sheets Sessions and Werkzeuge (#msheet) -->
-    <div id="mtop" role="group" aria-label="Session und Werkzeuge">
-      <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen — Sessions, Info und Werkzeuge"></button>
-      <div id="mopen">
-        <button id="mslot" type="button" aria-haspopup="dialog" title="Sessions öffnen — wechseln, starten, Tasks"></button>
-        <button id="mname" type="button" aria-expanded="true" title="Insel zuklappen — mehr Platz zum Lesen"></button>
-        <button id="minfo" type="button" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
-        <div id="mtools">
-          <button id="mview" type="button"></button>
-          <button id="mhist" type="button" title="Prompt-Verlauf dieser Session">History</button>
-          <button id="mauto" type="button" title="Geplante Prompts für diese Session">Schedule</button>
-          <button id="mmore" type="button" aria-haspopup="dialog" title="Weitere Werkzeuge — Modell, Effort, Live, Suche, Schrift, Einstellungen"></button>
+    <!-- the phone upright only (index.html, the island block): the top island of glass
+         (docs/design/insel-glas-notiz.md). #mtop is the 44-px hit zone, #mglas the glass: closed a
+         28-px pill (state + name, running as a band when it overflows), opened two rows of icon
+         buttons. Every button hands over to a control the board already has
+         (src/client.ts#renderIsland); a swipe right opens Sessions from the left, a swipe left the
+         Info from the right, never another session (src/client.ts#islandSwipe) -->
+    <div id="mtop" role="group" aria-label="Session">
+      <div id="mglas">
+        <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen"></button>
+        <div id="mopen">
+          <div class="mz1">
+            <button id="mslot" class="mib" type="button" aria-haspopup="dialog"></button>
+            <button id="mname" type="button" aria-expanded="true" aria-label="Insel zuklappen" title="Insel zuklappen"></button>
+            <button id="minfo" class="mib" type="button" aria-label="Info öffnen" title="Info öffnen — Brief, Änderungen, Checks, Verlauf"></button>
+          </div>
+          <div id="mtools">
+            <button id="mview" class="mib" type="button"></button>
+            <button id="mfind" class="mib" type="button" aria-label="Im Terminalverlauf suchen" title="Im Terminalverlauf suchen — am Desktop ⌘/Strg+F"></button>
+            <button id="mreload" class="mib" type="button" aria-label="Neu verbinden" title="Neu verbinden — holt den Verlauf neu"></button>
+            <button id="mup" class="mib" type="button" aria-label="Voriger Prompt" title="Zu deinem vorigen Prompt"></button>
+            <button id="mdown" class="mib" type="button" aria-label="Nächster Prompt" title="Zu deinem nächsten Prompt"></button>
+            <button id="mhist" class="mib" type="button" aria-label="Prompt-Verlauf" title="Prompt-Verlauf dieser Session"></button>
+            <button id="mauto" class="mib" type="button" aria-label="Geplante Prompts" title="Geplante Prompts für diese Session"></button>
+            <button id="mmore" class="mib" type="button" aria-haspopup="dialog" aria-label="Weitere Werkzeuge" title="Weitere Werkzeuge — Modell, Effort, Live, Schrift, Einstellungen"></button>
+            <!-- a named, EMPTY place: the worktree field of the Ranke card goes here (insel-glas-notiz.md §4) -->
+            <div id="mort" role="group" aria-label="Arbeitsort"></div>
+          </div>
         </div>
       </div>
     </div>

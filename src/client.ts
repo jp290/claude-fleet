@@ -1,7 +1,9 @@
 import type { CodexFirstTurn } from "../server/conversation-read";
+import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
+import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
+import { initBoard, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, setInstanceSource, takeFxAfterPaint } from "./board";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, renderWorkplaceField, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -18,7 +20,7 @@ import { MarkStage, markFacts, placeMarks, projectHue, type MarkItem } from "./m
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
-import { DraftBook, historySource, type HistoryEntry } from "./drafts";
+import { BoxDraft, DraftBook, historySource, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
@@ -26,7 +28,7 @@ import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, p
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
-import { pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { isInterruptMark, pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
@@ -52,14 +54,21 @@ import type { WaitRow } from "../waits";
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
   codexCliSnapshotFrom, codexCliUnknown, compareCodexCli, type CodexCliSnapshot,
+  instanceSourceFrom, instanceBandText, type InstanceSource,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
-  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow,
+  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow, type SubscriptionUsage, type SubscriptionWindow,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
+
+if (/Chrome\/|Chromium\//.test(navigator.userAgent) && !/CriOS\//.test(navigator.userAgent)) {
+  const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (viewport && !viewport.content.includes("interactive-widget="))
+    viewport.content = `${viewport.content}, interactive-widget=resizes-content`;
+}
 
 export const $ = (id: string) => document.getElementById(id)!;
 export const slotsEl = $("slots"), dot = $("dot"),
@@ -74,8 +83,12 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "3": 3, "4": 4 };
 // must match the mobile media query in index.html
 export const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 export const isMobile = () => MOBILE_MQ.matches;
-// MOBILE_MQ's second arm alone — the phone on its side (index.html's reading-mode block), no limit of its own
-const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px)");
+// MOBILE_MQ's second arm, held to a wide page — the phone on its side (index.html's reading-mode
+// block), no width limit of its own. The 8/5 tells it from the phone UPRIGHT with the keyboard up in
+// a browser whose keyboard shrinks the layout viewport (a phone browser, the owner's: 414 x ~385, 1.1):
+// that page is under 500 px too, and the reading mode hid #comp under the focused field — the focus
+// went, the keyboard flashed and closed. On its side a phone is ~2 or wider, with the keyboard more.
+const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5)");
 
 // Terminal links (bare urls via WebLinksAddon, OSC 8 via the linkHandler option) open on
 // Cmd/Ctrl-click, not a plain click: xterm activates a link on mouseup whenever the mousedown hit
@@ -180,6 +193,37 @@ function hostSign(name: IconName, text: string): HTMLElement[] {
   return [ic, el("span", "devname", text)];
 }
 
+// THE TESTINSTANZ BAND (ranke-notiz R11, grammatik G2.3): one quiet line above everything, on a
+// TEST INSTANCE only — which branch and stand this copy shows and what of it is not on its target
+// yet. Fed by `instance.source` of the existing sessions poll, which only an instance started by
+// testinstanz.sh carries (server.ts#INSTANCE_SOURCE); the live fleet never sends it, so there the
+// element stays hidden and <html> never gets the class that makes room for it. The wire value is
+// re-folded through the server's own parser at this boundary, and the words come from one pure
+// function (src/protocol.ts#instanceBandText) that e2e/lanes-lifecycle.ts runs without a browser.
+const tiBand = $("tiband");
+let tiBandRendered = "";
+function renderInstanceBand(source: InstanceSource | null) {
+  const key = source ? JSON.stringify(source) : "";
+  if (key === tiBandRendered) return;
+  tiBandRendered = key;
+  document.documentElement.classList.toggle("tiband", !!source);
+  tiBand.hidden = !source;
+  if (!source) { tiBand.replaceChildren(); tiBand.removeAttribute("title"); return; }
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const parts: Node[] = [];
+  band.segments.forEach((seg, i) => {
+    const span = el("span", "tiseg");
+    // the glyph rides inside the first segment and each separator closes its segment, so a wrapped
+    // line never starts with a lone glyph or a "·"
+    if (i === 0) span.append(icon("ranke"));
+    for (const run of seg) span.append(run.mono ? el("span", "timono", run.t) : document.createTextNode(run.t));
+    if (i < band.segments.length - 1) span.append(el("span", "tisep", " · "));
+    parts.push(span);
+  });
+  tiBand.replaceChildren(...parts);
+  tiBand.title = band.title;
+}
+
 function renderInstanceHead() {
   const key = JSON.stringify([instanceName, instanceLinks, instanceCodexCli,
     Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
@@ -280,8 +324,101 @@ gateIn.addEventListener("keydown", (e) => {
   void submitToken(t);
 });
 
+interface PerfSpan {
+  j: PerfJourney; start: number; done: boolean;
+  context: Pick<PerfRecord, "dev" | "saver" | "v" | "slots">;
+  attrs: PerfAttrs;
+}
+const perfBuffer: PerfRecord[] = [];
+const perfActive = new Set<PerfSpan>();
+const perfRequests = new WeakMap<Response, { url: string; start: number }>();
+const perfDeliveries = new WeakMap<Promise<boolean>, { response?: Response }>();
+let perfSendClickAt: number | undefined;
+const perfPending = new WeakMap<HTMLElement, { span: PerfSpan }>();
+let perfBoardStarted = false;
+function perfStart(j: PerfJourney, at = performance.now(), attrs: PerfAttrs = {}): PerfSpan {
+  const span: PerfSpan = { j, start: at > performance.timeOrigin ? at - performance.timeOrigin : at, done: false,
+    context: { dev: isMobile() ? "mobile" : "desktop", saver: dataSaver, v: bundleV, slots: fleet.filter((s) => !!s.cwd).length }, attrs };
+  if (document.hidden) span.attrs.hidden = true;
+  perfActive.add(span);
+  return span;
+}
+function perfPaint(fn: () => void): void {
+  requestAnimationFrame(() => requestAnimationFrame(fn));
+}
+function perfFinish(span: PerfSpan | null, ok: boolean, res?: Response, painted = false): void {
+  if (!span || span.done) return;
+  span.done = true;
+  const finish = (): void => {
+    perfActive.delete(span);
+    const ms = span.j === "J3" && span.attrs.responseMs !== null && span.attrs.responseMs !== undefined
+      ? span.attrs.responseMs : Math.max(0, performance.now() - span.start);
+    const request = res && perfRequests.get(res);
+    const req = request && request.start >= span.start ? request : undefined;
+    const resource = req ? (performance.getEntriesByName(req.url, "resource") as PerformanceResourceTiming[])
+      .filter((e) => e.startTime >= req.start - 1).at(-1) : undefined;
+    const total = resource?.serverTiming?.find((t) => t.name === "total")?.duration
+      ?? (req && res?.headers.get("server-timing")?.match(/(?:^|,\s*)total;dur=([\d.]+)/)?.[1]);
+    const serverMs = total === undefined ? null : Number(total);
+    const netMs = resource && serverMs !== null ? Math.max(0, resource.responseEnd - resource.startTime - serverMs) : null;
+    if (resource) span.attrs.bytes ??= resource.encodedBodySize;
+    if (request && serverMs === null) span.attrs.serverMs = "timing-unavailable";
+    if (span.j === "J1") {
+      const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+      const bundle = (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).find((e) => new URL(e.name).pathname === "/app.js");
+      span.attrs.htmlBytes = nav?.encodedBodySize ?? 0;
+      span.attrs.bundleBytes = bundle?.encodedBodySize ?? 0;
+      span.attrs.cold = (bundle?.transferSize ?? 0) > 0;
+      span.context.v = bundleV;
+      span.context.slots = fleet.filter((s) => !!s.cwd).length;
+    }
+    const record: PerfRecord = { ...span.context, j: span.j, ok, ms: ok ? ms : null,
+      clientMs: ok ? Math.max(0, ms - (serverMs ?? 0) - (netMs ?? 0)) : null,
+      serverMs: ok ? serverMs : null, netMs: ok ? netMs : null, attrs: span.attrs };
+    if (perfBuffer.length < PERF_BATCH_MAX * 2) perfBuffer.push(record);
+  };
+  if (ok && !painted) perfPaint(finish); else {
+    if (!ok && span.j === "J3") span.attrs.responseMs = null;
+    finish();
+  }
+}
+function perfBoardReady(span: PerfSpan, res: Response, input = ta): void {
+  const observer = new MutationObserver(() => { if (!input.disabled) perfPaint(ready); });
+  const cleanup = (): void => { observer.disconnect(); clearTimeout(timeout); };
+  const ready = (): void => {
+    if (span.done) { cleanup(); return; }
+    if (input.disabled) { observer.observe(input, { attributes: true, attributeFilter: ["disabled"] }); return; }
+    cleanup();
+    perfFinish(span, true, res, true);
+  };
+  const timeout = setTimeout(() => {
+    cleanup();
+    if (span.done) return;
+    span.attrs.reason = "composer-timeout";
+    perfFinish(span, false);
+  }, 30_000);
+  perfPaint(ready);
+}
+function perfVisibility(): void {
+  if (!document.hidden) return;
+  for (const span of perfActive) span.attrs.hidden = true;
+  flushPerf();
+}
+function flushPerf(): void {
+  while (perfBuffer.length) {
+    const batch = perfBuffer.slice(0, PERF_BATCH_MAX);
+    if (!navigator.sendBeacon("/api/perf", new Blob([JSON.stringify(batch)], { type: "application/json" }))) return;
+    perfBuffer.splice(0, batch.length);
+  }
+}
+setInterval(flushPerf, 60_000);
+document.addEventListener("visibilitychange", perfVisibility);
+
 export async function api(path: string, init?: RequestInit): Promise<Response> {
+  const timed = path === "/api/sessions" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)(?:\?|$)/.test(path);
+  const start = timed ? performance.now() : 0;
   const res = await fetch(path, init);
+  if (timed) perfRequests.set(res, { url: new URL(path, location.href).href, start });
   if (res.status === 401) showGate();
   return res;
 }
@@ -323,6 +460,7 @@ export interface SlotInfo {
   succession?: { session: number; taken: number | null; cap: number | null };
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
+  permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" } | { state: "invalid" };
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
@@ -347,6 +485,9 @@ export interface SlotInfo {
   // owner /sends parked behind an occupied composer (server.ts, THE PARKED SEND): how many wait,
   // the size of the draft that blocks them, since when. ABSENT = nothing waits.
   parkedSend?: { count: number; draftChars: number; since: number };
+  // Fleet deliveries a bundle holds for this session (server.ts#heldDeliveriesView): how many, when
+  // the bundle is due (null = until the next send), which paths. ABSENT = nothing held.
+  heldDeliveries?: HeldDeliveries;
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
@@ -364,7 +505,9 @@ interface CodexCandidatesView {
 // the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
-export interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
+export interface HarnessInfo { id: string; permissions?: { status: "unsupported" } | { status: "supported";
+  sandbox: ("read-only" | "workspace-write" | "danger-full-access")[]; approval: ("on-request" | "never")[];
+  default: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" } }; supports: { resume: boolean; transcript: boolean; model: boolean;
   effort: boolean; selfSchedule: boolean; container: boolean;
   // the conversation view has something to read: a Claude transcript OR the adapter's own reader
   // (codex rollout, pi session — server.ts#Harness.conversation). Optional for an older server,
@@ -947,9 +1090,10 @@ const CHAT_FOLLOW_PX = 8;
 const chatStill = matchMedia("(prefers-reduced-motion: reduce)");
 // A SEND'S STATE under YOUR bubble (Tranche 2, owner: „[Zitat entfernt]“
 // ): the state as a word, the dot in the state colour (G2.3).
-// "wartet" = this board sent it and the transcript has not brought it back — Claude Code queues a
-// prompt sent mid-turn and writes it after the turn; "durch" = the transcript has it (the entry that
-// retired the bubble). Nothing more is claimed: not read, not answered.
+// "wartet" = the session's own queue holds it (server.ts#sessionQueue — whoever sent it, and after a
+// reload too), or this board just sent it and neither the queue nor the transcript has it yet;
+// "durch" = the transcript has it (the entry that retired the bubble). Nothing more is claimed: not
+// read, not answered.
 type SendState = "sending" | "wait" | "done";
 const SEND_WORD: Record<SendState, string> = { sending: "wird gesendet …", wait: "wartet", done: "durch" };
 const SEND_TITLE: Record<SendState, string> = {
@@ -999,13 +1143,85 @@ type ChatToolGroup = { det: HTMLElement; sum: HTMLElement; body: HTMLElement; co
 type ChatNotifGroup = { sum: HTMLElement; body: HTMLElement; count: number };
 type ChatShelfRow = { nodes: Node[]; total: number; source: string | null; lastTurnAt: number; cacheTtl: number | null; cacheTtlSec: number | null;
   model: string | null; effort: string | null; toolGroup: ChatToolGroup | null; notifGroup: ChatNotifGroup | null;
-  pending: { text: string; el: HTMLElement }[]; openAgents: Map<string, { step: HTMLElement; run: HTMLElement }>;
+  pending: PendingBubble[]; openAgents: Map<string, { step: HTMLElement; run: HTMLElement }>;
   hover: boolean; anchor: ChatAnchor | null };
 const chatShelf = new Map<number, ChatShelfRow>();
+// A "wartet" bubble: the composer's own at Enter (no `key`), or one the session's queue names
+// (`key` = the queue entry; GET /api/slots/:id/transcript → `queued`). A composer bubble the queue
+// names becomes that entry's bubble — one bubble per send. `leftAt`: when its entry left the queue
+// without the transcript bringing it in the same read.
+type PendingBubble = { text: string; el: HTMLElement; key?: string; leftAt?: number };
+// the transcript turn follows its dequeue within milliseconds (measured 2026-10-03, ~10 ms); a read
+// between the two lines keeps the bubble, one the transcript never brings goes after this long
+const QUEUE_LEFT_MS = 5000;
 // the Markdown each rendered message body came from — what relinkChat re-renders in place
 const bodySource = new WeakMap<HTMLElement, string>();
 
+// A SENT DROP, SHOWN AS THE PICTURE IT IS (card 7d9c5394; owner 2026-09-30: „[Zitat entfernt]“
+//  — the bubble showed only the attached path). The prompt that
+// left the board is unchanged: the composer still appends server.ts#dropMention's line, the agent
+// still reads the path, the copy button still copies that text. Only the BUBBLE reads the line back:
+// a line of exactly that form, naming a raster in a drops/ folder, becomes a thumbnail; every other
+// line — a foreign path, a HEIC, a pasted look-alike — stays text. The bytes come from the slot's
+// own drop route (server.ts, GET /api/slots/:id/drop), which serves nothing but this slot's own
+// drops, so a look-alike line that names someone else's file fails there and falls back to its
+// text. Plain same-origin URLs on the owner cookie: no token in a URL, no object URL to revoke.
+const DROP_LINE_RE = /^attached: (\/.*\/drops\/(\d{13}-[A-Za-z0-9._-]{1,80}\.(?:png|jpe?g|gif|webp))) — read it$/i;
+const DROP_PREVIEW_MAX = 12; // per message; a longer list keeps the rest as text lines
+type DropImage = { path: string; name: string; line: string };
+function splitDropImages(text: string): { rest: string; images: DropImage[] } {
+  const images: DropImage[] = [];
+  const keep: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = images.length < DROP_PREVIEW_MAX ? DROP_LINE_RE.exec(line.trim()) : null;
+    if (m) images.push({ path: m[1], name: m[2].replace(/^\d{13}-/, ""), line: line.trim() });
+    else keep.push(line);
+  }
+  return images.length ? { rest: keep.join("\n").trim(), images } : { rest: text, images };
+}
+// One button per picture (Enter/Space open it like a click), the lightbox the composer's thumbnails
+// already use, Escape back to this button. A picture that does not come (gone with its worktree,
+// not a raster, not this slot's) turns back into its own line — readable, never a broken image.
+function dropStrip(slot: number, images: DropImage[]): HTMLElement {
+  const strip = el("div", "mimgs");
+  for (const d of images) {
+    const url = `/api/slots/${slot}/drop?path=${encodeURIComponent(d.path)}`;
+    const open = el("button", "mimg") as HTMLButtonElement;
+    open.type = "button";
+    open.title = `${d.name} — groß öffnen`;
+    const img = document.createElement("img");
+    img.alt = d.name;
+    img.decoding = "async";
+    img.onerror = () => open.replaceWith(el("div", "mimgline", d.line));
+    img.src = url;
+    open.appendChild(img);
+    open.onclick = () => openLightbox(url, d.name, open);
+    strip.appendChild(open);
+  }
+  return strip;
+}
+
 class Pane {
+  private perfSwitch: PerfSpan | null = null;
+  private perfChat: PerfSpan | null = null;
+  private perfChatLoaded = false;
+  private perfSeedReady = false;
+  visibleExistingSwitch(): void {
+    if (this.view === "chat" ? this.perfChatLoaded : this.perfSeedReady) this.visibleSwitch(true);
+  }
+  beginSwitch(at: number): void {
+    perfFinish(this.perfSwitch, false);
+    this.perfSwitch = perfStart("J2", at, { view: this.view });
+  }
+  visibleSwitch(shelf: boolean, res?: Response): void {
+    if (this.perfSwitch) {
+      this.perfSwitch.attrs.view = this.view;
+      this.perfSwitch.attrs.shelf = this.view === "chat" && shelf;
+      if (this.view === "term") this.perfSwitch.attrs.serverMs = "ws-seed-unmeasured";
+      perfFinish(this.perfSwitch, true, res);
+      this.perfSwitch = null;
+    }
+  }
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
   private pinPending = false; // pin the viewport to the bottom once the next seed lands
@@ -1168,7 +1384,7 @@ class Pane {
     this.viewBtn.setAttribute("aria-pressed", "false");
     this.viewBtn.onclick = (e) => {
       e.stopPropagation();
-      this.setView(this.view === "term" ? "chat" : "term");
+      this.setView(this.view === "term" ? "chat" : "term", e.timeStamp);
     };
     // terminal on the chat column's width — one pane, terminal view, never a phone (VERBOTEN mobil);
     // the phone never sees this button (mobile CSS hides it outright)
@@ -1472,7 +1688,14 @@ class Pane {
   // own resize jiggle relocates content, so line-anchored marks drift and were dropped.
   // "What did I send" lives in the 🕘 prompt history and the conversation view instead.
 
-  setView(v: "term" | "chat") {
+  setView(v: "term" | "chat", at = performance.now()) {
+    if (v !== this.view) { perfFinish(this.perfSwitch, false); this.perfSwitch = null; }
+    if (v === "chat" && this.view !== "chat" && this.slot && this.pastN === null) {
+      perfFinish(this.perfChat, false);
+      this.perfChat = perfStart("J4", at, { view: "chat", shelf: this.perfChatLoaded });
+      if (this.perfChatLoaded) { perfFinish(this.perfChat, true); this.perfChat = null; }
+    }
+    if (v === "term") { perfFinish(this.perfChat, false); this.perfChat = null; }
     if (v !== "term") this.closeSearch();
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
@@ -1538,6 +1761,7 @@ class Pane {
   }
 
   private resetChat() {
+    this.perfChatLoaded = false;
     clearTimeout(this.chatTimer);
     this.chatGen++;
     this.chatMemo = null;
@@ -1647,7 +1871,7 @@ class Pane {
   // They render as prominent anchors; everything the agent did between two texts
   // collapses into one expandable "⚙ n steps" line instead of a wall of rows. ---
   // prompts sent from the composer that the transcript has not brought back yet (src/pendingsend.ts)
-  private pending: { text: string; el: HTMLElement }[] = [];
+  private pending: PendingBubble[] = [];
   private toolGroup: { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number;
     lastStep: HTMLElement | null } | null = null;
   // task-notifications between two of your messages fold into one collapsed accordion —
@@ -1784,6 +2008,7 @@ class Pane {
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
   private appendEntry(e: TEntry) {
+    if (e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text" && isInterruptMark(b.text))) { this.addInterrupt(e); return; }
     if (e.meta) { this.addNotif(e); return; }
     this.notifGroup = null; // a real entry ends the notification run
     for (const b of e.blocks) {
@@ -1807,12 +2032,15 @@ class Pane {
       }
     }
   }
-  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean) {
+  private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean): HTMLElement {
     const msg = el("div", `msg ${e.role}`);
+    // only YOUR prompt names drops (the composer appends them); an agent quoting the line stays text
+    const drops = e.role === "user" ? splitDropImages(text) : { rest: text, images: [] };
     const body = el("div", "mbody");
-    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-    bodySource.set(body, text);
+    mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, drops.rest);
     for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+    if (drops.images.length) msg.appendChild(dropStrip(this.slot, drops.images));
     const meta = el("div", "mmeta");
     const who = e.role === "user" ? "you" : "claude";
     meta.appendChild(el("span", "mwho", e.ts ? `${who} · ${fmtClock(e.ts)}` : who));
@@ -1826,6 +2054,7 @@ class Pane {
     meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
     msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
     this.chatAdd(msg);
+    return msg;
   }
   // A bundle part Fleet wrote (a nudge, an event, the bundle's closing line): one quiet line, not a
   // bubble — you did not say it, and ↑/↓ and the outline jump between YOUR messages. Its first line
@@ -1834,12 +2063,31 @@ class Pane {
     const line = document.createElement("details");
     line.className = "msys";
     const sum = document.createElement("summary");
-    const [first = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
-    sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", first));
+    const [lead = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
+    // ONE label: a part that opens with its own "[fleet]" / "[fleet message]" shows that as the label
+    // instead of "fleet [fleet] …" (Abnahme 6936ed0b, owner picture nachher-1200-3-ereignisse)
+    const own = /^\[(fleet(?: [a-z][a-z-]*)?)\] /.exec(lead);
+    const first = own ? lead.slice(own[0].length) : lead;
+    sum.append(el("span", "msyswho", own?.[1] ?? "fleet"), el("span", "msystext", first));
     sum.title = [header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
     if (more) line.appendChild(el("div", "msysbody", more));
+    this.chatAdd(line);
+  }
+
+  // Esc mid-turn (src/pendingsend.ts#isInterruptMark): the terminal shows "Interrupted" as a line under
+  // the answer, so the chat view does too — a quiet line in the same ink as a Fleet part, never a bubble
+  // of yours (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The marker rides in the tooltip.
+  private addInterrupt(e: TEntry) {
+    this.toolGroup = null;
+    this.notifGroup = null;
+    const line = document.createElement("details");
+    line.className = "msys mstop";
+    const sum = document.createElement("summary");
+    sum.append(el("span", "msyswho", "esc"), el("span", "msystext", `interrupted${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`));
+    sum.title = `Die Session wurde mitten im Schritt unterbrochen — Claude Code schreibt das selbst, nicht du.\n${e.blocks.map((b) => b.text).join("\n")}`;
+    line.appendChild(sum);
     this.chatAdd(line);
   }
 
@@ -1850,9 +2098,13 @@ class Pane {
   addPending(text: string): HTMLElement | null {
     if (this.view !== "chat" || this.pastN !== null) return null;
     const msg = el("div", "msg user pending fresh");
+    // the same picture strip the transcript entry will carry, so the swap in settlePending changes
+    // the state line and nothing else (one preview before, one after)
+    const drops = splitDropImages(text);
+    if (drops.images.length) msg.appendChild(dropStrip(this.slot, drops.images));
     const body = el("div", "mbody");
-    mdInto(body, text, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
-    bodySource.set(body, text);
+    mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
+    bodySource.set(body, drops.rest);
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
     msg.append(body, sendState("sending"), meta);
@@ -1865,10 +2117,75 @@ class Pane {
     msg.remove();
     this.pending = this.pending.filter((p) => p.el !== msg);
   }
+  // THE SESSION'S QUEUE, READ BACK (server.ts#sessionQueue): every owner text the session still holds
+  // stands as a "wartet" bubble at the end of the view — whoever sent it, and after a reload. The
+  // composer's own bubble for the same send becomes the queue's; the transcript turn retires either
+  // through settlePending ("durch"). A bundle in the queue waits as its owner parts.
+  private syncQueue(queued: readonly { text: string; at: string | null }[]): void {
+    const now = Date.now();
+    const listed = new Set<string>();
+    for (const q of queued) {
+      const { header, body } = splitDeliveryHeader(unwrapPasted(q.text));
+      const parts = deliveryParts(body)?.filter((p) => p.owner) ?? [{ owner: true, mark: null, text: body }];
+      parts.forEach((part, i) => {
+        const key = `${q.at ?? ""}#${i}\n${part.text}`;
+        listed.add(key);
+        if (this.pending.some((p) => p.key === key)) return;
+        const mine = this.pending.find((p) => p.key === undefined && pendingSettledBy(p.text, part.text));
+        if (mine) {
+          mine.el.querySelector(".msend")?.replaceWith(sendState("wait"));
+          this.pending = this.pending.map((p) => (p === mine ? { ...p, key } : p));
+          return;
+        }
+        const msg = this.addMessage({ n: 0, role: "user", ts: q.at, blocks: [] }, part.text, header, part.mark, false);
+        msg.classList.add("pending");
+        msg.insertBefore(sendState("wait"), msg.querySelector(".mmeta"));
+        this.pending = [...this.pending, { text: part.text, el: msg, key }];
+      });
+    }
+    for (const p of this.pending) if (p.key !== undefined && !listed.has(p.key) && now - (p.leftAt ?? now) > QUEUE_LEFT_MS) this.dropPending(p.el);
+    this.pending = this.pending.map((p) => (p.key === undefined ? p
+      : { ...p, leftAt: listed.has(p.key) ? undefined : p.leftAt ?? now }));
+  }
+  // THE HELD BUNDLE (server.ts#heldDeliveriesView): Fleet holds deliveries for this session and types
+  // them when the bundle is due — until then neither the terminal nor this view showed anything for
+  // up to FLEET_DELIVERY_BUNDLE_SEC (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4).
+  // One quiet line at the very end, below every "wartet" bubble, read from the 2 s owner poll and
+  // gone with the flush; the composer adds „[Zitat entfernt]“ (src/composer.ts#renderHeldHint).
+  // Not a message: it never counts as new and never moves a released view.
+  syncHeld(): void {
+    const hd = this.slot && this.pastN === null && this.view === "chat"
+      ? fleet.find((x) => x.id === this.slot)?.heldDeliveries : undefined;
+    let line = this.chatEl.querySelector<HTMLElement>(":scope > .mheld");
+    if (!hd) { line?.remove(); return; }
+    const text = heldDeliveriesLine(hd);
+    const title = `Fleet hält ${hd.count === 1 ? "diese Zustellung" : "diese Zustellungen"} gebündelt zurück und tippt `
+      + `sie ${hd.dueAt === null ? "mit dem nächsten Senden" : "zur genannten Zeit"} in die Session — `
+      + `Senden nimmt sie früher mit. Wege: ${hd.paths.join(", ")}`;
+    if (!line) {
+      line = document.createElement("details");
+      line.className = "msys mheld";
+      const sum = document.createElement("summary");
+      sum.append(el("span", "msyswho", "fleet"), el("span", "msystext", text));
+      line.appendChild(sum);
+    }
+    const sum = line.querySelector("summary")!;
+    const shown = sum.querySelector(".msystext")!;
+    if (shown.textContent !== text) shown.textContent = text;
+    if (sum.title !== title) sum.title = title;
+    if (line.parentNode !== this.chatEl || line.nextSibling !== null) {
+      this.chatEl.appendChild(line);
+      if (this.chatStuck) this.followEnd(false);
+    }
+  }
   // true = the entry retired a bubble this board put up: it is the same send, now DURCH
   private settlePending(text: string): boolean {
     const hit = this.pending.find((p) => pendingSettledBy(p.text, text));
-    if (hit) this.dropPending(hit.el);
+    if (hit) {
+      const measured = perfPending.get(hit.el);
+      if (measured) measured.span.attrs.transcriptMs = Math.max(0, performance.now() - measured.span.start);
+      this.dropPending(hit.el);
+    }
     return !!hit;
   }
 
@@ -1903,16 +2220,31 @@ class Pane {
     // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
     const slot = this.slot, past = this.pastN, gen = this.chatGen;
+    const chatPerf = this.perfChat, switchPerf = this.perfSwitch;
+    const failPerf = (reason: "fetch-error" | "http-error"): void => {
+      const owns = this.slot === slot && this.pastN === past && this.chatGen === gen;
+      for (const span of [chatPerf, switchPerf, ...(owns ? [this.perfChat, this.perfSwitch] : [])]) {
+        if (span && !span.done) span.attrs.reason = reason;
+        perfFinish(span, false);
+      }
+      if (owns) { this.perfChat = null; this.perfSwitch = null; }
+    };
+    const initial = this.chatTotal === 0;
     this.chatBusy = true;
     let grew = false;
     try {
       const res = await api(past === null ? `/api/slots/${slot}/transcript?after=${this.chatTotal}`
         : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`);
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during the fetch — stale
-      if (!res.ok) return;
+      if (!res.ok) {
+        failPerf("http-error");
+        return;
+      }
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
+        // the session's own queue (claude, the owner's live route only — server.ts#sessionQueue)
+        queued?: { text: string; at: string | null }[];
         // the band's past session (GET /api/slots/:id/succession/:n/transcript)
         session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
         reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null };
@@ -1970,6 +2302,19 @@ class Pane {
         tickCacheAge();
         this.chatGrew(this.chatEl.childElementCount - before, first);
       }
+      // after the entries: a send whose turn arrived in this read has retired its bubble already
+      if (past === null && data.queued) {
+        const had = this.chatEl.childElementCount, first = this.chatTotal === 0;
+        this.chatFresh = !first;
+        this.syncQueue(data.queued);
+        this.chatFresh = false;
+        if (this.chatEl.childElementCount > had) {
+          this.chatEl.querySelector(".chatempty")?.remove();
+          this.chatGrew(this.chatEl.childElementCount - had, first);
+        }
+      }
+      // the held line stays the last thing in the view, below what this read appended
+      if (past === null) this.syncHeld();
       // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
       // newest token_usage_record, pi its newest assistant message's request start — and the
       // provider that sets the TTL. Read on every poll, not only when new entries arrived.
@@ -1994,10 +2339,21 @@ class Pane {
         if (focused === this.index) renderComposerOpts(false);
       }
       this.chatTotal = data.total;
+      if (initial && past === null) {
+        this.perfChatLoaded = true;
+        if (this.view === "chat") {
+          const visibleChat = this.perfChat;
+          if (visibleChat) visibleChat.attrs.entries = data.entries.length;
+          perfFinish(visibleChat, true, res);
+          this.perfChat = null;
+          this.visibleSwitch(false, res);
+        }
+      }
       // every poll re-reads the working fact and re-arms the RECENT_MS hide timer (the timer
       // alone makes the bound, the poll only refreshes the fact when new output moved it)
       if (past === null) this.updateWork();
     } catch {
+      failPerf("fetch-error");
       // transient fetch error — next tick retries
     } finally {
       if (this.chatGen === gen) this.chatFresh = false; // an entry that threw must not leave the flag up
@@ -2043,6 +2399,7 @@ class Pane {
 
   private connect(force = false) {
     if (!this.slot) return;
+    this.perfSeedReady = false;
     this.gen++;
     const g = this.gen;
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -2085,11 +2442,16 @@ class Pane {
       // Re-pin once the seed is written; the write callback runs after the buffer settles.
       const pin = this.pinPending;
       this.pinPending = false;
-      this.term.write(new Uint8Array(e.data as ArrayBuffer), pin ? () => this.pinToBottom() : undefined);
+      this.term.write(new Uint8Array(e.data as ArrayBuffer), pin || action.reset ? () => {
+        if (pin) this.pinToBottom();
+        if (action.reset && g === this.gen) this.perfSeedReady = true;
+        if (action.reset && g === this.gen && this.view === "term") this.visibleSwitch(false);
+      } : undefined);
       if (action.reset) this.flushHeld();
     };
     ws.onclose = () => {
-      if (g !== this.gen) return; // superseded by a reassign or dispose
+      if (g !== this.gen) return;
+      perfFinish(this.perfSwitch, false); this.perfSwitch = null;
       if (focused === this.index) setConn(false);
       // every successful open costs a scrollback seed, so a socket that keeps opening and
       // dropping is as expensive as one that never opens — only a socket that STAYED up
@@ -2104,7 +2466,7 @@ class Pane {
   }
 
   assign(slot: number) {
-    if (slot === this.slot) { this.focus(); this.scrollToEnd(); return; }
+    if (slot === this.slot) { this.focus(); this.scrollToEnd(); this.visibleExistingSwitch(); return; }
     this.leavePast();
     this.closeSearch(); // the hits were the old slot's text
     // the slot this pane leaves keeps its chat and its reading position (owner 2026-09-29: „[Zitat entfernt]“
@@ -2126,6 +2488,13 @@ class Pane {
     this.hideCopy();
     this.term.reset();
     const restored = !!slot && this.unshelveChat(slot);
+    this.perfChatLoaded = restored;
+    perfFinish(this.perfChat, false);
+    this.perfChat = null;
+    if (slot && this.view === "chat") {
+      if (restored) this.visibleSwitch(true);
+      else this.perfChat = perfStart("J4", this.perfSwitch?.start, { view: "chat", shelf: false });
+    }
     if (!restored) this.resetChat();
     this.boardBtn.style.display = slot ? "flex" : "none";
     this.reloadBtn.style.display = slot ? "flex" : "none";
@@ -2438,30 +2807,34 @@ export let panes: Pane[] = [];
 export let focused = 0;
 let layout = 1;
 
-// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2): one gear top right, one window,
-// four sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
+// THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2+038d2694): one gear top right, one
+// window, five sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its
 // label, its control and a way back (G5.1). "Schrift" is the size panel's ONE home (G5.3) — the Aa
 // corner button opens the window right there. "Fleet" holds the five server switches whose routes
 // already exist (G5.2, card D-3, fleetSection) and, beside them, what the parallelism really is right
 // now. "Diese Maschine" reads the fixed class-2 allowlist and renders no control (card D-5).
-// The four section targets stand at the top of the window at every width: on the phone each shows
-// its one section (G3.1), on the desktop all four stack and a target scrolls to its section. Esc,
+// "Verbrauch" shows the subscription usage and its explicit refresh (card 038d2694, usageSection).
+// The five section targets stand at the top of the window at every width: on the phone each shows
+// its one section (G3.1), on the desktop all five stack and a target scrolls to its section. Esc,
 // backdrop and ✕ come from openShell (G6.3); the focus enters the window on open, Tab and Shift-Tab
 // stay among its visible controls, and the focus returns to the button that opened it (G4).
 // Every control is NAMED BY ITS VISIBLE LABEL through aria-labelledby (G5.3, UI-MAIN 30.09.): a
 // renamed label renames the control, nobody keeps a copied string in sync.
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"]];
+const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"], ["usage", "Verbrauch"]];
 const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
 const setOnOff = (on: boolean): string => on ? "an" : "aus";
 // one DOM id per label of the window — the window exists once, a key's dots become dashes
 const setId = (part: string): string => `set-${part.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden]
+// what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden] — and
+// of a radio group with a choice only the chosen radio, the one stop Tab makes in it
 function visibleFocusables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex='-1'])")]
     .filter((e) => !(e as HTMLButtonElement).disabled && e.getClientRects().length > 0 && !e.closest("[hidden]")
-      && getComputedStyle(e).visibility !== "hidden");
+      && getComputedStyle(e).visibility !== "hidden"
+      && !(e instanceof HTMLInputElement && e.type === "radio" && !e.checked && !!e.name
+        && !!root.querySelector(`input[type="radio"][name="${CSS.escape(e.name)}"]:checked`)));
 }
 
 // The live effect of a row beyond the write itself — the SAME setters the original surfaces
@@ -2553,9 +2926,11 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   const fleetState = fleetSection(fleetsec);
   const machine = section("machine");
   machineSection(machine);
-  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine]];
+  const usagesec = section("usage");
+  usageSection(usagesec);
+  const sections: [string, HTMLElement][] = [["device", device], ["schrift", schrift], ["fleet", fleetsec], ["machine", machine], ["usage", usagesec]];
 
-  shell.detail.append(tabs, device, schrift, fleetsec, machine);
+  shell.detail.append(tabs, device, schrift, fleetsec, machine, usagesec);
   let discard: HTMLElement | null = null;
   let discardFocus: HTMLElement | null = null;
   shell.setCloseGuard(() => {
@@ -2601,7 +2976,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
     const next = e.shiftKey ? (i === 0 ? ring[ring.length - 1] : null) : (i === ring.length - 1 ? ring[0] : null);
     if (next) { e.preventDefault(); next.focus(); }
   });
-  // on the desktop all four sections stack: the target of the section under the target row reads
+  // on the desktop all five sections stack: the target of the section under the target row reads
   // pressed while the reader scrolls (one frame per scroll burst, no timer)
   let spy = 0;
   shell.detail.addEventListener("scroll", () => {
@@ -2712,6 +3087,321 @@ function settingsRow(d: PrefDef): HTMLElement {
   }
   syncAll();
   return row;
+}
+
+// THE "VERBRAUCH" SECTION (card 038d2694 over the wire of 7f458ab0, docs/self-api.md §subscription
+// usage): what the Codex subscription has used, from GET /api/subscription-usage read ONCE when the
+// window opens and again only by the explicit "Neu lesen" — no timer, no repaint read, and no GET
+// starts a refresh. The target is chosen apart: "lokal" re-reads the rollout files this machine has
+// already stored (a new READ, not a new measurement — the answer says whether the measurement event
+// moved); "Anbieter" is the active account read, which the wire names unsupported: its button stays
+// aria-disabled (focusable, so its reason stays reachable) and sends nothing. Three times stay
+// apart: when the event was measured (measuredAt), when the server read it (fetchedAt), and its age
+// by the server's clock (ageMs). A window the wire does not carry reads "unbekannt", never 0; a read
+// that fails keeps the last windows this page saw measured, dated and stale. An answer belongs to
+// the request that asked it: a newer answer on screen, a switched target or a closed window drops
+// it. The model block keeps four facts apart — the owner's preference, the register default, the
+// slot's selection and the model a turn really ran — and none of them follows from free quota: a
+// model is switched at its session, as before. The words are the owner's, not the wire's (card
+// e433): no event checksum, no reader vocabulary, and every "unbekannt" carries one short sentence
+// saying what is missing.
+type UsageTarget = "local" | "provider";
+// the last windows this page saw MEASURED, across window opens: a later failed or unknown read shows
+// them dated and stale instead of blank or 0. Page memory only — nothing of it is stored.
+let usageSeen: { primary: SubscriptionWindow | null; secondary: SubscriptionWindow | null;
+  measuredAt: number; provenance: string | null } | null = null;
+const USAGE_STATUS: Record<string, string> = { measured: "aktuell", stale: "veraltet", unknown: "unbekannt", error: "Fehler" };
+// the reader's reason codes (codex-quota.ts) as one short sentence each; an unknown code shows as it came
+const USAGE_REASON: Record<string, string> = {
+  "not-observed": "Die Sitzungsdateien wurden noch nicht gelesen.",
+  "missing-windows": "Codex hat keine Limits mitgeschickt.",
+  "event-older-than-15-minutes": "Der letzte Stand ist älter als 15 Minuten.",
+  "event-time-ahead-of-server": "Die Zeitangabe des Stands liegt in der Zukunft.",
+  "invalid-json-line": "Eine Zeile in den Sitzungsdateien ist beschädigt.",
+  "invalid-rate-limits": "Die Verbrauchsangaben in den Sitzungsdateien sind ungültig.",
+  "invalid-window": "Ein Zeitfenster in den Sitzungsdateien ist ungültig.",
+  "missing-or-invalid-event-time": "Dem Stand fehlt eine gültige Uhrzeit.",
+  "no-codex-rate-limits": "In den Sitzungsdateien steht kein Codex-Verbrauch.",
+  "no-codex-rate-limits-in-observed-tails": "In den neuesten Sitzungsdateien steht kein Codex-Verbrauch.",
+  "source-identity-changed": "Die Dateien haben sich beim Lesen geändert.",
+  "missing-source": "Auf dieser Maschine liegt kein Codex-Sitzungsordner.",
+  "unreadable-source": "Die Sitzungsdateien lassen sich nicht lesen.",
+  "read-timeout": "Das Lesen hat länger als 5 s gedauert und wurde abgebrochen.",
+  "read-failed": "Das Lesen ist fehlgeschlagen.",
+};
+// the wire's three prose reasons (server.ts#subscriptionUsage, codex-quota.ts#PROVIDER_UNSUPPORTED)
+// as the sentence the owner reads; a changed sentence shows as the server wrote it
+const USAGE_PROSE: Record<string, string> = {
+  "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced":
+    "Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen.",
+  "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract":
+    "Für andere Abos erfasst die Fleet noch keinen Verbrauch.",
+  "no dated owner preference source with scope and validity":
+    "Von dir ist keine Modell-Vorgabe hinterlegt.",
+};
+// what a refresh did, as the server line names it
+const USAGE_REFRESH: Record<string, string> = { refreshing: "läuft", ok: "erledigt", error: "fehlgeschlagen", timeout: "abgebrochen", unsupported: "nicht möglich" };
+const usageReason = (r: string | null): string => r === null ? "" : USAGE_REASON[r] ?? r;
+const usageProse = (r: string): string => USAGE_PROSE[r] ?? r;
+const usageClock = (ms: number): string => {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString("de-DE");
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} ${time}`;
+};
+function usageSpan(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "unter 1 min";
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return min % 60 ? `${h} h ${min % 60} min` : `${h} h`;
+  return h % 24 ? `${Math.floor(h / 24)} Tage ${h % 24} h` : `${Math.floor(h / 24)} Tage`;
+}
+const usageLength = (m: number): string => m % 1440 === 0 ? `${m / 1440} ${m === 1440 ? "Tag" : "Tage"}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+const usagePct = (p: number): string => `${p.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`;
+// a served answer is used only in the shape the wire promises; anything else is "nicht lesbar"
+function usageOf(raw: unknown): SubscriptionUsage | null {
+  const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
+  const num = (x: unknown): boolean => typeof x === "number" && Number.isFinite(x);
+  const numOrNull = (x: unknown): boolean => x === null || num(x);
+  const win = (x: unknown): boolean => x === null || (obj(x) && num(x.used_percent) && num(x.window_minutes) && num(x.resets_at));
+  if (!obj(raw) || raw.schema !== "fleet.subscription-usage/v1" || !num(raw.generatedAt)) return null;
+  const c = raw.codex, m = raw.model;
+  if (!obj(c) || typeof c.status !== "string" || !(c.status in USAGE_STATUS) || !win(c.primary) || !win(c.secondary)) return null;
+  const s = c.source, r = c.refresh, p = c.provider;
+  if (!obj(s) || !numOrNull(s.measuredAt) || !numOrNull(s.fetchedAt) || !numOrNull(s.ageMs) || !num(s.staleAfterMs)
+    || !obj(s.selection) || !obj(r) || typeof r.status !== "string" || !numOrNull(r.startedAt) || !numOrNull(r.finishedAt)
+    || !obj(p) || typeof p.status !== "string" || typeof p.reason !== "string") return null;
+  if (!obj(raw.otherSubscriptions) || typeof raw.otherSubscriptions.reason !== "string" || !obj(m) || !obj(m.ownerPreference)
+    || typeof m.ownerPreference.reason !== "string" || !obj(m.registerDefaults) || !Array.isArray(m.selected)) return null;
+  return raw as unknown as SubscriptionUsage;
+}
+function usageSection(sec: HTMLElement): void {
+  let usage: SubscriptionUsage | null = null;
+  let openFailed = "";
+  let target: UsageTarget = "local";
+  // the newest request, the request whose answer is on screen, the refresh this window waits for
+  let asked = 0, shown = 0, pending = 0;
+  let pendingTarget: UsageTarget | null = null;
+  let outcome = "";
+  let failed = false;
+
+  const stat = (key: string, word: string) => {
+    const row = el("div", "setstat");
+    row.dataset.use = key;
+    const v = el("span", "setstatv");
+    const more = el("div", "setstatl");
+    row.append(el("span", "setstatk", word), v, more);
+    sec.appendChild(row);
+    return { row, v, more };
+  };
+  sec.appendChild(el("h4", "setsub", "Codex-Abo"));
+  const state = stat("state", "Zustand");
+  const wins = { primary: stat("primary", "Erstes Fenster"), secondary: stat("secondary", "Zweites Fenster") };
+  const source = stat("source", "Quelle");
+  const measured = stat("measured", "Gemessen");
+  const age = stat("age", "Alter");
+  const fetched = stat("fetched", "Gelesen");
+
+  // the refresh: a native radio group picks the target, one button reads, one status line answers
+  const box = el("fieldset", "usetarget");
+  const legend = el("legend", "", "Neu lesen aus");
+  legend.id = setId("use-target");
+  const radios = el("div", "useradios");
+  const radio = (value: UsageTarget, word: string): HTMLInputElement => {
+    const label = el("label", "useradio");
+    const input = el("input", "") as HTMLInputElement;
+    input.type = "radio"; input.name = "set-usage-target"; input.value = value;
+    input.checked = value === target;
+    input.onchange = () => { if (input.checked) pick(value); };
+    label.append(input, el("span", "", word));
+    radios.appendChild(label);
+    return input;
+  };
+  radio("local", "Gespeicherter Stand");
+  radio("provider", "Konto beim Anbieter");
+  const hint = el("div", "hint setnote");
+  hint.id = setId("use-hint");
+  const btn = el("button", "setreset usebtn", "Neu lesen") as HTMLButtonElement;
+  btn.type = "button";
+  btn.setAttribute("aria-describedby", hint.id);
+  btn.onclick = () => { if (btn.getAttribute("aria-disabled") !== "true") void read(target); };
+  const ctl = el("div", "usectl");
+  const status = el("div", "hint setnote usestatus");
+  status.setAttribute("role", "status");
+  const server = el("div", "hint setnote");
+  ctl.append(btn, status);
+  box.append(legend, radios, hint, ctl, server);
+  sec.appendChild(box);
+
+  sec.appendChild(el("h4", "setsub", "Andere Abos"));
+  const others = stat("others", "Zustand");
+
+  sec.appendChild(el("h4", "setsub", "Modell"));
+  const pref = stat("preference", "Deine Vorgabe");
+  const defaults = stat("defaults", "Standard");
+  const selected = stat("selected", "An Sessions gewählt");
+  const turn = stat("turn", "Wirklich benutzt");
+  sec.appendChild(el("div", "hint setnote", "Freies Kontingent wählt kein Modell. Ein Modell wechselst du wie bisher an seiner Session."));
+
+  function pick(value: UsageTarget) {
+    target = value;
+    // a target switch ends the wait: the answer of the other target no longer belongs on screen
+    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Antwort verworfen, weil du die Quelle gewechselt hast."; failed = false; }
+    paint();
+  }
+  async function read(kind: "open" | UsageTarget) {
+    const mine = ++asked;
+    if (kind !== "open") { pending = mine; pendingTarget = kind; outcome = ""; failed = false; }
+    paint();
+    let res: Response | null = null;
+    let body: unknown = null;
+    try {
+      res = kind === "open" ? await api("/api/subscription-usage") : await post("/api/subscription-usage/refresh", { target: kind });
+      body = await res.json().catch(() => null);
+    } catch { res = null; }
+    if (!sec.isConnected || mine < shown || (kind !== "open" && mine !== pending)) return;
+    if (kind !== "open") { pending = 0; pendingTarget = null; }
+    const got = res?.ok ? usageOf(body) : null;
+    if (got) {
+      const seenBefore = usageSeen;
+      usage = got; shown = mine;
+      const c = got.codex;
+      if ((c.status === "measured" || c.status === "stale") && (c.primary || c.secondary) && c.source.measuredAt !== null)
+        usageSeen = { primary: c.primary, secondary: c.secondary, measuredAt: c.source.measuredAt, provenance: c.source.provenance };
+      if (kind !== "open") outcome = refreshWords(got, seenBefore);
+    } else {
+      const why = !res ? "Der Server ist nicht erreichbar." : res.status === 409 ? "Der Server liest gerade schon. Versuch es gleich noch einmal."
+        : res.ok ? "Die Antwort des Servers ist nicht lesbar." : `Der Server antwortet mit Fehler ${res.status}.`;
+      if (kind === "open") openFailed = why;
+      else { failed = true; outcome = `Neu lesen fehlgeschlagen. ${why}`; }
+    }
+    paint();
+  }
+  // what one refresh answer says about itself — a local read is a READ: same event, same measurement
+  function refreshWords(u: SubscriptionUsage, before: typeof usageSeen): string {
+    const r = u.codex.refresh, src = u.codex.source;
+    const at = r.finishedAt !== null ? ` um ${usageClock(r.finishedAt)}` : "";
+    if (r.status === "unsupported") return `Noch nicht möglich. ${usageProse(r.reason ?? u.codex.provider.reason)}`;
+    if (r.status === "error" || r.status === "timeout") { failed = true; return `Neu lesen${at} fehlgeschlagen. ${usageReason(r.reason) || "Der Grund ist nicht bekannt."}`; }
+    if (r.status !== "ok") return `Der Server meldet „${USAGE_REFRESH[r.status] ?? r.status}“.`;
+    if (src.measuredAt === null) return `Neu gelesen${at} — kein Stand gefunden.`;
+    return before && before.provenance !== null && before.provenance === src.provenance
+      ? `Neu gelesen${at} — nichts Neues, der Stand von ${usageClock(src.measuredAt)} gilt weiter.`
+      : `Neu gelesen${at} — Stand von ${usageClock(src.measuredAt)}.`;
+  }
+  function paintWindow(x: ReturnType<typeof stat>, w: SubscriptionWindow | null, at: number | null, stale: boolean, why: string) {
+    x.v.replaceChildren(); x.more.textContent = "";
+    x.row.classList.toggle("stale", stale && w !== null);
+    if (!w) { x.v.textContent = "unbekannt"; x.more.textContent = why; return; }
+    const bar = el("span", "usebar");
+    bar.setAttribute("aria-hidden", "true");
+    const fill = el("i", "");
+    fill.style.width = `${Math.max(0, Math.min(100, w.used_percent))}%`;
+    bar.appendChild(fill);
+    x.v.append(`${usagePct(w.used_percent)} verbraucht`, bar);
+    const reset = w.resets_at * 1000;
+    // the reset against the server's clock at the read, never this device's
+    const left = at !== null ? reset - at : null;
+    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (schon vorbei, der Wert ist vielleicht schon zurückgesetzt)";
+    x.more.textContent = `Fenster ${usageLength(w.window_minutes)} · beginnt neu um ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
+  }
+  function paint() {
+    const c = usage?.codex ?? null;
+    if (!c) {
+      state.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; state.more.textContent = openFailed;
+      const seen = usageSeen;
+      const missing = "Es fehlt eine lesbare Antwort des Servers.";
+      for (const k of ["primary", "secondary"] as const)
+        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : missing);
+      // the first read still running and nothing seen: the windows wait like every other row
+      if (!openFailed && !seen) for (const k of ["primary", "secondary"] as const) { wins[k].v.textContent = "wird gelesen …"; wins[k].more.textContent = ""; }
+      for (const x of [source, measured, age, fetched, others, pref, defaults, selected, turn]) {
+        x.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; x.more.replaceChildren(openFailed ? missing : "");
+      }
+    } else {
+      const s = c.source;
+      state.v.textContent = USAGE_STATUS[c.status] ?? c.status;
+      state.more.textContent = usageReason(s.reason);
+      const now = usage!.generatedAt;
+      if (c.primary || c.secondary) {
+        const stale = c.status === "stale";
+        for (const k of ["primary", "secondary"] as const)
+          paintWindow(wins[k], c[k], now, stale, c[k] ? "veraltet" : "Codex hat für dieses Fenster nichts mitgeschickt.");
+      } else {
+        // nothing measured in this answer: the last windows this page saw, dated and stale — or unknown
+        const seen = usageSeen;
+        for (const k of ["primary", "secondary"] as const)
+          paintWindow(wins[k], seen?.[k] ?? null, null, !!seen,
+            seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : usageReason(s.reason) || "Beim letzten Lesen wurde kein Stand gefunden.");
+      }
+      const sel = s.selection;
+      source.v.textContent = "Codex-Sitzungsdateien dieser Maschine";
+      source.more.textContent = `Nicht direkt vom Konto: die ${sel.maxFiles} neuesten Dateien, jeweils die letzten ${Math.round(sel.maxBytesPerFile / 1024)} KiB`
+        + `${sel.historyComplete ? "." : ". Ältere Einträge bleiben ungelesen."}`;
+      measured.v.textContent = s.measuredAt !== null ? usageClock(s.measuredAt) : "unbekannt";
+      measured.more.textContent = s.measuredAt !== null ? "Wann Codex diesen Stand gemeldet hat." : "Beim letzten Lesen wurde kein Stand gefunden.";
+      age.v.textContent = s.ageMs !== null ? usageSpan(s.ageMs) : "unbekannt";
+      age.more.textContent = s.ageMs !== null ? `Gilt nach ${usageSpan(s.staleAfterMs)} als veraltet.` : "Ohne gefundenen Stand gibt es kein Alter.";
+      fetched.v.textContent = s.fetchedAt !== null ? usageClock(s.fetchedAt) : "noch nicht gelesen";
+      fetched.more.textContent = s.fetchedAt !== null ? "Wann die Fleet die Dateien gelesen hat." : "Die Fleet hat die Dateien noch nicht gelesen.";
+      const o = usage!.otherSubscriptions;
+      others.v.textContent = USAGE_STATUS[o.status] ?? o.status;
+      others.more.textContent = usageProse(o.reason);
+      const m = usage!.model;
+      pref.v.textContent = USAGE_STATUS[m.ownerPreference.status] ?? m.ownerPreference.status;
+      pref.more.textContent = usageProse(m.ownerPreference.reason);
+      const d = m.registerDefaults;
+      defaults.v.textContent = `Worker ${modelLabel(d.worker.id)} · MAIN ${modelLabel(d.main.id)}`;
+      defaults.more.replaceChildren();
+      const dDet = el("details", "setwhy");
+      dDet.appendChild(el("summary", "", `alle ${Object.keys(d).length} Rollen`));
+      for (const [role, x] of Object.entries(d)) {
+        const line = el("div", "setwait");
+        line.append(el("span", "setids", role), ` ${x.harness} · ${modelLabel(x.id)}${x.effort ? ` · ${x.effort}` : ""}`);
+        line.title = x.id;
+        dDet.appendChild(line);
+      }
+      defaults.more.appendChild(dDet);
+      selected.v.textContent = `${m.selected.length} ${m.selected.length === 1 ? "Session" : "Sessions"}`;
+      selected.more.replaceChildren();
+      if (m.selected.length) {
+        const sDet = el("details", "setwhy");
+        sDet.appendChild(el("summary", "", "je Session"));
+        for (const row of m.selected) {
+          const slot = fleet.find((x) => x.id === row.slot && x.cwd);
+          const line = el("div", "setwait");
+          line.append(slot ? laneLabel(slot) : `Slot ${row.slot}`,
+            ` — ${row.harness ?? "Programm unbekannt"} · ${row.model ? modelLabel(row.model) : "Modell unbekannt"}`);
+          line.title = row.model ?? "";
+          sDet.appendChild(line);
+        }
+        selected.more.appendChild(sDet);
+      }
+      const why = [...new Set(m.selected.map((r) => r.decisionSource))];
+      selected.more.append(why.length === 1 && why[0] === "unknown" ? "Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst." : `Gewählt von: ${why.join(" · ") || "—"}`);
+      const used = m.selected.filter((r) => r.usedTurnModel !== null).length;
+      turn.v.textContent = used ? `bei ${used} ${used === 1 ? "Session" : "Sessions"} erfasst` : "unbekannt";
+      turn.more.textContent = used ? "Die Wahl an einer Session sagt nicht, welches Modell wirklich geantwortet hat."
+        : "Welches Modell wirklich geantwortet hat, ist nicht erfasst.";
+      const r = c.refresh;
+      server.textContent = r.status === "not-requested" ? "Noch nicht neu gelesen."
+        : `Zuletzt neu gelesen: ${r.target === "provider" ? "Konto beim Anbieter" : r.target === "local" ? "gespeicherter Stand" : "—"} · ${USAGE_REFRESH[r.status] ?? r.status}`
+          + `${r.finishedAt !== null ? ` · ${usageClock(r.finishedAt)}` : r.startedAt !== null ? ` · seit ${usageClock(r.startedAt)}` : ""}`;
+    }
+    // the button: reading, unsupported, retry — aria-disabled keeps the focus on it while it reads
+    const unsupported = target === "provider" && (!c || c.provider.status === "unsupported");
+    const busy = pending !== 0;
+    btn.textContent = busy ? "Liest …" : failed && target === "local" ? "Erneut lesen" : "Neu lesen";
+    btn.setAttribute("aria-disabled", busy || unsupported ? "true" : "false");
+    btn.setAttribute("aria-busy", busy ? "true" : "false");
+    hint.textContent = target === "local"
+      ? "Liest die gespeicherten Sitzungsdateien noch einmal, ohne beim Anbieter nachzufragen. Neues gibt es nur, wenn Codex inzwischen etwas gemeldet hat."
+      : c ? (c.provider.status === "unsupported" ? `Noch nicht möglich. ${usageProse(c.provider.reason)}` : "Fragt das Konto beim Anbieter ab.")
+      : "Ob das Konto abgefragt werden kann, sagt erst die Antwort des Servers.";
+    status.textContent = busy ? (pendingTarget === "local" ? "Liest den gespeicherten Stand …" : "Fragt den Anbieter …") : outcome;
+  }
+  paint();
+  void read("open");
 }
 
 interface MachineSetting {
@@ -3696,7 +4386,7 @@ async function loadGit(slot: number, cwd: string): Promise<void> {
   // never parsed.
   const e = res ? ((await res.json().catch(() => null)) as { error?: string; git?: string } | null) : null;
   fxGit.set(cwd, { error: e?.git === "none"
-    ? "No git in this folder — changes, history and lanes apply only to a repository."
+    ? "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository."
     : e?.error ?? "git status could not be read" });
 }
 // What both homes paint, derived in ONE place so the card and the window cannot disagree about
@@ -4222,7 +4912,7 @@ function setLayout(n: number, assignments?: number[]) {
 
 // sidebar click: assign to the focused pane — unless the slot is already
 // visible in another pane (same slot twice = two sessions fighting over resize)
-export function showSlot(id: number): boolean {
+export function showSlot(id: number, at = performance.now()): boolean {
   const s = fleet.find((slot) => slot.id === id);
   if (!s?.cwd) return false;
   // §F3 edge 2 — focus beats fold. Whatever route got here (a ⏸ badge, an adopt, a merge job
@@ -4234,8 +4924,10 @@ export function showSlot(id: number): boolean {
   }
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
-  if (existing) { existing.focus(); existing.scrollToEnd(); existing.flash(); void renderMobileAlarmHint(); return true; }
+  existing?.beginSwitch(at);
+  if (existing) { existing.focus(); existing.scrollToEnd(); existing.visibleExistingSwitch(); existing.flash(); void renderMobileAlarmHint(); return true; }
   const target = panes[focused];
+  target.beginSwitch(at);
   target.assign(id);
   target.flash();
   void renderMobileAlarmHint();
@@ -4309,27 +5001,125 @@ mreadWrite.onclick = () => {
   ta.focus();
 };
 // THE PHONE UPRIGHT: two islands instead of #mhead and the fixed foot (index.html, the island
-// block; docs/design/mobil-insel-notiz.md §1b/§1c). The top island has two steps — closed, a pill
-// with the state shape and the name (to read); open, the controls (to act). A tap on the pill opens
-// it; a tap on the name, on its free surface or anywhere outside closes it, and so does every
-// action in it. It invents no way of its own: each button hands over to the control the board
-// already has — the focused pane's ℹ and view toggle, the tray's History and Schedule — and the
-// slot button and ⋯ open the two sheets below (openSheet), which do the same row by row. Body
-// classes only; the CSS decides that they mean anything (portrait).
+// block; docs/design/mobil-insel-notiz.md §1b/§1c). The TOP island is glass (card "Die Insel auf
+// dem Telefon wird nach dem freigegebenen Entwurf gebaut", docs/design/insel-glas-notiz.md): closed
+// a 28-px pill with the state shape and the name — a band that runs when the name overflows —,
+// open two rows of icon buttons (to act). A tap on the pill or its 44-px rim opens it; a tap on
+// the name, on its free glass or anywhere outside closes it, and so does every action in it. A
+// swipe on it opens a SIDE — to the right Sessions from the left, to the left Info from the right —
+// and never another session (islandRelease); ← / → on the focused island do the same, Escape
+// closes. It invents no way of its own: each button hands over to the control the board already
+// has — the focused pane's ℹ, view toggle, ↻, ↑ ↓ and search, the tray's History and Schedule —
+// and Sessions and ⋯ open the two sheets below (openSheet). Body classes only; the CSS decides
+// that they mean anything (portrait).
 const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
 const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
 const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
 const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
+// the terminal search on a phone (card 746e381b): ⌘/Ctrl+F needs a hardware keyboard, so the open
+// island carries it — a pane action outside the terminal text (G6.4), terminal view only. It opens
+// the bar Pane#openSearch opens; the search itself is unchanged.
+const mFind = $("mfind") as HTMLButtonElement;
+const mReload = $("mreload") as HTMLButtonElement, mUp = $("mup") as HTMLButtonElement, mDown = $("mdown") as HTMLButtonElement;
+const mHist = $("mhist") as HTMLButtonElement, mAuto = $("mauto") as HTMLButtonElement, mTools = $("mtools");
+mSlot.appendChild(icon("menu"));
 mInfo.appendChild(icon("info"));
+mFind.appendChild(icon("search"));
+mReload.appendChild(icon("reload"));
+mUp.appendChild(icon("up"));
+mDown.appendChild(icon("down"));
+mHist.appendChild(icon("history"));
+mAuto.appendChild(icon("clock"));
 mMore.appendChild(icon("dots"));
+// the pill's name sits in a band track; a second copy joins it only while it runs (fitPill)
+const mBand = el("span", "mband"), mSpur = el("span", "mspur");
+mBand.setAttribute("aria-hidden", "true");
+mBand.appendChild(mSpur);
 const paneControl = (cls: string): HTMLButtonElement | null => {
   const b = panes[focused]?.root.querySelector<HTMLButtonElement>(`.panetools .${cls}`) ?? null;
   return b && b.style.display !== "none" ? b : null;
 };
+
+// THE SPRING (Grammatik G0.4 addendum, docs/design/liquid-glass.md §3): one spring in two settings,
+// given as in SwiftUI — response (s) and dampingFraction ζ; mass 1, so stiffness k = (2π/response)²
+// and damping c = 4π·ζ/response. "snap" moves a state (open, spring in, the island back to the
+// middle), "swipe" carries a released finger on with its velocity. springCurve samples the same
+// spring as a CSS linear() curve, so CSS and JS have one source. Still (prefers-reduced-motion,
+// chatStill): nothing springs, every state lands at once.
+type Spring = { response: number; zeta: number };
+const SPRING = { snap: { response: 0.38, zeta: 0.72 }, swipe: { response: 0.42, zeta: 0.86 } } satisfies Record<string, Spring>;
+const springKC = (f: Spring) => ({ k: (2 * Math.PI / f.response) ** 2, c: 4 * Math.PI * f.zeta / f.response });
+function springCurve(f: Spring, n = 24): { css: string; ms: number } {
+  const { k, c } = springKC(f);
+  let x = 0, v = 0, t = 0;
+  const xs = [0];
+  while (t < 3) {
+    v += (-k * (x - 1) - c * v) / 1000; x += v / 1000; t += 1 / 1000; xs.push(x);
+    if (Math.abs(1 - x) < 1e-3 && Math.abs(v) < 1e-2) break;
+  }
+  const ms = Math.round(t * 1000), pts: number[] = [];
+  for (let i = 0; i <= n; i++) pts.push(i === n ? 1 : +xs[Math.round(ms * i / n)].toFixed(3));
+  return { css: `linear(${pts.join(", ")})`, ms };
+}
+if (CSS.supports("transition-timing-function", "linear(0, 1)")) {
+  const snap = springCurve(SPRING.snap);
+  document.documentElement.style.setProperty("--feder", snap.css);
+  document.documentElement.style.setProperty("--feder-ms", `${snap.ms}ms`);
+}
+// the spring in JS, for what a finger hands over: integrated per frame in 1-ms steps from `v0`
+// (units per second), written only through `write`. The returned stop cancels it, so a new grip
+// starts from wherever it stands.
+function springTo(f: Spring, from: number, to: number, v0: number, write: (x: number) => void, done?: () => void): () => void {
+  if (chatStill.matches) { write(to); done?.(); return () => {}; }
+  const { k, c } = springKC(f);
+  let x = from, v = v0, last = performance.now(), id = 0;
+  const tick = (now: number) => {
+    let dt = Math.min(0.064, (now - last) / 1000);
+    last = now;
+    while (dt > 0) { const h = Math.min(dt, 0.001); v += (-k * (x - to) - c * v) * h; x += v * h; dt -= h; }
+    if (Math.abs(x - to) < 1e-3 * Math.max(1, Math.abs(to - from)) && Math.abs(v) < 1e-2) { write(to); done?.(); return; }
+    write(x);
+    id = requestAnimationFrame(tick);
+  };
+  id = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(id);
+}
+
+// the pill as wide as the name, 96–168 px; a name that does not fit runs as a band — a second copy
+// behind it, 40 px/s (the CSS starts it after 1.2 s, holds it while open or hidden) — never while
+// still, where it stands cut with a soft edge (liquid-glass.md §5)
+const PILL_PAD = 11 + 12, PILL_DOT = 6 + 6;
+function fitPill(): void {
+  for (const copy of [...mSpur.children].slice(1)) copy.remove();
+  mBand.classList.remove("mover");
+  mTop.classList.remove("mlong");
+  mSpur.classList.remove("mrun");
+  const nm = mSpur.firstElementChild as HTMLElement | null;
+  const nat = nm && portrait() ? nm.scrollWidth : 0;
+  if (!nm || !nat) return; // not drawn here (desktop, the phone on its side)
+  const chrome = PILL_PAD + (mPill.querySelector(".act") ? PILL_DOT : 0);
+  const width = Math.max(96, Math.min(168, nat + chrome));
+  mTop.style.setProperty("--mpw", `${width}px`);
+  if (nat <= width - chrome) return;
+  mBand.classList.add("mover");
+  mTop.classList.add("mlong");
+  const copy = nm.cloneNode(true) as HTMLElement;
+  mSpur.appendChild(copy);
+  mTop.style.setProperty("--mtick", `${(nm.getBoundingClientRect().width / 40).toFixed(2)}s`);
+  if (!chatStill.matches) mSpur.classList.add("mrun");
+}
+chatStill.addEventListener("change", () => { islandKey = ""; renderIsland(); });
+document.addEventListener("visibilitychange", () => document.body.classList.toggle("mhidden", document.hidden));
+
 function setIsland(open: boolean): void {
-  document.body.classList.toggle("mopen", open);
+  const body = document.body;
+  body.classList.toggle("mopen", open);
   mPill.setAttribute("aria-expanded", String(open));
-  if (open) renderIsland();
+  if (!open) { body.classList.remove("mda"); return; }
+  renderIsland();
+  // the contents spring in from the next frame on — in the frame that opens they have no start
+  if (chatStill.matches) body.classList.add("mda");
+  else requestAnimationFrame(() => requestAnimationFrame(() => { if (body.classList.contains("mopen")) body.classList.add("mda"); }));
 }
 let islandKey = "";
 function renderIsland(): void {
@@ -4345,39 +5135,66 @@ function renderIsland(): void {
   const model = s?.cwd ? runningModel(s.model, pane?.observedModel) : "";
   const effort = s?.cwd ? runningEffort(s.effort, pane?.observedEffort) : "";
   const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
-  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
+  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle"), reload = paneControl("panereload");
+  const jumps = !!paneControl("promptnav.up") && !!paneControl("promptnav.dn");
   const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
-  const key = [name, state, addr, meta, !!view, chat, !!info, more].join("|");
+  // the pill's type follows Aa up to 15 px, so its measured width does too
+  const fs = portrait() ? getComputedStyle(mPill).fontSize : "";
+  const key = [name, state, addr, meta, !!view, chat, !!info, !!reload, jumps, more, slot, fs].join("|");
   if (key === islandKey) return;
   islandKey = key;
   const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
-  mPill.replaceChildren(...(state ? [dot()] : []), el("span", "mnm", name));
+  mSpur.replaceChildren(el("span", "mnm", name));
+  mPill.replaceChildren(...(state ? [dot()] : []), mBand);
   mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
-  mSlot.replaceChildren(el("span", "maddr", addr), ...(state ? [dot()] : []));
+  mTop.setAttribute("aria-label", `Session ${name}`);
   mSlot.setAttribute("aria-label", `Sessions öffnen — gerade ${addr} ${name}`);
+  mSlot.title = "Sessions öffnen — wechseln, starten, Tasks";
   const line1 = el("span", "ml1");
   line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
   mName.replaceChildren(line1, el("span", "mrp", meta));
+  // the view button shows where it goes: the keyboard to the terminal, the bubble to the conversation
   mView.hidden = !view;
-  mView.textContent = chat ? "Terminal" : "Konversation";
-  mView.title = chat ? "Zum Terminal zurück" : "Konversation anzeigen";
+  mView.replaceChildren(icon(chat ? "keys" : "chat"));
+  const viewWord = chat ? "Terminal anzeigen" : "Konversation anzeigen";
+  mView.setAttribute("aria-label", viewWord);
+  mView.title = viewWord;
+  mFind.hidden = !slot || chat;
+  mReload.hidden = chat || !reload;
+  mUp.hidden = mDown.hidden = !chat || !jumps;
   mInfo.hidden = !info;
   mMore.setAttribute("aria-expanded", String(more));
+  // the stagger counts what is drawn, so the springs follow each other with no gap
+  let i = 0;
+  for (const e of [mSlot, mName, mInfo, ...mTools.children] as HTMLElement[]) if (!e.hidden) e.style.setProperty("--i", String(i++));
+  fitPill();
 }
-// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays).
-// Nor does ⋯: its options are for the field, and a keyboard leaving would fold them away again (sync)
-for (const b of [mPill, mName, mMore]) b.addEventListener("pointerdown", (e) => e.preventDefault());
-mPill.onclick = () => setIsland(true);
+MOBILE_MQ.addEventListener("change", () => { islandKey = ""; renderIsland(); });
+// switching the step is no action: like the keys, it never takes the field's focus (keyboard stays),
+// and neither does the island's rim. Nor does ⋯: its options are for the field, and a keyboard
+// leaving would fold them away again (sync)
+mTop.addEventListener("pointerdown", (e) => {
+  const b = (e.target as Element).closest("button");
+  if (!b || b === mPill || b === mName || b === mMore) e.preventDefault();
+});
 mName.onclick = () => setIsland(false);
 mTop.addEventListener("click", (e) => {
-  if (e.target === mTop || e.target === $("mopen") || e.target === $("mtools")) setIsland(false);
+  // a target the action itself replaced (the view button's glyph) is no free glass: it decides nothing
+  if (!(e.target as Element).isConnected) return;
+  const b = (e.target as Element).closest("button");
+  if (!document.body.classList.contains("mopen")) { if (!b || b === mPill) setIsland(true); return; }
+  if (!b) setIsland(false); // the free glass, the rim
 });
 const islandAction = (run: () => void) => () => { setIsland(false); run(); };
-mSlot.onclick = islandAction(() => openSheet("sessions"));
-mInfo.onclick = islandAction(() => paneControl("boardtoggle")?.click());
+mSlot.onclick = islandAction(() => sideTo("sessions", 1));
+mInfo.onclick = islandAction(() => sideTo("info", 1));
 mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
-$("mhist").onclick = islandAction(() => $("histbtn").click());
-$("mauto").onclick = islandAction(() => $("autobtn").click());
+mFind.onclick = islandAction(() => panes[focused]?.openSearch());
+mReload.onclick = islandAction(() => paneControl("panereload")?.click());
+mUp.onclick = islandAction(() => paneControl("promptnav.up")?.click());
+mDown.onclick = islandAction(() => paneControl("promptnav.dn")?.click());
+mHist.onclick = islandAction(() => $("histbtn").click());
+mAuto.onclick = islandAction(() => $("autobtn").click());
 mMore.onclick = islandAction(() => openSheet("tools"));
 // a tap outside closes the open island (upright only)
 document.addEventListener("pointerdown", (e) => {
@@ -4385,6 +5202,188 @@ document.addEventListener("pointerdown", (e) => {
   if (!t || !portrait()) return;
   if (document.body.classList.contains("mopen") && !mTop.contains(t)) setIsland(false);
 }, true);
+
+// THE TWO SIDES the island opens (insel-glas-notiz.md §1, §3): Sessions from the left — the
+// Sessions sheet in its side form (#msheetwrap.mside) — and Info from the right — the board's
+// window (#shell-board). --mside-p on the side's own root is its opening, 0 shut … 1 open: the
+// finger moves it while it drags, the swipe spring carries it on with the finger's velocity, a
+// button or an arrow key opens it with the same spring. Back at 0 the side closes for real.
+type Side = "sessions" | "info";
+const sideHost = (side: Side): HTMLElement | null => side === "sessions"
+  ? (sheetOpen === "sessions" ? mSheetWrap : null) : (boardShell?.isOpen() ? boardShell.root : null);
+const sideP: Record<Side, number> = { sessions: 0, info: 0 };
+const sideStop: Partial<Record<Side, () => void>> = {};
+function sideWrite(side: Side, p: number): void {
+  sideP[side] = p;
+  sideHost(side)?.style.setProperty("--mside-p", String(Math.max(0, Math.min(1.04, p))));
+}
+// open the side's own surface (the sheet, the board's ℹ); false when there is none — a pane with no
+// session has no Info
+function sideOpen(side: Side): boolean {
+  if (side === "sessions") { if (sheetOpen !== "sessions") openSheet("sessions"); }
+  else if (!boardShell?.isOpen()) paneControl("boardtoggle")?.click();
+  return !!sideHost(side);
+}
+function sideShut(side: Side): void {
+  sideStop[side]?.();
+  sideStop[side] = undefined;
+  sideP[side] = 0;
+  if (side === "sessions") closeSheet();
+  else if (boardShell?.isOpen()) setBoard(false);
+}
+function sideTo(side: Side, to: 0 | 1, v0 = 0): void {
+  sideStop[side]?.();
+  const host = sideHost(side);
+  // a side opened some other way stands open (no inline opening): it starts from there
+  if (host && !host.style.getPropertyValue("--mside-p")) sideP[side] = 1;
+  if (!host) {
+    sideP[side] = 0;
+    if (to === 0 || !sideOpen(side)) return;
+    sideWrite(side, 0);
+  }
+  sideStop[side] = springTo(SPRING.swipe, sideP[side], to, v0, (p) => sideWrite(side, p), () => {
+    sideStop[side] = undefined;
+    if (to === 1) sideHost(side)?.style.removeProperty("--mside-p");
+    else sideShut(side);
+  });
+}
+
+// THE SWIPE (insel-glas-notiz.md §3, liquid-glass.md §4): pointer events on the island, which takes
+// every horizontal move itself (touch-action: pan-y). The axis locks after 8 px, the larger one
+// wins; a horizontal drag moves the side with the finger (1:1, a drawer) and the island gives 35 %
+// of it, at most 24 px. Released, the side opens past 28 px unless flicked back faster than
+// 0.4 px/ms, or at more than 0.4 px/ms its way; otherwise it springs back — so does a
+// pointercancel (the system took the gesture; its coordinates are not to be trusted, the last move
+// counts). The velocity is read off the last 8 moves. A start in the outer 20 px belongs to iOS's
+// edge swipe. A finger's TAP (under 10 px and 250 ms; a mouse keeps its own click) is decided here, at pointerup, and pressed on what the
+// finger went down on — the engine's own click after it is swallowed (any trusted click for 400 ms
+// on the island, or anywhere within 10 px of where the finger left it: Sessions, ℹ and ⋯ open a
+// surface under the finger, and the click WebKit's tap sends after its touchend hit that surface's
+// shade and closed it again, measured with Playwright's WebKit tap; the press this code makes is
+// untrusted and passes — Chromium's tap click carries detail 0, so
+// detail cannot tell them apart, measured), and so is the click after a long press or a drag. Deciding it here keeps the
+// thresholds the note names, and a touch stream that synthesises no click (Playwright's WebKit on
+// macOS, measured) still taps. While a finger drags, the side and its shade take no pointer
+// (body.mdrag): an engine that hit-tests every move would otherwise cancel the touch the moment the
+// shade slides under it (measured in that WebKit: pointercancel, then pointerup on the shade).
+const SWIPE = { lock: 8, tapPx: 10, tapMs: 250, firePx: 28, fireV: 0.4, edge: 20, give: 0.35, giveMax: 24 } as const;
+type Drag = { id: number; at: Element; x0: number; y0: number; x: number; y: number; t0: number; axis: "x" | "y" | null; side: Side | null; none: Side | null; track: [number, number][] };
+let drag: Drag | null = null, swallowUntil = 0, swallowAt = { x: 0, y: 0 }, giveStop: (() => void) | null = null;
+const setGive = (px: number) => mTop.style.setProperty("--mdx", `${px.toFixed(2)}px`);
+const sideWidth = (side: Side): number =>
+  sideHost(side)?.querySelector<HTMLElement>(side === "sessions" ? "#msheet" : ".shellwin")?.getBoundingClientRect().width || innerWidth * 0.86;
+document.addEventListener("click", (e) => {
+  if (performance.now() >= swallowUntil || !e.isTrusted) return;
+  if (!mTop.contains(e.target as Node) && Math.hypot(e.clientX - swallowAt.x, e.clientY - swallowAt.y) >= SWIPE.tapPx) return;
+  e.stopImmediatePropagation(); e.preventDefault();
+}, true);
+mTop.addEventListener("pointerdown", (e) => {
+  if (!portrait() || e.button > 0) return;
+  if (drag) islandRelease(e, true, drag.id); // a finger whose end never came (the system kept it) lets go
+  if (e.clientX < SWIPE.edge || innerWidth - e.clientX < SWIPE.edge) return;
+  giveStop?.();
+  giveStop = null;
+  drag = { id: e.pointerId, at: e.target as Element, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: e.timeStamp,
+    axis: null, side: null, none: null, track: [[e.timeStamp, e.clientX]] };
+  mTop.classList.add("mpress");
+});
+mTop.addEventListener("pointermove", (e) => {
+  const d = drag;
+  if (!d || e.pointerId !== d.id) return;
+  d.track.push([e.timeStamp, e.clientX]);
+  if (d.track.length > 8) d.track.shift();
+  d.x = e.clientX; d.y = e.clientY;
+  const dx = d.x - d.x0, dy = d.y - d.y0;
+  if (!d.axis && Math.hypot(dx, dy) >= SWIPE.lock) {
+    d.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    mTop.classList.remove("mpress");
+    if (d.axis === "x") {
+      document.body.classList.add("mdrag");
+      try { mTop.setPointerCapture(e.pointerId); } catch { /* the pointer is gone already */ }
+    }
+  }
+  if (d.axis !== "x") return;
+  e.preventDefault();
+  setGive(Math.sign(dx) * Math.min(SWIPE.giveMax, Math.abs(dx) * SWIPE.give));
+  const side: Side = dx > 0 ? "sessions" : "info";
+  if (d.side && d.side !== side) { sideShut(d.side); d.side = null; }
+  if (d.none === side) return;
+  if (d.side !== side) {
+    sideStop[side]?.();
+    if (!sideHost(side)) { sideP[side] = 0; if (!sideOpen(side)) { d.none = side; return; } }
+    d.side = side;
+  }
+  sideWrite(side, Math.min(1, Math.abs(dx) / sideWidth(side)));
+});
+// `last`: the release happened where the finger last moved (the event's own coordinates are not to
+// be trusted — a cancel, or a cancel that turned out to be a release)
+function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, last = cancelled): void {
+  const d = drag;
+  if (!d || id !== d.id) return;
+  drag = null;
+  clearTimeout(cancelTimer);
+  pendingCancel = null;
+  mTop.classList.remove("mpress");
+  document.body.classList.remove("mdrag");
+  const x = last ? d.x : e.clientX, y = last ? d.y : e.clientY;
+  const dx = x - d.x0, dy = y - d.y0, ms = e.timeStamp - d.t0;
+  const a = d.track[0], b = d.track[d.track.length - 1];
+  const v = b[0] > a[0] ? (b[1] - a[1]) / (b[0] - a[0]) : 0; // px/ms
+  // what the island measured, for a reader of the page (the probe checks a fast swipe arrived fast)
+  mTop.dataset.swipe = JSON.stringify({ axis: d.axis, dx: Math.round(dx), v: +v.toFixed(2), ms: Math.round(ms), side: d.side, cancelled });
+  // a mouse that did not drag keeps its own click, held however long: the 250 ms bound is a finger's
+  // tap, and a slow press of a button is no long press (a loaded CDP click swallowed, measured)
+  if (!d.axis && e.pointerType === "mouse") return;
+  if (d.axis !== "x") {
+    // no drag: the engine's click that follows is swallowed either way; a tap presses what the finger
+    // went down on — its button, else the island itself (the pill's rim opens, free glass closes)
+    swallowUntil = performance.now() + 400;
+    swallowAt = { x, y };
+    if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && ms < SWIPE.tapMs && d.at.isConnected)
+      (d.at.closest<HTMLButtonElement>("#mtop button") ?? mTop).click();
+    return;
+  }
+  swallowUntil = performance.now() + 400;
+  swallowAt = { x, y };
+  const give = parseFloat(mTop.style.getPropertyValue("--mdx")) || 0;
+  giveStop = springTo(SPRING.snap, give, 0, v * 1000 * SWIPE.give, setGive, () => { giveStop = null; });
+  const side = d.side;
+  if (!side) return;
+  const vIn = v * Math.sign(dx); // the velocity in the swipe's own direction
+  const fire = !cancelled && ((Math.abs(dx) > SWIPE.firePx && vIn > -SWIPE.fireV) || vIn > SWIPE.fireV);
+  const w = sideWidth(side);
+  if (fire) { setIsland(false); sideTo(side, 1, Math.max(0, vIn) * 1000 / w); }
+  else sideTo(side, 0, Math.min(0, vIn) * 1000 / w);
+}
+mTop.addEventListener("pointerup", (e) => islandRelease(e, false));
+// A touch's pointercancel is not always the system taking it: WebKit (Playwright's macOS build,
+// measured) cancels a touch that ENDS outside the element it began on and then delivers that touch's
+// touchend — a drag that carried the finger off the pill would never open its side. The touch event
+// after the cancel decides: touchend is a release where the finger last was, touchcancel (or nothing
+// within 80 ms) is the cancel.
+let pendingCancel: PointerEvent | null = null, cancelTimer: ReturnType<typeof setTimeout> | undefined;
+mTop.addEventListener("pointercancel", (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (e.pointerType !== "touch") { islandRelease(e, true); return; }
+  pendingCancel = e;
+  clearTimeout(cancelTimer);
+  cancelTimer = setTimeout(() => { if (pendingCancel) islandRelease(pendingCancel, true); }, 80);
+});
+mTop.addEventListener("touchend", () => { if (pendingCancel) islandRelease(pendingCancel, false, pendingCancel.pointerId, true); }, { passive: true });
+mTop.addEventListener("touchcancel", () => {
+  const e = pendingCancel;
+  if (e) islandRelease(e, true);
+  else if (drag) islandRelease(new PointerEvent("pointercancel", { pointerId: drag.id }), true, drag.id);
+}, { passive: true });
+// ← and → on the focused island are the swipe's keys: they follow the SIDE (← opens the left one),
+// since a key pulls nothing; Escape closes (the window's handler above, the board's own)
+mTop.addEventListener("keydown", (e) => {
+  if (!portrait() || e.altKey || e.ctrlKey || e.metaKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  setIsland(false);
+  sideTo(e.key === "ArrowLeft" ? "sessions" : "info", 1);
+});
 // the grip folds the chips and the nine keys in and out of the bottom island; like the keys, it
 // never takes the field's focus, so the on-screen keyboard stays up
 mGrip.addEventListener("pointerdown", (e) => e.preventDefault());
@@ -4398,14 +5397,18 @@ mGrip.onclick = () => {
 LANDSCAPE_MQ.addEventListener("change", () => {
   setIsland(false);
   closeSheet();
+  islandKey = ""; // the pill is measured again once it is drawn
+  renderIsland();
   if (portrait()) { document.body.classList.remove("keyboard-options"); mobileMore.setAttribute("aria-expanded", "false"); }
 });
 
 // THE TWO SHEETS OF THE TOP ISLAND (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene
 // Blätter"; docs/design/mobil-insel-notiz.md §1 and §3, sketch mobil-insel-skizze.html?v=oben&blatt=…).
-// The slot button opens Sessions, ⋯ opens Werkzeuge: each a sheet over a shade, full width and set
+// Sessions opens Sessions, ⋯ opens Werkzeuge, each over a shade. Werkzeuge is a sheet, full width
 // at the foot of the VISIBLE screen (G4.1 mobil; #msheetwrap is --vvh tall, so a keyboard that has
-// not left yet never covers it). Like the island it invents no way of its own — every row hands over
+// not left yet never covers it); Sessions is the glass island's LEFT SIDE since its build — from
+// the left edge, 86 % wide, the visible screen tall (insel-glas-notiz.md §7: the form changed, not
+// the content), opened by the button, ← or a swipe (sideTo). Like the island it invents no way of its own — every row hands over
 // to what the board already has: the drawer's head buttons, showSlot, openPicker, the instance
 // menu's own rows, the tray, the pane's corner group, the composer's switches, openSettings. A
 // conditional control stays conditional: its row shows exactly when its source does. Every row
@@ -4423,6 +5426,8 @@ function openSheet(which: Sheet): void {
   sheetOpen = which;
   sheetInst = false;
   sheetKey = "";
+  // Sessions is the island's left side (index.html, THE TWO SIDES); Werkzeuge stays at the foot
+  mSheetWrap.classList.toggle("mside", which === "sessions");
   document.body.classList.add("msheet");
   mSheetWrap.setAttribute("aria-hidden", "false");
   renderSheet();
@@ -4432,6 +5437,11 @@ function closeSheet(refocus = false): void {
   if (!sheetOpen) return;
   sheetOpen = null;
   sheetKey = "";
+  sideStop.sessions?.();
+  sideStop.sessions = undefined;
+  sideP.sessions = 0;
+  mSheetWrap.classList.remove("mside");
+  mSheetWrap.style.removeProperty("--mside-p");
   document.body.classList.remove("msheet");
   mSheetWrap.setAttribute("aria-hidden", "true");
   mSheet.replaceChildren();
@@ -4439,13 +5449,13 @@ function closeSheet(refocus = false): void {
 }
 $("msheetshade").onclick = () => closeSheet(true);
 // one row of a sheet: an icon, the word, a quiet value; the click closes the sheet, then acts
-function sheetRow(cls: string, ico: IconName | null, word: string, run: () => void, value?: string): HTMLButtonElement {
+function sheetRow(cls: string, ico: IconName | null, word: string, run: (event: MouseEvent) => void, value?: string): HTMLButtonElement {
   const b = el("button", cls) as HTMLButtonElement;
   b.type = "button";
   if (ico) b.appendChild(icon(ico));
   b.appendChild(el("span", "mshw", word));
   if (value) b.appendChild(el("span", "mshval", value));
-  b.onclick = () => { closeSheet(); run(); };
+  b.onclick = (e) => { closeSheet(); run(e); };
   return b;
 }
 // the sessions in the drawer's order — a stack's anchor, then its lanes — none folded away: the
@@ -4526,7 +5536,7 @@ function sessionsSheet(): HTMLElement[] {
   for (const s of rows) {
     const addr = s.worktree ? refs.get(s.id) ?? String(s.id) : String(s.id);
     const state = slotState(s, serverNow, panes.some((p) => p.slot === s.id));
-    const r = sheetRow(`mshrow${s.worktree ? " lane" : ""}${s.id === cur ? " current" : ""}`, null, "", () => showSlot(s.id));
+    const r = sheetRow(`mshrow${s.worktree ? " lane" : ""}${s.id === cur ? " current" : ""}`, null, "", (e) => showSlot(s.id, e.timeStamp));
     r.dataset.slot = String(s.id);
     const nm = el("span", "mshnm");
     nm.appendChild(el("span", "mshname", laneLabel(s)));
@@ -4633,11 +5643,17 @@ function renderSheet(): void {
 }
 if (vv) {
   let vvRefitTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastUnfocusedHeight = window.innerHeight;
+  let lastViewportWidth = window.innerWidth;
   const sync = () => {
     if (isMobile()) document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
     else document.documentElement.style.removeProperty("--vvh");
     const focusedInput = document.activeElement === ta || document.activeElement === $("livein");
-    const keyboardOpen = isMobile() && focusedInput && window.innerHeight - vv.height > 120;
+    const widthChanged = Math.abs(window.innerWidth - lastViewportWidth) > 2;
+    if (!focusedInput || widthChanged) lastUnfocusedHeight = window.innerHeight;
+    if (widthChanged) lastViewportWidth = window.innerWidth;
+    const keyboardOpen = isMobile() && focusedInput
+      && (window.innerHeight - vv.height > 120 || lastUnfocusedHeight - window.innerHeight > 120);
     if (!focusedInput) document.body.classList.remove("landwrite");
     document.body.classList.toggle("keyboard-open", keyboardOpen);
     // ⋯'s options (the phone on its side) fold away as the keyboard goes — only the keyboard's own
@@ -4656,6 +5672,7 @@ if (vv) {
     vvRefitTimer = setTimeout(() => { for (const p of panes) p.refit(); }, 200);
   };
   vv.addEventListener("resize", sync);
+  window.addEventListener("resize", sync);
   document.addEventListener("focusin", sync);
   document.addEventListener("focusout", () => requestAnimationFrame(sync));
   sync();
@@ -4723,7 +5740,7 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
 // the options a founding sends with the slot's /open door. Absent fields mean "the default", which
 // is exactly what the server reads them as. src/founding.ts builds it.
 // `branch` only on the worktree doors (/open-worktree, /api/lanes): the owner's named lane
-export interface SpawnBody { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
+export interface SpawnBody { permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" }; harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //
@@ -5469,7 +6486,7 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   }, { passive: false });
   view.addEventListener("keydown", (e) => {
     const to = ({ ArrowLeft: idx - 1, ArrowRight: idx + 1, Home: 0, End: n - 1, Escape: n - 1 } as Record<string, number>)[e.key];
-    if (e.key === "Enter") { e.preventDefault(); showSlot(s.id); return; }
+    if (e.key === "Enter") { e.preventDefault(); showSlot(s.id, e.timeStamp); return; }
     if (to === undefined) return;
     e.preventDefault();
     e.stopPropagation();
@@ -5599,6 +6616,7 @@ function updateTitle() {
   const s = slot ? fleet[slot - 1] : undefined;
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
   mreadTitle.textContent = mtitle.textContent;
+  syncBox(); // a new session in the focused slot turns a held draft into the ended one's (G2.4)
   renderTarget(); // the composer's send target reads the same focused slot (G2.4)
   const ph = promptPlaceholder(); // …the placeholder names it (a rename, the first poll)…
   if (ta.placeholder !== ph) ta.placeholder = ph;
@@ -5736,7 +6754,7 @@ const marks = new MarkStage();
 let markItems: MarkItem[] = [];
 new ResizeObserver(() => placeMarks(marks, slotsEl, markItems)).observe(slotsEl);
 
-function renderSlots() {
+export function renderSlots() {
   updateTitle();
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
   // started from another device (or another tab) changes what its slot can do, and a 💬 that
@@ -5749,6 +6767,7 @@ function renderSlots() {
   // a band that had the keyboard gets it back on the rebuilt row (← → Esc keep working)
   const bandFocus = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("bandview")
     ? document.activeElement.closest<HTMLElement>(".slot")?.dataset.slot ?? null : null;
+  perfRebuild("renderSlots");
   slotsEl.replaceChildren();
   markItems = [];
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project
@@ -5867,6 +6886,13 @@ function laneCountChip(g: Stack, open: boolean): HTMLElement {
 // that draws the chip and the sidebar's render key, which must be keyed on what is painted and not
 // on the raw byte count (the rule `behind` and the ctx chip above both document).
 // ONE sentence for a parked send, shared by the slot chip's tooltip and the pane view's hint
+export type HeldDeliveries = { count: number; dueAt: number | null; paths: string[] };
+// THE HELD BUNDLE in owner words (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Szenario 4):
+// the chat view's quiet line and the composer's terminal-view hint say the same thing. HH:MM on the
+// viewer's clock — dueAt is an instant, not a server-clock age.
+export const heldDeliveriesLine = (hd: HeldDeliveries): string =>
+  `${hd.count} Fleet-Zustellung${hd.count === 1 ? "" : "en"} gehalten ${hd.dueAt === null ? "bis zum nächsten Senden"
+    : `bis ${new Date(hd.dueAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`}`;
 export const parkedSendLine = (ps: { count: number; draftChars: number }): string =>
   `${ps.count} message${ps.count === 1 ? "" : "s"} wait${ps.count === 1 ? "s" : ""} for an empty input — `
   + `a draft of ${ps.draftChars} char${ps.draftChars === 1 ? "" : "s"} holds the composer; send or clear it`;
@@ -6045,7 +7071,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (s.mergePending) {
         const rb = el("span", "revb", "⏸");
         rb.title = "Konflikte, die der Agent aufgelöst hat, ohne dass jemand sie prüfte — Klick öffnet das Board zum Prüfen und Landen (intern: merge review).";
-        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
+        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id, e.timeStamp); setBoard(true); };
         act.appendChild(rb);
       }
       if (s.share) {
@@ -6073,7 +7099,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // ): clicking a FOLDED stack only unfolds it — it does not steal the
       // pane. Once open the anchor is an ordinary row again and focuses its session. Folding back is
       // the arrow's job alone, or focusing the main session would always cost you the open fold.
-      row.onclick = stack && !open ? () => setStackOpen(stack, true) : () => showSlot(s.id);
+      row.onclick = stack && !open ? () => setStackOpen(stack, true) : (e) => showSlot(s.id, e.timeStamp);
   }
   return row;
 }
@@ -6271,13 +7297,18 @@ function armReload() {
 let chipCmds: string[] = [];
 let lastRender = "";
 export async function refresh() {
+  const boardPerf = !perfBoardStarted ? perfStart("J1", 0) : null;
+  if (boardPerf) perfBoardStarted = true;
   try {
     const res = await api("/api/sessions");
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (boardPerf) { boardPerf.attrs.reason = "http-error"; perfFinish(boardPerf, false); }
+      return;
+    }
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
-      instance?: { name?: string | null };
+      instance?: { name?: string | null; source?: InstanceSource };
       codexCli?: CodexCliSnapshot;
       // absent on a server that predates the flag → treated as "this fleet lands", the old behaviour
       lands?: boolean;
@@ -6335,6 +7366,9 @@ export async function refresh() {
     instanceCodexCli = codexCliSnapshotFrom(data.codexCli);
     instanceObservedNow = data.now;
     renderInstanceHead();
+    const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
+    renderInstanceBand(tiSource);
+    setInstanceSource(tiSource);
     briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;
@@ -6382,6 +7416,9 @@ export async function refresh() {
     chipCmds = data.chips;
     renderChips(data.chips);
     renderParkHint();
+    renderHeldHint();
+    renderWorkplaceField();
+    for (const p of panes) p.syncHeld();
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
     // proposal sits parked on the owner — before this, nothing on the board said so and the
     // lane waited invisibly until the owner happened to reselect the task
@@ -6483,6 +7520,7 @@ export async function refresh() {
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { setQueueDetailKey(dk); renderQueueDetail(); }
     }
+    if (boardPerf) perfBoardReady(boardPerf, res);
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
@@ -6494,6 +7532,7 @@ export async function refresh() {
       }
     }
   } catch {
+    if (boardPerf) { boardPerf.attrs.reason = "fetch-error"; perfFinish(boardPerf, false); }
     // server briefly unreachable — WS dot already shows disconnect
   }
 }
@@ -9124,24 +10163,31 @@ function flashSendError() {
 // conversation view's own bar): same POST /send, same 409 reading, same failure sentence. The
 // second composer was the moment this had to stop being inline in doSend — two readings of a
 // three-shape 409 is one reading too many.
-export async function deliver(slot: number, text: string): Promise<boolean> {
-  try {
-    const res = await post("/send", { slot, text, submit: true });
-    if (!res.ok) {
-      const body: unknown = await res.clone().json().catch(() => null);
-      toast(sendFailureMessage(res.status, body));
-      flashSendError();
+export function deliver(slot: number, text: string): Promise<boolean> {
+  const measured: { response?: Response } = {};
+  const delivery = (async (): Promise<boolean> => {
+    try {
+      const res = await post("/send", { slot, text, submit: true });
+      measured.response = res;
+      if (!res.ok) {
+        const body: unknown = await res.clone().json().catch(() => null);
+        toast(sendFailureMessage(res.status, body));
+        flashSendError();
+        return false;
+      }
+      return true;
+    } catch {
+      toast("send outcome unknown — check the pane; text kept, do not paste again");
+      flashSendError(); // text stays in the box so nothing typed is silently lost
       return false;
     }
-    return true;
-  } catch {
-    toast("send outcome unknown — check the pane; text kept, do not paste again");
-    flashSendError(); // text stays in the box so nothing typed is silently lost
-    return false;
-  }
+  })();
+  perfDeliveries.set(delivery, measured);
+  return delivery;
 }
 
-async function doSend() {
+async function doSend(at = perfSendClickAt ?? performance.now()) {
+  perfSendClickAt = undefined;
   const pane = panes[focused];
   const text = ta.value.trim();
   // exactly what the box used to carry after an upload: the prompt, then one mention per line
@@ -9151,10 +10197,28 @@ async function doSend() {
   // the box's content was written for draftSlot; switchDraft keeps the two equal, and a send
   // that finds them apart refuses rather than guess (the seventeenth cut's misdelivery)
   if (slot !== draftSlot) { toast(`not sent — this draft belongs to slot ${draftSlot}`); return; }
+  // …and to the session that was running there: after a recycle it waits for "übernehmen" or an empty box
+  if (syncBox()) {
+    renderTarget();
+    toast("Nicht gesendet — der Entwurf war für die beendete Session. Übernehmen oder leeren.");
+    flashSendError();
+    return;
+  }
+  const span = perfStart("J3", at, { view: pane.isChat ? "chat" : "term", bubbleMs: null, responseMs: null, transcriptMs: null });
+  let measuredResponse: Response | undefined;
+  let sendOk = false;
   send.disabled = true;
   const pending = pane.addPending(outgoing);
+  if (pending) {
+    perfPending.set(pending, { span });
+    perfPaint(() => { span.attrs.bubbleMs = Math.max(0, performance.now() - span.start); });
+  }
   try {
-    if (!await deliver(slot, outgoing)) { if (pending) pane.dropPending(pending); return; }
+    const delivery = deliver(slot, outgoing);
+    sendOk = await delivery;
+    measuredResponse = perfDeliveries.get(delivery)?.response;
+    span.attrs.responseMs = Math.max(0, performance.now() - span.start);
+    if (!sendOk) { if (pending) pane.dropPending(pending); return; }
     pending?.querySelector(".mwho")?.replaceChildren("you · gesendet");
     pending?.querySelector(".msend")?.replaceWith(sendState("wait"));
     // the send IS the next turn: the counter restarts now, not one transcript poll later
@@ -9169,14 +10233,21 @@ async function doSend() {
     pane.snapToBottom();
   } finally {
     send.disabled = false;
+    perfFinish(span, sendOk, measuredResponse);
   }
 }
+send.addEventListener("click", (e) => { perfSendClickAt = e.timeStamp; }, { capture: true });
 send.onclick = () => void doSend();
+// on the phone ➤ keeps the field's focus, like the key row: an engine that focuses a pressed button
+// (Chromium) blurred the field under the finger, the composer moved, and the tap's click landed on
+// #bar — nothing was sent, and the keyboard left. iOS focuses no button on a tap; the desktop keeps
+// its own focus rules.
+send.addEventListener("pointerdown", (e) => { if (isMobile()) e.preventDefault(); });
 ta.addEventListener("keydown", (e) => {
   // desktop: Enter sends. mobile: Enter is a newline (messaging convention) — ➤ sends
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
     e.preventDefault();
-    void doSend();
+    void doSend(e.timeStamp);
     return;
   }
   if (e.isComposing) return;
@@ -9212,6 +10283,8 @@ ta.addEventListener("input", () => {
   cyc = null; // real typing (not our programmatic recall) ends a history cycle
   updateChips();
   growComposer();
+  syncBox(); // an emptied box frees an orphaned draft; the first character binds a new one
+  renderTarget();
 });
 
 // --- 📎 drops: hand a FILE to the focused session (drag&drop, paste, or the button) ----------
@@ -9244,12 +10317,34 @@ const attached: Attachment[] = [];
 // split 7|6: typed with 7 focused, mousedown on 6, Enter → POST /send {slot:6}.
 const drafts = new DraftBook<Attachment>();
 let draftSlot = 0;
+// …and the draft IN the box is bound to its occupation too (src/drafts.ts#BoxDraft): a recycled
+// FOCUSED slot keeps the text on screen, marked, and no Enter sends it to the session that replaced
+// the one it was written for. An occupation is the session's openedAt, 0 for a slot with no session,
+// undefined for a slot whose row is not read yet.
+const box = new BoxDraft();
+function occupation(slot: number): number | undefined {
+  const s = slot ? fleet.find((x) => x.id === slot) : undefined;
+  return !s ? undefined : s.cwd ? s.openedAt ?? 0 : 0;
+}
+const boxHolds = (): boolean => !!ta.value.trim() || attached.length > 0;
+// re-read on every poll (updateTitle), input and send; the target paints the answer
+function syncBox(): boolean { return box.observe(occupation(draftSlot), boxHolds()); }
+export function boxOrphan(): boolean { return syncBox(); }
+export function adoptBox(): void {
+  box.adopt(occupation(draftSlot));
+  renderTarget();
+  ta.focus();
+}
+// where the box's draft parks when the focus leaves it: an orphan under the occupation it was
+// written for, so the book drops it like any draft of an ended session — never under the new one
+const parkedAt = (): number | undefined => box.orphan ? box.boundTo : fleet[draftSlot - 1]?.openedAt;
 function switchDraft(slot: number): void {
   if (slot === draftSlot) return;
-  const next = drafts.swap(draftSlot, fleet[draftSlot - 1]?.openedAt, { text: ta.value, attached },
+  const next = drafts.swap(draftSlot, parkedAt(), { text: ta.value, attached },
     slot, fleet[slot - 1]?.openedAt);
   for (const a of next.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
   draftSlot = slot;
+  box.reset(occupation(slot));
   ta.value = next.text;
   attached.length = 0; // no revoke: the parked entries still own their thumbnails
   attached.push(...next.attached);
@@ -9271,7 +10366,7 @@ function mentionExplorerPath(slot: number, path: string): void {
     return;
   }
   const currentSlot = draftSlot;
-  const currentOpenedAt = fleet[currentSlot - 1]?.openedAt;
+  const currentOpenedAt = parkedAt(); // parked and taken back under the same value, orphan or not
   const target = drafts.swap(currentSlot, currentOpenedAt, { text: ta.value, attached }, slot, openedAt);
   for (const a of target.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
   const restored = drafts.swap(slot, openedAt,
@@ -9336,7 +10431,8 @@ function closeLightbox(): void {
   if (!lightbox?.classList.contains("open")) return;
   lightbox.classList.remove("open");
   lightbox.replaceChildren();
-  lightboxBack?.focus();
+  // a chat thumbnail can be gone by now (the pane switched slot): focus nothing rather than a ghost
+  if (lightboxBack?.isConnected) lightboxBack.focus();
   lightboxBack = null;
 }
 
@@ -9371,7 +10467,7 @@ function renderAttachments(): void {
     const x = el("button", "attx") as HTMLButtonElement;
     x.appendChild(icon("x"));
     x.title = `remove ${a.name} from this prompt`;
-    x.onclick = () => { dropAttachment(i); renderAttachments(); ta.focus(); };
+    x.onclick = () => { dropAttachment(i); renderAttachments(); syncBox(); renderTarget(); ta.focus(); };
     box.appendChild(x);
     return box;
   })));
@@ -9465,13 +10561,6 @@ dropFile.addEventListener("change", () => {
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 initBoard();
-type TestinstanzView = { ok: true; state: "up"; url: string; port: number; expiresAt: number }
-  | { ok: true; state: "down" };
-const testinstanzSeen = new Map<string, { at: number; view: TestinstanzView }>();
-const testinstanzPending = new Set<string>();
-const testinstanzReadAt = new Map<string, number>();
-const testinstanzErrors = new Map<string, string>();
-const testinstanzKey = (s: SlotInfo) => `${s.id}:${s.openedAt ?? 0}:${s.cwd ?? ""}`;
 // Every test instance of this machine (GET /api/testinstanzen, owner route): `openUrl` carries the
 // instance's token, so the owner opens one from ANOTHER device without a shell on this one.
 type TestinstanzRow = { worktree: string; port: number; state: string; expiresAt: number | null; openUrl?: string };
@@ -9521,81 +10610,12 @@ function paintTestinstanzMachine(card: HTMLElement): void {
 
 function paintTestinstanzCard(): void {
   if (!boardOpen || boardBody.querySelector(".testinstanzcard")) return;
-  const slot = panes[focused]?.slot;
-  const s = slot ? fleet[slot - 1] : undefined;
-  if (!s?.worktree || !s.cwd) {
-    // no lane in focus: the card carries only the machine list, only once there is one, and at the
-    // END of the board — an answer arriving later never shifts the session's own sections
-    const card = el("div", "bsec testinstanzcard");
-    card.appendChild(el("h3", "", "Testinstanzen"));
-    paintTestinstanzMachine(card);
-    if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);
-    return;
-  }
-  const key = testinstanzKey(s);
-  const cached = testinstanzSeen.get(key);
-  const busy = testinstanzPending.has(key);
   const card = el("div", "bsec testinstanzcard");
-  card.appendChild(el("h3", "", "Testinstanz · dieser Worktree"));
-  const actions = el("div", "bbtnrow");
-  card.appendChild(actions);
-  const button = el("button", "bbtn", busy ? "Wird ausgeführt…"
-    : cached?.view.state === "up" ? "Testinstanz stoppen" : "Testinstanz starten") as HTMLButtonElement;
-  button.disabled = busy || !cached;
-  button.onclick = async () => {
-    if (testinstanzPending.has(key)) return;
-    testinstanzPending.add(key);
-    testinstanzErrors.delete(key);
-    card.remove(); paintTestinstanzCard();
-    const action = cached?.view.state === "up" ? "down" : "up";
-    try {
-      const res = await post(`/api/slots/${s.id}/testinstanz`, { action });
-      const answer = (await res.json()) as { error?: string; url?: string; port?: number; expiresAt?: number };
-      if (!res.ok) throw new Error(answer.error ?? `testinstanz ${action} failed (${res.status})`);
-      if (action === "up" && answer.url && answer.port && answer.expiresAt)
-        testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "up", url: answer.url,
-          port: answer.port, expiresAt: answer.expiresAt } });
-      else if (action === "down") testinstanzSeen.set(key, { at: Date.now(), view: { ok: true, state: "down" } });
-      else throw new Error("testinstanz started without a URL and deadline");
-    } catch (error) {
-      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
-      testinstanzSeen.delete(key);
-    } finally {
-      testinstanzPending.delete(key);
-      boardBody.querySelector(".testinstanzcard")?.remove();
-      paintTestinstanzCard();
-    }
-  };
-  actions.appendChild(button);
-  if (cached?.view.state === "up") {
-    const link = el("a", "bbtn", "Testinstanz öffnen") as HTMLAnchorElement;
-    link.href = cached.view.url;
-    link.target = "_blank";
-    link.rel = "noopener";
-    actions.appendChild(link);
-    card.appendChild(el("div", "hint", `Port ${cached.view.port} · bis ${new Date(cached.view.expiresAt).toLocaleString()}`));
-  }
-  const error = testinstanzErrors.get(key);
-  if (error) card.appendChild(el("div", "hint", error));
+  card.appendChild(el("h3", "", "Testinstanzen"));
   paintTestinstanzMachine(card);
-  boardBody.prepend(card);
-  if (!busy && Date.now() - (testinstanzReadAt.get(key) ?? 0) > 15_000) {
-    testinstanzPending.add(key);
-    testinstanzReadAt.set(key, Date.now());
-    void api(`/api/slots/${s.id}/testinstanz`).then(async (res) => {
-      const answer = (await res.json()) as TestinstanzView & { error?: string };
-      if (!res.ok) throw new Error(answer.error ?? `status failed (${res.status})`);
-      testinstanzSeen.set(key, { at: Date.now(), view: answer });
-      testinstanzErrors.delete(key);
-    }).catch((error: unknown) => {
-      testinstanzErrors.set(key, error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      testinstanzPending.delete(key);
-      boardBody.querySelector(".testinstanzcard")?.remove();
-      paintTestinstanzCard();
-    });
-  }
+  if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);
 }
+
 new MutationObserver(paintTestinstanzCard).observe(boardBody, { childList: true });
 initQueue();
 initAttention();

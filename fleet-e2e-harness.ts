@@ -505,12 +505,21 @@ export async function checkCodexSpawnFixtures(source: string,
     Object.assign(scope, {
       resolve: (p: string) => p, expandCwd: (p: string) => p, existsSync: () => true,
       statSync: () => ({ isDirectory: () => true }),
-      slotTeardownInflight: new Map(fixture.joined ? [[17, { occupant: { openedAt: 10, selfToken: oldToken } }]] : []),
+      slotTeardownInflight: new Map(fixture.joined ? [[17, { occupant: { slot: 17, openedAt: 10, selfToken: oldToken } }]] : []),
       slotSpawnInflight: new Map(), laneSpawn: new Set([17]),
       waitForSlotTeardown: async () => { if (fixture.joined) Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("teardown"); },
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
       harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }),
+      permissionsOf: () => ({ ok: true, permissions: { sandbox: "danger-full-access", approval: "never" } }),
+      slotOpeningGuard: (target: Record<string, unknown>) => {
+        const expected = JSON.stringify([target.cwd, target.openedAt, target.selfToken, target.permissions]);
+        return () => { if (JSON.stringify([target.cwd, target.openedAt, target.selfToken, target.permissions]) !== expected) throw new Error("slot occupant changed before opening"); };
+      },
+      slotSpawnOccupant: (target: Record<string, unknown>) => ({ ...target, permissions: { ...(target.permissions as Record<string, unknown>) } }),
+      sameSlotSpawnOccupant: (target: Record<string, unknown>, expected: Record<string, unknown>) => target.cwd === expected.cwd
+        && target.openedAt === expected.openedAt && target.selfToken === expected.selfToken
+        && JSON.stringify(target.permissions) === JSON.stringify(expected.permissions),
       modelOf: () => ({ ok: true }), modelsForHarness: () => [], codexSpawnSupport: async () => {
         supportCalls++;
         await barrier("support");
@@ -568,7 +577,7 @@ export async function checkCodexSpawnFixtures(source: string,
         const model = fixture.mismatch === "model" ? "fixture-other" : available.model;
         const cwd = fixture.mismatch === "cwd" ? "/other" : "/new";
         const result = openEvidence(await open(slot, cwd, null, model, null, "codex", null,
-          { container: null, containerContext: null }, null, false, null, false, false, available));
+          { container: null, containerContext: null }, null, false, null, false, null, false, available));
         checkFixture(`Codex preobserved target mismatch: ${fixture.mismatch}`, supportCalls === 0
           && result?.availability === "unknown" && result.reason === "observation-target-mismatch"
           && result.model === model && result.cwd === cwd && slot.cwd === cwd && effects.includes("ensure"),
@@ -593,7 +602,7 @@ export async function checkCodexSpawnFixtures(source: string,
             debtRetained = debt === stranded; return { id: "fixture-debt", at: now };
           },
           openSlot: open, s: slot, predecessor: { cwd: "/new" }, openRoot: "/new",
-          spawn: { model: available.model, effort: null }, label: null, harness: "codex",
+          spawn: { model: available.model, effort: null, permissions: null }, label: null, harness: "codex",
           box: { container: null, containerContext: null }, treeLease: null,
         });
         const at = source.indexOf("async function respawnInPlace(");
@@ -777,6 +786,10 @@ export async function checkCodexSpawnFixtures(source: string,
 }
 
 await checkCodexSpawnFixtures(readFileSync(`${ROOT}/server.ts`, "utf8"), check);
+import { codexPermissionsFrom } from "./server/types";
+
+for (const [claim, pass] of Object.entries(await codexPermissionSpawnClaims(readFileSync(`${ROOT}/server.ts`, "utf8"))))
+  check(claim, pass);
 
 // server.ts's two send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC:
 // neither is env-exposed, and every fixture below is a statement ABOUT them, so a fixture that
@@ -1329,3 +1342,151 @@ check("...and it refuses BEFORE spawning, not after a timeout", took < 10_000, `
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);
+
+export async function codexPermissionSpawnClaims(source: string): Promise<Record<string, boolean>> {
+  const span = (start: string, end: string): string => { const a = source.indexOf(start); return source.slice(a, source.indexOf(end, a)); };
+  const occupant = span("interface SlotSpawnOccupant", "const SLOT_POST_CAPTURE_LATCH");
+  const validators = span("function permissionsOf(", "// The lane's browser profile");
+  const ensure = span("async function ensureSlot(", "function expandCwd(");
+  const open = span("async function openSlot(", "// a task\'s `sent` state");
+  const adapterStart = source.indexOf("  spawnCmd: (o) => {", source.indexOf("const CODEX_HARNESS"));
+  const adapter = source.slice(adapterStart + "  spawnCmd: (o) => {".length, source.indexOf("\n  },", adapterStart));
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(`
+    return async (scenario) => {
+      const profile = {sandbox:"read-only",approval:"on-request"};
+      const s = { id:1,cwd:"/fixture",openedAt:100,selfToken:"old",sessionId: scenario === "resume" ? "10000000-0000-4000-8000-000000000001" : null,
+        model:null,harness:"codex",effort:null,browser:false,remote:false,context:null,container:null,containerContext:null,
+        permissions: scenario === "invalid" ? {state:"invalid"} : scenario.startsWith("open-recycle")
+          ? {sandbox:"danger-full-access",approval:"never"} : {...profile},sleeping:null,codexRecoveryState:null,worktree:null };
+      const commands = [], publications = [];
+      const PATH_EXPORT="",CODEX_TEXT_LANE_MCP="",SHELL="/usr/bin/true";
+      const realpathSync = (p) => p, shellSingleQuote = (v) => "'" + v.replaceAll("'", "'\\\\''") + "'";
+      const h = {id:"codex",permissions:{default:{sandbox:"danger-full-access",approval:"never"}},supports:{resume:true},pinsSession:false,
+        spawnCmd:(o)=>{${adapter}}};
+      const harnessOf = () => h;
+      const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
+      const rulebookRoleForSpawn=()=>null;
+      ${validators}
+      ${occupant}
+      const slotTeardownInflight = new Map(),slotSpawnInflight = new Map();
+      const sess = () => "s1",sessTarget = (v) => v;
+      let awaited = false;
+      const tmux = async (...args) => {
+        if(args[0] === "has-session") {
+          // t | event | exclusive owner
+          // 0 | snapshot captured | old@100
+          // 1 | external has-session await completes; slot reused/profile changed | new@200 / old@100
+          // 2 | continuation may spawn only after exact snapshot proof | current occupant
+          await Promise.resolve();
+          if(scenario === "replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+          if(scenario === "changed-profile") s.permissions.sandbox="danger-full-access";
+          awaited=true; return {code:1,out:""};
+        }
+        return {code:0,out:args[0] === "display-message" ? args.at(-1) === "#{pane_pipe}" ? "1" : "200 50" : ""};
+      };
+      const tmuxNewSession = async (...args) => {commands.push(args.at(-1)); return {code:0,out:"%1\\t@1",timedOut:false};};
+      const parseTmuxTarget = () => ({paneId:"%1",windowId:"@1"}),codexRolloutForId=async()=>"/rollout";
+      const CODEX_UUID_RE=/^[0-9a-f-]{36}$/, RULEBOOK_AB_RENDERS=null;
+      const saveState=()=>publications.push(JSON.stringify(s.permissions)),audit=()=>{},noteSessionIdLearned=()=>{},backfillProgramMainSessionId=()=>{};
+      const HOST="fixture",PORT=1,stewardToken=null,STEWARD_LABEL="steward",BASE_CMD="claude";
+      const boxFor=()=>({container:"",containerContext:""});
+      const existsSync=()=>true,statSync=()=>({mode:384,isDirectory:()=>true});
+      const occupantStreamPath=()=>"/stream",occupantStreamStagePath=()=>"/stage",legacyStreamPath=()=>"/legacy";
+      const console={log:()=>{}};
+      ${ensure}
+      const resolve=(v)=>v,expandCwd=(v)=>v,NO_BOX={};
+      // t | event | exclusive owner
+      // 0 | open captures A@100/old and the teardown latch already running | A (own latch) OR other@50 (foreign latch)
+      // 1 | the awaited teardown ends | empty@0/old-token, OR replaced by new@200, OR empty@0/new-token
+      // 2 | open may adopt the empty end-state only on its own captured latch | new request OR no spawn
+      if(scenario.startsWith("open-teardown-")) slotTeardownInflight.set(1,{occupant: scenario === "open-teardown-foreign-latch"
+        ? {slot:1,openedAt:50,selfToken:"other"} : {slot:1,openedAt:100,selfToken:"old"},promise:Promise.resolve()});
+      const waitForSlotTeardown=async()=>{await Promise.resolve();awaited=true;
+        if(scenario === "open-replaced") Object.assign(s,{openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-teardown-replaced") Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-teardown-empty-foreign-token") Object.assign(s,{cwd:null,openedAt:0,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario.startsWith("open-teardown-")) Object.assign(s,{cwd:null,openedAt:0,permissions:null});
+        slotTeardownInflight.delete(1);};
+      const observeTmuxSlots=async()=>({detail:"fixture"}),tmuxSlotObservation=()=>({presence:"absent"});
+      const waitForSlotSpawn=async()=>{};
+      const assertProgramFoundingTargetOpen=()=>{},repoCanon=(v)=>v,assertGameMakerTreeOpen=()=>{};
+      const openSlotIntents=new Set(),SEPARATE_LANE_SLOTS=false,BAND_SLOTS=16,FLEET_MAX_SESSIONS=64;
+      const slots=[s],laneSpawn=new Set(),singletonSpawn=new Set();
+      const detachSlotTasks=()=>{},closeShareClients=()=>{};
+      let shares=[],autos=[],recents=[];
+      const slotStreamOccupant=()=>s.cwd ? {slot:s.id,openedAt:s.openedAt,selfToken:s.selfToken} : null;
+      const killSlot=async()=>{
+        await Promise.resolve();awaited=true;
+        // t | event | exclusive owner
+        // 0 | open snapshot and new restrictive request | old@100/full-access
+        // 1 | own teardown finishes OR target is replaced during its await | empty@0/old-token OR new@200
+        // 2 | open may publish only against its known teardown end-state | new request OR no spawn
+        if(scenario === "open-recycle-replaced") Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else if(scenario === "open-recycle-empty-replaced") Object.assign(s,{cwd:null,openedAt:0,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});
+        else Object.assign(s,{cwd:null,openedAt:0,permissions:null});
+      };
+      const waitForGameMakerOpenTestLatch=async()=>{await Promise.resolve();if(scenario === "open-recycle-later-replaced")
+        Object.assign(s,{cwd:"/replacement",openedAt:200,selfToken:"new",permissions:{sandbox:"workspace-write",approval:"never"}});};
+      const randomBytes=()=>({toString:()=>"successor"}),historyPath=()=>"/history",rm=async()=>{};
+      const harvest=new Map(),startCache=new Map(),mergeParked=new Map(),mergeLast=new Map(),mergeInflight=new Map(),mergeStart=new Map();
+      const aliveInfo=new Map(),paneModelInfo=new Map(),gitOpInfo=new Map(),laneHunkInfo=new Map(),gitInfo=new Map(),repoInfo=new Map();
+      const backlogNudgeTried=new Set(),inboxNudgeTried=new Set();
+      const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
+      ${open}
+      let error=null; try {
+        if(scenario.startsWith("open-")) await openSlot(s,"/fixture",null,null,null,"codex",null,{},null,false,null,false,
+          scenario === "open-invalid" ? {sandbox:"read-only",approval:"untrusted"} : profile);
+        else await ensureSlot(s,scenario === "invalid" ? "restart" : "heal");
+      } catch(e) {error=String(e);}
+      return {commands,publications,awaited,error,profile:s.permissions};
+    };`);
+  const exercise = new Function("codexPermissionsFrom", code)(codexPermissionsFrom) as
+    (scenario: string) => Promise<{ commands: string[]; publications: string[]; awaited: boolean; error: string | null;
+      profile: { sandbox?: string; approval?: string; state?: string } }>;
+  const fresh = await exercise("fresh"), resume = await exercise("resume");
+  const replaced = await exercise("replaced"), changed = await exercise("changed-profile"), invalid = await exercise("invalid");
+  const openReplaced = await exercise("open-replaced"), openInvalid = await exercise("open-invalid");
+  const recycle = await exercise("open-recycle"), recycleReplaced = await exercise("open-recycle-replaced");
+  const recycleLaterReplaced = await exercise("open-recycle-later-replaced"), recycleEmptyReplaced = await exercise("open-recycle-empty-replaced");
+  const waitingOwn = await exercise("open-teardown-own"), waitingForeignLatch = await exercise("open-teardown-foreign-latch");
+  const waitingReplaced = await exercise("open-teardown-replaced"), waitingEmptyForeign = await exercise("open-teardown-empty-foreign-token");
+  const promptPattern = source.match(/\{ re: (\/Would you like[^\n]+?\/), why: "codex permission prompt" \}/)?.[1];
+  const promptBlock = promptPattern ? new Function(`return ${promptPattern}`)() as RegExp : null;
+  const promptFrame = ">_ OpenAI Codex (v0.159.0)\nWould you like to run the following command?\nEnvironment: local\nReason: Allow the isolated fixture command?\n$ printf permission-probe\n1. Yes, proceed (y)\n3. No, and tell Codex what to do differently (esc)";
+  return {
+    "Codex on-request command approval frame is a named readiness block despite the ready header": promptBlock?.test(promptFrame) === true,
+    "openSlot own teardown accepts exactly empty@0/old-token and spawns only the new restrictive profile": recycle.error === null
+      && recycle.commands.length === 1 && recycle.commands[0].includes("--sandbox read-only --ask-for-approval on-request")
+      && recycle.profile.sandbox === "read-only" && !recycle.commands[0].includes("bypass"),
+    "openSlot replacement during own teardown cannot spawn or overwrite the replacement profile": recycleReplaced.error !== null
+      && recycleReplaced.commands.length === 0 && recycleReplaced.publications.length === 0 && recycleReplaced.profile.sandbox === "workspace-write",
+    "openSlot empty@0 still requires the exact predecessor token after teardown": recycleEmptyReplaced.error !== null
+      && recycleEmptyReplaced.commands.length === 0 && recycleEmptyReplaced.publications.length === 0 && recycleEmptyReplaced.profile.sandbox === "workspace-write",
+    "openSlot re-proves the known teardown end-state after its next external await": recycleLaterReplaced.error !== null
+      && recycleLaterReplaced.commands.length === 0 && recycleLaterReplaced.publications.length === 0 && recycleLaterReplaced.profile.sandbox === "workspace-write",
+    "openSlot waiting behind exactly its predecessor's running teardown adopts empty@0/old-token and spawns only the new profile": waitingOwn.error === null
+      && waitingOwn.awaited && waitingOwn.commands.length === 1 && waitingOwn.commands[0].includes("--sandbox read-only --ask-for-approval on-request")
+      && !waitingOwn.commands[0].includes("bypass") && waitingOwn.profile.sandbox === "read-only",
+    "openSlot waiting behind a foreign occupant's teardown latch refuses the empty end-state without spawn": waitingForeignLatch.error !== null
+      && waitingForeignLatch.commands.length === 0 && waitingForeignLatch.publications.length === 0 && waitingForeignLatch.profile === null,
+    "openSlot waiting behind its own teardown refuses a new occupant published after it without spawn or profile overwrite": waitingReplaced.error !== null
+      && waitingReplaced.commands.length === 0 && waitingReplaced.publications.length === 0 && waitingReplaced.profile.sandbox === "workspace-write",
+    "openSlot waiting behind its own teardown refuses empty@0 under a foreign token without spawn or profile overwrite": waitingEmptyForeign.error !== null
+      && waitingEmptyForeign.commands.length === 0 && waitingEmptyForeign.publications.length === 0 && waitingEmptyForeign.profile.sandbox === "workspace-write",
+    "openSlot refuses a replaced target after teardown await without spawn or profile overwrite": openReplaced.error !== null
+      && openReplaced.awaited && openReplaced.commands.length === 0 && openReplaced.profile.sandbox === "workspace-write",
+    "openSlot invalid new profile refuses before teardown or occupant mutation": openInvalid.error?.includes("bad permissions") === true
+      && !openInvalid.awaited && openInvalid.commands.length === 0 && openInvalid.profile.sandbox === "read-only",
+    "ensureSlot fresh uses the captured restrictive profile without bypass": fresh.commands.length === 1
+      && fresh.commands[0].includes("--sandbox read-only --ask-for-approval on-request") && !fresh.commands[0].includes("bypass"),
+    "ensureSlot exact resume uses the same restrictive profile": resume.commands.length === 1
+      && resume.commands[0].includes("codex resume '10000000-0000-4000-8000-000000000001'")
+      && resume.commands[0].includes("--sandbox read-only --ask-for-approval on-request"),
+    "ensureSlot external await with a replaced occupant spawns and publishes nothing": replaced.awaited
+      && replaced.commands.length === 0 && replaced.publications.length === 0 && replaced.profile.sandbox === "workspace-write",
+    "ensureSlot external await with changed permissions spawns and publishes nothing": changed.awaited
+      && changed.commands.length === 0 && changed.publications.length === 0,
+    "ensureSlot invalid persisted permissions refuses before any external await or spawn": invalid.error !== null
+      && !invalid.awaited && invalid.commands.length === 0 && invalid.publications.length === 0 && invalid.profile.state === "invalid",
+  };
+}

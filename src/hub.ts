@@ -8,13 +8,14 @@
 // worktree, a MAIN is the slot a program names, and a lane belongs to a program when a task of
 // that program was sent to its slot. Where that join finds nothing, the row says so instead of
 // guessing.
+import { CONTEXT_PACKS } from "../context-packs";
 
 interface Git { branch: string; dirty: number; ahead: number; behind: number }
 interface Ctx { usedTokens: number; windowTokens: number; pct: number }
 interface Spawn { harness: string | null; model: string | null; effort: string | null }
 interface Slot {
   id: number; cwd: string | null; label: string | null; repo: string | null;
-  worktree: string | null; model: string | null; agent: string | null;
+  worktree: { repo: string; branch: string } | null; model: string | null; agent: string | null;
   git: Git | null; ctx: Ctx | null;
 }
 interface Task {
@@ -126,14 +127,14 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     host.textContent = "";
     var s = S.slots.filter(function (x) { return x.id === S.sel; })[0];
     if (!s) {
-      host.appendChild(el("div", "empty", "Klick links einen Slot - hier erscheinen Brief, ContextPacks, Tools und Modell."));
+      host.appendChild(el("div", "empty", "Klick links einen Slot - hier erscheinen Brief, die zugestellte Datei, Tools und Modell."));
       q("detN").textContent = "";
       return;
     }
     q("detN").textContent = (isLane(s) ? "Lane " : "Slot ") + s.id;
 
     kv(host, "cwd", s.cwd || "-");
-    kv(host, "worktree", s.worktree || "- (Haupt-Checkout)");
+    kv(host, "worktree", s.worktree ? s.worktree.branch + " von " + s.worktree.repo : "- (Haupt-Checkout)");
     if (s.git) kv(host, "git", s.git.branch + "  dirty " + s.git.dirty + "  ahead " + s.git.ahead + "  behind " + s.git.behind);
     kv(host, "Agent", s.agent || "-");
     kv(host, "Modell", s.model || "- (Datensatz leer, Env gilt)");
@@ -157,19 +158,18 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     const v1 = el("span", "v"); v1.appendChild(chips); r1.appendChild(v1);
     host.appendChild(r1);
 
-    /* ContextPacks: was tatsaechlich an diese Session ging */
+    /* Die zugestellte Datei: was tatsaechlich an diese Session ging, aus dem Receipt */
     var rec = S.receipts.filter(function (x) { return x && (x.slot === s.id); });
-    const cc = el("div", "chips");
-    if (rec.length) {
-      rec.slice(0, 8).forEach(function (x) {
-        cc.appendChild(el("span", "chip", (x.kind || "receipt") + (x.bytes ? " " + x.bytes + " B" : "")));
-      });
-    } else {
-      cc.appendChild(el("span", "chip none", "keine Context-Receipt-Zeile fuer diesen Slot"));
-    }
     const r2 = el("div", "kv");
-    r2.appendChild(el("span", "k", "ContextPacks"));
-    const v2 = el("span", "v"); v2.appendChild(cc); r2.appendChild(v2);
+    r2.appendChild(el("span", "k", "Zugestellt"));
+    const v2 = el("span", "v");
+    if (rec.length) {
+      const newest = rec.reduce(function (a, b) { return num(b.at) > num(a.at) ? b : a; });
+      receiptFile(v2, newest, rec.length);
+    } else {
+      v2.appendChild(el("span", "chip none", "keine Context-Receipt-Zeile fuer diesen Slot"));
+    }
+    r2.appendChild(v2);
     host.appendChild(r2);
 
     /* Write-Set */
@@ -188,6 +188,60 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     head.appendChild(el("span", "v", t ? (t.kind + " - " + t.status + " - " + String(t.id).slice(0, 8)) : "keine Aufgabe an diesem Slot"));
     host.appendChild(head);
     if (t) host.appendChild(el("pre", "brief", t.text || "(leer)"));
+  }
+
+  function num(v: unknown): number { return typeof v === "number" && Number.isFinite(v) ? v : 0; }
+  function kb(bytes: number): string { return (bytes / 1000).toFixed(1).replace(".", ",") + " KB"; }
+
+  /* THE DELIVERED FILE in the founding window's form (src/founding.ts#renderFile): the fixed order
+     Rolle, Auftrag, Anleitung, Wissen, Packs auf Abruf, Schluss, each with its sentence and size. A
+     receipt that carries its parts (task 197966d7) is read part by part; one without them names its
+     packs per group and its delivered bytes, and says "im Receipt nicht gemeldet" for the rest —
+     never an estimate. */
+  function receiptFile(host: HTMLElement, r: Record<string, unknown>, count: number): void {
+    const parts = Array.isArray(r.parts) ? (r.parts as unknown[]).filter(function (p): p is Record<string, unknown> {
+      return !!p && typeof p === "object" && typeof (p as Record<string, unknown>).id === "string";
+    }) : null;
+    const selected = Array.isArray(r.selected) ? (r.selected as unknown[]).filter(function (p): p is Record<string, unknown> {
+      return !!p && typeof p === "object" && typeof (p as Record<string, unknown>).id === "string";
+    }) : [];
+    const delivered = typeof r.deliveredBytes === "number" ? r.deliveredBytes : null;
+    const head = el("div", "chips");
+    head.appendChild(el("span", "chip", delivered === null ? "Groesse nicht gemeldet" : kb(delivered) + " zugestellt"));
+    head.appendChild(el("span", "chip", "harness " + (r.harness || "claude") + " · " + (r.model || "-") + " · " + (r.effort || "-")));
+    if (typeof r.at === "number") head.appendChild(el("span", "chip", new Date(r.at).toLocaleString("de-DE")));
+    if (count > 1) head.appendChild(el("span", "chip none", count + " Receipts fuer diesen Slot — das juengste gilt"));
+    host.appendChild(head);
+    const said = "im Receipt nicht gemeldet";
+    const sum = function (pred: (p: Record<string, unknown>) => boolean): string | null {
+      if (!parts) return null;
+      const hit = parts.filter(pred);
+      return hit.length ? kb(hit.reduce(function (n, p) { return n + num(p.bytes); }, 0)) : null;
+    };
+    const box = function (sorte: string) { return function (p: Record<string, unknown>) { return p.sorte === sorte && p.ort === "box"; }; };
+    const groups: Record<string, string> = { "grundlagen": "Grundlagen", "pruefen-landen": "Pruefen und Landen", "sessions-fuehren": "Sessions fuehren", "vor-arbeiten": "Vor bestimmten Arbeiten" };
+    const groupOf = function (p: Record<string, unknown>): string {
+      const own = typeof p.group === "string" ? p.group : CONTEXT_PACKS.find(function (c) { return c.id === p.id; })?.group;
+      return own && groups[own] ? groups[own]! : "ohne Gruppe";
+    };
+    const byGroup: Record<string, string[]> = {};
+    selected.forEach(function (p) { (byGroup[groupOf(p)] = byGroup[groupOf(p)] || []).push(String(p.id)); });
+    const rows: [string, string, string][] = [
+      ["Rolle", "Wer der Agent ist, was er selbst entscheidet und an wen er meldet.", sum(function (p) { return p.id === "role"; }) ?? said],
+      ["Auftrag", "Die Karte dieses Starts.", "im Brief"],
+      ["Anleitung", "Regeln und Schritte, ganz in der Datei.", parts ? sum(box("anleitung")) ?? "nichts ganz darin" : said],
+      ["Wissen", "Hintergrund, ganz in der Datei.", parts ? sum(box("wissen")) ?? "nichts ganz darin" : said],
+      ["Packs auf Abruf", selected.length ? selected.length + " Hinweise: " + Object.keys(byGroup).map(function (g) { return g + " (" + byGroup[g]!.join(", ") + ")"; }).join(" · ") : "keine Hinweise", parts ? "" : "Groesse " + said],
+      ["Schluss", "Wie sie am Ende abgibt.", sum(function (p) { return p.id === "footer"; }) ?? said],
+    ];
+    rows.forEach(function (row, i) {
+      const line = el("div", "kv");
+      line.appendChild(el("span", "k", (i + 1) + " " + row[0]));
+      const v = el("span", "v", row[1]);
+      if (row[2]) { v.appendChild(document.createTextNode("  ")); v.appendChild(el("span", "chip" + (row[2].indexOf("nicht gemeldet") >= 0 ? " none" : ""), row[2])); }
+      line.appendChild(v);
+      host.appendChild(line);
+    });
   }
 
   function renderCommits(): void {

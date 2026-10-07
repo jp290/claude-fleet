@@ -18,6 +18,13 @@ import type { CheckFn } from "./host-hygiene-table";
 const TMP = process.env.TMPDIR ?? "/tmp";
 const ROOT = resolve(import.meta.dir, "..");
 
+export function snapshotHasWorktreeBinding(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(snapshotHasWorktreeBinding);
+  if (value === null || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, v]) => (key === "worktree" && v !== null && v !== undefined)
+    || snapshotHasWorktreeBinding(v));
+}
+
 export async function scratchReapChecks(check: CheckFn): Promise<void> {
   const FIXROOT = `${TMP}/fleet-e2e-reapfix-${process.pid}`;
   const SOCKS = `${FIXROOT}/tmux-${process.getuid?.() ?? 0}`;
@@ -208,7 +215,7 @@ const src = process.argv.at(-2).replace(/\\/+$/, "");
 const dst = process.argv.at(-1);
 cpSync(src, dst, { recursive: true, filter: (path) => {
   const parts = relative(src, path).split(sep);
-  return !parts.some((part) => part === ".git" || part === "node_modules" || part === ".env"
+  return !parts.some((part) => part === ".git" || part === "node_modules" || part.startsWith(".env") || part === "fleet.pid"
     || part.startsWith("fleet.json") || part.endsWith(".jsonl"));
 } });
 `);
@@ -224,8 +231,18 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       delete env.FLEET_TI_PORT;
       delete env.FLEET_TI_DIR;
       delete env.FLEET_TI_TOKEN;
-      const run = (verb: string) => spawnSync(`${tiSource}/testinstanz.sh`, [verb],
+      const run = (verb: string, ...args: string[]) => spawnSync(`${tiSource}/testinstanz.sh`, [verb, ...args],
         { env, encoding: "utf8", timeout: 120_000 });
+      const sourceGit = (...args: string[]) => spawnSync("git", ["-C", tiSource, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      sourceGit("init", "-q"); sourceGit("add", "testinstanz.sh");
+      sourceGit("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "isolated source");
+      writeFileSync(`${tiSource}/.env.bak-fixture`, "SYNTHETIC_ENV_BACKUP_SECRET\n");
+      writeFileSync(`${tiSource}/fleet.pid`, "SYNTHETIC_FOREIGN_PID\n");
+      const sourceHead = sourceGit("rev-parse", "HEAD").stdout;
+      const sourceRefs = sourceGit("for-each-ref", "--format=%(refname) %(objectname)").stdout;
+      const invalidMode = run("up", "unavailable");
+      const invalidTTL = run("up", "mixed", "--ttl", "1441");
+      check("testinstanz script rejects unavailable mode and invalidTTL before starting", invalidMode.status === 2 && invalidTTL.status === 2);
       try {
         if (linked.status === 0) {
           const up = run("up");
@@ -237,6 +254,29 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
             up.status === 0 && state.includes(`\nport=${tiPort}\n`),
             `exit=${up.status} savedPort=${state.match(/^port=(.*)$/m)?.[1] ?? "missing"} tail=${up.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
           if (up.status === 0) {
+            check("testinstanz main copy excludes fleet.pid and every .env backup", !existsSync(`${stateDir}/fleet.pid`) || readFileSync(`${stateDir}/fleet.pid`, "utf8") !== "SYNTHETIC_FOREIGN_PID\n");
+            check("testinstanz copy has no source environment backup", !existsSync(`${stateDir}/.env.bak-fixture`));
+            const observation = run("status", "--json");
+            const fact = JSON.parse(observation.stdout) as { recordedSource?: { path?: string; before?: { head?: string; dirty?: number; measuredAt?: number } };
+              mode?: string; copyHead?: unknown; copyStartedAt?: number; copyFinishedAt?: number; builtAt?: number; startedAt?: number;
+              procStatus?: string; httpStatus?: string; expiresAt?: number; state?: string; identity?: string };
+            check("testinstanz script records source freshness separately from copy/build/start", observation.status === 0 && fact.recordedSource?.path === tiSource
+              && fact.recordedSource.before?.head === sourceHead.trim() && (fact.recordedSource.before.dirty ?? 0) > 0
+              && (fact.recordedSource.before.measuredAt ?? 0) > 0 && fact.mode === "mixed" && fact.copyHead === null
+              && (fact.copyStartedAt ?? 0) <= (fact.copyFinishedAt ?? 0) && (fact.copyFinishedAt ?? 0) <= (fact.builtAt ?? 0)
+              && (fact.builtAt ?? 0) <= (fact.startedAt ?? 0) && fact.procStatus === "alive" && fact.httpStatus === "healthy", `state=${fact.state}; proc=${fact.procStatus}; http=${fact.httpStatus}; identity=${fact.identity}; sourcePath=${fact.recordedSource?.path === tiSource}; sourceHead=${fact.recordedSource?.before?.head === sourceHead.trim()}; dirty=${fact.recordedSource?.before?.dirty}; copyTimes=${(fact.copyStartedAt ?? 0) <= (fact.copyFinishedAt ?? 0) && (fact.copyFinishedAt ?? 0) <= (fact.builtAt ?? 0) && (fact.builtAt ?? 0) <= (fact.startedAt ?? 0)}; lsofMatches=${spawnSync("lsof", ["-nP", "-a", "-p", state.match(/^pid=(.*)$/m)?.[1] ?? "0", `-iTCP:${tiPort}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" }).stdout.trim() === state.match(/^pid=(.*)$/m)?.[1]}`);
+            const beforeState = readFileSync(`${stateDir}/testinstanz.state`, "utf8");
+            const token = readFileSync(`${stateDir}/.testinstanz.token`, "utf8").trim();
+            const againRead = run("status", "--json");
+            check("testinstanz script Read preserves state TTL, source refs and HEAD and hides token", againRead.status === 0 && !againRead.stdout.includes(token)
+              && readFileSync(`${stateDir}/testinstanz.state`, "utf8") === beforeState && sourceGit("rev-parse", "HEAD").stdout === sourceHead
+              && sourceGit("for-each-ref", "--format=%(refname) %(objectname)").stdout === sourceRefs);
+            writeFileSync(`${stateDir}/testinstanz.state`, beforeState.replace(/^expiresAt=.*$/m, "expiresAt=1"));
+            const expired = run("status", "--json");
+            const expiredFact = JSON.parse(expired.stdout) as { state?: string; remainingTTL?: number; procStatus?: string };
+            check("testinstanz script reads expired TTL without cleanup", expired.status === 0 && expiredFact.state === "expired" && expiredFact.remainingTTL === 0
+              && expiredFact.procStatus === "alive" && existsSync(stateDir));
+            writeFileSync(`${stateDir}/testinstanz.state`, beforeState);
             const status = run("status");
             check("host-hygiene §e8 status names the saved port, not the next free port",
               new RegExp(`http://[^/]+:${tiPort}/`).test(status.stdout),
@@ -258,6 +298,53 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
             && spawnSync("lsof", ["-nP", `-iTCP:${tiPort}`, "-sTCP:LISTEN"]).status === 1,
           `exit=${down.status} line=${down.stdout?.trim().split("\n").slice(-1)[0] ?? ""}`);
       }
+      const stateDir = `${tiHome}/fleet-testinstanz-${spawnSync("cksum", { input: tiSource, encoding: "utf8" }).stdout?.split(" ")[0]}`;
+      const ownHost = spawnSync("sh", ["-c", `for t in /usr/local/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale tailscale; do a=$("$t" ip -4 2>/dev/null | head -1) && [ -n "$a" ] && { echo "$a"; exit; }; done; echo 127.0.0.1`], { encoding: "utf8" }).stdout.trim();
+      const healthMode = `${FIXROOT}/http-mode`, healthReady = `${FIXROOT}/http-ready`;
+      writeFileSync(healthMode, "failed");
+      const httpChild = spawn("python3", ["-u", "-c", `import socket,time,pathlib
+s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('0.0.0.0',${tiPort}));s.listen(4)
+pathlib.Path(${JSON.stringify(healthReady)}).write_text('ready')
+while True:
+    c,_=s.accept();c.recv(4096)
+    mode=pathlib.Path(${JSON.stringify(healthMode)}).read_text()
+    if mode=='timeout': time.sleep(2)
+    elif mode=='redirect': c.sendall(b'HTTP/1.1 302 Found\\r\\nLocation: http://example.invalid/forbidden\\r\\nContent-Length: 0\\r\\n\\r\\n')
+    else: c.sendall(b'HTTP/1.1 503 Unavailable\\r\\nContent-Length: 0\\r\\n\\r\\n')
+    c.close()
+`]);
+      try {
+        const deadline = Date.now() + 5000;
+        while (!existsSync(healthReady) && Date.now() < deadline && httpChild.exitCode === null) await Bun.sleep(20);
+        const bound = httpChild.pid !== undefined && existsSync(healthReady);
+        check("testinstanz real HTTP probe owns its listener", bound);
+        if (bound) {
+          mkdirSync(stateDir, { recursive: true });
+          const birth = spawnSync("ps", ["-p", String(httpChild.pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
+          writeFileSync(`${stateDir}/.testinstanz.pid`, String(httpChild.pid));
+          writeFileSync(`${stateDir}/.testinstanz.token`, "SYNTHETIC_HTTP_TOKEN");
+          const saved = `src=${tiSource}\nport=${tiPort}\nsock=${env.FLEET_TI_SOCK}\ndir=${stateDir}\npid=${httpChild.pid}\nbirth=${birth}\nhost=${ownHost}\nexpiresAt=2000000000\n`;
+          writeFileSync(`${stateDir}/testinstanz.state`, saved);
+          for (const [mode, expected] of [["failed", "http-failed"], ["redirect", "http-failed"], ["timeout", "http-timeout"]] as const) {
+            writeFileSync(healthMode, mode);
+            const status = run("status", "--json");
+            const data = JSON.parse(status.stdout) as { state?: string; procStatus?: string; httpStatus?: string; identity?: string };
+            check(`testinstanz real procAlive+HTTP ${mode} is distinct and bounded`, status.status === 0 && data.state === expected
+              && data.procStatus === "alive" && data.identity === "matched" && data.httpStatus === (mode === "timeout" ? "timeout" : "failed")
+              && !status.stdout.includes("SYNTHETIC_HTTP_TOKEN") && readFileSync(`${stateDir}/testinstanz.state`, "utf8") === saved,
+              `state=${data.state}; proc=${data.procStatus}; http=${data.httpStatus}`);
+          }
+          const foreign = spawn("sleep", ["60"]);
+          try {
+            writeFileSync(`${stateDir}/.testinstanz.pid`, String(foreign.pid));
+            const foreignBirth = spawnSync("ps", ["-p", String(foreign.pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
+            writeFileSync(`${stateDir}/testinstanz.state`, saved.replace(/^pid=.*$/m, `pid=${foreign.pid}`).replace(/^birth=.*$/m, `birth=${foreignBirth}`));
+            const down = run("down");
+            check("testinstanz script refuses a foreign PID even with matching birth and keeps instance state", down.status === 2
+              && foreign.pid !== undefined && spawnSync("kill", ["-0", String(foreign.pid)]).status === 0 && existsSync(`${stateDir}/testinstanz.state`));
+          } finally { foreign.kill(); }
+        }
+      } finally { httpChild.kill(); rmSync(stateDir, { recursive: true, force: true }); }
     } else {
       check("host-hygiene §e8 probe can copy its isolated source", false,
         `exit=${copied.status} tail=${copied.stderr?.trim().split("\n").slice(-1)[0] ?? ""}`);
@@ -274,7 +361,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
     token: markers[0], stewardToken: markers[1], helperToken: markers[2],
     helperDevices: [{ token: markers[3] }], shares: [{ token: markers[4] }],
     slots: { 1: { cwd: `${snapSource}/real-worktree`, selfToken: markers[5], label: "snapshot row", openedAt: Date.now() } },
-    tasks: [{ id: "snapshot-task", text: "Snapshot queue row", source: "owner", status: "pending", repo: snapSource }],
+    tasks: [{ id: "snapshot-task", text: `Snapshot prompt ${markers[0]} ${markers[5]}`, sessionId: "SYNTHETIC_REAL_SESSION", worktree: { repo: snapSource }, source: "owner", status: "pending", repo: snapSource }],
     programs: [], fleetReports: [], attentionRequests: [], dispatch: true, autosOn: true,
   }));
   writeFileSync(`${snapSource}/.env`, `SYNTHETIC_ENV=${markers[6]}\n`);
@@ -332,13 +419,21 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
           grep.status === 1, `grep exit=${grep.status}`);
         const state = JSON.parse(readFileSync(`${snapDir}/fleet.json`, "utf8"));
         const envNames = readFileSync(`${snapDir}/env-names`, "utf8");
+        const localSlots = Object.values(state.slots as Record<string, unknown>).every((value) => {
+          const s = value as { cwd?: unknown; worktree?: unknown };
+          return s.cwd === snapDir && !s.worktree;
+        });
+        const noBinding = !snapshotHasWorktreeBinding(state);
+        const noSourceSession = !JSON.stringify(state).includes("SYNTHETIC_REAL_SESSION");
+        const noCouplingEnv = !/FLEET_(HUB_|HELPER_|SHARE_)/.test(envNames);
         check("host-hygiene §e9 serving snapshot keeps master stop, local paths and no live-coupling env names",
-          state.dispatch === false && state.autosOn === false
-            && Object.values(state.slots as Record<string, unknown>).every((value) => {
-              const s = value as { cwd?: unknown; worktree?: unknown };
-              return s.cwd === snapDir && !s.worktree;
-            }) && !/FLEET_(HUB_|HELPER_|SHARE_)/.test(envNames),
-          `dispatch=${state.dispatch} autosOn=${state.autosOn} slots=${Object.keys(state.slots).length}`);
+          state.dispatch === false && state.autosOn === false && localSlots && noBinding && noSourceSession && noCouplingEnv,
+          `dispatch=${state.dispatch} autosOn=${state.autosOn} localSlots=${localSlots} noBinding=${noBinding} noSourceSession=${noSourceSession} noCouplingEnv=${noCouplingEnv}`);
+        check("host-hygiene §e9 binding probe accepts a serialized null and rejects a real nested worktree",
+          !snapshotHasWorktreeBinding({ slots: { 1: { cwd: snapDir, worktree: null } } })
+            && snapshotHasWorktreeBinding({ tasks: [{ worktree: { repo: snapSource } }] })
+            && snapshotHasWorktreeBinding({ programs: [{ nested: { worktree: snapSource } }] }),
+          "null is no binding; object and string source bindings are both rejected");
         const routes = [
           ["/api/slots/1/merge", {}], ["/api/tasks/snapshot-task/land", {}],
           ["/api/deploy", {}], ["/api/repos/undo-land", { repo: snapDir }],

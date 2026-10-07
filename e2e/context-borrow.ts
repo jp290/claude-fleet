@@ -285,8 +285,8 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       [fake, inline].every((answer) => answer.status === 409 && answer.body.refusal === "source-anchor-missing" && !answer.body.sources)
       && (await readLedger<Record<string, unknown>>(borrowFile)).rows.slice(-2).every((row) => row.bytes === 0 && JSON.stringify(row.sources) === "[]"));
     const code = await borrow("code-symbol");
-    check("context borrow: a non-Markdown symbol serves conservatively from its line to EOF, excluding earlier code",
-      code.status === 200 && code.body.sources?.[0]?.content === codeTail);
+    check("context borrow: a non-Markdown symbol stops before the next top-level declaration, excluding earlier code",
+      code.status === 200 && code.body.sources?.[0]?.content === "const TARGET = [\n  1,\n];\n");
     writeFileSync(join(root, "exact.md"), exactText);
     writeFileSync(join(root, "prefix.md"), prefixText);
     writeFileSync(join(root, "ambiguous.md"), ambiguousText);

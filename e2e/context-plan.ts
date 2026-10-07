@@ -680,12 +680,12 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
   const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
-  check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the repo's always pack",
-    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker", JSON.stringify(code));
+  check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the repo's always packs",
+    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,nachfolge-klug", JSON.stringify(code));
   check("task catalog: a measurement task adds only the measurement index",
-    measurement.selected.join(",") === `${code.selected.join(",")},messnotiz-index`, JSON.stringify(measurement));
+    measurement.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,messnotiz-index,nachfolge-klug", JSON.stringify(measurement));
   check("task catalog: a rulebook edit adds only the generator guidance",
-    rulebook.selected.join(",") === `${code.selected.join(",")},rulebook-generat`, JSON.stringify(rulebook));
+    rulebook.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,rulebook-generat,nachfolge-klug", JSON.stringify(rulebook));
   check("task catalog: code, measurement and rulebook catalogs are pairwise different",
     new Set([code, measurement, rulebook].map((row) => row.selected.join(","))).size === 3);
   check("task catalog: unrelated work omits both act-specific packs by trigger",

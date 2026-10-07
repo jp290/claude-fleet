@@ -49151,10 +49151,14 @@ Bun.serve<WSData>({
             return json({ error: "restart keeps its permissions — recycle selects a new profile" }, 409);
         }
         const pinned = s.sessionId;
-        const occupant = slotSpawnOccupant(s);
+        let occupant = slotSpawnOccupant(s);
         if (!occupant) return json({ error: "slot not active" }, 409);
         restarting.add(s.id);
         try {
+          await waitForSlotSpawn(s.id);
+          occupant = { ...occupant, sessionId: s.sessionId };
+          if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id) || s.sleeping || slotWakeInflight.has(s.id))
+            return json({ error: "slot changed while restart waited for its pane" }, 409);
           const target = await existingTmuxTarget(sess(occupant.slot));
           if (!target || !sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id))
             return json({ error: "slot pane unavailable or changed during restart" }, 409);

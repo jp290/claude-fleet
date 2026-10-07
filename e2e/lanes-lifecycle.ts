@@ -1627,16 +1627,19 @@ export async function run(lc: LaneCtx): Promise<void> {
         await tmuxOut("kill-session", "-t", `=s${opened.slot}`);
         await until(async () => {
           const pane = await tmuxOut("display-message", "-t", `=s${opened.slot}:`, "-p", "#{pane_id}\t#{pane_pid}");
-          return pane.code === 0 && pane.out.trim() !== paneBefore;
+          return pane.code === 0 && /^%\d+\t\d+$/.test(pane.out.trim()) && pane.out.trim() !== paneBefore;
         }, { timeoutMs: 15000, what: `native Program ${harness} heals into a new pane` });
         const healed = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
         check(`native Program ${harness}: pane death and heal preserve the exact founding rules and pack once`,
           healed === agents && packOnce(healed));
         if (harness === "claude") {
           const restarted = await post(`/api/slots/${opened.slot}/restart`, {});
+          const answer = await restarted.json() as { ok?: boolean; error?: string };
           const rules = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+          const live = (await tmuxOut("has-session", "-t", `=s${opened.slot}`)).code === 0;
           check("native Program restart: the same occupant keeps its exact founding rules and pack once",
-            restarted.ok && rules === agents && packOnce(rules), `HTTP ${restarted.status}`);
+            restarted.ok && answer.ok === true && live && rules === agents && packOnce(rules),
+            `HTTP ${restarted.status}; equal=${rules === agents}; once=${packOnce(rules)}; live=${live}; ${JSON.stringify(answer)}`);
         }
         await post(`/api/slots/${opened.slot}/kill`, {});
         await post(`/api/tasks/${task.task.id}/delete`, {});

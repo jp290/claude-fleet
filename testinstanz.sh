@@ -91,6 +91,18 @@ fi
 [ "$SOCK" = "claudefleet" ] && { echo "refused: claudefleet is the live tmux socket" >&2; exit 2; }
 case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside the checkout" >&2; exit 2;; esac
 
+# WHAT THE COPY TOOK FROM THE WORKTREE, as relative paths: every file and symlink the staged copy
+# holds right after its build, node_modules (the symlink to the source's) left out. `up` writes it
+# before the instance writes anything of its own; `refresh` deletes exactly the paths in the OLD list
+# that are missing from the NEW one. That is why a deletion can never reach the instance's own state:
+# the server writes ~25 paths into its own directory (fleet.json, the *.jsonl ledgers,
+# post-land-audit-queue.json, streams/, …), this script adds server.log, env-names, bin/, home/,
+# konzepte/ and the .testinstanz.* files, the fixtures their own — none of them was ever in a list
+# built from the copy, so none of them is ever a deletion candidate, including paths added later.
+ti_manifest() {
+  ( cd "$1" && find . -path ./node_modules -prune -o \( -type f -o -type l \) -print ) | sed 's#^\./##' | LC_ALL=C sort
+}
+
 # WHAT THE INSTANCE SHOWS, measured on the SOURCE before anything is copied (ranke-notiz R11): head,
 # branch, porcelain line count, and — against the TARGET the work wants to land on — how many of
 # head's commits are not on it yet. `--cherry-pick --right-only` drops commits whose change the
@@ -324,6 +336,9 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   # serving yesterday's client bundle while claiming to show today's change is worse than none.
   ( cd "$DIR" && bun run build ) || { echo "up: build failed — nothing started" >&2; exit 1; }
   TI_BUILT=$(date +%s)
+  # the list of what came from the worktree, taken BEFORE the token, the state file or the server
+  # put anything of their own here (ti_manifest); `refresh` deletes against it
+  ti_manifest "$DIR" > "$DIR.manifest" && mv "$DIR.manifest" "$DIR/.testinstanz.manifest"
   # FLEET_TI_TOKEN keeps the owner's link across a down/up (a rebuild after a client change);
   # without it every `up` mints a fresh one and the link he holds stops opening.
   TOK="${FLEET_TI_TOKEN:-$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
@@ -406,8 +421,8 @@ refresh)
   # build is synced over the running copy. A red build therefore leaves the old instance standing
   # exactly as it was — the same rule as `up`'s "a red build starts nothing", applied to a restart.
   # The sync uses `up`'s excludes, so the instance's own state (fleet.json, ledgers, home/, bin/,
-  # konzepte/, token, state file) is never overwritten. It does not delete: a file removed from the
-  # worktree stays in the copy until the next `up`.
+  # konzepte/, token, state file) is never overwritten. A file deleted in the worktree is deleted in
+  # the copy too, against the file list `up` and `refresh` keep (ti_manifest) — never by pattern.
   #
   # ONLY THE SERVER RESTARTS, the way ti_patch does it: the tmux sessions stand through it, so the
   # panes, their painters and the planted fixtures are still there. The restart is what carries the
@@ -432,7 +447,26 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   ln -s "$SRC/node_modules" "$TI_STAGE/node_modules"
   ( cd "$TI_STAGE" && bun run build ) || { rm -rf "$TI_STAGE"; echo "refresh: build failed — the running instance is unchanged" >&2; exit 1; }
   TI_BUILT=$(date +%s)
+  ti_manifest "$TI_STAGE" > "$DIR.manifest"
   rsync -a --exclude node_modules "$TI_STAGE/" "$DIR/"
+  # deleted in the worktree → deleted in the copy: old list minus new list, files only, never a path
+  # that leaves $DIR. No old list (an instance `up` started before the list existed) deletes nothing.
+  TI_GONE=0
+  if [ -f "$DIR/.testinstanz.manifest" ]; then
+    LC_ALL=C comm -23 "$DIR/.testinstanz.manifest" "$DIR.manifest" > "$DIR.gone"
+    while IFS= read -r TI_P; do
+      case "$TI_P" in ''|/*|..|../*|*/../*|*/..) continue ;; esac
+      if [ -f "$DIR/$TI_P" ] || [ -L "$DIR/$TI_P" ]; then rm -f "$DIR/$TI_P" && TI_GONE=$((TI_GONE + 1)); fi
+      # and the directories that held only it: rmdir takes only an EMPTY one, and only parents of a
+      # listed path are tried — never home/, bin/ or konzepte/, which no listed path lives under
+      TI_PD=$(dirname "$TI_P")
+      while [ "$TI_PD" != . ] && rmdir "$DIR/$TI_PD" 2>/dev/null; do TI_PD=$(dirname "$TI_PD"); done
+    done < "$DIR.gone"
+    rm -f "$DIR.gone"
+  else
+    echo "refresh: no file list from up — files deleted in the worktree stay in the copy until the next up" >&2
+  fi
+  mv "$DIR.manifest" "$DIR/.testinstanz.manifest"
   rm -rf "$TI_STAGE"
   # the state file records the stand NOW shown; ti_serve reads sourceBefore from it for the band
   # and rewrites pid= and birth= once the new server answers
@@ -450,7 +484,7 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   kill "$(cat "$PIDF")" 2>/dev/null || true
   i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
   ti_serve || exit 1
-  echo "refreshed   http://$(ti_addr):$PORT/   head $(printf '%s' "$TI_SOURCE_BEFORE" | sed -n 's/^{"head":"\([0-9a-f]\{7\}\).*/\1/p') · port and token unchanged"
+  echo "refreshed   http://$(ti_addr):$PORT/   head $(printf '%s' "$TI_SOURCE_BEFORE" | sed -n 's/^{"head":"\([0-9a-f]\{7\}\).*/\1/p') · removed $TI_GONE · port and token unchanged"
   ;;
 fixtures)
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }

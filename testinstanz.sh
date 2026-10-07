@@ -99,8 +99,12 @@ case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside 
 # post-land-audit-queue.json, streams/, …), this script adds server.log, env-names, bin/, home/,
 # konzepte/ and the .testinstanz.* files, the fixtures their own — none of them was ever in a list
 # built from the copy, so none of them is ever a deletion candidate, including paths added later.
+# A PATH WITH A LINE BREAK IS NEVER LISTED: the list is one path per line, and "x<LF>fleet.json" would
+# fall apart into a line `fleet.json` — which the deletion would then take for a copied file. Such a
+# file is copied like any other; it is only never deleted by refresh (it goes with the next `up`).
 ti_manifest() {
-  ( cd "$1" && find . -path ./node_modules -prune -o \( -type f -o -type l \) -print ) | sed 's#^\./##' | LC_ALL=C sort
+  ( cd "$1" && find . -path ./node_modules -prune -o ! -path "$(printf '*\n*')" \( -type f -o -type l \) -print ) \
+    | sed 's#^\./##' | LC_ALL=C sort
 }
 
 # WHAT THE INSTANCE SHOWS, measured on the SOURCE before anything is copied (ranke-notiz R11): head,
@@ -448,7 +452,9 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   ( cd "$TI_STAGE" && bun run build ) || { rm -rf "$TI_STAGE"; echo "refresh: build failed — the running instance is unchanged" >&2; exit 1; }
   TI_BUILT=$(date +%s)
   ti_manifest "$TI_STAGE" > "$DIR.manifest"
-  rsync -a --exclude node_modules "$TI_STAGE/" "$DIR/"
+  # --force: a non-empty directory the worktree replaced by a FILE is removed to make room (without
+  # it rsync leaves the directory, fails, and set -e ends refresh half-way after a green build)
+  rsync -a --force --exclude node_modules "$TI_STAGE/" "$DIR/"
   # deleted in the worktree → deleted in the copy: old list minus new list, files only, never a path
   # that leaves $DIR. No old list (an instance `up` started before the list existed) deletes nothing.
   TI_GONE=0
@@ -456,6 +462,10 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
     LC_ALL=C comm -23 "$DIR/.testinstanz.manifest" "$DIR.manifest" > "$DIR.gone"
     while IFS= read -r TI_P; do
       case "$TI_P" in ''|/*|..|../*|*/../*|*/..) continue ;; esac
+      # and never a path the instance owns, even if a list ever named one: up's excludes plus what
+      # this script and ti_serve create in $DIR (the list cannot hold these; this is the belt)
+      case "$TI_P" in fleet.json*|*.jsonl|.env*|fleet.pid|.testinstanz.*|testinstanz.state*|env-names|server.log \
+        |node_modules|node_modules/*|home/*|bin/*|konzepte/*) continue ;; esac
       if [ -f "$DIR/$TI_P" ] || [ -L "$DIR/$TI_P" ]; then rm -f "$DIR/$TI_P" && TI_GONE=$((TI_GONE + 1)); fi
       # and the directories that held only it: rmdir takes only an EMPTY one, and only parents of a
       # listed path are tried — never home/, bin/ or konzepte/, which no listed path lives under

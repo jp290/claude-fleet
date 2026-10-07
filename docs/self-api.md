@@ -2770,7 +2770,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Wahl, der Eintrag nennt sein Program (§Bindung).
 - **Antwort GET:** `{program, unread, dropped, entries: [{id, kind, at, ref, readBy, readAt,
   subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
-  `fleet-report` · `audit-red` · `ambient-land`. `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
+  `fleet-report` · `audit-red` · `ambient-land` · `card-verdict` · `text-proposal` (der Owner hat einen
+  Textvorschlag DIESES Programs bestätigt oder abgelehnt; `subject` ist der Vorschlag mit `status` und
+  `decisionReason`, §program-text). `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
   Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
   (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
   beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"

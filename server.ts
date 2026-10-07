@@ -44276,7 +44276,15 @@ Bun.serve<WSData>({
           : "a lane cannot propose its Program's text — its MAIN does" }, 409);
       const binding = mainBindingOf(s);
       if (!binding.ok) return json({ error: binding.error }, 409);
+      // THE OCCUPATION IS PINNED BEFORE THE BODY AWAIT and re-read from the TOKEN after it: an
+      // in-place succession landing during the await mutates this same `s` into the successor, and
+      // the binding check below would then admit the predecessor's credential as the new occupant.
+      const openedAt = s.openedAt, sessionId = s.sessionId;
       const body = await readJson(req);
+      const still = resolveSelfPrincipal(req);
+      if (still?.kind !== "session" || still.slot !== s.id || still.openedAt !== openedAt
+        || s.openedAt !== openedAt || s.sessionId !== sessionId || slotFrom(s.id) !== s)
+        return json({ refusal: "occupant-changed", error: "the slot changed occupant while this request ran — nothing is written on the old credential" }, 409);
       if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid json" }, 400);
       const readable: string[] = decisionDoor ? ["text", "programId"] : ["reason", "programId", ...PROGRAM_TEXT_FIELDS];
       const extra = Object.keys(body).filter((k) => !readable.includes(k));

@@ -797,7 +797,8 @@ auf drei verschiedene Reparaturen zeigen:
   Inbox-Quittung (`inbox/:id/read`, der Eintrag nennt sein Program), `memory?task=`. Hier gibt es
   keine Wahl und kein Body-Feld.
 - **Aus einer WAHL** — Türen ohne solches Objekt: `POST /api/self/tasks`, `POST /api/self/attention`,
-  `POST /api/self/messages`, `POST /api/self/program-context-packs` (Body-Feld `programId`),
+  `POST /api/self/messages`, `POST /api/self/program-context-packs`, `POST /api/self/program-decisions`,
+  `POST /api/self/program-text-proposals` (Body-Feld `programId`),
   `GET /api/self/inbox` und `GET /api/self/memory` (Query `program=`). Eine einzige Bindung antwortet
   ohne Wahl wie bisher. Die alte Regel „kein Body-Feld nominiert ein Program" heißt jetzt: **ein
   Body-Feld darf nur unter den eigenen wählen** — ein fremdes ist 409, nie ein Treffer.
@@ -1056,6 +1057,113 @@ bleibt.
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
   http://<fleet-host>:<port>/api/self/program-context-packs \
   -d '{"packs":[{"id":"grok-antwort-1","useWhen":"Bevor du eine Delegations-Zeile baust","sources":[{"path":"docs/messungen/INDEX.md","anchor":"# Index der Messnotizen"}]}]}'
+```
+
+## program-text — `POST /api/self/program-decisions`, `POST /api/self/program-text-proposals`, Owner `GET|POST /api/programs/:id/text-proposals` (seit 2026-10-07)
+
+Owner 2026-10-06: Programs sind endliche Vorhaben, und ihr Text lebt. Die MAIN schreibt
+Entscheidungen selbst ins Program; Ziel (`intent`), Fertig (`successCriterion`) und Nicht-Ziele
+(`nonGoals`) aendern sich nur mit Owner-Bestaetigung. Vorher war der Inhalt ab `active` eingefroren
+und `confirm` die einzige Korrektur — ohne MAIN-Tuer.
+
+**Wer:** beide Self-Tueren nur die gebundene MAIN eines aktiven Programs
+(`server.ts#boundProgramForMain`). Lane → 409, nicht gebunden → 409 (Satz aus §Bindung), fremdes
+`programId` → 409, unbekanntes Token → 401. Eine MAIN mehrerer Programs waehlt mit Body-Feld
+`programId`. Die Owner-Route nimmt das Owner-Token; ein Self-Token ist dort 401.
+
+### Entscheidung — `POST /api/self/program-decisions`
+
+Body `{"text": "…", "programId"?: "…"}` (geschlossen; 1–500 Zeichen, getrimmt). Haengt den Text an
+`Program.decisions` an — gueltig sofort, keine Bestaetigung — und notiert Autor und Zeit in
+`Program.decisionLog` (`{v:1, entries:[{index, at, by:{slot, openedAt, sessionId}}]}`, `index` zeigt
+in `decisions`). Antwort `{ok, programId, decision:{index, text, at, by}}`. Derselbe Text derselben
+Belegung als juengste Entscheidung ist `existing:true` ohne zweiten Eintrag. Deckel 200 Entscheidungen
+(`PROGRAM_DECISIONS_MAX`, danach 409); die 20-Eintraege-Grenze der anderen Listen gilt fuer
+`decisions` nicht mehr. Bestaetigte (vor `active` geschriebene) Entscheidungen tragen keinen Autor.
+
+### Textvorschlag — `POST /api/self/program-text-proposals`
+
+Body `{"reason": "…", "intent"?: "…", "successCriterion"?: "…", "nonGoals"?: ["…"], "programId"?: "…"}`
+(geschlossen). `reason` ist Pflicht (1–1000 Zeichen): der Satz der MAIN, warum. Mindestens ein
+Textfeld; jedes wird gegen dieselben Grenzen geprueft wie der gueltige Text
+(`server.ts#validateProgramContent`). Felder, die dem gueltigen Text gleichen, fallen heraus; aendert
+sich nichts → 400. **Der gueltige Text aendert sich NICHT.** Antwort
+`{ok, programId, proposal, superseded}` — `superseded` ist die id des bis dahin offenen Vorschlags
+oder `null`. **Hoechstens ein offener Vorschlag je Program:** ein neuer setzt den alten auf
+`superseded` (`supersededBy` = neue id), der lesbar bleibt. Derselbe Vorschlag (gleiche Belegung,
+gleicher Grund, gleiche Werte) erneut ist `existing:true`.
+
+### Die Form eines Vorschlags (Wire)
+
+```json
+{ "id": "<24 hex>", "programId": "<id>", "createdAt": 0,
+  "by": { "slot": 4, "openedAt": 0, "sessionId": null },
+  "reason": "warum",
+  "basedOn": "<16 hex>",
+  "before":   { "intent": "…", "nonGoals": ["…"] },
+  "proposed": { "intent": "…", "nonGoals": ["…"] },
+  "status": "open | confirmed | rejected | superseded",
+  "decidedAt": null, "decisionReason": null, "supersededBy": null,
+  "current": { "intent": "…", "nonGoals": ["…"] }, "stale": false }
+```
+
+- **Ganze Werte, kein Diff:** `proposed` traegt genau die geaenderten Felder, jeweils vollstaendig;
+  `nonGoals` immer als ganzes Array. Unveraenderte Felder fehlen. Den Wortvergleich rechnet der Client.
+- `before` = die gueltigen Werte dieser Felder beim Vorschlag. Bei `confirmed` ist das genau der
+  Text, den die Bestaetigung ersetzt hat — so bleibt nachlesbar, was vorher galt.
+- `current` + `stale` nur bei `open`: `current` = die gueltigen Werte JETZT; `stale:true`, wenn sich
+  der gueltige Text seit dem Vorschlag geaendert hat. Bei entschiedenen Vorschlaegen beide `null`.
+- `basedOn` = `server.ts#programTextHash` ueber ALLE drei Felder (sha256, 16 hex): auch eine
+  geaenderte Nicht-Ziel-Liste macht einen Ziel-Vorschlag stale.
+- `decisionReason` = optionaler Grund des Owners bei confirm/reject.
+
+### Owner — `GET /api/programs/:id/text-proposals`
+
+```json
+{ "id": "…", "status": "active",
+  "text": { "intent": "…", "successCriterion": "…", "nonGoals": ["…"] }, "basedOn": "<16 hex>",
+  "decisions": [{ "index": 0, "text": "…", "at": null, "by": null }],
+  "open": { …Vorschlag… } | null,
+  "decided": [ …Vorschlaege, neueste Entscheidung zuerst… ],
+  "dropped": 0 }
+```
+
+`decisions` traegt `at`/`by` fuer jede von einer MAIN angehaengte Entscheidung, sonst `null`.
+`decided` haelt bis zu 50 Vorschlaege (`PROGRAM_TEXT_PROPOSALS_MAX`, der offene nie verdraengt);
+`dropped` zaehlt, was darueber herausfiel.
+
+### Owner — `POST /api/programs/:id/text-proposals`
+
+Body `{"id": "<proposal>", "decision": "confirm" | "reject", "reason"?: "…"}` (geschlossen).
+
+- `confirm` setzt genau die Felder aus `proposed` als gueltigen Text — nur an einem `active`
+  Program (sonst 409). Hat sich der gueltige Text seit dem Vorschlag geaendert, antwortet die Route
+  **409** mit `{error, stale:true, basedOn, current, proposal}` und ueberschreibt nichts: ablehnen,
+  die MAIN schlaegt gegen den aktuellen Text neu vor.
+- `reject` laesst den Text unveraendert.
+- Beide schreiben `decidedAt` und `decisionReason` und legen einen Inbox-Eintrag
+  `kind:"text-proposal"` (`ref` = Vorschlags-id) ins Program; `GET /api/self/inbox` der MAIN zeigt
+  als `subject` den Vorschlag samt Status und Owner-Grund.
+- Dieselbe Entscheidung erneut ist `existing:true`; ein schon anders entschiedener oder
+  `superseded` Vorschlag ist 409, unbekannte id 404. Keine Teil-Bestaetigung je Feld.
+
+Antwort `{ok, id, proposal}`.
+
+### Im Poll — `GET /api/programs`
+
+Jede Zeile traegt `proposalsOpen` (0 oder 1) und `textProposal` (der offene Vorschlag in der Form
+oben, sonst `null`) — neben `intent` und `successCriterion` der Zeile. `nonGoals`, `decisions`,
+`decisionLog` und `textProposals` stehen nicht in der Listenzeile; Geschichte und Autoren liefert
+`GET /api/programs/:id/text-proposals`. `GET /api/self/programs` zeigt der MAIN ihr Program voll,
+also auch `decisionLog` und `textProposals` im gespeicherten Format (ohne `programId`/`current`/`stale`).
+
+**Laden:** `decisionLog` und `textProposals` sind geschlossen, versioniert und default-abwesend; ein
+unlesbarer Record laedt als abwesend (Meldung im Server-Log), das Program bleibt.
+
+```sh
+curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  http://<fleet-host>:<port>/api/self/program-text-proposals \
+  -d '{"reason":"Das Ziel sagt nicht mehr, was wir bauen","intent":"…neuer Text…"}'
 ```
 
 ## context — `GET /api/self/context/<id>`

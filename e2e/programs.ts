@@ -15496,4 +15496,176 @@ exit 0
     for (const p of [mpA, mpB, mpForeign]) await programPost(p.id, "complete", { force: true });
     await post("/api/dispatch", { on: mpDispatchBefore });
   }
+
+  // === THE LIVING TEXT OF AN ACTIVE PROGRAM (owner 2026-10-06: „[Zitat entfernt]“
+  // ) — the bound MAIN appends a DECISION itself (POST /api/self/program-decisions) and
+  // only PROPOSES a new intent/successCriterion/nonGoals (POST /api/self/program-text-proposals); the
+  // owner confirms or rejects on POST /api/programs/:id/text-proposals. Proven here: the decision lands
+  // in `decisions` with its author; a proposal changes nothing until confirmed, at most one is open, a
+  // rejection leaves the text and reaches the MAIN's inbox with its reason, the text that held before
+  // a confirm stays readable, a confirm over a text that moved since is 409 stale, both records
+  // survive a restart, and a session bound to nothing meets 409 at both MAIN doors. ===
+  {
+    type LtActor = { slot: number; openedAt: number; sessionId: string | null };
+    type LtValues = { intent?: string; successCriterion?: string; nonGoals?: string[] };
+    type LtProposal = { id: string; programId: string; status: string; createdAt: number; by: LtActor;
+      reason: string; basedOn: string; before: LtValues; proposed: LtValues; current: LtValues | null;
+      stale: boolean | null; decidedAt: number | null; decisionReason: string | null; supersededBy: string | null };
+    type LtRow = { id: string; intent: string; successCriterion: string; proposalsOpen?: number;
+      textProposal?: LtProposal | null; decisionLog?: unknown; textProposals?: unknown };
+    type LtDetail = { text: { intent: string; successCriterion: string; nonGoals: string[] }; basedOn: string;
+      decisions: { index: number; text: string; at: number | null; by: LtActor | null }[];
+      open: LtProposal | null; decided: LtProposal[]; dropped: number };
+    const ltProgram = await activateNewProgram("Living text");
+    const ltLabel = "living-text-main";
+    const ltPending = beginBootstrap(ltProgram.id, { cwd: REPO, label: ltLabel, harness: "codex", model: "gpt-5.5", effort: "high" });
+    const ltSlot = await waitForLabel(ltLabel);
+    if (ltSlot !== null) await respawnScreen(ltSlot, ">_ OpenAI Codex (v0.147.0)");
+    const ltBoot = await ltPending;
+    const ltTok = slotToken(ltSlot);
+    const ltOpenedAt = readState().slots?.[String(ltSlot)]?.openedAt ?? 0;
+    const ltProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
+    const ltProbeOpen = ltProbeSlot === null ? null
+      : await post(`/api/slots/${ltProbeSlot}/open`, { cwd: REPO, label: "living-text-unbound" });
+    const ltProbeTok = slotToken(ltProbeSlot);
+    check("living text setup: a bound MAIN of an active Program and an unbound session are observable",
+      ltBoot.ok && ltSlot !== null && /^[0-9a-f]{32}$/.test(ltTok) && !!ltProbeOpen?.ok && /^[0-9a-f]{32}$/.test(ltProbeTok),
+      JSON.stringify({ boot: ltBoot.status, slot: ltSlot, probe: ltProbeOpen?.status ?? null }));
+
+    const ltDecide = (token: string, body: unknown): Promise<Response> => selfPost("/api/self/program-decisions", token, body);
+    const ltPropose = (token: string, body: unknown): Promise<Response> => selfPost("/api/self/program-text-proposals", token, body);
+    const ltOwner = (body: unknown): Promise<Response> => post(`/api/programs/${ltProgram.id}/text-proposals`, body);
+    const ltRow = async (): Promise<LtRow | undefined> =>
+      ((await (await get("/api/programs")).json()) as { programs: LtRow[] }).programs.find((p) => p.id === ltProgram.id);
+    const ltDetail = async (): Promise<LtDetail> =>
+      (await (await get(`/api/programs/${ltProgram.id}/text-proposals`)).json()) as LtDetail;
+    const ltProposalOf = async (r: Response): Promise<{ status: number; proposal: LtProposal | null; superseded: string | null; error: string | null; stale: boolean | null }> => {
+      const body = await r.json() as { proposal?: LtProposal; superseded?: string | null; error?: string; stale?: boolean };
+      return { status: r.status, proposal: body.proposal ?? null, superseded: body.superseded ?? null,
+        error: body.error ?? null, stale: body.stale ?? null };
+    };
+
+    // (1) A DECISION: appended by the MAIN, valid at once, with its author and time — a retry is a read
+    const ltDecisionText = "living text: the board renders the proposal, the server only stores it";
+    const ltDecision = await ltDecide(ltTok, { text: `  ${ltDecisionText}  ` });
+    const ltDecisionBody = await ltDecision.json() as { ok?: boolean; decision?: { index: number; text: string; at: number; by: LtActor } };
+    const ltDecisionAgain = await ltDecide(ltTok, { text: ltDecisionText });
+    const ltDecisionAgainBody = await ltDecisionAgain.json() as { existing?: boolean };
+    const ltStoredDecisions = storedProgram(ltProgram.id)?.decisions ?? [];
+    const ltDetail1 = await ltDetail();
+    const ltAuthored = ltDetail1.decisions.at(-1);
+    check("living text (1): the bound MAIN appends a decision to its active Program — it stands in decisions (trimmed) with by {slot, openedAt} and at, the confirmed ones carry no author, and a retry is existing:true without a second entry",
+      ltDecision.status === 200 && ltDecisionBody.ok === true
+        && JSON.stringify(ltStoredDecisions) === JSON.stringify([...content.decisions, ltDecisionText])
+        && ltDecisionBody.decision?.index === content.decisions.length
+        && ltAuthored?.text === ltDecisionText && ltAuthored.by?.slot === ltSlot && ltAuthored.by.openedAt === ltOpenedAt
+        && typeof ltAuthored.at === "number" && ltDetail1.decisions[0]?.by === null && ltDetail1.decisions[0]?.at === null
+        && ltDecisionAgain.status === 200 && ltDecisionAgainBody.existing === true,
+      JSON.stringify({ status: ltDecision.status, body: ltDecisionBody, again: ltDecisionAgain.status, stored: ltStoredDecisions, detail: ltDetail1.decisions }));
+
+    // (2) A PROPOSAL changes nothing: the valid text stays, the proposal stands open beside it with
+    // whole values for the changed fields only, and the poll carries the count
+    const ltIntent2 = "Keep the owner's intention durable — and let its text live while the Program runs.";
+    const ltNoReason = await ltPropose(ltTok, { intent: ltIntent2 });
+    const ltNoChange = await ltPropose(ltTok, { reason: "no change", intent: content.intent });
+    const ltP1 = await ltProposalOf(await ltPropose(ltTok, { reason: "the intent no longer says the text lives",
+      intent: ltIntent2, successCriterion: content.successCriterion }));
+    const ltRow1 = await ltRow();
+    check("living text (2): a proposal without a reason or without a change is 400; a real one stands OPEN at the Program — intent unchanged, proposalsOpen 1, the open proposal carries id, createdAt, author, reason, basedOn, current AND proposed of the changed field only, stale:false — and the list row carries no history records",
+      ltNoReason.status === 400 && ltNoChange.status === 400
+        && ltP1.status === 200 && ltP1.proposal?.status === "open" && /^[0-9a-f]{24}$/.test(ltP1.proposal.id)
+        && ltP1.proposal.by.slot === ltSlot && ltP1.proposal.by.openedAt === ltOpenedAt
+        && JSON.stringify(Object.keys(ltP1.proposal.proposed)) === JSON.stringify(["intent"])
+        && ltP1.proposal.proposed.intent === ltIntent2 && ltP1.proposal.current?.intent === content.intent
+        && ltP1.proposal.before.intent === content.intent && ltP1.proposal.stale === false
+        && ltRow1?.intent === content.intent && storedProgram(ltProgram.id)?.intent === content.intent
+        && ltRow1.proposalsOpen === 1 && ltRow1.textProposal?.id === ltP1.proposal.id
+        && !("decisionLog" in ltRow1) && !("textProposals" in ltRow1),
+      JSON.stringify({ noReason: ltNoReason.status, noChange: ltNoChange.status, p1: ltP1, row: ltRow1 }));
+
+    // (3) AT MOST ONE OPEN: a newer proposal supersedes; REJECT leaves the text and tells the MAIN why
+    const ltP2 = await ltProposalOf(await ltPropose(ltTok, { reason: "the criterion should name the board",
+      successCriterion: "The board shows the open proposal beside the valid text." }));
+    const ltReject = await ltProposalOf(await ltOwner({ id: ltP2.proposal?.id, decision: "reject", reason: "not yet — first the decisions" }));
+    const ltRejectAgain = await ltOwner({ id: ltP2.proposal?.id, decision: "reject" });
+    const ltConfirmSuperseded = await ltOwner({ id: ltP1.proposal?.id, decision: "confirm" });
+    const ltRow2 = await ltRow();
+    const ltInbox2 = await selfInbox(ltTok);
+    const ltRejectEntry = ltInbox2.view?.entries.find((e) => e.kind === "text-proposal" && e.ref === ltP2.proposal?.id);
+    const ltP1Stored = (await ltDetail()).decided.find((p) => p.id === ltP1.proposal?.id);
+    check("living text (3): a second proposal supersedes the first (readable as superseded); a REJECT leaves intent and successCriterion unchanged, a repeat is existing:true, confirming the superseded one is 409, and the MAIN's inbox carries a text-proposal entry whose subject names the owner's reason",
+      ltP2.status === 200 && ltP2.superseded === ltP1.proposal?.id
+        && ltP1Stored?.status === "superseded" && ltP1Stored.supersededBy === ltP2.proposal?.id
+        && ltReject.status === 200 && ltReject.proposal?.status === "rejected"
+        && ltReject.proposal.decisionReason === "not yet — first the decisions" && typeof ltReject.proposal.decidedAt === "number"
+        && ltRejectAgain.status === 200 && ltConfirmSuperseded.status === 409
+        && ltRow2?.intent === content.intent && ltRow2.successCriterion === content.successCriterion
+        && ltRow2.proposalsOpen === 0 && ltRow2.textProposal === null
+        && !!ltRejectEntry && ltRejectEntry.subject?.decisionReason === "not yet — first the decisions"
+        && ltRejectEntry.subject?.status === "rejected",
+      JSON.stringify({ p2: ltP2, reject: ltReject, again: ltRejectAgain.status, superseded: ltConfirmSuperseded.status,
+        p1: ltP1Stored ?? null, row: ltRow2, inbox: ltInbox2.view?.entries.map((e) => [e.kind, e.ref]) ?? ltInbox2.error }));
+
+    // (4) CONFIRM applies exactly the proposed fields; what held before stays readable on the proposal
+    const ltNonGoals3 = [...content.nonGoals, "Rendering a server-side diff"];
+    const ltP3 = await ltProposalOf(await ltPropose(ltTok, { reason: "the text lives now; say what it will not do",
+      intent: ltIntent2, nonGoals: ltNonGoals3 }));
+    const ltConfirm = await ltProposalOf(await ltOwner({ id: ltP3.proposal?.id, decision: "confirm" }));
+    const ltStored3 = storedProgram(ltProgram.id);
+    const ltDetail3 = await ltDetail();
+    const ltConfirmed = ltDetail3.decided.find((p) => p.id === ltP3.proposal?.id);
+    const ltInbox3 = await selfInbox(ltTok);
+    check("living text (4): a CONFIRM through the owner route applies intent and nonGoals and nothing else, the confirmed proposal keeps the replaced text in `before`, and the MAIN's inbox names it",
+      ltP3.status === 200 && ltConfirm.status === 200 && ltConfirm.proposal?.status === "confirmed"
+        && ltStored3?.intent === ltIntent2 && JSON.stringify(ltStored3.nonGoals) === JSON.stringify(ltNonGoals3)
+        && ltStored3.successCriterion === content.successCriterion
+        && JSON.stringify(ltDetail3.text.nonGoals) === JSON.stringify(ltNonGoals3)
+        && ltConfirmed?.before.intent === content.intent
+        && JSON.stringify(ltConfirmed.before.nonGoals) === JSON.stringify(content.nonGoals)
+        && !!ltInbox3.view?.entries.some((e) => e.kind === "text-proposal" && e.ref === ltP3.proposal?.id
+          && e.subject?.status === "confirmed"),
+      JSON.stringify({ p3: ltP3.status, confirm: ltConfirm, stored: ltStored3 && { intent: ltStored3.intent, nonGoals: ltStored3.nonGoals },
+        before: ltConfirmed?.before ?? null }));
+
+    // (5) STALE: the valid text moved under an open proposal (planted, since no other route writes it
+    // after activation) — the list says stale:true, confirm is 409 and overwrites nothing; both
+    // records survive the restart that plants it
+    const ltP4 = await ltProposalOf(await ltPropose(ltTok, { reason: "the criterion should name the board",
+      successCriterion: "The board shows the open proposal beside the valid text." }));
+    const ltMovedIntent = "An intent the MAIN never saw when it proposed.";
+    await stopSrv();
+    const ltPlant = readState();
+    const ltPlantRow = ltPlant.programs?.find((p) => p.id === ltProgram.id);
+    if (ltPlantRow) ltPlantRow.intent = ltMovedIntent;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(ltPlant, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const ltRow5 = await ltRow();
+    const ltStaleConfirm = await ltProposalOf(await ltOwner({ id: ltP4.proposal?.id, decision: "confirm" }));
+    const ltStored5 = storedProgram(ltProgram.id);
+    const ltDetail5 = await ltDetail();
+    check("living text (5): after the valid text moved, the open proposal reads stale:true, confirm answers 409 stale:true and overwrites nothing — and decisions with their author and the decided proposals survived the restart",
+      ltP4.status === 200 && ltRow5?.textProposal?.id === ltP4.proposal?.id && ltRow5?.textProposal?.stale === true
+        && ltStaleConfirm.status === 409 && ltStaleConfirm.stale === true
+        && ltStored5?.intent === ltMovedIntent && ltStored5.successCriterion === content.successCriterion
+        && ltDetail5.open?.id === ltP4.proposal?.id && ltDetail5.open?.status === "open"
+        && ltDetail5.decisions.at(-1)?.by?.slot === ltSlot
+        && ltDetail5.decided.some((p) => p.id === ltP3.proposal?.id && p.status === "confirmed"),
+      JSON.stringify({ row: ltRow5?.textProposal ?? null, confirm: ltStaleConfirm, stored: ltStored5 && { intent: ltStored5.intent,
+        successCriterion: ltStored5.successCriterion }, decided: ltDetail5.decided.map((p) => [p.id, p.status]) }));
+
+    // (6) A SESSION BOUND TO NOTHING meets 409 at BOTH MAIN doors, and nothing is written
+    const ltBefore = JSON.stringify(storedProgram(ltProgram.id));
+    const ltUnboundDecision = await ltDecide(ltProbeTok, { text: "unbound decision", programId: ltProgram.id });
+    const ltUnboundProposal = await ltPropose(ltProbeTok, { reason: "unbound", intent: "unbound intent", programId: ltProgram.id });
+    const ltNoOwner = await fetch(`${BASE}/api/programs/${ltProgram.id}/text-proposals`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": ltTok },
+      body: JSON.stringify({ id: ltP4.proposal?.id, decision: "confirm" }) });
+    check("living text (6): an unbound session gets 409 at program-decisions and program-text-proposals, the MAIN's own token is 401 at the owner route, and the Program is unchanged",
+      ltUnboundDecision.status === 409 && ltUnboundProposal.status === 409 && ltNoOwner.status === 401
+        && JSON.stringify(storedProgram(ltProgram.id)) === ltBefore,
+      JSON.stringify({ decision: ltUnboundDecision.status, proposal: ltUnboundProposal.status, owner: ltNoOwner.status }));
+
+    for (const slot of [ltProbeSlot, ltSlot]) if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
+    await programPost(ltProgram.id, "complete", { force: true });
+  }
 }

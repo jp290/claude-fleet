@@ -2312,6 +2312,19 @@ interface Program {
   // validated against the MAIN's integration HEAD); absent = every lane brief byte-identical to before.
   // An unreadable list loads as ABSENT; the Program itself stays.
   contextPacks?: ProgramContextPack[];
+  // WHO WROTE WHICH DECISION, AND WHEN (see ProgramDecisionLog). `decisions` stays the plain string
+  // list every content path compares; this record annotates the entries a bound MAIN APPENDED after
+  // activation, by index. Absent = no MAIN ever appended one — every proposed, confirmed or legacy
+  // decision carries no author, honestly. Written by exactly one route
+  // (POST /api/self/program-decisions); an unreadable record loads as ABSENT.
+  decisionLog?: ProgramDecisionLog;
+  // THE MAIN'S PROPOSALS TO CHANGE THE PROGRAM'S TEXT (see ProgramTextProposal) — intent,
+  // successCriterion and nonGoals stay the owner's after activation: a MAIN may PROPOSE a new text,
+  // and only the owner's text-proposals door applies it. Absent = nothing was ever proposed. Every
+  // decided proposal stays readable here, which is how the text that held before a confirm stays
+  // readable. Written by POST /api/self/program-text-proposals (append, supersede) and
+  // POST /api/programs/:id/text-proposals (decide); an unreadable record loads as ABSENT.
+  textProposals?: ProgramTextProposals;
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -2781,7 +2794,10 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
 // with an owner token that did not come from the board (LandActor.bypassed), which is a fact about
 // the Program and not about whoever held the pane at the time. That is why it belongs here rather
 // than in a FleetEvent: a succession retires the events, and this must outlive it.
-type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict";
+// `text-proposal` points at a ProgramTextProposal of the SAME Program by its id: the owner confirmed
+// or rejected what the MAIN proposed, and the reason (if any) rides on the proposal itself.
+type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict"
+  | "text-proposal";
 interface ProgramInboxEntry {
   id: string;                       // 24 hex, minted by appendProgramInbox
   kind: ProgramInboxKind;
@@ -2794,7 +2810,8 @@ interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
 // the cap is on the RECORD, so a hand-written file cannot make a Program carry an unbounded
 // history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
 const PROGRAM_INBOX_MAX = 100;
-const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict"];
+const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict",
+  "text-proposal"];
 const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
 const PROGRAM_INBOX_REF_MAX = 200;
 type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };
@@ -3549,6 +3566,152 @@ const foundingIdentityFrom = (value: unknown): ProgramFoundingIdentity | null =>
   return { ...occupant, selfTokenHash: r.selfTokenHash };
 };
 
+// === THE LIVING TEXT OF AN ACTIVE PROGRAM (owner 2026-10-06) ==================================
+// „[Zitat entfernt]“ Two different acts, two different records:
+// a DECISION the bound MAIN takes is appended by the MAIN itself (decisions + decisionLog); a new
+// TEXT for intent, successCriterion or nonGoals is only ever PROPOSED by the MAIN and applied by the
+// owner (textProposals). Both are closed, versioned and default-absent like the inbox: an unreadable
+// record is no record, never a repaired one.
+interface ProgramActor { slot: number; openedAt: number; sessionId: string | null }
+// `index` points into Program.decisions — stable because nothing rewrites that list after
+// activation, and the MAIN door is the only writer once the Program is active.
+interface ProgramDecisionEntry { index: number; at: number; by: ProgramActor }
+interface ProgramDecisionLog { v: 1; entries: ProgramDecisionEntry[] }
+type ProgramTextField = "intent" | "successCriterion" | "nonGoals";
+const PROGRAM_TEXT_FIELDS: readonly ProgramTextField[] = ["intent", "successCriterion", "nonGoals"];
+// only the fields a proposal CHANGES are present; nonGoals is always the whole array
+interface ProgramTextValues { intent?: string; successCriterion?: string; nonGoals?: string[] }
+const PROGRAM_TEXT_PROPOSAL_STATUSES = ["open", "confirmed", "rejected", "superseded"] as const;
+type ProgramTextProposalStatus = typeof PROGRAM_TEXT_PROPOSAL_STATUSES[number];
+interface ProgramTextProposal {
+  id: string;                         // 24 hex — the target of the owner's decide door
+  createdAt: number;
+  by: ProgramActor;                   // the bound MAIN occupation that proposed it
+  reason: string;                     // the MAIN's one obligatory sentence: why
+  basedOn: string;                    // programTextHash of the valid text when proposed
+  before: ProgramTextValues;          // the valid values of the changed fields when proposed
+  proposed: ProgramTextValues;        // the new values of exactly those fields
+  status: ProgramTextProposalStatus;
+  decidedAt: number | null;           // null exactly while open
+  decisionReason: string | null;      // the owner's optional reason (confirm/reject)
+  supersededBy: string | null;        // the newer proposal's id when superseded
+}
+interface ProgramTextProposals { v: 1; entries: ProgramTextProposal[]; dropped: number }
+const PROGRAM_DECISIONS_MAX = 200;
+const PROGRAM_TEXT_PROPOSALS_MAX = 50;
+const PROGRAM_TEXT_REASON_MAX = 1000;
+type ProgramDecisionLogRead = { ok: true; log: ProgramDecisionLog } | { ok: false; error: string };
+type ProgramTextProposalsRead = { ok: true; proposals: ProgramTextProposals } | { ok: false; error: string };
+const programActorFrom = (value: unknown): ProgramActor | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["slot", "openedAt", "sessionId"].includes(k)) || Object.keys(r).length !== 3) return null;
+  if (!Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS) return null;
+  if (typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || r.openedAt <= 0) return null;
+  if (r.sessionId !== null && typeof r.sessionId !== "string") return null;
+  return { slot: r.slot as number, openedAt: r.openedAt, sessionId: r.sessionId as string | null };
+};
+const loadProgramDecisionLog = (value: unknown, decisions: number): ProgramDecisionLogRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "entries"].includes(k)) || Object.keys(r).length !== 2)
+    return { ok: false, error: "must contain exactly v, entries" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (!Array.isArray(r.entries) || r.entries.length > PROGRAM_DECISIONS_MAX)
+    return { ok: false, error: `entries must be an array of at most ${PROGRAM_DECISIONS_MAX}` };
+  const entries: ProgramDecisionEntry[] = [];
+  const seen = new Set<number>();
+  for (let i = 0; i < r.entries.length; i++) {
+    const e = r.entries[i] as Record<string, unknown> | null;
+    if (!e || typeof e !== "object" || Array.isArray(e)
+      || Object.keys(e).some((k) => !["index", "at", "by"].includes(k)) || Object.keys(e).length !== 3)
+      return { ok: false, error: `entry ${i} must contain exactly index, at, by` };
+    // an index past the list would annotate a decision that does not exist — the list and its log
+    // disagree, and the log is the one that cannot be trusted
+    if (!Number.isInteger(e.index) || (e.index as number) < 0 || (e.index as number) >= decisions || seen.has(e.index as number))
+      return { ok: false, error: `entry ${i} index must name a distinct decision in 0..${decisions - 1}` };
+    if (typeof e.at !== "number" || !Number.isFinite(e.at) || e.at <= 0)
+      return { ok: false, error: `entry ${i} at must be a positive number` };
+    const by = programActorFrom(e.by);
+    if (!by) return { ok: false, error: `entry ${i} by must be {slot, openedAt, sessionId}` };
+    seen.add(e.index as number);
+    entries.push({ index: e.index as number, at: e.at, by });
+  }
+  return { ok: true, log: { v: 1, entries } };
+};
+const programTextValuesFrom = (value: unknown): ProgramTextValues | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !(PROGRAM_TEXT_FIELDS as readonly string[]).includes(k))) return null;
+  const out: ProgramTextValues = {};
+  for (const field of ["intent", "successCriterion"] as const)
+    if (field in r) {
+      if (typeof r[field] !== "string") return null;
+      out[field] = r[field] as string;
+    }
+  if ("nonGoals" in r) {
+    if (!Array.isArray(r.nonGoals) || r.nonGoals.some((g) => typeof g !== "string")) return null;
+    out.nonGoals = [...(r.nonGoals as string[])];
+  }
+  return out;
+};
+const PROGRAM_TEXT_PROPOSAL_KEYS = ["id", "createdAt", "by", "reason", "basedOn", "before", "proposed",
+  "status", "decidedAt", "decisionReason", "supersededBy"];
+const loadProgramTextProposals = (value: unknown): ProgramTextProposalsRead => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "must be an object" };
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["v", "entries", "dropped"].includes(k)) || Object.keys(r).length !== 3)
+    return { ok: false, error: "must contain exactly v, entries, dropped" };
+  if (r.v !== 1) return { ok: false, error: "v must be 1" };
+  if (!Array.isArray(r.entries) || r.entries.length > PROGRAM_TEXT_PROPOSALS_MAX)
+    return { ok: false, error: `entries must be an array of at most ${PROGRAM_TEXT_PROPOSALS_MAX}` };
+  if (!Number.isInteger(r.dropped) || (r.dropped as number) < 0)
+    return { ok: false, error: "dropped must be a non-negative integer" };
+  const entries: ProgramTextProposal[] = [];
+  const ids = new Set<string>();
+  for (let i = 0; i < r.entries.length; i++) {
+    const e = r.entries[i] as Record<string, unknown> | null;
+    if (!e || typeof e !== "object" || Array.isArray(e)
+      || Object.keys(e).some((k) => !PROGRAM_TEXT_PROPOSAL_KEYS.includes(k))
+      || Object.keys(e).length !== PROGRAM_TEXT_PROPOSAL_KEYS.length)
+      return { ok: false, error: `entry ${i} must contain exactly ${PROGRAM_TEXT_PROPOSAL_KEYS.join(", ")}` };
+    if (typeof e.id !== "string" || !/^[0-9a-f]{24}$/.test(e.id) || ids.has(e.id))
+      return { ok: false, error: `entry ${i} id must be 24 distinct hex characters` };
+    if (typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0)
+      return { ok: false, error: `entry ${i} createdAt must be a positive number` };
+    const by = programActorFrom(e.by);
+    if (!by) return { ok: false, error: `entry ${i} by must be {slot, openedAt, sessionId}` };
+    if (typeof e.reason !== "string" || !e.reason || e.reason.length > PROGRAM_TEXT_REASON_MAX)
+      return { ok: false, error: `entry ${i} reason must be 1–${PROGRAM_TEXT_REASON_MAX} chars` };
+    if (typeof e.basedOn !== "string" || !/^[0-9a-f]{16,64}$/.test(e.basedOn))
+      return { ok: false, error: `entry ${i} basedOn must be a hex hash` };
+    const before = programTextValuesFrom(e.before);
+    const proposed = programTextValuesFrom(e.proposed);
+    if (!before || !proposed || Object.keys(proposed).length === 0
+      || JSON.stringify(Object.keys(before).sort()) !== JSON.stringify(Object.keys(proposed).sort()))
+      return { ok: false, error: `entry ${i} before and proposed must name the same non-empty set of text fields` };
+    if (typeof e.status !== "string" || !(PROGRAM_TEXT_PROPOSAL_STATUSES as readonly string[]).includes(e.status))
+      return { ok: false, error: `entry ${i} status must be one of ${PROGRAM_TEXT_PROPOSAL_STATUSES.join(", ")}` };
+    const open = e.status === "open";
+    if (open ? e.decidedAt !== null : typeof e.decidedAt !== "number" || !Number.isFinite(e.decidedAt) || e.decidedAt <= 0)
+      return { ok: false, error: `entry ${i} decidedAt must be null exactly while open` };
+    if (e.decisionReason !== null && (typeof e.decisionReason !== "string" || e.decisionReason.length > PROGRAM_TEXT_REASON_MAX))
+      return { ok: false, error: `entry ${i} decisionReason must be a string of at most ${PROGRAM_TEXT_REASON_MAX} chars or null` };
+    if ((e.status === "superseded") !== (typeof e.supersededBy === "string" && /^[0-9a-f]{24}$/.test(e.supersededBy))
+      || (e.status !== "superseded" && e.supersededBy !== null))
+      return { ok: false, error: `entry ${i} supersededBy must name a proposal exactly when superseded` };
+    ids.add(e.id);
+    entries.push({ id: e.id, createdAt: e.createdAt, by, reason: e.reason, basedOn: e.basedOn, before, proposed,
+      status: e.status as ProgramTextProposalStatus, decidedAt: e.decidedAt as number | null,
+      decisionReason: e.decisionReason as string | null, supersededBy: e.supersededBy as string | null });
+  }
+  // AT MOST ONE OPEN — the invariant the decide door and the poll count rest on. Two open rows are
+  // a record nobody can decide unambiguously, so it is no record.
+  if (entries.filter((e) => e.status === "open").length > 1)
+    return { ok: false, error: "at most one proposal may be open" };
+  return { ok: true, proposals: { v: 1, entries, dropped: r.dropped as number } };
+};
+
 // The seven proposable fields PLUS the wish — and the wish is in here rather than beside it so the
 // ONE correction path the owner already has (confirm merges its body over the stored proposal)
 // carries it too. A second merge path for one optional field is a second place to forget it.
@@ -3575,6 +3738,8 @@ export type {
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
   ProgramInboxKind, ProgramInboxEntry, ProgramInbox, ProgramInboxRead,
+  ProgramActor, ProgramDecisionEntry, ProgramDecisionLog, ProgramTextField, ProgramTextValues,
+  ProgramTextProposalStatus, ProgramTextProposal, ProgramTextProposals,
   MessageRole, MessageAddress, MessagePayload, Message, Messages, MessagesRead,
   ProgramHandoverKind, ProgramHandoverDetail, ProgramHandoverObligation, ProgramHandover,
   ProgramHandoverSettledHow, ProgramHandoverSettled, ProgramHandoverLost,
@@ -3607,6 +3772,8 @@ export {
   PROGRAM_INBOX_MAX, PROGRAM_INBOX_KINDS, PROGRAM_INBOX_ENTRY_KEYS, PROGRAM_INBOX_REF_MAX,
   PROGRAM_RECORD_LOSS_ERROR_MAX,
   loadProgramInboxEntry, loadProgramInbox,
+  PROGRAM_TEXT_FIELDS, PROGRAM_TEXT_PROPOSAL_STATUSES, PROGRAM_DECISIONS_MAX, PROGRAM_TEXT_PROPOSALS_MAX,
+  PROGRAM_TEXT_REASON_MAX, loadProgramDecisionLog, loadProgramTextProposals,
   MESSAGE_ROLES, MESSAGE_PAYLOAD_KINDS, MESSAGE_ENTRY_KEYS, MESSAGE_IDEMPOTENCY_KEY_MAX,
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS, PROGRAM_HANDOVER_SETTLED_HOWS,

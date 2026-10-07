@@ -122,6 +122,10 @@ import {
   PROGRAM_STATUSES, PROMOTION_SELF_LAND, loadPromotion, loadPromotionRequest, PROGRAM_PROFILE_KINDS, loadProgramProfile,
   PROGRAM_LINEAGE_MAX, loadProgramLineage, foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_INBOX_MAX, loadProgramInbox, type ProgramRecordLoss, loadProgramRecordLoss,
+  PROGRAM_TEXT_FIELDS, PROGRAM_DECISIONS_MAX, PROGRAM_TEXT_PROPOSALS_MAX, PROGRAM_TEXT_REASON_MAX,
+  loadProgramDecisionLog, loadProgramTextProposals,
+  type ProgramActor, type ProgramDecisionLog, type ProgramTextProposals, type ProgramTextProposal,
+  type ProgramTextValues,
   MESSAGES_MAX, loadMessages, MESSAGE_IDEMPOTENCY_KEY_MAX,
   type Message, type Messages, type MessageAddress, type MessagePayload,
   loadMessageAddress, loadMessagePayload,
@@ -2762,10 +2766,13 @@ function validateProgramContent(raw: unknown): ProgramValidation {
     if (trimmed.length > max) return { ok: false, error: `${field} must be at most ${max} chars` };
     return trimmed;
   };
-  const array = (field: "nonGoals" | "decisions" | "evidence" | "openQuestions", max: number): string[] | ProgramValidation => {
+  // `decisions` alone grows past 20: a bound MAIN appends to it for the Program's whole life
+  // (POST /api/self/program-decisions), and a loader that refused the 21st would drop the Program
+  const array = (field: "nonGoals" | "decisions" | "evidence" | "openQuestions", max: number,
+    maxItems = 20): string[] | ProgramValidation => {
     const value = body[field];
     if (!Array.isArray(value)) return { ok: false, error: `${field} must be an array` };
-    if (value.length > 20) return { ok: false, error: `${field} must contain at most 20 items` };
+    if (value.length > maxItems) return { ok: false, error: `${field} must contain at most ${maxItems} items` };
     const out: string[] = [];
     for (let i = 0; i < value.length; i++) {
       if (typeof value[i] !== "string") return { ok: false, error: `${field}[${i}] must be a string` };
@@ -2781,7 +2788,7 @@ function validateProgramContent(raw: unknown): ProgramValidation {
   const successCriterion = scalar("successCriterion", 4000);
   if (typeof successCriterion !== "string") return successCriterion;
   const nonGoals = array("nonGoals", 500); if (!Array.isArray(nonGoals)) return nonGoals;
-  const decisions = array("decisions", 500); if (!Array.isArray(decisions)) return decisions;
+  const decisions = array("decisions", 500, PROGRAM_DECISIONS_MAX); if (!Array.isArray(decisions)) return decisions;
   const evidence = array("evidence", 300); if (!Array.isArray(evidence)) return evidence;
   const openQuestions = array("openQuestions", 500); if (!Array.isArray(openQuestions)) return openQuestions;
   // THE WISH IS NOT VALIDATED, IT IS READ — and the difference is the whole safety property. Every
@@ -2817,6 +2824,49 @@ const contentWithoutWish = (c: ProgramContent): Omit<ProgramContent, "promotionR
 const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind === "session"
   && p.proposedBy.slot === s.id && p.proposedBy.openedAt === s.openedAt
   && p.proposedBy.sessionId === s.sessionId;
+// === THE LIVING TEXT: hash, projection, and the one writer of each record =====================
+// `basedOn` of a proposal is this hash of the WHOLE valid text (all three fields), so a change to
+// any of them since the proposal makes it stale — conservative on purpose: a nonGoals edit can
+// change what a new intent means.
+const programTextHash = (p: Pick<Program, "intent" | "successCriterion" | "nonGoals">): string =>
+  createHash("sha256").update(JSON.stringify([p.intent, p.successCriterion, p.nonGoals])).digest("hex").slice(0, 16);
+const programTextValuesOf = (p: Program, fields: readonly string[]): ProgramTextValues => {
+  const out: ProgramTextValues = {};
+  if (fields.includes("intent")) out.intent = p.intent;
+  if (fields.includes("successCriterion")) out.successCriterion = p.successCriterion;
+  if (fields.includes("nonGoals")) out.nonGoals = [...p.nonGoals];
+  return out;
+};
+// THE WIRE SHAPE of one proposal: the stored record plus its Program, plus — only while OPEN — the
+// LIVE valid values of the changed fields (`current`) and whether they moved since (`stale`). A
+// decided proposal keeps `before` as the text that held when it was made; for a confirmed one that
+// is exactly the text the confirm replaced.
+const publicTextProposal = (p: Program, e: ProgramTextProposal): Record<string, unknown> => ({
+  ...e, programId: p.id,
+  ...(e.status === "open"
+    ? { current: programTextValuesOf(p, Object.keys(e.proposed)), stale: programTextHash(p) !== e.basedOn }
+    : { current: null, stale: null }),
+});
+const openTextProposal = (p: Program): ProgramTextProposal | undefined =>
+  p.textProposals?.entries.find((e) => e.status === "open");
+// THE ONE WRITER of `textProposals` — every append and every decision goes through here. Capped
+// like the inbox: past PROGRAM_TEXT_PROPOSALS_MAX the oldest DECIDED entry goes (never the open
+// one), and `dropped` counts it. The caller saves.
+function writeProgramTextProposals(p: Program, entries: ProgramTextProposal[]): void {
+  let kept = entries;
+  let dropped = p.textProposals?.dropped ?? 0;
+  while (kept.length > PROGRAM_TEXT_PROPOSALS_MAX) {
+    const idx = kept.findIndex((e) => e.status !== "open");
+    kept = kept.filter((_, i) => i !== idx);
+    dropped++;
+  }
+  p.textProposals = { v: 1, entries: kept, dropped };
+}
+const decisionsWithAuthors = (p: Program): { index: number; text: string; at: number | null; by: ProgramActor | null }[] => {
+  const log = new Map((p.decisionLog?.entries ?? []).map((e) => [e.index, e]));
+  return p.decisions.map((text, index) => ({ index, text, at: log.get(index)?.at ?? null, by: log.get(index)?.by ?? null }));
+};
+
 let programs: Program[] = [];
 let studios: Studio[] = [];
 const programBootstrapInflight = new Set<string>();
@@ -2883,10 +2933,17 @@ const publicProgram = (program: Program): Record<string, unknown> => ({ ...progr
 // number keeps their intent ("the full row is fat") sharper than an `Array.isArray` ever did.
 // This is the LIST only. Every other publicProgram callsite keeps the full shape by design —
 // /api/self/programs above all, where a pane reads the content itself (e2e/programs.ts).
+// The two living-text records follow the same rule: the list carries `proposalsOpen` (0 or 1, the
+// cheap count a poll reads) and the OPEN proposal itself, which is at most one per Program and rare
+// — it is the one thing the board must show beside the valid text. History and authored decisions
+// stay on GET /api/programs/:id/text-proposals.
 const publicProgramListRow = (program: Program): Record<string, unknown> => {
   const { nonGoals: _nonGoals, decisions: _decisions, evidence: _evidence,
-    openQuestions: _openQuestions, ...rest } = publicProgram(program);
-  return { ...rest, evidenceCount: program.evidence.length };
+    openQuestions: _openQuestions, decisionLog: _decisionLog, textProposals: _textProposals,
+    ...rest } = publicProgram(program);
+  const open = openTextProposal(program);
+  return { ...rest, evidenceCount: program.evidence.length,
+    proposalsOpen: open ? 1 : 0, textProposal: open ? publicTextProposal(program, open) : null };
 };
 const foundingAffected = (founding: ProgramFounding): { attemptId: string; slot: number; openedAt: number } => ({
   attemptId: founding.attemptId, slot: founding.target.slot, openedAt: founding.target.openedAt,
@@ -15961,8 +16018,16 @@ function inboxJoinCtx(): InboxJoinCtx {
   };
 }
 
-async function inboxSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx):
-    Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | AuditRedSubject | { taskId: string; gaps: string[] } | null; unknown: string | null }> {
+async function inboxSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx, program: Program):
+    Promise<{ subject: AttentionRequest | FleetReport | AmbientLandSubject | AuditRedSubject | { taskId: string; gaps: string[] } | Record<string, unknown> | null; unknown: string | null }> {
+  // the owner's verdict on this Program's own text proposal: the subject IS the proposal, with its
+  // status, decidedAt and the owner's reason — joined from the Program, never copied into the entry
+  if (e.kind === "text-proposal") {
+    const proposal = program.textProposals?.entries.find((x) => x.id === e.ref);
+    return proposal
+      ? { subject: publicTextProposal(program, proposal), unknown: null }
+      : { subject: null, unknown: `entry ${e.id} names a text proposal no longer present (retention)` };
+  }
   if (e.kind === "card-verdict") {
     const task = tasks.find((t) => t.id === e.ref);
     return task?.card
@@ -15999,7 +16064,7 @@ async function programInboxView(program: Program): Promise<Record<string, unknow
   const entries = [];
   const ctx = inboxJoinCtx();
   for (const e of [...inbox.entries].sort((a, b) => b.at - a.at)) {
-    const joined = await inboxSubject(e, ctx);
+    const joined = await inboxSubject(e, ctx, program);
     if (joined.unknown !== null) unknown.push(joined.unknown);
     entries.push({ ...e, subject: joined.subject });
   }
@@ -39127,6 +39192,74 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     if (req.method !== "POST") return json({ error: "bad request" }, 400);
     return releaseValidForOwner(program, await readJson(req));
   }
+  // THE PROGRAM'S LIVING TEXT, OWNER half (docs/self-api.md §program-text). GET reads the valid
+  // text beside the open proposal, the decided ones and the authored decisions; POST decides ONE
+  // open proposal: {"id": "<proposal>", "decision": "confirm"|"reject", "reason"?: "…"}. A confirm
+  // applies the proposed fields — and refuses with 409 when the valid text moved since the proposal
+  // (`stale`), because applying it then would silently overwrite a text the MAIN never saw. Either
+  // verdict reaches the Program's MAIN as a `text-proposal` inbox entry.
+  const textProposalRoute = /^\/api\/programs\/([^/]+)\/text-proposals$/.exec(url.pathname);
+  if (textProposalRoute) {
+    const program = programs.find((p) => p.id === textProposalRoute[1]);
+    if (!program) return json({ error: "unknown program" }, 404);
+    const entries = program.textProposals?.entries ?? [];
+    if (req.method === "GET") {
+      const open = openTextProposal(program);
+      return json({ id: program.id, status: program.status,
+        text: { intent: program.intent, successCriterion: program.successCriterion, nonGoals: program.nonGoals },
+        basedOn: programTextHash(program), decisions: decisionsWithAuthors(program),
+        open: open ? publicTextProposal(program, open) : null,
+        decided: entries.filter((e) => e.status !== "open")
+          .sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0)).map((e) => publicTextProposal(program, e)),
+        dropped: program.textProposals?.dropped ?? 0 });
+    }
+    if (req.method !== "POST") return json({ error: "bad request" }, 400);
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+    const extra = Object.keys(body).filter((k) => !["id", "decision", "reason"].includes(k));
+    if (extra.length)
+      return json({ error: `this door reads id, decision, reason only — [${extra.join(", ")}] is not read` }, 400);
+    if (body.decision !== "confirm" && body.decision !== "reject")
+      return json({ error: 'decision must be "confirm" or "reject"' }, 400);
+    if (typeof body.id !== "string" || !/^[0-9a-f]{24}$/.test(body.id))
+      return json({ error: "id must name a text proposal of this program" }, 400);
+    if (body.reason !== undefined && body.reason !== null && typeof body.reason !== "string")
+      return json({ error: "reason must be a string" }, 400);
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+    if (reason !== null && reason.length > PROGRAM_TEXT_REASON_MAX)
+      return json({ error: `reason must be at most ${PROGRAM_TEXT_REASON_MAX} chars` }, 400);
+    const decision = body.decision;
+    const proposal = entries.find((e) => e.id === body.id);
+    if (!proposal) return json({ error: "unknown text proposal" }, 404);
+    if (proposal.status !== "open") {
+      // the same verdict again is a read of the one that landed; anything else is a different act
+      if (proposal.status === (decision === "confirm" ? "confirmed" : "rejected"))
+        return json({ ok: true, existing: true, id: program.id, proposal: publicTextProposal(program, proposal) });
+      return json({ error: `text proposal ${proposal.id} is ${proposal.status} — only an open proposal is decided`,
+        proposal: publicTextProposal(program, proposal) }, 409);
+    }
+    if (decision === "confirm") {
+      if (program.status !== "active")
+        return json({ error: `cannot apply a text proposal to a ${program.status} program` }, 409);
+      if (programTextHash(program) !== proposal.basedOn)
+        return json({ error: "the valid text changed since this proposal was made — confirming it would overwrite that change. Reject it; the MAIN proposes again against the current text",
+          stale: true, basedOn: proposal.basedOn, current: programTextHash(program),
+          proposal: publicTextProposal(program, proposal) }, 409);
+      const valid = validateProgramContent({ ...programContent(program), ...proposal.proposed });
+      if (!valid.ok) return json({ error: `the proposal no longer validates: ${valid.error}` }, 409);
+      if (proposal.proposed.intent !== undefined) program.intent = valid.content.intent;
+      if (proposal.proposed.successCriterion !== undefined) program.successCriterion = valid.content.successCriterion;
+      if (proposal.proposed.nonGoals !== undefined) program.nonGoals = valid.content.nonGoals;
+    }
+    const decided: ProgramTextProposal = { ...proposal, status: decision === "confirm" ? "confirmed" : "rejected",
+      decidedAt: Date.now(), decisionReason: reason };
+    writeProgramTextProposals(program, entries.map((e) => e === proposal ? decided : e));
+    appendProgramInbox(program, "text-proposal", proposal.id);
+    audit("program_text_proposal" as Parameters<typeof audit>[0], undefined,
+      `${program.id} ${proposal.id} ${decided.status}`);
+    await saveStateNow();
+    return json({ ok: true, id: program.id, proposal: publicTextProposal(program, decided) });
+  }
   const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard|bootstrap-main)$/.exec(url.pathname);
   if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
   const program = programs.find((p) => p.id === action[1]);
@@ -39985,6 +40118,20 @@ if (existsSync(STATE_FILE)) {
           if (read) contextPacks = read;
           else console.error(`Program ${x.id} contextPacks unreadable — loaded as absent`);
         }
+        // the living text: SHAPE at load, default-absent, unreadable → ABSENT and said out loud. The
+        // Program stays — a lost annotation or proposal history must never cost the bracket.
+        let decisionLog: ProgramDecisionLog | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "decisionLog")) {
+          const read = loadProgramDecisionLog(x.decisionLog, valid.content.decisions.length);
+          if (read.ok) decisionLog = read.log;
+          else console.error(`Program ${x.id} decisionLog unreadable (${read.error}) — loaded as absent`);
+        }
+        let textProposals: ProgramTextProposals | undefined;
+        if (Object.prototype.hasOwnProperty.call(x, "textProposals")) {
+          const read = loadProgramTextProposals(x.textProposals);
+          if (read.ok) textProposals = read.proposals;
+          else console.error(`Program ${x.id} textProposals unreadable (${read.error}) — loaded as absent`);
+        }
         let founding: ProgramFounding | undefined;
         if (foundingRead?.ok) {
           const markerProfile = foundingProfileKind(foundingRead.founding);
@@ -40020,6 +40167,8 @@ if (existsSync(STATE_FILE)) {
           ...(handover ? { handover } : {}),
           ...(handoverLost ? { handoverLost } : {}),
           ...(contextPacks && contextPacks.length > 0 ? { contextPacks } : {}),
+          ...(decisionLog ? { decisionLog } : {}),
+          ...(textProposals ? { textProposals } : {}),
           ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
           ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
@@ -44107,6 +44256,96 @@ Bun.serve<WSData>({
       return json({ ok: true, contextPacks: program.contextPacks ?? [], head });
     }
 
+    // THE PROGRAM'S LIVING TEXT, MAIN half (docs/self-api.md §program-text; owner 2026-10-06: „[Zitat entfernt]“
+    // 
+    // ). Two doors, one gate: the bound MAIN of an active Program. A decision
+    // is APPENDED here and is valid at once; a text is only PROPOSED here and changes nothing until
+    // the owner confirms it on POST /api/programs/:id/text-proposals.
+    if ((url.pathname === "/api/self/program-decisions" || url.pathname === "/api/self/program-text-proposals")
+      && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const decisionDoor = url.pathname === "/api/self/program-decisions";
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: decisionDoor
+          ? "a lane cannot write its Program's decisions — its MAIN does"
+          : "a lane cannot propose its Program's text — its MAIN does" }, 409);
+      const binding = mainBindingOf(s);
+      if (!binding.ok) return json({ error: binding.error }, 409);
+      const body = await readJson(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid json" }, 400);
+      const readable: string[] = decisionDoor ? ["text", "programId"] : ["reason", "programId", ...PROGRAM_TEXT_FIELDS];
+      const extra = Object.keys(body).filter((k) => !readable.includes(k));
+      if (extra.length)
+        return json({ error: `this door reads ${readable.join(", ")} only — [${extra.join(", ")}] is not read` }, 400);
+      const choice = programChoiceOf(body.programId);
+      if (!choice.ok) return json({ error: choice.error }, 400);
+      // re-derived after the body await: the binding answers for THIS moment, never the one before it
+      const bound = boundProgramForMain(s, choice.programId);
+      if (!bound.ok) return json({ error: bound.error }, 409);
+      const program = bound.program;
+      const by: ProgramActor = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+      const sameActor = (a: ProgramActor): boolean => a.slot === by.slot && a.openedAt === by.openedAt;
+      if (decisionDoor) {
+        const text = typeof body.text === "string" ? body.text.trim() : "";
+        if (!text || text.length > 500) return json({ error: "text must be 1–500 chars" }, 400);
+        // a retried POST is a read of the append that already happened: same text, same occupant,
+        // still the newest decision
+        const last = program.decisions.length - 1;
+        const lastLog = program.decisionLog?.entries.find((e) => e.index === last);
+        if (last >= 0 && program.decisions[last] === text && lastLog && sameActor(lastLog.by))
+          return json({ ok: true, existing: true, programId: program.id,
+            decision: { index: last, text, at: lastLog.at, by: lastLog.by } });
+        if (program.decisions.length >= PROGRAM_DECISIONS_MAX)
+          return json({ error: `program ${program.id} already holds ${PROGRAM_DECISIONS_MAX} decisions — the cap of the record` }, 409);
+        const at = Date.now();
+        program.decisions = [...program.decisions, text];
+        const index = program.decisions.length - 1;
+        const log: ProgramDecisionLog = { v: 1, entries: [...(program.decisionLog?.entries ?? []), { index, at, by }] };
+        program.decisionLog = log;
+        audit("program_decision" as Parameters<typeof audit>[0], s.id, `${program.id} #${index}`);
+        await saveStateNow();
+        return json({ ok: true, programId: program.id, decision: { index, text, at, by } });
+      }
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (!reason || reason.length > PROGRAM_TEXT_REASON_MAX)
+        return json({ error: `reason is required — one sentence why, 1–${PROGRAM_TEXT_REASON_MAX} chars` }, 400);
+      const named = PROGRAM_TEXT_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(body, f));
+      if (!named.length) return json({ error: `name at least one of ${PROGRAM_TEXT_FIELDS.join(", ")}` }, 400);
+      // the ONE content boundary again: a proposed text is held to exactly the limits the valid one is
+      const merged: Record<string, unknown> = { ...programContent(program) };
+      for (const f of named) merged[f] = body[f];
+      const valid = validateProgramContent(merged);
+      if (!valid.ok) return json({ error: valid.error }, 400);
+      const changed = named.filter((f) => JSON.stringify(valid.content[f]) !== JSON.stringify(program[f]));
+      if (!changed.length)
+        return json({ error: "nothing changes — every named field equals the valid text" }, 400);
+      const proposed: ProgramTextValues = {};
+      for (const f of changed) {
+        if (f === "nonGoals") proposed.nonGoals = [...valid.content.nonGoals];
+        else proposed[f] = valid.content[f];
+      }
+      const open = openTextProposal(program);
+      if (open && sameActor(open.by) && open.reason === reason
+        && JSON.stringify(open.proposed) === JSON.stringify(proposed))
+        return json({ ok: true, existing: true, programId: program.id,
+          proposal: publicTextProposal(program, open), superseded: null });
+      // AT MOST ONE OPEN: a newer proposal supersedes the open one, which stays readable as such
+      const at = Date.now();
+      const id = randomBytes(12).toString("hex");
+      const entry: ProgramTextProposal = { id, createdAt: at, by, reason, basedOn: programTextHash(program),
+        before: programTextValuesOf(program, changed), proposed, status: "open", decidedAt: null,
+        decisionReason: null, supersededBy: null };
+      writeProgramTextProposals(program, [...(program.textProposals?.entries ?? []).map((e): ProgramTextProposal => e === open
+        ? { ...e, status: "superseded", decidedAt: at, supersededBy: id } : e), entry]);
+      audit("program_text_proposal" as Parameters<typeof audit>[0], s.id,
+        `${program.id} ${id} open [${changed.join(",")}]${open ? ` supersedes ${open.id}` : ""}`);
+      await saveStateNow();
+      return json({ ok: true, programId: program.id, proposal: publicTextProposal(program, entry),
+        superseded: open?.id ?? null });
+    }
+
 
 
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
@@ -45126,7 +45365,7 @@ Bun.serve<WSData>({
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid|text-proposals))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
     }

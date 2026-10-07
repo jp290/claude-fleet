@@ -3615,7 +3615,7 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("the attended dispatch carries model+harness+effort+browser+context+permissions, while the tick default keeps all three null and no browser or context",
     /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null; browser\?: true;\s+context\?: SlotContext; permissions\?: SlotPermissions \};/.test(server)
     && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
-    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, spawn\.permissions, \[next, \.\.\.\(wave\?\.followers \?\? \[\]\)\]\.some\(\(t\) =>\s+t\.card\?\.valid === true && t\.card\.web === "search"\)\)/.test(dBody),
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort, NO_BOX, null, spawn\.browser === true,\s+spawn\.context \?\? null, false, spawn\.permissions, \[next, \.\.\.\(wave\?\.followers \?\? \[\]\)\]\.some\(\(t\) =>\s+t\.card\?\.valid === true && t\.card\.web === "search"\), null, undefined, context\.sessionAgents\)/.test(dBody),
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
@@ -7992,7 +7992,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && !/LANE_ROLE_CARD|laneExitFooter|memoryBlock/.test(foundingBrief)
       && foundingBrief.includes("${context.anchorBlock}")
       && /footer: footer \?\? \(position === "lane" \? laneExitFooter\(harness, null\)/.test(server)
-      && server.includes('await writeLaneSessionAgents(wt.path, context.sessionAgents);'), foundingBrief);
+      && server.includes('t.card?.valid === true && t.card.web === "search"), null, undefined, context.sessionAgents);')
+      && server.includes('await ensureSlot(s, "open", preparedLaneAgents);')
+      && server.includes('await writeLaneSessionAgents(occupant.cwd, agents, current);'), foundingBrief);
 
 }
 
@@ -8476,7 +8478,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "v2 profile/root/hashed occupant schema or raw-token exclusion is missing");
   const markerSaveAt = persistBody.indexOf("await saveStateNow()");
   const slotSaveAt = openBody.indexOf("await saveStateNow()");
-  const ensureAt = openBody.indexOf('await ensureSlot(s, "open")');
+  const ensureAt = openBody.indexOf('await ensureSlot(s, "open", preparedLaneAgents)');
   pin(`${RULE_FOUNDING_V2} — marker save precedes open and the exact Slot row is durable before tmux`,
     markerSaveAt >= 0
       && bootstrapBody.indexOf("await persistProgramFounding") < bootstrapBody.indexOf("await openSlot")

@@ -1,6 +1,6 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents } from "./session-agents";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
@@ -7513,10 +7513,13 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
   } catch { /* see above: a dirty lane beats a spawn that throws */ }
 }
 
-async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents): Promise<void> {
+async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents,
+  current: () => boolean): Promise<void> {
   const tracked = await git(lanePath, "ls-files", "--", "AGENTS.override.md", "CLAUDE.local.md");
+  if (!current()) return;
   if (tracked.code !== 0 || tracked.out) throw new Error("session rule paths must be untracked");
   const exclude = await git(lanePath, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude");
+  if (!current()) return;
   if (exclude.code !== 0 || !exclude.out) throw new Error("could not resolve lane info/exclude");
   const previous = existsSync(exclude.out) ? readFileSync(exclude.out, "utf8") : "";
   const have = new Set(previous.split("\n").map((line) => line.trim()));
@@ -9261,9 +9264,9 @@ async function waitForSlotPostCaptureTestLatch(occupant: SlotSpawnOccupant,
   while (!existsSync(`${SLOT_POST_CAPTURE_LATCH}.release`)) await Bun.sleep(20);
 }
 
-// Only the irreducible tmux new-session await and its state commit are serialized. Teardown waits
-// for this promise before clearing/recycling the occupant, so a successful old spawn cannot finish
-// behind the new occupant. This is not a general slot lock: capture, pipe and repaint stay outside.
+// Session-rule preparation, tmux new-session and its state commit are serialized. Teardown waits
+// for this promise before clearing/recycling the occupant, so an old rule write or spawn cannot
+// finish behind the new occupant. Capture, pipe and repaint stay outside this barrier.
 const slotSpawnInflight = new Map<number, Promise<void>>();
 async function waitForSlotSpawn(slot: number): Promise<void> {
   const pending = slotSpawnInflight.get(slot);
@@ -9305,7 +9308,8 @@ function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "o
 
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
-async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal"): Promise<void> {
+async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal",
+  preparedLaneAgents?: SessionAgents): Promise<void> {
   if (slotTeardownInflight.has(s.id)) return;
   // ASLEEP ON PURPOSE (sleepSlot): the absent pane is the state, not damage. Every caller — the 2 s
   // self-heal first of all — must leave it absent; only wakeSlot clears the mark and then calls here.
@@ -9337,29 +9341,6 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     // RESUME when the harness's own conversation evidence still exists (transcript .jsonl, pi's
     // create-or-attach id, codex's exact rollout file) — asking claude's question of another
     // harness loses work. Narrativ: server-narrativ-archiv.md#ensureslot
-    let projectDocMaxBytes: number | undefined;
-    try {
-      if (s.worktree && !existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
-        const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
-        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-        if (!planned.ok) throw new Error(planned.error);
-        const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
-        if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
-        const agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
-          occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
-        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-        await writeLaneSessionAgents(occupant.cwd, agents);
-        if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-      }
-      const projectBytes = s.worktree ? Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`)) : 0;
-      projectDocMaxBytes = s.worktree && projectBytes > SESSION_AGENTS_LIMIT ? projectBytes : undefined;
-    } catch (e) {
-      if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
-      const message = e instanceof Error ? e.message : String(e);
-      console.error(`slot ${s.id}: session rules unavailable; spawn refused (${cause}): ${message}`);
-      if (cause !== "heal") throw new Error(`session rules unavailable: ${message}`);
-      return;
-    }
     const codex = h.id === "codex";
     const priorSessionId = occupant.sessionId;
     const priorCodexState = s.codexRecoveryState;
@@ -9405,6 +9386,35 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
     let spawn: Promise<void>;
     spawn = (async () => {
+      let projectDocMaxBytes: number | undefined;
+      const rulesOccupant = occupant;
+      const current = (): boolean => sameSlotSpawnOccupant(s, rulesOccupant) && !slotTeardownInflight.has(s.id);
+      try {
+        if (s.worktree) {
+          let agents = preparedLaneAgents;
+          if (!agents) {
+            const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+            if (!current()) return;
+            if (!planned.ok) throw new Error(planned.error);
+            const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
+            if (!current()) return;
+            if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
+            agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
+              occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+            if (!current()) return;
+          }
+          await writeLaneSessionAgents(occupant.cwd, agents, current);
+          if (!current()) return;
+          projectDocMaxBytes = agents.projectDocMaxBytes;
+        }
+      } catch (e) {
+        if (!current()) return;
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`slot ${s.id}: session rules unavailable; spawn refused (${cause}): ${message}`);
+        if (cause !== "heal") throw new Error(`session rules unavailable: ${message}`);
+        return;
+      }
+
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -9534,7 +9544,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // one parameter for the pair: a container and its daemon are one decision, never chosen apart.
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
   browser = false, context: SlotContext | null = null, remote = false, permissions: SlotPermissions | null | undefined = undefined, webSearch = false, preObservedSupport: CodexModelSupport | null = null,
-  onCandidate: (occupant: SlotStreamOccupant) => void = () => {}): Promise<SlotOpenResult> {
+  onCandidate: (occupant: SlotStreamOccupant) => void = () => {}, preparedLaneAgents?: SessionAgents): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -9728,7 +9738,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
-  await ensureSlot(s, "open");
+  await ensureSlot(s, "open", preparedLaneAgents);
   // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
   if (!openOccupantCurrent()) return { superseded: true, occupant: expected, modelSupport: modelSupport
     ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
@@ -12957,7 +12967,8 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   laneSpawn.add(s.id);
   try {
     try {
-      const opened = await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions, r.webSearch);
+      const opened = await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions, r.webSearch,
+        null, undefined, r.context?.sessionAgents);
       if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
         || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane restart");
     } catch (e) {
@@ -18967,12 +18978,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
         taskId: next.id, originId: next.originId ?? null, programId: next.programId ?? null }, wt,
         preparedBrief.brief, preparedBrief.sourceRows, preparedBrief.briefSource, clarify);
       guard();
-      await writeLaneSessionAgents(wt.path, context.sessionAgents);
-      guard();
       prepared = { ...preparedBrief, context };
       const opened = await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
         spawn.context ?? null, false, spawn.permissions, [next, ...(wave?.followers ?? [])].some((t) =>
-          t.card?.valid === true && t.card.web === "search"));
+          t.card?.valid === true && t.card.web === "search"), null, undefined, context.sessionAgents);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
         || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during dispatch open");
     } finally {

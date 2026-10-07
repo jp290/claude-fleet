@@ -1488,8 +1488,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     const pointer = `${lane.cwd}/.git`, original = readFileSync(pointer);
     await stopSrv();
     await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
-    rmSync(`${lane.cwd}/AGENTS.override.md`);
-    rmSync(`${lane.cwd}/CLAUDE.local.md`);
+    const priorRules = readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8");
+    const priorLocal = readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8");
     writeFileSync(pointer, `gitdir: ${ROOT}/native-missing-git\n`);
     const before = readFileSync(`${ROOT}/server.log`).length;
     try {
@@ -1501,8 +1501,9 @@ export async function run(lc: LaneCtx): Promise<void> {
       check("native rules restart keeps the server available and names the failed slot", api.ok
         && log.includes(`slot ${lane.slot}: session rules unavailable`)
         && log.includes("could not read lane HEAD for session rules"), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
-      check("native rules restart refuses a lane spawn without its rules", pane.code !== 0
-        && !existsSync(`${lane.cwd}/AGENTS.override.md`) && !existsSync(`${lane.cwd}/CLAUDE.local.md`), `pane=${pane.code}`);
+      check("native rules restart refuses to spawn with stale rules when replanning fails", pane.code !== 0
+        && readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") === priorRules
+        && readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") === priorLocal, `pane=${pane.code}`);
     } finally {
       writeFileSync(pointer, original);
       await post(`/api/slots/${lane.slot}/kill`, {}).catch(() => undefined);
@@ -1520,6 +1521,49 @@ export async function run(lc: LaneCtx): Promise<void> {
     check(`native lane start: ${harness} ignores both files and keeps git clean`, ignored.status === 0
       && ignored.stdout.trim() === "AGENTS.override.md\nCLAUDE.local.md" && status.status === 0 && status.stdout === "");
     if (harness !== "claude" && lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
+  {
+    const lane = await (await post("/api/lanes", { repo: ROOT, harness: "claude" })).json() as
+      { ok?: boolean; slot?: number; cwd?: string };
+    check("native attach fixture: a Claude lane has an existing projection without the portable contract",
+      lane.ok === true && typeof lane.slot === "number" && typeof lane.cwd === "string");
+    if (typeof lane.slot === "number" && typeof lane.cwd === "string") {
+      const rulesPath = `${lane.cwd}/AGENTS.override.md`;
+      const claudeRules = readFileSync(rulesPath, "utf8");
+      const portable = readFileSync(`${ROOT}/AGENTS.md`, "utf8").split("## Portable operating contract\n")[1]?.split("\n## Verify")[0]?.trim() ?? "";
+      const hasPortable = (text: string): boolean => portable.length > 0 && text.includes(portable);
+      check("native attach fixture: the actual Claude file rejects the portable-contract predicate",
+        !hasPortable(claudeRules) && claudeRules.includes("then POST /api/self/succeed"));
+      try {
+        const refused = await post("/api/lanes", { repo: ROOT, attach: lane.cwd, harness: "codex" });
+        check("native attach: a held lane refuses another executor and keeps its running rules byte for byte",
+          refused.status === 409 && readFileSync(rulesPath, "utf8") === claudeRules, `HTTP ${refused.status}`);
+        await restartSrv();
+        check("native attach: server recovery leaves the rules of an existing pane byte for byte",
+          readFileSync(rulesPath, "utf8") === claudeRules);
+        let slot = lane.slot;
+        for (const harness of ["codex", "pi", "claude"] as const) {
+          await post(`/api/slots/${slot}/kill`, {});
+          const attached = await post("/api/lanes", { repo: ROOT, attach: lane.cwd, harness });
+          const body = await attached.json() as { ok?: boolean; slot?: number };
+          check(`native attach ${harness}: the same orphan is seated with the requested executor`,
+            attached.status === 200 && body.ok === true && typeof body.slot === "number", `HTTP ${attached.status}`);
+          if (typeof body.slot !== "number") break;
+          slot = body.slot;
+          const rules = readFileSync(rulesPath, "utf8");
+          check(`native attach ${harness}: its rules replace the old projection and carry the exact portable contract where required`,
+            hasPortable(rules) === (harness !== "claude") && (harness !== "codex" || rules !== claudeRules));
+          check(`native attach ${harness}: the exit follows the starting harness`,
+            harness === "codex" ? rules.includes("and no baton door follows it") && !rules.includes("then POST /api/self/succeed")
+              : rules.includes("then POST /api/self/succeed"));
+        }
+        await post(`/api/slots/${slot}/kill`, {});
+      } finally {
+        const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] };
+        for (const active of sessions.slots.filter((row) => row.cwd === lane.cwd)) await post(`/api/slots/${active.id}/kill`, {});
+      }
+    }
   }
 
   for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
@@ -2731,6 +2775,8 @@ export async function run(lc: LaneCtx): Promise<void> {
 
     // THE HANDOVER ITSELF.
     const promptsBefore = (await plogRead()).filter((e) => e.slot === batonSlotId).length;
+    const staleRules = "STALE PREDECESSOR RULES\n";
+    writeFileSync(`${batonCwd}/AGENTS.override.md`, staleRules);
     const succeedRes = await selfPost(batonTok, "/api/self/succeed", {});
     const succeedBody = (await succeedRes.json()) as { ok?: boolean; slot?: number; branch?: string;
       successions?: number; session?: number; delivered?: boolean; error?: string };
@@ -2738,6 +2784,10 @@ export async function run(lc: LaneCtx): Promise<void> {
       succeedRes.ok && succeedBody.slot === batonSlotId && succeedBody.branch === batonBranch
         && succeedBody.successions === 1 && succeedBody.session === 2 && succeedBody.delivered === true,
       `${succeedRes.status} ${JSON.stringify(succeedBody)}`);
+    const successorRules = readFileSync(`${batonCwd}/AGENTS.override.md`, "utf8");
+    check("(baton) the successor replaces stale predecessor rules before its founding delivery",
+      succeedRes.ok && successorRules !== staleRules && successorRules.startsWith("## Rolle\n\n--- ROLLE --- Lane:")
+        && successorRules.includes("then POST /api/self/succeed"));
     const after = batonSlot(batonSlotId);
     check("(baton) the successor is a NEW session on the SAME lane: worktree, row and Program held, credential and occupant rotated",
       after?.worktree?.branch === batonBranch && after?.taskId === batonTaskId
@@ -2913,6 +2963,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       const lhSlot = (): LhSlot | undefined => batonSlot(batonSlotId) as LhSlot | undefined;
       const lhPath = `/api/slots/${batonSlotId}/lane-harness`;
       const lhBefore = lhSlot();
+      const lhRulesBefore = readFileSync(`${batonCwd}/AGENTS.override.md`, "utf8");
       const untouched = (): boolean => lhSlot()?.openedAt === lhBefore?.openedAt && lhSlot()?.selfToken === lhBefore?.selfToken;
       const lhText = async (r: Response): Promise<string> => `${r.status} ${await r.text()}`;
 
@@ -2976,6 +3027,10 @@ export async function run(lc: LaneCtx): Promise<void> {
         lhRes.ok && lhBody.slot === batonSlotId && lhBody.branch === batonBranch && lhBody.harness === "codex"
           && lhBody.model === "gpt-6.1-sol" && lhBody.effort === "high" && lhBody.successions === 1 && lhBody.delivered === true,
         `${lhRes.status} ${JSON.stringify(lhBody)}`);
+      const lhRulesAfter = readFileSync(`${batonCwd}/AGENTS.override.md`, "utf8");
+      check("(lane-harness) the Codex successor replaces Claude rules and its exit before delivery",
+        lhRes.ok && lhRulesAfter !== lhRulesBefore && lhRulesAfter.includes("and no baton door follows it")
+          && !lhRulesAfter.includes("then POST /api/self/succeed"));
       const lhAfter = lhSlot();
       check("(lane-harness) the slot runs a NEW session on codex, with worktree, row, Program and baton count held",
         lhAfter?.harness === "codex" && lhAfter.model === "gpt-6.1-sol" && lhAfter.effort === "high"

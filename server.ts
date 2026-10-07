@@ -102,6 +102,7 @@ import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
   FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, instanceSourceFrom, CODEX_CLI_VERSION_RE,
+  INSTANCE_LINKS_MAX_BYTES,
   type CodexCliSnapshot, type CodexCliReason,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
@@ -4991,6 +4992,61 @@ function testinstanzList(out: string, withOpenUrl = false): Array<{ worktree: st
     const token = row.state === "up" ? tokenByInstance.get(`${worktree}\0${port}`) : undefined;
     return token ? { ...row, openUrl: `${url}?token=${encodeURIComponent(token)}` } : row;
   });
+}
+
+// THE INSTANZ-CHIP AS UMSCHALTER between the live fleet and the test instances of this machine
+// (2026-10-07, Live-Worktree-Konzept §3). Not a third list: the live side appends the RUNNING rows
+// of the list above (`testinstanzList`, without `openUrl` — the chip carries an origin and never a
+// token, e2e/pins.ts RULE_SWITCH) to INSTANCE_LINKS, and a test instance marks the one
+// FLEET_INSTANCES entry testinstanz.sh#ti_serve adds as the way back. `kind`
+// is what the board groups by: a test instance is not another computer, so it stays out of "1/2".
+// The first visit per device still goes through „öffnen“ on the Testinstanzen card, which sets the
+// instance's cookie; after that the chip switches token-free.
+type ChipLink = InstanceLink & { kind?: "testinstanz" | "live" };
+const TESTINSTANZ_LIVE_NAME = "live";
+const TESTINSTANZ_CHIP_MS = 10_000;
+// WHICH TEST INSTANCES: those whose source is a worktree of THIS checkout's repo. A copy without
+// `.git` — every test instance and every e2e staging dir — therefore lists none, so neither a test
+// instance nor a suite server ever offers the machine's real instances (e2e/tasks.ts checks the
+// poll carries no `instances` key on an unconfigured server). The poll never waits for the script:
+// it reads the last answer and, at most every TESTINSTANZ_CHIP_MS, starts one refresh.
+const testinstanzChip: { links: ChipLink[]; at: number; busy: boolean } = { links: [], at: 0, busy: false };
+async function refreshTestinstanzChip(): Promise<void> {
+  if (INSTANCE_SOURCE || testinstanzChip.busy || Date.now() - testinstanzChip.at < TESTINSTANZ_CHIP_MS) return;
+  testinstanzChip.busy = true;
+  let links: ChipLink[] = [];
+  try {
+    const script = `${import.meta.dir}/testinstanz.sh`;
+    const st = lstatSync(script);
+    if (st.isFile() && (st.mode & 0o111) !== 0) {
+      const own = new Set((await listWorktrees(import.meta.dir, true)).flatMap((w) => {
+        try { return [realpathSync(w.path)]; } catch { return []; } }));
+      const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
+      const rows = run.code === 0 ? testinstanzList(run.out).filter((row) => {
+        try { return row.state === "up" && own.has(realpathSync(row.worktree)); } catch { return false; } }) : [];
+      // the shared parser decides what an entry may be (name charset, origin-only url, no repeat
+      // of a FLEET_INSTANCES url); the byte budget is counted on the list as it goes on the wire
+      const parsed = instanceLinksFrom(JSON.stringify([...INSTANCE_LINKS, ...rows.map((row) => {
+        const name = basename(row.worktree);
+        return { name: instanceNameFrom(name) ?? `testinstanz-${row.port}`, url: row.url };
+      })])).links.slice(INSTANCE_LINKS.length);
+      let bytes = Buffer.byteLength(JSON.stringify(INSTANCE_LINKS));
+      for (const link of parsed) {
+        const entry: ChipLink = { ...link, kind: "testinstanz" };
+        bytes += Buffer.byteLength(JSON.stringify(entry)) + 1;
+        if (bytes > INSTANCE_LINKS_MAX_BYTES) break;
+        links.push(entry);
+      }
+    }
+  } catch { links = []; } // no script, no repo, an unreadable list: the chip offers no test instance
+  finally { testinstanzChip.links = links; testinstanzChip.at = Date.now(); testinstanzChip.busy = false; }
+}
+const INSTANCE_LINKS_TESTINSTANZ: ChipLink[] = INSTANCE_LINKS.map((link) =>
+  link.name === TESTINSTANZ_LIVE_NAME ? { ...link, kind: "live" } : link);
+function instanceChipLinks(): ChipLink[] {
+  if (INSTANCE_SOURCE) return INSTANCE_LINKS_TESTINSTANZ;
+  void refreshTestinstanzChip();
+  return testinstanzChip.links.length ? [...INSTANCE_LINKS, ...testinstanzChip.links] : INSTANCE_LINKS;
 }
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
@@ -45664,6 +45720,7 @@ Bun.serve<WSData>({
       // (`stalledSince`), and a row stamped against a later `Date.now()` than the `now` the reader
       // subtracts it from would hand back a negative age.
       const pollNow = Date.now();
+      const chipLinks = instanceChipLinks();
       return json({
         now: pollNow,
         chips: CHIPS,
@@ -45699,7 +45756,9 @@ Bun.serve<WSData>({
         // so the honest cheap shape is to send nothing at all on the single-host machine that is
         // still the ordinary case. Bounded at src/protocol.ts#INSTANCE_LINKS_MAX_BYTES against the
         // 14 KiB budget this payload is measured by (e2e/tasks.ts).
-        ...(INSTANCE_LINKS.length ? { instances: INSTANCE_LINKS } : {}),
+        // The test instances of this machine ride the same key (server.ts#instanceChipLinks), so the
+        // empty case is unchanged: no FLEET_INSTANCES and no running test instance sends nothing.
+        ...(chipLinks.length ? { instances: chipLinks } : {}),
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),

@@ -159,6 +159,12 @@ collapseBtn.onclick = () => setCollapsed(!sideCollapsed);
 const instWrap = $("instwrap"), instBtn = $("instbtn") as HTMLButtonElement, instMenu = $("instmenu");
 export let instanceName: string | null = null;
 export let instanceLinks: InstanceLink[] = [];
+// THE UMSCHALTER half of the same wire list (server.ts#instanceChipLinks): on the live board the
+// running test instances of this machine, on a test instance the way back to live. Kept apart from
+// `instanceLinks` because a test instance is not another computer — the "1/2" and the board's
+// "zählt hier nicht" line (src/board.ts) stay about computers.
+type SwitchLink = InstanceLink & { kind: "testinstanz" | "live" };
+let switchLinks: SwitchLink[] = [];
 let instRendered = "";
 let instanceCodexCli: CodexCliSnapshot | null = null;
 let instanceObservedNow = 0;
@@ -225,7 +231,7 @@ function renderInstanceBand(source: InstanceSource | null) {
 }
 
 function renderInstanceHead() {
-  const key = JSON.stringify([instanceName, instanceLinks, instanceCodexCli,
+  const key = JSON.stringify([instanceName, instanceLinks, switchLinks, instanceCodexCli,
     Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
     instanceLinks.map((link) => codexCliUnknown(link.codexCli, instanceObservedNow))]);
   if (key === instRendered) return; // an open menu must survive the 2 s poll
@@ -239,11 +245,16 @@ function renderInstanceHead() {
   const n = Math.max(instanceLinks.length, 1);
   const at = instanceLinks.findIndex((l) => instOriginOf(l.url) === location.origin);
   // an unnamed single host shows only the screen and its "+": the title row has no room for a word
+  const back = switchLinks.some((l) => l.kind === "live");
+  const tis = switchLinks.filter((l) => l.kind === "testinstanz").length;
   instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
-    el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"));
+    el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"),
+    ...(switchLinks.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
   instBtn.title = n > 1
     ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
     : MORE_HOSTS;
+  if (switchLinks.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
+    : ` · Umschalter: ${tis} ${tis === 1 ? "Testinstanz" : "Testinstanzen"} dieser Maschine`;
   instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
   instBtn.classList.add("pick");
   instBtn.onclick = () => setInstMenu(!instMenuOpen());
@@ -263,6 +274,27 @@ function renderInstanceHead() {
     row.onclick = go(link);
     return row;
   }));
+  if (switchLinks.length) {
+    // the Umschalter: same tab, same `go`, a bare origin — on the live board each running
+    // test instance, on a test instance the way back
+    instMenu.appendChild(el("div", "hint instnote", back ? "Umschalter · zurück" : "Umschalter · Testinstanzen dieser Maschine"));
+    for (const link of switchLinks) {
+      const row = el("button", "instrow");
+      row.style.flexWrap = "wrap";
+      // name and origin each on their own line: a worktree name is long, and a phone that cut the
+      // origin off would hide the one fact that says where the tap goes
+      const name = el("span", "instname", link.kind === "live" ? "Live-Fleet" : link.name);
+      const origin = el("span", "insturl", link.url);
+      for (const part of [name, origin])
+        Object.assign(part.style, { flexBasis: "100%", minWidth: "0", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" });
+      row.append(name, origin);
+      row.title = link.kind === "live" ? `zurück zum Live-Fleet · ${link.url}` : `Testinstanz ${link.name} · ${link.url}`;
+      row.onclick = go(link);
+      instMenu.appendChild(row);
+    }
+    if (!back) instMenu.appendChild(el("div", "hint instnote",
+      "Erster Besuch je Gerät: „öffnen“ in der Karte Testinstanzen, danach schaltet der Chip direkt um."));
+  }
   instMenu.appendChild(el("div", "hint instnote", `Lokal: ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`));
   instMenu.appendChild(el("div", "hint instnote", MORE_HOSTS));
 }
@@ -5516,7 +5548,11 @@ function sessionsSheet(): HTMLElement[] {
     const b = el("button", "mshinst") as HTMLButtonElement;
     b.type = "button";
     b.dataset.tool = "instbtn";
-    b.append(el("span", "mshw", instanceName ?? "Computer"), icon("chevron"));
+    b.append(el("span", "mshw", instanceName ?? "Computer"));
+    // the Umschalter rows ride in the same fold; the head says they are there, as the chip does
+    if (switchLinks.length) b.append(el("span", "mshval", switchLinks.some((l) => l.kind === "live") ? "⇄ live"
+      : `⇄ ${switchLinks.length} ${switchLinks.length === 1 ? "Testinstanz" : "Testinstanzen"}`));
+    b.append(icon("chevron"));
     b.title = instBtn.title;
     b.setAttribute("aria-expanded", String(sheetInst));
     b.onclick = () => { sheetInst = !sheetInst; renderSheet(); };
@@ -7361,9 +7397,15 @@ export async function refresh() {
     // value the board turns into a NAVIGATION. Re-applying the server's own charset here means the
     // set of places a click can reach is decided by one regex that both ends import, so widening it
     // on one side alone widens nothing.
-    instanceLinks = (data.instances ?? []).filter((l) =>
+    const wireLinks = (data.instances ?? []).filter((l) =>
       typeof l?.name === "string" && INSTANCE_NAME_RE.test(l.name)
       && typeof l.url === "string" && INSTANCE_URL_RE.test(l.url));
+    const kindOf = (l: InstanceLink): unknown => (l as { kind?: unknown }).kind;
+    instanceLinks = wireLinks.filter((l) => kindOf(l) === undefined);
+    switchLinks = wireLinks.flatMap((l) => {
+      const kind = kindOf(l);
+      return kind === "testinstanz" || kind === "live" ? [{ name: l.name, url: l.url, kind }] : [];
+    });
     instanceCodexCli = codexCliSnapshotFrom(data.codexCli);
     instanceObservedNow = data.now;
     renderInstanceHead();

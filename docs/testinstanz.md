@@ -77,6 +77,17 @@ Server nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der `.testinstanz.toke
 liest (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential und anonym enden vorher mit
 401/403 und sehen nie ein Token.
 
+Danach schaltet der **Instanz-Chip** um, im selben Tab und ohne Token: der Live-Server hängt die
+laufenden Testinstanzen aus Worktrees seines eigenen Repos (`server.ts#instanceChipLinks`, dieselbe
+`testinstanzList` ohne `openUrl`, alle 10 s neu gelesen) mit `kind:"testinstanz"` an die
+`instances` des Sessions-Polls, und `ti_serve` gibt jeder Instanz einen Eintrag `live` in ihre
+`FLEET_INSTANCES` (Origin `http://<ti_addr>:8790`, `FLEET_TI_LIVE_URL` überschreibt), den sie als
+`kind:"live"` sendet. Der Board-Client führt beide als Gruppe „Umschalter" im Chip-Menü und im
+Sessions-Blatt des Handys, getrennt von den Computern (`src/client.ts#renderInstanceHead`). Ein
+ausdrücklich gesetztes `FLEET_TI_INSTANCES` bleibt unverändert, ohne Rückweg. Der erste Besuch je
+Gerät bleibt „öffnen": erst er setzt den Cookie der Instanz. Eine Kopie ohne `.git` (jede
+Testinstanz, jedes e2e-Staging) listet keine Testinstanzen.
+
 Was die Snapshot-Instanz über sich selbst sagt (Owner-Befund 2026-10-06): die Kopie hat kein
 `.git`, ihr Boot-Head ist unlesbar — sie nennt sich in den Arbeitsorten deshalb nicht „Live“,
 sondern „Testinstanz“ mit dem vor dem Kopieren gemessenen Stand (`instance.source`, dieselben

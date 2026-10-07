@@ -196,6 +196,13 @@ ti_workhorse_url() {
   echo "${u:-http://100.64.0.1:8790}"
 }
 
+# THE WAY BACK (Umschalter, 2026-10-07): the live fleet of THIS machine, as one more entry of the
+# instance's own FLEET_INSTANCES. 8790 is the live port the guards below refuse by name, and the live
+# server binds the same address ti_addr reads, so the origin is derived, never written here.
+# FLEET_TI_LIVE_URL points it elsewhere (a scratch "live" server when the switch itself is measured).
+# The name is a contract with server.ts#TESTINSTANZ_LIVE_NAME, which marks this entry as the way back.
+ti_live_url() { echo "${FLEET_TI_LIVE_URL:-http://$(ti_addr):8790}"; }
+
 # The fixtures are replanted against the RUNNING instance, so switching between the two stands
 # (free places in the axis / all sixteen taken) costs no restart.
 ti_plant() {
@@ -266,6 +273,12 @@ ti_serve() {
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
   [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"
+  # …and the way back to live in both modes, unless FLEET_TI_INSTANCES was set: an explicit list is
+  # the operator's whole answer and stays exactly as given.
+  if [ -z "${FLEET_TI_INSTANCES+set}" ]; then
+    TI_LIVE='{"name":"live","url":"'"$(ti_live_url)"'"}'
+    if [ -z "$TI_INST" ]; then TI_INST="[$TI_LIVE]"; else TI_INST="${TI_INST%]},$TI_LIVE]"; fi
+  fi
   # env -i, the card's "the server gets only the values the script itself sets": BY CONSTRUCTION,
   # not by filtering — the child env is exactly the names written to env-names above.
   # the konzept store (konzept-ledger.ts) lives INSIDE the instance directory, so the board's Konzepte

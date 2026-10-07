@@ -119,7 +119,8 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
     const refs = supplied ?? ("privateSourceId" in pack.sources
       ? [`  private source ${pack.sources.privateSourceId} (metadata only)`]
       : remaining.map((part) => `  ${part.path} | ${part.anchor}${part.refusal ? ` (${part.refusal})` : ""}`));
-    pointers.push([pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`, ...refs].join("\n"));
+    const label = `- ${pack.id} [${pack.hardness}]`;
+    pointers.push([pack.useWhen ? `${label} — ${pack.useWhen}` : label, ...refs].join("\n"));
   }
   const box = (sorte: ContextPartSorte) => parts.filter((part) => part.id !== "role" && part.sorte === sorte
     && part.ort === "box" && part.content !== null).map((part) => part.content).join("\n");

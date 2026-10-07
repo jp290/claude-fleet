@@ -231,7 +231,7 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; parts?: Omit<SessionAgentsPart, "content">[]; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
+  selected: { id: string; hardness?: "hard" | "guidance"; parts?: Omit<SessionAgentsPart, "content">[]; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string; origin?: string;
     private?: { verdict: string; version: number | null } }[];
   omitted: { id: string; why: string; reason?: string | null }[];
   deliveredBytes: number; truncated: boolean;
@@ -10658,10 +10658,16 @@ export async function run(ctx: Ctx): Promise<void> {
         const slot = body.slot;
         const before = await contextReceipts();
         const dispatchReceipt = before.receipts.findLast((r) => r.slot === slot && r.taskId === taskId);
-        const dispatchAnchorLines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
-        for (const pack of dispatchReceipt?.selected ?? []) {
-          dispatchAnchorLines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
-          if (Array.isArray(pack.anchors)) for (const source of pack.anchors) dispatchAnchorLines.push(`  ${source.path} | ${source.anchor}`);
+        const dispatchAnchorLines = ["ContextPlan v2 anchors (fresh pointers; no source content is copied):"];
+        for (const hardness of ["hard", "guidance"] as const) {
+          const packs = (dispatchReceipt?.selected ?? []).filter((pack) => pack.hardness === hardness);
+          if (!packs.length) continue;
+          dispatchAnchorLines.push(hardness === "hard" ? "Bindend (hard):" : "Hinweise (guidance):");
+          for (const pack of packs) {
+            const label = `- ${pack.id} [${pack.hardness}]`;
+            dispatchAnchorLines.push(pack.useWhen ? `${label} — ${pack.useWhen}` : label);
+            if (Array.isArray(pack.anchors)) for (const source of pack.anchors) dispatchAnchorLines.push(`  ${source.path} | ${source.anchor}`);
+          }
         }
         const dispatchAnchors = dispatchReceipt?.selected.length ? `\n\n${dispatchAnchorLines.join("\n")}` : "";
         check("studio lane dispatch: every receipted public source anchor appears in its native rule file",
@@ -10698,17 +10704,25 @@ export async function run(ctx: Ctx): Promise<void> {
             mode: successorReceipt.mode, triggers: successorReceipt.triggers,
             selected: successorReceipt.selected, omitted: successorReceipt.omitted },
         })).digest("hex") : "";
+        const conjuncts = {
+          reportOk: report.ok, succeededOk: succeeded.ok, dispatchAnchorsPresent: dispatchAnchors.length > 0,
+          sourceExcerptPresent: snippets(text).includes("function buildProgramMainBrief("),
+          anchorsExact: anchors(successorBrief) === dispatchAnchors, snippetsExact: snippets(successorBrief) === snippets(text),
+          predecessorClaimPresent: successorBrief.includes(handoffText), predecessorClaimLabelled: successorBrief.includes("Behauptung deiner Vorgängerin"),
+          dispatchReceiptPresent: !!dispatchReceipt, successorReceiptPresent: !!successorReceipt,
+          oneNewReceipt: after.total === before.total + 1,
+          distinctReceipt: !!dispatchReceipt && !!successorReceipt && successorReceipt.id !== dispatchReceipt.id,
+          receiptHashExact: !!successorReceipt && successorReceipt.hash === receiptedHash,
+          briefHashExact: !!successorReceipt && successorReceipt.briefHash === briefHashOf(successorBrief),
+          deliveredBytesExact: !!successorReceipt && successorReceipt.deliveredBytes === new TextEncoder().encode(successorBrief).byteLength,
+          selectionsExact: !!dispatchReceipt && !!successorReceipt && JSON.stringify(successorReceipt.selected) === JSON.stringify(dispatchReceipt.selected),
+          omissionsExact: !!dispatchReceipt && !!successorReceipt && JSON.stringify(successorReceipt.omitted) === JSON.stringify(dispatchReceipt.omitted),
+        };
         check("Lane succession context: same row delivers dispatch anchors and source excerpt, labels the predecessor claim, and writes one exact receipt",
-          report.ok && succeeded.ok && dispatchAnchors.length > 0 && snippets(text).includes("function buildProgramMainBrief(")
-            && anchors(successorBrief) === dispatchAnchors && snippets(successorBrief) === snippets(text)
-            && successorBrief.includes(handoffText) && successorBrief.includes("Behauptung deiner Vorgängerin")
-            && !!dispatchReceipt && !!successorReceipt && after.total === before.total + 1
-            && successorReceipt.id !== dispatchReceipt.id && successorReceipt.hash === receiptedHash
-            && successorReceipt.briefHash === briefHashOf(successorBrief)
-            && successorReceipt.deliveredBytes === new TextEncoder().encode(successorBrief).byteLength
-            && JSON.stringify(successorReceipt.selected) === JSON.stringify(dispatchReceipt.selected)
-            && JSON.stringify(successorReceipt.omitted) === JSON.stringify(dispatchReceipt.omitted),
-          `report=${report.status} succeed=${succeeded.status} anchors=${dispatchAnchors.length}/${anchors(successorBrief).length} snippets=${snippets(text).length}/${snippets(successorBrief).length} receipts=${before.total}/${after.total}`);
+          Object.values(conjuncts).every(Boolean),
+          JSON.stringify({ report: report.status, succeed: succeeded.status,
+            anchors: [dispatchAnchors.length, anchors(successorBrief).length], snippets: [snippets(text).length, snippets(successorBrief).length],
+            receipts: [before.total, after.total], conjuncts }));
       } else if (succession) {
         check("Lane succession context fixture: dispatch must deliver before its successor can be measured", false,
           `${res.status} slot=${body.slot ?? "none"} briefBytes=${text.length}`);

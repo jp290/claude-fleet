@@ -10603,14 +10603,14 @@ function paintTestinstanzMachine(card: HTMLElement): void {
   }).finally(() => {
     testinstanzMachinePending = false;
     if (JSON.stringify([testinstanzMachine, testinstanzMachineError]) === before) return;
-    boardBody.querySelector(".testinstanzcard")?.remove();
+    boardBody.querySelector(".testinstanzmachine")?.remove();
     paintTestinstanzCard();
   });
 }
 
 function paintTestinstanzCard(): void {
-  if (!boardOpen || boardBody.querySelector(".testinstanzcard")) return;
-  const card = el("div", "bsec testinstanzcard");
+  if (!boardOpen || boardBody.querySelector(".testinstanzmachine")) return;
+  const card = el("div", "bsec testinstanzmachine");
   card.appendChild(el("h3", "", "Testinstanzen"));
   paintTestinstanzMachine(card);
   if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);

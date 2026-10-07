@@ -1,7 +1,7 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -404,7 +404,7 @@ export async function run(): Promise<void> {
     // instead of a 200 carrying B's row. B's identity, stream and label are the check below.
     const staleBody = await staleResult.text();
     check("slot-stream fixture: releasing A lets its stale open return without hanging B",
-      staleResult.status === 400 && staleBody === JSON.stringify({ error: "slot occupant changed during open spawn" }),
+      staleResult.status === 400 && staleBody === JSON.stringify({ error: "slot occupant changed during owner open" }),
       `${staleResult.status} ${staleBody}`);
     await tmuxOut("send-keys", "-t", "s3", `printf '${afterMarker}\\n'`, "Enter");
     let bBody = "";
@@ -2360,7 +2360,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     for (const result of await runArbeitsorteDom(sourceRoot)) {
       const facts = JSON.stringify(result.facts).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
-        check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok, facts);
+        check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok,
+          claim.includes("the old card") ? JSON.stringify(result.facts.oldCard)
+            : claim.includes("machine-wide") ? JSON.stringify(result.facts.machineList) : facts);
     }
   } catch (error) {
     check("arbeitsorte DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
@@ -10018,14 +10020,37 @@ async function runCodexPermissions(): Promise<void> {
       const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions: unknown }> };
       durable.slots[16].permissions = permissions;
       writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(durable)); n = args().length;
+      const argvBefore = args();
+      const fixtureStat = statSync(`${ROOT}/fleet.json`);
       await restartSrv({ PATH: path });
       const invalid = await row();
       const restart = await post("/api/slots/16/restart", {});
-      const snapshot = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof durable;
+      const persistedFile = openSync(`${ROOT}/fleet.json`, "r");
+      let snapshot: typeof durable;
+      let persistedStat: ReturnType<typeof fstatSync>;
+      try {
+        snapshot = JSON.parse(readFileSync(persistedFile, "utf8")) as typeof durable;
+        persistedStat = fstatSync(persistedFile);
+      } finally { closeSync(persistedFile); }
+      const argvAfter = args();
+      const pane = await tmuxOut("has-session", "-t", "=s16");
+      const restartBody = await restart.json() as { error?: unknown };
+      const conjuncts = {
+        normalizedInvalid: JSON.stringify(invalid?.permissions) === '{"state":"invalid"}',
+        restartRefused: restart.status === 400,
+        noSpawn: argvAfter.length === n,
+        noPane: pane.code !== 0,
+        persistedInvalid: JSON.stringify(snapshot.slots[16].permissions) === '{"state":"invalid"}',
+      };
       check("invalid stored permissions stay explicit across reload and refuse heal/restart without full-access fallback",
-        JSON.stringify(invalid?.permissions) === '{"state":"invalid"}' && restart.status === 400 && args().length === n
-          && (await tmuxOut("has-session", "-t", "=s16")).code !== 0
-          && JSON.stringify(snapshot.slots[16].permissions) === '{"state":"invalid"}', JSON.stringify(permissions));
+        conjuncts.normalizedInvalid && conjuncts.restartRefused && conjuncts.noSpawn && conjuncts.noPane && conjuncts.persistedInvalid,
+        JSON.stringify({ input: permissions, normalizedProfile: invalid?.permissions ?? null,
+          restart: { status: restart.status, body: { error: typeof restartBody.error === "string" ? restartBody.error : null },
+            bodyKeys: Object.keys(restartBody) }, argvBefore, argvAfter, tmux: { exit: pane.code, exists: pane.code === 0 },
+          persistedMarker: snapshot.slots[16].permissions,
+          persistence: { fixture: { inode: fixtureStat.ino, mtimeMs: fixtureStat.mtimeMs, ctimeMs: fixtureStat.ctimeMs },
+            observed: { inode: persistedStat.ino, mtimeMs: persistedStat.mtimeMs, ctimeMs: persistedStat.ctimeMs },
+            replaced: persistedStat.ino !== fixtureStat.ino, modified: persistedStat.mtimeMs !== fixtureStat.mtimeMs }, conjuncts }));
     }
     const repaired: PermissionProfile = { sandbox: "read-only", approval: "on-request" }; n = args().length;
     const recycled = await post("/api/slots/16/open", { cwd, harness: "codex", permissions: repaired, packs: [] });
@@ -10126,6 +10151,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
     checks?: Partial<Record<"local" | "preview" | "gate" | "audit", Check>>; landed?: "yes" | "no" | null; landedAs?: string;
     ti?: "up" | "expired" | "not-running"; awaiting?: "owner" | "main"; working?: boolean; repo?: string; auditUnreadable?: boolean };
   const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[] };
+  const machineOpenUrl = "http://fleet.fixture/blank?machine-instance";
+  const machineError = "fixture: machine test instances unavailable";
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -10279,6 +10306,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
       if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st), instance: { name: "Mac" },
         deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" } });
       if (p === "/api/worktrees") return void json(requestId, workplaces(st));
+      if (p === "/api/testinstanzen") return void (st === "alarm"
+        ? json(requestId, { error: machineError }, 503)
+        : json(requestId, { testinstanzen: [
+          { worktree: "/fixture/retained-other-tree", port: 8913, state: "up", expiresAt: fx.now + 3600_000, openUrl: machineOpenUrl },
+          { worktree: "/fixture/retained-stopped-tree", port: 8914, state: "down", expiresAt: null },
+        ] }));
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
@@ -10337,6 +10370,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'),
+        machineList: (() => { const card = body.querySelector('.testinstanzmachine'); return { count: body.querySelectorAll('.testinstanzmachine').length,
+          title: card?.querySelector('h3')?.textContent ?? null, text: card?.innerText ?? '', linkCount: card?.querySelectorAll('a').length ?? 0,
+          rows: [...(card?.querySelectorAll('.bbtnrow') ?? [])].map((row) => ({ text: row.innerText,
+            links: [...row.querySelectorAll('a')].map((a) => ({ href: a.href, target: a.target, rel: a.rel, text: a.textContent })) })) }; })(),
         live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'),
         field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
         trayBox: box(tray), schedBox: box(sched), mort: mort ? mort.innerText.replace(/\\s+/g, ' ').trim() : null,
@@ -10348,6 +10385,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
     type Read = { index: number; before: string[]; next: string | null; head: string | null; seg: string[]; rows: Row[];
       lines: { cls: string; for: string | null; text: string; title: string; buttons: string[] }[]; text: string; svgPaths: number; inkPaths: number;
       secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean;
+      machineList: { count: number; title: string | null; text: string; linkCount: number;
+        rows: { text: string; links: { href: string; target: string; rel: string; text: string | null }[] }[] };
       live: string; wait: string; danger: string; amber: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
       trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number } | null; mort: string | null };
@@ -10377,7 +10416,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
         await send("Page.enable"); await send("Runtime.enable");
         await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
-          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };` });
+          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };
+          document.addEventListener('click', (e) => { const link = e.target instanceof Element ? e.target.closest('.testinstanzmachine a') : null;
+            if (link) { e.preventDefault(); (window.__machineOpened = window.__machineOpened || []).push(link.href); } }, true);` });
         await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
         await navigate("http://fleet.fixture/blank");
         const focus = focusOf(st);
@@ -10426,7 +10467,33 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
               : /^(nichts zu landen|unbekannt, ob)/.test(b.title); });
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
-        claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] = !r.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(r.bodyText);
+        const machineShown = await wait(st === "alarm"
+          ? `document.querySelector('#boardbody .testinstanzmachine')?.innerText.includes(${JSON.stringify(machineError)})`
+          : `document.querySelectorAll('#boardbody .testinstanzmachine .bbtnrow').length === 2`, 8000);
+        const machineRead = await read();
+        claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] =
+          !machineRead.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(machineRead.bodyText);
+        facts.oldCard = { present: machineRead.oldCard, retiredWorktreeTitlePresent: /Testinstanz · dieser Worktree/.test(machineRead.bodyText),
+          retiredLaneListPresent: /Lanes in /.test(machineRead.bodyText) };
+        const machine = machineRead.machineList;
+        facts.machineList = { shown: machineShown, ...machine };
+        if (st === "alarm") {
+          claims[`${tag}the machine-wide list keeps its named error without fabricating instance rows or an opening link`] =
+            machineShown && machine.count === 1 && machine.title === "Testinstanzen" && machine.text.includes(machineError)
+              && machine.rows.length === 0 && machine.linkCount === 0;
+        } else {
+          claims[`${tag}the machine-wide list preserves both external worktrees, ports, running state and expiry`] =
+            machineShown && machine.count === 1 && machine.title === "Testinstanzen" && machine.text.includes("Alle Testinstanzen dieser Maschine")
+              && machine.rows.length === 2 && machine.rows[0].text.includes("retained-other-tree · Port 8913 · läuft · bis ")
+              && machine.rows[1].text === "retained-stopped-tree · Port 8914 · aus" && machine.rows[1].links.length === 0;
+          const opening = machine.rows[0]?.links[0];
+          await evaluate(`document.querySelector('#boardbody .testinstanzmachine a')?.click()`);
+          const opened = await evaluate<string[]>("window.__machineOpened || []");
+          facts.machineList = { shown: machineShown, ...machine, opened };
+          claims[`${tag}the machine-wide öffnen link preserves its exact URL, new-tab target and noopener, and a click delivers that URL to the navigation boundary`] =
+            machine.linkCount === 1 && machine.rows[0]?.links.length === 1 && opening?.text === "öffnen" && opening.href === machineOpenUrl
+              && opening.target === "_blank" && opening.rel === "noopener" && JSON.stringify(opened) === JSON.stringify([machineOpenUrl]);
+        }
         claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
         // abe74821 — the stand of every carrier, grouped by machine
         const machines = r.rows.filter((x) => x.cls.includes("mach")).map((x) => x.text);

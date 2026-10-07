@@ -1262,7 +1262,18 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   const legacy = { id: "legacy", hardness: "guidance" as const, useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
   const legacyRender = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [legacy], omitted: [] }, sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
   check("session agents: an unsplit pack retains its exact existing pointer bytes",
-    legacyRender.text.includes("- legacy — Read on demand\n  old.md | ## Old") && !legacyRender.text.includes("old bytes"));
+    legacyRender.text.includes("- legacy [guidance] — Read on demand\n  old.md | ## Old") && !legacyRender.text.includes("old bytes"));
+  for (const hardness of ["hard", "guidance"] as const) for (const useWhen of [undefined, "Read on demand"]) {
+    const pack = { ...legacy, hardness, useWhen };
+    const rendered = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [pack], omitted: [] },
+      sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
+    const pointer = `- legacy [${hardness}]${useWhen ? ` — ${useWhen}` : ""}\n  old.md | ## Old`;
+    const otherHardness = hardness === "hard" ? "guidance" : "hard";
+    check(`session agents: ${hardness} pointer preserves its exact label ${useWhen ? "with" : "without"} purpose`,
+      rendered.text.split("## Packs auf Abruf\n\n")[1] === `${pointer}\n`
+        && !rendered.text.includes(`- legacy [${otherHardness}]`) && !rendered.text.includes("old bytes"),
+      JSON.stringify({ expected: `${pointer}\n`, pointers: rendered.text.split("## Packs auf Abruf\n\n")[1] }));
+  }
   const section = "### Part\nGrüße.\n```md\n### False sibling\n```\n";
   check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
     sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section

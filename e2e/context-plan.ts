@@ -1185,10 +1185,21 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
   const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
   const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
-  const expected = [582, 1549, 403, 321, 3959, 4777];
+  const expected = [582, 3696, 403, 321, 3959, 4777];
+  const expectedHashes = [
+    "379cc076926b3741956ec03542c1edc87dea4f730c952b1a6dbc35e6162bdcb3",
+    "2adbefa30c61ea4cc143d4183271bb16980d46a75c7348ee0fd20b73b7905118",
+    "21c8f4b8b45f9d496f81d6ca46a362e79740463801af03a425e3dd8ba04fa5a0",
+    "7c2fa80e6536a552cb555ae86fd38c8bcecd92b576d7384b8a0814ca01cab3e1",
+    "704a7016daf73017b58e8d7450976c82f32af229a53982cd92bac154f9801fc0",
+    "de993756cb83eac5241d9d6328065c6dda1bd3134cd4048a74dc963bcf39b96c",
+  ];
   const measured = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.bytes);
-  check("session agents: six verify parts carry the approved tree bytes (fixture 670/902/161/711/3917/2623)",
+  check("session agents: six verify parts carry the approved tree bytes (fixture 582/3696/403/321/3959/4777)",
     JSON.stringify(measured) === JSON.stringify(expected), JSON.stringify(measured));
+  const hashes = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.sha256);
+  check("session agents: six verify parts carry the exact approved source hashes",
+    JSON.stringify(hashes) === JSON.stringify(expectedHashes), JSON.stringify(hashes));
   const sums: string[] = [];
   for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
     const footer = position === "lane" ? templates.laneExitFooter("codex", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
@@ -1226,6 +1237,12 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
         && rendered.parts[0].bytes === Buffer.byteLength(templates.roles[0]!)
         && rendered.parts.filter((part) => part.content !== null).every((part) => part.sha256 === createHash("sha256").update(part.content!).digest("hex")),
       `${rendered.bytes} bytes`);
+    const lanePart = rendered.parts.find((part) => part.id === "verify-e2e.lane");
+    check(`native lane render: ${harness} carries the restored jobs and local-withdraw contract in the exact Lane part`,
+      lanePart?.ort === "box" && lanePart.bytes === expected[1] && lanePart.sha256 === expectedHashes[1]
+        && lanePart.content !== null && lanePart.content.includes("**Gate suites, and a MAIN's preview, go through the jobs door.**")
+        && lanePart.content.includes("only the 200 with `mayRunLocally: true` permits the local run."),
+      JSON.stringify({ ort: lanePart?.ort, bytes: lanePart?.bytes, sha256: lanePart?.sha256 }));
   }
   const missingBytes = new Map(sourceBytes);
   missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");

@@ -2959,6 +2959,68 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("subscription: local completion retains its exact local success without a competing provider request",
     localOnly.refresh.target === "local" && localOnly.refresh.status === "ok" && localOnly.refresh.startedAt === now
       && localOnly.refresh.finishedAt === now && localOnly.primary?.used_percent === 27);
+  // t | event | acquisition / refresh owner
+  // now | initial get starts one deferred read | initial acquisition / no request
+  // now+1 | local refresh joins; optional provider refusal follows | same read / local or provider
+  // now+2 | read succeeds, fails or times out | same acquisition / last request retained
+  for (const outcome of ["success", "stale", "failure", "timeout"] as const) for (const providerWins of [false, true]) {
+    let clock = now, reads = 0;
+    let resolveRead!: (value: typeof measured) => void, rejectRead!: (error: Error) => void;
+    const deferred = new Promise<typeof measured>((resolve, reject) => { resolveRead = resolve; rejectRead = reject; });
+    const joining = createSubscriptionReader(() => { reads++; return deferred; }, () => clock, 10);
+    const initial = joining.get();
+    clock++;
+    const local = joining.refresh("local");
+    const provider = providerWins ? await joining.refresh("provider") : null;
+    clock++;
+    if (outcome === "success") resolveRead(measured);
+    else if (outcome === "stale") resolveRead(old);
+    else if (outcome === "failure") rejectRead(new Error("fixture-initial-read-failed"));
+    const [first, last] = await Promise.all([initial, local]);
+    const reason = outcome === "failure" ? "read-failed" : outcome === "timeout" ? "read-timeout" : last.source.reason;
+    pin(`subscription: local refresh joining initial ${outcome} shares one read and ${providerWins ? "preserves provider unsupported" : "records its exact completion"}`,
+      reads === 1 && JSON.stringify(first) === JSON.stringify(last) && !joining.busy()
+        && (provider ? JSON.stringify(last.refresh) === JSON.stringify(provider.refresh) && last.refresh.target === "provider"
+          && last.refresh.status === "unsupported" && last.refresh.reason === PROVIDER_UNSUPPORTED
+          : last.refresh.target === "local" && last.refresh.startedAt === now + 1 && last.refresh.finishedAt === now + 2
+            && last.refresh.status === (outcome === "failure" ? "error" : outcome === "timeout" ? "timeout" : "ok")
+            && last.refresh.reason === reason)
+        && (outcome === "success" ? last.status === "measured" && last.primary?.used_percent === 27 && last.source.measuredAt === now
+          : outcome === "stale" ? last.status === "stale" && last.source.measuredAt === old.source.measuredAt
+          : last.status === "error" && last.primary === null && last.secondary === null && last.source.reason === reason),
+      JSON.stringify({ reads, refresh: last.refresh, status: last.status, measuredAt: last.source.measuredAt }));
+    if (outcome === "timeout") {
+      resolveRead(measured);
+      await Promise.resolve();
+      const late = await joining.get();
+      pin(`subscription: late initial read retains timeout ${providerWins ? "and provider unsupported" : "and local timeout completion"}`,
+        reads === 1 && JSON.stringify(late) === JSON.stringify(last), JSON.stringify(late));
+    }
+  }
+  // t | event | exclusive read owner
+  // now | two initial getters join | one acquisition; neither caller has an observation
+  // now | deferred read settles | both callers receive that same observation
+  for (const outcome of ["success", "failure", "timeout"] as const) {
+    let reads = 0, firstSettled = false, secondSettled = false;
+    let resolveRead!: (value: typeof measured) => void, rejectRead!: (error: Error) => void;
+    const deferred = new Promise<typeof measured>((resolve, reject) => { resolveRead = resolve; rejectRead = reject; });
+    const concurrent = createSubscriptionReader(() => { reads++; return deferred; }, () => now, 10);
+    const first = concurrent.get().then((value) => { firstSettled = true; return value; });
+    const second = concurrent.get().then((value) => { secondSettled = true; return value; });
+    await Promise.resolve();
+    pin(`subscription: concurrent initial ${outcome} getters both await the single acquisition`,
+      reads === 1 && concurrent.busy() && !firstSettled && !secondSettled,
+      JSON.stringify({ reads, firstSettled, secondSettled, busy: concurrent.busy() }));
+    if (outcome === "success") resolveRead(measured);
+    else if (outcome === "failure") rejectRead(new Error("fixture-concurrent-read-failed"));
+    const [a, b] = await Promise.all([first, second]);
+    pin(`subscription: concurrent initial ${outcome} getters receive the exact shared result without another read`,
+      reads === 1 && firstSettled && secondSettled && !concurrent.busy() && JSON.stringify(a) === JSON.stringify(b)
+        && a.refresh.target === null && a.refresh.status === "not-requested"
+        && (outcome === "success" ? a.status === "measured" && a.primary?.used_percent === 27 && a.source.measuredAt === now
+          : a.status === "error" && a.primary === null && a.source.reason === (outcome === "failure" ? "read-failed" : "read-timeout")),
+      JSON.stringify({ reads, status: a.status, measuredAt: a.source.measuredAt, reason: a.source.reason }));
+  }
   let calls = 0;
   let release: ((value: typeof measured) => void) | undefined;
   const pending = createSubscriptionReader(async () => { calls++; return new Promise(resolve => { release = resolve; }); }, () => now, 10);

@@ -186,6 +186,14 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
   -d '<localProof.offerBody>' "$FLEET_SELF_URL/api/self/suite-offer"
 ```
 
+**Gate suites, and a MAIN's preview, go through the jobs door.** `POST /api/self/jobs` takes an
+exact `server/types.ts#HELPER_CMD_ALLOW` key: `{"cmd":"./e2e-clean-review.sh"}`,
+`{"cmd":"./e2e-security.sh"}`, `{"cmd":"./e2e-claude-gate.sh"}`. A lane may not subscribe to the
+job and reads `GET /api/self/jobs/<jobId>`. A MAIN has no suite-offer (it is lane-only): it posts
+`{"cmd":"./e2e-isolated.sh","timeoutMs":2700000}` and arms a `{"kind":"job","target":"<jobId>"}`
+watch (`docs/self-api.md` §jobs).
+Before running a gate suite locally, withdraw its own open command job with
+`POST /api/self/jobs/<jobId>/withdraw`; only the 200 with `mayRunLocally: true` permits the local run.
 ### MAIN
 
 6. You have no `self/gate` and no suite-offer: your own preview goes through `POST /api/self/jobs` with `{"cmd":"./e2e-isolated.sh"}` and a job watch.

@@ -149,25 +149,29 @@ export function createSubscriptionReader(read = () => readLocalQuota(), clock = 
   let snapshot = unknownSnapshot("not-observed", null);
   let observed = false;
   let active: Promise<void> | null = null;
+  let initialAcquisition = false;
+  let localRequest: SubscriptionRefresh | null = null;
   let refresh: SubscriptionRefresh = { target: null, status: "not-requested", startedAt: null, finishedAt: null, reason: null };
   const acquire = (explicit: boolean): Promise<void> => {
+    if (explicit) {
+      localRequest = { target: "local", status: "refreshing", startedAt: clock(), finishedAt: null, reason: null };
+      refresh = localRequest;
+    }
     if (active) return active;
-    const request: SubscriptionRefresh | null = explicit
-      ? { target: "local", status: "refreshing", startedAt: clock(), finishedAt: null, reason: null } : null;
-    if (request) refresh = request;
+    initialAcquisition = !explicit;
     active = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         snapshot = await Promise.race([Promise.resolve().then(read), new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("read-timeout")), timeoutMs);
         })]);
-        if (request && refresh === request) refresh = { ...request, status: snapshot.status === "error" || snapshot.status === "unknown" ? "error" : "ok",
+        if (localRequest && refresh === localRequest) refresh = { ...localRequest, status: snapshot.status === "error" || snapshot.status === "unknown" ? "error" : "ok",
           finishedAt: clock(), reason: snapshot.source.reason };
       } catch (error) {
         const timeout = error instanceof Error && error.message === "read-timeout";
         snapshot = unknownSnapshot(timeout ? "read-timeout" : "read-failed", clock(), "error");
-        if (request && refresh === request) refresh = { ...request, status: timeout ? "timeout" : "error", finishedAt: clock(), reason: snapshot.source.reason };
-      } finally { clearTimeout(timer); observed = true; active = null; }
+        if (localRequest && refresh === localRequest) refresh = { ...localRequest, status: timeout ? "timeout" : "error", finishedAt: clock(), reason: snapshot.source.reason };
+      } finally { clearTimeout(timer); observed = true; active = null; initialAcquisition = false; localRequest = null; }
     })();
     return active;
   };
@@ -175,7 +179,7 @@ export function createSubscriptionReader(read = () => readLocalQuota(), clock = 
     provider: { status: "unsupported" as const, reason: PROVIDER_UNSUPPORTED } });
   return {
     busy: () => active !== null,
-    get: async () => { if (!observed && !active) await acquire(false); return view(); },
+    get: async () => { if (!observed && (!active || initialAcquisition)) await acquire(false); return view(); },
     refresh: async (target: "local" | "provider") => {
       if (target === "local") await acquire(true);
       else refresh = { target, status: "unsupported", startedAt: clock(), finishedAt: clock(), reason: PROVIDER_UNSUPPORTED };

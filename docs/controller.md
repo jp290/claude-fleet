@@ -231,6 +231,66 @@ schreibt dieser Weg nicht; die Übergabe trägt deshalb ein committeter `HANDOFF
 Nachfolge nach Regel A), auf den die Vorgängerin die Nachfolgerin per `/send` zeigt, bevor sie endet.
 Codex lädt `AGENTS.md`, nicht `CLAUDE.md`: der Hinweis nennt die benötigten Regelbuch-Abschnitte namentlich.
 
+## Nachfolge ohne kalten Wiederaufruf
+
+Für eine Claude-Session empfehlen wir: **im noch warmen Turn nachfolgen, sobald die effektive
+Übergabe-Schwelle erreicht ist und nichts mehr in Flug ist, das nur in dieser Session lebt.**
+Den aktuellen Füllstand und `succession.thresholdPct` aus `GET /api/self` lesen
+(`server.ts#successionFacts`); fehlende Werte bleiben `unknown`, eine ausgeschaltete Schwelle
+ist kein Auslöser. Die Owner-Einstellung dieser Belegung geht vor dem Fleet-Default
+(`server.ts#patchHandover`). Der Pack setzt keine Schwelle und erteilt keine zusätzliche
+Nachfolge-Befugnis: die eigene Rollenkarte und Nachfolge-Schiene gelten, insbesondere das
+Lane-Ende des jeweiligen Harness. Codex kompaktiert nativ; diese Cache-Messung begründet dort
+keinen Arbeitsstopp und keine Nachfolge.
+
+Die [Usage-Messung vom 07.10.](messungen/2026-10-07-cache-lebensdauer-nachfolge.md) findet auf
+diesem Host **rund 60 Minuten Cache-Lebensdauer** im Claude-Hauptgespräch: 3 043 von 3 043
+Pausen zwischen 5 und 60 Minuten waren Treffer; ab 62 Minuten waren 270 von 270 Wiederaufnahmen
+kalt. Direkt an der Kante: letzter Treffer bei 60,13, erster Miss bei 60,21 Minuten
+(25 Paare aus 22 Sessions im Band 58–62 Minuten). Das ist eine beobachtete Übergangszone,
+keine garantierte Frist. Ein gemeinsam genutzter Sockel kann warm bleiben, obwohl der
+Gesprächsverlauf neu geschrieben wird. Als Planungspuffer **vor 55 Minuten seit der letzten
+Usage** fertig sein; die fünf Minuten Reserve sind eine Empfehlung, kein gemessener Timer.
+Ist die Schwelle schon erreicht und die Übergabe möglich, gleich im laufenden Turn handeln,
+nicht erst bis zu diesem Puffer warten. Werkzeuglaufzeit zählt zur Cache-Pause, wenn kein
+neuer Modellaufruf den Cache auffrischt.
+
+Vorher dauerhaft machen:
+
+- Änderungen committen; Ergebnis, Beleg, offene Arbeit und nächste Handlung an einem für die
+  Nachfolgerin lesbaren Ort festhalten. Offene Pflichten tragen ihre IDs und ihre maßgebliche
+  Quelle. Eine stehende Übergabe im ohnehin laufenden Turn aktualisieren; für die ungebundene
+  Schiene `intent` oder Zeiger auf einen committeten Abschnitt, für Game-Maker den vollständigen
+  Checkpoint. Es gelten die vier Fälle oben, kein zusätzlicher HANDOFF-Commit für Standard-MAINs.
+- Laufende Subagenten beenden lassen und ihre Ergebnisse dauerhaft sichern: sie überleben den
+  Tod der Vorgängerin nicht. Ein angekündigtes Ergebnis oder ein Tool-Handle im Gespräch genügt
+  nicht als Übergabe. Eine selbstständige Fleet-Lane ist kein solcher Subagent; ihren Report
+  und ihren Rückweg als dauerhafte Pflicht erhalten.
+- Watches, Autos, nicht quittierte Events und offene Reports prüfen. Auf der ungebundenen
+  Schiene enden die armierten Watches und Autos; der Linien-Record hält ihre IDs, Watch-Ziele
+  und `reArm` fest, armiert aber nichts neu (`docs/self-api.md` §Der Linien-Record).
+  Bei einer gebundenen Standard-Program-MAIN persistiert Fleet übertragbare Pflichten im
+  `handover`; verlorene stehen in `handover.lost` (§Nachfolge oben). Vor dem Ende Quelle und
+  Rückweg der noch laufenden Arbeit lesbar machen, nach dem Schnitt Übertragung beziehungsweise
+  Wiederarmierung belegen. Eine Watch allein ist kein Beweis, dass ihr Ergebnis ankommt.
+
+**Warten an der Schwelle kostet den alten Verlauf nochmals.** Bei 40 % eines 1M-Fensters,
+also 400 000 gecachten Input-Token, kostet deren vollständiger 1h-Neuschrieb für Opus 5.5
+3,20 USD statt 0,08 USD Cache-Read: **3,12 USD Mehrkosten, Faktor 40**. Das sind
+[API-Listenpreis-Äquivalente](https://platform.claude.com/docs/en/about-claude/pricing)
+(07.10.2026), keine gemessene Abo-Rechnung. Ein weiterhin warmer Sockel senkt den Neuschrieb;
+Output, neuer Input und Erdung der Nachfolgerin kommen hinzu. Gemessen wurden bei kalten
+Wiederaufnahmen ab 62 Minuten median 199 779 Write-Token, bei warmen Pausen von 5–60 Minuten
+614. Wer nach einer Stunde nur noch zur Übergabe geweckt wird, bezahlt den großen alten
+Verlauf und anschließend den Aufbau der Nachfolgerin. Ist die Übergabe noch blockiert,
+Pflicht und Grund schon warm sichern; keine Keepalive-Pings daraus ableiten. Für eine bereits
+kalte ungebundene Session beziehungsweise Orchestratorin gibt es die Owner-Nachfolge ohne
+Turn der Vorgängerin (oben); die Session erhält dadurch keine Owner-Befugnis.
+
+Das ist gemessenes Wissen und eine Handlungsempfehlung für die bestehende Nachfolge. Der
+Server-Hinweis `tickMigrate` prüft Füllstand, Schwelle und Zustellbarkeit; er implementiert
+keinen Cache-Ablauf und keinen Abschluss laufender Subagenten.
+
 ## Kontext-Hinweis des Servers
 
 Der Tick `server.ts#tickMigrate` (nur registriert bei `FLEET_MIGRATE_PCT > 0`) stupst ausschließlich
@@ -243,13 +303,15 @@ per ID in den Linien-Record), `succeed` mit optionalem `intent` ODER `pointer`. 
 
 ## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)
 
-**Die Nachfolge-Schwelle ist die env, nicht eine Zahl auf der Karte.** Die Orchestratorin Slot 9
+**Die Nachfolge-Schwelle ist die effektive Einstellung, nicht eine Zahl auf der Karte.** Die Orchestratorin Slot 9
 übergab am 2026-10-02 ~00:50 bei gemessenen 30 %, weil ihre Rollenkarte („Entscheidung bei 25 %
-gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. `.env` sagt `FLEET_MIGRATE_PCT='40'`, und
+gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. Damals galt `FLEET_MIGRATE_PCT='40'`, und
 der Owner fand die frühe Nachfolge „[Zitat entfernt]“. Seit der Owner-Promotion am selben Tag gilt: Die
-Schwelle ist `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT` (Lanes).
-Darunter wird nicht übergeben, über 45 % wird die Nachfolge aktiv gefahren. Die Zahl liest man aus
-`.env` und den eigenen Füllstand misst man mit `./ctl.sh ctx`. **Das gilt für claude, nicht für
+Fleet-Defaults sind `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT`
+(Lanes); eine Owner-Einstellung für die konkrete Belegung geht ihnen inzwischen vor
+(`server.ts#patchHandover`). Die wirksame Zahl steht in `GET /api/self` → `succession.thresholdPct`,
+der eigene Füllstand in `succession.fill` beziehungsweise `./ctl.sh ctx`. Die historische
+45-%-Handlungsmarke ersetzt keine heutige Einstellung. **Das gilt für claude, nicht für
 codex** (Owner-Korrektur 2026-09-30): eine codex-Orchestratorin verdichtet nativ, ihr gemessener
 Füllstand ist Anzeige, und weder Schwelle noch 45 % lösen bei ihr einen Arbeitsstopp oder eine
 Nachfolge aus. Eine bewusste Nachfolge schuldet trotzdem den vollen Linien-Record der Karte.

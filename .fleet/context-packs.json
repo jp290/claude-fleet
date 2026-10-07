@@ -124,5 +124,24 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "nachfolge-klug",
+    "useWhen": "Wenn deine Claude-Session die wirksame Uebergabe-Schwelle erreicht: warm sichern und den Nachfolgezeitpunkt entscheiden.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["always"],
+    "hardness": "guidance",
+    "group": "sessions-fuehren",
+    "sources": [
+      { "path": "docs/controller.md", "anchor": "## Nachfolge ohne kalten Wiederaufruf" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude"],
+    "modes": ["read-only", "mutating", "monitoring"],
+    "estimatedBytes": 4588,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

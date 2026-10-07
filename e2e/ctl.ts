@@ -730,6 +730,12 @@ await import(pathToFileURL(process.argv[2]).href);
   }
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(multiState, null, 2));
   await restartSrv();
+  const realExecutionResponse = await fetch(`${BASE}/api/self/program-execution`, {
+    headers: { "x-fleet-self-token": selfTok },
+  });
+  const realExecution = (await realExecutionResponse.json()) as { programs?: {
+    program?: { id?: string }; programId?: unknown;
+  }[] };
   const choiceInbox = await ctl(["inbox"]);
   const choiceFile = await ctl(["file", cardFile, "--json"]);
   const choiceSend = await ctl(["send", "--orchestrator", sendFile, "--json"]);
@@ -1790,14 +1796,20 @@ await import(pathToFileURL(process.argv[2]).href);
   const sendPosts: { body: { slot?: number; text?: string; openedAt?: number }; auth: string | null }[] = [];
   const selfPosts: { body: { to?: { kind?: string; role?: string; slot?: number; openedAt?: number }; payload?: { kind?: string; text?: string }; idempotencyKey?: string; programId?: string };
     token: string | null; auth: string | null }[] = [];
-  let selfExecution: unknown = { session: { slot: 4, openedAt: 4000 }, programs: [{
-    programId: "aa".repeat(12),
+  let selfExecution = { session: { slot: 4, openedAt: 4000 }, programs: [{
+    program: { id: "aa".repeat(12) },
     authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" }, lanes: { rows: [] },
   }, {
-    programId: "bb".repeat(12),
+    program: { id: "bb".repeat(12) },
     authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" },
     lanes: { rows: [{ slot: 9, openedAt: 9000 }] },
   }] };
+  check("ctl send --lane setup: the stub matches the real two-Program projection's program.id without an entry programId",
+    realExecutionResponse.ok && realExecution.programs?.length === 2
+      && [programId, foreignProgramId].every((id) => realExecution.programs?.some((entry) =>
+        entry.program?.id === id && !("programId" in entry)))
+      && selfExecution.programs.every((entry) => typeof entry.program.id === "string" && !("programId" in entry)),
+    `status=${realExecutionResponse.status} realIds=${JSON.stringify(realExecution.programs?.map((entry) => entry.program?.id))}`);
   let selfMessageStatus = 200;
   let selfMessageError = "";
   const bound = (id: string, slot: number | null, openedAt: number, occupancy: string) =>
@@ -1896,6 +1908,7 @@ await import(pathToFileURL(process.argv[2]).href);
     `exit=${selfForeign.code} posts=${selfPosts.length} error=${selfForeign.err}`);
   selfMessageStatus = 200;
   selfExecution = { session: { slot: 4, openedAt: 4000 }, programs: [{
+    program: { id: "aa".repeat(12) },
     authority: { boundSlot: 4, boundOpenedAt: 4000, executionState: "active" }, lanes: { rows: [] },
   }] };
   const selfNotNamed = await ctl(["send", "--lane", "10", msgFile], noOwnerEnv);

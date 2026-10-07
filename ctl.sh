@@ -1417,7 +1417,7 @@ if (!execution.ok || !session || !binding || !target || typeof target.openedAt !
 const key = "ctl-lane-" + require("node:crypto").randomBytes(12).toString("hex");
 const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "lane", slot: targetSlot, openedAt: target.openedAt },
-    payload: { kind: "text", text }, idempotencyKey: key, ...(binding.programId ? { programId: binding.programId } : {}) }) });
+    payload: { kind: "text", text }, idempotencyKey: key, ...(binding.program?.id ? { programId: binding.program.id } : {}) }) });
 const error = r.ok ? null : (r.body?.error ?? "refused");
 if (error) console.error(`send --lane: ${r.status} ${error}`);
 out({ ok: r.ok, sent: r.ok, slot: targetSlot, openedAt: target.openedAt, status: r.status,

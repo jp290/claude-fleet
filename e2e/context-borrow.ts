@@ -74,7 +74,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       missingClient.client === undefined && missingClient.error?.includes("src/founding.ts") === true, missingClient.error);
     for (const harness of ["claude", "codex"]) {
       const input = { role: { text: "Fixture role.", path: "server.ts", anchor: "role" }, position: "lane", harness,
-        plan: { selected: [{ id: "renderer-anchor", estimatedBytes: 0, sources: [
+        plan: { selected: [{ id: "renderer-anchor", hardness: "guidance", estimatedBytes: 0, sources: [
           { id: "ambiguous", path: "ambiguous.md", anchor: "### Kern" },
           { id: "exact", path: "exact.md", anchor: "### Kern" },
         ] }], omitted: [] }, selection: { "renderer-anchor.ambiguous": "box", "renderer-anchor.exact": "box" },

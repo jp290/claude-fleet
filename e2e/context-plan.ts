@@ -638,6 +638,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
 
   sessionAgentsChecks(check);
   await laneSessionFilesChecks(check);
+  await ownerSuccessionPermissionsChecks(check);
   taskCatalogChecks(check);
   privatePackChecks(check);
   await contextBorrowChecks(check);
@@ -1258,7 +1259,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   const duplicate = "Read the exact output. Preserve this footer sentence.";
   check("session agents: sentence-equal instructions disappear from the footer only",
     sessionExitFooter(duplicate, "--- DER LOOP --- Read the exact output.") === "Preserve this footer sentence.");
-  const legacy = { id: "legacy", useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
+  const legacy = { id: "legacy", hardness: "guidance" as const, useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
   const legacyRender = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [legacy], omitted: [] }, sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
   check("session agents: an unsplit pack retains its exact existing pointer bytes",
     legacyRender.text.includes("- legacy — Read on demand\n  old.md | ## Old") && !legacyRender.text.includes("old bytes"));
@@ -1266,6 +1267,61 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
     sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section
     && sectionAt(section, "x.md", "### Missing") === null);
+}
+
+async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promise<void> {
+  const source = readFileSync(join(import.meta.dir, "../server.ts"), "utf8");
+  const cut = (start: string, end: string): string => {
+    const at = source.indexOf(start), until = source.indexOf(end, at);
+    if (at < 0 || until < 0) throw new Error(`owner succession probe: missing source ${start}`);
+    return source.slice(at, until);
+  };
+  const code = [cut("const harnessOf =", "\n\n"), cut("function permissionsOf(", "\n// The lane's browser profile"),
+    cut("const sameSuccessionOccupant =", "\n\n"), cut("function boundProgramsForMain(", "\nfunction mainBindingOf("),
+    cut("const isGameMaker =", "\n"), cut("type OwnerSucceedRefusal =", "\n// THE SESSION'S HALF:")].join("\n");
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+  const profiles = ["read-only", "workspace-write", "danger-full-access"].flatMap((sandbox) =>
+    ["on-request", "never"].map((approval) => ({ sandbox, approval })));
+  const cases = [
+    ...profiles.map((permissions) => ({ name: `${permissions.sandbox}/${permissions.approval}`, harness: "codex", permissions, late: null })),
+    { name: "invalid", harness: "codex", permissions: { state: "invalid" }, late: null },
+    { name: "unsupported", harness: "claude", permissions: profiles[0]!, late: null },
+    { name: "late invalid", harness: "codex", permissions: profiles[0]!, late: { state: "invalid" } },
+    { name: "late changed", harness: "codex", permissions: profiles[0]!, late: profiles[5]! },
+  ];
+  for (const fixture of cases) {
+    let effects = 0, spawn: unknown = null;
+    const slot: Record<string, unknown> = { id: 1, openedAt: 123, cwd: "/fixture/owner-succession", selfToken: "fixture-token",
+      label: "Fixture", harness: fixture.harness, model: "fixture-model", effort: "high", permissions: fixture.permissions };
+    const claude = { id: "claude", supports: { transcript: false } };
+    const deps = { codexPermissionsFrom, CLAUDE_HARNESS: claude,
+      HARNESSES: [claude, { id: "codex", supports: { transcript: false },
+        permissions: { default: { sandbox: "danger-full-access", approval: "never" } } }],
+      programs: [], STEWARD_LABEL: "steward", MERGE_IDLE_MS: 1000,
+      slotWakeInflight: new Set(), slotTeardownInflight: new Set(), restarting: new Set(), slotSpawnInflight: new Set(),
+      laneSpawn: new Set(), mergeInflight: new Set(), successionStarted: new Map(), successionInflight: new Set(),
+      json: (body: unknown, status = 200) => Response.json(body, { status }),
+      canDeliver: async () => ({ ok: true }), transcriptPayload: async () => ({ source: null, entries: [] }),
+      lineagePointerCommitted: async () => true, audit: () => {},
+      succeedGeneric: async (_slot: unknown, options: { spawn: unknown; beforeKill: () => Promise<Response | null> }) => {
+        spawn = options.spawn;
+        if (fixture.late) slot.permissions = fixture.late;
+        const refused = await options.beforeKill();
+        if (refused) return refused;
+        effects++;
+        return Response.json({ ok: true });
+      } };
+    const succeed = new Function(...Object.keys(deps), `${js}; return handleOwnerSucceed;`)(...Object.values(deps)) as
+      (s: Record<string, unknown>) => Promise<Response>;
+    const response = await succeed(slot);
+    const positive = fixture.name.includes("/");
+    const expectedStatus = positive ? 200 : fixture.name === "late changed" ? 409 : 400;
+    check(`owner succession permissions: ${fixture.name} ${positive ? "preserved exactly" : "refused before destruction"}`,
+      response.status === expectedStatus && effects === (positive ? 1 : 0)
+        && (positive ? JSON.stringify(spawn) === JSON.stringify({ model: slot.model, effort: slot.effort, permissions: fixture.permissions })
+          : fixture.late !== null || spawn === null),
+      `status=${response.status}, effects=${effects}, spawn=${JSON.stringify(spawn)}`);
+  }
 }
 
 async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {
@@ -1325,7 +1381,9 @@ async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {
     mkdirSync(join(repo, "denied"));
     writeFileSync(join(repo, "denied/canary"), "blocked");
     const profile = piZaiFenceProfile({ home: repo, fleetDir: repo, agentDir: join(repo, "agent"),
-      keyFile: join(repo, "key"), cwd: repo, tmuxDir: join(repo, "tmux"), sockets: [], denyRoots: [join(repo, "denied")] });
+      keyFile: join(repo, "key"), cwd: repo, tmuxDir: join(repo, "tmux"), sockets: [], denyRoots: [join(repo, "denied")],
+      tmpRoots: [join(repo, "tmp")], ownTmp: join(repo, "tmp/own"), suiteLock: join(repo, "tmp/suite-lock"),
+      toolRoots: [join(repo, "tools")], git: null });
     check("lane files: pi-zai fence builds with a local native rule file", profile !== null);
     if (process.platform === "darwin" && profile) {
       const allowed = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/cat", join(repo, "AGENTS.override.md")], { encoding: "utf8" });

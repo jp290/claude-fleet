@@ -10688,7 +10688,6 @@ type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent
   onRefused?: (receiver: Slot) => Promise<void>; address?: DeliveryAddress; bypassQueue?: true;
   eventIds?: readonly string[]; paneInboxNotice?: string; reportId?: string; inboxId?: string;
   programEventId?: string; beforePaste?: (receiver: Slot) => void;
-  programEventId?: string;
   timing?: (phase: string, ms: number) => void;
   bundleGate?: { harness?: false; quietHours?: false; idleMs?: number } };
 type DeliveryAddress = { kind: "program"; id: string } | { kind: "orchestrator" } | { kind: "slot"; id: number };
@@ -13401,6 +13400,8 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
   const no = (r: OwnerSucceedNo): Response => json({ error: r.error, reason: r.reason }, r.code);
   const railNo = ownerSucceedRailRefusal(s);
   if (railNo) return no(railNo);
+  const pe = slotPermissionsOf(s);
+  if (!pe.ok) return json({ error: pe.error }, 400);
   const busyNo = await ownerSucceedBusy(s);
   if (busyNo) return no(busyNo);
   const predecessorIdentity: SuccessionPredecessorIdentity = { slot: s.id, openedAt: s.openedAt, cwd: s.cwd!, selfToken: s.selfToken };
@@ -13424,6 +13425,13 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
       const lateRail = ownerSucceedRailRefusal(s);
       if (lateRail && lateRail.reason !== "in-flight") return no(lateRail);
       const lateBusy = await ownerSucceedBusy(s);
+      if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
+        return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
+      const latePermissions = slotPermissionsOf(s);
+      if (!latePermissions.ok) return json({ error: latePermissions.error }, 400);
+      if (latePermissions.permissions?.sandbox !== pe.permissions?.sandbox
+        || latePermissions.permissions?.approval !== pe.permissions?.approval)
+        return no(ownerSucceedNo(409, "slot-changing", "the session's permissions changed while the succession was prepared — nothing was handed over"));
       return lateBusy ? no(lateBusy) : null;
     };
     const early = await lastQuestion();
@@ -13437,7 +13445,7 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     };
     return await succeedGeneric(s, { label: s.label, carry: null,
       channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
-      spawn: { model: s.model, effort: s.effort }, predecessorIdentity, memoryGrant: undefined,
+      spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, memoryGrant: undefined,
       appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
   } finally {
     successionInflight.delete(identity);

@@ -75,7 +75,7 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
   const selections = [...input.plan.selected];
   if (nativeContract && !selections.some((pack) => pack.id === "portable-core")) {
     const seed = CONTEXT_PACKS.find((pack) => pack.id === "portable-core")!;
-    selections.unshift({ id: seed.id, useWhen: seed.useWhen, sources: seed.sources, estimatedBytes: seed.estimatedBytes });
+    selections.unshift({ id: seed.id, hardness: seed.hardness, useWhen: seed.useWhen, sources: seed.sources, estimatedBytes: seed.estimatedBytes });
   }
   for (const pack of selections) {
     const sources = "privateSourceId" in pack.sources ? [] : pack.sources;

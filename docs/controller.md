@@ -235,9 +235,11 @@ Codex lädt `AGENTS.md`, nicht `CLAUDE.md`: der Hinweis nennt die benötigten Re
 
 Für eine Claude-Session empfehlen wir: **im noch warmen Turn nachfolgen, sobald die effektive
 Übergabe-Schwelle erreicht ist und nichts mehr in Flug ist, das nur in dieser Session lebt.**
-Den aktuellen Füllstand und `succession.thresholdPct` aus `GET /api/self` lesen
-(`server.ts#successionFacts`); fehlende Werte bleiben `unknown`, eine ausgeschaltete Schwelle
-ist kein Auslöser. Die Owner-Einstellung dieser Belegung geht vor dem Fleet-Default
+Den eigenen Füllstand mit `./ctl.sh ctx` messen. Die effektive Schwelle steht als
+`succession.thresholdPct` im Slot-Brief beziehungsweise Board (`GET /api/slots/:id/brief`,
+`server.ts#successionFacts`, `docs/self-api.md` §succeed). Sind diese Fakten nicht zugestellt,
+die wirksame Einstellung beim eigenen Empfänger klären; fehlende Werte bleiben `unknown`,
+eine ausgeschaltete Schwelle ist kein Auslöser. Die Owner-Einstellung dieser Belegung geht vor dem Fleet-Default
 (`server.ts#patchHandover`). Der Pack setzt keine Schwelle und erteilt keine zusätzliche
 Nachfolge-Befugnis: die eigene Rollenkarte und Nachfolge-Schiene gelten, insbesondere das
 Lane-Ende des jeweiligen Harness. Codex kompaktiert nativ; diese Cache-Messung begründet dort
@@ -309,8 +311,9 @@ gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. Damals galt `FLEET_MIG
 der Owner fand die frühe Nachfolge „[Zitat entfernt]“. Seit der Owner-Promotion am selben Tag gilt: Die
 Fleet-Defaults sind `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT`
 (Lanes); eine Owner-Einstellung für die konkrete Belegung geht ihnen inzwischen vor
-(`server.ts#patchHandover`). Die wirksame Zahl steht in `GET /api/self` → `succession.thresholdPct`,
-der eigene Füllstand in `succession.fill` beziehungsweise `./ctl.sh ctx`. Die historische
+(`server.ts#patchHandover`). Die wirksame Zahl steht im Slot-Brief/Board
+(`GET /api/slots/:id/brief` → `succession.thresholdPct`), der eigene Füllstand in dessen
+`succession.fill` beziehungsweise `./ctl.sh ctx`. Die historische
 45-%-Handlungsmarke ersetzt keine heutige Einstellung. **Das gilt für claude, nicht für
 codex** (Owner-Korrektur 2026-09-30): eine codex-Orchestratorin verdichtet nativ, ihr gemessener
 Füllstand ist Anzeige, und weder Schwelle noch 45 % lösen bei ihr einen Arbeitsstopp oder eine

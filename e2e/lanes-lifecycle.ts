@@ -11,6 +11,8 @@ import { request as httpRequest } from "node:http";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
+import { CONTEXT_PACKS } from "../context-packs";
+import { sourceSection } from "../context-sections";
 import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastReviewPromptFor, plantScreen, plogRead, post, restartSrv,
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
@@ -1484,24 +1486,43 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
   }
   {
+    const pack = CONTEXT_PACKS.find((pack) => pack.id === "harness-adapter")!;
+    const sections = pack.sources.map((source) => sourceSection(readFileSync(`${ROOT}/${source.path}`, "utf8"), source.path, source.anchor));
+    const measured = sections.reduce((bytes, section) => bytes + (section?.bytes ?? 0), 0);
+    check("harness-adapter estimate stays within 20% of its bounded source sections",
+      sections.every((section) => section !== null) && measured > 0 && Math.abs(pack.estimatedBytes - measured) <= measured * 0.2,
+      `estimated=${pack.estimatedBytes}; measured=${measured}; resolved=${sections.every((section) => section !== null)}`);
+  }
+  for (const cause of ["heal", "restart"] as const) {
     const lane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
-    await stopSrv();
-    await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
-    rmSync(`${lane.cwd}/AGENTS.override.md`);
+    const rulesPath = `${lane.cwd}/AGENTS.override.md`;
     const priorLocal = readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8");
-    const before = readFileSync(`${ROOT}/server.log`).length;
     try {
-      check("native rules recovery fixture has lost its founding file", !existsSync(`${lane.cwd}/AGENTS.override.md`)
+      rmSync(rulesPath);
+      check(`native rules ${cause} fixture has lost its founding file`, !existsSync(rulesPath)
         && priorLocal === "@AGENTS.override.md\n");
-      await restartSrv();
-      const api = await get("/api/sessions"), pane = await tmuxOut("has-session", "-t", `=s${lane.slot}`);
-      const log = readFileSync(`${ROOT}/server.log`).subarray(before).toString("utf8");
-      check("native rules restart keeps the server available and names the failed slot", api.ok
-        && log.includes(`slot ${lane.slot}: session rules unavailable`)
-        && log.includes(`${lane.cwd}/AGENTS.override.md`), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
-      check("native rules recovery refuses to invent a generic replacement for missing founding rules", pane.code !== 0
-        && !existsSync(`${lane.cwd}/AGENTS.override.md`)
-        && readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") === priorLocal, `pane=${pane.code}`);
+      if (cause === "heal") await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
+      else {
+        const restarted = await post(`/api/slots/${lane.slot}/restart`, {});
+        check("native rules missing-file restart answers ok", restarted.ok, `HTTP ${restarted.status}`);
+      }
+      await until(async () => (await tmuxOut("has-session", "-t", `=s${lane.slot}`)).code === 0 && existsSync(rulesPath),
+        { timeoutMs: 15_000, what: `native rules ${cause}: generic recovery` });
+      const rules = readFileSync(rulesPath);
+      check(`native rules ${cause} starts a live pane with generic Lane rules`,
+        rules.toString("utf8").startsWith("## Rolle\n\n--- ROLLE --- Lane:") && rules.includes("/api/self/fleet-report"));
+      check(`native rules ${cause} keeps the exact Claude import`, readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") === priorLocal);
+      const recovered = Buffer.concat([rules, Buffer.from("\nRecovery preservation probe: ä\r\n")]);
+      writeFileSync(rulesPath, recovered);
+      if (cause === "heal") {
+        await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
+        await until(async () => (await tmuxOut("has-session", "-t", `=s${lane.slot}`)).code === 0,
+          { timeoutMs: 15_000, what: "native rules heal: existing-file recovery" });
+      } else {
+        const restarted = await post(`/api/slots/${lane.slot}/restart`, {});
+        check("native rules existing-file restart answers ok", restarted.ok, `HTTP ${restarted.status}`);
+      }
+      check(`native rules ${cause} preserves an existing file byte for byte`, readFileSync(rulesPath).equals(recovered));
     } finally {
       await post(`/api/slots/${lane.slot}/kill`, {}).catch(() => undefined);
     }

@@ -9397,7 +9397,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           let agents = preparedLaneAgents ?? opening?.sessionAgents;
           // Recovery keeps the founding selections. An open selects the harness anew; its token also
           // covers a heal that wins the race to spawn before openSlot reaches ensureSlot.
-          if (!agents && cause !== "open" && !opening) {
+          if (!agents && cause !== "open" && !opening && existsSync(`${occupant.cwd}/AGENTS.override.md`)) {
             const bytes = Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`));
             projectDocMaxBytes = bytes > SESSION_AGENTS_LIMIT ? bytes : undefined;
           } else {

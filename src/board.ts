@@ -3046,7 +3046,7 @@ function machineRow(key: string, name: string, roles: string[], lead: MachineLea
       if (lead.label) { say.appendChild(el("b", "", lead.label)); say.appendChild(document.createTextNode(" · ")); }
       say.append(...s.text);
       if (lead.due) { row.classList.add("due"); titles.push(lead.dueTitle ?? ""); }
-      if (s.title) lines.push([s.title]);
+      if (s.title) { lines.push([s.title]); titles.push(s.title); }
     } else {
       row.dataset.kind = lead.kind;
       row.appendChild(el("span", `nd ${lead.node}`));
@@ -3370,15 +3370,19 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   };
   // NO ROW WITHOUT A STATEMENT, NO TWO ROWS ALIKE: a worktree without a session shows the words of
   // its branch — a detached one first THAT it is detached (the phone cuts the end), then its
-  // directory's words — and words two such rows would share carry what tells them apart
+  // directory's words — and words two such rows would share lead with what tells them apart
   const words = new Map<string, string>();
   for (const w of lanes) if (!slotOf(w)) words.set(w.path, w.branch ? laneWords(w.branch) : `losgelöst · ${laneWords(baseName(w.path))}`);
-  for (const w of lanes) {
-    const mine = words.get(w.path);
-    if (mine === undefined || ![...words].some(([p, x]) => p !== w.path && x === mine)) continue;
-    const hex = w.branch ? /[-_/]([0-9a-f]{4,})$/.exec(w.branch)?.[1] : null;
-    const day = w.branch ? branchDay(w.branch) : null;
-    words.set(w.path, `${mine} · ${hex ?? day ?? sha7(w.head) ?? w.branch ?? w.path}`);
+  // the part that tells them apart goes FIRST (a narrow column cuts the end): the day the branch was
+  // cut where the days differ, else its hex tail, else the commit it stands on
+  const plain = new Map(words);
+  for (const mine of new Set(plain.values())) {
+    const alike = lanes.filter((w) => plain.get(w.path) === mine);
+    if (alike.length < 2) continue;
+    const days = alike.map((w) => (w.branch ? branchDay(w.branch) : null));
+    const byDay = days.every((d) => d) && new Set(days).size === alike.length;
+    alike.forEach((w, i) => words.set(w.path,
+      `${byDay ? days[i] : (w.branch ? /[-_/]([0-9a-f]{4,})$/.exec(w.branch)?.[1] : null) ?? sha7(w.head) ?? w.path} · ${mine}`));
   }
   const fold = lanes.length > 12 && !rankeFoldOpen.has(R.repo) ? lanes.filter((w) => !slotOf(w)) : [];
   const branchRows = (list: WorkplaceRow[], d: number, parent: string) => {

@@ -7514,7 +7514,7 @@ async function excludeLaneScratch(lanePath: string): Promise<void> {
 }
 
 async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents,
-  current: () => boolean): Promise<void> {
+  current: () => boolean = () => true): Promise<void> {
   const tracked = await git(lanePath, "ls-files", "--", "AGENTS.override.md", "CLAUDE.local.md");
   if (!current()) return;
   if (tracked.code !== 0 || tracked.out) throw new Error("session rule paths must be untracked");

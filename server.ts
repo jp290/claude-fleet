@@ -27717,6 +27717,15 @@ interface PostLandAuditShard {
   k: number; jobId: string; result: "green" | "red" | "unknown";
   ms: number | null; ran: number | null; failed: number | null; exitCode: number | null;
   name?: string; trail?: string;
+  // WHY THIS SHARD MEASURED NOTHING, when it produced no result at all — the slot's own `closed.why`,
+  // copied as it stands: `sibling` (never started, a sibling had already ruled green out — skipped
+  // ON PURPOSE), `unclaimed` (nobody claimed it before the run's window shut) or `lapsed` (a helper
+  // claimed it and reported nothing). Stamped on EVERY row regardless of the row's result: a red row
+  // is exactly where a sibling-closed shard lives, and before this field the red row dropped the
+  // reason the unknown row printed (post-land-audits.jsonl at 18b6a8c3, 373d2a96, f6c50aea: red rows
+  // whose unreported shards stood `unknown`, ms/ran null, with no word why). Absent on a shard that
+  // reported, and on every row written before the field existed — "not recorded", never "it ran".
+  unmeasured?: NonNullable<AuditShardSlot["closed"]>["why"];
   // CO-RESIDENCE — which SIBLING shards of this same audit held an overlapping window on the SAME
   // host. Derived, never sensed: the claim and report instants are already on the run, and the row
   // keeps each shard's DURATION (`ms`) plus the run's outer span, from which the PAIRWISE question
@@ -27751,7 +27760,7 @@ interface PostLandAuditRow {
   main: string;        // integration branch name
   mainSha: string;     // the tip the audit actually ran against — joins to a note's `mainAfter`
   result: "green" | "red" | "unknown" | "not-applicable";
-  reason?: string;     // why an unknown run or a not-applicable land had no measurement
+  reason?: string;     // why an unknown run or a not-applicable land had no measurement — and, on a sharded RED row, which shards measured nothing and why
   cmd: string;
   // which config chose `cmd` — the repo's own worker or the env default. Optional so historical
   // rows (all env) and remote rows (the helper's own suite) claim nothing they never recorded.
@@ -27803,8 +27812,9 @@ interface PostLandAuditRow {
   covers: AuditCover[];
   // Present ONLY on a row a SHARDED run produced (FLEET_AUDIT_SHARDS, see AuditShardRun): one entry per
   // shard, in `k` order, including the ones that produced nothing — `result:"unknown"` with `ms`,
-  // `ran`, `failed` and `exitCode` null is a shard that lapsed or never ran, and the row's own
-  // `reason` says which. Absent on every unsharded row, historical or new.
+  // `ran`, `failed` and `exitCode` null is a shard that lapsed or never ran; its own `unmeasured`
+  // names which, and the row's `reason` says it in prose — on a red row too (only the unmeasured
+  // shards there; the red one speaks through `fails` and `out`). Absent on every unsharded row.
   shards?: PostLandAuditShard[];
   // Present ONLY on a row a remote helper produced (see THE REMOTE HELPER PORTAL). Its absence is
   // the statement "this machine measured it itself" — which is why the field is optional rather
@@ -31777,9 +31787,13 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
     s.result ? `shard ${s.k}/${n} (${s.result.name}): ${s.result.reason ?? s.result.result}`
     : s.closed?.why === "lapsed" ? `shard ${s.k}/${n} lapsed — ${s.closed.name ?? "a helper"} claimed it and reported nothing`
     : s.closed?.why === "sibling" ? `shard ${s.k}/${n} was not run — a sibling had already ruled green out`
+    : s.closed?.why === "unclaimed" ? `shard ${s.k}/${n} was never claimed — the run's claim window shut first`
     : `shard ${s.k}/${n} was never claimed`;
-  const reason = result === "unknown"
-    ? run.shards.filter((s) => s.result?.result !== "green").map(why).join("; ") : undefined;
+  // unknown: every shard that is not green. red: every shard that measured NOTHING (closed, or reported
+  // unknown) — a red row must still tell "skipped on purpose" from "the helper delivered nothing".
+  const unmeasured = run.shards.filter((s) => s.result?.result !== "green" && s.result?.result !== "red").map(why);
+  const reason = result === "unknown" ? run.shards.filter((s) => s.result?.result !== "green").map(why).join("; ")
+    : result === "red" && unmeasured.length ? unmeasured.join("; ") : undefined;
   // ms = FIRST CLAIM to LAST RESULT. The first claim is read off the shards (the run is opened a
   // microtask before its opener's claim is stamped); a run with a shard that never reported ends now.
   const claimTimes = run.shards.flatMap((s) => (s.result ? [s.result.claimedAt]
@@ -31820,6 +31834,8 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
       exitCode: s.result?.exitCode ?? null,
       ...(s.result?.name ?? s.closed?.name ? { name: s.result?.name ?? s.closed?.name } : {}),
       ...(s.result?.trail ? { trail: s.result.trail } : {}),
+      // whatever the row's result: a red row is where a sibling-closed shard lives
+      ...(!s.result && s.closed ? { unmeasured: s.closed.why } : {}),
       // spread, not `?? undefined`: a shard with no window must leave the key OUT, and an EMPTY
       // `with` must stay on the row (it is the measured "disjoint", not a missing measurement)
       ...(coResident.has(s.k) ? { coResident: coResident.get(s.k)! } : {}),

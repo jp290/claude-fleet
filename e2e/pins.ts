@@ -9464,6 +9464,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       /const allGreen = reported\.length === n && reported\.every\(\(x\) => x\.r\.result === "green"\);/.test(shardRowOf!)
         && /reds\.length \? "red" : allGreen \? "green" : "unknown"/.test(shardRowOf!),
       `allGreenNeedsN=${/reported\.length === n/.test(shardRowOf!)}`);
+    // (d) A SHARD THAT MEASURED NOTHING SAYS WHY, ON A RED ROW TOO. The red row is exactly where a
+    // sibling-closed shard lives (closeOpenShards closes every unclaimed one once a sibling is red), and
+    // until the per-shard `unmeasured` existed the red row dropped the reason only the unknown row
+    // printed: 18b6a8c3, 373d2a96 and f6c50aea stood in the ledger with shard 3 `unknown`, ms/ran null,
+    // and no word why. Fails when the stamp is missing, when it is gated on the row's result, or when
+    // the red arm of `reason` is gone.
+    const shardMap = /shards: run\.shards\.map\(\(s\) => \(\{[\s\S]*?\}\)\),/.exec(shardRowOf!)?.[0] ?? "";
+    const stamp = /\.\.\.\(!s\.result && s\.closed \? \{ unmeasured: s\.closed\.why \} : \{\}\)/;
+    pin(`${RULE_SHARDS} (d) every shard without a result carries its closed reason (sibling/unclaimed/lapsed) whatever the row's result, and a red row's reason names the unmeasured shards`,
+      stamp.test(shardMap) && !/\bresult ===/.test(shardMap.replace(/^\s*\/\/.*$/gm, ""))
+        && /\bunmeasured\?: NonNullable<AuditShardSlot\["closed"\]>\["why"\];/.test(serverU.span("interface PostLandAuditShard {", "\n}")?.text ?? "")
+        && /: result === "red" && unmeasured\.length \? unmeasured\.join\("; "\) : undefined;/.test(shardRowOf!),
+      `map=${shardMap !== ""} stamp=${stamp.test(shardMap)} redReason=${/result === "red" && unmeasured/.test(shardRowOf!)}`);
   }
 
   // --- THE S1 HANDSHAKE. A command job is offered ONLY to a device whose heartbeat named a

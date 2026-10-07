@@ -1295,6 +1295,62 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   check("session agents: the shared cut preserves UTF-8 and fenced headings and refuses an absent anchor",
     sectionAt(`${section}### Next\nother\n`, "x.md", "### Part") === section
     && sectionAt(section, "x.md", "### Missing") === null);
+  const codeSection = [
+    "export const PACK = {",
+    "  nested: (() => {",
+    "const inner = 1;",
+    "    return inner;",
+    "  })(),",
+    '  text: "Grüße }",',
+    "  template: `",
+    "export const fake = 2;",
+    "  `,",
+    "  pattern: /[{}]/,",
+    "};",
+    "/*",
+    "export const commented = 3;",
+    "*/",
+    "",
+  ].join("\n") + "\n";
+  const codePrefix = "const before = 0;\n\n";
+  const codeTail = "export function after() { return 4; }\n";
+  const codeSource = codePrefix + codeSection + codeTail;
+  check("source sections: a TS anchor stops at the next top-level declaration, ignoring nested code and literals",
+    sectionAt(codeSource, "fixture.ts", "export const PACK =") === codeSection);
+  const codeReceipt = sourceSection(codeSource, "fixture.ts", "export const PACK =");
+  check("source sections: receipt offsets, UTF-8 bytes and hash describe exactly the bounded TS section",
+    codeReceipt?.start === codePrefix.length && codeReceipt.end === codePrefix.length + codeSection.length
+      && codeReceipt.bytes === Buffer.byteLength(codeSection)
+      && codeReceipt.sha256 === createHash("sha256").update(codeSection).digest("hex"), JSON.stringify(codeReceipt));
+  check("source sections: a final TS declaration and CRLF retain their exact source bytes",
+    sectionAt(codePrefix + codeTail, "fixture.ts", "export function after") === codeTail
+      && sectionAt(codeSource.replaceAll("\n", "\r\n"), "fixture.ts", "export const PACK =") === codeSection.replaceAll("\n", "\r\n"));
+  check("source sections: an absent TS anchor returns null",
+    sourceSection(codeSource, "fixture.ts", "const absent =") === null);
+  let ambiguousCode = "";
+  try { sectionAt(codeSource + codeSection, "fixture.ts", "export const PACK ="); }
+  catch (error) { ambiguousCode = error instanceof Error ? error.name : "unknown"; }
+  check("source sections: duplicate TS anchors are refused as ambiguous", ambiguousCode === "source-anchor-ambiguous", ambiguousCode);
+  const harnessPack = CONTEXT_PACKS.find((pack) => pack.id === "harness-adapter")!;
+  const harnessSections = "sources" in harnessPack ? harnessPack.sources.map((source) =>
+    sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)) : [];
+  const harnessBytes = harnessSections.reduce((sum, part) => sum + (part?.bytes ?? 0), 0);
+  // An order-of-magnitude bound allows the unchanged Markdown part to exceed the estimate.
+  check("source sections: the real harness-adapter pack stays within one order of magnitude of its estimate",
+    harnessSections.length === 2 && harnessSections.every((part) => part !== null)
+      && harnessBytes >= harnessPack.estimatedBytes / 10 && harnessBytes <= harnessPack.estimatedBytes * 10,
+    JSON.stringify({ bytes: harnessBytes, estimatedBytes: harnessPack.estimatedBytes, parts: harnessSections.map((part) => part?.bytes) }));
+  const harnessCode = harnessSections.find((part) => part?.path === "server.ts");
+  check("source sections: the harness registry excludes the following harnessOf declaration",
+    harnessCode?.content.includes("CODEX_HARNESS") === true && !harnessCode.content.includes("const harnessOf ="),
+    JSON.stringify(harnessCode?.content));
+  const harnessRender = renderSessionAgents({ ...base, harness: "claude",
+    plan: { selected: [harnessPack], omitted: [] }, sourceBytes });
+  const harnessParts = harnessRender.parts.filter((part) => part.packId === "harness-adapter");
+  check("session agents: harness-adapter receipts carry the bounded source bytes and hashes",
+    harnessParts.length === 2 && harnessParts.every((part, index) =>
+      part.bytes === harnessSections[index]?.bytes && part.sha256 === harnessSections[index]?.sha256),
+    JSON.stringify(harnessParts.map((part) => ({ path: part.path, bytes: part.bytes, refusal: part.refusal }))));
 }
 
 async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promise<void> {

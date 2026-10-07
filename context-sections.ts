@@ -34,6 +34,37 @@ function sectionSpan(text: string, path: string, anchor: string): { start: numbe
   const start = matches[0] ?? -1;
   if (start < 0) return null;
   const first = lines[start]!;
+  if (!markdown) {
+    // Code sections end before the next top-level declaration.
+    // Lexical tokens keep declarations inside comments, literals and bodies out of the cut.
+    const tokens = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/(?:\\[^\n]|\[(?:\\[^\n]|[^\]\\\n])*\]|[^/\\\n])+\/[dgimsuvy]*|[A-Za-z_$][\w$]*|[^\s]/g;
+    const declaration = /^(?:(?:export|default|declare|abstract|async)\s+)*(?:const|let|var|function|class|interface|type|enum|namespace|import)\b/;
+    let depth = 0;
+    let previous = "";
+    let lineIndex = 0;
+    let token: RegExpExecArray | null;
+    while ((token = tokens.exec(text)) !== null) {
+      const offset = token.index;
+      while (lineIndex + 1 < lines.length && lines[lineIndex + 1]!.offset <= offset) lineIndex++;
+      const line = lines[lineIndex]!;
+      const head = line.offset + line.text.length - line.text.trimStart().length;
+      if (lineIndex > start && offset === head && depth === 0 && declaration.test(line.text.trimStart()))
+        return { start: first.offset, end: line.offset };
+      const value = token[0];
+      if (value.startsWith("//") || value.startsWith("/*")) continue;
+      if (value.startsWith("/") && value.length > 1
+        && !/^(?:|[=(:,!&|?;{}\[\]]|return|throw|case|yield|await)$/.test(previous)) {
+        // A slash after an operand is division; rescan its contents as code.
+        tokens.lastIndex = offset + 1;
+        previous = "/";
+        continue;
+      }
+      if (/^[({\[]$/.test(value)) depth++;
+      else if (/^[)}\]]$/.test(value)) depth--;
+      previous = value;
+    }
+    return { start: first.offset, end: text.length };
+  }
   const next = markdown ? lines.slice(start + 1).find((line) => line.level > 0 && (!first.level || line.level <= first.level)) : undefined;
   return { start: first.offset, end: next?.offset ?? text.length };
 }

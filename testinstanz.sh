@@ -91,6 +91,42 @@ fi
 [ "$SOCK" = "claudefleet" ] && { echo "refused: claudefleet is the live tmux socket" >&2; exit 2; }
 case "$DIR" in "$SRC"|"$SRC"/*) echo "refused: the instance may not live inside the checkout" >&2; exit 2;; esac
 
+# WHAT THE INSTANCE OWNS INSIDE $DIR, read off the code — ONE list for both uses in `refresh`: its
+# last sync excludes these (a worktree file named like one must not overwrite the instance's state,
+# and --force must never remove a state directory), and its deletion never touches them.
+#   server.ts writes   fleet.json (+ .tmp/.bak/.corrupt), fleet.pid, every *.jsonl ledger (audit.jsonl
+#                      via server/audit-log.ts, rulebook/ab.jsonl), streams/, post-land-audit-queue.json,
+#                      deploy-inflight.json — the server's own constants at the top of server.ts
+#   this script        .testinstanz.pid/.token/.manifest, testinstanz.state(.new), env-names, server.log,
+#                      bin/, home/, konzepte/, node_modules (ti_serve, up)
+#   the fixtures       fixture-repo/, fixture-other/ (testinstanz-fixtures.js); transcripts live in home/
+#   never copied       .env* (up's exclude)
+# A new path the server or this script writes into $DIR belongs in this list.
+TI_OWN='fleet.json* fleet.pid *.jsonl streams post-land-audit-queue.json deploy-inflight.json .testinstanz.* testinstanz.state* env-names server.log bin home konzepte node_modules fixture-repo fixture-other .env*'
+# is the relative path $1 instance-owned? *.jsonl at any depth, everything else from the top of $DIR
+ti_own_path() {
+  set -f
+  for TI_O in $TI_OWN; do
+    case "$TI_O" in
+      '*.jsonl') case "$1" in *.jsonl) set +f; return 0 ;; esac ;;
+      *) case "$1" in $TI_O|$TI_O/*) set +f; return 0 ;; esac ;;
+    esac
+  done
+  set +f
+  return 1
+}
+# does the relative path $1 reach $DIR only through real directories? A worktree that replaced a
+# directory by a SYMLINK hands rsync -a that symlink, and a deletion below it would follow it out
+# of the instance (or onto the instance's own state); any symlinked ancestor makes the path untouchable
+ti_plain_path() {
+  TI_A=$(dirname "$1")
+  while [ "$TI_A" != . ]; do
+    [ -L "$DIR/$TI_A" ] && return 1
+    TI_A=$(dirname "$TI_A")
+  done
+  return 0
+}
+
 # WHAT THE COPY TOOK FROM THE WORKTREE, as relative paths: every file and symlink the staged copy
 # holds right after its build, node_modules (the symlink to the source's) left out. `up` writes it
 # before the instance writes anything of its own; `refresh` deletes exactly the paths in the OLD list
@@ -454,18 +490,22 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   ti_manifest "$TI_STAGE" > "$DIR.manifest"
   # --force: a non-empty directory the worktree replaced by a FILE is removed to make room (without
   # it rsync leaves the directory, fails, and set -e ends refresh half-way after a green build)
-  rsync -a --force --exclude node_modules "$TI_STAGE/" "$DIR/"
+  set -f
+  set -- -a --force
+  for TI_O in $TI_OWN; do
+    case "$TI_O" in '*.jsonl') set -- "$@" --exclude '*.jsonl' ;; *) set -- "$@" --exclude "/$TI_O" ;; esac
+  done
+  set +f
+  rsync "$@" "$TI_STAGE/" "$DIR/"
   # deleted in the worktree → deleted in the copy: old list minus new list, files only, never a path
   # that leaves $DIR. No old list (an instance `up` started before the list existed) deletes nothing.
-  TI_GONE=0
+  TI_GONE=0; TI_KEPT=0
   if [ -f "$DIR/.testinstanz.manifest" ]; then
     LC_ALL=C comm -23 "$DIR/.testinstanz.manifest" "$DIR.manifest" > "$DIR.gone"
     while IFS= read -r TI_P; do
       case "$TI_P" in ''|/*|..|../*|*/../*|*/..) continue ;; esac
-      # and never a path the instance owns, even if a list ever named one: up's excludes plus what
-      # this script and ti_serve create in $DIR (the list cannot hold these; this is the belt)
-      case "$TI_P" in fleet.json*|*.jsonl|.env*|fleet.pid|.testinstanz.*|testinstanz.state*|env-names|server.log \
-        |node_modules|node_modules/*|home/*|bin/*|konzepte/*) continue ;; esac
+      # never a path the instance owns (TI_OWN), and never one below a symlink (ti_plain_path)
+      if ti_own_path "$TI_P" || ! ti_plain_path "$TI_P"; then TI_KEPT=$((TI_KEPT + 1)); continue; fi
       if [ -f "$DIR/$TI_P" ] || [ -L "$DIR/$TI_P" ]; then rm -f "$DIR/$TI_P" && TI_GONE=$((TI_GONE + 1)); fi
       # and the directories that held only it: rmdir takes only an EMPTY one, and only parents of a
       # listed path are tried — never home/, bin/ or konzepte/, which no listed path lives under
@@ -494,7 +534,7 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   kill "$(cat "$PIDF")" 2>/dev/null || true
   i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
   ti_serve || exit 1
-  echo "refreshed   http://$(ti_addr):$PORT/   head $(printf '%s' "$TI_SOURCE_BEFORE" | sed -n 's/^{"head":"\([0-9a-f]\{7\}\).*/\1/p') · removed $TI_GONE · port and token unchanged"
+  echo "refreshed   http://$(ti_addr):$PORT/   head $(printf '%s' "$TI_SOURCE_BEFORE" | sed -n 's/^{"head":"\([0-9a-f]\{7\}\).*/\1/p') · removed $TI_GONE · kept $TI_KEPT · port and token unchanged"
   ;;
 fixtures)
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }

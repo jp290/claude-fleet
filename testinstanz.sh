@@ -17,6 +17,9 @@
 #                                           succession, ctx, codex states, painters), print the URL
 #                                           — the whole demo; FLEET_TI_TOKEN=<old> keeps the link the
 #                                           owner holds; default ttl 240 min
+#   ./testinstanz.sh refresh                bring the worktree's CURRENT stand into the standing instance:
+#                                           stage + build beside it, restart only the server; port,
+#                                           token (the owner's link), tmux and fixtures stay
 #   ./testinstanz.sh fixtures [mixed|full]  replant against the running instance, no restart
 #   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
@@ -394,6 +397,61 @@ JS
   echo "  log $DIR/server.log · socket $SOCK · port $PORT · ttl ${TI_TTL}min · FLEET_CMD=true (no agent is ever spawned)"
   echo "  down: $SRC/testinstanz.sh down"
   ;;
+refresh)
+  # A CHANGE IN THE WORKTREE, VISIBLE AFTER A RELOAD — without `down` + `up` (40 s, new fixtures, a
+  # new token unless FLEET_TI_TOKEN is carried by hand). Measured 2026-10-07
+  # (docs/messungen/2026-10-07-live-worktree-konzept.md §2, §6).
+  #
+  # STAGED BESIDE THE INSTANCE, NOT INTO IT. The copy and the build happen in $DIR.next; only a green
+  # build is synced over the running copy. A red build therefore leaves the old instance standing
+  # exactly as it was — the same rule as `up`'s "a red build starts nothing", applied to a restart.
+  # The sync uses `up`'s excludes, so the instance's own state (fleet.json, ledgers, home/, bin/,
+  # konzepte/, token, state file) is never overwritten. It does not delete: a file removed from the
+  # worktree stays in the copy until the next `up`.
+  #
+  # ONLY THE SERVER RESTARTS, the way ti_patch does it: the tmux sessions stand through it, so the
+  # panes, their painters and the planted fixtures are still there. The restart is what carries the
+  # new FLEET_INSTANCE_SOURCE (the band is read once at boot, server.ts#INSTANCE_SOURCE) and any
+  # server.ts change; a client-only change would need no restart (server/transport.ts#bundleV), but
+  # one path for both keeps the band honest. An open page sees the new bundle version in its next
+  # /api/sessions poll and offers the reload (src/client.ts#armReload).
+  ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
+  ti_owned || { echo 'refused: instance identity is unknown' >&2; exit 2; }
+  ti_source_match || { echo 'refused: source removed or replaced' >&2; exit 2; }
+  TI_STAGE="$DIR.next"
+  case "$TI_STAGE" in "$SRC"|"$SRC"/*) echo "refused: the staging copy may not live inside the checkout" >&2; exit 2;; esac
+  TI_SOURCE_BEFORE=$(ti_measure)
+  TI_COPY_STARTED=$(date +%s)
+  rm -rf "$TI_STAGE"; mkdir -p "$TI_STAGE"
+  rsync -a --exclude .git --exclude node_modules --exclude '.env*' --exclude fleet.pid --exclude 'fleet.json*' --exclude '*.jsonl' "$SRC/" "$TI_STAGE/"
+  TI_COPY_FINISHED=$(date +%s)
+  TI_SOURCE_AFTER=$(TI_GIT_SRC="$SRC" GIT_OPTIONAL_LOCKS=0 bun -e '
+const run=(...a)=>{const p=Bun.spawnSync(["git","-C",process.env.TI_GIT_SRC,...a],{env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}});return p.exitCode===0?p.stdout.toString().trim():null;};
+const head=run("rev-parse","HEAD"),branch=run("symbolic-ref","--short","HEAD"),status=run("status","--porcelain");
+console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt:Date.now()}));')
+  ln -s "$SRC/node_modules" "$TI_STAGE/node_modules"
+  ( cd "$TI_STAGE" && bun run build ) || { rm -rf "$TI_STAGE"; echo "refresh: build failed — the running instance is unchanged" >&2; exit 1; }
+  TI_BUILT=$(date +%s)
+  rsync -a --exclude node_modules "$TI_STAGE/" "$DIR/"
+  rm -rf "$TI_STAGE"
+  # the state file records the stand NOW shown; ti_serve reads sourceBefore from it for the band
+  # and rewrites pid= and birth= once the new server answers
+  sed -e '/^sourceBefore=/d' -e '/^sourceAfter=/d' -e '/^copyStartedAt=/d' -e '/^copyFinishedAt=/d' -e '/^builtAt=/d' "$STATE" > "$STATE.new"
+  {
+    echo "sourceBefore=$TI_SOURCE_BEFORE"
+    echo "sourceAfter=$TI_SOURCE_AFTER"
+    echo "copyStartedAt=$TI_COPY_STARTED"
+    echo "copyFinishedAt=$TI_COPY_FINISHED"
+    echo "builtAt=$TI_BUILT"
+  } >> "$STATE.new"
+  mv "$STATE.new" "$STATE"
+  # the restart serves the mode the instance was started in (snapshot: `cat` panes, no device list)
+  TI_KIND=$(sed -n 's/^mode=//p' "$STATE" | head -1)
+  kill "$(cat "$PIDF")" 2>/dev/null || true
+  i=0; while kill -0 "$(cat "$PIDF")" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i+1)); sleep 0.25; done
+  ti_serve || exit 1
+  echo "refreshed   http://$(ti_addr):$PORT/   head $(printf '%s' "$TI_SOURCE_BEFORE" | sed -n 's/^{"head":"\([0-9a-f]\{7\}\).*/\1/p') · port and token unchanged"
+  ;;
 fixtures)
   ti_alive || { echo "not up — ./testinstanz.sh up" >&2; exit 1; }
   ti_plant "${2:-mixed}"
@@ -518,5 +576,5 @@ down)
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | fixtures [mixed|full] | succession | states | status | source | list | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | refresh | fixtures [mixed|full] | succession | states | status | source | list | down" >&2; exit 2;;
 esac

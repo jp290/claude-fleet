@@ -10947,10 +10947,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
           // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Notizblock → History → Mehr
           const order = n.kids.map((k) => k.includes("ranke") ? "ranke" : k.includes("bhead") ? "sess" : k.includes("bchanges") ? "changes"
             : k.includes("bnotesec") ? "note" : k.includes("bhist") ? "history" : k.includes("bmore") ? "more" : k.includes("bnopane") ? "nopane"
-            : /plasec|berrs/.test(k) ? "alarm" : k).filter((k) => k !== "alarm");
-          claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Notizblock → History → Mehr`] = !hasSession
-            ? JSON.stringify(order) === JSON.stringify(["ranke", "nopane"])
-            : JSON.stringify(order) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "note", "history", "more"] : ["ranke", "sess", "changes", "history", "more"]);
+            : /plasec|berrs/.test(k) ? "alarm" : k.includes("testinstanzmachine") ? "machine" : k).filter((k) => k !== "alarm");
+          // the machine's test instances (src/client.ts#paintTestinstanzCard) close the column when there are any
+          const story = order.at(-1) === "machine" ? order.slice(0, -1) : order;
+          claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Notizblock → History → Mehr`] = !story.includes("machine") && (!hasSession
+            ? JSON.stringify(story) === JSON.stringify(["ranke", "nopane"])
+            : JSON.stringify(story) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "note", "history", "more"] : ["ranke", "sess", "changes", "history", "more"]));
           claims[`${it}no process word anywhere in the column's visible text`] = !PROCESS.test(n.bodyText) && !ADDRESS.test(n.bodyText);
           if (!hasSession) claims[`${it}without a session the column says so in one sentence and draws no session block`] = /Wähle eine Pane, um ihre Session zu sehen\./.test(n.bodyText) && !n.sess;
           if (hasSession && detail && n.sess) {

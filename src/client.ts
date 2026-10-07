@@ -10613,6 +10613,8 @@ function paintTestinstanzMachine(card: HTMLElement): void {
 function paintTestinstanzCard(): void {
   if (!boardOpen || boardBody.querySelector(".testinstanzmachine")) return;
   const card = el("div", "bsec testinstanzmachine");
+  // carried through the board's swaps (src/board.ts#keptCards): re-added after one, it jumped the column
+  card.dataset.boardKeep = "1";
   card.appendChild(el("h3", "", "Testinstanzen"));
   paintTestinstanzMachine(card);
   if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);

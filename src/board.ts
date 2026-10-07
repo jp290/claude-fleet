@@ -1336,6 +1336,12 @@ export function notepadBlock(repo: string, w: WtRow): HTMLElement {
   return box;
 }
 
+// A card the column does not build itself but carries (data-board-keep: the machine's test instances,
+// src/client.ts#paintTestinstanzCard) rides through every swap. Dropped and re-added by an observer
+// after it, the column was that card shorter at the moment its scroll was restored: clamped, and
+// every tick jumped the column under the pointer (e2e/slots.ts, "a repaint keeps the reading position").
+const keptCards = (): HTMLElement[] => [...boardBody.querySelectorAll<HTMLElement>(":scope > [data-board-keep]")];
+
 export async function renderBoard() {
   // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
@@ -1365,7 +1371,7 @@ export async function renderBoard() {
       boardPop = null;
       perfRebuild("renderBoard");
       boardBody.replaceChildren(...(pla0 ? [pla0] : []), ...(er ? [er] : []),
-        arbeitsorteSection(null, null), el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen."));
+        arbeitsorteSection(null, null), el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen."), ...keptCards());
       boardBody.scrollTop = y0;
       drawRankeLines(boardBody);
       return;
@@ -1493,7 +1499,7 @@ export async function renderBoard() {
     const msec = moreSection(c);
     nodes.push(msec);
     perfRebuild("renderBoard");
-    boardBody.replaceChildren(...nodes);
+    boardBody.replaceChildren(...nodes, ...keptCards());
     drawRankeLines(boardBody);
     boardBody.scrollTop = y;
     // the worktree field asked to be shown: bring its row into view once, then leave the scroll alone

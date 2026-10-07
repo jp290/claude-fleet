@@ -9403,8 +9403,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(cpProgramReceipt.sessionAgents.parts?.filter((part) => part.packId === cpPack.id)) === JSON.stringify([cpPart])
       && cpSource.startsWith(`${cpHeading}\n`) && !/\n# /.test(cpSource)
       && cpRules.includes(cpPack.useWhen) && cpRules.includes(`AGENTS.md | ${cpHeading}`)
-      // the label carries the pack's hardness since 02cf9fb2 (session-agents.ts#renderSessionAgents: `- <id> [<hardness>]`)
-      && cpRules.split(`- ${cpPack.id} [guidance] —`).length === 2
+      && cpRules.split(`- ${cpPack.id} —`).length === 2
       && cpDelivered?.text.endsWith("\n\nSession-Regeln: ./AGENTS.override.md") === true
       && !cpDelivered.text.includes(cpPack.id) && !cpDelivered.text.includes("--- ROLLE ---")
       && !cpDelivered.text.includes("ContextPlan v2 anchors") && !cpDelivered.text.includes("HOW THIS LANE ENDS"),

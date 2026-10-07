@@ -10015,6 +10015,14 @@ async function runCodexPermissions(): Promise<void> {
     await restartSrv({ PATH: path });
     check("legacy Codex absence reloads the explicit historical full-access default", profileIs((await row())?.permissions, defaultProfile)
       && flagsAre(await nextArgs(n), defaultProfile));
+    const codexCliVersionProbe = (argv: readonly string[]): boolean => argv.length === 1 && argv[0] === "--version";
+    const codexInvocationDelta = (before: readonly (readonly string[])[], after: readonly (readonly string[])[]) => {
+      const prefixUnchanged = after.length >= before.length && JSON.stringify(after.slice(0, before.length)) === JSON.stringify(before);
+      const delta = after.slice(before.length);
+      const versionProbes = delta.filter(codexCliVersionProbe);
+      const otherCalls = delta.filter((argv) => !codexCliVersionProbe(argv));
+      return { prefixUnchanged, delta, versionProbes, otherCalls, noSpawn: prefixUnchanged && otherCalls.length === 0 };
+    };
     for (const permissions of [null, { sandbox: "read-only", approval: "untrusted" }, { state: "invalid" }]) {
       await stopSrv(); await tmuxOut("kill-session", "-t", "=s16");
       const durable = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { permissions: unknown }> };
@@ -10033,12 +10041,28 @@ async function runCodexPermissions(): Promise<void> {
         persistedStat = fstatSync(persistedFile);
       } finally { closeSync(persistedFile); }
       const argvAfter = args();
+      const invocations = codexInvocationDelta(argvBefore, argvAfter);
+      const freshStart = argvBefore.find((argv) => argv[0] === "--no-daemon");
+      const resumedStart = argvBefore.find((argv) => argv[0] === "resume");
+      for (const [name, call] of [["fresh", freshStart], ["resume", resumedStart], ["version plus extra", ["--version", "fixture-extra"]]] as const) {
+        const rejected = call ? codexInvocationDelta(argvBefore, [...argvBefore, call]) : null;
+        check(`invalid permissions invocation counterprobe: ${name} remains an unauthorized delta`,
+          rejected !== null && !rejected.noSpawn && rejected.prefixUnchanged && rejected.versionProbes.length === 0
+            && rejected.otherCalls.length === 1,
+          JSON.stringify({ input: permissions, fixturePresent: !!call, delta: rejected }));
+      }
+      const versionOnly = codexInvocationDelta(argvBefore, [...argvBefore, ["--version"]]);
+      const changedPrefix = codexInvocationDelta([["fixture-predecessor"]], [["fixture-replacement"], ["--version"]]);
+      check("invalid permissions invocation counterprobe: only the exact CLI version entry is separate, with the original prefix retained",
+        versionOnly.noSpawn && versionOnly.versionProbes.length === 1 && versionOnly.otherCalls.length === 0
+          && codexInvocationDelta(argvBefore, argvBefore).noSpawn && !changedPrefix.noSpawn && !changedPrefix.prefixUnchanged,
+        JSON.stringify({ input: permissions, versionOnly, changedPrefix }));
       const pane = await tmuxOut("has-session", "-t", "=s16");
       const restartBody = await restart.json() as { error?: unknown };
       const conjuncts = {
         normalizedInvalid: JSON.stringify(invalid?.permissions) === '{"state":"invalid"}',
         restartRefused: restart.status === 400,
-        noSpawn: argvAfter.length === n,
+        noSpawn: invocations.noSpawn,
         noPane: pane.code !== 0,
         persistedInvalid: JSON.stringify(snapshot.slots[16].permissions) === '{"state":"invalid"}',
       };
@@ -10046,7 +10070,7 @@ async function runCodexPermissions(): Promise<void> {
         conjuncts.normalizedInvalid && conjuncts.restartRefused && conjuncts.noSpawn && conjuncts.noPane && conjuncts.persistedInvalid,
         JSON.stringify({ input: permissions, normalizedProfile: invalid?.permissions ?? null,
           restart: { status: restart.status, body: { error: typeof restartBody.error === "string" ? restartBody.error : null },
-            bodyKeys: Object.keys(restartBody) }, argvBefore, argvAfter, tmux: { exit: pane.code, exists: pane.code === 0 },
+            bodyKeys: Object.keys(restartBody) }, argvBefore, argvAfter, invocations, tmux: { exit: pane.code, exists: pane.code === 0 },
           persistedMarker: snapshot.slots[16].permissions,
           persistence: { fixture: { inode: fixtureStat.ino, mtimeMs: fixtureStat.mtimeMs, ctimeMs: fixtureStat.ctimeMs },
             observed: { inode: persistedStat.ino, mtimeMs: persistedStat.mtimeMs, ctimeMs: persistedStat.ctimeMs },

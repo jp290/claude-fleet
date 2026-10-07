@@ -2567,6 +2567,8 @@ const rankeRepos: Map<string, boolean> = (() => {
   return m;
 })(); // a hand-edited or foreign value is "nothing chosen", not a crash
 const rankeFoldOpen = new Set<string>();
+// the projects without running work behind their one row: open or not is a look, like the fold above
+let rankeQuietOpen = false;
 // the settings window resets the two (src/client.ts#PREF_APPLY): read them again and repaint
 export function reloadRankePrefs(): void {
   rankeMode = rankeModeOf(prefText("fleet.ranke.mode"));
@@ -2592,12 +2594,24 @@ const tiErr = new Map<string, string>();
 const sha7 = (h: string | null | undefined): string | null => (h ? h.slice(0, 7) : null);
 const refShort = (ref: string): string => ref.replace(/^refs\/(heads|remotes)\//, "");
 // "fleet/261004-zeitleiste-c3d4" → "zeitleiste": the words of a branch without its date and hex
-// (owner 2026-10-04: the lane's name, not a hex tail)
+// (owner 2026-10-04: the lane's name, not a hex tail). A date stands anywhere in the name as a stamp
+// (261004, 260920214010) or a day (2026-10-04); a name of a date and a hex alone says the day it was
+// cut (owner 2026-10-07: „[Zitat entfernt]“ twice told nothing). Without a branch the worktree is detached.
 export function laneWords(branch: string | null): string {
-  if (!branch) return "ohne Branch";
-  const words = branch.replace(/^fleet\//, "").replace(/^\d{6,}-/, "").replace(/-[0-9a-f]{4,}$/, "")
-    .replace(/[-_/]+/g, " ").trim();
-  return words || branch;
+  if (!branch) return "losgelöst";
+  const bare = branch.replace(/^fleet\//, "");
+  const words = bare.replace(/(^|[-_/])(?:\d{6,}|(?:19|20)\d\d-\d\d-\d\d)(?=[-_/]|$)/g, "$1")
+    .replace(/[-_/][0-9a-f]{4,}$/, "").replace(/[-_/]+/g, " ").trim();
+  if (words && !/^(?=.*\d)[0-9a-f]{4,}$/.test(words)) return words;
+  const day = branchDay(bare);
+  return day ? `Zweig vom ${day}` : branch;
+}
+// the day in a branch name, "20.09.": a stamp yymmdd[hhmm…] or a yyyy-mm-dd, read only when it is one
+export function branchDay(branch: string): string | null {
+  const m = /(?:^|[-_/])(?:(?:19|20)\d\d-(\d\d)-(\d\d)|\d\d(\d\d)(\d\d)\d*)(?=[-_/]|$)/.exec(branch);
+  if (!m) return null;
+  const mm = Number(m[1] ?? m[3]), dd = Number(m[2] ?? m[4]);
+  return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 ? `${String(dd).padStart(2, "0")}.${String(mm).padStart(2, "0")}.` : null;
 }
 const clockOf = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export function agoDe(ms: number): string {
@@ -2940,25 +2954,16 @@ function standSentence(st: WorkplaceStand): { text: (Node | string)[]; title: st
       if (st.reportedCheckout) { parts.push(" · Checkout "); parts.push(el("span", "mono", sha7(st.reportedCheckout.head) ?? "")); }
       titles.push("die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses");
     } else if (st.basis === "copy-unproven") titles.push("eine Testkopie meldet keinen belegten Stand");
-    else if (st.basis === "heartbeat") titles.push("der Helfer hat noch keinen Stand gemeldet");
+    else if (st.basis === "heartbeat") {
+      // a helper without a stand still says when it last spoke at all: weeks of silence are the fact
+      parts.push(st.observedAt ? ` · zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)}` : " · hat sich nie gemeldet");
+      titles.push("der Helfer hat noch keinen Stand gemeldet");
+    }
   }
-  if (st.basis === "heartbeat" && st.observedAt) titles.push(`zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)} — ein letzter Bericht, kein Beweis, dass er gerade erreichbar ist`);
+  if (head && st.basis === "heartbeat" && st.observedAt) titles.push(`zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)} — ein letzter Bericht, kein Beweis, dass er gerade erreichbar ist`);
   if (st.update) titles.push(`Aktualisierung: ${st.update.state}${st.update.mainSha ? ` auf ${sha7(st.update.mainSha)}` : ""}`);
   const node = st.kind === "live-server" ? (behindCode ? "wait" : "live") : head ? "" : "leer";
   return { text: parts, title: titles.join(" · "), node, behindCode };
-}
-function standRow(label: string | null, st: WorkplaceStand): HTMLElement {
-  const s = standSentence(st);
-  const row = el("div", "zr stand");
-  row.dataset.kind = st.kind;
-  row.appendChild(el("span", `nd ${s.node}`));
-  const nm = el("span", "nm");
-  if (label) { nm.appendChild(el("b", "", label)); nm.appendChild(document.createTextNode(" · ")); }
-  nm.append(...s.text);
-  row.appendChild(nm);
-  row.title = [label ?? "", ...s.text.map((p) => (typeof p === "string" ? p : p.textContent ?? ""))].join("").trim()
-    + (s.title ? ` — ${s.title}` : "");
-  return row;
 }
 // THE TEST INSTANCE'S OWN ROW, in the machine group: the same words the band above the app paints
 // (src/protocol.ts#instanceBandText, minus the branch — the row sits under the machine's name), so
@@ -2989,6 +2994,111 @@ function machineHead(name: string, sub: string, title: string): HTMLElement {
   row.appendChild(nm);
   row.title = title;
   return row;
+}
+
+// --- ONE ROW PER MACHINE (owner 2026-10-07). The stands arrive per CARRIER — a helper's daemon, its
+// instance, a link to a Fleet — and a machine is the name they report under, so they group by that
+// name (case and spaces aside). The row: the name, the roles the carriers give it, the sentence of
+// its first carrier; a tap opens every other carrier's sentence and the reasons the hover holds
+// (a phone has no hover). Order: the helper's daemon, its instance, then the link.
+const machineKey = (name: string): string => name.trim().toLowerCase();
+const CARRIER_ORDER: WorkplaceStand["kind"][] = ["live-server", "helper-daemon", "helper-instance", "linked-instance"];
+function machinesOf(stands: WorkplaceStand[]): Map<string, WorkplaceStand[]> {
+  const out = new Map<string, WorkplaceStand[]>();
+  stands.forEach((st, i) => {
+    if (st.kind !== "helper-daemon" && st.kind !== "helper-instance" && st.kind !== "linked-instance") return;
+    // a carrier without a name is a machine of its own: nothing says which other one it is
+    const key = st.name ? machineKey(st.name) : `\0${st.kind}${st.kind === "linked-instance" ? i : ""}`;
+    out.set(key, [...(out.get(key) ?? []), st]);
+  });
+  for (const list of out.values()) list.sort((a, b) => CARRIER_ORDER.indexOf(a.kind) - CARRIER_ORDER.indexOf(b.kind));
+  return out;
+}
+function rolesOf(list: WorkplaceStand[]): string[] {
+  return [list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance") ? "Helfer" : "",
+    list.some((st) => st.kind === "linked-instance") ? "verlinkt" : ""].filter(Boolean);
+}
+function carrierWord(st: WorkplaceStand): string {
+  return st.kind === "helper-daemon" ? "Helfer-Dienst" : st.kind === "helper-instance" ? "Instanz"
+    : st.kind === "linked-instance" ? "Fleet-Instanz" : "Live";
+}
+type MachineLead = { label: string | null; st: WorkplaceStand; due?: boolean; dueTitle?: string }
+  | { label: string; text: string; node: string; kind: string };
+type MachineFact = { label: string; text: string | null; st: WorkplaceStand | null };
+function machineRow(key: string, name: string, roles: string[], lead: MachineLead | null, facts: MachineFact[], about: string): HTMLElement[] {
+  const row = el("div", "zr mach");
+  const fx = el("span", "fx");
+  fx.appendChild(icon("screen"));
+  row.appendChild(fx);
+  const nm = el("span", "nm", name);
+  if (roles.length) nm.appendChild(el("span", "cnt", roles.join(" · ")));
+  row.appendChild(nm);
+  const titles = [name + (roles.length ? ` · ${roles.join(" · ")}` : "")];
+  // what a tap opens: the lead's own reasons, then every other carrier in its own words
+  const lines: (Node | string)[][] = [];
+  if (lead) {
+    row.classList.add("one");
+    const say = el("span", "st");
+    if ("st" in lead) {
+      const s = standSentence(lead.st);
+      row.dataset.kind = lead.st.kind;
+      row.appendChild(el("span", `nd ${s.node}`));
+      if (lead.label) { say.appendChild(el("b", "", lead.label)); say.appendChild(document.createTextNode(" · ")); }
+      say.append(...s.text);
+      if (lead.due) { row.classList.add("due"); titles.push(lead.dueTitle ?? ""); }
+      if (s.title) lines.push([s.title]);
+    } else {
+      row.dataset.kind = lead.kind;
+      row.appendChild(el("span", `nd ${lead.node}`));
+      say.append(el("b", "", lead.label), ` · ${lead.text}`);
+    }
+    row.appendChild(say);
+    titles.splice(1, 0, say.textContent ?? "");
+  }
+  for (const f of facts) {
+    const s = f.st ? standSentence(f.st) : null;
+    lines.push([el("b", "", f.label), " · ", ...(s ? s.text : [f.text ?? ""]), ...(s?.title ? [` — ${s.title}`] : [])]);
+  }
+  const id = `mach:${key}`;
+  const open = rankeOpen === id && lines.length > 0;
+  row.dataset.machine = name;
+  row.title = [...titles, about].filter(Boolean).join(" — ");
+  if (!lines.length) return [row];
+  const fc = el("span", "fc");
+  fc.appendChild(icon("chevron"));
+  row.appendChild(fc);
+  if (open) row.classList.add("open");
+  rowTarget(row, () => { rankeOpen = open ? null : id; void renderBoard(); });
+  row.setAttribute("aria-expanded", String(open));
+  if (!open) return [row];
+  return [row, ...lines.map((parts) => {
+    const line = el("div", "zd mx");
+    line.dataset.for = id;
+    const tx = el("span", "tx");
+    tx.append(...parts);
+    line.appendChild(tx);
+    return line;
+  })];
+}
+
+// RUNNING WORK in a project: a lane (a worktree with its session), a session that works or waits
+// right now, or a land on its way (its land check runs or queues). A session that only sits in the
+// main checkout marks a place, not work; an unreadable project stands open with its reason.
+function workSlot(w: WorkplaceRow): SlotInfo | undefined {
+  if (!w.session) return undefined;
+  const s = fleet[w.session.slot - 1];
+  return s?.cwd && (s.openedAt === undefined || s.openedAt === w.session.openedAt) ? s : undefined;
+}
+function repoAtWork(R: WorkplaceRepo): boolean {
+  if (R.worktrees === null) return true;
+  const busy = (s: SlotInfo) => sessionActive(s.id) || !!s.awaiting;
+  for (const w of R.worktrees) {
+    const s = workSlot(w);
+    if (s && (!w.primary || busy(s))) return true;
+    const gate = w.checks.gate?.state;
+    if (gate === "running" || gate === "waiting") return true;
+  }
+  return fleet.some((s) => !!s.cwd && !s.worktree && (s.repo ?? s.cwd) === R.repo && busy(s));
 }
 
 // a row that acts on a click is a target for the keyboard too: Tab reaches it, Enter or Space act
@@ -3046,29 +3156,46 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   const standOf = new Map<string, WorkplaceStand>();
   for (const st of wp.stands ?? []) if (st.path) standOf.set(`${st.kind}:${st.path}`, st);
 
-  // 1 — THIS MACHINE: its running server, then its repos
+  // 1 — THIS MACHINE: its running server, then its repos. EVERY MACHINE ONCE (owner 2026-10-07,
+  // „[Zitat entfernt]“): a machine is its NAME, so a link or a helper that carries
+  // this server's own name is this row and not a second one under the same name.
+  const machines = machinesOf(wp.stands ?? []);
+  const hereKey = instanceName ? machineKey(instanceName) : null;
+  const hereOwn = (hereKey ? machines.get(hereKey) : undefined) ?? [];
+  if (hereKey) machines.delete(hereKey);
   const here = el("div", "grp");
-  here.appendChild(machineHead(instanceName ?? "Dieser Rechner", instanceName ? "dieser Rechner" : "",
-    "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+  const hereName = instanceName ?? "Dieser Rechner";
+  const hereRoles = [instanceName ? "dieser Rechner" : "", ...rolesOf(hereOwn)].filter(Boolean);
+  const hereFacts = hereOwn.map((st) => st.kind === "linked-instance"
+    ? { label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null } : { label: carrierWord(st), text: null, st });
   const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
   if (instanceSource) {
     // A TEST INSTANCE DOES NOT CALL ITSELF LIVE (owner, 2026-10-06): the copy has no .git, so its
-    // boot head is unreadable and standRow would read „[Zitat entfernt]“. It names itself
+    // boot head is unreadable and its row would read „[Zitat entfernt]“. It names itself
     // and carries the stand measured BEFORE the copy (instance.source), in the band's own words.
+    here.append(...machineRow("here", hereName, hereRoles, null, hereFacts,
+      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
     here.appendChild(testInstanceStandRow(instanceSource));
   } else {
     // "deploy due" lives HERE now (§3, I3): it is the same statement as the Live row — does the running
     // server carry the newest code — so a due restart renames the row in the wait colour (G0.2: amber
     // means unmeasured, a due restart waits on you), and an outdated page bundle adds its own line
     const restartDue = deployGapInfo?.codeBehind === true;
-    for (const st of lives) {
-      const row = standRow(restartDue || st.target?.codeBehind === true ? "Neustart fällig" : "Live", st);
-      if (restartDue || st.target?.codeBehind === true) {
-        row.classList.add("due");
-        row.title = `${row.title} — Der laufende Server bootet von einem älteren Commit, und der Unterschied berührt Server-Code: neu starten, dann läuft dieser Stand.`;
-      }
-      here.appendChild(row);
+    const [live, ...moreLives] = lives;
+    let lead: MachineLead | null = null;
+    if (live) {
+      const due = restartDue || live.target?.codeBehind === true;
+      lead = { label: due ? "Neustart fällig" : "Live", st: live, due,
+        dueTitle: "Der laufende Server bootet von einem älteren Commit, und der Unterschied berührt Server-Code: neu starten, dann läuft dieser Stand." };
+    } else if (deployGapInfo) {
+      // an older server without stands: the deploy gap alone, said as plainly
+      const n = deployGapInfo.behindCount;
+      lead = { label: "Live", text: `läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`,
+        node: deployGapInfo.codeBehind ? "wait" : "live", kind: "live-server" };
     }
+    here.append(...machineRow("here", hereName, hereRoles, lead,
+      [...moreLives.map((st) => ({ label: "Live", text: null, st })), ...hereFacts],
+      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
     if (bundleStaleInfo?.stale === true) {
       const row = el("div", "zr stand due");
       row.dataset.kind = "bundle";
@@ -3079,33 +3206,40 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       row.title = "Der Browser zeigt einen älteren Stand — im Terminal `bun run build` ausführen, dann ist er aktuell (public/*.js sind Bauartefakte).";
       here.appendChild(row);
     }
-    if (!lives.length && deployGapInfo) {
-      // an older server without stands: the deploy gap alone, said as plainly
-      const row = el("div", "zr stand");
-      row.dataset.kind = "live-server";
-      row.appendChild(el("span", `nd ${deployGapInfo.codeBehind ? "wait" : "live"}`));
-      const n = deployGapInfo.behindCount;
-      row.appendChild(el("span", "nm", `Live · läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`));
-      here.appendChild(row);
-    }
   }
   sec.appendChild(here);
 
-  // the focused session's repo stands open; without a focused session, the first one the server reads
-  const focusRepo = focus?.cwd ? (focus.worktree?.repo ?? focus.repo ?? focus.cwd) : wp.repos[0]?.repo ?? null;
-  for (const R of wp.repos) sec.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
-
-  // 2 — THE OTHER MACHINES: helpers by their fleet name, then each linked instance
-  const helpers = new Map<string, WorkplaceStand[]>();
-  for (const st of wp.stands ?? []) {
-    if (st.kind !== "helper-daemon" && st.kind !== "helper-instance") continue;
-    const key = st.name ?? "Helfer ohne Namen";
-    helpers.set(key, [...(helpers.get(key) ?? []), st]);
-  }
-  for (const [name, list] of helpers) {
+  // THE PROJECTS (owner 2026-10-07: „[Zitat entfernt]“): a project
+  // with running work (repoAtWork) and the focused session's project stand open; every other one
+  // waits behind ONE row, a tap away, and opens there like any project
+  const focusRepo = focus?.cwd ? (focus.worktree?.repo ?? focus.repo ?? focus.cwd) : null;
+  const quiet = wp.repos.filter((R) => R.repo !== focusRepo && !repoAtWork(R));
+  for (const R of wp.repos) if (!quiet.includes(R)) sec.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+  if (quiet.length) {
     const g = el("div", "grp");
-    g.appendChild(machineHead(name, "Helfer", "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht"));
-    for (const st of list) g.appendChild(standRow(st.kind === "helper-daemon" ? "Helfer-Dienst" : "Instanz", st));
+    const f = el("div", `zr zq ${rankeQuietOpen ? "auf" : "zu"}`);
+    const fx = el("span", "fx");
+    fx.appendChild(icon("chevron"));
+    f.appendChild(fx);
+    f.appendChild(el("span", "nm", `${quiet.length} ${quiet.length === 1 ? "Projekt" : "Projekte"} ohne laufende Arbeit`));
+    f.title = `${quiet.map((R) => baseName(R.repo)).join(", ")} — keine Lane, keine arbeitende Session, kein Land unterwegs · ${rankeQuietOpen ? "zuklappen" : "aufklappen"}`;
+    rowTarget(f, () => { rankeQuietOpen = !rankeQuietOpen; void renderBoard(); });
+    f.setAttribute("aria-expanded", String(rankeQuietOpen));
+    g.appendChild(f);
+    sec.appendChild(g);
+    if (rankeQuietOpen) for (const R of quiet) sec.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+  }
+
+  // 2 — THE OTHER MACHINES: helpers by their fleet name, then each linked instance — one row each,
+  // whatever reports under the name
+  const helpers = new Map([...machines].filter(([, list]) => list.some((st) => st.kind !== "linked-instance")));
+  for (const [key, list] of machines) {
+    const [first, ...rest] = list;
+    const g = el("div", "grp");
+    g.append(...machineRow(key, first.name ?? (first.kind === "linked-instance" ? "verlinkte Fleet" : "Helfer ohne Namen"), rolesOf(list),
+      { label: first.kind === "linked-instance" ? null : carrierWord(first), st: first },
+      rest.map((st) => ({ label: carrierWord(st), text: null, st })),
+      helpers.has(key) ? "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht" : "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));
     sec.appendChild(g);
   }
   if (instanceSource && !helpers.size) {
@@ -3115,12 +3249,6 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     const g = el("div", "grp");
     g.appendChild(machineHead("Helfer", "in der Testinstanz nicht gemeldet",
       "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
-    sec.appendChild(g);
-  }
-  for (const st of (wp.stands ?? []).filter((x) => x.kind === "linked-instance")) {
-    const g = el("div", "grp");
-    g.appendChild(machineHead(st.name ?? "verlinkte Fleet", "verlinkt", "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));
-    g.appendChild(standRow(null, st));
     sec.appendChild(g);
   }
   return sec;
@@ -3133,13 +3261,17 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const hue = projectHue(R.repo);
   const rows = R.worktrees ?? [];
   const primary = rows.find((w) => w.primary) ?? null;
-  const lanes = rows.filter((w) => !w.primary);
-  const isOpen = rankeRepos.get(R.repo) ?? R.repo === focusRepo;
-  const slotOf = (w: WorkplaceRow): SlotInfo | undefined => {
-    if (!w.session) return undefined;
-    const s = fleet[w.session.slot - 1];
-    return s?.cwd && (s.openedAt === undefined || s.openedAt === w.session.openedAt) ? s : undefined;
-  };
+  const branchOf = (name: string) => R.branches?.find((b) => b.branch === name) ?? null;
+  const targetOf = (w: WorkplaceRow) => w.target?.branch ?? w.base?.branch ?? "main";
+  const overhaul = branchOf("overhaul");
+  const hasOverhaul = !!overhaul || rows.some((w) => !w.primary && targetOf(w) === "overhaul");
+  // A BRANCH STANDS ONCE (owner 2026-10-07): a worktree checked out on a branch the Ranke draws as a
+  // stem IS that stem — its session and its test instance hang on the stem row, not on a second one
+  const stemWt = new Map<string, WorkplaceRow>();
+  for (const w of rows) if (!w.primary && w.branch && (w.branch === "main" || (hasOverhaul && w.branch === "overhaul"))) stemWt.set(w.branch, w);
+  const lanes = rows.filter((w) => !w.primary && !(w.branch && stemWt.get(w.branch) === w));
+  const isOpen = rankeRepos.get(R.repo) ?? (R.repo === focusRepo || repoAtWork(R));
+  const slotOf = workSlot;
   // the repo's head: chevron, name, how many branches, where it comes from, + Lane
   const head = el("div", `zr repo ${isOpen ? "auf" : "zu"}`);
   const fx = el("span", "fx");
@@ -3194,10 +3326,6 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const rk = el("div", "rk");
   const focusSession = focusSlot ? fleet[focusSlot - 1] : undefined;
   const ownPath = focusSession?.worktree ? rows.find((w) => slotOf(w)?.id === focusSlot)?.path ?? null : null;
-  const branchOf = (name: string) => R.branches?.find((b) => b.branch === name) ?? null;
-  const targetOf = (w: WorkplaceRow) => w.target?.branch ?? w.base?.branch ?? "main";
-  const overhaul = branchOf("overhaul");
-  const hasOverhaul = !!overhaul || lanes.some((w) => targetOf(w) === "overhaul");
   const onOver = hasOverhaul ? lanes.filter((w) => targetOf(w) === "overhaul") : [];
   const onMain = lanes.filter((w) => !onOver.includes(w));
   const wantsHere = (list: WorkplaceRow[]) => list.filter((w) => w.target.landed !== "yes").length;
@@ -3220,7 +3348,8 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const msha = sha7(main?.head);
   mrt.appendChild(el("span", "mono", msha ?? "?"));
   if (!msha) (mrt.lastChild as HTMLElement).title = "Spitze von main nicht lesbar";
-  for (const s of fleet.filter((x) => x.cwd && !x.worktree && (x.repo ?? x.cwd) === R.repo)) {
+  const stemSession = (b: string) => { const w = stemWt.get(b); const s = w ? slotOf(w) : undefined; return s ? [s] : []; };
+  for (const s of [...fleet.filter((x) => x.cwd && !x.worktree && (x.repo ?? x.cwd) === R.repo), ...stemSession("main")]) {
     const r = el("button", `ref${s.id === focusSlot ? " on" : ""}`, String(s.id)) as HTMLButtonElement;
     r.type = "button";
     r.style.setProperty("--proj-h", String(hue));
@@ -3239,10 +3368,22 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
     const ref = s ? bands.get(s.id) ?? String(s.id) : "";
     return s ? `0${ref.padStart(6, "0")}` : `1${w.branch ?? w.path}`;
   };
+  // NO ROW WITHOUT A STATEMENT, NO TWO ROWS ALIKE: a worktree without a session shows the words of
+  // its branch — a detached one first THAT it is detached (the phone cuts the end), then its
+  // directory's words — and words two such rows would share carry what tells them apart
+  const words = new Map<string, string>();
+  for (const w of lanes) if (!slotOf(w)) words.set(w.path, w.branch ? laneWords(w.branch) : `losgelöst · ${laneWords(baseName(w.path))}`);
+  for (const w of lanes) {
+    const mine = words.get(w.path);
+    if (mine === undefined || ![...words].some(([p, x]) => p !== w.path && x === mine)) continue;
+    const hex = w.branch ? /[-_/]([0-9a-f]{4,})$/.exec(w.branch)?.[1] : null;
+    const day = w.branch ? branchDay(w.branch) : null;
+    words.set(w.path, `${mine} · ${hex ?? day ?? sha7(w.head) ?? w.branch ?? w.path}`);
+  }
   const fold = lanes.length > 12 && !rankeFoldOpen.has(R.repo) ? lanes.filter((w) => !slotOf(w)) : [];
   const branchRows = (list: WorkplaceRow[], d: number, parent: string) => {
     for (const w of [...list].filter((x) => !fold.includes(x)).sort((a, b) => sortKey(a).localeCompare(sortKey(b))))
-      rk.append(...laneRow(R, w, slotOf(w), d, parent, focusSlot, bands, hue, standOf, wts));
+      rk.append(...laneRow(R, w, slotOf(w), d, parent, focusSlot, bands, hue, standOf, wts, words.get(w.path)));
   };
   branchRows(onMain, 1, `${R.repo}#main`);
   if (hasOverhaul) {
@@ -3263,8 +3404,31 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
     }
     // the tip's commit only where the column asks for stands — here the distance is the answer
     if (rankeMode === "stand" || !d) ort.appendChild(el("span", "mono", sha7(overhaul?.head) ?? "?"));
+    const ow = stemWt.get("overhaul");
+    const os = ow ? slotOf(ow) : undefined;
+    if (os) {
+      const r = el("button", `ref${os.id === focusSlot ? " on" : ""}`, bands.get(os.id) ?? String(os.id)) as HTMLButtonElement;
+      r.type = "button";
+      r.style.setProperty("--proj-h", String(hue));
+      r.title = `Zu Session ${os.id} · ${laneLabel(os)} im Worktree auf overhaul springen`;
+      r.onclick = (e) => { e.stopPropagation(); jumpTo(os.id); };
+      ort.appendChild(r);
+    }
     orow.appendChild(ort);
     rk.appendChild(orow);
+    if (ow) {
+      orow.appendChild(tiSquare(ow, os?.id === focusSlot));
+      orow.title = `overhaul · ausgecheckt in ${ow.path}${os ? "" : " — Klick zeigt Öffnen und Schließen"}`;
+      const open = !os && rankeOpen === `wt:${ow.path}`;
+      if (!os) {
+        rowTarget(orow, () => { rankeOpen = open ? null : `wt:${ow.path}`; void renderBoard(); });
+        orow.setAttribute("aria-expanded", String(open));
+        orow.classList.toggle("open", open);
+        orow.style.cursor = "pointer";
+      }
+      if (open) rk.append(...wtLines(R, ow, wts));
+      if (rankeOpen === `ti:${ow.path}`) rk.appendChild(tiLine(R.repo, ow, os ? os.id : null, standOf));
+    }
     branchRows(onOver, 2, `${R.repo}#overhaul`);
   }
   if (fold.length) {
@@ -3292,9 +3456,53 @@ function jumpTo(slot: number): void {
   else void renderBoard();
 }
 
+// the line a worktree without a session opens: its branch, how far, what is unsaved, and Öffnen —
+// closing it only where the focused session's repo carries the risk facts
+function wtLines(R: WorkplaceRepo, w: WorkplaceRow, wts: WtInfo | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const line = el("div", "zd zx");
+  line.dataset.for = w.path;
+  const tx = el("span", "tx");
+  tx.appendChild(el("span", "mono", w.branch ?? "losgelöst"));
+  const wr = wts && wts.repo === R.repo ? wts.worktrees.find((x) => x.path === w.path) : undefined;
+  tx.appendChild(document.createTextNode(` · ↑${w.distance?.ahead ?? "?"}${wr ? ` · ${wr.dirty ? `${wr.dirty} ungesichert` : "nichts ungesichert"}` : ""}`));
+  tx.title = w.path;
+  line.appendChild(tx);
+  out.push(line);
+  if (wr && wts) {
+    const box = el("div", "zd zx2");
+    box.append(...worktreeControls(wts, wr));
+    out.push(box);
+  } else {
+    // only the focused session's repo carries the risk facts closing needs; opening works anywhere
+    const box = el("div", "zd zx2");
+    const acts = el("div", "rk-acts");
+    const ob = el("button", "rk-btn primary", "Öffnen") as HTMLButtonElement;
+    ob.title = "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
+    ob.onclick = async (e) => {
+      e.stopPropagation();
+      if (laneReqBusy) return;
+      laneReqBusy = true;
+      try {
+        const r = await post("/api/lanes", { repo: R.repo, attach: w.path });
+        const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+        if (!r.ok) { alert(j.error ?? "open failed"); return; }
+        await refresh();
+        loadWorkplaces(true);
+        if (j.slot) showSlot(j.slot);
+      } finally { laneReqBusy = false; }
+    };
+    acts.appendChild(ob);
+    box.appendChild(acts);
+    box.appendChild(el("div", "hint", "Schließen und die Notiz: in einer Session dieses Repos, dort steht, was verloren ginge."));
+    out.push(box);
+  }
+  return out;
+}
+
 function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: number, parent: string,
   focusSlot: number | null, bands: Map<number, string>, hue: number, standOf: Map<string, WorkplaceStand>,
-  wts: WtInfo | null): HTMLElement[] {
+  wts: WtInfo | null, words?: string): HTMLElement[] {
   const here = !!s && s.id === focusSlot;
   const ref = s ? bands.get(s.id) ?? String(s.id) : "";
   const working = !!s && sessionActive(s.id);
@@ -3315,7 +3523,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   const headSha = sha7(w.head) ?? sha7(stand?.head);
   let name: HTMLElement;
   if (rankeMode === "branch") {
-    name = el("span", "nm mono br", w.branch ?? "(detached)");
+    name = el("span", "nm mono br", w.branch ?? "losgelöst");
   } else if (rankeMode === "stand") {
     name = el("span", "nm mono st");
     name.appendChild(document.createTextNode(headSha ?? "unbekannt"));
@@ -3323,7 +3531,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
     if (dist?.behind) name.appendChild(el("span", "q", ` ↓${dist.behind}`));
   } else {
     // without a session the ring of the node says so; the words of the branch tell such worktrees apart
-    name = el("span", `nm${s ? "" : " leer"}`, s ? laneLabel(s) : laneWords(w.branch));
+    name = el("span", `nm${s ? "" : " leer"}`, s ? laneLabel(s) : words ?? laneWords(w.branch));
   }
   rowCells(row, node, ref, hue, name);
   const up = el("span", "up", `${w.distance?.ahead ? `↑${w.distance.ahead}` : ""}${s?.git?.dirty ? ` •${s.git.dirty}` : ""}`.trim());
@@ -3332,7 +3540,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   row.appendChild(up);
   row.appendChild(checkBeads(w));
   row.appendChild(tiSquare(w, here));
-  const where = `${w.branch ?? "(detached)"} · läuft auf ${headSha ?? "unbekannt"}${w.target ? ` · landet in ${w.target.branch}` : ""}`;
+  const where = `${w.branch ?? "losgelöst, auf keinem Zweig"} · läuft auf ${headSha ?? "unbekannt"}${w.target ? ` · landet in ${w.target.branch}` : ""}`;
   row.title = !s ? `Kein Gespräch in diesem Worktree · ${where} — Klick zeigt Öffnen und Schließen`
     : here ? `${ref} · ${laneLabel(s)} · ${word} — diese Session · ${where}`
     : `${ref} · ${laneLabel(s)} · ${word} — Klick springt hin wie in der Leiste · ${where}`;
@@ -3342,45 +3550,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
     row.setAttribute("aria-expanded", String(open));
   }
   const out: HTMLElement[] = [row];
-  if (open) {
-    const line = el("div", "zd zx");
-    line.dataset.for = w.path;
-    const tx = el("span", "tx");
-    tx.appendChild(el("span", "mono", w.branch ?? "(detached)"));
-    const wr = wts && wts.repo === R.repo ? wts.worktrees.find((x) => x.path === w.path) : undefined;
-    tx.appendChild(document.createTextNode(` · ↑${w.distance?.ahead ?? "?"}${wr ? ` · ${wr.dirty ? `${wr.dirty} ungesichert` : "nichts ungesichert"}` : ""}`));
-    tx.title = w.path;
-    line.appendChild(tx);
-    out.push(line);
-    if (wr && wts) {
-      const box = el("div", "zd zx2");
-      box.append(...worktreeControls(wts, wr));
-      out.push(box);
-    } else {
-      // only the focused session's repo carries the risk facts closing needs; opening works anywhere
-      const box = el("div", "zd zx2");
-      const acts = el("div", "rk-acts");
-      const ob = el("button", "rk-btn primary", "Öffnen") as HTMLButtonElement;
-      ob.title = "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
-      ob.onclick = async (e) => {
-        e.stopPropagation();
-        if (laneReqBusy) return;
-        laneReqBusy = true;
-        try {
-          const r = await post("/api/lanes", { repo: R.repo, attach: w.path });
-          const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-          if (!r.ok) { alert(j.error ?? "open failed"); return; }
-          await refresh();
-          loadWorkplaces(true);
-          if (j.slot) showSlot(j.slot);
-        } finally { laneReqBusy = false; }
-      };
-      acts.appendChild(ob);
-      box.appendChild(acts);
-      box.appendChild(el("div", "hint", "Schließen und die Notiz: in einer Session dieses Repos, dort steht, was verloren ginge."));
-      out.push(box);
-    }
-  }
+  if (open) out.push(...wtLines(R, w, wts));
   if (rankeOpen === `ti:${w.path}`) out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
   return out;
 }

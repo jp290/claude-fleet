@@ -2961,6 +2961,36 @@
   #board .zr .mono { font-family: var(--chat-mono); font-size: 10.5px; }
   #board .zr.stand .nm .q { color: var(--chat-faint); }
   #board .zr.stand .nm .cb { color: var(--q-wait); }
+  /* ONE ROW PER MACHINE (owner 2026-10-07): the name and its roles, under them the stand of its
+     first carrier with its node below the screen; the chevron at the right opens the others */
+  #board .zr.mach.one { grid-template-rows: auto auto; row-gap: 1px; padding: 3px 0; align-items: start; }
+  #board .zr.mach.one > .fx { grid-row: 1; align-self: center; }
+  #board .zr.mach.one > .nm { grid-row: 1; }
+  #board .zr.mach.one > .nd { grid-column: 1; grid-row: 2; margin: 5px 0 0 3px; }
+  #board .zr.mach.one > .st { grid-column: 2; grid-row: 2; min-width: 0; font-size: var(--chat-ui-fs); color: var(--chat-mute);
+    white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+  #board .zr.mach > .st b { color: var(--chat-ink); font-weight: 500; }
+  #board .zr.mach > .st .q { color: var(--chat-faint); }
+  #board .zr.mach > .st .cb { color: var(--q-wait); }
+  #board .zr.mach[role="button"] { grid-template-columns: var(--rk-rail) minmax(0, 1fr) 14px; cursor: pointer; }
+  #board .zr.mach[role="button"]:hover { background: var(--c-hover); }
+  #board .zr.mach > .fc { grid-column: 3; grid-row: 1; align-self: center; color: var(--chat-faint); display: grid; place-items: center; }
+  #board .zr.mach > .fc .ico { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--t); }
+  #board .zr.mach.open > .fc .ico { transform: none; }
+  #board .zd.mx { display: block; min-height: 0; padding: 2px 0 2px calc(var(--rk-rail) + 4px); line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+  #board .zd.mx > .tx { display: inline; white-space: normal; overflow: visible; }
+  #board .zd.mx b { color: var(--chat-prose); font-weight: 500; }
+  #board .zd.mx .mono { color: var(--chat-mute); }
+  #board .zd.mx .cb { color: var(--q-wait); }
+  #board .zd.mx + .zd.mx { margin-top: 2px; }
+  #board .zd.mx:last-of-type { padding-bottom: 6px; }
+  /* the projects without running work behind one row, a tap away */
+  #board .zr.zq { cursor: pointer; grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
+  #board .zr.zq:hover { background: var(--c-hover); }
+  #board .zr.zq .fx { grid-column: 1; color: var(--chat-faint); display: grid; place-items: center start; }
+  #board .zr.zq .fx .ico { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--t); }
+  #board .zr.zq.auf .fx .ico { transform: none; }
+  #board .zr.zq .nm { grid-column: 2; color: var(--chat-mute); }
   /* the line under a row: its test instance, or a worktree without a session opened up */
   #board .zd { display: grid; grid-template-columns: var(--rk-cols); column-gap: 4px; align-items: center; min-height: var(--rk-sub);
     font-size: var(--chat-ui-fs); color: var(--chat-mute); }
@@ -2998,6 +3028,10 @@
     #board .zr { font-size: 13px; }
     #board .zr .ref { font-size: 11px; }
     #board .zr.stand, #board .zr.mach { min-height: 32px; }
+    #board .zr.mach[role="button"] { grid-template-columns: var(--rk-rail) minmax(0, 1fr) 40px; min-height: 40px; }
+    #board .zr.zq { min-height: 40px; }
+    #board .zr.mach[role="button"]:hover, #board .zr.zq:hover { background: transparent; }
+    #board .zr.mach.open { background: var(--chat-surface); }
     #board .zr .ti { width: 40px; height: 40px; }
     #board .zr .pf i { width: 7px; height: 7px; } #board .zr .pf b { width: 7px; height: 7px; }
     #board .rkseg button, #board .rk-btn { min-height: 40px; padding: 0 12px; }

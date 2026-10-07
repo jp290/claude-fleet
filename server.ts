@@ -1114,7 +1114,9 @@ const PI_ZAI_HARNESS: Harness = {
   spawnCmd: (o) => {
     // o.model is one of the two ids modelRe admitted at SET time; absent = the default tier.
     const model = o.model ?? "glm-5.3";
-    let cmd = `pi --provider zai --model '${model}'`;
+    // The fence's HOME makes the real ~/.agents/skills look project-local to Pi's ancestor scan.
+    // Ignore trust-gated resources for this run; Pi still loads AGENTS context files independently.
+    let cmd = `pi --provider zai --model '${model}' --no-approve`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     // Both entries carry the facts pi's own catalogue declares for these ids (read from the

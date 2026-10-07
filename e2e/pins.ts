@@ -4590,6 +4590,12 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("pi-zai is a bounded self-contained adapter declaration, never inherited through object spread",
     pzStart > 0 && pzBody.length > 500 && pzBody.length < 8_000 && !pzCode.includes("..."),
     `${pzBody.length} bytes`);
+  // Pi's --no-approve sets projectTrustOverride=false without disabling AGENTS context loading.
+  // With the fence's temporary HOME, the real ~/.agents/skills becomes an ancestor project resource.
+  pin("pi-zai explicitly ignores trust-gated project resources when its fenced HOME reclassifies global skills",
+    /let cmd = `pi [^`]* --no-approve(?: |`)/.test(pzCode)
+      && !/(?:^|\s)--approve(?:\s|`)/.test(pzCode),
+    pzCode.match(/let cmd = `[^`]*`/)?.[0] ?? "no pi command");
   pin("pi-zai reads key bytes only through $(cat ...) in the pane shell",
     pzCode.includes("ZAI_API_KEY=\"$(cat '${PI_ZAI_KEY_FILE}')\"")
     && (pzCode.match(/ZAI_API_KEY=/g) ?? []).length === 1

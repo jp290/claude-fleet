@@ -39202,8 +39202,8 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   if (textProposalRoute) {
     const program = programs.find((p) => p.id === textProposalRoute[1]);
     if (!program) return json({ error: "unknown program" }, 404);
-    const entries = program.textProposals?.entries ?? [];
     if (req.method === "GET") {
+      const entries = program.textProposals?.entries ?? [];
       const open = openTextProposal(program);
       return json({ id: program.id, status: program.status,
         text: { intent: program.intent, successCriterion: program.successCriterion, nonGoals: program.nonGoals },
@@ -39229,6 +39229,9 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     if (reason !== null && reason.length > PROGRAM_TEXT_REASON_MAX)
       return json({ error: `reason must be at most ${PROGRAM_TEXT_REASON_MAX} chars` }, 400);
     const decision = body.decision;
+    // read AFTER the body await: a MAIN may have superseded the open proposal meanwhile, and a list
+    // captured before it would write that newer proposal away
+    const entries = program.textProposals?.entries ?? [];
     const proposal = entries.find((e) => e.id === body.id);
     if (!proposal) return json({ error: "unknown text proposal" }, 404);
     if (proposal.status !== "open") {

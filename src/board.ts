@@ -25,7 +25,9 @@ export function setInstanceSource(s: InstanceSource | null) { instanceSource = s
 // the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
 wireRights({
   tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
-  programsRead: () => programsRead, loadPrograms: () => loadPrograms(),
+  // the block's own read repaints the board when it moves the answer — loadPrograms repaints only the
+  // queue, and "steht gleich hier" must not wait for the 3 s tick; unchanged (floored fail) paints nothing
+  programsRead: () => programsRead, loadPrograms: () => { const was = programsRead; return loadPrograms().then(() => { if (programsRead !== was) void renderBoard(); }); },
   source: () => instanceSource,
   openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
 });

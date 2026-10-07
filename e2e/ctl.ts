@@ -281,7 +281,7 @@ await import(pathToFileURL(process.argv[2]).href);
       spawnSync("chmod", ["+x", `${dir}/bun`]);
       const log = `${dir}/requests`;
       const fixturePath = `${dir}/view.json`;
-      const own = {slot: 1, position: {role: "orchestrator", programId: null as string | null, taskId: null,
+      const own = {slot: 1, position: {role: "orchestrator", programId: null as string | null, programIds: [] as string[], taskId: null,
         openedAt: 1, sessionId: "session1", receiver: null,
         waitingOnMe: [1, 2, 3].map((i) => ({kind: "message", id: `m${i}`})),
         messages: {unread: 3, droppedFleetWide: 0, unknown: [] as string[]}, attention: [{id: "attention1", status: "open"}]},
@@ -397,6 +397,32 @@ await import(pathToFileURL(process.argv[2]).href);
       check("start Standard MAIN reads only its own projection with phase, inbox ID and next door",
         main.requests.join(",") === "/api/self,/api/self/program-execution,/api/self" && ["phase=OWNER_GATE", "door=owner answers", "inbox1", "own-messages unread=3"].every((s) => main.stdout.includes(s))
         && !main.stdout.includes("Blocking title"));
+      const boundPrograms = [program, ...[2, 3].map((i) => ({...structuredClone(program),
+        program: {...program.program, id: `program${i}`, title: `Program ${i}`},
+        inbox: {...program.inbox, unread: [{id: `inbox${i}`, kind: "audit-red", ref: `audit${i}`}]},
+        tasks: {rows: [{...program.tasks.rows[0]!, id: `task${i}`, text: `Task ${i}`}]}}))];
+      own.position.programId = null;
+      own.position.programIds = boundPrograms.map((p) => p.program.id);
+      fixtures["/api/self/program-execution"].programs = boundPrograms;
+      const multiMain = run(["state.sh", "--brief"]);
+      check("start multi-Program MAIN renders each bound Program with its own inbox, task and door within the existing budget",
+        multiMain.status === 0 && multiMain.requests.join(",") === "/api/self,/api/self/program-execution,/api/self"
+          && !multiMain.stdout.includes("identity-or-source-not-proven")
+          && boundPrograms.every((p) => multiMain.stdout.includes(`"id":"${p.program.id}"`)
+            && multiMain.stdout.includes(`"id":"${p.inbox.unread[0]!.id}"`)
+            && multiMain.stdout.includes(`task ${p.tasks.rows[0]!.id} status=queued phase=OWNER_GATE door=owner answers`))
+          && multiMain.stdout.trimEnd().split("\n").length <= 80 && Buffer.byteLength(multiMain.stdout) <= 10_000,
+        multiMain.stdout);
+      fixtures["/api/self/program-execution"].programs = [...boundPrograms,
+        {...structuredClone(program), program: {...program.program, id: "foreign-program"}}];
+      const multiForeign = run(["state.sh", "--brief"]);
+      check("start multi-Program MAIN discards the projection if it includes a Program outside position.programIds",
+        multiForeign.status === 0 && multiForeign.stdout.includes("unknown start reason=identity-or-source-not-proven")
+          && multiForeign.stdout.includes("data discarded") && !multiForeign.stdout.includes('program authority=')
+          && !multiForeign.stdout.includes("foreign-program"), multiForeign.stdout);
+      own.position.programId = "program1";
+      own.position.programIds = [];
+      fixtures["/api/self/program-execution"].programs = [program];
       const mainArgs = [["state-old.sh", "--brief"], ["register.sh", "--brief"],
         ["ctl.sh", "get", "/api/self/program-execution", "--json"], ["ctl.sh", "get", "/api/self/inbox", "--json"],
         ["ctl.sh", "get", "/api/self", "--json"], ["ctl.sh", "get", "/api/self/messages", "--json"]];

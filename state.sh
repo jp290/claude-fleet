@@ -240,31 +240,35 @@ def execution(view, self):
     if seat(view.get('session', {})) != seat(self):
         raise ValueError('execution-occupant-mismatch')
     programs = view.get('programs')
-    if not isinstance(programs, list) or len(programs) != 1 or programs[0].get('program', {}).get('id') != self['position'].get('programId'):
+    position = self['position']
+    program_ids = [position['programId']] if position.get('programId') is not None else position.get('programIds')
+    if not isinstance(program_ids, list) or not program_ids or not isinstance(programs, list) or not programs:
         raise ValueError('unproven-own-program')
-    p = programs[0]
-    emit(f"program authority={compact(p.get('authority'))} {compact(p.get('program'))} detail: GET /api/self/program-execution", door='GET /api/self/program-execution')
-    if p.get('authority', {}).get('sessionIdMatch') != 'exact':
-        emit('unknown MAIN binding reason=unproven-session-id; detail: GET /api/self/program-execution')
-    emit(f"program-status {compact(p.get('status'))} detail: GET /api/self/inbox; GET /api/self/messages; GET /api/self/attention", door='GET /api/self/program-execution')
-    inbox = p.get('inbox', {})
-    if inbox.get('lost'):
-        emit(f"unknown inbox reason=record-lost {compact(inbox['lost'])}; detail: GET /api/self/inbox")
-    else:
-        group('inbox', inbox.get('unread'), 'GET /api/self/inbox; POST /api/self/inbox/<id>/read after reading')
-    emit(f"inbox dropped={p.get('inbox', {}).get('dropped', 'unknown')}; loss: see execution-unknown")
-    handover = p.get('handover')
-    if handover is None:
-        emit('handover record=null; absence or loss: see execution-unknown')
-    elif isinstance(handover, dict):
-        emit(f"handover from={compact(handover.get('from'))} to={compact(handover.get('to'))} lost={compact(handover.get('lost'))} dropped={handover.get('dropped')} detail: GET /api/self/program-execution (handover)", door='GET /api/self/program-execution')
-        group('historical-obligation', handover.get('obligations'), 'GET /api/self/program-execution')
-    else:
-        emit('unknown handover reason=unreadable-record')
-    group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution', limit=2)
-    group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
-          f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(row_title(r.get('text'), r.get('id')))} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
-    group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
+    if any(p.get('program', {}).get('id') not in program_ids for p in programs) or (position.get('programId') is not None and len(programs) != 1):
+        raise ValueError('unproven-own-program')
+    for p in programs:
+        emit(f"program authority={compact(p.get('authority'))} {compact(p.get('program'))} detail: GET /api/self/program-execution", door='GET /api/self/program-execution')
+        if p.get('authority', {}).get('sessionIdMatch') != 'exact':
+            emit('unknown MAIN binding reason=unproven-session-id; detail: GET /api/self/program-execution')
+        emit(f"program-status {compact(p.get('status'))} detail: GET /api/self/inbox; GET /api/self/messages; GET /api/self/attention", door='GET /api/self/program-execution')
+        inbox = p.get('inbox', {})
+        if inbox.get('lost'):
+            emit(f"unknown inbox reason=record-lost {compact(inbox['lost'])}; detail: GET /api/self/inbox")
+        else:
+            group('inbox', inbox.get('unread'), 'GET /api/self/inbox; POST /api/self/inbox/<id>/read after reading')
+        emit(f"inbox dropped={p.get('inbox', {}).get('dropped', 'unknown')}; loss: see execution-unknown")
+        handover = p.get('handover')
+        if handover is None:
+            emit('handover record=null; absence or loss: see execution-unknown')
+        elif isinstance(handover, dict):
+            emit(f"handover from={compact(handover.get('from'))} to={compact(handover.get('to'))} lost={compact(handover.get('lost'))} dropped={handover.get('dropped')} detail: GET /api/self/program-execution (handover)", door='GET /api/self/program-execution')
+            group('historical-obligation', handover.get('obligations'), 'GET /api/self/program-execution')
+        else:
+            emit('unknown handover reason=unreadable-record')
+        group('execution-unknown', p.get('unknown'), 'GET /api/self/program-execution', limit=2)
+        group('task', p.get('tasks', {}).get('rows'), 'GET /api/self/program-execution', lambda r:
+              f"{r.get('id')} status={r.get('status', 'unknown')} phase={r.get('phase', 'unknown')} door={r.get('nextAction') or 'none; observe the named phase'} title={title(row_title(r.get('text'), r.get('id')))} basis={compact(r.get('phaseBasis'))} note={compact(r.get('note'))}")
+        group('clarifications', p.get('clarifications'), 'GET /api/self/clarifications')
 try:
     if not os.environ.get('FLEET_SELF_TOKEN'):
         emit('unknown self reason=no-self-credential; legacy owner metadata only')

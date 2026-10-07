@@ -394,19 +394,29 @@ async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: st
           if (document.body.classList.contains('board') || open()) break;
           await new Promise(r => setTimeout(r, 120));
         }
+        // the rights block sits in the closed "Rechte" tab under "Mehr zu dieser Session" since
+        // dd6e77af (Variante 3A, a closed tab builds nothing) — open it as the owner does; the tab
+        // state is a device preference that survives the next load, so press only a closed one
         const until2 = Date.now() + 12000;
         while (Date.now() < until2) {
           if (document.querySelectorAll('#board .rgv').length) break;
+          const tab = document.querySelector('#board .btab[data-tab="rechte"]:not(.open) .btabbtn');
+          if (tab) tab.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise(r => setTimeout(r, 120));
         }
         await new Promise(r => setTimeout(r, 900));
-        const row = document.querySelector('#board .zr.stand');
+        // the stand statement of every live-server carrier under the machine: the test instance's
+        // own row (.zr.stand), or — since d33d46c2, one row per machine — the Live lead painted
+        // into the machine row itself, whose statement is its .st (the row also holds the name)
+        const row = [...document.querySelectorAll('#board [data-kind="live-server"]')]
+          .map(r => r.classList.contains('mach') ? r.querySelector('.st') : r).filter(Boolean)
+          .map(r => r.textContent).join(' | ') || null;
         // .nm's textContent INCLUDES the .cnt child (machineHead appends the sub into it), so the
         // name must be read from the first text node — exact equality on textContent never matches
         const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helfer');
         const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');
         const brief = document.querySelector('#board .bfail .bstate, #board .bempty');
-        return { rowText: row ? row.textContent : '(no row)', helperText: helper ? helper.querySelector('.cnt')?.textContent ?? null : null,
+        return { rowText: row ?? '(no row)', helperText: helper ? helper.querySelector('.cnt')?.textContent ?? null : null,
           repoRows: document.querySelectorAll('#board .zd').length, rights,
           brief: brief ? brief.textContent : null, briefLen: (document.getElementById('board')?.textContent ?? '').length };
       })()`);

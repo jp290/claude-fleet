@@ -9268,6 +9268,7 @@ async function waitForSlotPostCaptureTestLatch(occupant: SlotSpawnOccupant,
 // for this promise before clearing/recycling the occupant, so an old rule write or spawn cannot
 // finish behind the new occupant. Capture, pipe and repaint stay outside this barrier.
 const slotSpawnInflight = new Map<number, Promise<void>>();
+const laneSessionAgentsForOpen = new Map<string, SessionAgents>();
 async function waitForSlotSpawn(slot: number): Promise<void> {
   const pending = slotSpawnInflight.get(slot);
   if (pending) await pending;
@@ -9391,7 +9392,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       const current = (): boolean => sameSlotSpawnOccupant(s, rulesOccupant) && !slotTeardownInflight.has(s.id);
       try {
         if (s.worktree) {
-          let agents = preparedLaneAgents;
+          let agents = preparedLaneAgents ?? laneSessionAgentsForOpen.get(occupant.selfToken);
           if (!agents) {
             const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
             if (!current()) return;
@@ -9573,6 +9574,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
   assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
+  let preparedRulesToken: string | null = null;
   try {
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
@@ -9684,6 +9686,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.laneSeats = []; // ...and its seats with it, stamped back by succeedLane on the same terms
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
+  if (preparedLaneAgents) {
+    preparedRulesToken = s.selfToken;
+    laneSessionAgentsForOpen.set(preparedRulesToken, preparedLaneAgents);
+  }
   onCandidate({ slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken });
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.sessionIdLearned = null; // ...and a new occupation has learned nothing yet
@@ -9744,6 +9750,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
   return { superseded: false, occupant: expected, modelSupport };
   } finally {
+    if (preparedRulesToken) laneSessionAgentsForOpen.delete(preparedRulesToken);
     openSlotIntents.delete(openIntent);
   }
 }

@@ -246,6 +246,29 @@ delivered (the wave: the head row's card). **No card, or `valid: false`: no head
 reading the tree refused would put an unestablished claim first. A clarify lane gets no head: it
 ignores the brief by design.
 
+### 6d. Das Regelbuch-Generat bearbeiten
+
+`CLAUDE.md` ist ein Generat aus den sieben Fragmenten unter `rulebook/` im Haupt-Checkout.
+Eine direkte Aenderung an `CLAUDE.md` geht beim naechsten Render verloren; editiere die
+betreffende Fragmentdatei und rendere danach neu.
+
+Die Regelpraefixe sind der Wegweiser aus `rulebook.ts#FRAGMENT_BY_RULE_PREFIX`:
+L → `loader.md`, E → `einstieg.md`, D → `lane-discipline.md`, S → `supervisor.md`,
+F → `self-scheduling.md`, P → `deploy.md`, G → `graphify.md`.
+Pruefe die konkrete Regel im Fragment vor dem Editieren.
+
+Massgeblich ist der Kopf von `rulebook.ts`; dort steht auch der Render-Einzeiler unten.
+Im Haupt-Checkout erzeugt er die vollstaendige `CLAUDE.md` mit `renderRulebook("voll", …)`.
+Danach prueft `bun e2e/pins.ts` das Ergebnis:
+
+```sh
+bun -e 'import{RULEBOOK_FRAGMENTS as F,RULEBOOK_DIR as d,fragmentFileName as n,renderRulebook as r}from"./rulebook";import{readFileSync as R,writeFileSync as W}from"node:fs";W("CLAUDE.md",r("voll",new Map(F.map(f=>[f,R(`${d}/${n(f)}`,"utf8")]))))'
+bun e2e/pins.ts
+```
+
+Der Renderer verweigert fehlende oder leere Fragmente. Der Byte-Pin prueft das Generat
+gegen die aktuellen Fragmente; er ersetzt keine inhaltliche Pruefung der Regelaenderung.
+
 ## 7. Checklist for a good brief
 
 - [ ] **Environment:** the files/constraints/interfaces this task actually touches — curated, not exhaustive.

@@ -25,12 +25,13 @@
     "triggers": ["rulebook-edit"],
     "hardness": "guidance",
     "sources": [
+      { "path": "docs/tailored-context.md", "anchor": "### 6d. Das Regelbuch-Generat bearbeiten" },
       { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 7700,
+    "estimatedBytes": 1408,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

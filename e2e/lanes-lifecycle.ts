@@ -1485,27 +1485,24 @@ export async function run(lc: LaneCtx): Promise<void> {
   }
   {
     const lane = await (await post("/api/lanes", { repo: REPO })).json() as { slot: number; cwd: string };
-    const pointer = `${lane.cwd}/.git`, original = readFileSync(pointer);
     await stopSrv();
     await tmuxOut("kill-session", "-t", `=s${lane.slot}`);
-    const priorRules = readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8");
+    rmSync(`${lane.cwd}/AGENTS.override.md`);
     const priorLocal = readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8");
-    writeFileSync(pointer, `gitdir: ${ROOT}/native-missing-git\n`);
     const before = readFileSync(`${ROOT}/server.log`).length;
     try {
-      const unreadable = spawnSync("git", ["-C", lane.cwd, "rev-parse", "HEAD"], { encoding: "utf8" });
-      check("native rules restart fixture has an unreadable lane HEAD", unreadable.status !== 0, unreadable.stderr.trim());
+      check("native rules recovery fixture has lost its founding file", !existsSync(`${lane.cwd}/AGENTS.override.md`)
+        && priorLocal === "@AGENTS.override.md\n");
       await restartSrv();
       const api = await get("/api/sessions"), pane = await tmuxOut("has-session", "-t", `=s${lane.slot}`);
       const log = readFileSync(`${ROOT}/server.log`).subarray(before).toString("utf8");
       check("native rules restart keeps the server available and names the failed slot", api.ok
         && log.includes(`slot ${lane.slot}: session rules unavailable`)
-        && log.includes("could not read lane HEAD for session rules"), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
-      check("native rules restart refuses to spawn with stale rules when replanning fails", pane.code !== 0
-        && readFileSync(`${lane.cwd}/AGENTS.override.md`, "utf8") === priorRules
+        && log.includes(`${lane.cwd}/AGENTS.override.md`), `HTTP ${api.status}; named failure=${log.includes(`slot ${lane.slot}: session rules unavailable`)}`);
+      check("native rules recovery refuses to invent a generic replacement for missing founding rules", pane.code !== 0
+        && !existsSync(`${lane.cwd}/AGENTS.override.md`)
         && readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") === priorLocal, `pane=${pane.code}`);
     } finally {
-      writeFileSync(pointer, original);
       await post(`/api/slots/${lane.slot}/kill`, {}).catch(() => undefined);
     }
   }
@@ -1566,50 +1563,91 @@ export async function run(lc: LaneCtx): Promise<void> {
     }
   }
 
-  for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
-    const marker = `native-lane-receipt-${harness}-${Date.now()}`;
-    const task = await (await post("/api/tasks", { text: marker, queue: false, repo: ROOT })).json() as { task: { id: string } };
-    const opened = await (await post(`/api/tasks/${task.task.id}/dispatch`, { harness })).json() as
-      { ok?: boolean; slot?: number; error?: string };
-    check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
-    if (typeof opened.slot !== "number") continue;
-    if (harness === "claude" || harness === "codex") {
-      await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› " : "❯", "native lane receipt");
-    } else {
-      await until(async () => {
-        const frame = await tmuxOut("capture-pane", "-t", `s${opened.slot}`, "-p", "-J");
-        return frame.code === 0 && frame.out.includes("────────")
-          && (harness === "pi" || frame.out.includes("0.0%/1.0M"));
-      }, { timeoutMs: 15000, what: `native ${harness} stand-in composer` });
+  {
+    const nativeProgramId = "e2e1ea1".padEnd(24, "0");
+    const nativePack = { id: "e2e-program-heal", useWhen: "Keep the Program context through pane recovery",
+      sources: [{ path: "AGENTS.md", anchor: readFileSync(`${ROOT}/AGENTS.md`, "utf8").split("\n")[0] }] };
+    type NativeProgramState = { programs?: Record<string, unknown>[] };
+    const state = (): NativeProgramState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as NativeProgramState;
+    await stopSrv();
+    const initial = state(), now = Date.now();
+    initial.programs = [...(initial.programs ?? []), { id: nativeProgramId, title: "Native recovery fixture",
+      intent: "Keep the dispatched context", successCriterion: "A healed pane keeps its Program pack once", nonGoals: [],
+      decisions: [], evidence: [], openQuestions: [], status: "active", createdAt: now - 1000,
+      proposedBy: { kind: "owner" }, confirmedAt: now - 900, activatedAt: now - 800, contextPacks: [nativePack] }];
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(initial), { mode: 0o600 });
+    await restartSrv();
+    try {
+      for (const harness of ["claude", "codex", "pi", "pi-zai"] as const) {
+        const marker = `native-lane-receipt-${harness}-${Date.now()}`;
+        const task = await (await post("/api/tasks", { text: marker, queue: false, repo: ROOT, programId: nativeProgramId })).json() as { task: { id: string } };
+        const opened = await (await post(`/api/tasks/${task.task.id}/dispatch`, { harness })).json() as
+          { ok?: boolean; slot?: number; error?: string };
+        check(`native dispatch ${harness}: stand-in lane starts`, opened.ok === true && typeof opened.slot === "number", JSON.stringify(opened));
+        if (typeof opened.slot !== "number") continue;
+        if (harness === "claude" || harness === "codex") {
+          await plantScreen(opened.slot, harness === "codex" ? ">_ OpenAI Codex (v0.159.0)\n› " : "❯", "native lane receipt");
+        } else {
+          await until(async () => {
+            const frame = await tmuxOut("capture-pane", "-t", `s${opened.slot}`, "-p", "-J");
+            return frame.code === 0 && frame.out.includes("────────")
+              && (harness === "pi" || frame.out.includes("0.0%/1.0M"));
+          }, { timeoutMs: 15000, what: `native ${harness} stand-in composer` });
+        }
+        type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
+        type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
+        let receipt: Receipt | undefined, prompt = "";
+        await until(async () => {
+          const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
+            .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Receipt) : [];
+          receipt = rows.findLast((row) => row.taskId === task.task.id);
+          const prompts = await (await get("/api/prompts?limit=100")).json() as { prompts: { slot: number; text: string }[] };
+          prompt = prompts.prompts.find((row) => row.slot === opened.slot && row.text.startsWith(marker))?.text ?? "";
+          return !!receipt && !!prompt;
+        }, { timeoutMs: 15000, what: `native ${harness} delivery receipt` });
+        const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] };
+        const cwd = sessions.slots.find((row) => row.id === opened.slot)?.cwd;
+        const agents = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+        const roleStart = agents.indexOf("## Rolle\n\n") + "## Rolle\n\n".length;
+        const roleEnd = agents.indexOf("\n\n## Anleitung", roleStart);
+        const role = agents.slice(roleStart, roleEnd);
+        const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
+        check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
+          prompt.startsWith(`${marker}\n\nSession-Regeln: ./AGENTS.override.md`)
+            && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
+        check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
+          && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")
+          && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
+          && part.sha256 === createHash("sha256").update(role).digest("hex") && part.ort === "box"
+          && meta.parts.some((row) => row.id === "footer" && typeof row.bytes === "number" && row.bytes > 0));
+        const packOnce = (text: string): boolean => text.split(`- ${nativePack.id} [guidance] —`).length === 2;
+        check(`native Program ${harness}: founding carries its pack once and rejects a missing pack`,
+          packOnce(agents) && !packOnce(agents.replace(`- ${nativePack.id} [guidance] —`, "")));
+        const paneBefore = (await tmuxOut("display-message", "-t", `=s${opened.slot}:`, "-p", "#{pane_id}\t#{pane_pid}")).out.trim();
+        await tmuxOut("kill-session", "-t", `=s${opened.slot}`);
+        await until(async () => {
+          const pane = await tmuxOut("display-message", "-t", `=s${opened.slot}:`, "-p", "#{pane_id}\t#{pane_pid}");
+          return pane.code === 0 && pane.out.trim() !== paneBefore;
+        }, { timeoutMs: 15000, what: `native Program ${harness} heals into a new pane` });
+        const healed = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+        check(`native Program ${harness}: pane death and heal preserve the exact founding rules and pack once`,
+          healed === agents && packOnce(healed));
+        if (harness === "claude") {
+          const restarted = await post(`/api/slots/${opened.slot}/restart`, {});
+          const rules = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
+          check("native Program restart: the same occupant keeps its exact founding rules and pack once",
+            restarted.ok && rules === agents && packOnce(rules), `HTTP ${restarted.status}`);
+        }
+        await post(`/api/slots/${opened.slot}/kill`, {});
+        await post(`/api/tasks/${task.task.id}/delete`, {});
+      }
+    } finally {
+      await stopSrv();
+      const final = state();
+      final.programs = final.programs?.filter((program) => program.id !== nativeProgramId);
+      writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(final), { mode: 0o600 });
+      await restartSrv();
     }
-    type Part = { id: string; path: string | null; anchor: string | null; sha256: string | null; bytes: number | null; ort: string };
-    type Receipt = { taskId?: string; branch?: string; sessionAgents?: { path: string; sha256: string; bytes: number; parts: Part[] } };
-    let receipt: Receipt | undefined, prompt = "";
-    await until(async () => {
-      const rows = existsSync(`${ROOT}/context-receipts.jsonl`) ? readFileSync(`${ROOT}/context-receipts.jsonl`, "utf8")
-        .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Receipt) : [];
-      receipt = rows.findLast((row) => row.taskId === task.task.id);
-      const prompts = await (await get("/api/prompts?limit=100")).json() as { prompts: { slot: number; text: string }[] };
-      prompt = prompts.prompts.find((row) => row.slot === opened.slot && row.text.startsWith(marker))?.text ?? "";
-      return !!receipt && !!prompt;
-    }, { timeoutMs: 15000, what: `native ${harness} delivery receipt` });
-    const sessions = await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] };
-    const cwd = sessions.slots.find((row) => row.id === opened.slot)?.cwd;
-    const agents = cwd ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : "";
-    const roleStart = agents.indexOf("## Rolle\n\n") + "## Rolle\n\n".length;
-    const roleEnd = agents.indexOf("\n\n## Anleitung", roleStart);
-    const role = agents.slice(roleStart, roleEnd);
-    const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
-    check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
-      prompt.startsWith(`${marker}\n\nSession-Regeln: ./AGENTS.override.md`)
-        && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
-    check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
-      && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")
-      && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
-      && part.sha256 === createHash("sha256").update(role).digest("hex") && part.ort === "box"
-      && meta.parts.some((row) => row.id === "footer" && typeof row.bytes === "number" && row.bytes > 0));
-    await post(`/api/slots/${opened.slot}/kill`, {});
-    await post(`/api/tasks/${task.task.id}/delete`, {});
   }
   {
     const repo = mkdtempSync(`${ROOT}/native-detached-`);

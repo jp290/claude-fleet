@@ -1,6 +1,6 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
@@ -8859,11 +8859,13 @@ const gameMakerTreeLeases = new Set<GameMakerTreeLease>();
 
 // Every open, including Standard and generic owner opens, announces its path before its first
 // await. A concurrent Game-Maker preflight can therefore see the request while it is neither a
-// slot occupant nor a git-canonical tree yet. Standard opens do not conflict with each other; this
-// set exists only so a Game-Maker lease can refuse them and so they can see a Game-Maker lease.
+// slot occupant nor a git-canonical tree yet. Standard opens do not conflict with each other.
+// Once the candidate exists, its token and prepared rules also identify an open to self-heal.
 interface OpenSlotIntent {
   readonly root: string;
   readonly lease: GameMakerTreeLease | null;
+  selfToken?: string;
+  sessionAgents?: SessionAgents;
 }
 const openSlotIntents = new Set<OpenSlotIntent>();
 
@@ -9268,7 +9270,6 @@ async function waitForSlotPostCaptureTestLatch(occupant: SlotSpawnOccupant,
 // for this promise before clearing/recycling the occupant, so an old rule write or spawn cannot
 // finish behind the new occupant. Capture, pipe and repaint stay outside this barrier.
 const slotSpawnInflight = new Map<number, Promise<void>>();
-const laneSessionAgentsForOpen = new Map<string, SessionAgents>();
 async function waitForSlotSpawn(slot: number): Promise<void> {
   const pending = slotSpawnInflight.get(slot);
   if (pending) await pending;
@@ -9392,21 +9393,29 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       const current = (): boolean => sameSlotSpawnOccupant(s, rulesOccupant) && !slotTeardownInflight.has(s.id);
       try {
         if (s.worktree) {
-          let agents = preparedLaneAgents ?? laneSessionAgentsForOpen.get(occupant.selfToken);
-          if (!agents) {
-            const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+          const opening = [...openSlotIntents].find((intent) => intent.selfToken === rulesOccupant.selfToken);
+          let agents = preparedLaneAgents ?? opening?.sessionAgents;
+          // Recovery keeps the founding selections. An open selects the harness anew; its token also
+          // covers a heal that wins the race to spawn before openSlot reaches ensureSlot.
+          if (!agents && cause !== "open" && !opening) {
+            const bytes = Buffer.byteLength(readFileSync(`${occupant.cwd}/AGENTS.override.md`));
+            projectDocMaxBytes = bytes > SESSION_AGENTS_LIMIT ? bytes : undefined;
+          } else {
+            if (!agents) {
+              const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+              if (!current()) return;
+              if (!planned.ok) throw new Error(planned.error);
+              const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
+              if (!current()) return;
+              if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
+              agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
+                occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+              if (!current()) return;
+            }
+            await writeLaneSessionAgents(occupant.cwd, agents, current);
             if (!current()) return;
-            if (!planned.ok) throw new Error(planned.error);
-            const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
-            if (!current()) return;
-            if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
-            agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
-              occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
-            if (!current()) return;
+            projectDocMaxBytes = agents.projectDocMaxBytes;
           }
-          await writeLaneSessionAgents(occupant.cwd, agents, current);
-          if (!current()) return;
-          projectDocMaxBytes = agents.projectDocMaxBytes;
         }
       } catch (e) {
         if (!current()) return;
@@ -9574,7 +9583,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
   assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
-  let preparedRulesToken: string | null = null;
   try {
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
@@ -9686,10 +9694,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.laneSeats = []; // ...and its seats with it, stamped back by succeedLane on the same terms
   s.selfToken = treeLease?.targetSelfToken ?? randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
-  if (preparedLaneAgents) {
-    preparedRulesToken = s.selfToken;
-    laneSessionAgentsForOpen.set(preparedRulesToken, preparedLaneAgents);
-  }
+  openIntent.selfToken = s.selfToken;
+  openIntent.sessionAgents = preparedLaneAgents;
   onCandidate({ slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken });
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.sessionIdLearned = null; // ...and a new occupation has learned nothing yet
@@ -9750,7 +9756,6 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
     ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
   return { superseded: false, occupant: expected, modelSupport };
   } finally {
-    if (preparedRulesToken) laneSessionAgentsForOpen.delete(preparedRulesToken);
     openSlotIntents.delete(openIntent);
   }
 }

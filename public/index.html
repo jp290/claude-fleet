@@ -1457,7 +1457,21 @@
   .tlcanvas { flex: 1; min-height: 0; overflow: auto; padding: 8px 14px 16px; outline: none; }
   .tlcanvas:focus-visible { box-shadow: inset 0 0 0 1px var(--chat-mute); }
   .tlaxis, .tltrack { display: grid; grid-template-columns: var(--tl-rail, 150px) minmax(0, 1fr); column-gap: 8px; }
-  .tlaxis { position: sticky; top: 0; z-index: 2; background: var(--chat-surface); height: 28px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  .tlaxis { position: sticky; top: 0; z-index: 2; background: var(--chat-surface); min-height: 28px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  .tlaxis > span { line-height: 1.25; padding-top: 2px; }
+  /* the legend: one glyph, one word — every kind on the canvas, once, at the axis head */
+  .tllegend { display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 6px 0 2px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
+  .tllegit { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .tllegit .tlglyph { color: var(--chat-ink); font-size: 11px; }
+  /* the phone's session and call zoom: a list in time order — one row per mark, nothing overlaps */
+  .tllist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .tllist li { min-width: 0; }
+  .tllist .tlunmeasured { position: static; min-height: 40px; display: flex; align-items: center; padding: 0 10px; border-radius: var(--r1); }
+  .tllist .tlunmeasured span { position: static; white-space: normal; }
+  .tllist .tlev, .tlcanvas[data-zoom] .tllist .tlev { position: static; transform: none; display: flex; width: 100%; height: auto; min-height: 44px; justify-content: flex-start;
+    gap: 8px; padding: 6px 10px; text-align: left; white-space: normal; background: var(--chat-raised); border-color: var(--chat-edge); }
+  .tllist .tlev .tlname, .tllist .tlev .tlst, .tllist .tlev .tlsub { display: inline; overflow-wrap: anywhere; }
+  .tllist .tlev .tltime { margin-left: auto; flex: none; font-family: var(--chat-mono); font-size: 10.5px; color: var(--chat-mute); }
   .tlaxisplot { position: relative; margin: 0 var(--tl-pad, 56px); border-bottom: 1px solid var(--chat-edge); }
   .tltick { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; font-family: var(--chat-mono); font-size: 10.5px; }
   .tltick::after { content: ""; position: absolute; left: 50%; bottom: -8px; height: 6px; border-left: 1px solid var(--chat-edge); }
@@ -1469,11 +1483,11 @@
   .tlgap { border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--chat-edge)); color: var(--amber); background: transparent; border-radius: var(--r1); font: 500 10.5px/1.3 var(--chat-sans); padding: 2px 6px; cursor: pointer; }
   .tlgap:hover { background: var(--c-hover); }
   .tlhead .shrbtn { align-self: flex-start; margin-top: 2px; }
-  .tlplot { position: relative; margin: 0 var(--tl-pad, 56px); height: calc(var(--tl-rows, 1) * var(--tl-step, 22px) + 10px); }
+  .tlplot { position: relative; margin: 0 var(--tl-pad, 56px); height: calc(var(--tl-rows, 1) * var(--tl-step, 22px) + 10px + var(--tl-foot, 0px)); }
   .tlplot::before { content: ""; position: absolute; inset: 0; border-left: 1px solid var(--chat-edge-soft); border-right: 1px solid var(--chat-edge-soft); }
   .tlunmeasured { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--amber) 18%, transparent) 6px 7px); }
-  .tlunmeasured { overflow: hidden; }
-  .tlunmeasured span { position: absolute; left: 4px; right: 4px; bottom: 0; color: var(--amber); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the hatch's word wraps and is never cut: it may run past a narrow hatch, never past the plot */
+  .tlunmeasured span { position: absolute; left: 4px; bottom: 0; max-width: max(calc(100% - 8px), 64px); color: var(--amber); font-size: 10px; line-height: 1.2; white-space: normal; }
   .tlbar { position: absolute; height: 2px; background: var(--chat-faint); margin-top: 5px; }
   .tlbar.error { background: var(--danger); } .tlbar.pending { background: none; border-top: 2px dashed var(--q-wait); height: 0; }
   .tlev { position: absolute; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 0; height: 18px; padding: 0 4px;
@@ -1509,7 +1523,7 @@
   .tlstate { padding: 24px 14px; color: var(--chat-prose); line-height: 1.5; max-width: 560px; }
   .tlstate b { color: var(--amber); font-weight: 500; } .tlstate code { font-family: var(--chat-mono); font-size: 12px; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
-    .tlaxis, .tltrack { --tl-rail: 84px; --tl-pad: 36px; column-gap: 6px; }
+    .tlaxis, .tltrack { --tl-rail: 84px; --tl-pad: 20px; column-gap: 6px; }
     .tlhead strong { font-size: 12.5px; } .tlhead .tlcounts { display: none; }
     .tlev { height: 40px; min-width: 24px; justify-content: center; }
     .tlcanvas[data-zoom="session"] .tlev, .tlcanvas[data-zoom="call"] .tlev { height: 40px; }

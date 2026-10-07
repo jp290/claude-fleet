@@ -112,14 +112,16 @@ export interface TimelineModel {
 }
 
 const ROUTE = "/api/timeline";
-const CLOCK_NOTE = "clockUncertainty: unknown · Hostuhren ungemessen — gleiche Position heißt gleiche Recordzeit, keine Kausalität";
+// the clock note is prose for the view's banner; the raw key (`uncertainty`) stays a field, so the
+// view can print it once as an internal value and never as a sentence
+const CLOCK_NOTE = "Hostuhren ungemessen — gleiche Position heißt gleiche Aufzeichnungszeit, keine Kausalität";
 const GAP_TEXT: Record<string, string> = {
-  "missing-result": "Call ohne Resultat im Snapshot",
-  "orphan-result": "Resultat ohne Call",
-  "ambiguous-result": "Resultat passt auf mehrere Calls",
-  "malformed-record": "Record nicht lesbar",
-  "partial-record": "Record am Ende unvollständig",
-  "missing-record-id": "Record ohne Id",
+  "missing-result": "Aufruf ohne Resultat im Snapshot",
+  "orphan-result": "Resultat ohne Aufruf",
+  "ambiguous-result": "Resultat passt auf mehrere Aufrufe",
+  "malformed-record": "Aufzeichnung nicht lesbar",
+  "partial-record": "Aufzeichnung am Ende unvollständig",
+  "missing-record-id": "Aufzeichnung ohne Id",
   "invalid-tool-metadata": "Tool-Metadaten ungültig",
   "unsupported-codex-item": "Codex-Eintrag nicht unterstützt",
   "source-rewritten": "Quelle wurde umgeschrieben",

@@ -9637,15 +9637,29 @@ let tlGen = 0;
 const TL_WINDOW_MS = 24 * 3600_000;
 const TL_MOBILE_MQ = "(max-width: 700px), ((pointer: coarse) and (max-height: 500px))";
 const tlMobile = (): boolean => matchMedia(TL_MOBILE_MQ).matches;
+// ONE vocabulary, German (UI-MAIN review 2026-10-07): a tool call is an "Aufruf", a ledger row an
+// "Ereignis", a source row an "Aufzeichnung"; the state words follow STATE_WORD's register (wartet,
+// Fehler), and a verdict is said in German ("Gate grün", "Land gelandet") while the raw word stays
+// on the mark's data attribute for a check to read.
 const TL_KIND_LABEL: Record<TimelineKind, string> = {
-  "tool.call": "Call", "tool.result": "Resultat", report: "Report", clarification: "Rückfrage", founding: "Gründung",
+  "tool.call": "Aufruf", "tool.result": "Resultat", report: "Report", clarification: "Rückfrage", founding: "Gründung",
   commit: "Commit", land: "Land", gate: "Gate", audit: "Audit", deploy: "Deploy", other: "Ereignis",
 };
 const TL_GLYPH: Record<TimelineKind, string> = {
   "tool.call": "●", "tool.result": "○", report: "▣", clarification: "?", founding: "◆",
   commit: "⌑", land: "▲", gate: "▮", audit: "☑", deploy: "⇧", other: "·",
 };
-const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "Fehler", pending: "offen", late: "spät", unknown: "unbekannt" };
+const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "Fehler", pending: "wartet", late: "spät", unknown: "unbekannt" };
+const TL_SOURCE_STATE: Record<TimelineSession["state"], string> = { read: "gelesen", pending: "wartet", rejected: "abgewiesen", unsupported: "nicht unterstützt" };
+const TL_VERDICT_WORD: Record<string, string> = {
+  green: "grün", red: "rot", landed: "gelandet", failed: "fehlgeschlagen", unknown: "unbekannt", complete: "fertig",
+  handoff: "Übergabe", "needs-main": "braucht MAIN", rejected: "abgelehnt", accepted: "angenommen", resolved: "aufgelöst",
+};
+const tlVerdict = (v: string | null): string => (v ? TL_VERDICT_WORD[v] ?? v : "");
+const tlN = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+const tlCallWords = (c: TimelineSession["counts"]): string =>
+  `${tlN(c.calls, "Aufruf", "Aufrufe")}${c.errors ? ` · ${c.errors} Fehler` : ""}${c.pending ? ` · ${tlN(c.pending, "wartet", "warten")}` : ""}`;
+const tlIntern = (m: TimelineModel): string => `intern: clockUncertainty: ${m.clock.uncertainty}`;
 // the row packing measures the canvas, so a resize is a repaint
 window.addEventListener("resize", () => { if (ocShell && actLens === "timeline") renderActivity(); });
 function resetTimeline() {
@@ -9781,10 +9795,14 @@ function renderTimeline() {
   const callEv = tlEventOf(tlCall);
   if (tlZoom === "call" && callEv) {
     crumbs.appendChild(el("span", "tlsep", "›"));
-    crumbs.appendChild(crumb(`Call ${callEv.sub || callEv.label}`, "call", () => undefined));
+    crumbs.appendChild(crumb(`Aufruf ${callEv.sub || callEv.label}`, "call", () => undefined));
   }
   tools.appendChild(crumbs);
-  if (m && m.state === "read") {
+  // THE PHONE LISTS (UI-MAIN review 2026-10-07): at phone width the session and call zoom show their
+  // events as a list in time order instead of a ~190 px axis — chips never overlap, words never cut.
+  // The overview keeps the axis (glyph-only marks); the axis window's zoom and pan have no list meaning.
+  const listMode = mobile && tlZoom !== "overview";
+  if (m && m.state === "read" && !listMode) {
     const zoom = el("div", "tlzoom");
     const zb = (label: string, title: string, on: () => void) => {
       const b = el("button", "shrbtn", label) as HTMLButtonElement;
@@ -9826,12 +9844,14 @@ function renderTimeline() {
       tlRowOf.set(r, s);
       const main = el("div", "shrmain");
       main.appendChild(el("div", "shrname", s.label));
-      main.appendChild(el("div", "shrsub", `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}${s.project ? ` · ${baseName(s.project)}` : ""}${s.state !== "read" ? ` · ${s.state}` : ""}${s.occupation === "unknown" ? " · Belegung unbekannt" : ""}`));
+      // a list row carries what is known; what is unknown about a session (its occupation, the
+      // clocks) is said once in the banner and in the gaps inspector, never per row
+      main.appendChild(el("div", "shrsub", `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}${s.project ? ` · ${baseName(s.project)}` : ""}${s.state !== "read" ? ` · ${TL_SOURCE_STATE[s.state]}` : ""}`));
       const c = el("div", "tlcount");
-      c.appendChild(el("span", "", `${s.counts.calls} Calls`));
+      c.appendChild(el("span", "", tlN(s.counts.calls, "Aufruf", "Aufrufe")));
       if (s.counts.errors) c.appendChild(el("span", "err", `${s.counts.errors} Fehler`));
-      if (s.counts.pending) c.appendChild(el("span", "pend", `${s.counts.pending} offen`));
-      if (s.counts.ledger) c.appendChild(el("span", "", `${s.counts.ledger} Ledger`));
+      if (s.counts.pending) c.appendChild(el("span", "pend", tlN(s.counts.pending, "wartet", "warten")));
+      if (s.counts.ledger) c.appendChild(el("span", "", tlN(s.counts.ledger, "Ereignis", "Ereignisse")));
       if (s.gaps.length) c.appendChild(el("span", "pend", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}`));
       main.appendChild(c);
       r.appendChild(main);
@@ -9846,7 +9866,7 @@ function renderTimeline() {
   shell.setRows(shRows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
   shell.setSubtitle(m ? m.state === "read"
-    ? `${m.sessions.length} Sessions · ${m.events.filter((e) => e.family === "tool").length} Tool-Events · ${m.events.filter((e) => e.family === "ledger").length} Ledger-Ereignisse · ${m.gaps.length} Lücken`
+    ? `${tlN(m.sessions.length, "Session", "Sessions")} · ${tlN(m.events.filter((e) => e.kind === "tool.call").length, "Aufruf", "Aufrufe")} · ${tlN(m.events.filter((e) => e.family === "ledger").length, "Ereignis", "Ereignisse")} · ${tlN(m.gaps.length, "Lücke", "Lücken")}`
     : m.state === "empty" ? "keine Ereignisse im Fenster" : "Quelle antwortet nicht" : "");
 
   // --- the canvas, inside one pane of its own: the shell's detail keeps its display rules (hidden on
@@ -9863,17 +9883,18 @@ function renderTimeline() {
     box.appendChild(el("code", "", "GET /api/timeline"));
     box.appendChild(document.createTextNode(" liefert diese Ansicht; bis sie antwortet, zeigt die Zeitleiste nichts und behauptet nichts."));
     pane.appendChild(box);
-    shell.foot.textContent = m.clock.note;
+    shell.foot.textContent = tlIntern(m);
     return;
   }
+  // the unknown is said ONCE, here, in words; the foot carries the raw key as an internal value
   const note = el("div", "tlnote");
   note.appendChild(el("b", "", "Uhrunsicherheit: unbekannt."));
-  note.appendChild(document.createTextNode(` ${m.clock.note.replace(/^clockUncertainty: unknown · /, "")} · Dauer: keine Laufzeit belegt, nur Recordabstände.`
-    + `${m.ledgerUnassigned ? ` · ${m.ledgerUnassigned} Ledger-Ereignisse ohne Session.` : ""}`));
+  note.appendChild(document.createTextNode(` ${m.clock.note} · Dauer: keine Laufzeit belegt, nur Abstände der Aufzeichnungen.`
+    + `${m.ledgerUnassigned ? ` · ${tlN(m.ledgerUnassigned, "Ereignis", "Ereignisse")} ohne Session.` : ""}`));
   pane.appendChild(note);
   if (m.state === "empty") {
     pane.appendChild(el("div", "tlstate", `Keine Ereignisse zwischen ${tlIso(m.window.from)} und ${tlIso(m.window.to)}. Was die Quellen vor dem Fenster halten, ist hier ungemessen, nicht leer.`));
-    shell.foot.textContent = m.clock.note;
+    shell.foot.textContent = tlIntern(m);
     return;
   }
   const events = tlScopedEvents();
@@ -9895,31 +9916,75 @@ function renderTimeline() {
     ev.preventDefault(); ev.stopPropagation();
     next?.focus();
   };
-  const railPx = mobile ? 84 + 6 : 150 + 8, padPx = mobile ? 36 : 56;
+  const railPx = mobile ? 84 + 6 : 150 + 8, padPx = mobile ? 20 : 56;
   const plotPx = Math.max(120, shell.detail.clientWidth - 28 - railPx - padPx * 2);
-  const axisRow = el("div", "tlaxis");
-  axisRow.appendChild(el("span", "", "Recordzeit, lokal"));
-  const plotAxis = el("div", "tlaxisplot");
-  for (const t of tlTicks(axis, Math.max(2, Math.floor(plotPx / (mobile ? 76 : 92))))) {
-    const tick = el("time", "tltick", tlFmtClock(t.at, t.step));
-    const tx = x(t.at);
-    tick.style.left = `${tx}%`;
-    // a label at either end stays inside the plot: the canvas never scrolls sideways for a tick
-    if (tx > 88) tick.style.transform = "translateX(-100%)"; else if (tx < 12) tick.style.transform = "none";
-    tick.setAttribute("datetime", tlIso(t.at));
-    plotAxis.appendChild(tick);
+  if (!listMode) {
+    const axisRow = el("div", "tlaxis");
+    axisRow.appendChild(el("span", "", "Zeit laut Quelle"));
+    const plotAxis = el("div", "tlaxisplot");
+    for (const t of tlTicks(axis, Math.max(2, Math.floor(plotPx / (mobile ? 76 : 92))))) {
+      const tick = el("time", "tltick", tlFmtClock(t.at, t.step));
+      const tx = x(t.at);
+      tick.style.left = `${tx}%`;
+      // a label at either end stays inside the plot: the canvas never scrolls sideways for a tick
+      if (tx > 88) tick.style.transform = "translateX(-100%)"; else if (tx < 12) tick.style.transform = "none";
+      tick.setAttribute("datetime", tlIso(t.at));
+      plotAxis.appendChild(tick);
+    }
+    axisRow.appendChild(plotAxis);
+    canvas.appendChild(axisRow);
   }
-  axisRow.appendChild(plotAxis);
-  canvas.appendChild(axisRow);
+  // THE LEGEND (UI-MAIN review 2026-10-07): every glyph on the canvas has its word here, once, at the
+  // axis head — and again on each mark's title, so hover, hold and a screen reader all get the word
+  const legend = el("div", "tllegend");
+  legend.setAttribute("aria-label", "Legende");
+  const legendKinds = [...new Set(events.map((e) => e.kind))].sort((a, b) => TL_KIND_LABEL[a].localeCompare(TL_KIND_LABEL[b]));
+  for (const k of legendKinds) {
+    const item = el("span", "tllegit");
+    item.dataset.kind = k;
+    item.appendChild(el("span", "tlglyph", TL_GLYPH[k]));
+    item.appendChild(document.createTextNode(TL_KIND_LABEL[k]));
+    legend.appendChild(item);
+  }
+  if (events.some((e) => e.status === "pending")) legend.appendChild(el("span", "tllegit", "┄ wartet auf Resultat"));
+  if (events.some((e) => !e.atKnown)) legend.appendChild(el("span", "tllegit", "⋯ ohne Zeitstempel"));
+  canvas.appendChild(legend);
+  // one mark, the same button on the axis and in a phone list
+  const markButton = (e: TimelineEvent): HTMLButtonElement => {
+    const b = el("button", `tlev${tlPick === e.id ? " sel" : ""}`) as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.id = e.id; b.dataset.kind = e.kind; b.dataset.family = e.family; b.dataset.status = e.status; b.dataset.atKnown = String(e.atKnown);
+    b.dataset.at = String(e.at);
+    if (e.verdict) b.dataset.verdict = e.verdict;
+    const verdict = tlVerdict(e.verdict);
+    b.title = `${TL_KIND_LABEL[e.kind]} ${e.label}${e.sub ? ` ${e.sub}` : ""} · ${TL_STATUS_WORD[e.status]}${verdict ? ` · ${verdict}` : ""} · ${tlIso(e.at)}${e.atKnown ? "" : " (Beobachtung, Aufzeichnung ohne Zeit)"} — öffnen`;
+    b.setAttribute("aria-label", b.title);
+    b.appendChild(el("span", "tlglyph", TL_GLYPH[e.kind]));
+    b.appendChild(el("span", "tlname", e.family === "tool" ? e.label : `${e.label}${verdict ? ` ${verdict}` : ""}`));
+    b.appendChild(el("span", "tlsub", tlSubOf(e)));
+    b.appendChild(el("span", "tlst", e.family === "tool" ? TL_STATUS_WORD[e.status] : ""));
+    b.onclick = () => tlOpenPick(e.id);
+    return b;
+  };
+  // a ledger mark whose sub IS its verdict says the verdict once, in German, in its name
+  const tlSubOf = (e: TimelineEvent): string => (e.family === "ledger" && e.sub === e.verdict ? "" : e.sub);
+  // the width a mark takes on the axis, estimated from its text — the packing below keeps marks
+  // apart by THAT, so a long name costs a row and never a neighbour (UI-MAIN review 2026-10-07)
+  const markWidthPx = (e: TimelineEvent): number => {
+    if (tlZoom === "overview") return mobile ? 24 : 14;
+    const name = e.family === "tool" ? e.label : `${e.label} ${tlVerdict(e.verdict)}`;
+    const text = `${name} ${tlZoom === "call" ? tlSubOf(e) : ""} ${e.family === "tool" ? TL_STATUS_WORD[e.status] : ""}`.trim();
+    return 8 + 11 + 8 + text.length * 6.6;
+  };
 
-  // overview marks are 24 px wide on a phone (40 px tall for the thumb), so the packing stays flat
-  const clearancePx = tlZoom === "overview" ? (mobile ? 26 : 14) : tlZoom === "session" ? (mobile ? 96 : 132) : 200;
+  // the gap two neighbouring marks keep between their edges (their widths come from markWidthPx)
+  const clearancePx = tlZoom === "overview" ? 2 : 6;
   const stepPx = tlZoom === "overview" ? (mobile ? 42 : 22) : (mobile ? 44 : 26);
   const tracks: { key: string | null; title: string; sub: string; session: TimelineSession | null }[] = [];
   const visibleSessions = m.sessions.filter((s) => tlZoom === "overview" ? tlHarness === "all" || s.harness === tlHarness : s.key === tlScope);
   for (const s of visibleSessions) tracks.push({ key: s.key, title: s.label, sub: `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}`, session: s });
   const fleetEvents = events.filter((e) => e.session === null);
-  if (tlZoom === "overview" && fleetEvents.length) tracks.push({ key: null, title: "Fleet", sub: "Ledger ohne Session", session: null });
+  if (tlZoom === "overview" && fleetEvents.length) tracks.push({ key: null, title: "Fleet", sub: "Ereignisse ohne Session", session: null });
   for (const t of tracks) {
     const lane = events.filter((e) => e.session === t.key);
     const shown = lane.filter(inside);
@@ -9931,7 +9996,7 @@ function renderTimeline() {
     head.appendChild(el("span", "", t.sub));
     if (t.session) {
       const s = t.session;
-      head.appendChild(el("span", "tlcounts", `${s.counts.calls} Calls${s.counts.errors ? ` · ${s.counts.errors} Fehler` : ""}${s.counts.pending ? ` · ${s.counts.pending} offen` : ""}`));
+      head.appendChild(el("span", "tlcounts", tlCallWords(s.counts)));
       if (s.gaps.length || s.horizon.state === "unmeasured") {
         const gaps = el("div", "tlgaps");
         const g = el("button", "tlgap", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}${s.horizon.state === "unmeasured" ? " · Horizont ungemessen" : ""}`) as HTMLButtonElement;
@@ -9950,28 +10015,49 @@ function renderTimeline() {
     }
     track.appendChild(head);
     const body = el("div", "");
-    const plot = el("div", "tlplot");
-    // horizon: what lies before a source's first record is unmeasured, never empty
-    if (t.session) {
-      const h = t.session.horizon;
-      const later = h.oldestAt !== null && m.span.from !== null && h.oldestAt > m.span.from && h.oldestAt > axis.from;
-      if (h.state === "unmeasured" || later) {
-        const un = el("div", "tlunmeasured");
+    // horizon: what lies before a source's first record is unmeasured, never empty. The hatch says
+    // one word that wraps and never cuts; the reason stands in the gaps inspector.
+    const h = t.session?.horizon ?? null;
+    const later = !!h && h.oldestAt !== null && m.span.from !== null && h.oldestAt > m.span.from && (listMode || h.oldestAt > axis.from);
+    const horizonWord = h && (h.state === "unmeasured" || later) ? (h.state === "unmeasured" ? "ungemessen" : "davor ungemessen") : null;
+    if (listMode) {
+      const list = el("ol", "tllist");
+      if (h && horizonWord) {
+        const un = el("li", "tlunmeasured");
         un.dataset.horizon = h.state;
-        un.style.left = "0";
-        un.style.width = h.state === "unmeasured" ? "100%" : `${x(h.oldestAt ?? axis.from)}%`;
-        un.appendChild(el("span", "", h.state === "unmeasured" ? `ungemessen · ${h.reason ?? ""}` : "davor ungemessen"));
-        plot.appendChild(un);
+        un.appendChild(el("span", "", horizonWord));
+        list.appendChild(un);
       }
+      for (const e of lane) {
+        const li = el("li", "");
+        const b = markButton(e);
+        b.appendChild(el("time", "tltime", tlFmtClock(e.at, 1000)));
+        li.appendChild(b);
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+      track.appendChild(body);
+      canvas.appendChild(track);
+      continue;
     }
-    // row packing: a mark takes a row where nothing within its clearance already stands
+    const plot = el("div", "tlplot");
+    if (h && horizonWord) {
+      const un = el("div", "tlunmeasured");
+      un.dataset.horizon = h.state;
+      un.style.left = "0";
+      un.style.width = h.state === "unmeasured" ? "100%" : `${x(h.oldestAt ?? axis.from)}%`;
+      un.appendChild(el("span", "", horizonWord));
+      plot.appendChild(un);
+      plot.style.setProperty("--tl-foot", mobile ? "26px" : "14px");
+    }
+    // row packing: a mark takes the first row whose last mark's right edge ends before its own left
+    // edge (marks are centred on their time); no row cap — the plot grows, a chip never covers another
     const rowsEnd: number[] = [];
     const pos = new Map<string, { x: number; row: number }>();
     for (const e of shown) {
-      const px = x(e.at) * plotPx / 100;
-      let row = rowsEnd.findIndex((end) => px - end >= clearancePx);
-      if (row < 0) { if (rowsEnd.length < 6) { row = rowsEnd.length; rowsEnd.push(px); } else { row = 5; rowsEnd[5] = px; } }
-      else rowsEnd[row] = px;
+      const px = x(e.at) * plotPx / 100, half = markWidthPx(e) / 2;
+      let row = rowsEnd.findIndex((end) => px - half - clearancePx >= end);
+      if (row < 0) { row = rowsEnd.length; rowsEnd.push(px + half); } else rowsEnd[row] = px + half;
       pos.set(e.id, { x: x(e.at), row });
     }
     plot.style.setProperty("--tl-rows", String(Math.max(1, rowsEnd.length)));
@@ -9987,26 +10073,15 @@ function renderTimeline() {
       bar.style.left = `${p.x}%`;
       bar.style.top = `${p.row * stepPx + 4}px`;
       bar.style.width = `${Math.max(0, (pair ? Math.min(100, x(pair.at)) : 100) - p.x)}%`;
-      bar.title = pair ? `Recordabstand ${e.separationMs ?? "?"} ms — keine Laufzeit` : "Resultat nicht im Snapshot — offen";
+      bar.title = pair ? `Abstand der Aufzeichnungen ${e.separationMs ?? "?"} ms — keine Laufzeit` : "Resultat nicht im Snapshot — wartet";
       plot.appendChild(bar);
     }
     for (const e of shown) {
       const p = pos.get(e.id);
       if (!p) continue;
-      const b = el("button", `tlev${tlPick === e.id ? " sel" : ""}`) as HTMLButtonElement;
-      b.type = "button";
-      b.dataset.id = e.id; b.dataset.kind = e.kind; b.dataset.family = e.family; b.dataset.status = e.status; b.dataset.atKnown = String(e.atKnown);
-      b.dataset.at = String(e.at);
-      if (e.verdict) b.dataset.verdict = e.verdict;
+      const b = markButton(e);
       b.style.left = `${p.x}%`;
       b.style.top = `${p.row * stepPx}px`;
-      b.title = `${TL_KIND_LABEL[e.kind]} ${e.label}${e.sub ? ` ${e.sub}` : ""} · ${TL_STATUS_WORD[e.status]}${e.verdict ? ` · ${e.verdict}` : ""} · ${tlIso(e.at)}${e.atKnown ? "" : " (Beobachtung, Record ohne Zeit)"} — öffnen`;
-      b.setAttribute("aria-label", b.title);
-      b.appendChild(el("span", "tlglyph", TL_GLYPH[e.kind]));
-      b.appendChild(el("span", "tlname", e.family === "tool" ? e.label : `${e.label}${e.verdict ? ` ${e.verdict}` : ""}`));
-      b.appendChild(el("span", "tlsub", e.sub));
-      b.appendChild(el("span", "tlst", e.family === "tool" ? TL_STATUS_WORD[e.status] : ""));
-      b.onclick = () => tlOpenPick(e.id);
       plot.appendChild(b);
     }
     body.appendChild(plot);
@@ -10023,8 +10098,8 @@ function renderTimeline() {
     pane.appendChild(more);
   }
   pane.appendChild(tlInspector());
-  shell.foot.textContent = mobile ? m.clock.note
-    : `${m.clock.note} · Esc schließt den Inspektor, dann eine Zoomstufe, dann das Fenster · ← → gehen die Marken entlang`;
+  shell.foot.textContent = mobile ? tlIntern(m)
+    : `Esc schließt den Inspektor, dann eine Zoomstufe, dann das Fenster · ← → gehen die Marken entlang · ${tlIntern(m)}`;
 }
 
 // the picked event in full, or a session's gaps; a card under the canvas, the whole screen on a phone
@@ -10053,7 +10128,8 @@ function tlInspector(): HTMLElement {
     box.appendChild(head);
     if (s) {
       field("Horizont", s.horizon.state === "read" ? `ab ${tlIso(s.horizon.oldestAt ?? 0)} gelesen${s.horizon.newestAt ? ` bis ${tlIso(s.horizon.newestAt)}` : ""}` : null, `ungemessen · ${s.horizon.reason ?? ""}`);
-      field("Quellstand", `${s.state} · Generation ${s.version}`);
+      field("Quellstand", `${TL_SOURCE_STATE[s.state]} · Generation ${s.version}`);
+      field("Belegung", s.occupation === "unknown" ? null : `Slot ${s.occupation.slot} seit ${tlIso(s.occupation.openedAt)}`, "unbekannt · die Quelle nennt keine Belegung");
       for (const g of s.gaps) field(g.code, `${g.text}${g.offset !== null ? ` · Bytes ${g.offset}${g.bytes !== null ? ` + ${g.bytes}` : ""}` : ""}`);
       if (!s.gaps.length) field("Lücken", "keine in diesem Snapshot; frühere Vollständigkeit unbekannt");
     }
@@ -10064,36 +10140,37 @@ function tlInspector(): HTMLElement {
   if (!e) { box.hidden = true; return box; }
   const pair = e.pair ? tlEventOf(e.pair) : null;
   head.appendChild(el("h3", "", `${TL_KIND_LABEL[e.kind]} · ${e.label}${e.sub ? ` ${e.sub}` : ""}`));
-  const chip = el("span", "tlchip", `${TL_STATUS_WORD[e.status]}${e.verdict ? ` · ${e.verdict}` : ""}`);
+  const verdict = tlVerdict(e.verdict);
+  const chip = el("span", "tlchip", `${TL_STATUS_WORD[e.status]}${verdict ? ` · ${verdict}` : ""}`);
   chip.dataset.status = e.status;
   head.appendChild(chip);
   head.appendChild(close);
   box.appendChild(head);
   if (e.family === "tool") {
     field("Argumente", e.args !== null ? pre(e.args) : null, "nicht geliefert · die Quelle hält sie unter dem Locator");
-    field("Resultat", e.result !== null ? pre(e.result) : null, e.status === "pending" ? "ausstehend · kein Resultat im Snapshot" : "nicht geliefert");
+    field("Resultat", e.result !== null ? pre(e.result) : null, e.status === "pending" ? "wartet · kein Resultat im Snapshot" : "nicht geliefert");
     field("Fehler", e.error !== null ? pre(e.error) : e.status === "unknown" ? null : "keiner laut Quelle", "unbekannt · Quelle sagt nichts");
   } else {
-    field("Urteil", e.verdict ?? null, "ohne Urteil");
+    field("Urteil", e.verdict ? `${verdict}${verdict !== e.verdict ? ` (${e.verdict})` : ""}` : null, "ohne Urteil");
     field("Bezüge", Object.keys(e.source.refs).length ? code(Object.entries(e.source.refs).map(([k, v]) => `${k}=${v}`).join(" · ")) : null, "keine");
   }
   const times = el("div", "");
-  times.appendChild(el("div", "", `${e.atKnown ? "Record" : "Beobachtung (Record ohne Zeitstempel)"}: ${tlIso(e.at)} · ${e.clock}`));
+  times.appendChild(el("div", "", `${e.atKnown ? "Aufzeichnung" : "Beobachtung (Aufzeichnung ohne Zeitstempel)"}: ${tlIso(e.at)} · ${e.clock}`));
   if (e.observedAt !== null) times.appendChild(el("div", "", `beobachtet: ${tlIso(e.observedAt)}`));
   if (pair) times.appendChild(el("div", "", `${TL_KIND_LABEL[pair.kind]}: ${tlIso(pair.at)}`));
   field("Zeitpunkte", times);
-  field("Dauer", e.separationMs !== null ? `keine Laufzeit belegt · Recordabstand Call→Resultat ${e.separationMs} ms` : null, "keine Laufzeit belegt");
+  field("Dauer", e.separationMs !== null ? `keine Laufzeit belegt · Abstand der Aufzeichnungen Aufruf→Resultat ${e.separationMs} ms` : null, "keine Laufzeit belegt");
   const src = el("div", "");
   src.appendChild(el("div", "", `${e.source.name}${e.source.sidechain ? " · Sidechain derselben Session" : ""}`));
   if (e.source.locator) src.appendChild(code(`${e.source.locator}${e.source.fp ? ` fp ${e.source.fp}` : ""}`));
-  if (e.source.record) src.appendChild(el("div", "", `Record ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}`));
+  if (e.source.record) src.appendChild(el("div", "", `Aufzeichnung ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}`));
   if (e.source.edge) src.appendChild(el("div", "", `Kante: ${e.source.edge}`));
   field("Quelle", src);
   if (e.files.length) field("Dateien", e.files.join(", "));
   box.appendChild(dl);
   const acts = el("div", "tliacts");
   if (e.family === "tool" && tlZoom !== "call") {
-    const z = el("button", "shrbtn", "Zoom Call") as HTMLButtonElement;
+    const z = el("button", "shrbtn", "Zoom Aufruf") as HTMLButtonElement;
     z.onclick = () => tlSetZoom("call", e.session, e.kind === "tool.call" ? e.id : e.pair ?? e.id);
     acts.appendChild(z);
   }

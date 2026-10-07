@@ -26,7 +26,8 @@ import type { TraceEvent } from "../trace-index";
 import type { TimelineWire, TimelineWireSession } from "../src/timeline";
 
 export interface TimelineDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
-export interface TimelineMutant { name: string; claim: string; file: "src/timeline.ts" | "src/client.ts"; needle: string; with: string }
+// `width`: the one viewport the mutant is judged at — 1200 unless the claim is a phone claim
+export interface TimelineMutant { name: string; claim: string; file: "src/timeline.ts" | "src/client.ts"; needle: string; with: string; width?: 1200 | 390 }
 
 // the claims, named once so the mutants can point at them
 export const TL_CLAIM = {
@@ -35,7 +36,10 @@ export const TL_CLAIM = {
   kinds: "tool calls and the eight ledger kinds are told apart by kind and glyph, and a report carries its verdict",
   unknown: "what was not observed stays visible: the clock note, one gap chip per session gap, the pending call's open bar, the unmeasured horizon's hatch, the timeless mark",
   zoom: "Zoom narrows to the session (two crumbs, one track), Zoom Call to the pair (two marks), and back steps one level at a time",
-  inspect: "a click opens the inspector with Argumente, Resultat, Fehler, Zeitpunkte, Dauer and Quelle; an error shows its text, a pending call says ausstehend",
+  inspect: "a click opens the inspector with Argumente, Resultat, Fehler, Zeitpunkte, Dauer and Quelle; an error shows its text, a pending call says wartet",
+  legend: "every glyph on the canvas has its word once in the legend at the axis head, and every mark's title begins with that word",
+  phoneList: "on the phone the session zoom lists its marks in time order: no two overlap, no word is cut, the hatch keeps its word",
+  apart: "in the session zoom no two chips share a pixel, however many events fall on one instant",
   keys: "keyboard: → walks the marks, Enter opens the inspector, Escape closes it and gives focus back to the mark",
   touch: "touch-sized: every control at least 40 px tall, no sideways page scroll, the inspector covers the screen, ‹ shows the session rail",
   bundle: "the production bundle carries neither the fixture module nor its canary",
@@ -63,6 +67,12 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: "if (!res.ok) {", with: "if (res.status === 599) {" },
   { name: "a closed window's late answer is kept", claim: TL_CLAIM.stale, file: "src/client.ts",
     needle: "if (gen !== tlGen) return; // an older window's answer: not ours to paint", with: "void gen;" },
+  { name: "the legend built from no kinds", claim: TL_CLAIM.legend, file: "src/client.ts",
+    needle: "for (const k of legendKinds) {", with: "for (const k of [] as TimelineKind[]) {" },
+  { name: "the phone keeps the axis in session zoom", claim: TL_CLAIM.phoneList, file: "src/client.ts", width: 390,
+    needle: `const listMode = mobile && tlZoom !== "overview";`, with: "const listMode = false;" },
+  { name: "the packing forgets how wide a chip is", claim: TL_CLAIM.apart, file: "src/client.ts",
+    needle: "half = markWidthPx(e) / 2;", with: "half = 0;" },
 ];
 
 const T = Date.parse("2026-01-01T00:00:00.000Z");
@@ -233,7 +243,12 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const canvas = sh.querySelector('.tlcanvas');
       const marks = [...sh.querySelectorAll('.tlev')].map((b) => { const r = b.getBoundingClientRect(); return { id: b.dataset.id, kind: b.dataset.kind, family: b.dataset.family,
         status: b.dataset.status, atKnown: b.dataset.atKnown, verdict: b.dataset.verdict ?? null, at: Number(b.dataset.at), left: parseFloat(b.style.left),
-        glyph: b.querySelector('.tlglyph')?.textContent ?? '', h: Math.round(r.height), w: Math.round(r.width), track: b.closest('.tltrack')?.dataset.session ?? 'fleet' }; });
+        glyph: b.querySelector('.tlglyph')?.textContent ?? '', h: Math.round(r.height), w: Math.round(r.width), track: b.closest('.tltrack')?.dataset.session ?? 'fleet',
+        title: b.title, rect: { t: Math.round(r.top), b: Math.round(r.bottom), l: Math.round(r.left), r: Math.round(r.right) },
+        cut: [...b.querySelectorAll('span')].some((s) => s.scrollWidth > s.clientWidth + 1) }; });
+      const legend = [...sh.querySelectorAll('.tllegend [data-kind]')].map((s) => ({ kind: s.dataset.kind, glyph: s.querySelector('.tlglyph')?.textContent ?? '', text: s.textContent.trim() }));
+      const hatchCut = [...sh.querySelectorAll('.tlunmeasured span')].some((s) => s.scrollWidth > s.clientWidth + 1 || s.getBoundingClientRect().right > (s.closest('.tlplot, .tllist')?.getBoundingClientRect().right ?? Infinity) + 1);
+      const hatchWords = [...sh.querySelectorAll('.tlunmeasured span')].map((s) => s.textContent);
       const inspect = sh.querySelector('.tlinspect');
       const fields = {}; for (const dd of sh.querySelectorAll('.tlinspect dd[data-field]')) fields[dd.dataset.field] = dd.innerText.trim();
       const ir = inspect && !inspect.hidden ? inspect.getBoundingClientRect() : null;
@@ -242,16 +257,18 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         ticks: sh.querySelectorAll('.tltick').length, crumbs: [...sh.querySelectorAll('.tlcrumb')].map((b) => b.textContent),
         note: sh.querySelector('.tlnote')?.innerText ?? '', gapChips: [...sh.querySelectorAll('.tlgap')].map((g) => g.textContent),
         pendingBars: sh.querySelectorAll('.tlbar.pending').length, hatches: [...sh.querySelectorAll('.tlunmeasured')].map((h) => h.dataset.horizon),
-        marks, inspectOpen: !!ir, inspectRect: ir ? { top: Math.round(ir.top), left: Math.round(ir.left), w: Math.round(ir.width), h: Math.round(ir.height) } : null,
+        marks, legend, hatchCut, hatchWords, inspectOpen: !!ir, inspectRect: ir ? { top: Math.round(ir.top), left: Math.round(ir.left), w: Math.round(ir.width), h: Math.round(ir.height) } : null,
         fields, inspectTitle: sh.querySelector('.tlihead h3')?.textContent ?? null, state: sh.querySelector('.tlstate')?.dataset.state ?? null,
         stateText: sh.querySelector('.tlstate')?.innerText ?? '', detailmode: sh.classList.contains('detailmode'),
         railRows: sh.querySelectorAll('.tlrow').length, railVisible: !!sh.querySelector('.shelllist') && sh.querySelector('.shelllist').getBoundingClientRect().width > 0,
         focusId: document.activeElement?.dataset?.id ?? null, focusClass: document.activeElement?.className ?? null,
         shortControls: [...sh.querySelectorAll('button:not(.shellclose):not(.shellback), select')].filter((b) => b.getBoundingClientRect().width > 0 && b.getBoundingClientRect().height < 40).map((b) => b.className + ':' + b.textContent.slice(0, 16)),
         pageScroll: document.documentElement.scrollWidth - innerWidth, canvasScroll: canvas ? canvas.scrollWidth - canvas.clientWidth : 0 }; })()`;
-    type Mark = { id: string; kind: string; family: string; status: string; atKnown: string; verdict: string | null; at: number; left: number; glyph: string; h: number; w: number; track: string };
+    type Mark = { id: string; kind: string; family: string; status: string; atKnown: string; verdict: string | null; at: number; left: number; glyph: string; h: number; w: number; track: string;
+      title: string; rect: { t: number; b: number; l: number; r: number }; cut: boolean };
     type Read = { lens: string | null; zoom: string | null; tracks: string[]; fleetTracks: number; ticks: number; crumbs: string[]; note: string; gapChips: string[];
-      pendingBars: number; hatches: string[]; marks: Mark[]; inspectOpen: boolean; inspectRect: { top: number; left: number; w: number; h: number } | null;
+      pendingBars: number; hatches: string[]; marks: Mark[]; legend: { kind: string; glyph: string; text: string }[]; hatchCut: boolean; hatchWords: string[];
+      inspectOpen: boolean; inspectRect: { top: number; left: number; w: number; h: number } | null;
       fields: Record<string, string>; inspectTitle: string | null; state: string | null; stateText: string; detailmode: boolean; railRows: number; railVisible: boolean;
       focusId: string | null; focusClass: string | null; shortControls: string[]; pageScroll: number; canvasScroll: number } | null;
     const read = async (): Promise<NonNullable<Read>> => {
@@ -313,10 +330,35 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       claims[TL_CLAIM.unknown] = r1.note.includes("Uhrunsicherheit: unbekannt") && chipGaps === expectedGaps && expectedGaps > 0
         && r1.pendingBars >= 1 && r1.hatches.includes("unmeasured") && r1.marks.some((m) => m.atKnown === "false");
 
+      // --- 4b. the legend: one word per glyph on the canvas, the same word first on every mark's title
+      const wordOf = new Map(r1.legend.map((l) => [l.kind, l.text.replace(l.glyph, "").trim()]));
+      const legendCovers = [...new Set(r1.marks.map((m) => m.kind))].every((k) => (wordOf.get(k) ?? "").length > 1);
+      const titled = r1.marks.every((m) => m.title.startsWith(wordOf.get(m.kind) ?? "\u0000"));
+      const legendGlyphs = r1.legend.every((l) => l.glyph === r1.marks.find((m) => m.kind === l.kind)?.glyph);
+      facts.legend = { legend: r1.legend.map((l) => l.text), covers: legendCovers, titled, sample: r1.marks.slice(0, 2).map((m) => m.title.slice(0, 40)) };
+      claims[TL_CLAIM.legend] = r1.legend.length >= 10 && legendCovers && titled && legendGlyphs
+        && !!wordOf.get("tool.call")?.startsWith("Aufruf") && (!wordOf.has("other") || !!wordOf.get("other")?.startsWith("Ereignis"));
+
       // --- 5. zoom in two steps, back one level at a time
       await click(`.tltrack[data-session="${claudeKey}"] .shrbtn`);
       const r5a = await read();
       await shot(`${width}-2-session`);
+      // --- 5b. no two chips share a pixel in the session zoom — the claude fixture puts eight
+      // ledger events and two results on one instant, more than the old six rows could hold
+      const rects = r5a.marks.map((m) => m.rect);
+      const overlap = rects.some((a, i) => rects.some((b, j) => j > i && a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b));
+      facts.apart = { marks: r5a.marks.length, overlap, rows: new Set(rects.map((r) => r.t)).size };
+      claims[TL_CLAIM.apart] = r5a.marks.length >= 8 && !overlap;
+      // --- 5c. the phone's session zoom is a list in time order, no word cut, the hatch keeps its word
+      if (mobile) {
+        const ordered = r5a.marks.every((m, i) => i === 0 || m.at >= r5a.marks[i - 1]!.at);
+        // a list row spans the width (an axis chip is as wide as its words); the rows read in time order
+        const minW = Math.min(...r5a.marks.map((m) => m.w));
+        facts.phoneList = { marks: r5a.marks.length, overlap, cut: r5a.marks.filter((m) => m.cut).length, ordered, hatchCut: r5a.hatchCut, hatchWords: r5a.hatchWords,
+          minH: Math.min(...r5a.marks.map((m) => m.h)), minW, zoomTools: r5a.shortControls.length };
+        claims[TL_CLAIM.phoneList] = r5a.marks.length >= 8 && !overlap && ordered && !r5a.marks.some((m) => m.cut) && !r5a.hatchCut
+          && r5a.hatchWords.some((w) => /ungemessen/.test(w ?? "")) && Math.min(...r5a.marks.map((m) => m.h)) >= 40 && minW >= width * 0.6;
+      }
       const call = r5a.marks.find((m) => m.kind === "tool.call" && m.status === "ok");
       if (call) await click(`.tlev[data-id="${call.id}"]`);
       await click(".tliacts .shrbtn");  // Zoom Call
@@ -348,11 +390,11 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       let pendingResult = "";
       if (pendingMark) { await click(`.tlev[data-id="${pendingMark.id}"]`); pendingResult = (await read()).fields.Resultat ?? ""; }
       facts.inspect = { title: r6.inspectTitle, fields: Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.slice(0, 60)])), pendingResult: pendingResult.slice(0, 60) };
-      claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.includes("Call") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
+      claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
         && (f.Argumente ?? "").startsWith("Synthetic tool.call side-1") && (f.Resultat ?? "").startsWith("Synthetic tool.result side-1")
-        && (f.Fehler ?? "").startsWith("Synthetic tool.result side-1") && (f.Zeitpunkte ?? "").includes("Record:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
-        && (f.Dauer ?? "").includes("Recordabstand") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").includes("native:") && (f.Quelle ?? "").includes("Sidechain")
-        && pendingResult.startsWith("ausstehend");
+        && (f.Fehler ?? "").startsWith("Synthetic tool.result side-1") && (f.Zeitpunkte ?? "").includes("Aufzeichnung:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
+        && (f.Dauer ?? "").includes("Abstand der Aufzeichnungen") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").includes("native:") && (f.Quelle ?? "").includes("Sidechain")
+        && pendingResult.startsWith("wartet");
       await click(".tliclose");
 
       // --- 7. keyboard: → walks the marks, Enter opens, Escape closes and returns focus
@@ -451,10 +493,11 @@ export async function run(): Promise<void> {
       error instanceof Error ? error.message : String(error));
     return;
   }
-  // every mutant must turn its claim red at 1200×900 — a needle that left the source fails as the probe
+  // every mutant must turn its claim red at its one viewport (1200×900 unless it is a phone claim) —
+  // a needle that left the source fails as the probe
   for (const m of TIMELINE_MUTANTS) {
     try {
-      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [1200], mutate: m }))[0];
+      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
       check(`timeline DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
         JSON.stringify(hit?.facts ?? null).slice(0, 600));
     } catch (error) {

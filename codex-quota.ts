@@ -117,7 +117,11 @@ async function readQuotaTail(path: string): Promise<string> {
     const bytes = Buffer.alloc(Math.min(size, selection.maxBytesPerFile));
     const { bytesRead } = await file.read(bytes, 0, bytes.length, start);
     const text = bytes.subarray(0, bytesRead).toString("utf8");
-    return start === 0 ? text : text.slice(text.indexOf("\n") < 0 ? text.length : text.indexOf("\n") + 1);
+    if (start === 0) return text;
+    const previous = Buffer.alloc(1);
+    const { bytesRead: previousRead } = await file.read(previous, 0, 1, start - 1);
+    if (previousRead === 1 && previous[0] === 0x0a) return text;
+    return text.slice(text.indexOf("\n") < 0 ? text.length : text.indexOf("\n") + 1);
   } finally { await file.close(); }
 }
 

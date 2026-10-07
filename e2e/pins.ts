@@ -2865,6 +2865,25 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("subscription: event time is required, not inferred from mtime", noTime.status === "unknown" && noTime.source.measuredAt === null);
   const dir = mkdtempSync(join(tmpdir(), "subscription-quota-"));
   try {
+    const tailDay = join(dir, "tail-cases", "2026", "10", "03");
+    mkdirSync(tailDay, { recursive: true });
+    const cap = 262144;
+    const boundaryEvent = event(now, { ...limits, primary: { ...window, used_percent: 10 } });
+    const fillTail = (text: string) => text + " ".repeat(cap - Buffer.byteLength(text) - 1) + "\n";
+    const tailCases = [
+      { name: "event exactly at bounded tail start is measured", text: '{}\n' + fillTail(boundaryEvent + '\n'), used: 10, at: now },
+      { name: "tail inside a line discards its valid-looking quota suffix", text: '{}\n ' + fillTail(boundaryEvent + '\n' + event(now - 60_000) + '\n'), used: 27, at: now - 60_000 },
+      { name: "small complete file is measured", text: boundaryEvent + '\n', used: 10, at: now },
+      { name: "torn final line retains the preceding measurement", text: boundaryEvent + '\n{"payload":', used: 10, at: now },
+    ];
+    for (const test of tailCases) {
+      writeFileSync(join(tailDay, "fixture.jsonl"), test.text);
+      const snapshot = await readLocalQuota(join(dir, "tail-cases"), () => now);
+      pin(`codex-quota: ${test.name}`, snapshot.status === "measured" && snapshot.primary?.used_percent === test.used
+        && snapshot.source.measuredAt === test.at && snapshot.source.selection.maxBytesPerFile === cap
+        && snapshot.source.selection.historyComplete === false,
+        `status=${snapshot.status}; used=${snapshot.primary?.used_percent}; at=${snapshot.source.measuredAt}; reason=${snapshot.source.reason}`);
+    }
     const day = join(dir, "2026", "10", "03");
     mkdirSync(day, { recursive: true });
     writeFileSync(join(day, "a.jsonl"), event(now));

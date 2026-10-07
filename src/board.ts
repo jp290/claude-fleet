@@ -3430,9 +3430,9 @@ export function drawRankeLines(root: HTMLElement): void {
 //
 // WHERE IT LIVES (grammatik G2.1, decision W2): in flow, never an overlay. On the desktop the
 // alarm is the FIRST card of the board's machine zone — the same place as the deploy-due line,
-// above "is what you are looking at even the code that is running". A phone, whose board never
-// renders, keeps it as a full-width bar above #mhead that pushes the page down instead of
-// covering it. Ack (PLA_ACK_KEY) and the adjudicate paths (undo-land, suite.log) stay.
+// above "is what you are looking at even the code that is running". A phone shows the same card
+// at the top of its Info window (the island's ℹ) and nothing above the island: no strip, no dot
+// (owner 2026-10-07). Ack (PLA_ACK_KEY) and the adjudicate paths (undo-land, suite.log) stay.
 export let postLandAudit: PostLandAuditInfo | null = null;
 export let plaCard: HTMLElement | null = null;
 
@@ -3547,40 +3547,15 @@ export function renderPostLandAudit() {
   const bar = $("plaudit");
   bar.replaceChildren();
   bar.style.display = "none";
-  // the phone's own sign is the dot at the island (hidden on the desktop); the card itself is a
-  // section of Info on both, swapped in place when Info has one — the alarm must not wait for the
-  // board's own repaint (it rides this 2s poll on purpose), and that repaint must not yank the
-  // reading position just for it
-  void renderMobileAlarmHint();
+  // the card is a section of Info on both surfaces — the phone has no dot and no strip of its own
+  // (owner 2026-10-07), its Info window is the one the island's ℹ opens. Swapped in place when Info
+  // has one: the alarm must not wait for the board's own repaint (it rides this 2s poll on purpose),
+  // and that repaint must not yank the reading position just for it
   const had = plaCard?.isConnected ? plaCard : null;
   const card = plaBoardCard();
   if (had) { if (card) had.replaceWith(card); else had.remove(); }
   else if (card && boardOpen) void renderBoard();
 }
-
-export let mobileAlarmGeneration = 0;
-export async function renderMobileAlarmHint() {
-  const hint = $("malarm") as HTMLButtonElement;
-  const generation = ++mobileAlarmGeneration;
-  if (!isMobile()) { hint.hidden = true; return; }
-  const audit = postLandAlarm(postLandAudit, prefNumber(PLA_ACK_KEY));
-  const slot = panes[focused]?.slot ?? 0;
-  let failedLand = false;
-  if (slot && fleet[slot - 1]?.worktree) {
-    try {
-      const res = await api(`/api/slots/${slot}/merge`);
-      if (res.ok) failedLand = failedLandVerdict(((await res.json()) as MergeState).last);
-    } catch { /* a missing verdict does not invent an alarm */ }
-  }
-  if (generation !== mobileAlarmGeneration) return;
-  hint.hidden = !audit && !failedLand;
-  hint.classList.toggle("unknown", !!audit && audit.tone === "unknown" && !failedLand);
-  hint.title = failedLand ? "Land fehlgeschlagen — Details in Info öffnen" :
-    audit?.tone === "unknown" ? "Land-Nachprüfung ungemessen — Details in Info öffnen" :
-    "Land-Nachprüfung fehlgeschlagen — Details in Info öffnen";
-  hint.onclick = () => setBoard(true);
-}
-
 
 export function initBoard(): void {
   $("boardclose").onclick = () => setBoard(false);

@@ -2,7 +2,7 @@ import type { CodexFirstTurn } from "../server/conversation-read";
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, renderMobileAlarmHint, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -4927,12 +4927,11 @@ export function showSlot(id: number, at = performance.now()): boolean {
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
   existing?.beginSwitch(at);
-  if (existing) { existing.focus(); existing.scrollToEnd(); existing.visibleExistingSwitch(); existing.flash(); void renderMobileAlarmHint(); return true; }
+  if (existing) { existing.focus(); existing.scrollToEnd(); existing.visibleExistingSwitch(); existing.flash(); return true; }
   const target = panes[focused];
   target.beginSwitch(at);
   target.assign(id);
   target.flash();
-  void renderMobileAlarmHint();
   return true;
 }
 
@@ -4964,7 +4963,7 @@ MOBILE_MQ.addEventListener("change", () => {
   if (!isMobile() && boardShell?.isOpen()) setBoard(false); // the info WINDOW is the phone's surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
   applyBoard(); // same for the right sideboard — a desktop-only surface
-  renderPostLandAudit(); // the alarm swaps surfaces: board section on desktop, #mhead bar on a phone
+  renderPostLandAudit(); // the alarm card follows Info: the board column on the desktop, the window on a phone
   setLayout(isMobile() ? 1 : layout, panes.map((p) => p.slot));
 });
 

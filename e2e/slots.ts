@@ -1916,9 +1916,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     !!failedLandVerdict && ["blocked", "error", "interrupted"].every((status) => failedLandVerdict({ status, landed: false }))
       && !failedLandVerdict({ status: "merged", landed: false })
       && !failedLandVerdict({ status: "error", landed: true })
-      && /hint\.onclick = \(\) => setBoard\(true\)/.test(cliSrc)
-      && /bar\.style\.display = "none";\n[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n  void renderMobileAlarmHint\(\)/.test(cliSrc)
-      && /id="malarm" hidden/.test(indexSrc), "failedLandVerdict + mobile Info hint");
+, "failedLandVerdict");
   check("B4: both alarm cards keep their detail one gesture away — the check after the land behind Ansehen, the land under one summary",
     /el\("div", `plasec \$\{al\.tone\}`\)/.test(cliSrc)
       && /el\("button", "plaack", plaOpen \? "Weniger" : "Ansehen"\)/.test(cliSrc) && /if \(plaOpen\) \{/.test(cliSrc)
@@ -7378,7 +7376,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0 },
     ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
   ];
-  const fx = { sessions: 0, inputs: [] as string[], posts: [] as { path: string; body: string }[] };
+  const fx = { sessions: 0, inputs: [] as string[], posts: [] as { path: string; body: string }[], alarm: false };
   // one harness with the composer's two switches, so the tools sheet has model and effort to show —
   // its pick list is the register's (model-register.ts), as the server hands it out — the register's
   // statuses with it (server.ts /api/harnesses → modelRegistry), so a superseded id reads as one
@@ -7474,7 +7472,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
-      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [] }); }
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [],
+        ...(fx.alarm ? { postLandAudit: { at: 9 * 60_000, result: "red", repo: "/fixture/alpha", main: "main", mainSha: "a".repeat(40), covers: ["fleet/261007-insel-1b2c"] } } : {}) }); }
       if (p === "/api/harnesses") return void json(requestId, HARNESSES);
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -8121,6 +8120,93 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         && owner.cls === "act wait owner" && owner.title === "wartet auf dich" && owner.ink === qWait && /· wartet auf dich —/.test(ownerLabel ?? "");
       claims['wait · when the slot moves to waiting on its MAIN, the next poll repaints the pill in ink, "wartet auf MAIN"'] = repainted
         && !!main && main.title === "wartet auf MAIN" && main.ink === mute;
+      missing.length = 0;
+      results.push({ width: W, height: H, claims, facts, detail });
+    }
+    // --- THE ROOM BELONGS TO THE TEXT (card "Du kennst mobile Web-Oberflaechen", owner 2026-10-07: „[Zitat entfernt]“
+    //  · „[Zitat entfernt]“): upright, with a red check after the land on
+    // the poll, nothing stands above the top island — no strip, no dot —, and the card is Info's first
+    // section behind ℹ. The field: empty it is one line even when its placeholder would wrap (a long
+    // name), it grows with three typed lines, ➤ sends them as POST /send to the slot, and it falls back
+    // to one line. Touch emulation on: the strip of old showed under a finger and not under a mouse.
+    {
+      const claims: Record<string, boolean> = {}, facts: Record<string, unknown> = {}, detail: Record<string, unknown> = {};
+      fx.alarm = true; fx.posts = []; fx.inputs = [];
+      await boot(W, H, true);
+      const polled = fx.sessions;
+      while (fx.sessions <= polled + 1) await Bun.sleep(50);
+      await settle(400);
+      const top = { mhead: await shown("#mhead"), dot: await evaluate<boolean>("!!document.querySelector('#malarm')"), app: await box("#app"), mtop: await box("#mtop"), pill: await box("#mpill"),
+        firstAt8: await evaluate<string>("(document.elementFromPoint(20, 8)?.closest('[id]')?.id) ?? ''") };
+      facts.top = top;
+      await shot(`${W}-alarm-ohne-leiste`);
+      const topClaim = "with a red check after the land on the poll nothing stands above the top island: no #mhead strip, no dot, the app starts at 0 and the pill 8 px under the edge";
+      claims[topClaim] = !top.mhead && !top.dot && top.app?.y === 0 && top.mtop?.y === 0 && top.pill?.y === 8;
+      detail[topClaim] = top;
+      await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#minfo')");
+      const card = await wait("document.querySelector('#boardbody .plasec .plat')", 6000)
+        && await evaluate<{ first: boolean; t: string; btns: string[]; hit: boolean } | null>(`(() => { const c = document.querySelector('#boardbody .plasec'); if (!c) return null;
+          const b = c.querySelector('button'), r = b.getBoundingClientRect();
+          return { first: document.querySelector('#boardbody').firstElementChild === c, t: c.querySelector('.plat').textContent,
+            btns: [...c.querySelectorAll('button')].map((x) => x.textContent), hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
+      facts.infoCard = card;
+      await shot(`${W}-alarm-in-info`);
+      const cardClaim = "…and ℹ on the island opens Info with the alarm as its first card: \"Der Check nach dem Land ist rot\", Ansehen · Gesehen under a finger";
+      claims[cardClaim] = !!card && card.first && card.t === "Der Check nach dem Land ist rot" && JSON.stringify(card.btns) === JSON.stringify(["Ansehen", "Gesehen"]) && card.hit;
+      detail[cardClaim] = card;
+      await escape();
+      facts.infoClosed = await evaluate<boolean>("!window.__fx.shown(document.querySelector('#board'))");
+      fx.alarm = false;
+      // the field, under a name long enough to wrap its placeholder in the island's field
+      const LONG = "Claude Fleet · MAIN · Opus 5.5";
+      alpha.label = LONG;
+      const seen = fx.sessions;
+      while (fx.sessions <= seen + 1) await Bun.sleep(50);
+      await wait(`document.querySelector('#input').placeholder === ${JSON.stringify(`Prompt für ${LONG} …`)}`, 4000);
+      // a poll rewrites the placeholder but fits no field; the view switch there and back mounts the
+      // composer (src/composer.ts#setComposerSize → fitTextarea), as a boot under that name does
+      for (const chat of [true, false]) {
+        await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
+        await wait(`${chat ? "" : "!"}window.__fx.pane().classList.contains('chat')`, 3000);
+      }
+      await settle(300);
+      const FIELD = `(() => { const t = document.querySelector('#input'), c = getComputedStyle(t), r = t.getBoundingClientRect();
+        const line = parseFloat(c.lineHeight), pad = parseFloat(c.paddingTop) + parseFloat(c.paddingBottom);
+        const m = document.createElement('canvas').getContext('2d'); m.font = c.font;
+        return { h: Math.round(r.height), one: Math.round(line + pad), line, pad, value: t.value, ph: t.placeholder,
+          phWide: Math.round(m.measureText(t.placeholder).width), inner: Math.round(t.clientWidth - parseFloat(c.paddingLeft) - parseFloat(c.paddingRight)) }; })()`;
+      type Field = { h: number; one: number; line: number; pad: number; value: string; ph: string; phWide: number; inner: number };
+      const empty = await evaluate<Field>(FIELD);
+      await shot(`${W}-feld-leer`);
+      const emptyClaim = "the empty field is exactly one text line high, even with a placeholder wider than the field";
+      claims[emptyClaim] = !!empty && empty.value === "" && empty.phWide > empty.inner && Math.abs(empty.h - empty.one) <= 1;
+      detail[emptyClaim] = empty;
+      await tap("document.querySelector('#input')");
+      const enter = async () => {
+        await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      };
+      const TYPED = ["handy probe zeile eins", "zeile zwei", "zeile drei"];
+      for (const [i, line] of TYPED.entries()) { if (i) await enter(); await send("Input.insertText", { text: line }); }
+      await settle(400);
+      const typed = await evaluate<Field>(FIELD);
+      await shot(`${W}-feld-mehrzeilig`);
+      const grewClaim = "three typed lines grow the field to three lines — Enter is a new line on the phone, nothing is sent";
+      claims[grewClaim] = !!typed && typed.value === TYPED.join("\n") && Math.abs(typed.h - Math.round(3 * typed.line + typed.pad)) <= 1
+        && !fx.posts.some((x) => x.path === "/send");
+      detail[grewClaim] = { typed, posts: fx.posts };
+      await tap("document.querySelector('#send')");
+      await wait("document.querySelector('#input').value === ''", 4000);
+      await settle(400);
+      const after = await evaluate<Field>(FIELD);
+      await shot(`${W}-feld-gesendet`);
+      const sent = fx.posts.filter((x) => x.path === "/send").map((x) => JSON.parse(x.body) as { slot: number; text: string; submit: boolean });
+      const sendClaim = "➤ sends the three lines to the focused slot (POST /send, submit) and the field falls back to one line";
+      claims[sendClaim] = sent.length === 1 && sent[0].slot === 1 && sent[0].text === TYPED.join("\n") && sent[0].submit === true
+        && !!after && after.value === "" && Math.abs(after.h - after.one) <= 1 && after.h === empty?.h;
+      detail[sendClaim] = { sent, after };
+      alpha.label = "Alpha";
+      Object.assign(facts, { inputs: [...fx.inputs], missing: [...missing] });
       missing.length = 0;
       results.push({ width: W, height: H, claims, facts, detail });
     }
@@ -10450,7 +10536,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
         deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" },
         programs: [{ id: "0b3e0f1d2c3b4a59", title: "Oberfläche", status: "active" }],
         gate: gateOf(st), helperDevices: [{ id: "wh", name: "workhorse", lastSeen: fx.now - 5000, maxParallelSuites: 2, running: 0 }], helperOnlineMs: 20_000,
-        ...(st === "alarm" ? { postLandAudit: { at: fx.now - 20 * 60_000, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH] },
+        ...(st === "alarm" ? { postLandAudit: { at: fx.now - 20 * 60_000, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH],
+          artifact: { bytes: 745_000, sha256: "5e".repeat(32), url: `/api/post-land-audits/artifact?at=${fx.now - 20 * 60_000}` } },
           errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
       if (p === "/api/tree") return void json(requestId, { root: REPO, files: Array.from({ length: 412 }, (_, i) => `src/datei-${i}.ts`), total: 412, capped: false });
       if (/^\/api\/slots\/\d+\/memory-grant$/.test(p)) return void json(requestId, { slot: Number(p.split("/")[3]), openedAt: openedAt(Number(p.split("/")[3])), grant: null, inForce: false, knownProjects: [] });
@@ -11028,6 +11115,44 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string):
             n = await info();
             claims[`${it}"Ansehen" opens where, when and the way back ("Undo last land" in the ⋯ beside Land lane)`] = /Undo last land/.test(n.alarm.card?.detail ?? "") && /im ⋯ neben Land lane/.test(n.alarm.card?.detail ?? "");
             await shot(`info-${st}-${width}`);
+            // THE ALARM LIVES IN INFO, on the phone too (card "Du kennst mobile Web-Oberflaechen"): the strip
+            // above the island is gone, so everything it led to is read and pressed here — the whole log
+            // the helper uploaded (suite.log) and the undo behind ⋯ beside Land lane
+            const logLink = await evaluate<{ text: string; href: string; target: string; hit: boolean } | null>(`(() => { const a = document.querySelector('#boardbody .plasec .plalog'); if (!a) return null;
+              a.scrollIntoView({ block: 'nearest' }); const r = a.getBoundingClientRect();
+              return { text: a.textContent, href: a.getAttribute('href'), target: a.target, hit: a.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
+            facts.alarmLog = logLink;
+            claims[`${it}"Ansehen" carries the whole log the helper uploaded (suite.log): "Protokoll · 728 KB", opening in its own tab, under a finger`] = !!logLink
+              && logLink.text === "Protokoll · 728 KB" && /^\/api\/post-land-audits\/artifact\?at=\d+$/.test(logLink.href) && logLink.target === "_blank" && logLink.hit;
+            if (phone) {
+              const top = await evaluate<{ mhead: boolean; dot: boolean; app: number; mtop: number }>(`({ mhead: !!document.querySelector('#mhead') && getComputedStyle(document.querySelector('#mhead')).display !== 'none',
+                dot: !!document.querySelector('#malarm'), app: Math.round(document.querySelector('#app').getBoundingClientRect().top), mtop: Math.round(document.querySelector('#mtop').getBoundingClientRect().top) })`);
+              facts.alarmTop = top;
+              claims[`${it}while the alarm is due nothing stands above the top island: no #mhead strip, no dot, the app and the island start at 0`] =
+                !top.mhead && !top.dot && top.app === 0 && top.mtop === 0;
+              fx.writes = [];
+              await evaluate(`(() => { window.confirm = (m) => { (window.__asked = window.__asked || []).push(String(m)); return true; }; window.alert = (m) => { (window.__told = window.__told || []).push(String(m)); }; })()`);
+              await evaluate(`document.querySelector('#boardbody .bchangeacts button[data-pop="land"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop[data-pop="land"]')`, 3000);
+              await settle(150);
+              const UNDO_ITEM = `[...document.querySelectorAll('#boardbody .bpop[data-pop="land"] .bmenuitem')].find((x) => /^Undo last land/.test(x.querySelector('.t')?.textContent ?? ''))`;
+              const undoAt = await evaluate<{ t: string } | null>(`(() => { const b = ${UNDO_ITEM}; if (!b) return null;
+                const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) ? { t: b.querySelector('.t').textContent } : null; })()`);
+              if (undoAt) {
+                await evaluate(`${UNDO_ITEM}.click()`);
+                await wait(`(window.__told || []).length > 0`, 3000);
+              }
+              const asked = await evaluate<string[]>("window.__asked || []");
+              const undo = fx.writes.filter((w) => w.path === "/api/repos/undo-land");
+              facts.undo = { item: undoAt, asked, undo };
+              claims[`${it}on the phone ⋯ beside Land lane offers Undo last land under a finger, and pressing it asks and posts /api/repos/undo-land for the repo`] = !!undoAt
+                && asked.length === 1 && asked[0].includes(UNDO_BRANCH) && undo.length === 1 && (undo[0].body as { repo?: string } | null)?.repo === REPO;
+              await wait(`document.querySelector('#boardbody .plasec .plaack')`, 4000);
+              if (!await evaluate<boolean>("!!document.querySelector('#boardbody .plasec .pladetail')")) {
+                await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
+                await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
+              }
+            }
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Gesehen')?.click()`);
             claims[`${it}"Gesehen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
               await wait(`document.querySelector('#boardbody .plasec.seen') && localStorage.getItem('fleet.plaudit.ack') !== null`, 3000);

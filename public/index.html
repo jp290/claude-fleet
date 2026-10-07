@@ -45,9 +45,9 @@
   #mtop, #mgrip, #msheetwrap { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
   /* verification tier 2 — the post-land check alarm (grammatik G2.1): IN FLOW, never an overlay.
-     On the desktop it is the first card of the board's machine zone — the same place as the
-     deploy-due line; a phone, whose board is display:none, keeps it as a full-width bar above
-     #mhead that pushes the page down (display:block is set by JS only while a card exists).
+     It is the first card of Info on both: the board's machine zone on the desktop — the same place
+     as the deploy-due line — and the Info window the island's ℹ opens on a phone. #plaudit stays
+     display:none (src/board.ts#renderPostLandAudit empties it); nothing stands above the phone's island.
      One material — --chat-void tinted from the signal colour, ink text, signal-coloured bottom
      edge. Red = the suite failed on the integration tip; amber = nothing was measured. Green
      never renders, and the “seen” receipt is the same card at its quietest. */
@@ -120,9 +120,6 @@
   .plasec .plaacts .plaack { margin-top: 0; }
   .plasec .plaack.quiet { border-color: transparent; background: transparent; color: var(--chat-mute); }
   .plasec .plaack.quiet:hover { color: var(--chat-ink); background: var(--c-hover); }
-  #malarm { display: none; flex: none; width: 40px; height: 40px; padding: 0; border: 0; background: none; cursor: pointer; }
-  #malarm::after { content: ""; display: block; width: 7px; height: 7px; margin: auto; border-radius: 50%; background: var(--danger); }
-  #malarm.unknown::after { background: var(--amber); }
   /* terminal key row: hidden only where a hardware Esc exists (fine-pointer desktop).
      Any touchscreen device shows it — that includes an iPad in the DESKTOP layout,
      whose Magic Keyboard has no Esc key */
@@ -3592,10 +3589,6 @@
     /* the test-instance band on a phone: a little more air around its (usually two) lines */
     #tiband { padding: 6px 12px; }
 
-    /* the check alarm's phone surface: full-bleed above #mhead, in flow — it pushes the app down
-       instead of floating over it (G2.1 mobil); only the signal-coloured bottom edge stays */
-    #malarm:not([hidden]) { display: block; }
-
     #mhead { flex: none; display: flex; align-items: center; gap: 10px;
       padding: calc(4px + env(safe-area-inset-top)) 10px 4px;
       background: #1a1a1a; border-bottom: 1px solid var(--line-soft); }
@@ -3796,12 +3789,11 @@
        Werkzeuge). The sheets: #msheet, full width at the foot of the visible screen (G4.1 mobil).
        BOTTOM: #bar itself is the island, in flow (so the terminal ends above it by construction):
        + field send in one row, the grip over it folds #chips and #keys in. Live line, a dropped
-       socket (.panedown) and the alarm stay in flow as before; #mhead only keeps the alarm. */
+       socket (.panedown) stay in flow as before. #mhead is gone here WHOLE, an alarm or not (owner
+       2026-10-07: „[Zitat entfernt]“): the check after the land is the first card of Info,
+       which ℹ on the island opens — no dot and no strip of its own above the island. */
     @media not all and ((pointer: coarse) and (max-height: 500px) and (min-aspect-ratio: 8/5)) {
       #mhead { display: none; }
-      #mhead:has(> #malarm:not([hidden])) { display: flex; justify-content: flex-end; padding: env(safe-area-inset-top) 6px 0;
-        background: none; border: 0; }
-      #mhead > #menu, #mhead > #mtitle, #mhead > #mset, #mhead > #mdot { display: none; }
       #panes { padding: 0; gap: 0; }
       /* the terminal starts 6 px under the glass (8 + 28 + 6 on screen; the pane sits 1 px down, so
          41 here); the conversation runs on UNDER the
@@ -3960,6 +3952,10 @@
         border-radius: 14px; background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
         font-size: 16px; line-height: 1.4; }
       #main #comp #input:focus { box-shadow: inset 0 0 0 1px var(--chat-mute); }
+      /* an EMPTY field is one line high (owner 2026-10-07: „[Zitat entfernt]“
+         ): the placeholder ends in … instead of wrapping into a second line — the session's
+         name stands in the pill above. The height itself: src/composer.ts#fitTextarea */
+      #main #comp #input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       /* the send target (G2.4) stays, as its address between field and send — the pill above names
          the session; a target that takes nothing keeps its word ("leer", "liest nur") */
       #main #comp #comptarget { order: 1; align-self: center; max-width: 30%; }
@@ -4235,7 +4231,6 @@
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>
     <span id="mtitle">Claude Fleet</span>
-    <button id="malarm" hidden aria-label="Alarm in Info öffnen"></button>
     <button id="mset" title="Einstellungen öffnen"></button>
     <span id="mdot" class="dot off"></span>
   </div>

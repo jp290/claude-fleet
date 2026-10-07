@@ -127,6 +127,13 @@ interface LiveView {
 
 const DEVICE = "e2e0device01";        // matches the server's /^[a-z0-9]{8,32}$/
 const DEVICE_NAME = "e2e helper box";
+// The offer door's body for a lane whose preview is SELF-ASSESSED (server.ts, grep
+// PREVIEW_OWED_REASONS). Since 3a5a62b0 a `{}` offer from such a lane is 400, and every lane this
+// module opens is one: openLane commits a root-level text file, which verify-proportion.ts maps to
+// its conservative default. Measured 2026-10-07: the bare body left every (K8)/(K9)/(K12) offer as
+// `""` and 44 checks red. The reason is a fixture statement, not a finding about the seeded tree —
+// it is named so the door accepts the offer. (K8) below keeps the refusal itself measured.
+const OFFER_BODY = JSON.stringify({ owedReason: "asserted-contract" });
 
 export async function run(h: {
   REPO: string;
@@ -1573,9 +1580,22 @@ export async function run(h: {
     const offer = async (slot: number): Promise<string> => {
       const tok = await selfTokenOf(slot);
       const r = await fetch(`${BASE}/api/self/suite-offer`, { method: "POST",
-        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" });
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: OFFER_BODY });
       return ((await r.json()) as { offer?: { id?: string } | null }).offer?.id ?? "";
     };
+    // THE REFUSAL, kept measured where this suite's lanes live: a self-assessed lane offering `{}`
+    // is 400 with the closed reason list, and the rejected POST mints nothing — the two offers below
+    // exist only because they name their reason. MUTATION: drop the owedReason gate in
+    // server.ts#laneSuiteOfferDoor ⇒ the bare POST mints an open offer ⇒ red.
+    const bareTok = await selfTokenOf(capA.slot);
+    const bare = await fetch(`${BASE}/api/self/suite-offer`, { method: "POST",
+      headers: { "x-fleet-self-token": bareTok, "content-type": "application/json" }, body: "{}" });
+    const bareBody = (await bare.json()) as { error?: string; offer?: unknown };
+    const bareAfter = (await (await fetch(`${BASE}/api/self/suite-offer`,
+      { headers: { "x-fleet-self-token": bareTok } })).json()) as { offer?: unknown };
+    check("(K8) setup: a self-assessed lane's offer WITHOUT owedReason is 400 naming the field, and mints nothing",
+      bare.status === 400 && /owedReason/.test(bareBody.error ?? "") && !("offer" in bareBody) && bareAfter.offer === null,
+      `status=${bare.status} error=${bareBody.error ?? ""} after=${JSON.stringify(bareAfter.offer)}`);
     const jobA = await offer(capA.slot);
     const jobB = await offer(capB.slot);
     check("(K8) setup: two lanes offer their preview suites — two open jobs on one list",
@@ -1710,7 +1730,7 @@ export async function run(h: {
       const tok = await selfTokenOf(slot);
       const r = await fetch(`${BASE}/api/self/suite-offer`, { method,
         headers: { "x-fleet-self-token": tok, "content-type": "application/json" },
-        ...(method === "POST" ? { body: "{}" } : {}) });
+        ...(method === "POST" ? { body: OFFER_BODY } : {}) });
       return (await r.json()) as OfferAnswer;
     };
     const satRow = async (): Promise<OwnerDeviceView | undefined> =>
@@ -2360,7 +2380,7 @@ export async function run(h: {
     // the lane's own reads and writes, by credential — the same shapes every suite-offer section above uses
     const offerPost = async (tok: string): Promise<K12Offer | null | undefined> =>
       ((await (await fetch(`${BASE}/api/self/suite-offer`, { method: "POST",
-        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" })).json()) as
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: OFFER_BODY })).json()) as
         { offer?: K12Offer | null }).offer;
     const offerGet = async (tok: string): Promise<K12Offer | null | undefined> =>
       ((await (await fetch(`${BASE}/api/self/suite-offer`,

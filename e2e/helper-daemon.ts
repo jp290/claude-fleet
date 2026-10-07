@@ -57,6 +57,13 @@ interface OwnerDevice {
 
 const DEVICE = "daemonbox0001";           // matches the server's /^[a-z0-9]{8,32}$/
 const DEVICE_NAME = "linux work-horse (e2e)";
+// The offer door's body for a lane whose preview is SELF-ASSESSED (server.ts, grep
+// PREVIEW_OWED_REASONS). Since 3a5a62b0 a `{}` offer from such a lane is 400, and every lane this
+// module opens is one: openLane commits a root-level text file, which verify-proportion.ts maps to
+// its conservative default. Measured 2026-10-07: the bare body left every (HD) offer below as `""`
+// and the section crashed on the empty job list. The reason here is a fixture statement, not a
+// finding about the seeded tree — it is named so the door accepts the offer.
+const OFFER_BODY = JSON.stringify({ owedReason: "asserted-contract" });
 const TRAIL = "isolated-20260828T2200Z-7777";
 const REMOTE_PRE_TRAIL_CHECKS = 3476;
 const REMOTE_TOTAL_CHECKS = REMOTE_PRE_TRAIL_CHECKS + 9;
@@ -302,6 +309,49 @@ export async function run(h: {
   // the next run of it, 2026-09-17. What is copied here is exactly what e2e-stage.sh derived into
   // this instance, which is the same rule the check below asserts.
   cpSync(dirname(DAEMON), `${UPD}/helper-daemon`, { recursive: true });
+  // …AND THE REST OF THE DAEMON'S IMPORT CLOSURE, outside helper-daemon/. The same root one
+  // directory further out: `9301d7e2` (2026-10-05) made daemon.ts import `../src/protocol`, which
+  // imports `../model-register`, and a clone of helper-daemon/ alone could no longer RESOLVE —
+  // measured 2026-10-07 on tree 0d63dbb3 (trail postland-audit-…-14825): `Could not resolve:
+  // "../src/protocol"`, (HD.8) read it as "does not parse", twelve (HD) lines red through (HD.9b).
+  // Derived the way e2e-stage.sh#_stage_closure derives this instance — import-anchored relative
+  // specifiers, Bun's resolution order, transitive — from the staged copy, so the next sibling or
+  // parent the daemon grows rides along with no edit here. A specifier that resolves to nothing
+  // THROWS: a fixture that silently lacks a file is exactly the red this replaces.
+  const importClosure = (root: string, entry: string): string[] => {
+    const norm = (p: string): string => {
+      const out: string[] = [];
+      for (const seg of p.split("/")) {
+        if (seg === "." || seg === "") continue;
+        if (seg === ".." && out.length > 0 && out[out.length - 1] !== "..") { out.pop(); continue; }
+        out.push(seg);
+      }
+      return out.join("/");
+    };
+    const resolveSpec = (rel: string): string | null => {
+      for (const ext of [".ts", ".tsx", "/index.ts", ""])
+        if (existsSync(`${root}/${rel}${ext}`) && statSync(`${root}/${rel}${ext}`).isFile()) return `${rel}${ext}`;
+      return null;
+    };
+    const seen: string[] = [];
+    const pending = [entry];
+    while (pending.length > 0) {
+      const f = pending.shift()!;
+      if (seen.includes(f)) continue;
+      seen.push(f);
+      for (const m of readFileSync(`${root}/${f}`, "utf8").matchAll(/(?:from|import)\s*\(?\s*"(\.[^"]*)"/g)) {
+        const hit = resolveSpec(norm(`${dirname(f)}/${m[1]!}`));
+        if (!hit) throw new Error(`${f} imports "${m[1]}", which resolves to no file under ${root}`);
+        pending.push(hit);
+      }
+    }
+    return seen;
+  };
+  const daemonClosure = importClosure(ROOT, "helper-daemon/daemon.ts").filter((f) => !f.startsWith("helper-daemon/"));
+  for (const f of daemonClosure) {
+    mkdirSync(dirname(`${UPD}/${f}`), { recursive: true });
+    cpSync(`${ROOT}/${f}`, `${UPD}/${f}`);
+  }
   for (const args of [["init", "-q", "-b", "main"], ["add", "-A"],
     ["-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "the daemon, as shipped"]])
     spawnSync("git", ["-C", UPD, ...args]);
@@ -328,6 +378,18 @@ export async function run(h: {
 
   check("(HD) setup: e2e-stage.sh staged helper-daemon/ into this instance (derived, not hand-listed)",
     existsSync(DAEMON), DAEMON);
+  // the fixture must RESOLVE the way the daemon's own update check will — `bun build --target=bun
+  // --outdir=…` over the committed clone, parse + resolve, no execution (helper-daemon/daemon.ts,
+  // grep check-failed). Same flags on purpose: `--no-bundle` resolves NOTHING and exits 0 over the
+  // broken fixture too (measured 2026-10-07). Red here is the one root (HD.8) would otherwise
+  // report twelve times over.
+  const buildOut = `${UPD}.buildcheck`;
+  const fixtureBuild = spawnSync(process.execPath, ["build", "--target=bun", `--outdir=${buildOut}`, "helper-daemon/daemon.ts"],
+    { cwd: UPD, stdio: ["ignore", "ignore", "pipe"] });
+  rmSync(buildOut, { recursive: true, force: true });
+  check("(HD) setup: the update fixture carries the daemon's whole import closure — its daemon.ts resolves from the clone root",
+    fixtureBuild.status === 0 && daemonClosure.length > 0 && daemonClosure.every((f) => existsSync(`${UPD}/${f}`)),
+    `exit=${fixtureBuild.status} closure=${JSON.stringify(daemonClosure)} ${fixtureBuild.stderr?.toString().slice(0, 300) ?? ""}`);
 
   const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
   const HH = { "x-fleet-helper-token": helperToken };
@@ -510,7 +572,7 @@ export async function run(h: {
     // moved by it either.
     await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME });
     const offerRes = await fetch(BASE + "/api/self/suite-offer",
-      { method: "POST", headers, body: "{}" });
+      { method: "POST", headers, body: OFFER_BODY });
     const offer = (await offerRes.json()) as { offer?: { id?: string } };
     const jobId = offer.offer?.id ?? "";
     await hpost("/api/helper/claim", { jobId, deviceId: DEVICE });
@@ -1117,7 +1179,7 @@ export async function run(h: {
       capLanes.push(ln);
       const tok = await selfTokenOf(ln.slot);
       const r = await fetch(BASE + "/api/self/suite-offer", { method: "POST",
-        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: "{}" });
+        headers: { "x-fleet-self-token": tok, "content-type": "application/json" }, body: OFFER_BODY });
       capJobs.push(((await r.json()) as { offer?: { id?: string } | null }).offer?.id ?? "");
     }
     check("(HD.10) setup: four lanes offer their preview suites — four open jobs, none claimed by anything yet",
@@ -1249,7 +1311,9 @@ export async function run(h: {
     check("(HD.10) setup: the victim is one of the two runs this full machine holds",
       victimIdx >= 0 && keptIdx >= 0 && victimIdx !== keptIdx && /^[0-9a-f]{12}$/.test(victimJob),
       `held=${JSON.stringify(heldRefs)} victim=${victimIdx} kept=${keptIdx}`);
-    await post(`/api/slots/${capLanes[victimIdx]!.slot}/kill`, {});
+    // a red setup check above leaves no victim to kill: the checks below then fail on their own
+    // evidence instead of the section dying on `capLanes[-1]` (measured 2026-10-07, TypeError)
+    if (victimIdx >= 0) await post(`/api/slots/${capLanes[victimIdx]!.slot}/kill`, {});
     const aborted = await waitLog(two.log, `job ${victimJob} is no longer this machine's`, 15_000);
     const ended = await waitLog(two.log, `for ${victimJob} ended by withdrawal`, 15_000);
     check("(HD.10) A FULL DAEMON ABORTS THE RUN WHOSE LANE IS GONE — within a few polls, and reports nothing for it",

@@ -3008,7 +3008,7 @@ function machinesOf(stands: WorkplaceStand[]): Map<string, WorkplaceStand[]> {
   stands.forEach((st, i) => {
     if (st.kind !== "helper-daemon" && st.kind !== "helper-instance" && st.kind !== "linked-instance") return;
     // a carrier without a name is a machine of its own: nothing says which other one it is
-    const key = st.name ? machineKey(st.name) : `\0${st.kind}${st.kind === "linked-instance" ? i : ""}`;
+    const key = st.name ? machineKey(st.name) : `\0${st.kind}${i}`;
     out.set(key, [...(out.get(key) ?? []), st]);
   });
   for (const list of out.values()) list.sort((a, b) => CARRIER_ORDER.indexOf(a.kind) - CARRIER_ORDER.indexOf(b.kind));
@@ -3233,10 +3233,20 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   // 2 — THE OTHER MACHINES: helpers by their fleet name, then each linked instance — one row each,
   // whatever reports under the name
   const helpers = new Map([...machines].filter(([, list]) => list.some((st) => st.kind !== "linked-instance")));
+  // machines without a name are told apart by a number, never folded into one
+  const nameless = (st: WorkplaceStand) => (st.kind === "linked-instance" ? "verlinkte Fleet" : "Helfer ohne Namen");
+  const namelessCount = new Map<string, number>(), namelessSeen = new Map<string, number>();
+  for (const [, [first]] of machines) if (!first.name) namelessCount.set(nameless(first), (namelessCount.get(nameless(first)) ?? 0) + 1);
   for (const [key, list] of machines) {
     const [first, ...rest] = list;
     const g = el("div", "grp");
-    g.append(...machineRow(key, first.name ?? (first.kind === "linked-instance" ? "verlinkte Fleet" : "Helfer ohne Namen"), rolesOf(list),
+    let name = first.name;
+    if (!name) {
+      const n = (namelessSeen.get(nameless(first)) ?? 0) + 1;
+      namelessSeen.set(nameless(first), n);
+      name = (namelessCount.get(nameless(first)) ?? 0) > 1 ? `${nameless(first)} ${n}` : nameless(first);
+    }
+    g.append(...machineRow(key, name, rolesOf(list),
       { label: first.kind === "linked-instance" ? null : carrierWord(first), st: first },
       rest.map((st) => ({ label: carrierWord(st), text: null, st })),
       helpers.has(key) ? "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht" : "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));

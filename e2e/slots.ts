@@ -10338,6 +10338,8 @@ async function runCodexPermissions(): Promise<void> {
 export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; needle: string; with: string }[] = [
   { name: "machines keyed by carrier, not by name", state: "doppelt", claim: "every machine stands once as one row",
     needle: "const key = st.name ? machineKey(st.name) : ", with: "const key = st.name ? `${st.kind}:${machineKey(st.name)}` : " },
+  { name: "nameless helpers folded into one machine", state: "doppelt", claim: "every machine stands once as one row",
+    needle: String.raw`const key = st.name ? machineKey(st.name) : ` + "`\\0${st.kind}${i}`;", with: String.raw`const key = st.name ? machineKey(st.name) : ` + "`\\0${st.kind}`;" },
   { name: "this server's own link read as a foreign one", state: "doppelt", claim: "this server's own link says",
     needle: `{ label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null }`, with: `{ label: "Fleet-Instanz", text: null, st }` },
   { name: "a tap shows no other carrier", state: "doppelt", claim: "a tap on workhorse opens its instance",
@@ -10516,6 +10518,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         // the links name machines that report otherwise too: this server itself and the helper
         ...["Mac", "workhorse", "Zweite Fleet"].map((name) => ({ kind: "linked-instance", repo: null, name, path: null, head: null, basis: "link-only", codeScope: "server",
           observedAt: null, target: null, remote: null, update: null, reasons: [{ field: "head", reason: "linked-instance-sha-unreported" }] })),
+        // two helpers whose names the server could not show: two machines, never one
+        ...(st === "doppelt" ? [hex("nameless-1"), hex("nameless-2")].map((head) => ({ kind: "helper-daemon", repo: REPO, name: null, path: null, head, basis: "heartbeat",
+          codeScope: "helper-daemon", observedAt: fx.now - 60_000, target: null, remote: null, update: null, reasons: [{ field: "name", reason: "fleet-name-unrecorded-or-not-applicable" }] })) : []),
       ],
       measuredAt: fx.now, cacheMs: 3000,
     };
@@ -10850,7 +10855,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         facts.stands = { machines: machRows.map((x) => `${x.machine} [${x.roles}] ${x.say}`), stray: stray.map((x) => `${x.kind}: ${x.text}`) };
         const mach = (name: string) => machRows.find((x) => x.machine === name);
         claims[`${tag}every machine stands once as one row — this server, the helpers, the links — whatever carriers report under its name`] =
-          JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "mainMacbook", "Zweite Fleet"])
+          JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "mainMacbook", "Zweite Fleet",
+            ...(st === "doppelt" ? ["Helfer ohne Namen 1", "Helfer ohne Namen 2"] : [])])
           && machRows.every((x) => x.cls.split(" ").includes("one") && !!x.say) && stray.length === 0;
         claims[`${tag}a machine row carries its roles together: Mac "dieser Rechner · verlinkt", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "verlinkt"`] =
           mach("Mac")?.roles === "dieser Rechner · verlinkt" && mach("workhorse")?.roles === "Helfer · verlinkt"

@@ -2893,6 +2893,23 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     `], { env: { ...process.env, HOME: dir, CODEX_HOME: dir }, encoding: "utf8", timeout: 10_000 });
     pin("subscription: import causes no CLI, network, feed or cache action", probe.status === 0
       && probe.stdout.trim() === '{"calls":0,"cache":false}', `status=${probe.status}`);
+    const cliHome = join(dir, "cli-home"), cliDay = join(cliHome, "sessions", "2026", "10", "03");
+    mkdirSync(cliDay, { recursive: true });
+    const preload = join(dir, "cli-preload.ts");
+    writeFileSync(preload, `Date.now = () => ${now};\nglobalThis.fetch = async () => Response.json({data: []});\n`);
+    for (const stale of [true, false]) {
+      writeFileSync(join(cliDay, "fixture.jsonl"), event(stale ? now - SUBSCRIPTION_STALE_MS - 1 : now) + "\n");
+      const cli = spawnSync(process.execPath, ["--preload", preload, resolve(ROOT, "codex-quota.ts"), "--json"], {
+        env: { ...process.env, HOME: cliHome, CODEX_HOME: cliHome }, encoding: "utf8", timeout: 10_000 });
+      let result: unknown;
+      try { result = JSON.parse(cli.stdout); } catch {}
+      const expected = stale
+        ? { quota: null, announcements: [], errors: ["rollout: stale codex rate_limits (event-older-than-15-minutes)"], exit_code: 2 }
+        : { quota: quotaPosition(limits, now), announcements: [], errors: [], exit_code: 0 };
+      pin(`subscription CLI: ${stale ? "stale snapshot is refused as current quota" : "fresh snapshot retains exact current quota"}`,
+        cli.status === expected.exit_code && JSON.stringify(result) === JSON.stringify(expected),
+        `status=${cli.status}; result=${JSON.stringify(result)}; stderr=${cli.stderr.trim()}`);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
   let identity = "own";
   const rejected = await readIdentityBound(async () => identity, async () => { identity = "foreign"; return measured; })
@@ -2914,6 +2931,34 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const providerResult = await providerOnly.refresh("provider");
   pin("subscription: unsupported provider performs no local fallback read", forbiddenReads === 0
     && providerResult.primary === null && providerResult.refresh.status === "unsupported");
+  // t | event | refresh owner
+  // now | deferred local read starts | local request; now+1 | provider refused | provider request
+  // now+2 | local read resolves/rejects | provider request remains unsupported
+  for (const outcome of ["success", "failure"]) {
+    let clock = now;
+    let resolveRead!: (value: typeof measured) => void, rejectRead!: (error: Error) => void;
+    const deferred = new Promise<typeof measured>((resolve, reject) => { resolveRead = resolve; rejectRead = reject; });
+    const racing = createSubscriptionReader(() => deferred, () => clock, 1000);
+    const local = racing.refresh("local");
+    clock++;
+    const provider = await racing.refresh("provider");
+    clock++;
+    if (outcome === "success") resolveRead(measured);
+    else rejectRead(new Error("fixture-read-failed"));
+    const settled = await local;
+    pin(`subscription: deferred local ${outcome} cannot overwrite or misattribute provider unsupported`,
+      provider.refresh.target === "provider" && provider.refresh.status === "unsupported"
+        && JSON.stringify(settled.refresh) === JSON.stringify(provider.refresh)
+        && settled.provider.status === "unsupported" && settled.provider.reason === PROVIDER_UNSUPPORTED
+        && (outcome === "success" ? settled.status === "measured" && settled.primary?.used_percent === 27
+          && settled.source.provenance === measured.source.provenance
+          : settled.status === "error" && settled.primary === null && settled.source.reason === "read-failed"),
+      JSON.stringify({ refresh: settled.refresh, status: settled.status, provider: settled.provider }));
+  }
+  const localOnly = await createSubscriptionReader(async () => measured, () => now, 100).refresh("local");
+  pin("subscription: local completion retains its exact local success without a competing provider request",
+    localOnly.refresh.target === "local" && localOnly.refresh.status === "ok" && localOnly.refresh.startedAt === now
+      && localOnly.refresh.finishedAt === now && localOnly.primary?.used_percent === 27);
   let calls = 0;
   let release: ((value: typeof measured) => void) | undefined;
   const pending = createSubscriptionReader(async () => { calls++; return new Promise(resolve => { release = resolve; }); }, () => now, 10);

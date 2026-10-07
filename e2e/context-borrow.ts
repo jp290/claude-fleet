@@ -49,6 +49,20 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       check(`context borrow: ${read.name} rejects ambiguous prefixes with a named error`,
         error instanceof Error && error.name === "source-anchor-ambiguous"
         && error.message.includes("ambiguous.md") && error.message.includes("### Kern"));
+      const duplicateExact = "### Kern\nFirst section.\n  ### Kern\nSecond section.\n";
+      error = undefined;
+      try { read(duplicateExact, "duplicate.md", "### Kern"); } catch (caught) { error = caught; }
+      check(`context borrow: ${read.name} rejects duplicate exact anchors with a named error`,
+        error instanceof Error && error.name === "source-anchor-ambiguous"
+        && error.message.includes("duplicate.md") && error.message.includes("### Kern"));
+      const uniqueExact = read(exactText, "exact.md", "### Kern");
+      const uniquePrefix = read(prefixText, "prefix.md", "### Kern");
+      check(`context borrow: ${read.name} retains unique exact and prefix bytes outside code`,
+        (typeof uniqueExact === "string" ? uniqueExact : uniqueExact?.content) === exactSection
+        && (typeof uniquePrefix === "string" ? uniquePrefix : uniquePrefix?.content) === prefixSection);
+      const fencedExact = read(`~~~md\n### Kern\n~~~\n    ### Kern\n${exactSection}### After\n`, "fenced.md", "### Kern");
+      check(`context borrow: ${read.name} ignores exact anchor copies in fenced and indented code`,
+        (typeof fencedExact === "string" ? fencedExact : fencedExact?.content) === exactSection);
     }
     const readClient = (roots: readonly string[]) => {
       const errors: string[] = [];

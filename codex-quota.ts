@@ -152,19 +152,21 @@ export function createSubscriptionReader(read = () => readLocalQuota(), clock = 
   let refresh: SubscriptionRefresh = { target: null, status: "not-requested", startedAt: null, finishedAt: null, reason: null };
   const acquire = (explicit: boolean): Promise<void> => {
     if (active) return active;
-    if (explicit) refresh = { target: "local", status: "refreshing", startedAt: clock(), finishedAt: null, reason: null };
+    const request: SubscriptionRefresh | null = explicit
+      ? { target: "local", status: "refreshing", startedAt: clock(), finishedAt: null, reason: null } : null;
+    if (request) refresh = request;
     active = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         snapshot = await Promise.race([Promise.resolve().then(read), new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("read-timeout")), timeoutMs);
         })]);
-        if (explicit) refresh = { ...refresh, status: snapshot.status === "error" || snapshot.status === "unknown" ? "error" : "ok",
+        if (request && refresh === request) refresh = { ...request, status: snapshot.status === "error" || snapshot.status === "unknown" ? "error" : "ok",
           finishedAt: clock(), reason: snapshot.source.reason };
       } catch (error) {
         const timeout = error instanceof Error && error.message === "read-timeout";
         snapshot = unknownSnapshot(timeout ? "read-timeout" : "read-failed", clock(), "error");
-        if (explicit) refresh = { ...refresh, status: timeout ? "timeout" : "error", finishedAt: clock(), reason: snapshot.source.reason };
+        if (request && refresh === request) refresh = { ...request, status: timeout ? "timeout" : "error", finishedAt: clock(), reason: snapshot.source.reason };
       } finally { clearTimeout(timer); observed = true; active = null; }
     })();
     return active;
@@ -185,6 +187,7 @@ export function createSubscriptionReader(read = () => readLocalQuota(), clock = 
 async function readQuota() {
   const snapshot = await readLocalQuota();
   if (!snapshot.primary) throw new Error("rollout: no codex rate_limits found");
+  if (snapshot.status === "stale") throw new Error("rollout: stale codex rate_limits (event-older-than-15-minutes)");
   return quotaPosition({ primary: snapshot.primary }, Date.now());
 }
 

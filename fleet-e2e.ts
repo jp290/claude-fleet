@@ -76,6 +76,7 @@ import * as errors from "./e2e/errors";
 import * as hostHygiene from "./e2e/host-hygiene";
 import * as stateSnapshot from "./e2e/state-snapshot";
 import * as trace from "./e2e/trace";
+import * as timelineUi from "./e2e/timeline-ui";
 import * as konzepte from "./e2e/konzepte";
 import * as roleAddress from "./e2e/role-address";
 import * as stuckDelivery from "./e2e/stuck-delivery";
@@ -368,6 +369,12 @@ const steps: Step[] = [
   // instance over ledgers it writes itself (three audit generations), so it touches no fixture here.
   { unit: "trace", module: "trace", run: async () => {
     await trace.run();
+  } },
+  // --- the session timeline lens (src/timeline.ts + src/client.ts), operated in a headless Chromium
+  // against a fixture origin — the one route it reads is served from e2e/trace-native-fixtures.ts.
+  // Its own unit: it touches no server fixture and runs the bundle, not the suite's srv.
+  { unit: "timeline-ui", module: "timeline-ui", run: async () => {
+    await timelineUi.run();
   } },
   // --- the konzept ledger (konzept-ledger.ts). Same reason as its two neighbours: it boots its OWN
   // scratch instance with a planted Program binding and a konzept root it owns, so it touches no fixture here.

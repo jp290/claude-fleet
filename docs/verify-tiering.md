@@ -5288,7 +5288,7 @@ wirklich LIEFEN, eine Zeile geschrieben haben.
 
 Reihenfolge = Laufreihenfolge des Runners (gepinnt). `·L` = Modul des Worktree-Lane-Blocks, braucht
 `FLEET_E2E_REPO`; eine Auswahl, die eines davon zieht, wird ohne dieses Env verweigert statt still
-übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 37 der 53 Module sind nach
+übersprungen. Spalte 4 ist der eigene transitive Schluss des Moduls — 38 der 54 Module sind nach
 DIESER KARTE allein vorschaubar, die längste Kette ist acht (`steward-outcomes`, `security`).
 
 **Spalte 4 ist eine Ableitung, kein Laufbeweis.** Gefahren sind bisher zwei Auswahlen mit Lauf:
@@ -5347,6 +5347,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `host-hygiene` | — | — | allein |
 | `state-snapshot` | — | — | allein |
 | `trace` | — | — | allein |
+| `timeline-ui` | — | — | allein |
 | `konzepte` | — | — | allein |
 | `role-address` | — | — | allein |
 | `stuck-delivery` | — | — | allein |
@@ -5477,7 +5478,7 @@ nicht betroffen (keine Kante), drei ziehen `restart`:
 
 | Modul nach `restart` | zieht `restart`? | Weg |
 | --- | --- | --- |
-| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` · `state-snapshot` · `trace` · `konzepte` · `role-address` · `stuck-delivery` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
+| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` · `state-snapshot` · `trace` · `timeline-ui` · `konzepte` · `role-address` · `stuck-delivery` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
 | `steward-core` | ja | liest `ctx.gapRepo`/`ctx.auditPath`/`ctx.planted*`, die nur `restart` schreibt |
 | `steward-outcomes` | ja | über `sc.*` → `steward-core` → `restart` |
 | `security` | ja | liest `ctx.auditPath` → `restart` |

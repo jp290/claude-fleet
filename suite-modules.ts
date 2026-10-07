@@ -192,6 +192,7 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "host-hygiene" },
   { module: "state-snapshot" },
   { module: "trace" },
+  { module: "timeline-ui" },
   { module: "konzepte" },
   { module: "role-address" },
   { module: "stuck-delivery" },

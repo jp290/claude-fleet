@@ -1,0 +1,441 @@
+// THE SESSION TIMELINE, OPERATED (Program ae1f4279, part 5 — src/timeline.ts + the lens in src/client.ts).
+//
+// A real browser runs the real client bundle behind a fixture origin, exactly as e2e/drops.ts and
+// e2e/slots.ts#runArbeitsorteDom do: Chromium over CDP, every request of http://fleet.fixture/*
+// answered here. The one route the lens reads, GET /api/timeline, is served from the native
+// fixtures of e2e/trace-native-fixtures.ts (five harness sessions, each tool call and result) plus
+// a hand-written ledger (report with verdict, clarification, founding, commit, land, gate, audit,
+// deploy) and two contract edge sessions (a record without a timestamp, a snapshot that stops
+// before its identity record). NOTHING of that is in the bundle — a claim below asserts it.
+//
+// Every claim is a DOM fact at 1200×900 and at 390×844, and every claim has a MUTANT (owner card
+// 2026-10-07: „[Zitat entfernt]“): `TIMELINE_MUTANTS` swaps one needle of
+// src/timeline.ts or src/client.ts in the bundle the page runs and expects the named claim to go
+// red. A needle that left the source throws, so a probe that could not apply its mutation fails as
+// ITSELF, never as "caught".
+//
+// WHAT IS NOT PROVEN HERE: that the live route answers this wire shape — it does not exist yet
+// (lane 91040c44 builds it). The last claim is the honest half of that: without the route the lens
+// names the 404 and draws no track.
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { NATIVE_CANARY, NATIVE_FIXTURES, loadNativeUiFixtures } from "./trace-native-fixtures";
+import { normalizeNative } from "../trace-native";
+import type { TraceEvent } from "../trace-index";
+import type { TimelineWire, TimelineWireSession } from "../src/timeline";
+
+export interface TimelineDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export interface TimelineMutant { name: string; claim: string; file: "src/timeline.ts" | "src/client.ts"; needle: string; with: string }
+
+// the claims, named once so the mutants can point at them
+export const TL_CLAIM = {
+  open: "the ⋯ panel's Zeitleiste entry opens the Activity window on the Zeitleiste lens, its switch pressed, the overview drawn",
+  axis: "every session is its own track on ONE axis: marks across all tracks keep record-time order, and the axis carries ticks",
+  kinds: "tool calls and the eight ledger kinds are told apart by kind and glyph, and a report carries its verdict",
+  unknown: "what was not observed stays visible: the clock note, one gap chip per session gap, the pending call's open bar, the unmeasured horizon's hatch, the timeless mark",
+  zoom: "Zoom narrows to the session (two crumbs, one track), Zoom Call to the pair (two marks), and back steps one level at a time",
+  inspect: "a click opens the inspector with Argumente, Resultat, Fehler, Zeitpunkte, Dauer and Quelle; an error shows its text, a pending call says ausstehend",
+  keys: "keyboard: → walks the marks, Enter opens the inspector, Escape closes it and gives focus back to the mark",
+  touch: "touch-sized: every control at least 40 px tall, no sideways page scroll, the inspector covers the screen, ‹ shows the session rail",
+  bundle: "the production bundle carries neither the fixture module nor its canary",
+  noRoute: "without the route the lens names the 404 of GET /api/timeline and draws no track",
+} as const;
+
+export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
+  { name: "marks placed by a per-event remainder instead of the shared axis", claim: TL_CLAIM.axis, file: "src/client.ts",
+    needle: "100 * (at - axis.from) / (axis.to - axis.from)", with: "100 * ((at - axis.from) % 700) / (axis.to - axis.from)" },
+  { name: "a report read as 'other'", claim: TL_CLAIM.kinds, file: "src/timeline.ts",
+    needle: `if (fam === "report") return { kind: "report", label: "Report", verdict: qual || verb || null };`,
+    with: `if (fam === "report") return { kind: "other", label: "Report", verdict: null };` },
+  { name: "a session's gaps dropped from the model", claim: TL_CLAIM.unknown, file: "src/timeline.ts",
+    needle: "const sessionGaps = [...snap.gaps.map((g) => gapOf(s.key, g.code, g.offset, g.bytes)), ...pairMissing];",
+    with: "const sessionGaps: TimelineGap[] = [];" },
+  { name: "a timeless record claims a known time", claim: TL_CLAIM.unknown, file: "src/timeline.ts",
+    needle: "atKnown: e.occurredAt !== null,", with: "atKnown: true," },
+  { name: "back from call zoom jumps to the overview", claim: TL_CLAIM.zoom, file: "src/client.ts",
+    needle: `if (tlZoom === "call") { tlSetZoom("session", tlScope, null); return true; }`,
+    with: `if (tlZoom === "call") { tlSetZoom("overview", null, null); return true; }` },
+  { name: "the inspector drops the source", claim: TL_CLAIM.inspect, file: "src/client.ts",
+    needle: `field("Quelle", src);`, with: "void src;" },
+  { name: "the route's error status ignored", claim: TL_CLAIM.noRoute, file: "src/timeline.ts",
+    needle: "if (!res.ok) {", with: "if (res.status === 599) {" },
+];
+
+const T = Date.parse("2026-01-01T00:00:00.000Z");
+const encode = (rows: readonly unknown[]): Uint8Array => new TextEncoder().encode(rows.map((r) => JSON.stringify(r) + "\n").join(""));
+
+// the wire GET /api/timeline would answer for this window: five fixture sessions, two edge sessions, a ledger
+export async function timelineWireFixture(): Promise<TimelineWire> {
+  const ui = await loadNativeUiFixtures();
+  const sessions: TimelineWireSession[] = ui.map((f, i) => ({
+    key: f.snapshot.identityKey ?? `unbound-${f.name}`, harness: f.snapshot.harness, host: f.snapshot.sourceHost, label: f.name,
+    slot: i + 1, openedAt: T - 60_000 * (i + 1), project: "/synthetic/repo", program: i < 2 ? "ae1f4279" : null,
+    snapshot: f.snapshot, details: f.details,
+  }));
+  // a Codex record without a timestamp: the event sits at its observation time and says so
+  const codex = NATIVE_FIXTURES[1];
+  if (!codex) throw new Error("timeline wire fixture: the codex native fixture is missing");
+  const rows = JSON.parse(JSON.stringify(codex.rows)) as Record<string, unknown>[];
+  const timeless = rows.map((r, i) => i === 1 ? { ...r, timestamp: undefined } : r);
+  const codexTimeless = await normalizeNative({ ...codex.input, sourceId: "codex-ohne-zeit", bytes: encode(timeless), observedAt: T + 2500 });
+  sessions.push({ key: codexTimeless.identityKey ?? "unbound-codex-ohne-zeit", harness: "codex", host: "synthetic-host", label: "codex-ohne-zeit",
+    slot: 6, openedAt: T - 7000, project: "/synthetic/repo", program: null, snapshot: codexTimeless, details: [] });
+  // a snapshot that stops before its identity record: no events, horizon unmeasured, two gaps
+  const claude = NATIVE_FIXTURES[0];
+  if (!claude) throw new Error("timeline wire fixture: the claude native fixture is missing");
+  const torn = await normalizeNative({ ...claude.input, sourceId: "claude-abgerissen", bytes: new TextEncoder().encode('{"type":'), observedAt: T + 2600 });
+  sessions.push({ key: "torn-claude-abgerissen", harness: "claude", host: "synthetic-host", label: "claude-abgerissen",
+    slot: 7, openedAt: T - 8000, project: "/synthetic/repo", program: null, snapshot: torn, details: [] });
+  // a call whose result the snapshot does not hold yet: pending, with its own `missing-result` gap
+  const open = await normalizeNative({ ...claude.input, sourceId: "claude-offen", bytes: encode(claude.rows.slice(0, 1)), observedAt: T + 2700 });
+  sessions.push({ key: open.identityKey ?? "unbound-claude-offen", harness: "claude", host: "synthetic-host", label: "claude-offen",
+    slot: 8, openedAt: T - 9000, project: "/synthetic/repo", program: null, snapshot: open, details: [] });
+  const first = sessions[0];
+  if (!first) throw new Error("timeline wire fixture: no session");
+  const bound = { slot: first.slot ?? 1, openedAt: first.openedAt ?? T };
+  const ledger: TraceEvent[] = [
+    { source: "fleet.json", kind: "task.created", at: T + 400, refs: { task: "3b2698ac", ...bound }, files: [] },
+    { source: "fleet-reports.jsonl", kind: "report.filed.handoff", at: T + 2300, refs: { task: "3b2698ac", ...bound }, files: [],
+      detailRef: { source: "fleet-reports.jsonl", locator: "fleet-reports.jsonl@120+300", fp: "ab12cd34ef56ab12" } },
+    { source: "fleet-clarifications.jsonl", kind: "send.clarification.asked", at: T + 1500, refs: { task: "3b2698ac", ...bound }, files: [] },
+    { source: "prompts.jsonl", kind: "commit.lane", at: T + 1800, refs: { task: "3b2698ac", branch: "fleet/261007-x", sha: "c0ffee1234567", ...bound }, files: ["src/a.ts"] },
+    { source: "fleet/land note", kind: "land.gate.green", at: T + 2400, refs: { task: "3b2698ac", branch: "fleet/261007-x", ...bound }, files: [] },
+    { source: "lane-outcomes.jsonl", kind: "land.main-direct.landed", at: T + 2450, refs: { task: "3b2698ac", branch: "fleet/261007-x", sha: "deadbeef00000", ...bound }, files: [] },
+    { source: "post-land-audits.jsonl", kind: "audit.red", at: T + 2550, refs: { branch: "fleet/261007-x", sha: "deadbeef00000" }, files: [] },
+    { source: "audit.jsonl", kind: "deploy.done", at: T + 2700, refs: { sha: "deadbeef00000" }, files: [] },
+  ];
+  return { schema: "fleet.timeline/v1", now: T + 3000, window: { from: T - 3600_000, to: T + 3000 }, sessions, ledger,
+    horizon: [{ source: "audit.jsonl", state: "unmeasured", reason: "ledger not readable in this fixture", clock: "fleet server wallclock (Date.now at write)" }],
+    next: null };
+}
+
+export async function runTimelineDom(sourceRoot: string, artifacts?: string,
+  only: { widths?: readonly number[]; mutate?: TimelineMutant } = {}): Promise<TimelineDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-timeline-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  if (artifacts) mkdirSync(artifacts, { recursive: true });
+  const mutant = only.mutate;
+  const mutantPath = mutant ? resolve(sourceRoot, mutant.file) : null;
+  let mutationApplied = !mutant;
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
+    plugins: mutant && mutantPath ? [{ name: "timeline-mutant", setup(build) {
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
+        if (path !== mutantPath) return;
+        const source = readFileSync(path, "utf8");
+        mutationApplied = source.includes(mutant.needle);
+        return { contents: source.replace(mutant.needle, mutant.with), loader: "ts" };
+      });
+    } }] : [] });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`timeline mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
+  const appJs = await built.outputs[0].text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const wire = await timelineWireFixture();
+  const fx = { route404: false, timelineHits: 0 };
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("timeline DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string | Uint8Array, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: T + 3000, chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/synthetic/repo", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: "/fixture/orch.jsonl", ttlSec: 300 });
+      if (p === "/api/timeline") {
+        fx.timelineHits++;
+        return void (fx.route404 ? json(requestId, { error: "no such route" }, 404) : json(requestId, wire));
+      }
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <V>(expression: string): Promise<V> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("timeline DOM probe: evaluate failed: " + JSON.stringify(r.exceptionDetails).slice(0, 300) + " in " + expression.replace(/\s+/g, " ").slice(0, 160));
+      return (r.result as { value: V }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    const key = async (k: "Enter" | "Escape" | "ArrowRight" | "ArrowLeft" | "Tab") => {
+      const codes = { Enter: 13, Escape: 27, ArrowRight: 39, ArrowLeft: 37, Tab: 9 } as const;
+      await send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code: k, windowsVirtualKeyCode: codes[k], ...(k === "Enter" ? { text: "\r" } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code: k, windowsVirtualKeyCode: codes[k] });
+      await settle(80);
+    };
+    const click = async (selector: string) => {
+      const ok = await evaluate<boolean>(`(() => { const n = document.querySelector(${JSON.stringify(selector)}); if (!n) return false; n.click(); return true; })()`);
+      if (!ok) throw new Error("timeline DOM probe: nothing to click at " + selector);
+      await settle(80);
+    };
+    const openLens = async () => {
+      const entry = await wait(`document.querySelector('#morepanel [data-lens="timeline"]')`, 15000);
+      if (!entry) throw new Error("timeline DOM probe: the ⋯ panel has no Zeitleiste entry: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await click('#morepanel [data-lens="timeline"]');
+      await wait(`document.querySelector('#shell-outcomes .tlcanvas, #shell-outcomes .tlstate')`, 8000);
+      await settle(150);
+    };
+    // what the lens shows, read the way the owner reads it
+    const READ = `(() => { const sh = document.querySelector('#shell-outcomes'); if (!sh) return null;
+      const canvas = sh.querySelector('.tlcanvas');
+      const marks = [...sh.querySelectorAll('.tlev')].map((b) => { const r = b.getBoundingClientRect(); return { id: b.dataset.id, kind: b.dataset.kind, family: b.dataset.family,
+        status: b.dataset.status, atKnown: b.dataset.atKnown, verdict: b.dataset.verdict ?? null, at: Number(b.dataset.at), left: parseFloat(b.style.left),
+        glyph: b.querySelector('.tlglyph')?.textContent ?? '', h: Math.round(r.height), w: Math.round(r.width), track: b.closest('.tltrack')?.dataset.session ?? 'fleet' }; });
+      const inspect = sh.querySelector('.tlinspect');
+      const fields = {}; for (const dd of sh.querySelectorAll('.tlinspect dd[data-field]')) fields[dd.dataset.field] = dd.innerText.trim();
+      const ir = inspect && !inspect.hidden ? inspect.getBoundingClientRect() : null;
+      return { lens: sh.querySelector('.actlens button[aria-pressed="true"]')?.textContent ?? null, zoom: canvas?.dataset.zoom ?? null,
+        tracks: [...sh.querySelectorAll('.tltrack[data-session]')].map((t) => t.dataset.session), fleetTracks: sh.querySelectorAll('.tltrack.fleet').length,
+        ticks: sh.querySelectorAll('.tltick').length, crumbs: [...sh.querySelectorAll('.tlcrumb')].map((b) => b.textContent),
+        note: sh.querySelector('.tlnote')?.innerText ?? '', gapChips: [...sh.querySelectorAll('.tlgap')].map((g) => g.textContent),
+        pendingBars: sh.querySelectorAll('.tlbar.pending').length, hatches: [...sh.querySelectorAll('.tlunmeasured')].map((h) => h.dataset.horizon),
+        marks, inspectOpen: !!ir, inspectRect: ir ? { top: Math.round(ir.top), left: Math.round(ir.left), w: Math.round(ir.width), h: Math.round(ir.height) } : null,
+        fields, inspectTitle: sh.querySelector('.tlihead h3')?.textContent ?? null, state: sh.querySelector('.tlstate')?.dataset.state ?? null,
+        stateText: sh.querySelector('.tlstate')?.innerText ?? '', detailmode: sh.classList.contains('detailmode'),
+        railRows: sh.querySelectorAll('.tlrow').length, railVisible: !!sh.querySelector('.shelllist') && sh.querySelector('.shelllist').getBoundingClientRect().width > 0,
+        focusId: document.activeElement?.dataset?.id ?? null, focusClass: document.activeElement?.className ?? null,
+        shortControls: [...sh.querySelectorAll('button:not(.shellclose):not(.shellback), select')].filter((b) => b.getBoundingClientRect().width > 0 && b.getBoundingClientRect().height < 40).map((b) => b.className + ':' + b.textContent.slice(0, 16)),
+        pageScroll: document.documentElement.scrollWidth - innerWidth, canvasScroll: canvas ? canvas.scrollWidth - canvas.clientWidth : 0 }; })()`;
+    type Mark = { id: string; kind: string; family: string; status: string; atKnown: string; verdict: string | null; at: number; left: number; glyph: string; h: number; w: number; track: string };
+    type Read = { lens: string | null; zoom: string | null; tracks: string[]; fleetTracks: number; ticks: number; crumbs: string[]; note: string; gapChips: string[];
+      pendingBars: number; hatches: string[]; marks: Mark[]; inspectOpen: boolean; inspectRect: { top: number; left: number; w: number; h: number } | null;
+      fields: Record<string, string>; inspectTitle: string | null; state: string | null; stateText: string; detailmode: boolean; railRows: number; railVisible: boolean;
+      focusId: string | null; focusClass: string | null; shortControls: string[]; pageScroll: number; canvasScroll: number } | null;
+    const read = async (): Promise<NonNullable<Read>> => {
+      const r = await evaluate<Read>(READ);
+      if (!r) throw new Error("timeline DOM probe: the Activity window is not open");
+      return r;
+    };
+    const results: TimelineDomResult[] = [];
+    let targetId = "";
+    const expectedGaps = wire.sessions.reduce((n, s) => n + s.snapshot.gaps.length, 0);
+    const claudeKey = wire.sessions[0]?.key ?? "";
+    const errorCall = wire.sessions[0]?.snapshot.events.find((e) => e.kind === "tool.call" && e.status === "error");
+    const pendingCallAt = T + 1000;
+    for (const [width, height] of ([[1200, 900], [390, 844]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      const mobile = width <= 700;
+      fx.route404 = false; fx.timelineHits = 0;
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      await openLens();
+
+      // --- 1. open on the lens, the overview drawn
+      const r1 = await read();
+      facts.open = { lens: r1.lens, zoom: r1.zoom, tracks: r1.tracks.length, marks: r1.marks.length, hits: fx.timelineHits };
+      claims[TL_CLAIM.open] = r1.lens === "Zeitleiste" && r1.zoom === "overview" && r1.tracks.length === wire.sessions.length && fx.timelineHits === 1;
+      await shot(`${width}-1-ueberblick`);
+
+      // --- 2. one axis for all tracks: record-time order holds across tracks
+      const byAt = [...r1.marks].sort((a, b) => a.at - b.at);
+      const ordered = byAt.every((m, i) => i === 0 || m.left >= byAt[i - 1]!.left - 0.01);
+      facts.axis = { ticks: r1.ticks, ordered, sample: byAt.slice(0, 6).map((m) => [m.track.slice(0, 6), m.at - T, Math.round(m.left * 10) / 10]) };
+      claims[TL_CLAIM.axis] = r1.tracks.length === wire.sessions.length && r1.ticks >= 2 && ordered && r1.marks.length >= 20;
+
+      // --- 3. kinds and glyphs; the report carries its verdict
+      const ledger = r1.marks.filter((m) => m.family === "ledger");
+      const kinds = new Set(ledger.map((m) => m.kind));
+      const glyphs = new Map<string, string>();
+      let glyphClash = false;
+      for (const m of r1.marks) { const g = glyphs.get(m.kind); if (g !== undefined && g !== m.glyph) glyphClash = true; glyphs.set(m.kind, m.glyph); }
+      const distinctGlyphs = new Set(glyphs.values()).size === glyphs.size;
+      facts.kinds = { kinds: [...kinds].sort(), glyphs: [...glyphs], report: ledger.find((m) => m.kind === "report")?.verdict ?? null };
+      claims[TL_CLAIM.kinds] = ["report", "clarification", "founding", "commit", "land", "gate", "audit", "deploy"].every((k) => kinds.has(k))
+        && r1.marks.some((m) => m.kind === "tool.call") && r1.marks.some((m) => m.kind === "tool.result")
+        && !glyphClash && distinctGlyphs && ledger.find((m) => m.kind === "report")?.verdict === "handoff" && r1.fleetTracks === 1;
+
+      // --- 4. the unknown stays visible
+      const chipGaps = r1.gapChips.reduce((n, c) => n + (Number(/^(\d+)/.exec(c)?.[1]) || 0), 0);
+      facts.unknown = { note: r1.note.slice(0, 80), chipGaps, expectedGaps, pendingBars: r1.pendingBars, hatches: r1.hatches,
+        timeless: r1.marks.filter((m) => m.atKnown === "false").length };
+      claims[TL_CLAIM.unknown] = r1.note.includes("Uhrunsicherheit: unbekannt") && chipGaps === expectedGaps && expectedGaps > 0
+        && r1.pendingBars >= 1 && r1.hatches.includes("unmeasured") && r1.marks.some((m) => m.atKnown === "false");
+
+      // --- 5. zoom in two steps, back one level at a time
+      await click(`.tltrack[data-session="${claudeKey}"] .shrbtn`);
+      const r5a = await read();
+      await shot(`${width}-2-session`);
+      const call = r5a.marks.find((m) => m.kind === "tool.call" && m.status === "ok");
+      if (call) await click(`.tlev[data-id="${call.id}"]`);
+      await click(".tliacts .shrbtn");  // Zoom Call
+      const r5b = await read();
+      await shot(`${width}-3-call`);
+      // back: on the desktop Escape steps (inspector, then one level); on a phone the crumb does the same
+      let r5c: NonNullable<Read>, r5d: NonNullable<Read>;
+      if (!mobile) { await key("Escape"); r5c = await read(); await key("Escape"); r5d = await read(); }
+      else { await click(".tliclose"); r5c = await read(); await click('.tlcrumb[data-zoom="session"]'); r5d = await read(); }
+      facts.zoom = { session: { zoom: r5a.zoom, tracks: r5a.tracks, crumbs: r5a.crumbs }, call: { zoom: r5b.zoom, marks: r5b.marks.map((m) => m.kind), crumbs: r5b.crumbs.length },
+        afterClose: { zoom: r5c.zoom, inspect: r5c.inspectOpen }, afterBack: { zoom: r5d.zoom, tracks: r5d.tracks.length } };
+      claims[TL_CLAIM.zoom] = r5a.zoom === "session" && r5a.tracks.length === 1 && r5a.tracks[0] === claudeKey && r5a.crumbs.length === 2
+        && r5b.zoom === "call" && r5b.marks.length === 2 && r5b.marks.some((m) => m.kind === "tool.call") && r5b.marks.some((m) => m.kind === "tool.result") && r5b.crumbs.length === 3
+        && r5c.zoom === "call" && !r5c.inspectOpen && r5d.zoom === "session" && r5d.tracks.length === 1;
+      if (!mobile) { await key("Escape"); }
+      else await click('.tlcrumb[data-zoom="overview"]');
+      // a back that skipped a level has closed the window by now — that is the red, not a probe error
+      const r5e = await evaluate<Read>(READ);
+      claims[TL_CLAIM.zoom] = claims[TL_CLAIM.zoom]! && !!r5e && r5e.zoom === "overview" && r5e.tracks.length === wire.sessions.length;
+      if (!r5e) { facts.zoom = { ...(facts.zoom as Record<string, unknown>), windowClosedEarly: true }; await openLens(); }
+
+      // --- 6. the inspector on an error call, then on the pending call
+      if (!errorCall) throw new Error("timeline DOM probe: the claude fixture has no error call");
+      await click(`.tlev[data-id="${errorCall.id}"]`);
+      const r6 = await read();
+      await shot(`${width}-4-inspektor`);
+      const f = r6.fields;
+      const pendingMark = r6.marks.find((m) => m.status === "pending" && m.kind === "tool.call" && m.at === pendingCallAt && m.track !== claudeKey);
+      let pendingResult = "";
+      if (pendingMark) { await click(`.tlev[data-id="${pendingMark.id}"]`); pendingResult = (await read()).fields.Resultat ?? ""; }
+      facts.inspect = { title: r6.inspectTitle, fields: Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.slice(0, 60)])), pendingResult: pendingResult.slice(0, 60) };
+      claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.includes("Call") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
+        && (f.Argumente ?? "").startsWith("Synthetic tool.call side-1") && (f.Resultat ?? "").startsWith("Synthetic tool.result side-1")
+        && (f.Fehler ?? "").startsWith("Synthetic tool.result side-1") && (f.Zeitpunkte ?? "").includes("Record:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
+        && (f.Dauer ?? "").includes("Recordabstand") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").includes("native:") && (f.Quelle ?? "").includes("Sidechain")
+        && pendingResult.startsWith("ausstehend");
+      await click(".tliclose");
+
+      // --- 7. keyboard: → walks the marks, Enter opens, Escape closes and returns focus
+      if (!mobile) {
+        await evaluate(`document.querySelector('.tlev')?.focus()`);
+        const k0 = await read();
+        await key("ArrowRight");
+        const k1 = await read();
+        await key("Enter");
+        const k2 = await read();
+        await key("Escape");
+        const k3 = await read();
+        facts.keys = { first: k0.focusId, next: k1.focusId, opened: k2.inspectOpen, focusAfterOpen: k2.focusClass, back: k3.focusId, closed: !k3.inspectOpen };
+        claims[TL_CLAIM.keys] = !!k0.focusId && !!k1.focusId && k1.focusId !== k0.focusId && k2.inspectOpen && (k2.focusClass ?? "").includes("tliclose")
+          && !k3.inspectOpen && k3.focusId === k1.focusId;
+      } else {
+        // the phone's keyboard path: Enter on a focused mark opens, the close button returns focus
+        await evaluate(`document.querySelector('.tlev')?.focus()`);
+        const k0 = await read();
+        await key("Enter");
+        const k2 = await read();
+        await click(".tliclose");
+        const k3 = await read();
+        facts.keys = { first: k0.focusId, opened: k2.inspectOpen, back: k3.focusId };
+        claims[TL_CLAIM.keys] = !!k0.focusId && k2.inspectOpen && !k3.inspectOpen && k3.focusId === k0.focusId;
+      }
+
+      // --- 8. touch-sized on the phone
+      if (mobile) {
+        const first = r1.marks[0];
+        if (first) await click(`.tlev[data-id="${first.id}"]`);
+        const t1 = await read();
+        await click(".tliclose");
+        await click("#shell-outcomes .shellback");
+        const t2 = await read();
+        facts.touch = { short: t1.shortControls.slice(0, 8), pageScroll: t1.pageScroll, canvasScroll: t1.canvasScroll, inspect: t1.inspectRect, detailmode: t1.detailmode, railAfterBack: t2.railVisible, railRows: t2.railRows };
+        claims[TL_CLAIM.touch] = t1.shortControls.length === 0 && t1.pageScroll <= 0 && t1.canvasScroll <= 0 && !!t1.inspectRect
+          && t1.inspectRect.w >= width - 2 && t1.inspectRect.h >= height * 0.6 && t1.detailmode && t2.railVisible && t2.railRows === wire.sessions.length;
+        await click('#shell-outcomes .tlrow');
+      }
+
+      // --- 9. the bundle carries no fixture
+      facts.bundle = { bytes: appJs.length };
+      claims[TL_CLAIM.bundle] = !appJs.includes(NATIVE_CANARY) && !appJs.includes("trace-native-fixtures") && !appJs.includes("synthetic-host") && !appJs.includes("codex-ohne-zeit");
+
+      // --- 10. without the route: the 404 named, no track
+      await click("#shell-outcomes .shellclose");
+      fx.route404 = true;
+      await openLens();
+      const r10 = await read();
+      await shot(`${width}-5-keine-quelle`);
+      facts.noRoute = { state: r10.state, text: r10.stateText.slice(0, 120), tracks: r10.tracks.length };
+      claims[TL_CLAIM.noRoute] = r10.state === "unavailable" && r10.stateText.includes("404") && r10.stateText.includes("/api/timeline") && r10.tracks.length === 0 && r10.marks.length === 0;
+      await click("#shell-outcomes .shellclose");
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close();
+    browser.kill();
+    await browser.exited.catch(() => undefined);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+export async function run(): Promise<void> {
+  // the harness is loaded HERE, not at the top: it reads the instance's fleet.json on import, and
+  // the rig above is a library a scratch probe may run against any checkout without an instance
+  const { ROOT, check } = await import("./harness");
+  // the scratch copy carries server.ts + public/ but not src/ — the link back to the checkout is the
+  // node_modules symlink, so the real source is its realpath's parent (as in e2e/drops.ts)
+  const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+  try {
+    for (const result of await runTimelineDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`timeline DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("timeline DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+    return;
+  }
+  // every mutant must turn its claim red at 1200×900 — a needle that left the source fails as the probe
+  for (const m of TIMELINE_MUTANTS) {
+    try {
+      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [1200], mutate: m }))[0];
+      check(`timeline DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      check(`timeline DOM mutant — PROBE: ${m.name}`, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+}

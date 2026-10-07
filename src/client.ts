@@ -61,6 +61,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
+import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
 import { openLaneFounding, openPicker } from "./founding";
 import { runningEffort, runningModel } from "./running";
 
@@ -9419,9 +9420,11 @@ function renderAkteDetail(d: Dossier) {
 // e2e/outcomes.ts asserts over the source — and the other three are new views on existing data.
 // The fourth, Akte, is the same argument one level up: the first three each read ONE ledger across
 // all lanes, and no ledger alone can answer "why did this land, and what did it cost afterwards".
-type ActLens = "lands" | "commits" | "audit" | "akte";
+type ActLens = "lands" | "commits" | "audit" | "akte" | "timeline";
 let actLens: ActLens = "lands";
 const ACT_LENS: { k: ActLens; label: string; title: string }[] = [
+  { k: "timeline", label: "Zeitleiste", title: "alle Sessions auf einer Zeitachse, bis zum einzelnen Werkzeugaufruf —"
+    + " Reports, Rückfragen, Gründung, Commit, Land, Gate, Audit und Deploy daneben; Lücken bleiben Lücken" },
   { k: "lands", label: "Lands", title: "the lane-outcome ledger — what Fleet landed, and what ③ review said" },
   { k: "commits", label: "Commits", title: "recent commits in a repo Fleet has open — including ones no ledger recorded" },
   { k: "audit", label: "Audit", title: "what Fleet did to each slot, and in which project — opened,"
@@ -9434,6 +9437,7 @@ function renderActivity() {
   const shell = ocShell;
   if (!shell) return;
   shell.tools.replaceChildren();
+  shell.root.classList.toggle("tl", actLens === "timeline"); // the timeline lens lays its own detail pane out
   const sw = el("div", "tabrow actlens");
   for (const l of ACT_LENS) {
     const b = el("button", `shrbtn${actLens === l.k ? " on" : ""}`, l.label) as HTMLButtonElement;
@@ -9446,6 +9450,7 @@ function renderActivity() {
   if (actLens === "lands") renderOutcomes();
   else if (actLens === "commits") renderCommits();
   else if (actLens === "akte") renderAkte();
+  else if (actLens === "timeline") renderTimeline();
   else renderAudit();
 }
 
@@ -9457,8 +9462,17 @@ async function switchLens(k: ActLens) {
   shell.setTitle(k === "lands" ? "Outcome feed — what landed, and what review said"
     : k === "commits" ? "Commits — what is actually in the repo"
       : k === "akte" ? "Akte — one lane, end to end"
-        : "Audit trail — what Fleet did to each slot, and where");
+        : k === "timeline" ? "Zeitleiste — alle Sessions, bis zum Werkzeugaufruf"
+          : "Audit trail — what Fleet did to each slot, and where");
   shell.setSubtitle("");
+  if (k === "timeline") {
+    shell.foot.textContent = "";
+    renderActivity();
+    await loadLens(k);
+    // the overview IS the landing: on a phone the canvas is the pushed screen, the rail one ‹ away
+    if (shell.isOpen()) { if (tlMobile()) shell.showDetail(true); renderActivity(); }
+    return;
+  }
   if (k === "akte") {
     shell.foot.textContent = "Six append-only files, joined by branch name and read in the order things"
       + " happened. Nothing here is new data and nothing is written: the order that started the lane,"
@@ -9517,6 +9531,8 @@ async function loadLens(k: ActLens) {
       akteData = (data.lanes ?? []).filter((l): l is LaneIndexRow => typeof l?.branch === "string");
       akteTotal = typeof data.total === "number" ? data.total : akteData.length;
     }
+  } else if (k === "timeline") {
+    await loadTimelineModel();
   } else {
     const res = await api("/api/audit?limit=1000");
     if (res.ok) {
@@ -9551,6 +9567,7 @@ export async function openActivity(lens: ActLens, at?: { repo: string | null; ha
   akteDoc = null;
   akteBusy = false;
   ocRowOf = new Map();
+  resetTimeline();
   actLens = lens;
   actLoaded.clear();
   const shell = openShell({
@@ -9564,7 +9581,10 @@ export async function openActivity(lens: ActLens, at?: { repo: string | null; ha
       const e = auditRowOf.get(row.el);
       if (e) { auditPick = `${e.ts}|${e.event}`; renderAuditDetail(e); return; }
       const c = cmRowOf.get(row.el);
-      if (c) { cmPick = c.hash; renderCommitDetail(c); }
+      if (c) { cmPick = c.hash; renderCommitDetail(c); return; }
+      // a timeline session row only HIGHLIGHTS under the cursor; Enter (its `open`) zooms into it —
+      // following the cursor with a zoom would move the whole canvas on every arrow key
+      if (tlRowOf.has(row.el)) return;
     },
     onClose: () => { ocShell = null; ocRowOf = new Map(); auditRowOf = new Map(); cmRowOf = new Map(); },
   });
@@ -9582,6 +9602,500 @@ export async function openAkte(branch: string) {
   ocShell?.showDetail(true);
 }
 $("outcomebtn").onclick = () => void openActivity("lands");
+
+// --- the session timeline lens (Program ae1f4279, part 5 — the operating draft) ---------------------
+//
+// One common time axis for every session in the window, down to the single tool call, with the
+// ledger's own events (report with its verdict, clarification, founding, commit, land, gate, audit,
+// deploy) beside them as a second family of marks. Three zoom levels — Überblick (every session, one
+// track each), Session (one track, labelled marks packed into rows), Call (one call and its result)
+// — and one inspector for the picked event: arguments, result, error, times, duration, source.
+//
+// Everything shown comes from src/timeline.ts#loadTimeline; this block never reads the wire. What
+// the data cannot prove stays visibly unknown: a mark without a record timestamp is hollow and says
+// "Beobachtung", a pending call's bar runs open to the edge, a horizon that begins inside the view
+// hatches what lies before it, and the foot carries the clock note on every zoom level.
+//
+// Its CSS sits with the board's in public/index.html ("the session timeline lens"); the MAIN's call
+// 2026-10-07 — no src module injects styles.
+type TlZoom = "overview" | "session" | "call";
+let tlModel: TimelineModel | null = null;
+let tlBusy = false;
+let tlZoom: TlZoom = "overview";
+let tlScope: string | null = null;      // session key in session/call zoom
+let tlCall: string | null = null;       // the call anchoring call zoom
+let tlPick: string | null = null;       // the inspected event, or `gaps:<session>` for a session's gaps
+let tlHarness = "all";
+let tlView: { from: number; to: number } | null = null;   // axis window set by zoom/pan; null = fit to data
+let tlRowOf = new Map<HTMLElement, TimelineSession>();
+let tlReturnFocus: string | null = null;
+const TL_WINDOW_MS = 24 * 3600_000;
+const TL_MOBILE_MQ = "(max-width: 700px), ((pointer: coarse) and (max-height: 500px))";
+const tlMobile = (): boolean => matchMedia(TL_MOBILE_MQ).matches;
+const TL_KIND_LABEL: Record<TimelineKind, string> = {
+  "tool.call": "Call", "tool.result": "Resultat", report: "Report", clarification: "Rückfrage", founding: "Gründung",
+  commit: "Commit", land: "Land", gate: "Gate", audit: "Audit", deploy: "Deploy", other: "Ereignis",
+};
+const TL_GLYPH: Record<TimelineKind, string> = {
+  "tool.call": "●", "tool.result": "○", report: "▣", clarification: "?", founding: "◆",
+  commit: "⌑", land: "▲", gate: "▮", audit: "☑", deploy: "⇧", other: "·",
+};
+const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "Fehler", pending: "offen", late: "spät", unknown: "unbekannt" };
+// the row packing measures the canvas, so a resize is a repaint
+window.addEventListener("resize", () => { if (ocShell && actLens === "timeline") renderActivity(); });
+function resetTimeline() {
+  tlModel = null; tlBusy = false; tlZoom = "overview"; tlScope = null; tlCall = null; tlPick = null;
+  tlHarness = "all"; tlView = null; tlRowOf = new Map(); tlReturnFocus = null;
+}
+const tlQuery = () => { const to = Date.now(); return { from: to - TL_WINDOW_MS, to }; };
+async function loadTimelineModel() {
+  tlBusy = true;
+  try { tlModel = await loadTimeline(tlQuery()); } finally { tlBusy = false; }
+}
+async function tlLoadMore() {
+  const m = tlModel;
+  if (!m?.next || tlBusy) return;
+  tlBusy = true;
+  try {
+    const page = await loadTimeline({ ...tlQuery(), page: m.next });
+    if (page.state === "unavailable") { m.next = null; m.reason = page.reason; }
+    else {
+      const known = new Set(m.sessions.map((s) => s.key));
+      m.sessions.push(...page.sessions.filter((s) => !known.has(s.key)));
+      m.events.push(...page.events); m.events.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+      m.gaps.push(...page.gaps); m.next = page.next;
+      const ats = m.events.map((e) => e.at);
+      m.span = { from: ats.length ? Math.min(...ats) : null, to: ats.length ? Math.max(...ats) : null };
+      if (m.state === "empty" && m.events.length) m.state = "read";
+    }
+  } finally { tlBusy = false; }
+  renderActivity();
+}
+const tlSessionOf = (key: string | null): TimelineSession | null => tlModel?.sessions.find((s) => s.key === key) ?? null;
+const tlEventOf = (id: string | null): TimelineEvent | null => tlModel?.events.find((e) => e.id === id) ?? null;
+// the events a zoom level shows, before the axis window cuts them
+function tlScopedEvents(): TimelineEvent[] {
+  const m = tlModel;
+  if (!m) return [];
+  if (tlZoom === "overview") return m.events.filter((e) => tlHarness === "all" || (tlSessionOf(e.session)?.harness ?? "fleet") === tlHarness);
+  if (tlZoom === "session") return m.events.filter((e) => e.session === tlScope);
+  const c = tlEventOf(tlCall);
+  return c ? m.events.filter((e) => e.id === c.id || e.id === c.pair) : [];
+}
+// the axis window: the user's zoom/pan, else the scoped events' span with a tenth of padding each side
+function tlAxis(events: TimelineEvent[]): { from: number; to: number } {
+  if (tlView) return tlView;
+  const m = tlModel;
+  const ats = events.map((e) => e.at);
+  const lo = ats.length ? Math.min(...ats) : m?.window.from ?? 0, hi = ats.length ? Math.max(...ats) : m?.window.to ?? 1;
+  const pad = Math.max(500, (hi - lo) * 0.1);
+  return { from: lo - pad, to: hi + pad };
+}
+function tlSetZoom(zoom: TlZoom, scope: string | null, call: string | null) {
+  tlZoom = zoom; tlScope = scope; tlCall = call; tlView = null;
+  if (zoom === "overview") tlPick = null;
+  // the detail pane first (on a phone the canvas is the pushed screen), then the paint that measures it
+  ocShell?.showDetail(true);
+  renderActivity();
+  document.querySelector<HTMLElement>(".tlcanvas")?.focus({ preventScroll: true });
+}
+function tlZoomSession(s: TimelineSession) { tlSetZoom("session", s.key, null); }
+// Escape and the shell's close gestures: step back one level before the window may close
+function tlBack(): boolean {
+  if (actLens !== "timeline") return false;
+  if (tlPick) { tlClosePick(); return true; }
+  if (tlZoom === "call") { tlSetZoom("session", tlScope, null); return true; }
+  if (tlZoom === "session") { tlSetZoom("overview", null, null); return true; }
+  return false;
+}
+function tlClosePick() {
+  const back = tlReturnFocus;
+  tlPick = null;
+  renderActivity();
+  const target = back ? document.querySelector<HTMLElement>(`.tlev[data-id="${CSS.escape(back)}"]`) : null;
+  (target ?? document.querySelector<HTMLElement>(".tlcanvas"))?.focus({ preventScroll: !target });
+}
+function tlOpenPick(id: string) {
+  if (!tlPick) tlReturnFocus = document.activeElement instanceof HTMLElement && document.activeElement.dataset.id ? document.activeElement.dataset.id : id;
+  tlPick = id;
+  renderActivity();
+  document.querySelector<HTMLElement>(".tlinspect .tliclose")?.focus();
+}
+const tlFmtClock = (ms: number, step: number): string => {
+  const d = new Date(ms);
+  const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  if (step < 1000) return `${ss}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+  if (step < 60_000) return `${hhmm}:${ss}`;
+  if (step < 86_400_000) return hhmm;
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${hhmm}`;
+};
+const tlIso = (ms: number): string => new Date(ms).toISOString();
+const TL_STEPS = [100, 250, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 21_600_000, 43_200_000, 86_400_000];
+function tlTicks(axis: { from: number; to: number }, want: number): { at: number; step: number }[] {
+  const span = Math.max(1, axis.to - axis.from);
+  const step = TL_STEPS.find((s) => span / s <= want) ?? TL_STEPS[TL_STEPS.length - 1] * Math.ceil(span / TL_STEPS[TL_STEPS.length - 1] / want);
+  const out: { at: number; step: number }[] = [];
+  for (let at = Math.ceil(axis.from / step) * step; at <= axis.to; at += step) out.push({ at, step });
+  return out;
+}
+
+function renderTimeline() {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.setCloseGuard(tlBack);
+  const m = tlModel;
+  const mobile = tlMobile();
+
+  // --- tools: breadcrumb (also the way back), zoom and pan, harness filter
+  const tools = el("div", "tltools");
+  const crumbs = el("nav", "tlcrumbs");
+  crumbs.setAttribute("aria-label", "Zoomstufe");
+  const crumb = (label: string, zoom: TlZoom, on: () => void) => {
+    const b = el("button", "shrbtn tlcrumb", label) as HTMLButtonElement;
+    b.dataset.zoom = zoom;
+    if (tlZoom === zoom) b.setAttribute("aria-current", "step");
+    b.title = tlZoom === zoom ? `${label} — diese Zoomstufe` : `zurück auf ${label}`;
+    b.onclick = on;
+    return b;
+  };
+  crumbs.appendChild(crumb("Überblick", "overview", () => tlSetZoom("overview", null, null)));
+  const scoped = tlSessionOf(tlScope);
+  if (tlZoom !== "overview" && scoped) {
+    crumbs.appendChild(el("span", "tlsep", "›"));
+    crumbs.appendChild(crumb(`Session ${scoped.label}`, "session", () => tlSetZoom("session", scoped.key, null)));
+  }
+  const callEv = tlEventOf(tlCall);
+  if (tlZoom === "call" && callEv) {
+    crumbs.appendChild(el("span", "tlsep", "›"));
+    crumbs.appendChild(crumb(`Call ${callEv.sub || callEv.label}`, "call", () => undefined));
+  }
+  tools.appendChild(crumbs);
+  if (m && m.state === "read") {
+    const zoom = el("div", "tlzoom");
+    const zb = (label: string, title: string, on: () => void) => {
+      const b = el("button", "shrbtn", label) as HTMLButtonElement;
+      b.title = title; b.onclick = on; zoom.appendChild(b);
+    };
+    const axisNow = tlAxis(tlScopedEvents());
+    const span = axisNow.to - axisNow.from, mid = axisNow.from + span / 2;
+    zb("−", "Zeitachse weiter fassen", () => { tlView = { from: mid - span, to: mid + span }; renderActivity(); });
+    zb("+", "Zeitachse enger fassen", () => { tlView = { from: mid - span / 4, to: mid + span / 4 }; renderActivity(); });
+    zb("◀", "früher", () => { tlView = { from: axisNow.from - span / 4, to: axisNow.to - span / 4 }; renderActivity(); });
+    zb("▶", "später", () => { tlView = { from: axisNow.from + span / 4, to: axisNow.to + span / 4 }; renderActivity(); });
+    if (tlView) zb("Alles", "Zeitachse auf die Daten dieser Zoomstufe", () => { tlView = null; renderActivity(); });
+    tools.appendChild(zoom);
+    const harnesses = [...new Set(m.sessions.map((s) => s.harness))].sort();
+    if (tlZoom === "overview" && harnesses.length > 1) {
+      const sel = el("select", "") as HTMLSelectElement;
+      sel.title = "nur Sessions dieses Harness";
+      for (const h of ["all", ...harnesses]) {
+        const o = el("option", "", h === "all" ? "alle Harnesses" : h) as HTMLOptionElement;
+        o.value = h; sel.appendChild(o);
+      }
+      sel.value = tlHarness;
+      sel.onchange = () => { tlHarness = sel.value; renderActivity(); };
+      tools.appendChild(sel);
+    }
+  }
+  shell.tools.appendChild(tools);
+
+  // --- the session rail: one row per session; Enter or a tap zooms into it
+  shell.list.replaceChildren();
+  tlRowOf = new Map();
+  const shRows: ShellRow[] = [];
+  let selIdx = -1;
+  if (m && m.sessions.length) {
+    for (const s of m.sessions) {
+      if (tlZoom === "overview" && tlHarness !== "all" && s.harness !== tlHarness) continue;
+      const r = el("div", "shellrow tlrow");
+      r.dataset.session = s.key;
+      tlRowOf.set(r, s);
+      const main = el("div", "shrmain");
+      main.appendChild(el("div", "shrname", s.label));
+      main.appendChild(el("div", "shrsub", `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}${s.project ? ` · ${baseName(s.project)}` : ""}${s.state !== "read" ? ` · ${s.state}` : ""}${s.occupation === "unknown" ? " · Belegung unbekannt" : ""}`));
+      const c = el("div", "tlcount");
+      c.appendChild(el("span", "", `${s.counts.calls} Calls`));
+      if (s.counts.errors) c.appendChild(el("span", "err", `${s.counts.errors} Fehler`));
+      if (s.counts.pending) c.appendChild(el("span", "pend", `${s.counts.pending} offen`));
+      if (s.counts.ledger) c.appendChild(el("span", "", `${s.counts.ledger} Ledger`));
+      if (s.gaps.length) c.appendChild(el("span", "pend", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}`));
+      main.appendChild(c);
+      r.appendChild(main);
+      r.title = `Session ${s.label} vergrößern`;
+      const act = () => tlZoomSession(s);
+      r.onclick = act;
+      shell.list.appendChild(r);
+      if (s.key === tlScope) { r.classList.add("sel"); selIdx = shRows.length; }
+      shRows.push({ el: r, open: act });
+    }
+  } else shell.list.appendChild(el("div", "histnone", tlBusy ? "Sessions werden geladen …" : m?.state === "unavailable" ? "keine Quelle" : "keine Session im Fenster"));
+  shell.setRows(shRows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
+  shell.setSubtitle(m ? m.state === "read"
+    ? `${m.sessions.length} Sessions · ${m.events.filter((e) => e.family === "tool").length} Tool-Events · ${m.events.filter((e) => e.family === "ledger").length} Ledger-Ereignisse · ${m.gaps.length} Lücken`
+    : m.state === "empty" ? "keine Ereignisse im Fenster" : "Quelle antwortet nicht" : "");
+
+  // --- the canvas, inside one pane of its own: the shell's detail keeps its display rules (hidden on
+  // a phone until pushed), the pane does the column layout and anchors the inspector
+  shell.detail.replaceChildren();
+  const pane = el("div", "tlpane");
+  shell.detail.appendChild(pane);
+  if (!m) { pane.appendChild(el("div", "tlstate", tlBusy ? "Zeitleiste wird geladen …" : "noch nichts geladen")); shell.foot.textContent = ""; return; }
+  if (m.state === "unavailable") {
+    const box = el("div", "tlstate");
+    box.dataset.state = "unavailable";
+    box.appendChild(el("b", "", "Keine Quelle."));
+    box.appendChild(document.createTextNode(` ${m.reason ?? ""} — die Route `));
+    box.appendChild(el("code", "", "GET /api/timeline"));
+    box.appendChild(document.createTextNode(" liefert diese Ansicht; bis sie antwortet, zeigt die Zeitleiste nichts und behauptet nichts."));
+    pane.appendChild(box);
+    shell.foot.textContent = m.clock.note;
+    return;
+  }
+  const note = el("div", "tlnote");
+  note.appendChild(el("b", "", "Uhrunsicherheit: unbekannt."));
+  note.appendChild(document.createTextNode(` ${m.clock.note.replace(/^clockUncertainty: unknown · /, "")} · Dauer: keine Laufzeit belegt, nur Recordabstände.`
+    + `${m.ledgerUnassigned ? ` · ${m.ledgerUnassigned} Ledger-Ereignisse ohne Session.` : ""}`));
+  pane.appendChild(note);
+  if (m.state === "empty") {
+    pane.appendChild(el("div", "tlstate", `Keine Ereignisse zwischen ${tlIso(m.window.from)} und ${tlIso(m.window.to)}. Was die Quellen vor dem Fenster halten, ist hier ungemessen, nicht leer.`));
+    shell.foot.textContent = m.clock.note;
+    return;
+  }
+  const events = tlScopedEvents();
+  const axis = tlAxis(events);
+  const x = (at: number): number => Math.max(0, Math.min(100, 100 * (at - axis.from) / (axis.to - axis.from)));
+  const inside = (e: TimelineEvent): boolean => e.at >= axis.from && e.at <= axis.to;
+  const canvas = el("div", "tlcanvas");
+  canvas.tabIndex = 0;
+  canvas.dataset.zoom = tlZoom;
+  canvas.setAttribute("aria-label", "Gemeinsame Zeitachse");
+  // ← → walk the marks of one track in time order; Enter/Space on a mark is the button's own
+  canvas.onkeydown = (ev) => {
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    const cur = document.activeElement;
+    const marks = [...canvas.querySelectorAll<HTMLButtonElement>(".tlev")];
+    if (!marks.length) return;
+    const i = cur instanceof HTMLButtonElement ? marks.indexOf(cur) : -1;
+    const next = marks[i < 0 ? 0 : Math.max(0, Math.min(marks.length - 1, i + (ev.key === "ArrowRight" ? 1 : -1)))];
+    ev.preventDefault(); ev.stopPropagation();
+    next?.focus();
+  };
+  const railPx = mobile ? 84 + 6 : 150 + 8, padPx = mobile ? 36 : 56;
+  const plotPx = Math.max(120, shell.detail.clientWidth - 28 - railPx - padPx * 2);
+  const axisRow = el("div", "tlaxis");
+  axisRow.appendChild(el("span", "", "Recordzeit, lokal"));
+  const plotAxis = el("div", "tlaxisplot");
+  for (const t of tlTicks(axis, Math.max(2, Math.floor(plotPx / (mobile ? 76 : 92))))) {
+    const tick = el("time", "tltick", tlFmtClock(t.at, t.step));
+    const tx = x(t.at);
+    tick.style.left = `${tx}%`;
+    // a label at either end stays inside the plot: the canvas never scrolls sideways for a tick
+    if (tx > 88) tick.style.transform = "translateX(-100%)"; else if (tx < 12) tick.style.transform = "none";
+    tick.setAttribute("datetime", tlIso(t.at));
+    plotAxis.appendChild(tick);
+  }
+  axisRow.appendChild(plotAxis);
+  canvas.appendChild(axisRow);
+
+  // overview marks are 24 px wide on a phone (40 px tall for the thumb), so the packing stays flat
+  const clearancePx = tlZoom === "overview" ? (mobile ? 26 : 14) : tlZoom === "session" ? (mobile ? 96 : 132) : 200;
+  const stepPx = tlZoom === "overview" ? (mobile ? 42 : 22) : (mobile ? 44 : 26);
+  const tracks: { key: string | null; title: string; sub: string; session: TimelineSession | null }[] = [];
+  const visibleSessions = m.sessions.filter((s) => tlZoom === "overview" ? tlHarness === "all" || s.harness === tlHarness : s.key === tlScope);
+  for (const s of visibleSessions) tracks.push({ key: s.key, title: s.label, sub: `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}`, session: s });
+  const fleetEvents = events.filter((e) => e.session === null);
+  if (tlZoom === "overview" && fleetEvents.length) tracks.push({ key: null, title: "Fleet", sub: "Ledger ohne Session", session: null });
+  for (const t of tracks) {
+    const lane = events.filter((e) => e.session === t.key);
+    const shown = lane.filter(inside);
+    const track = el("section", `tltrack${t.key === null ? " fleet" : ""}`);
+    if (t.key !== null) track.dataset.session = t.key;
+    if (t.session) track.dataset.harness = t.session.harness;
+    const head = el("div", "tlhead");
+    head.appendChild(el("strong", "", t.title));
+    head.appendChild(el("span", "", t.sub));
+    if (t.session) {
+      const s = t.session;
+      head.appendChild(el("span", "tlcounts", `${s.counts.calls} Calls${s.counts.errors ? ` · ${s.counts.errors} Fehler` : ""}${s.counts.pending ? ` · ${s.counts.pending} offen` : ""}`));
+      if (s.gaps.length || s.horizon.state === "unmeasured") {
+        const gaps = el("div", "tlgaps");
+        const g = el("button", "tlgap", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}${s.horizon.state === "unmeasured" ? " · Horizont ungemessen" : ""}`) as HTMLButtonElement;
+        g.type = "button";
+        g.title = "was in dieser Session nicht beobachtet wurde";
+        g.onclick = () => tlOpenPick(`gaps:${s.key}`);
+        gaps.appendChild(g);
+        head.appendChild(gaps);
+      }
+      if (tlZoom === "overview") {
+        const z = el("button", "shrbtn", "Zoom") as HTMLButtonElement;
+        z.title = `Session ${s.label} vergrößern`;
+        z.onclick = () => tlZoomSession(s);
+        head.appendChild(z);
+      }
+    }
+    track.appendChild(head);
+    const body = el("div", "");
+    const plot = el("div", "tlplot");
+    // horizon: what lies before a source's first record is unmeasured, never empty
+    if (t.session) {
+      const h = t.session.horizon;
+      const later = h.oldestAt !== null && m.span.from !== null && h.oldestAt > m.span.from && h.oldestAt > axis.from;
+      if (h.state === "unmeasured" || later) {
+        const un = el("div", "tlunmeasured");
+        un.dataset.horizon = h.state;
+        un.style.left = "0";
+        un.style.width = h.state === "unmeasured" ? "100%" : `${x(h.oldestAt ?? axis.from)}%`;
+        un.appendChild(el("span", "", h.state === "unmeasured" ? `ungemessen · ${h.reason ?? ""}` : "davor ungemessen"));
+        plot.appendChild(un);
+      }
+    }
+    // row packing: a mark takes a row where nothing within its clearance already stands
+    const rowsEnd: number[] = [];
+    const pos = new Map<string, { x: number; row: number }>();
+    for (const e of shown) {
+      const px = x(e.at) * plotPx / 100;
+      let row = rowsEnd.findIndex((end) => px - end >= clearancePx);
+      if (row < 0) { if (rowsEnd.length < 6) { row = rowsEnd.length; rowsEnd.push(px); } else { row = 5; rowsEnd[5] = px; } }
+      else rowsEnd[row] = px;
+      pos.set(e.id, { x: x(e.at), row });
+    }
+    plot.style.setProperty("--tl-rows", String(Math.max(1, rowsEnd.length)));
+    plot.style.setProperty("--tl-step", `${stepPx}px`);
+    // call→result bars, and an open bar for a call still waiting
+    for (const e of shown) {
+      if (e.kind !== "tool.call") continue;
+      const p = pos.get(e.id);
+      if (!p) continue;
+      const pair = e.pair ? lane.find((r) => r.id === e.pair) : null;
+      const bar = el("div", `tlbar${e.status === "error" ? " error" : ""}${e.status === "pending" ? " pending" : ""}`);
+      bar.dataset.call = e.id;
+      bar.style.left = `${p.x}%`;
+      bar.style.top = `${p.row * stepPx + 4}px`;
+      bar.style.width = `${Math.max(0, (pair ? Math.min(100, x(pair.at)) : 100) - p.x)}%`;
+      bar.title = pair ? `Recordabstand ${e.separationMs ?? "?"} ms — keine Laufzeit` : "Resultat nicht im Snapshot — offen";
+      plot.appendChild(bar);
+    }
+    for (const e of shown) {
+      const p = pos.get(e.id);
+      if (!p) continue;
+      const b = el("button", `tlev${tlPick === e.id ? " sel" : ""}`) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.id = e.id; b.dataset.kind = e.kind; b.dataset.family = e.family; b.dataset.status = e.status; b.dataset.atKnown = String(e.atKnown);
+      b.dataset.at = String(e.at);
+      if (e.verdict) b.dataset.verdict = e.verdict;
+      b.style.left = `${p.x}%`;
+      b.style.top = `${p.row * stepPx}px`;
+      b.title = `${TL_KIND_LABEL[e.kind]} ${e.label}${e.sub ? ` ${e.sub}` : ""} · ${TL_STATUS_WORD[e.status]}${e.verdict ? ` · ${e.verdict}` : ""} · ${tlIso(e.at)}${e.atKnown ? "" : " (Beobachtung, Record ohne Zeit)"} — öffnen`;
+      b.setAttribute("aria-label", b.title);
+      b.appendChild(el("span", "tlglyph", TL_GLYPH[e.kind]));
+      b.appendChild(el("span", "tlname", e.family === "tool" ? e.label : `${e.label}${e.verdict ? ` ${e.verdict}` : ""}`));
+      b.appendChild(el("span", "tlsub", e.sub));
+      b.appendChild(el("span", "tlst", e.family === "tool" ? TL_STATUS_WORD[e.status] : ""));
+      b.onclick = () => tlOpenPick(e.id);
+      plot.appendChild(b);
+    }
+    body.appendChild(plot);
+    if (shown.length < lane.length) body.appendChild(el("div", "tloutside", `${lane.length - shown.length} außerhalb der Zeitachse`));
+    track.appendChild(body);
+    canvas.appendChild(track);
+  }
+  if (!tracks.length) canvas.appendChild(el("div", "tlstate", "keine Session für diesen Filter"));
+  pane.appendChild(canvas);
+  if (m.next) {
+    const more = el("button", "shrbtn", tlBusy ? "lädt …" : "weitere Seite laden") as HTMLButtonElement;
+    more.disabled = tlBusy; more.style.margin = "0 14px 12px";
+    more.onclick = () => void tlLoadMore();
+    pane.appendChild(more);
+  }
+  pane.appendChild(tlInspector());
+  shell.foot.textContent = mobile ? m.clock.note
+    : `${m.clock.note} · Esc schließt den Inspektor, dann eine Zoomstufe, dann das Fenster · ← → gehen die Marken entlang`;
+}
+
+// the picked event in full, or a session's gaps; a card under the canvas, the whole screen on a phone
+function tlInspector(): HTMLElement {
+  const box = el("aside", "tlinspect");
+  box.setAttribute("aria-label", "Inspektor");
+  if (!tlPick) { box.hidden = true; return box; }
+  const head = el("div", "tlihead");
+  const close = el("button", "shrbtn tliclose", "Schließen") as HTMLButtonElement;
+  close.title = "Inspektor schließen (Esc)";
+  close.onclick = tlClosePick;
+  const dl = el("dl", "tlidl");
+  const field = (name: string, value: string | HTMLElement | null, unknownText = "unbekannt"): void => {
+    dl.appendChild(el("dt", "", name));
+    const dd = el("dd", value === null ? "unk" : "");
+    dd.dataset.field = name;
+    if (value === null) dd.textContent = unknownText; else if (typeof value === "string") dd.textContent = value; else dd.appendChild(value);
+    dl.appendChild(dd);
+  };
+  const code = (s: string): HTMLElement => el("code", "", s);
+  const pre = (s: string): HTMLElement => el("pre", "", s);
+  if (tlPick.startsWith("gaps:")) {
+    const s = tlSessionOf(tlPick.slice(5));
+    head.appendChild(el("h3", "", `Lücken · ${s?.label ?? "?"}`));
+    head.appendChild(close);
+    box.appendChild(head);
+    if (s) {
+      field("Horizont", s.horizon.state === "read" ? `ab ${tlIso(s.horizon.oldestAt ?? 0)} gelesen${s.horizon.newestAt ? ` bis ${tlIso(s.horizon.newestAt)}` : ""}` : null, `ungemessen · ${s.horizon.reason ?? ""}`);
+      field("Quellstand", `${s.state} · Generation ${s.version}`);
+      for (const g of s.gaps) field(g.code, `${g.text}${g.offset !== null ? ` · Bytes ${g.offset}${g.bytes !== null ? ` + ${g.bytes}` : ""}` : ""}`);
+      if (!s.gaps.length) field("Lücken", "keine in diesem Snapshot; frühere Vollständigkeit unbekannt");
+    }
+    box.appendChild(dl);
+    return box;
+  }
+  const e = tlEventOf(tlPick);
+  if (!e) { box.hidden = true; return box; }
+  const pair = e.pair ? tlEventOf(e.pair) : null;
+  head.appendChild(el("h3", "", `${TL_KIND_LABEL[e.kind]} · ${e.label}${e.sub ? ` ${e.sub}` : ""}`));
+  const chip = el("span", "tlchip", `${TL_STATUS_WORD[e.status]}${e.verdict ? ` · ${e.verdict}` : ""}`);
+  chip.dataset.status = e.status;
+  head.appendChild(chip);
+  head.appendChild(close);
+  box.appendChild(head);
+  if (e.family === "tool") {
+    field("Argumente", e.args !== null ? pre(e.args) : null, "nicht geliefert · die Quelle hält sie unter dem Locator");
+    field("Resultat", e.result !== null ? pre(e.result) : null, e.status === "pending" ? "ausstehend · kein Resultat im Snapshot" : "nicht geliefert");
+    field("Fehler", e.error !== null ? pre(e.error) : e.status === "unknown" ? null : "keiner laut Quelle", "unbekannt · Quelle sagt nichts");
+  } else {
+    field("Urteil", e.verdict ?? null, "ohne Urteil");
+    field("Bezüge", Object.keys(e.source.refs).length ? code(Object.entries(e.source.refs).map(([k, v]) => `${k}=${v}`).join(" · ")) : null, "keine");
+  }
+  const times = el("div", "");
+  times.appendChild(el("div", "", `${e.atKnown ? "Record" : "Beobachtung (Record ohne Zeitstempel)"}: ${tlIso(e.at)} · ${e.clock}`));
+  if (e.observedAt !== null) times.appendChild(el("div", "", `beobachtet: ${tlIso(e.observedAt)}`));
+  if (pair) times.appendChild(el("div", "", `${TL_KIND_LABEL[pair.kind]}: ${tlIso(pair.at)}`));
+  field("Zeitpunkte", times);
+  field("Dauer", e.separationMs !== null ? `keine Laufzeit belegt · Recordabstand Call→Resultat ${e.separationMs} ms` : null, "keine Laufzeit belegt");
+  const src = el("div", "");
+  src.appendChild(el("div", "", `${e.source.name}${e.source.sidechain ? " · Sidechain derselben Session" : ""}`));
+  if (e.source.locator) src.appendChild(code(`${e.source.locator}${e.source.fp ? ` fp ${e.source.fp}` : ""}`));
+  if (e.source.record) src.appendChild(el("div", "", `Record ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}`));
+  if (e.source.edge) src.appendChild(el("div", "", `Kante: ${e.source.edge}`));
+  field("Quelle", src);
+  if (e.files.length) field("Dateien", e.files.join(", "));
+  box.appendChild(dl);
+  const acts = el("div", "tliacts");
+  if (e.family === "tool" && tlZoom !== "call") {
+    const z = el("button", "shrbtn", "Zoom Call") as HTMLButtonElement;
+    z.onclick = () => tlSetZoom("call", e.session, e.kind === "tool.call" ? e.id : e.pair ?? e.id);
+    acts.appendChild(z);
+  }
+  if (pair) {
+    const p = el("button", "shrbtn", `${TL_KIND_LABEL[pair.kind]} öffnen`) as HTMLButtonElement;
+    p.onclick = () => tlOpenPick(pair.id);
+    acts.appendChild(p);
+  }
+  if (e.session && tlZoom === "overview") {
+    const s = tlSessionOf(e.session);
+    if (s) { const z = el("button", "shrbtn", "Zoom Session") as HTMLButtonElement; z.onclick = () => tlZoomSession(s); acts.appendChild(z); }
+  }
+  if (acts.childElementCount) box.appendChild(acts);
+  return box;
+}
 
 // ⋯ mehr — the board-wide fold under the header row: every NEW or secondary board action goes
 // in here first, never into the row above; promoting one to the row is its own owner call.
@@ -9603,8 +10117,12 @@ function moreAction(label: string, title: string, run: () => void): HTMLButtonEl
   b.onclick = run;
   return b;
 }
+const tlMoreBtn = moreAction("⏱ Zeitleiste", ACT_LENS.find((l) => l.k === "timeline")?.title ?? "",
+  () => void openActivity("timeline"));
+tlMoreBtn.dataset.lens = "timeline";
 morePanel.append(
   el("div", "morehead", "⋯ mehr"),
+  tlMoreBtn,
   moreAction("⎇ Commits", ACT_LENS.find((l) => l.k === "commits")?.title ?? "",
     () => void openActivity("commits")),
   moreAction("📂 Akte", ACT_LENS.find((l) => l.k === "akte")?.title ?? "",

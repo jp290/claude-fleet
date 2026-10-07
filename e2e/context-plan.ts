@@ -1325,6 +1325,12 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   check("source sections: a final TS declaration and CRLF retain their exact source bytes",
     sectionAt(codePrefix + codeTail, "fixture.ts", "export function after") === codeTail
       && sectionAt(codeSource.replaceAll("\n", "\r\n"), "fixture.ts", "export const PACK =") === codeSection.replaceAll("\n", "\r\n"));
+  const nestedTemplate = "const TARGET = `outer ${`inner\nexport const fake = 1;\n`}`;\n";
+  check("source sections: nested template interpolation cannot manufacture a sibling declaration",
+    sectionAt(nestedTemplate + codeTail, "fixture.ts", "const TARGET =") === nestedTemplate);
+  const division = "const TARGET = (9 / 3 / 1);\n";
+  check("source sections: division is code and leaves the next declaration at top level",
+    sectionAt(division + codeTail, "fixture.ts", "const TARGET =") === division);
   check("source sections: an absent TS anchor returns null",
     sourceSection(codeSource, "fixture.ts", "const absent =") === null);
   let ambiguousCode = "";

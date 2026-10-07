@@ -37,13 +37,29 @@ function sectionSpan(text: string, path: string, anchor: string): { start: numbe
   if (!markdown) {
     // Code sections end before the next top-level declaration.
     // Lexical tokens keep declarations inside comments, literals and bodies out of the cut.
-    const tokens = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/(?:\\[^\n]|\[(?:\\[^\n]|[^\]\\\n])*\]|[^/\\\n])+\/[dgimsuvy]*|[A-Za-z_$][\w$]*|[^\s]/g;
+    const tokens = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\/(?:\\[^\n]|\[(?:\\[^\n]|[^\]\\\n])*\]|[^/\\\n])+\/[dgimsuvy]*|[A-Za-z_$][\w$]*|[^\s]/g;
     const declaration = /^(?:(?:export|default|declare|abstract|async)\s+)*(?:const|let|var|function|class|interface|type|enum|namespace|import)\b/;
     let depth = 0;
     let previous = "";
     let lineIndex = 0;
-    let token: RegExpExecArray | null;
-    while ((token = tokens.exec(text)) !== null) {
+    let template = false;
+    const interpolations: number[] = [];
+    while (tokens.lastIndex < text.length) {
+      if (template) {
+        let offset = tokens.lastIndex;
+        for (; offset < text.length; offset++) {
+          if (text[offset] === "\\") { offset++; continue; }
+          if (text[offset] === "`") { template = false; previous = "`"; offset++; break; }
+          if (text[offset] === "$" && text[offset + 1] === "{") {
+            interpolations.push(++depth);
+            template = false; previous = "{"; offset += 2; break;
+          }
+        }
+        tokens.lastIndex = offset;
+        continue;
+      }
+      const token = tokens.exec(text);
+      if (!token) break;
       const offset = token.index;
       while (lineIndex + 1 < lines.length && lines[lineIndex + 1]!.offset <= offset) lineIndex++;
       const line = lines[lineIndex]!;
@@ -60,7 +76,10 @@ function sectionSpan(text: string, path: string, anchor: string): { start: numbe
         continue;
       }
       if (/^[({\[]$/.test(value)) depth++;
-      else if (/^[)}\]]$/.test(value)) depth--;
+      else if (/^[)}\]]$/.test(value)) {
+        if (value === "}" && interpolations.at(-1) === depth) { interpolations.pop(); template = true; }
+        depth--;
+      } else if (value === "`") template = true;
       previous = value;
     }
     return { start: first.offset, end: text.length };

@@ -1437,9 +1437,8 @@ export function qTaskSummary(t: TaskInfo, text: string, now: number,
 // --- LANE ↔ TASK JOIN — which live lane belongs to which open task row, from the 2 s poll alone.
 // The key is the dispatcher's own pointer: the dispatch core writes `task.slot = free.id` in the
 // same tick as `slot.taskId = task.id`, and every teardown clears both (server.ts#detachSlotTasks,
-// the boot reconciliation of `sent` rows). The poll carries only the TASK-side half — no
-// `taskId`/`originId`/`programId`/`sessionId` per slot — so the pointer is the one join this client
-// can make, and the guards below are what keep a stale pointer from painting a foreign lane on a row:
+// the boot reconciliation of `sent` rows). The task-side pointer selects the slot, and the guards
+// below check the poll's slot facts to keep a stale pointer from painting a foreign lane on a row:
 //   · status `sent` — the pointer means nothing on any other status (a detached row is `pending`)
 //   · slot occupied AND a worktree — a recycled slot holding a plain checkout is not a lane
 //   · openedAt ≥ task.created — a session opened before the row existed cannot be its lane
@@ -1447,11 +1446,11 @@ export function qTaskSummary(t: TaskInfo, text: string, now: number,
 //     digest carries the path AS WRITTEN and the slot the RESOLVED one, so equality (or a
 //     subdirectory of the toplevel) is a match, a segment-aligned suffix (/var/x vs /private/var/x)
 //     is an ALIAS this client cannot resolve and says so, and anything else is FOREIGN — refused.
-//   · program — UNCHECKED HERE: the poll carries no programId per slot. Said on the line, never
-//     read as a match. (The originId fallback is not derivable either, for the same reason.)
+//   · program — a slot's programId must match the row's; a foreign program is refused. A slot
+//     without programId stays UNCHECKED and says which fact is missing.
 // Each slot attaches to at most one row: two `sent` rows naming one slot attach to neither, so a
 // lane appears on the workbench zero or one times, never twice.
-export interface QLaneSlot { id: number; cwd: string | null; openedAt?: number; lastOutput: number;
+export interface QLaneSlot { id: number; cwd: string | null; openedAt?: number; lastOutput: number; programId?: string;
   git?: { dirty: number; ahead: number } | null; worktree?: { repo: string; branch: string } | null }
 export interface QLaneTask { id: string; status: TaskInfo["status"]; created: number; slot?: number;
   repo?: string; programId?: string }
@@ -1461,7 +1460,7 @@ export interface QLaneTask { id: string; status: TaskInfo["status"]; created: nu
 export type QLaneState = "running" | "idle" | "done-looking" | "unknown";
 export interface QLaneFacts { state: QLaneState; quietMs: number | null; dirty: number | null; ahead: number | null }
 export interface QLaneView extends QLaneFacts { slot: number; branch: string; repo: "match" | "alias";
-  program: "unchecked" | "none" }
+  program: "match" | "unchecked" }
 export type QLaneJoin = { kind: "lane"; lane: QLaneView } | { kind: "none" }
   | { kind: "refused"; slot: number; why: string };
 // mirrors the server's FLEET_AUTO_REVIEW_IDLE_MS default — a claim about a foreign surface, which
@@ -1512,8 +1511,12 @@ export function qLaneJoins(tasks: readonly QLaneTask[], slots: readonly QLaneSlo
     const rel = qRepoRelation(target, s.worktree.repo);
     if (rel === "foreign") { refuse(`the lane is in ${s.worktree.repo}, foreign to this row's target ${target}`); continue; }
     if (rel === "unknown") { refuse("this row names no target repo and no dispatch default is known"); continue; }
+    if (s.programId && s.programId !== t.programId) {
+      refuse(`the lane belongs to program ${s.programId}, foreign to this row's ${t.programId ? `program ${t.programId}` : "lack of a program"}`);
+      continue;
+    }
     out.set(t.id, { kind: "lane", lane: { slot, branch: s.worktree.branch, repo: rel,
-      program: t.programId ? "unchecked" : "none", ...qLaneState(s, now) } });
+      program: s.programId ? "match" : "unchecked", ...qLaneState(s, now) } });
   }
   return out;
 }
@@ -3029,7 +3032,8 @@ export function qLaneLine(join: QLaneJoin): HTMLElement | null {
     l.repo === "alias"
       ? "target repo and lane toplevel differ by a path prefix (alias) — this client cannot resolve symlinks, so the repo match is unproven"
       : "target repo matches the lane's toplevel",
-    l.program === "unchecked" ? "program membership unchecked — the poll carries no programId per slot" : "",
+    l.program === "unchecked" ? "program membership unchecked — this slot has no programId in the poll"
+      : "program membership matches this row",
   ].filter(Boolean).join("\n");
   return line;
 }

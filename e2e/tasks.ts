@@ -782,7 +782,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const taskModelReady = taskModelSource.includes("function qTaskListModel")
     && taskModelSource.includes("function qTaskMatches") && taskModelSource.includes("function qLaneJoins");
   // the lane ↔ task join, hoisted so the (e3) dispatch probe below can run it over a LIVE poll
-  type LaneSlot = { id: number; cwd: string | null; openedAt?: number; lastOutput: number;
+  type LaneSlot = { id: number; cwd: string | null; openedAt?: number; lastOutput: number; programId?: string;
     git?: { dirty: number; ahead: number } | null; worktree?: { repo: string; branch: string } | null };
   type LaneTask = { id: string; status: string; created: number; slot?: number; repo?: string; programId?: string };
   type LaneView = { slot: number; branch: string; state: string; quietMs: number | null; dirty: number | null;
@@ -945,8 +945,8 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(n3V.map((v) => [v.taskId, v.at, v.taskKnown])));
 
     // --- LANE ↔ TASK JOIN (qLaneJoins). The 2 s poll carries the dispatcher's pointer on the TASK
-    // side only (task.slot; no taskId/originId/programId per slot), so the fixtures below are the
-    // shapes that pointer can take once the slots move under it. Every guard is exercised by a
+    // side (task.slot), with programId on each bound slot to check its membership. The fixtures
+    // below cover the shapes that pointer can take once the slots move under it. Every guard is exercised by a
     // fixture whose ONLY difference from the attached case is the guarded fact — delete the
     // openedAt clause or the repo clause in qLaneJoins and the matching check goes red.
     const NOW = 10_000_000;
@@ -956,7 +956,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const sent = (id: string, slot: number | undefined, over: Partial<LaneTask> = {}): LaneTask =>
       ({ id, status: "sent", created: 1000, slot, repo: "/repos/alpha", ...over });
     const slots: LaneSlot[] = [
-      lane(3, "/repos/alpha"),                                            // exact pointer, repo match
+      lane(3, "/repos/alpha", { programId: "program-orion-111" }),         // exact pointer, repo and program match
       lane(4, "/repos/other"),                                            // foreign repo in the named slot
       lane(5, "/repos/alpha", { openedAt: 900 }),                         // session older than the row
       { id: 6, cwd: null, lastOutput: 0, git: null, worktree: null },     // pointer into an empty slot
@@ -971,6 +971,8 @@ export async function run(ctx: Ctx): Promise<void> {
       lane(15, "/repos/alpha"),                                           // a lane a DONE row points at
       lane(16, "/repos/alpha", { openedAt: undefined }),                  // older server: no openedAt
       lane(17, "/repos/alpha/sub"),                                       // (never named by a row)
+      lane(18, "/repos/alpha"),                                          // no programId in this slot's poll
+      lane(19, "/repos/alpha", { programId: "program-nimbus-222" }),       // foreign program
     ];
     const tasks2: LaneTask[] = [
       sent("t-exact", 3, { programId: "program-orion-111" }),
@@ -989,15 +991,24 @@ export async function run(ctx: Ctx): Promise<void> {
       sent("t-noopened", 16),
       sent("t-noslot", undefined),
       sent("t-subdir", 3, { repo: "/repos/alpha/deep/dir", status: "queued" }), // queued: pointer ignored
+      sent("t-program-unchecked", 18, { programId: "program-orion-111" }),
+      sent("t-program-foreign", 19, { programId: "program-orion-111" }),
     ];
     const joins = modelFns.qLaneJoins(tasks2, slots, "/repos/alpha", NOW);
     const j = (id: string): LaneJoin => joins.get(id) ?? { kind: "none" };
     const laneOf = (id: string): LaneView | null => { const x = j(id); return x.kind === "lane" ? x.lane : null; };
     const refusedWhy = (id: string): string => { const x = j(id); return x.kind === "refused" ? x.why : `<${x.kind}>`; };
-    check("lane join: an exact task.slot pointer attaches the lane with branch, slot and a program-unchecked note",
+    check("lane join: an exact task.slot pointer with matching programId attaches the lane with confirmed program membership",
       laneOf("t-exact")?.slot === 3 && laneOf("t-exact")?.branch === "fleet/lane-3"
-        && laneOf("t-exact")?.repo === "match" && laneOf("t-exact")?.program === "unchecked",
+        && laneOf("t-exact")?.repo === "match" && laneOf("t-exact")?.program === "match",
       JSON.stringify(j("t-exact")));
+    check("lane join: a slot without programId attaches with membership unchecked, never a proven match",
+      laneOf("t-program-unchecked")?.slot === 18 && laneOf("t-program-unchecked")?.program === "unchecked",
+      JSON.stringify(j("t-program-unchecked")));
+    check("lane join: a slot with a FOREIGN programId is refused and names both the slot's program and the row's program",
+      j("t-program-foreign").kind === "refused" && refusedWhy("t-program-foreign").includes("foreign")
+        && refusedWhy("t-program-foreign").includes("program-nimbus-222")
+        && refusedWhy("t-program-foreign").includes("program-orion-111"), JSON.stringify(j("t-program-foreign")));
     check("lane join: a lane in a FOREIGN repo is refused even though the row's pointer names its slot",
       j("t-foreign").kind === "refused" && refusedWhy("t-foreign").includes("/repos/other")
         && refusedWhy("t-foreign").includes("/repos/bravo"), JSON.stringify(j("t-foreign")));
@@ -1033,7 +1044,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const attached = laneSlotsOf(joins);
     check("lane join: every lane appears zero or one times across all rows",
       new Set(attached).size === attached.length
-        && JSON.stringify([...attached].sort((a, b) => a - b)) === JSON.stringify([3, 9, 11, 12, 13, 14]),
+        && JSON.stringify([...attached].sort((a, b) => a - b)) === JSON.stringify([3, 9, 11, 12, 13, 14, 18]),
       JSON.stringify(attached));
     check("lane join: a row targeting a SUBDIRECTORY of the lane's toplevel is a match; unrelated paths are foreign",
       modelFns.qRepoRelation("/repos/alpha/deep/dir", "/repos/alpha") === "match"

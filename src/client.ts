@@ -9629,6 +9629,11 @@ let tlHarness = "all";
 let tlView: { from: number; to: number } | null = null;   // axis window set by zoom/pan; null = fit to data
 let tlRowOf = new Map<HTMLElement, TimelineSession>();
 let tlReturnFocus: string | null = null;
+// THE WINDOW GENERATION (Kern-MAIN review of e8894ef7): every data answer belongs to the window that
+// asked for it. Closing the Activity window and opening it again bumps the generation, and an
+// answer that arrives for an older one is dropped — it would otherwise paint a closed window's
+// sessions into the new one.
+let tlGen = 0;
 const TL_WINDOW_MS = 24 * 3600_000;
 const TL_MOBILE_MQ = "(max-width: 700px), ((pointer: coarse) and (max-height: 500px))";
 const tlMobile = (): boolean => matchMedia(TL_MOBILE_MQ).matches;
@@ -9644,20 +9649,28 @@ const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", erro
 // the row packing measures the canvas, so a resize is a repaint
 window.addEventListener("resize", () => { if (ocShell && actLens === "timeline") renderActivity(); });
 function resetTimeline() {
+  tlGen++;
   tlModel = null; tlBusy = false; tlZoom = "overview"; tlScope = null; tlCall = null; tlPick = null;
   tlHarness = "all"; tlView = null; tlRowOf = new Map(); tlReturnFocus = null;
 }
 const tlQuery = () => { const to = Date.now(); return { from: to - TL_WINDOW_MS, to }; };
 async function loadTimelineModel() {
+  const gen = tlGen;
   tlBusy = true;
-  try { tlModel = await loadTimeline(tlQuery()); } finally { tlBusy = false; }
+  try {
+    const m = await loadTimeline(tlQuery());
+    if (gen !== tlGen) return; // an older window's answer: not ours to paint
+    tlModel = m;
+  } finally { if (gen === tlGen) tlBusy = false; }
 }
 async function tlLoadMore() {
   const m = tlModel;
   if (!m?.next || tlBusy) return;
+  const gen = tlGen;
   tlBusy = true;
   try {
     const page = await loadTimeline({ ...tlQuery(), page: m.next });
+    if (gen !== tlGen || tlModel !== m) return; // the window that asked is gone
     if (page.state === "unavailable") { m.next = null; m.reason = page.reason; }
     else {
       const known = new Set(m.sessions.map((s) => s.key));
@@ -9668,8 +9681,8 @@ async function tlLoadMore() {
       m.span = { from: ats.length ? Math.min(...ats) : null, to: ats.length ? Math.max(...ats) : null };
       if (m.state === "empty" && m.events.length) m.state = "read";
     }
-  } finally { tlBusy = false; }
-  renderActivity();
+  } finally { if (gen === tlGen) tlBusy = false; }
+  if (gen === tlGen) renderActivity();
 }
 const tlSessionOf = (key: string | null): TimelineSession | null => tlModel?.sessions.find((s) => s.key === key) ?? null;
 const tlEventOf = (id: string | null): TimelineEvent | null => tlModel?.events.find((e) => e.id === id) ?? null;

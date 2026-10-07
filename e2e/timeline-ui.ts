@@ -40,6 +40,7 @@ export const TL_CLAIM = {
   touch: "touch-sized: every control at least 40 px tall, no sideways page scroll, the inspector covers the screen, ‹ shows the session rail",
   bundle: "the production bundle carries neither the fixture module nor its canary",
   noRoute: "without the route the lens names the 404 of GET /api/timeline and draws no track",
+  stale: "an answer that arrives after its window was closed paints nothing into the window opened since",
 } as const;
 
 export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
@@ -60,6 +61,8 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `field("Quelle", src);`, with: "void src;" },
   { name: "the route's error status ignored", claim: TL_CLAIM.noRoute, file: "src/timeline.ts",
     needle: "if (!res.ok) {", with: "if (res.status === 599) {" },
+  { name: "a closed window's late answer is kept", claim: TL_CLAIM.stale, file: "src/client.ts",
+    needle: "if (gen !== tlGen) return; // an older window's answer: not ours to paint", with: "void gen;" },
 ];
 
 const T = Date.parse("2026-01-01T00:00:00.000Z");
@@ -132,7 +135,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
   const appJs = await built.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const wire = await timelineWireFixture();
-  const fx = { route404: false, timelineHits: 0 };
+  // `delayMs` holds the next answer back, `narrow` makes it a one-session variant — together they
+  // stage the late answer of a window that has been closed meanwhile
+  const fx = { route404: false, timelineHits: 0, delayMs: 0, narrow: false };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("timeline DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -180,7 +185,10 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: "/fixture/orch.jsonl", ttlSec: 300 });
       if (p === "/api/timeline") {
         fx.timelineHits++;
-        return void (fx.route404 ? json(requestId, { error: "no such route" }, 404) : json(requestId, wire));
+        if (fx.route404) return void json(requestId, { error: "no such route" }, 404);
+        const body = fx.narrow ? { ...wire, sessions: wire.sessions.slice(0, 1), ledger: [] } : wire;
+        if (fx.delayMs > 0) { setTimeout(() => void json(requestId, body), fx.delayMs); return; }
+        return void json(requestId, body);
       }
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -398,6 +406,21 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       await shot(`${width}-5-keine-quelle`);
       facts.noRoute = { state: r10.state, text: r10.stateText.slice(0, 120), tracks: r10.tracks.length };
       claims[TL_CLAIM.noRoute] = r10.state === "unavailable" && r10.stateText.includes("404") && r10.stateText.includes("/api/timeline") && r10.tracks.length === 0 && r10.marks.length === 0;
+      await click("#shell-outcomes .shellclose");
+
+      // --- 11. a late answer of a closed window: open (answer held back, one session), close, open
+      // again (answer at once, every session), let the late answer land, repaint — still every session
+      fx.route404 = false; fx.delayMs = 1500; fx.narrow = true; fx.timelineHits = 0;
+      await click('#morepanel [data-lens="timeline"]');
+      await wait(`document.querySelector('#shell-outcomes .tlstate')`, 4000);
+      fx.delayMs = 0; fx.narrow = false;
+      await click("#shell-outcomes .shellclose");
+      await openLens();
+      await settle(2000);
+      await click('.tlcrumb[data-zoom="overview"]');
+      const r11 = await read();
+      facts.stale = { hits: fx.timelineHits, tracks: r11.tracks.length, subtitle: r11.lens };
+      claims[TL_CLAIM.stale] = fx.timelineHits === 2 && r11.tracks.length === wire.sessions.length && r11.marks.length >= 20;
       await click("#shell-outcomes .shellclose");
       results.push({ width, height, claims, facts });
     }

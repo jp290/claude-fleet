@@ -1618,6 +1618,7 @@ export async function run(ctx: Ctx): Promise<void> {
   }
 
   await ownerSuccessionDoor(lnTok.slot, selfTok);
+  await ownerProgramSuccession();
 
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.
@@ -1785,6 +1786,225 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
   rmSync(proj, { recursive: true, force: true });
   rmSync(repo, { recursive: true, force: true });
   rmSync(rec, { force: true });
+}
+
+// --- THE OWNER DOOR ON THE PROGRAM RAIL, AND THE NUDGE THAT STOPS (second cut, 2026-10-07) -------
+// The first cut refused a Program-MAIN by name (409 `program-main`), and that is where the fullest
+// contexts sit. Now the owner door hands a resting, exactly bound Standard Program-MAIN over through
+// server.ts#succeedProgramMain — the self door's own rail — and tickMigrate leaves a session alone
+// whose standing handover is fresh (server.ts#standingHandoverFresh). Claims, each with the mutation
+// that turns it red:
+//   rail     — the preview names `program`, and the successor is a new occupation of the SAME slot
+//              that the SAME Program is now bound to (route the program rail back to a 409, or to
+//              succeedGeneric: the binding stays on the dead occupation).
+//   no turn  — byte recorder + prompt log, as on the generic door (sendText into the predecessor).
+//   handed   — the founding brief carries the Program record (an auto the predecessor armed, in its
+//              preview), THEN the owner section: the standing intent verbatim with its write time,
+//              and the transcript rest read from THIS occupant's pinned file after `at` only (drop
+//              the appendix, or the `since` cut, or read the slot's other file).
+//   game-maker — still refused by name at the owner door and at /api/self/handover (drop that refusal).
+//   fresh    — two sessions at 50 % above the armed 44, both with a standing handover: the one whose
+//              rest since the handover reaches a successor whole gets NO nudge, the one whose rest
+//              overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
+//              is nudged; make it "any handover" → the stale one is not).
+async function ownerProgramSuccession(): Promise<void> {
+  const repos: string[] = [];
+  const mkRepo = (name: string, agents: boolean): string => {
+    const repo = `${ROOT}/${name}`;
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo, { recursive: true });
+    spawnSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+    spawnSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", repo, "config", "user.name", "t"]);
+    // a target-repo Program-MAIN needs a tracked, non-empty AGENTS.md (server.ts#preflightProgramMain)
+    writeFileSync(`${repo}/${agents ? "AGENTS.md" : "README.md"}`, `${name} fixture\n`);
+    spawnSync("git", ["-C", repo, "add", "."]);
+    spawnSync("git", ["-C", repo, "commit", "-qm", "init"]);
+    repos.push(repo);
+    return repo;
+  };
+  type Row = { id: number; cwd: string | null; openedAt?: number; lastOutput: number };
+  const sessions = async (): Promise<{ now: number; slots: Row[] }> =>
+    (await (await get("/api/sessions")).json()) as { now: number; slots: Row[] };
+  const selfPost = (tok: string, path: string, body: unknown): Promise<Response> => fetch(`${BASE}${path}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+  const openFree = async (cwd: string, label: string): Promise<{ slot: number; tok: string; openedAt: number }> => {
+    const slot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+    const r = slot ? await post(`/api/slots/${slot}/open`, { cwd, label }) : null;
+    const tok = r?.ok ? await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    return { slot: r?.ok ? slot : 0, tok, openedAt: (await sessions()).slots.find((x) => x.id === slot)?.openedAt ?? 0 };
+  };
+  const repoP = mkRepo("owner-program-repo", true);
+  const repoF = mkRepo("owner-fresh-repo", false);
+  const repoT = mkRepo("owner-stale-repo", false);
+  const repoG = mkRepo("owner-gamemaker-repo", true);
+  const P = await openFree(repoP, "owner-program-main");
+  const F = await openFree(repoF, "owner-fresh-handover");
+  const T = await openFree(repoT, "owner-stale-handover");
+  const G = await openFree(repoG, "owner-gamemaker-main");
+  const all = [P, F, T, G];
+  check("owner program succession setup: four plain sessions open on private checkouts, each with its own token",
+    all.every((x) => x.slot > 0 && /^[0-9a-f]{32}$/.test(x.tok) && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 4,
+    JSON.stringify(all.map((x) => ({ slot: x.slot, tok: x.tok.length, openedAt: x.openedAt }))));
+  const cleanup = async (): Promise<void> => {
+    for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
+    for (const r of repos) {
+      rmSync(r, { recursive: true, force: true });
+      rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
+    }
+  };
+  if (!all.every((x) => x.slot > 0 && x.tok)) { await cleanup(); return; }
+
+  // THE STANDING HANDOVERS are written while the sessions are still unbound and unmeasured: after the
+  // restart below the tick is armed, and a nudge racing the write would measure the race
+  const INTENT_P = "PM-INTENT-MARK Absicht: erst Zeile 7 landen, dann den Audit lesen. Korrektur: Slot 3 ist NICHT frei.";
+  const write = async (x: typeof P, intent: string): Promise<number> =>
+    (((await (await selfPost(x.tok, "/api/self/handover", { intent })).json()) as { standingHandover?: { at?: number } })
+      .standingHandover?.at) ?? 0;
+  const atF = await write(F, "FRESH-INTENT-MARK alles steht im Record");
+  const atT = await write(T, "STALE-INTENT-MARK alles steht im Record");
+
+  // PLANTED, not driven, for watch.ts's reason: an active Program whose main names this living
+  // occupant (boundProgramsForMain), and a pinned conversation per slot — minting either through
+  // the founding routes would measure those routes. Session ids are pinned so every transcript read
+  // below is THIS occupant's file (server.ts#transcriptFile), never a newest-file guess.
+  await stopSrv();
+  const statePath = `${ROOT}/fleet.json`;
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null }>;
+    programs?: Record<string, unknown>[] };
+  const sid = (n: number): string => `e2e0feed-0000-4000-8000-0000000002${String(n).padStart(2, "0")}`;
+  for (const [i, x] of all.entries()) if (state.slots?.[String(x.slot)]) state.slots[String(x.slot)]!.sessionId = sid(i);
+  const plantAt = Date.now() - 5000;
+  const programRow = (id: string, x: typeof P, i: number, extra: Record<string, unknown>): Record<string, unknown> => ({
+    id, title: `Owner succession fixture ${id.slice(0, 6)}`, intent: "Hand a resting MAIN over without a turn",
+    successCriterion: "The successor is bound and names the record", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    status: "active", createdAt: plantAt - 1000, proposedBy: { kind: "owner" }, confirmedAt: plantAt - 900, activatedAt: plantAt - 800,
+    main: { slot: x.slot, openedAt: x.openedAt, sessionId: sid(i), boundAt: plantAt - 700 }, ...extra });
+  const programP = "0a5e5c".padEnd(24, "1");
+  const programG = "0a5e5c".padEnd(24, "2");
+  state.programs = [...(state.programs ?? []), programRow(programP, P, 0, {}),
+    programRow(programG, G, 3, { profile: { v: 1, kind: "game-maker", confirmedAt: plantAt - 850 } })];
+  writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+
+  const line = (cwd: string, type: string, ts: number, content: unknown): string =>
+    `${JSON.stringify({ type, cwd, timestamp: new Date(ts).toISOString(), message: { role: type, content } })}\n`;
+  const fileOf = (repo: string, i: number): string => {
+    const dir = `${process.env.HOME}/.claude/projects/${repo.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(dir, { recursive: true });
+    return `${dir}/${sid(i)}.jsonl`;
+  };
+  // 500 000 of the 1 000 000 window: 50 %, above the 44 e2e-isolated.sh arms — the LAST line, because
+  // the context reader walks back to the newest usage record
+  const usage = `${JSON.stringify({ message: { usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000,
+    cache_read_input_tokens: 300_000, output_tokens: 9_000_000 } } })}\n`;
+  writeFileSync(fileOf(repoF, 1), line(repoF, "user", atF - 1000, "FRESH-BEFORE asked before the handover")
+    + line(repoF, "user", atF + 1, "FRESH-AFTER one short question after it")
+    + line(repoF, "assistant", atF + 2, [{ type: "text", text: "FRESH-AFTER one short answer" }]) + usage);
+  // 20 entries of 1500 characters after the handover: 30 000 > FRESH_TAIL_MAX (24 000), so a successor
+  // would lose the oldest of them — the handover is no longer fresh
+  writeFileSync(fileOf(repoT, 2), Array.from({ length: 20 }, (_, k) =>
+    line(repoT, k % 2 ? "assistant" : "user", atT + 1 + k, k % 2 ? [{ type: "text", text: `STALE-${k} ${"x".repeat(1490)}` }]
+      : `STALE-${k} ${"y".repeat(1490)}`)).join("") + usage);
+  const fileP = fileOf(repoP, 0);
+  writeFileSync(fileP, line(repoP, "user", Date.now() - 60_000, "PM-BEFORE-MARK what was asked long ago")
+    + line(repoP, "assistant", Date.now() - 59_000, [{ type: "text", text: "PM-BEFORE-MARK answered long ago" }]));
+
+  // the default (claude) adapter is automatable without FLEET_HARNESS_AUTOMATION, so the plain boot arms the tick
+  await restartSrv();
+  const migratePrompts = async (slot: number) => (await plogRead())
+    .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+  type CtxRow = { id: number; ctx: { pct: number } | null };
+  const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
+  check("owner program succession setup: both handover subjects wrote a standing handover and measure 50 %",
+    atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 50
+      && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 50,
+    JSON.stringify({ atF, atT, ctx: ctxRows.filter((x) => [F.slot, T.slot].includes(x.id)) }));
+  let staleNudges = await migratePrompts(T.slot);
+  for (let i = 0; i < 100 && staleNudges.length === 0; i++) {
+    await Bun.sleep(100);
+    staleNudges = await migratePrompts(T.slot);
+  }
+  // negative proof, so it is a window: the fresh subject sat in every due scan the stale one was nudged in, plus four
+  const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
+  await Bun.sleep(tickMs * 4 + 500);
+  check("tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
+    staleNudges.length === 1 && (await migratePrompts(F.slot)).length === 0 && (await migratePrompts(T.slot)).length === 1,
+    `fresh=${(await migratePrompts(F.slot)).length} stale=${(await migratePrompts(T.slot)).length}`);
+
+  // GAME-MAKER stays on its own rail at both doors
+  const gDoor = await post(`/api/slots/${G.slot}/succeed`, {});
+  const gDoorBody = (await gDoor.json()) as { reason?: string };
+  const gWrite = await selfPost(G.tok, "/api/self/handover", { intent: "a game-maker hands over a checkpoint" });
+  const gWriteBody = (await gWrite.json()) as { reason?: string };
+  check("owner succession door: a game-maker Program-MAIN is still refused 409 `game-maker` at the owner door AND at /api/self/handover",
+    gDoor.status === 409 && gDoorBody.reason === "game-maker" && gWrite.status === 409 && gWriteBody.reason === "game-maker",
+    `${gDoor.status} ${JSON.stringify(gDoorBody)} | ${gWrite.status} ${JSON.stringify(gWriteBody)}`);
+
+  // the Program record gets one row the predecessor owes: a one-shot an hour out, captured at the kill
+  const autoRes = await selfPost(P.tok, "/api/self/autos", { text: "PM-RECORD-AUTO-MARK nach dem Audit nachsehen", everySec: null, inSec: 3600 });
+  // the Program-MAIN writes its standing handover now that it is bound — the first cut refused this
+  const wroteP = await selfPost(P.tok, "/api/self/handover", { intent: INTENT_P });
+  const atP = (((await wroteP.json()) as { standingHandover?: { at?: number } }).standingHandover?.at) ?? 0;
+  appendFileSync(fileP, line(repoP, "user", atP + 1, "PM-AFTER-MARK bitte noch die Zeile 7 freigeben")
+    + line(repoP, "assistant", atP + 2, [{ type: "text", text: "PM-AFTER-MARK gebe ich frei" },
+      { type: "tool_use", id: "toolu_pm", name: "Bash", input: { command: "echo PM-TOOL-MARK" } }])
+    + line(repoP, "user", atP + 3, [{ type: "tool_result", tool_use_id: "toolu_pm", content: "PM-TOOL-MARK" }]));
+
+  // NO TURN: the generic door's recorder, on the Program-MAIN's pane
+  const rec = `${ROOT}/owner-program-recorder`;
+  rmSync(rec, { force: true });
+  await tmuxOut("send-keys", "-t", `=s${P.slot}:`, `stty -icanon -echo; cat > '${rec}'`, "Enter");
+  let resting = false;
+  for (let i = 0; i < 100 && !resting; i++) {
+    await Bun.sleep(100);
+    const sx = await sessions();
+    const r = sx.slots.find((x) => x.id === P.slot);
+    resting = existsSync(rec) && !!r && sx.now - r.lastOutput > MERGE_IDLE_MS + 300;
+  }
+  type Preview = { ready?: boolean; rail?: string; programs?: string[]; refusal?: unknown;
+    standingHandover?: { at?: number } | null; tail?: { state?: string; entries?: number } | null };
+  const pv = (await (await get(`/api/slots/${P.slot}/succeed`)).json()) as Preview;
+  check("owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
+    autoRes.ok && wroteP.ok && atP > 0 && resting && pv.ready === true && pv.rail === "program" && pv.programs?.[0] === programP
+      && pv.standingHandover?.at === atP && pv.tail?.state === "read" && pv.tail.entries === 2,
+    `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} preview=${JSON.stringify(pv)}`);
+  const promptsOfOld = async (): Promise<number> =>
+    (await plogRead()).filter((e) => e.slot === P.slot && e.openedAt === P.openedAt).length;
+  const oldPromptsBefore = await promptsOfOld();
+
+  const pressed = await post(`/api/slots/${P.slot}/succeed`, {});
+  const pressedBody = (await pressed.json()) as { ok?: boolean; slot?: number; briefBytes?: number; program?: { id?: string } };
+  const successor = (await sessions()).slots.find((x) => x.id === P.slot);
+  const boundNow = ((await (await get("/api/programs")).json()) as { programs?: { id: string; main?: { slot?: number; openedAt?: number } | null }[] })
+    .programs?.find((p) => p.id === programP)?.main ?? null;
+  check("owner succession door: a resting Program-MAIN is succeeded on the SAME slot and cwd, and its Program is bound to the new occupation",
+    pressed.ok && pressedBody.ok === true && pressedBody.slot === P.slot && pressedBody.program?.id === programP
+      && successor?.cwd === repoP && (successor.openedAt ?? 0) > P.openedAt
+      && boundNow?.slot === P.slot && boundNow.openedAt === successor.openedAt && typeof pressedBody.briefBytes === "number",
+    `${pressed.status} ${JSON.stringify(pressedBody)} row=${JSON.stringify(successor)} main=${JSON.stringify(boundNow)}`);
+  const recorded = existsSync(rec) ? readFileSync(rec, "utf8") : null;
+  check("owner succession door: the Program-MAIN predecessor got NO turn — recorder empty, no prompt-log row for its occupation",
+    recorded === "" && (await promptsOfOld()) === oldPromptsBefore,
+    `recorder=${JSON.stringify(recorded?.slice(0, 200))} prompts ${oldPromptsBefore} → ${await promptsOfOld()}`);
+
+  let brief = "";
+  for (let i = 0; i < 100 && !brief; i++) {
+    brief = (await plogRead()).findLast((e) => e.slot === P.slot && e.openedAt === successor?.openedAt
+      && e.text.startsWith("[fleet Program-MAIN succession]"))?.text ?? "";
+    if (!brief) await Bun.sleep(100);
+  }
+  const recordAt = brief.indexOf("YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD");
+  const ownerAt = brief.indexOf("VOM OWNER AUSGELÖST");
+  check("owner succession door: the Program-MAIN successor's brief names the record (with the armed auto), then the standing intent verbatim with its write time, then the rest after it — typed text only",
+    recordAt > 0 && brief.indexOf("PM-RECORD-AUTO-MARK") > recordAt && ownerAt > brief.indexOf("PM-RECORD-AUTO-MARK")
+      && brief.indexOf(INTENT_P) > ownerAt && brief.includes(`geschrieben ${new Date(atP).toISOString()} — Alter `)
+      && brief.includes("gilt der Record") && brief.lastIndexOf("PM-AFTER-MARK") > brief.indexOf(INTENT_P)
+      && !brief.includes("PM-BEFORE-MARK") && !brief.includes("PM-TOOL-MARK")
+      && Buffer.byteLength(brief) === pressedBody.briefBytes,
+    brief.slice(Math.max(0, recordAt), recordAt + 2500));
+
+  rmSync(rec, { force: true });
+  await cleanup();
 }
 
 // --- THE PROJECT MEMORY DOOR (GET /api/self/memory, server.ts#memoryScopeFor) -----------------

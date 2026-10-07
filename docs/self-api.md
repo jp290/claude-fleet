@@ -740,8 +740,9 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   datiert, getrackt und sauber, sonst 400/409; leerer Body = 400). Überschreibt die vorige; die
   Session hält sie in ohnehin laufenden Turns aktuell. Gespeichert als `Slot.standingHandover
   {at, openedAt, intent, pointer}` (`server/types.ts#StandingHandover`), persistiert, an die Belegung
-  gebunden: eine neue Belegung erbt keine. Lane, Program-MAIN, Game-Maker und Steward: 409 mit `reason`
-  (dieselben Gründe wie unten) — niemand pflegt eine Übergabe, die keine Tür liest.
+  gebunden: eine neue Belegung erbt keine. Lane, Game-Maker und Steward: 409 mit `reason`
+  (dieselben Gründe wie unten) — niemand pflegt eine Übergabe, die keine Tür liest. Eine Standard-
+  Program-MAIN darf sie seit 2026-10-07 schreiben (zweiter Schnitt, unten).
   Lesen: `GET /api/self` → `standingHandover` (`null` = keine geschrieben).
 - **`POST /api/slots/:id/succeed`** (Owner-Credential, `server.ts#handleOwnerSucceed`) — beendet die
   RUHENDE Session und öffnet auf demselben Slot und cwd eine frische auf der ungebundenen Schiene
@@ -758,13 +759,33 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   Antwort wie `succeed` plus `briefBytes`. Verweigerungen, je `{error, reason}`: `not-active` (400),
   `busy` (409, Pane-Ausgabe binnen `MERGE_IDLE_MS` — dasselbe Prädikat wie `sleep`; zuletzt
   NACH dem Brief-Bau unmittelbar vor `respawnInPlace` erneut gefragt, `server.ts#succeedGeneric`
-  `beforeKill`), `asleep`, `slot-changing`, `steward`, `lane`, `program-main`, `game-maker`,
-  `in-flight`, `pointer-uncommitted` (alle 409). Audit `main_succession` mit `owner-triggered`.
+  `beforeKill`), `asleep`, `slot-changing` (auch: die Program-Bindung hat sich während der Vorbereitung
+  bewegt), `steward`, `lane`, `game-maker`, `in-flight`, `pointer-uncommitted` (alle 409). Audit
+  `main_succession` mit `owner-triggered`.
+  **Program-Schiene (seit 2026-10-07):** ist die ruhende Session exakt gebundene MAIN Standard-Programs
+  (`server.ts#boundProgramsForMain`, Slot + `openedAt`), fährt die Tür `server.ts#succeedProgramMain` —
+  dieselbe Schiene wie `succeed` der Session: Founding-Marker, Program-Record (`captureProgramHandover`)
+  im Moment des Kills, Bindungsschnitt auf die neue Belegung, Begleit-Programs mit. Kein `carry`. Die
+  stehende Übergabe geht NICHT in den Record (der bleibt Byte für Byte, was die Self-Tür erfasst),
+  sondern als Abschnitt hinter den Founding-Brief: `intent` wörtlich bzw. der `pointer`, mit Schreibzeit,
+  Alter und dem Satz „[Zitat entfernt]“ — der Record ist im Moment der
+  Übergabe gemessen, die stehende Übergabe davor. Danach der Transkript-Rest wie oben. Antwort wie
+  `succeed` der Program-Schiene plus `briefBytes`; Fehler aus `succeedProgramMain` (Founding offen,
+  Preflight) kommen unverändert, ohne `reason`. Game-Maker bleibt abgewiesen.
 - **`GET /api/slots/:id/succeed`** (Owner) — die Lese-Tür für den Knopf, ohne Wirkung: `{ready,
-  refusal: {reason, error} | null, idleMs, observed, idleThresholdMs, standingHandover: {at, ageMs,
+  refusal: {reason, error} | null, rail: "program" | "generic", programs: [id…], idleMs, observed, idleThresholdMs, standingHandover: {at, ageMs,
   channel, pointer} | null, tail: {state, reason, entries, omitted, chars}}`. Sie liest das Transkript,
   ist also kein 2-s-Poll; dafür trägt die Zeile in `GET /api/sessions` `standingHandover: {at}` (fehlt,
   wenn keine steht) neben dem vorhandenen `lastOutput` und `now`.
+
+**Frische stehende Übergabe stoppt den Schwellen-Hinweis** (`server.ts#standingHandoverFresh`, im
+`tickMigrate`): steht eine stehende Übergabe der aktuellen Belegung und erreicht der Transkript-Rest seit
+ihrem `at` eine Nachfolgerin noch GANZ (gelesen, nichts ausgelassen unter 24 000 Zeichen), bekommt die
+Session keinen Hinweis — jeder Hinweis wäre ein Turn über den vollen Kontext, und die Owner-Tür kann
+schon ohne einen übergeben. Frisch ist also kein Uhr-Alter, sondern „[Zitat entfernt]“: eine
+drei Stunden alte Übergabe über einer seitdem ruhenden Pane ist frisch, eine zehn Minuten alte vor
+30 000 Zeichen Arbeit nicht. Ein unlesbarer Rest ist nie frisch. Der Hinweis der Standard-Program-
+MAIN nennt die stehende Übergabe jetzt ebenfalls als Alternative.
 
 Gemessen 2026-10-07 an einem echten Claude-Transkript (dieser Lane, 628 Zeilen, 1,79 MB jsonl) auf einer
 Scratch-Instanz: Übergabe 8 min alt, Rest 9 Einträge / 1227 Zeichen, Brief **2242 Bytes**; ohne

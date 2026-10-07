@@ -215,11 +215,15 @@ als Kanal im Linien-Record), und dem **Transkript-Rest** seit deren Zeitstempel
 (`server.ts#freshTranscriptTail`: nur Eingänge und Antworttexte, ohne Werkzeuge, neueste zuerst unter
 24 000 Zeichen). Der Brief nennt Schreibzeit und Alter der Übergabe und hängt den Rest an. „Ruht"
 ist dasselbe Prädikat wie bei `sleep` (keine Pane-Ausgabe binnen `MERGE_IDLE_MS`); eine laufende Pane
-wird mit 409 `busy` abgewiesen. In diesem Schnitt nur ungebundene Sessions und die Orchestratorin:
-Lane, Program-MAIN, Game-Maker und Steward antworten mit benanntem 409 (`reason`) und behalten ihre
-eigene Schiene. Der Schwellen-Hinweis der ungebundenen Schiene nennt die stehende Übergabe als
-Alternative, wenn gerade Arbeit läuft. Lese-Tür für den Knopf: `GET /api/slots/:id/succeed`
-(`docs/self-api.md` §handover).
+wird mit 409 `busy` abgewiesen. Ungebundene Sessions, die Orchestratorin und seit dem zweiten Schnitt
+(2026-10-07) die exakt gebundene Standard-Program-MAIN: sie geht über `server.ts#succeedProgramMain`
+(Program-Record im Moment des Kills, Bindungsschnitt), und ihre stehende Übergabe reist wörtlich als
+Abschnitt hinter dem Founding-Brief — der Record gilt, wo beide sich widersprechen. Lane, Game-Maker
+und Steward antworten mit benanntem 409 (`reason`) und behalten ihre eigene Schiene. Die
+Schwellen-Hinweise der ungebundenen und der Standard-Program-Schiene nennen die stehende Übergabe als
+Alternative, wenn gerade Arbeit läuft; steht eine frische (der Transkript-Rest seit ihr erreicht eine
+Nachfolgerin noch ganz, `server.ts#standingHandoverFresh`), kommt kein weiterer Hinweis. Lese-Tür für
+den Knopf: `GET /api/slots/:id/succeed` (`docs/self-api.md` §handover).
 
 **Harness-Wechsel geht NICHT über `succeed`** (`server.ts#handleSelfSucceed`: „that harness is not
 overridable here" — nur Modell/Effort innerhalb des geerbten Harness). Der Weg, gegangen am 2026-09-23
@@ -262,8 +266,9 @@ Vorher dauerhaft machen:
 - Änderungen committen; Ergebnis, Beleg, offene Arbeit und nächste Handlung an einem für die
   Nachfolgerin lesbaren Ort festhalten. Offene Pflichten tragen ihre IDs und ihre maßgebliche
   Quelle. Eine stehende Übergabe im ohnehin laufenden Turn aktualisieren; für die ungebundene
-  Schiene `intent` oder Zeiger auf einen committeten Abschnitt, für Game-Maker den vollständigen
-  Checkpoint. Es gelten die vier Fälle oben, kein zusätzlicher HANDOFF-Commit für Standard-MAINs.
+  Schiene und die Standard-Program-MAIN `intent` oder Zeiger auf einen committeten Abschnitt (bei
+  der Program-MAIN neben dem Program-Record, der bei Widerspruch gilt), für Game-Maker den
+  vollständigen Checkpoint. Es gelten die vier Fälle oben, kein zusätzlicher HANDOFF-Commit für Standard-MAINs.
 - Laufende Subagenten beenden lassen und ihre Ergebnisse dauerhaft sichern: sie überleben den
   Tod der Vorgängerin nicht. Ein angekündigtes Ergebnis oder ein Tool-Handle im Gespräch genügt
   nicht als Übergabe. Eine selbstständige Fleet-Lane ist kein solcher Subagent; ihren Report
@@ -286,12 +291,13 @@ Wiederaufnahmen ab 62 Minuten median 199 779 Write-Token, bei warmen Pausen von 
 614. Wer nach einer Stunde nur noch zur Übergabe geweckt wird, bezahlt den großen alten
 Verlauf und anschließend den Aufbau der Nachfolgerin. Ist die Übergabe noch blockiert,
 Pflicht und Grund schon warm sichern; keine Keepalive-Pings daraus ableiten. Für eine bereits
-kalte ungebundene Session beziehungsweise Orchestratorin gibt es die Owner-Nachfolge ohne
-Turn der Vorgängerin (oben); die Session erhält dadurch keine Owner-Befugnis.
+kalte ungebundene Session, Orchestratorin oder Standard-Program-MAIN gibt es die Owner-Nachfolge
+ohne Turn der Vorgängerin (oben); die Session erhält dadurch keine Owner-Befugnis.
 
 Das ist gemessenes Wissen und eine Handlungsempfehlung für die bestehende Nachfolge. Der
-Server-Hinweis `tickMigrate` prüft Füllstand, Schwelle und Zustellbarkeit; er implementiert
-keinen Cache-Ablauf und keinen Abschluss laufender Subagenten.
+Server-Hinweis `tickMigrate` prüft Füllstand, Schwelle und Zustellbarkeit und schweigt bei einer
+frischen stehenden Übergabe (`server.ts#standingHandoverFresh`); er implementiert keinen
+Cache-Ablauf und keinen Abschluss laufender Subagenten.
 
 ## Kontext-Hinweis des Servers
 

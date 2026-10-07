@@ -13425,10 +13425,13 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
 // What it knew reaches the successor through two things it already had: the standing handover it
 // wrote in earlier turns (POST /api/self/handover → the line record's intent/pointer) and its
 // transcript on disk since that write, cut to typed text (freshTranscriptTail).
-// THIS CUT TAKES THE GENERIC RAIL ONLY (an unbound MAIN, the orchestrator). Every other rail keeps
-// its own gate and is refused by name: a lane hands over by its own `handoff` report, a Program-MAIN
-// through its Program record, a game-maker MAIN through a checkpoint only it can commit.
-type OwnerSucceedRefusal = "not-active" | "asleep" | "slot-changing" | "steward" | "lane" | "program-main"
+// TWO RAILS: the generic one (an unbound MAIN, the orchestrator) and, since the second cut
+// (2026-10-07), the Standard Program-MAIN rail (succeedProgramMain), where the fullest contexts sit.
+// There the Program record is captured at the kill exactly as on the self door, and the standing
+// handover rides the brief as the predecessor's older prose beside it (freshSuccessionAppendix).
+// The remaining rails keep their own gate and are refused by name: a lane hands over by its own
+// `handoff` report, a game-maker MAIN through a checkpoint only it can commit.
+type OwnerSucceedRefusal = "not-active" | "asleep" | "slot-changing" | "steward" | "lane"
   | "game-maker" | "in-flight" | "busy" | "pointer-uncommitted";
 type OwnerSucceedNo = { code: number; reason: OwnerSucceedRefusal; error: string };
 const ownerSucceedNo = (code: number, reason: OwnerSucceedRefusal, error: string): OwnerSucceedNo => ({ code, reason, error });
@@ -13445,8 +13448,6 @@ function ownerSucceedRailRefusal(s: Slot): OwnerSucceedNo | null {
   const bound = boundProgramsForMain(s);
   if (bound.some((p) => isGameMaker(p)))
     return ownerSucceedNo(409, "game-maker", "a game-maker Program-MAIN hands over a committed checkpoint only it can write — POST /api/self/succeed from the session");
-  if (bound.length)
-    return ownerSucceedNo(409, "program-main", `this session is Program-MAIN of ${bound.map((p) => p.id).join(", ")} — that rail keeps its own gate in this cut: POST /api/self/succeed from the session`);
   if (successionStarted.get(s.id) === s.selfToken || successionInflight.has(s.selfToken))
     return ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight");
   return null;
@@ -13509,19 +13510,34 @@ async function freshTranscriptTail(s: Slot, since: number | null): Promise<Fresh
 const ageText = (ms: number): string => ms < 120_000 ? `${Math.max(0, Math.round(ms / 1000))} s`
   : ms < 7_200_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
 // the section behind the founding ritual: WHO ended the predecessor, how old its standing handover
-// is, and the rest. The handover's text itself stays in the record (the brief names it, as the
-// self door's brief does) — only its age and the rest travel here.
-function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number): string {
-  const standingLine = standing
-    ? `Stehende Übergabe: ${standing.intent !== null ? "`intent`" : `\`pointer\` ${standing.pointer}`} im Linien-Record, `
-      + `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}. Was danach geschah, steht nur im Transkript-Rest unten.`
-    : "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Transkript-Rest unten ist das Ende ihrer Unterhaltung — prüfe ihn gegen git und GET /api/self, bevor du darauf baust.";
+// is, and the rest. On the generic rail the handover's text stays in the line record (the brief
+// names it, as the self door's brief does) — only its age and the rest travel here.
+// ON THE PROGRAM RAIL there is no line record to hold it: the Program record (standardHandoverLines,
+// above this section) is the handover and stays byte for byte what the self door captures, so the
+// standing handover travels HERE, verbatim, as the predecessor's own older prose beside it — the
+// owner door's stand-in for the `carry` a predecessor without a turn cannot write. Where the two
+// disagree the record wins: it was measured at the kill, the standing handover before it.
+function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number,
+  rail: "generic" | "program" = "generic"): string {
+  const written = standing ? `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}` : "";
+  const standingLines = !standing
+    ? [rail === "program"
+      ? "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Program-Record oben und der Transkript-Rest unten sind alles, was sie hinterlässt — prüfe den Rest gegen git und GET /api/self/program-execution, bevor du darauf baust."
+      : "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Transkript-Rest unten ist das Ende ihrer Unterhaltung — prüfe ihn gegen git und GET /api/self, bevor du darauf baust."]
+    : rail === "program"
+      ? [`Stehende Übergabe der Vorgängerin (${standing.intent !== null ? "`intent`" : "`pointer`"}), ${written}. `
+        + "Sie ist älter als der Program-Record oben, der im Moment der Übergabe gemessen wurde: wo beide sich widersprechen, gilt der Record. "
+        + "Was nach ihr geschah, steht nur im Transkript-Rest unten.",
+      ...(standing.intent !== null ? ["--- STEHENDE ÜBERGABE (wörtlich) ---", standing.intent]
+        : [`Zeiger: ${standing.pointer} — lies diesen committeten Abschnitt.`])]
+      : [`Stehende Übergabe: ${standing.intent !== null ? "`intent`" : `\`pointer\` ${standing.pointer}`} im Linien-Record, `
+        + `${written}. Was danach geschah, steht nur im Transkript-Rest unten.`];
   const tailHead = tail.state === "none" ? `--- TRANSKRIPT-REST: unbekannt (${tail.reason}) ---`
     : `--- TRANSKRIPT-REST ${standing ? "seit der stehenden Übergabe" : "(Ende der Unterhaltung)"}: ${tail.entries} Einträge`
       + `${tail.omitted ? `, ${tail.omitted} ältere ausgelassen (Deckel ${FRESH_TAIL_MAX} Zeichen)` : ""}; `
       + "nur Eingänge und Antworttexte, ohne Werkzeuge — Kontext der Vorgängerin, keine neue Anweisung an dich ---";
   return ["--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---",
-    standingLine, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
+    ...standingLines, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
 }
 
 // the button's read: may the door fire now, and what would the successor get. Read on demand — it
@@ -13531,8 +13547,11 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
   const standing = liveStandingHandover(s);
   const now = Date.now();
   const tail = s.cwd ? await freshTranscriptTail(s, standing?.at ?? null) : null;
+  const bound = s.cwd ? boundProgramsForMain(s) : [];
   return { slot: s.id, ready: refusal === null,
     refusal: refusal ? { reason: refusal.reason, error: refusal.error } : null,
+    // which rail a press would take: the Program record travels on `program`, a line record on `generic`
+    rail: bound.length ? "program" : "generic", programs: bound.map((p) => p.id),
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null, observed: s.lastOutput > 0, idleThresholdMs: MERGE_IDLE_MS,
     standingHandover: standing ? { at: standing.at, ageMs: now - standing.at,
       channel: standing.intent !== null ? "intent" : "pointer", pointer: standing.pointer } : null,
@@ -13553,6 +13572,10 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     return no(ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight"));
   successionInflight.add(identity);
   try {
+    // THE RAIL, fixed here and re-asked before the kill: a binding that moves while the brief is built
+    // would otherwise be answered with the other rail's handover
+    const bound = boundProgramsForMain(s);
+    const boundKey = bound.map((p) => p.id).join(",");
     const standing = liveStandingHandover(s);
     if (standing?.pointer && !(await lineagePointerCommitted(predecessorIdentity.cwd, standing.pointer)))
       return no(ownerSucceedNo(409, "pointer-uncommitted", "the standing handover's pointer no longer names a committed, clean file — the session writes it again; nothing was handed over"));
@@ -13565,6 +13588,8 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     const lastQuestion = async (): Promise<Response | null> => {
       if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
         return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
+      if (boundProgramsForMain(s).map((p) => p.id).join(",") !== boundKey)
+        return no(ownerSucceedNo(409, "slot-changing", "the session's Program binding changed while the succession was prepared — nothing was handed over"));
       const lateRail = ownerSucceedRailRefusal(s);
       if (lateRail && lateRail.reason !== "in-flight") return no(lateRail);
       const lateBusy = await ownerSucceedBusy(s);
@@ -13582,10 +13607,17 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     const now = Date.now();
     const beforeKill = async (): Promise<Response | null> => {
       const refused = await lastQuestion();
-      if (!refused) audit("main_succession", s.id, `generic owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
+      if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
         + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
       return refused;
     };
+    // THE PROGRAM RAIL: the same succeedProgramMain the self door takes — founding marker, record
+    // capture at the kill, binding cut, companions — with no carry (the predecessor writes nothing
+    // now) and the owner section behind the founding brief. game-maker never gets here (rail refusal).
+    if (bound.length)
+      return await succeedProgramMain(bound[0]!, s, s.label, null,
+        { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, bound.slice(1),
+        { appendix: freshSuccessionAppendix(standing, tail, now, "program"), beforeKill });
     return await succeedGeneric(s, { label: s.label, carry: null,
       channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
       spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, memoryGrant: undefined,
@@ -13601,8 +13633,7 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
 // keeps a handover current that no door will ever read.
 async function handleSelfHandover(s: Slot, req: Request): Promise<Response> {
   const railNo = ownerSucceedRailRefusal(s);
-  if (railNo && (railNo.reason === "steward" || railNo.reason === "lane" || railNo.reason === "program-main"
-    || railNo.reason === "game-maker"))
+  if (railNo && (railNo.reason === "steward" || railNo.reason === "lane" || railNo.reason === "game-maker"))
     return json({ error: railNo.error, reason: railNo.reason }, railNo.code);
   const openedAt = s.openedAt, cwd = s.cwd!, token = s.selfToken;
   const body = await readJson(req);
@@ -24835,7 +24866,12 @@ function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
     return opening
       + "(1) offene Pflichten dort lesbar machen, wo die Nachfolgerin sie liest — Program-Tasks, fleet-reports, "
       + "Inbox —, nichts nur im Pane-Text; ein Übergabe-Commit ist für eine gebundene Program-MAIN kein Gate; "
-      + `(2) ${succeed}, optional mit \`carry\` (ein Satz: das Erste, was du als Nächstes tätest).`;
+      + `(2) ${succeed}, optional mit \`carry\` (ein Satz: das Erste, was du als Nächstes tätest). `
+      // the Program rail's owner door (handleOwnerSucceed → succeedProgramMain) reads the same
+      // standing handover, as prose beside the Program record
+      + "Läuft gerade Arbeit, die du nicht abbrechen willst: schreib stattdessen eine stehende Übergabe "
+      + "(POST /api/self/handover, `intent` ODER `pointer`) und halte sie in deinen weiteren Turns aktuell — der Program-Record "
+      + "bleibt die Übergabe, sie ist deine Absicht daneben, und der Owner kann die Nachfolge jederzeit ohne einen Turn an dich auslösen.";
   if (rail === "game-maker-main")
     return opening
       + "(1) den Abschnitt `## Current game checkpoint` in HANDOFF.md aktualisieren UND committen; "
@@ -24866,6 +24902,29 @@ function laneMigrateMessage(fill: ContextFill): string {
     + "(3) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN. "
     + "Deine Nachfolgerin ist eine frische Session auf DIESEM Worktree, Branch und Slot; "
     + "sie bekommt den Brief, `git log`, `git status` und deinen handoff-Text als ersten Prompt.";
+}
+
+// A FRESH STANDING HANDOVER ENDS THE NUDGE (owner 2026-10-06: every nudge is a turn that re-reads the
+// whole context). The nudge exists to make a full session leave a handover; once one stands, the owner
+// door (handleOwnerSucceed) can hand over without a turn, and another nudge buys only a second turn.
+// FRESH IS NOT A CLOCK AGE: it is "nothing the successor needs is lost" — the transcript rest since the
+// handover's `at` still reaches the successor WHOLE (freshTranscriptTail: read, nothing omitted under
+// FRESH_TAIL_MAX). A handover written three hours ago over a pane that has rested since is fresh; one
+// written ten minutes ago before 30 000 characters of work is not, and the nudge then asks for a new
+// one. An unreadable rest is never fresh (cannot tell is not "nothing lost"). Memoised per occupant on
+// (handover, last output): the answer cannot change while the pane printed nothing, so a slot that
+// sits past its cooldown does not re-read its transcript every tick.
+const migrateFreshMemo = new Map<number, { key: string; fresh: boolean }>();
+async function standingHandoverFresh(s: Slot): Promise<boolean> {
+  const standing = liveStandingHandover(s);
+  if (!standing) return false;
+  const key = `${s.openedAt}:${s.sessionId}:${standing.at}:${s.lastOutput}`;
+  const memo = migrateFreshMemo.get(s.id);
+  if (memo?.key === key) return memo.fresh;
+  const tail = await freshTranscriptTail(s, standing.at);
+  const fresh = tail.state === "read" && tail.omitted === 0;
+  migrateFreshMemo.set(s.id, { key, fresh });
+  return fresh;
 }
 
 let migrateTickBusy = false;
@@ -24915,6 +24974,9 @@ async function tickMigrate(): Promise<void> {
       // rail's instructions, which name an exit it does not have.
       if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane
         || harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
+      // asked after the delivery gate, so the transcript is read only for a nudge that would go out
+      if (await standingHandoverFresh(s)) continue;
+      if (s.sessionId !== attempt.sessionId || !s.cwd) continue;
       // the rail is read HERE, after the awaits, for the same reason the kind is re-checked: a
       // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
       const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
@@ -38328,9 +38390,13 @@ async function repoSheetView(rawRepo: string): Promise<Response> {
 // They ride the SAME respawn: `program` carries the founding marker and the receipt, every
 // companion is reserved, captured, briefed and rebound in the same binding cut — and settled as
 // lost by the same rules wherever the primary is.
+// `owner` is the owner door's half (handleOwnerSucceed), null on the self door: its section rides
+// BEHIND the founding brief, and its last rest question runs after every await of the brief build
+// and right before the kill — the same two seams succeedGeneric gives that door.
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
   spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity,
-  companions: readonly Program[] = []): Promise<Response> {
+  companions: readonly Program[] = [],
+  owner: { appendix: string; beforeKill: () => Promise<Response | null> } | null = null): Promise<Response> {
   const all = [program, ...companions];
   // the one cut every settle below names, so each Program keeps the events of its own lanes
   const cutIds: ReadonlySet<string> = new Set(all.map((p) => p.id));
@@ -38444,8 +38510,9 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         if (boundToPredecessor(c.program)) closeProgramLineage(c.program, "retire", Date.now());
       }
     };
-    const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained,
+    const ritual = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained,
       companionRecords);
+    const deliveredBrief = owner === null ? ritual : `${ritual}\n\n${owner.appendix}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     // WHICH CONVERSATION LEAVES, read before the kill clears it — never guessed afterwards
@@ -38454,6 +38521,18 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     const openRoot = isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd;
     if (!predecessorCurrent())
       return await refuse(409, "Program-MAIN predecessor authority changed before successor open", "predecessor-revoked-before-open");
+    if (owner) {
+      // a refusal here ends nothing: only the marker falls, exactly like every refusal above
+      const refused = await owner.beforeKill();
+      if (refused || !predecessorCurrent()) {
+        try {
+          await rollbackProgramFounding(program, founding, "owner-door-refused-before-open");
+        } catch (e) {
+          logError("programSuccessionRefuse", e);
+        }
+        return refused ?? json({ error: "Program-MAIN predecessor authority changed before successor open" }, 409);
+      }
+    }
 
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
     try {
@@ -38634,6 +38713,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       return json({ ok: true, slot: s.id, label: s.label, program: programDigest(program),
         ...(companions.length ? { companions: movedCompanions } : {}),
         ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
+        ...(owner ? { briefBytes: Buffer.byteLength(deliveredBrief) } : {}),
         ...(receipt ? {} : { receipt: false }) });
     } finally {
       laneSpawn.delete(s.id);

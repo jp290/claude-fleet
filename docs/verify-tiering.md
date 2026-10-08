@@ -419,16 +419,16 @@ mit Stand-ins nur an den Host-/Schreibgrenzen. Ein lokaler HTTP-GET fährt den e
 `state.sh --brief` parst dessen Antwort über eine Fixture-CTL. Vier Ticks bei genau 4 GiB müssen
 beide Starts halten, den Cover behalten und die Lane queued lassen. Nach Freigabe bei 12 GiB
 laufen beide ohne Handgriff genau einmal. Je eine Mutation entfernt den Audit- oder Lane-Halt
-und muss dieselbe negative Probe rot machen. Ein zusätzlicher Claim verankert Bootmessung und
-wiederkehrenden Disk-Takt im Produktionscode, nach Entfernung ganzzeiliger Kommentare.
+und muss dieselbe negative Probe rot machen. Ein zusätzlicher Pin in `e2e/pins.ts` verankert
+Bootmessung und wiederkehrenden Disk-Takt im Produktionscode, nach Entfernung ganzzeiliger Kommentare.
 Das Entfernen der Produktions-`setInterval`-Zeile macht genau diesen Wiring-Claim rot;
 eine auskommentierte Zeile kann ihn ebenfalls nicht erfüllen. Keine echte Platte wird gefüllt.
 Isolated, clean-review, security, claude-gate (alle drei Serverphasen) und postland-audit übergeben
 ihren Servern und Runnern ausdrücklich je 0,001 GiB Mindestrest und
 Schreiberreserve: ihre Lane-/Audit-Stand-ins dürfen die Hostkapazität nicht zum Urteil über
 Dispatch- oder Reserve-Checks machen. `host-hygiene` liest die tatsächlichen Overrides aus
-`GET /api/operational-view`. Quellenclaims prüfen jeden Wrapper-Start und die eigenen
-Restart-Whitelists in `e2e/restart.ts` und `fleet-e2e-postland-audit.ts`; das Entfernen eines
+`GET /api/operational-view`. `e2e/pins.ts` liest ausschließlich seinen geprüften Baum, ohne
+Symlink-Fallback, und prüft jeden Wrapper-Start sowie die eigenen Restart-Whitelists in `e2e/restart.ts` und `fleet-e2e-postland-audit.ts`; das Entfernen eines
 Wrapper-Overrides macht dessen Claim rot. Die eigene Knappheitsprobe setzt ihre ENV-Grenze leer und verlangt
 separat exakt die scharfen Defaults 4/3,6 GiB sowie einen Halt bei 4 GiB. Die CLI-Probe liest
 `state.sh` bei fehlender gestagter Kopie über genau einen `node_modules`-Symlink zum Quellbaum.

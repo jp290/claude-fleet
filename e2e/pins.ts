@@ -704,6 +704,47 @@ const watchdog = read("watchdog.sh");
 // keeps its meaning after the split instead of going vacuum-green on a moved subject.
 const server = serverU.text;
 
+// Host-disk admission ↔ stand-in wrapper starts and their restart environments.
+{
+  const diskSource = read("server.ts");
+  const activeCode = (code: string): string => code.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  const diskBootWired = (code: string): boolean => /^tickHostDiskSpace\(\);$/m.test(activeCode(code));
+  const diskTickWired = (code: string): boolean => /^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m.test(activeCode(code));
+  pin("host-disk production boot measures space and production interval returns held audits",
+    diskBootWired(diskSource) && diskTickWired(diskSource));
+  const noDiskTick = diskSource.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m, "");
+  pin("host-disk removing production interval makes the same wiring claim red",
+    noDiskTick !== diskSource && !(diskBootWired(noDiskTick) && diskTickWired(noDiskTick)));
+  pin("host-disk a commented production interval cannot satisfy the wiring claim",
+    !diskTickWired(diskSource.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m,
+      "// setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);")));
+  const wrapperDiskWired = (code: string): boolean => {
+    const lines = code.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")
+      .replace(/\\\n\s*/g, " ").split("\n");
+    const small = (line: string): boolean => line.includes('FLEET_DISK_MIN_FREE_GIB=0.001')
+      && line.includes('FLEET_DISK_WRITER_GIB=0.001');
+    const shared = lines.find((line) => line.startsWith('SRV_ENV='));
+    const boots = lines.filter((line) => line.includes('exec bun server.ts'));
+    return boots.length > 0 && boots.every((line) => small(line) || line.includes('$SRV_ENV') && !!shared && small(shared));
+  };
+  const wrappers = readdirSync(ROOT).filter((file) => /^e2e-.*\.sh$/.test(file)
+    && read(file).split('\n').some((line) => !/^\s*#/.test(line) && line.includes('exec bun server.ts'))).sort();
+  pin('host-disk wrapper-start universe is not empty', wrappers.length > 0);
+  for (const wrapper of wrappers) {
+    const code = read(wrapper);
+    pin(`host-disk ${wrapper} explicitly neutralizes every stand-in server start`, wrapperDiskWired(code));
+    pin(`host-disk removing ${wrapper} reserve override makes its wiring claim red`,
+      !wrapperDiskWired(code.replaceAll('FLEET_DISK_WRITER_GIB=0.001', '')));
+  }
+  for (const [file, start] of [['e2e/restart.ts', 'const cmdEnv = ['], ['fleet-e2e-postland-audit.ts', 'const env = [']]) {
+    const code = activeCode(read(file));
+    const at = code.indexOf(start);
+    const list = at < 0 ? '' : code.slice(at, code.indexOf('.map(', at));
+    pin(`host-disk ${file} carries both wrapper overrides into its own server restart`,
+      list.includes('"FLEET_DISK_MIN_FREE_GIB"') && list.includes('"FLEET_DISK_WRITER_GIB"'));
+  }
+}
+
 {
   const harness = read("fleet-e2e-harness.ts");
   const start = harness.indexOf("export async function checkPaneAgentAtFixtures(");

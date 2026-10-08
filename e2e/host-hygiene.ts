@@ -224,41 +224,6 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     if (start < 0 || end < start) throw Error(`disk fixture missing ${name}`);
     return source.slice(start, end + 3);
   };
-  const activeCode = (code: string): string => code.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
-  const diskBootWired = (code: string): boolean => /^tickHostDiskSpace\(\);$/m.test(activeCode(code));
-  const diskTickWired = (code: string): boolean => /^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m.test(activeCode(code));
-  assert("host-disk production boot measures space and production interval returns held audits",
-    diskBootWired(source) && diskTickWired(source));
-  const noDiskTick = source.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m, "");
-  assert("host-disk removing production interval makes the same wiring claim red",
-    noDiskTick !== source && !(diskBootWired(noDiskTick) && diskTickWired(noDiskTick)));
-  assert("host-disk a commented production interval cannot satisfy the wiring claim",
-    !diskTickWired(source.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m,
-      "// setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);")));
-  const sourceHome = existsSync(`${ROOT}/e2e-isolated.sh`) ? ROOT
-    : dirname(resolve(ROOT, readlinkSync(`${ROOT}/node_modules`)));
-  const wrapperDiskWired = (code: string): boolean => {
-    const lines = code.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")
-      .replace(/\\\n\s*/g, " ").split("\n");
-    const small = (line: string): boolean => line.includes('FLEET_DISK_MIN_FREE_GIB=0.001')
-      && line.includes('FLEET_DISK_WRITER_GIB=0.001');
-    const shared = lines.find((line) => line.startsWith('SRV_ENV='));
-    const boots = lines.filter((line) => line.includes('exec bun server.ts'));
-    return boots.length > 0 && boots.every((line) => small(line) || line.includes('$SRV_ENV') && !!shared && small(shared));
-  };
-  for (const wrapper of ['e2e-isolated.sh', 'e2e-clean-review.sh', 'e2e-security.sh', 'e2e-claude-gate.sh', 'e2e-postland-audit.sh']) {
-    const code = readFileSync(`${sourceHome}/${wrapper}`, 'utf8');
-    assert(`host-disk ${wrapper} explicitly neutralizes every stand-in server start`, wrapperDiskWired(code));
-    assert(`host-disk removing ${wrapper} reserve override makes its wiring claim red`,
-      !wrapperDiskWired(code.replaceAll('FLEET_DISK_WRITER_GIB=0.001', '')));
-  }
-  for (const [file, start] of [['e2e/restart.ts', 'const cmdEnv = ['], ['fleet-e2e-postland-audit.ts', 'const env = [']]) {
-    const code = activeCode(readFileSync(`${sourceHome}/${file}`, 'utf8'));
-    const at = code.indexOf(start);
-    const list = at < 0 ? '' : code.slice(at, code.indexOf('.map(', at));
-    assert(`host-disk ${file} carries both wrapper overrides into its own server restart`,
-      list.includes('"FLEET_DISK_MIN_FREE_GIB"') && list.includes('"FLEET_DISK_WRITER_GIB"'));
-  }
   const diskStart = source.indexOf("const DISK_GIB =");
   const diskEnd = source.indexOf("// --- end host disk admission ---", diskStart);
   const actual = source.slice(diskStart, diskEnd) + fn("tickDispatch") + fn("drainPostLandAudits")

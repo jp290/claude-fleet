@@ -2671,6 +2671,165 @@ export async function run(): Promise<void> {
           && uncertainBody.receipt.acceptance === undefined && stateText() === ""
           && await replay(uncertain, "send outcome uncertain — check the pane; do not paste again"),
         JSON.stringify(uncertainBody.receipt));
+
+      // === THE ARRIVAL GRACE (server.ts#ARRIVAL_GRACE_MS). Measured 2026-10-08 under load 30-37: two
+      // /send payloads (3013 and 1656 chars) answered 409 "the composer still held only part of the
+      // payload after 3000ms; no Enter was sent" while the whole text lay in the composer moments
+      // later, idle until someone pressed Enter by hand. The arrival is made slow ON PURPOSE: the
+      // stand-in is SIGSTOPped before the paste, so its composer keeps the empty frame (the
+      // zero-length prefix, composer.ts#composerArrival "partial") until SIGCONT lets it read the
+      // queued bytes. The anchor is the paste itself — sendText's `fleetbuf<slot>-` tmux buffer lives
+      // from load-buffer to cleanup — because this server's one-shot pre-paste latch is spent above.
+      // Three sends: continued INSIDE the grace → one Enter after the whole payload, 200 (before the
+      // grace: the measured 409); stopped THROUGH the grace → 409 and no Enter; continued inside the
+      // grace into a placeholder frame ("differs") → 409 and no Enter.
+      {
+        const acceptMs = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
+        const graceMs = 4 * acceptMs; // server.ts#ARRIVAL_GRACE_MS
+        const words = Array.from({ length: 24 }, (_, i) => `slow-arrival-word-${i}`).join(" ");
+        const commOf = (pid: number): string => (spawnSync("ps", ["-o", "comm=", "-p", String(pid)],
+          { encoding: "utf8" }).stdout ?? "").trim().split("/").pop() ?? "";
+        // the stand-in's OWN pid — the pane pid when it was exec'd, else its `pi` child; only comm
+        // names and pids are read, never a command line (the panes carry Self tokens)
+        const standInPid = async (): Promise<number> => {
+          const panePid = Number((await tmuxOut("display-message", "-p", "-t", `=s${slot}:`, "#{pane_pid}")).out.trim());
+          if (!panePid) return 0;
+          if (commOf(panePid) === "pi") return panePid;
+          const kids = (spawnSync("pgrep", ["-P", String(panePid)], { encoding: "utf8" }).stdout ?? "")
+            .split("\n").filter(Boolean).map(Number);
+          return kids.find((pid) => commOf(pid) === "pi") ?? 0;
+        };
+        const pasteBufferLive = async (): Promise<boolean> =>
+          (await tmuxOut("list-buffers", "-F", "#{buffer_name}")).out.split("\n")
+            .some((name) => name.startsWith(`fleetbuf${slot}-`));
+        const graceReady = await until(async () => {
+          const body = await (await get("/api/sessions")).json() as { slots: { id: number; agent: string }[] };
+          return body.slots.find((s) => s.id === slot)?.agent === "alive" && stateText() === "";
+        }, { timeoutMs: 8000, what: "arrival grace fixture: live stand-in with an empty composer" })
+          .catch((error: unknown) => { if (error instanceof UntilTimeout) return false; throw error; });
+        const pid = graceReady ? await standInPid() : 0;
+        check("arrival grace fixture: the live pi-ox stand-in's own process is found and its composer is empty",
+          graceReady && pid > 0 && !(await pasteBufferLive()),
+          JSON.stringify({ ready: graceReady, standIn: pid > 0, composerBytes: stateText().length }));
+        // Remove exactly what this fixture left in the composer, as its author, and see it empty.
+        const clearFixtureComposer = async (what: string): Promise<void> => {
+          const held = stateText();
+          if (held) await tmuxOut("send-keys", "-t", `=s${slot}:`, "-N", String([...held].length), "BSpace");
+          await until(async () => {
+            const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `=s${slot}:`);
+            return stateText() === "" && frame.code === 0 && composerBuffer({ kind: "rules" }, frame.out) === "";
+          }, { timeoutMs: 3000, what: `arrival grace fixture: ${what} cleared by its author` });
+        };
+        // One send against a stopped stand-in. `contAfterMs` = SIGCONT that long after the paste was
+        // seen (null = only after the answer); the stand-in is continued on every exit path.
+        const stalledSend = async (text: string, contAfterMs: number | null): Promise<{
+          response: Response; body: { error?: string; receipt?: { delivery?: string; acceptance?: string } } | null;
+          arrivalMs: number | null; answeredAfterMs: number; contAtMs: number | null;
+        }> => {
+          let stopped = false;
+          try {
+            process.kill(pid, "SIGSTOP");
+            stopped = true;
+            const sentAt = Date.now();
+            let settled = false;
+            const sending = post("/send", { slot, text }).finally(() => { settled = true; });
+            let pastedAt = 0;
+            let contAtMs: number | null = null;
+            if (contAfterMs !== null) {
+              pastedAt = await until(async () => settled ? -1 : await pasteBufferLive() ? Date.now() : 0,
+                { timeoutMs: 8000, stepMs: 10, what: "arrival grace fixture: the paste buffer of the stalled send" })
+                .catch((error: unknown) => { if (error instanceof UntilTimeout) return 0; throw error; });
+              if (pastedAt > 0) {
+                await Bun.sleep(Math.max(0, pastedAt + contAfterMs - Date.now()));
+                process.kill(pid, "SIGCONT");
+                stopped = false;
+                contAtMs = Date.now() - pastedAt;
+              }
+            }
+            const response = await sending;
+            const answeredAfterMs = Date.now() - (pastedAt > 0 ? pastedAt : sentAt);
+            if (stopped) { process.kill(pid, "SIGCONT"); stopped = false; }
+            const body = await response.clone().json().catch(() => null) as {
+              error?: string; receipt?: { delivery?: string; acceptance?: string } } | null;
+            const dur = /(?:^|,\s*)arrival;dur=([\d.]+)/.exec(response.headers.get("server-timing") ?? "")?.[1];
+            return { response, body, arrivalMs: dur === undefined ? null : Math.round(Number(dur)),
+              answeredAfterMs, contAtMs };
+          } finally {
+            if (stopped) process.kill(pid, "SIGCONT");
+          }
+        };
+        const partialError = (ms: number): RegExp => new RegExp(`^send outcome uncertain: prompt not submitted — the `
+          + `composer still held only part of the \\d+-char payload after ${ms}ms; no Enter was sent$`);
+        const notObservedNotice = "prompt acceptance not observed — check the pane; do not paste again";
+
+        if (pid > 0) {
+          // (1) THE MEASURED CASE. Continued halfway into the grace: the window has long answered
+          // "partial", the grace sees the whole payload, and that frame — not a timer — is the Enter.
+          const slowText = `owner-send-arrival-grace-once ${words}`;
+          const slow = await stalledSend(slowText, 150 + acceptMs + graceMs / 2);
+          const slowTurns = await until(() => count(slowText) || null, { timeoutMs: 3000, what: "the slow payload's turn" })
+            .catch((error: unknown) => { if (error instanceof UntilTimeout) return 0; throw error; });
+          check("owner send: a payload still arriving after the accept window is submitted once it is whole — one Enter, 200",
+            slow.response.status === 200 && slow.body?.receipt?.acceptance === "observed"
+              && slowTurns === 1 && stateText() === "" && slow.arrivalMs !== null && slow.arrivalMs > acceptMs
+              && slow.answeredAfterMs < 150 + acceptMs + graceMs,
+            JSON.stringify({ http: slow.response.status, error: slow.body?.error?.slice(0, 160) ?? null,
+              acceptance: slow.body?.receipt?.acceptance ?? null, arrivalMs: slow.arrivalMs, acceptMs, graceMs,
+              contAfterPasteMs: slow.contAtMs, answeredAfterPasteMs: slow.answeredAfterMs, turns: slowTurns,
+              residueBytes: stateText().length }));
+          if (stateText() !== "") await clearFixtureComposer("the slow payload");
+
+          // (2) STOPPED THROUGH THE GRACE: the payload never becomes whole, so the answer is the old
+          // 409 — after the grace, never an Enter. Proof of "no Enter" in the stand-in's own buffer:
+          // once it runs again it reads the queued payload, and a server Enter would sit behind it
+          // in the same pty queue. The probe's own BSpace goes in behind both; a buffer that is the
+          // payload minus its last character can only mean no Enter came first.
+          const stuckText = `owner-send-arrival-grace-never ${words}`;
+          const stuck = await stalledSend(stuckText, null);
+          const drained = await until(() => stateText().endsWith(stuckText) || count(stuckText) > 0,
+            { timeoutMs: 5000, what: "the stopped payload drained into the stand-in" })
+            .catch((error: unknown) => { if (error instanceof UntilTimeout) return false; throw error; });
+          await tmuxOut("send-keys", "-t", `=s${slot}:`, "BSpace");
+          const behindProbe = await until(() => stateText().endsWith(stuckText.slice(0, -1)) || count(stuckText) > 0,
+            { timeoutMs: 3000, what: "the probe's BSpace behind the stopped payload" })
+            .catch((error: unknown) => { if (error instanceof UntilTimeout) return false; throw error; });
+          check("owner send: a payload still partial when the grace runs out answers 409 after the grace and sends no Enter",
+            stuck.response.status === 409 && partialError(acceptMs + graceMs).test(stuck.body?.error ?? "")
+              && stuck.body?.receipt?.delivery === "uncertain" && stuck.body.receipt.acceptance === "not-observed"
+              && stuck.answeredAfterMs >= acceptMs + graceMs && drained && behindProbe
+              && count(stuckText) === 0 && stateText().endsWith(stuckText.slice(0, -1))
+              && await replay(stuck.response, notObservedNotice),
+            JSON.stringify({ http: stuck.response.status, error: stuck.body?.error?.slice(0, 160) ?? null,
+              receipt: stuck.body?.receipt ?? null, answeredAfterMs: stuck.answeredAfterMs, acceptMs, graceMs,
+              drained, behindProbe, turns: count(stuckText), composerBytes: stateText().length }));
+          await clearFixtureComposer("the stopped payload");
+
+          // (3) "differs" INSIDE THE GRACE IS NO PROOF: continued into a placeholder frame, the
+          // composer never shows the payload, so the grace runs out into the same 409. The error text
+          // is thrown only before the Enter; the stand-in's phase says no Enter reached it either.
+          const placeholderText = `owner-send-arrival-grace-placeholder ${words}`;
+          writeFileSync(modeFile, "placeholder\n");
+          let placeholder: Awaited<ReturnType<typeof stalledSend>> | null = null;
+          let placeholderPhase = "";
+          try {
+            placeholder = await stalledSend(placeholderText, 150 + acceptMs + graceMs / 2);
+            await until(() => stateText().endsWith(placeholderText),
+              { timeoutMs: 3000, what: "the placeholder payload in the stand-in's buffer" })
+              .catch((error: unknown) => { if (!(error instanceof UntilTimeout)) throw error; });
+            placeholderPhase = readFileSync(stateFile, "utf8").split("\n")[0]?.split(":")[0] ?? "";
+          } finally {
+            writeFileSync(modeFile, "normal\n");
+          }
+          check("owner send: a placeholder frame inside the grace never earns the Enter — 409 after the grace",
+            placeholder?.response.status === 409 && partialError(acceptMs + graceMs).test(placeholder.body?.error ?? "")
+              && placeholder.contAtMs !== null && placeholderPhase === "typing"
+              && stateText().endsWith(placeholderText) && count(placeholderText) === 0,
+            JSON.stringify({ http: placeholder?.response.status ?? null, error: placeholder?.body?.error?.slice(0, 160) ?? null,
+              contAfterPasteMs: placeholder?.contAtMs ?? null, phase: placeholderPhase,
+              composerBytes: stateText().length, turns: count(placeholderText) }));
+          await clearFixtureComposer("the placeholder payload");
+        }
+      }
       for (const raw of ["{broken", "null", "{}", '{"receipt":"refused"}', '{"receipt":{"acceptance":"not-observed"}}',
         '{"error":"SECRET=credential/raw log","receipt":{"delivery":"refused"}}']) {
         const response = new Response(raw, { status: 409 });

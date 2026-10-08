@@ -2082,13 +2082,15 @@ interface MemSlotRow { selfToken?: string; openedAt?: number; sessionId?: string
   worktree?: unknown; taskId?: string | null }
 interface MemRow { id: string; status: string | null; hold: { grund: string | null } | null;
   audit: { state: string }; basis: Record<string, string> }
-interface MemReceipt { taskId: string | null; selected: { id: string }[] }
+interface MemReceipt { id: string; taskId: string | null; selected: { id: string }[] }
 interface MemBody {
   refusal?: string; error?: string; scope?: { principal: string }; program?: { id: string } | null;
   tasks?: { rows: MemRow[] }; occupants?: { slot: number }[]; sources?: { persisted: string[]; volatile: string[] };
   stateRevision?: string; bootEpoch?: number; generatedAt?: number; unknown?: string[]; coverage?: string;
   declaredNow?: { selected: { id: string; origin: string }[]; nativeRules?: { trackedAtHead: boolean } } | null;
-  deliveredThen?: { receipts: MemReceipt[] }; readByAgent?: string; missing?: string[];
+  deliveredThen?: { receipts: MemReceipt[]; total: number; omitted: number };
+  borrowed?: { rows: { id: string }[]; total: number; omitted: number };
+  readByAgent?: string; missing?: string[];
 }
 interface MemInstance { dir: string; base: string; sock: string; proc: ReturnType<typeof Bun.spawn> | null; log: string }
 
@@ -2364,6 +2366,52 @@ async function memoryDoor(): Promise<void> {
         && deliveredA.some((r) => r.taskId === T[0] && r.selected.some((s) => s.id === "a-pack"))
         && LA.body.readByAgent === "unknown" && LA.body.declaredNow?.nativeRules?.trackedAtHead === true,
       JSON.stringify({ declaredA, deliveredA: deliveredA.map((r) => r.selected.map((s) => s.id)) }));
+    const receiptPath = `${dir}/context-receipts.jsonl`;
+    const borrowPath = `${dir}/context-borrows.jsonl`;
+    const receiptBytes = readFileSync(receiptPath, "utf8");
+    const borrowBytes = existsSync(borrowPath) ? readFileSync(borrowPath, "utf8") : null;
+    const receipt = JSON.parse(receiptBytes.trim().split("\n").find((line) =>
+      (JSON.parse(line) as { taskId?: string }).taskId === T[0])!) as Record<string, unknown>;
+    const lane = readState().slots[String(laneSlot[0])]!;
+    const borrow = { slot: laneSlot[0], openedAt: lane.openedAt, programId: P[0], taskId: T[0],
+      status: 200, borrowedAt: now, id: "a-pack" };
+    const ledgerRows = (row: Record<string, unknown>, count: number, prefix: string) =>
+      Array.from({ length: count }, (_, k) => JSON.stringify({ ...row, id: `${prefix}-${k}`,
+        at: now + k, borrowedAt: now + k })).join("\n") + (count ? "\n" : "");
+    try {
+      for (const [receipts, borrows] of [[0, 0], [20, 20], [21, 0], [0, 21], [21, 21]] as const) {
+        writeFileSync(receiptPath, ledgerRows(receipt, receipts, "own-receipt")
+          + ledgerRows({ ...receipt, taskId: T[1], programId: P[1], slot: laneSlot[1], branch: "fleet/foreign" }, 21, "foreign-receipt"));
+        for (const [reader, token, occupant, slot] of [["lane", laneTok[0]!, lane, laneSlot[0]],
+          ["MAIN", mainTok[0]!, rows[0]!, 1]] as const) {
+          const ownBorrow = { ...borrow, slot, openedAt: occupant.openedAt };
+          writeFileSync(borrowPath, ledgerRows(ownBorrow, borrows, "own-borrow")
+          + ledgerRows({ ...borrow, taskId: T[1], programId: P[1], slot: laneSlot[1] }, 21, "foreign-borrow")
+          + ledgerRows({ ...ownBorrow, openedAt: Number(occupant.openedAt) - 1 }, 21, "recycled-borrow")
+          + ledgerRows({ ...ownBorrow, status: 409 }, 21, "refused-borrow"));
+          const sources = await memJ(token, "?view=sources");
+          const d = sources.body.deliveredThen;
+          const b = sources.body.borrowed;
+          const truncated = receipts > 20 || borrows > 20;
+          check(`memory sources (${reader}, ${receipts} receipts, ${borrows} borrows): exact totals and omissions distinguish empty, complete and truncated scope`,
+            sources.status === 200 && d?.total === receipts && b?.total === borrows
+              && d.receipts.length === Math.min(receipts, 20) && b.rows.length === Math.min(borrows, 20)
+              && d.omitted === Math.max(0, receipts - 20) && b.omitted === Math.max(0, borrows - 20)
+              && sources.body.coverage === (truncated ? "incomplete" : "complete")
+              && (!truncated || (sources.body.unknown ?? []).some((u) => u.includes("omitted"))),
+            JSON.stringify({ reader, coverage: sources.body.coverage, receipts: d?.total, borrows: b?.total,
+              receiptOmitted: d?.omitted, borrowOmitted: b?.omitted, unknown: sources.body.unknown }));
+          check(`memory sources (${reader}, ${receipts} receipts, ${borrows} borrows): foreign receipts and foreign, recycled or refused borrows stay excluded`,
+            d?.receipts.every((r) => r.id.startsWith("own-receipt-")) === true
+              && b?.rows.every((r) => r.id.startsWith("own-borrow-")) === true,
+            JSON.stringify({ receipts: d?.receipts.map((r) => r.id), borrows: b?.rows.map((r) => r.id) }));
+        }
+      }
+    } finally {
+      writeFileSync(receiptPath, receiptBytes);
+      if (borrowBytes === null) rmSync(borrowPath, { force: true });
+      else writeFileSync(borrowPath, borrowBytes);
+    }
     // move the repository's declaration AFTER the delivery: today's plan changes, the receipt does not
     writeFileSync(`${rA}/.fleet/context-packs.json`, JSON.stringify([memPack("a-pack", "docs/a.md", "# A anchor"),
       memPack("a-pack-late", "AGENTS.md", "# A contract")], null, 2));

@@ -30,11 +30,12 @@ export const KONZEPT_MAX = { anlass: 500, geltung: 200, text: 4000, grund: 500, 
   arbeitetEin: 100, neu: 50, candidate: 100, source: 200, locator: 500 } as const;
 export const KONZEPT_ROOT_ENV = "FLEET_KONZEPT_ROOT";
 
+export type KonzeptZugriff = "fleet" | { program: string };
 export interface KonzeptVersion {
   konzept: string; version: number; vorgaenger: number | null; sha256: string; at: number;
   actor: Principal; kontext: TraceRefs; anlass: string; detailRef?: TraceDetailRef;
   arbeitetEin: string[]; quellen: { korpus?: string; neu: string[] };
-  ebene: KonzeptEbene; geltung: string;
+  ebene: KonzeptEbene; geltung: string; zugriff?: KonzeptZugriff;
 }
 export type AnmerkungStatus = "offen" | { eingearbeitet: number } | { verworfen: string; actor: Principal };
 export interface KonzeptAnmerkung {
@@ -48,7 +49,7 @@ type VerworfenLine = { art: "verworfen"; anmerkung: string; konzept: string; gru
   actor: Principal; kontext: TraceRefs };
 
 // who is writing, resolved by the CALLER from the request — never from a body
-export interface KonzeptWriter { actor: Principal; kontext: TraceRefs }
+export interface KonzeptWriter { actor: Principal; kontext: TraceRefs; programs?: readonly string[] }
 export interface KonzeptAnswer { status: number; body: Record<string, unknown> }
 
 // ONE WRITER AT A TIME PER KONZEPT: read-last-N, check and append run inside one link of this chain, so
@@ -411,6 +412,42 @@ export function konzeptOpOf(method: string, rest: string): KonzeptOp | null {
   return m && method === "POST" ? { op: "verwerfen", anmerkung: m[1]! } : null;
 }
 
+function isZugriff(v: unknown): v is KonzeptZugriff {
+  return v === "fleet" || (isObj(v) && Object.keys(v).length === 1
+    && typeof v.program === "string" && /^[0-9a-f]{1,64}$/.test(v.program));
+}
+
+function konzeptZugriff(l: Ledgers, konzept: string): KonzeptZugriff | null | KonzeptAnswer {
+  if (konzept === "k-claude-fleet" || konzept === OWNER_KORREKTUREN) return "fleet";
+  const declared = l.versionen.filter((v) => v.zugriff !== undefined).map((v) => v.zugriff);
+  if (declared.some((v) => !isZugriff(v))) return refuse(409, `konzept-scope-unknown: ${konzept} has an invalid access binding`);
+  const keys = new Set(declared.map((v) => v === "fleet" ? "fleet" : v!.program));
+  if (keys.size > 1) return refuse(409, `konzept-scope-unknown: ${konzept} has conflicting access bindings`);
+  if (declared.length) return declared[0]!;
+  const programs = [...new Set(l.versionen.flatMap((v) => v.kontext?.program ? [v.kontext.program] : []))];
+  if (programs.length > 1) return refuse(409, `konzept-scope-unknown: ${konzept} has conflicting legacy Program traces`);
+  return programs.length === 1 ? { program: programs[0]! } : null;
+}
+
+function konzeptAccess(l: Ledgers, konzept: string, writer: KonzeptWriter, create = false,
+  requested?: KonzeptZugriff): KonzeptZugriff | null | KonzeptAnswer {
+  const scope = konzeptZugriff(l, konzept);
+  if (writer.actor.kind === "owner") {
+    if (!create) return null;
+    if (isAnswer(scope)) return scope;
+    if (requested !== undefined && scope !== null && JSON.stringify(requested) !== JSON.stringify(scope))
+      return refuse(409, `konzept-scope-fixed: ${konzept} already has an access binding — a new version cannot change it`);
+    return scope ?? requested ?? null;
+  }
+  if (isAnswer(scope)) return scope;
+  const programs = writer.programs ?? [];
+  const bound = scope ?? (create && !l.versionen.length && programs.length === 1 ? { program: programs[0]! } : null);
+  if (bound === null) return refuse(409, `konzept-scope-unknown: ${konzept} has no unambiguous Program or fleet access binding`);
+  if (bound !== "fleet" && !programs.includes(bound.program))
+    return refuse(403, `konzept-program-forbidden: ${konzept} belongs to another Program — this session is not bound to it`);
+  return bound;
+}
+
 // THE ONE HANDLER both doors call. Order is part of the contract: the konzept id (400), the body (400),
 // the root (503), then under the konzept's lock the state (404/409). A body is validated BEFORE the
 // root is looked at, so a malformed request never learns whether a store exists.
@@ -434,6 +471,8 @@ export async function konzeptRequest(input: {
     try { if (!(await stat(dir)).isDirectory()) throw new Error("not a directory"); }
     catch { return refuse(404, `unknown konzept ${konzept} — no directory for it under the root`); }
     const l = await readLedgers(dir, konzept);
+    const access = konzeptAccess(l, konzept, writer);
+    if (isAnswer(access)) return access;
     return { status: 200, body: op.op === "read-versionen"
       ? { konzept, versionen: l.versionen, letzte: lastVersion(l) || null, malformed: l.malformed }
       : { konzept, anmerkungen: folded(l), malformed: l.malformed } };
@@ -445,9 +484,13 @@ export async function konzeptRequest(input: {
     const owners = konzept === OWNER_KORREKTUREN;
     if (owners && writer.actor.kind !== "owner")
       return refuse(403, `${konzept} takes a fassung only from the owner (POST /api/konzepte/${konzept}/versionen) — a ${writer.actor.kind === "session" ? writer.actor.role : writer.actor.kind} proposes through an anmerkung or the clarification chain`);
-    const closed = closedBody(body, ["sha256", "anlass", "detailRef", "arbeitetEin", "quellen", "ebene", "geltung", "erwartet"]);
+    const closed = closedBody(body, ["sha256", "anlass", "detailRef", "arbeitetEin", "quellen", "ebene", "geltung", "erwartet", "zugriff"]);
     if (closed) return closed;
     const b = body!;
+    if (b.zugriff !== undefined && writer.actor.kind !== "owner")
+      return refuse(403, "konzept-scope-owner-only: only the owner may declare a Program or fleet access binding");
+    if (b.zugriff !== undefined && !isZugriff(b.zugriff))
+      return refuse(400, 'zugriff must be "fleet" or {program: <Program id>}');
     // optional compare-and-append: the version the writer read as latest (null = none yet). Absent, the
     // write behaves as before — N is simply last+1.
     if (b.erwartet !== undefined && b.erwartet !== null && (!Number.isInteger(b.erwartet) || (b.erwartet as number) < 1))
@@ -481,6 +524,8 @@ export async function konzeptRequest(input: {
     const dir = `${root}/${konzept}`;
     return serial(konzept, async () => {
       const l = await readLedgers(dir, konzept);
+      const access = konzeptAccess(l, konzept, writer, true, b.zugriff as KonzeptZugriff | undefined);
+      if (isAnswer(access)) return access;
       const last = lastVersion(l);
       // checked under the same lock that hands out N, so "nobody published since I read" holds at the append
       if (b.erwartet !== undefined && (last || null) !== b.erwartet)
@@ -517,7 +562,7 @@ export async function konzeptRequest(input: {
       if (unknown.length) return refuse(409, `arbeitetEin names anmerkungen ${konzept} does not have: ${unknown.join(", ")}`);
       const row: KonzeptVersion = { konzept, version: n, vorgaenger: last || null, sha256, at: now(),
         actor: writer.actor, kontext: writer.kontext, anlass: anlass!, ...(detailRef ? { detailRef } : {}),
-        arbeitetEin: [...new Set(ein as string[])], quellen, ebene, geltung: geltung! };
+        arbeitetEin: [...new Set(ein as string[])], quellen, ebene, geltung: geltung!, ...(access ? { zugriff: access } : {}) };
       await append(`${dir}/versionen.jsonl`, row);
       return { status: 200, body: { ok: true, version: row, ...(heft ? { eintraege: foldKorrekturHeft(heft) } : {}) } };
     });
@@ -548,6 +593,8 @@ export async function konzeptRequest(input: {
     const dir = `${root}/${konzept}`;
     return serial(konzept, async () => {
       const l = await readLedgers(dir, konzept);
+      const access = konzeptAccess(l, konzept, writer);
+      if (isAnswer(access)) return access;
       if (!l.versionen.some((v) => v.version === b.version))
         return refuse(409, `${konzept} has no version ${String(b.version)} — an anmerkung hangs on a published version (latest: ${lastVersion(l) || "none"})`);
       const row: AnmerkungLine = { art: "anmerkung", id: randomBytes(8).toString("hex"), konzept,
@@ -570,6 +617,8 @@ export async function konzeptRequest(input: {
   const dir = `${root}/${konzept}`;
   return serial(konzept, async () => {
     const l = await readLedgers(dir, konzept);
+    const access = konzeptAccess(l, konzept, writer);
+    if (isAnswer(access)) return access;
     const current = folded(l).find((a) => a.id === op.anmerkung);
     if (!current) return refuse(404, `${konzept} has no anmerkung ${op.anmerkung}`);
     if (typeof current.status === "object" && "verworfen" in current.status)

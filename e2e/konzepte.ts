@@ -258,6 +258,7 @@ async function ledgerDoors(): Promise<void> {
         && JSON.stringify(lv.actor) === laneActor
         && lv.kontext.slot === LANE && lv.kontext.openedAt === laneOpenedAt && lv.kontext.branch === BRANCH
         && lv.kontext.task === TASK && lv.kontext.program === PROGRAM
+        && lv.zugriff !== "fleet" && lv.zugriff?.program === PROGRAM
         && JSON.stringify(versionLines()[0]?.actor) === JSON.stringify(lv.actor),
       `${laneV.status} ${JSON.stringify(laneV.body).slice(0, 500)}`);
     const missing = await self(laneTok!, "versionen", "POST", version(v1));
@@ -642,6 +643,126 @@ async function ledgerDoors(): Promise<void> {
       cfLane.status === 200 && cfLane.body.version?.version === 1 && cfMain.status === 200 && cfMain.body.version?.version === 2
         && kStale.status === 409 && kLane.status === 200 && kLane.body.version?.version === 12 && kLane.body.version.ebene === "owner",
       `cfLane=${cfLane.status} ${cfLane.body.error ?? ""} cfMain=${cfMain.status} ${cfMain.body.error ?? ""} stale=${kStale.status} lane=${kLane.status} ${kLane.body.error ?? ""}`);
+
+    await programScope();
+
+    async function programScope(): Promise<void> {
+      const foreignProgram = "badc0de".repeat(3);
+      const foreignK = "k-e2e-private-project", sharedK = "k-e2e-shared", unknownK = "k-e2e-unassigned";
+      const bytes = "# Synthetic access fixture\n";
+      for (const k of [foreignK, sharedK, unknownK]) {
+        mkdirSync(`${i.root}/${k}`, { recursive: true });
+        writeFileSync(`${i.root}/${k}/v1.md`, bytes);
+      }
+      const published = await owner("versionen", "POST", version(sha(bytes), { zugriff: { program: foreignProgram } }), foreignK);
+      const shared = await owner("versionen", "POST", version(sha(bytes), { zugriff: "fleet" }), sharedK);
+      const unassigned = await owner("versionen", "POST", version(sha(bytes)), unknownK);
+      const remarked = await owner("anmerkungen", "POST", { version: 1, text: "synthetic remark" }, foreignK);
+      check("konzepte scope fixture: owner publishes Program-bound, fleet-wide and unassigned versions",
+        published.status === 200 && published.body.version?.zugriff !== "fleet"
+          && published.body.version?.zugriff?.program === foreignProgram && shared.status === 200
+          && shared.body.version?.zugriff === "fleet" && unassigned.status === 200 && remarked.status === 200,
+        `private=${published.status} shared=${shared.status} unassigned=${unassigned.status} remark=${remarked.status}`);
+
+      const before = readFileSync(`${i.root}/${foreignK}/anmerkungen.jsonl`, "utf8");
+      const denied = (a: Answer): boolean => a.status === 403 && /^konzept-program-forbidden:/.test(a.body.error ?? "")
+        && a.body.versionen === undefined && a.body.anmerkungen === undefined && a.body.anmerkung === undefined;
+      for (const [role, tok] of [["lane", laneTok!], ["bound MAIN", mainTok!]]) {
+        for (const rest of ["versionen", "anmerkungen"]) {
+          const a = await self(tok!, rest!, "GET", undefined, foreignK);
+          check(`konzepte scope: ${role} cannot read a foreign project's ${rest}`, denied(a), `${a.status} ${a.body.error ?? ""}`);
+        }
+        const write = await self(tok!, "anmerkungen", "POST", { version: 1, text: "foreign attempt" }, foreignK);
+        const discard = await self(tok!, `anmerkungen/${remarked.body.anmerkung?.id}/verwerfen`, "POST", { grund: "foreign attempt" }, foreignK);
+        const publish = await self(tok!, "versionen", "POST", version(sha(bytes)), foreignK);
+        check(`konzepte scope: ${role} cannot comment, discard or publish in a foreign project`,
+          denied(write) && denied(discard) && denied(publish) && readFileSync(`${i.root}/${foreignK}/anmerkungen.jsonl`, "utf8") === before
+            && jsonl(`${i.root}/${foreignK}/versionen.jsonl`).length === 1,
+          `comment=${write.status} discard=${discard.status} publish=${publish.status}`);
+        const own = await self(tok!, "versionen", "GET");
+        const global = await self(tok!, "anmerkungen", "GET", undefined, sharedK);
+        const globalWrite = await self(tok!, "anmerkungen", "POST", { version: 1, text: "shared attempt" }, sharedK);
+        const unknown = await self(tok!, "versionen", "GET", undefined, unknownK);
+        check(`konzepte scope: ${role} reads its own project, reads and comments fleet-wide, refuses unknown scope`,
+          own.status === 200 && global.status === 200 && globalWrite.status === 200
+            && unknown.status === 409 && /^konzept-scope-unknown:/.test(unknown.body.error ?? ""),
+          `own=${own.status} global=${global.status}/${globalWrite.status} unknown=${unknown.status}`);
+      }
+      const forged = await self(laneTok!, "versionen", "POST", version(sha(bytes), { zugriff: "fleet" }), foreignK);
+      const broaden = await owner("versionen", "POST", version(sha(bytes), { zugriff: "fleet" }), foreignK);
+      const badScope = await owner("versionen", "POST", version(sha(bytes), { zugriff: { program: "wrong" } }), foreignK);
+      const ownerRead = await owner("anmerkungen", "GET", undefined, foreignK);
+      check("konzepte scope: sessions cannot grant fleet access, scope cannot widen in a new version, owner still reads",
+        forged.status === 403 && /^konzept-scope-owner-only:/.test(forged.body.error ?? "")
+          && broaden.status === 409 && /^konzept-scope-fixed:/.test(broaden.body.error ?? "")
+          && badScope.status === 400 && ownerRead.status === 200,
+        `forged=${forged.status} broaden=${broaden.status} invalid=${badScope.status} owner=${ownerRead.status}`);
+
+      const ownLedger = `${i.root}/${K}/versionen.jsonl`;
+      const saved = readFileSync(ownLedger, "utf8");
+      const legacy = versionLines().map(({ zugriff: _zugriff, ...row }) => row);
+      writeFileSync(ownLedger, legacy.map((row) => JSON.stringify(row)).join("\n") + "\n");
+      const oldOwn = await self(laneTok!, "versionen", "GET");
+      const conflicting = { ...legacy[0], version: 13, kontext: { program: foreignProgram } };
+      writeFileSync(ownLedger, readFileSync(ownLedger, "utf8") + JSON.stringify(conflicting) + "\n");
+      const oldConflict = await self(laneTok!, "versionen", "GET");
+      const inconsistent = { ...versionLines()[0], version: 14, zugriff: { program: foreignProgram } };
+      writeFileSync(ownLedger, saved + JSON.stringify(inconsistent) + "\n");
+      const scopeConflict = await self(laneTok!, "versionen", "GET");
+      writeFileSync(ownLedger, saved);
+      check("konzepte scope legacy: a unique Program trace allows access, conflicting traces refuse 409",
+        oldOwn.status === 200 && oldConflict.status === 409 && /^konzept-scope-unknown:/.test(oldConflict.body.error ?? "")
+          && scopeConflict.status === 409 && /^konzept-scope-unknown:/.test(scopeConflict.body.error ?? ""),
+        `unique=${oldOwn.status} legacyConflict=${oldConflict.status} scopeConflict=${scopeConflict.status}`);
+
+      await stop(i);
+      const planted = readState();
+      const originalProgram = planted.programs![0]!;
+      planted.programs!.push({ ...originalProgram, id: foreignProgram, title: "Second synthetic Program" });
+      planted.slots[String(FREMD_LANE)]!.programId = foreignProgram;
+      planted.slots[String(CODEX_LANE)]!.programId = null;
+      writeFileSync(`${i.dir}/fleet.json`, JSON.stringify(planted), { mode: 0o600 });
+      const reboot = await boot(i, bin);
+      check("konzepte scope fixture: the MAIN binds two Programs and the foreign lane binds the second", reboot);
+      if (!reboot) return;
+      const foreignTok = planted.slots[String(FREMD_LANE)]!.selfToken!;
+      const multiMain = await self(mainTok!, "anmerkungen", "POST", { version: 1, text: "bound to second" }, foreignK);
+      const ownForeign = await self(foreignTok, "versionen", "GET", undefined, foreignK);
+      const rejectFirst = await self(foreignTok, "versionen", "GET");
+      const globalCf = await self(foreignTok, "versionen", "GET", undefined, CF);
+      const globalHeft = await self(foreignTok, "versionen", "GET", undefined, "k-owner-korrekturen");
+      const ambiguous = await self(mainTok!, "versionen", "POST", version(sha(bytes)), "k-e2e-ambiguous");
+      const noProgramTok = planted.slots[String(CODEX_LANE)]!.selfToken!;
+      const noProgramPrivate = await self(noProgramTok, "versionen", "GET");
+      const noProgramFleet = await self(noProgramTok, "versionen", "GET", undefined, CF);
+      check("konzepte scope: MAIN of multiple Programs accesses each binding without inventing a trace Program",
+        multiMain.status === 200 && multiMain.body.anmerkung?.kontext.program === undefined,
+        `main=${multiMain.status} traceProgram=${multiMain.body.anmerkung?.kontext.program ?? "absent"}`);
+      check("konzepte scope: a lane reads only its Program and the two existing fleet-wide concepts",
+        ownForeign.status === 200 && denied(rejectFirst) && globalCf.status === 200 && globalHeft.status === 200,
+        `own=${ownForeign.status} foreign=${rejectFirst.status} fleet=${globalCf.status} heft=${globalHeft.status}`);
+      check("konzepte scope: ambiguous MAIN creation is refused and a Program-less lane reads only fleet-wide",
+        ambiguous.status === 409 && /^konzept-scope-unknown:/.test(ambiguous.body.error ?? "")
+          && denied(noProgramPrivate) && noProgramFleet.status === 200,
+        `ambiguous=${ambiguous.status} private=${noProgramPrivate.status} fleet=${noProgramFleet.status}`);
+
+      await stop(i);
+      const path = `${i.dir}/konzept-ledger.ts`;
+      const original = readFileSync(path, "utf8");
+      const mutant = original.replace('if (bound !== "fleet" && !programs.includes(bound.program))', 'if (false)');
+      check("konzepte scope mutation fixture: the scratch ledger loses only the foreign Program guard", mutant !== original);
+      writeFileSync(path, mutant);
+      const mutatedBoot = await boot(i, bin);
+      const leaked = mutatedBoot ? await self(laneTok!, "anmerkungen", "GET", undefined, foreignK) : null;
+      check("konzepte scope mutation: removing the Program guard turns the same foreign-read assertion red",
+        leaked !== null && leaked.status === 200 && !denied(leaked) && leaked.body.anmerkungen?.length === 2,
+        `boot=${mutatedBoot} status=${leaked?.status} rejectionClaim=${leaked ? denied(leaked) : "unknown"}`);
+      await stop(i);
+      writeFileSync(path, original);
+      const restored = await boot(i, bin);
+      const closed = restored ? await self(laneTok!, "anmerkungen", "GET", undefined, foreignK) : null;
+      check("konzepte scope mutation: restoring the guard restores the same named refusal", closed !== null && denied(closed));
+    }
 
     // ---- missing root: 503 naming FLEET_KONZEPT_ROOT, on read and write, and nothing is created
     renameSync(i.root, `${i.root}.away`);

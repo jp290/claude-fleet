@@ -15989,17 +15989,17 @@ setPrincipalState({
 // the binding — a lane's branch, task and Program, a bound MAIN's Program. Nothing of it is read from a
 // body. Every other session is refused here: the door is Lane AND MAIN, by the owner's word
 // („[Zitat entfernt]“, Entwurf 2026-09-26) and the orchestrator's decision.
-type KonzeptKontext = { ok: true; refs: TraceRefs } | { ok: false; error: string };
+type KonzeptKontext = { ok: true; refs: TraceRefs; programs: string[] } | { ok: false; error: string };
 function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>): KonzeptKontext {
   const base: TraceRefs = { slot: s.id, openedAt: p.openedAt, ...(s.sessionId ? { session: s.sessionId } : {}) };
   if (p.role === "lane" && s.worktree)
-    return { ok: true, refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
+    return { ok: true, programs: s.programId ? [s.programId] : [], refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
       ...(s.programId ? { program: s.programId } : {}) } };
   if (p.role === "main") {
     // a MAIN of several Programs writes as the project's MAIN: the trace then names the occupation
     // and no Program, rather than one picked at random
     const binding = mainBindingOf(s);
-    return binding.ok ? { ok: true, refs: { ...base,
+    return binding.ok ? { ok: true, programs: binding.programs.map((program) => program.id), refs: { ...base,
       ...(binding.programs.length === 1 ? { program: binding.programs[0]!.id } : {}) } } : { ok: false, error: binding.error };
   }
   return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
@@ -44556,14 +44556,17 @@ Bun.serve<WSData>({
           return json({ error: "the slot changed occupant while this read ran — nothing is served on the old credential" }, 409);
         return json(answer.body, answer.status);
       }
-      const kontext = konzeptKontextFor(s, p);
-      if (!kontext.ok) return json({ error: kontext.error }, 409);
       const body = req.method === "POST" ? await readJson(req) : null;
       const still = resolveSelfPrincipal(req);
       if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
         return json({ error: "the slot changed occupant while this request ran — nothing is written on the old credential" }, 409);
+      const kontext = konzeptKontextFor(s, still);
+      if (!kontext.ok) return json({ error: kontext.error }, 409);
       const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: selfKonzept[1]!, op, body,
-        writer: { actor: p, kontext: kontext.refs } });
+        writer: { actor: still, kontext: kontext.refs, programs: kontext.programs } });
+      const after = resolveSelfPrincipal(req);
+      if (s.openedAt !== p.openedAt || after?.kind !== "session" || after.slot !== s.id || after.openedAt !== p.openedAt)
+        return json({ error: "the slot changed occupant while this request ran — nothing is served on the old credential" }, 409);
       return json(answer.body, answer.status);
     }
 

@@ -47,9 +47,9 @@ export const TL_CLAIM = {
   stale: "an answer that arrives after its window was closed paints nothing into the window opened since",
   // the UI-MAIN's follow-up points 5–9 (card 2026-10-08)
   headBtn: "in the overview each session's track head is the one button into it (name and chevron, touch-high on the phone), no track carries a Zoom button, and the session zoom has none",
-  oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber, no mark, bar or state word is amber or wait-coloured",
+  oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber; no mark, bar or state word carries amber or the wait colour on text, fill or border",
   emptyOne: "without the route the lens says it in one sentence that names GET /api/timeline exactly once, with the status and the server's error text",
-  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary with a Kopieren button; the visible Quelle text carries none of them",
+  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary; Kopieren writes exactly the full raw value to the clipboard; the visible Quelle text carries none of it",
   toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind Mehr and appear on tap; on the desktop they stand in the row and there is no Mehr",
 } as const;
 
@@ -88,6 +88,10 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `" Bis dahin zeigt sie nichts und behauptet nichts."`, with: `" Bis GET /api/timeline antwortet, zeigt sie nichts und behauptet nichts."` },
   { name: "the raw value stands open as flowing text", claim: TL_CLAIM.rawSource, file: "src/client.ts",
     needle: `const raw = el("details", "tlraw");`, with: `const raw = el("div", "tlraw");` },
+  { name: "Kopieren copies only the first raw line", claim: TL_CLAIM.rawSource, file: "src/client.ts",
+    needle: `copyText(rawLines.join("\\n"));`, with: `copyText(rawLines[0] ?? "");` },
+  { name: "a codex call's bar filled amber", claim: TL_CLAIM.oneAmber, file: "public/index.html",
+    needle: `.tlbar.error { background: var(--danger); }`, with: `.tlbar.error { background: var(--danger); } .tltrack[data-harness="codex"] .tlbar { background: var(--amber); }` },
   { name: "the phone keeps zoom, pan and picker in the toolbar", claim: TL_CLAIM.toolbarRow, file: "src/client.ts", width: 390,
     needle: "const fold = mobile && !listMode;", with: "const fold = false;" },
 ];
@@ -282,7 +286,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         return m ? 'rgb(' + [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)).join(', ') + ')' : v; };
       const amber = rgbOf('--amber'), waitc = rgbOf('--q-wait');
       const colorOf = (n) => getComputedStyle(n).color;
-      const tinted = (c) => [...sh.querySelectorAll('.tlev, .tlev *, .tlbar, .tlihead .tlchip')].filter((n) => colorOf(n) === c || getComputedStyle(n).borderTopColor === c).length;
+      // a colour can sit on the text, the fill or any border side — all of them count (Kern-MAIN review of 2a4fee39)
+      const tinted = (c) => [...sh.querySelectorAll('.tlev, .tlev *, .tlbar, .tlihead .tlchip')].filter((n) => { const cs = getComputedStyle(n);
+        return [cs.color, cs.backgroundColor, cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor].includes(c); }).length;
       const legUnk = sh.querySelector('.tllegend [data-meaning="unmeasured"]');
       const colours = { amberMarks: tinted(amber), waitMarks: tinted(waitc),
         hatch: [...sh.querySelectorAll('.tlunmeasured span')].every((n) => colorOf(n) === amber), hatches: sh.querySelectorAll('.tlunmeasured span').length,
@@ -480,11 +486,20 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       // --- 6b. the raw value folded, copyable (point 8): read on the error call's inspector
       await click(`.tlev[data-id="${errorCall.id}"]`);
       const r6b = await read();
+      // the page runs on a plain-http origin where navigator.clipboard is undefined — plant one that
+      // keeps its argument, so the claim reads WHAT was copied, not only that the button answered
+      await evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { window.__fleetCopied = String(t); return Promise.resolve(); } } })`);
       await tryClick(".tlraw .tlcopy");
       const copied = (await read()).raw?.copy ?? null;
-      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), copied };
+      const copiedText = await evaluate<string | null>("window.__fleetCopied ?? null");
+      const rec = errorCall.record, ref = errorCall.detailRef;
+      const expectedRaw = [ref ? `${ref.locator} fp ${ref.fp}` : null,
+        `Aufzeichnung ${rec.id ?? "?"}${rec.parent ? ` ← ${rec.parent}` : ""} · Bytes ${rec.offset} + ${rec.bytes} #${rec.block}`].filter((l) => l !== null).join("\n");
+      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), copied,
+        copiedText: (copiedText ?? "").slice(0, 80), expectedRaw: expectedRaw.slice(0, 80), copiedMatches: copiedText === expectedRaw };
       claims[TL_CLAIM.rawSource] = !!r6b.raw && r6b.raw.details && !r6b.raw.open && r6b.raw.summary.startsWith("Rohwert") && r6b.raw.code.includes("native:")
         && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Kopieren" && copied === "Kopiert"
+        && expectedRaw.includes("native:") && copiedText === expectedRaw
         && !(r6b.fields.Quelle ?? "").includes("native:") && !(r6b.fields.Quelle ?? "").includes("Bytes ") && (r6b.fields.Quelle ?? "").includes("Sidechain");
       claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
         && (f.Argumente ?? "").startsWith("Synthetic tool.call side-1") && (f.Resultat ?? "").startsWith("Synthetic tool.result side-1")

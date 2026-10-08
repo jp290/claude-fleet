@@ -119,7 +119,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "host-hygiene", seconds: 40, modules: ["host-hygiene"] },
   { unit: "state-snapshot", seconds: 12, modules: ["state-snapshot"] },
   { unit: "trace", seconds: 5, modules: ["trace"] },
-  { unit: "timeline-ui", seconds: 150, modules: ["timeline-ui"] },
+  { unit: "timeline-ui", seconds: 160, modules: ["timeline-ui"] },
   { unit: "konzepte", seconds: 10, modules: ["konzepte"] },
   { unit: "role-address", seconds: 10, modules: ["role-address"] },
   { unit: "stuck-delivery", seconds: 20, modules: ["stuck-delivery"] },

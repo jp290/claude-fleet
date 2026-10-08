@@ -41,9 +41,23 @@ export async function snapshotMirrorChecks(): Promise<void> {
   const scratch = realpathSync(mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-mirror-check-")));
   const repo = `${scratch}/repo`, tree = `${scratch}/worktree`, unknownTree = `${scratch}/unknown`, instance = `${scratch}/instance`;
   mkdirSync(repo);
-  const copy = spawnSync("rsync", ["-a", "--exclude=.git", "--exclude=node_modules", "--exclude=.env*",
-    "--exclude=fleet.pid", "--exclude=fleet.json*", "--exclude=*.jsonl", `${src}/`, `${repo}/`]);
-  if (copy.status !== 0) throw new Error("mirror fixture copy failed");
+  // the rsync shim of scratch-reap-checks §e8: a helper host (Linux, no rsync) otherwise dies at
+  // this fixture copy and again at testinstanz.sh's staging copy (preview c3ad41a4c0b5, 2026-10-08)
+  const copyScript = `${scratch}/ti-copy.cjs`, shimDir = `${scratch}/bin`;
+  writeFileSync(copyScript, `const { cpSync } = require("node:fs");
+const { relative, sep } = require("node:path");
+const src = process.argv.at(-2).replace(/\\/+$/, "");
+const dst = process.argv.at(-1);
+cpSync(src, dst, { recursive: true, filter: (path) => {
+  const parts = relative(src, path).split(sep);
+  return !parts.some((part) => part === ".git" || part === "node_modules" || part.startsWith(".env") || part === "fleet.pid"
+    || part.startsWith("fleet.json") || part.endsWith(".jsonl"));
+} });
+`);
+  mkdirSync(shimDir);
+  writeFileSync(`${shimDir}/rsync`, `#!/bin/sh\nexec bun "${copyScript}" "$@"\n`, { mode: 0o755 });
+  const copy = spawnSync("bun", [copyScript, `${src}/`, `${repo}/`], { encoding: "utf8" });
+  if (copy.status !== 0) throw new Error(`mirror fixture copy failed (${copy.status}): ${(copy.stderr ?? "").slice(-500)}`);
   symlinkSync(`${src}/node_modules`, `${repo}/node_modules`);
   const git = (...args: string[]) => {
     const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
@@ -65,7 +79,7 @@ export async function snapshotMirrorChecks(): Promise<void> {
   const openedAt = Date.now();
   const secret = "mirror-fixture-live-secret";
   writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: repo, openedAt, label: "main holder", selfToken: secret }, "26": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret, taskId: "fixturetask", worktree: { base: "main", baseSha } }, "27": { cwd: unknownTree, openedAt, worktree: { base: "missing-target" } } }, tasks: [], programs: [] }));
-  const env = { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? "/tmp",
+  const env = { PATH: `${shimDir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? "/tmp",
     FLEET_TI_DIR: instance, FLEET_TI_SOCK: `fleetmirror${process.pid}`, FLEET_TI_ROOT: scratch,
     FLEET_TI_SNAPSHOT_SRC: repo, FLEET_TI_INSTANCES: "" };
   const command = async (...args: string[]) => {
@@ -1469,7 +1483,7 @@ async function workplacesChecks(): Promise<void> {
         return row?.session === null && row.base?.head === bOverhaul
           && row.reasons.some((r) => r.field === "session" && r.reason === "session-changed-since-measurement");
       };
-      const identityGuard = "const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;";
+      const identityGuard = "const sessionMatches = w.session?.slot === holder?.slot && w.session?.openedAt === holder?.openedAt;";
       const occupantMutant = functions.replace(identityGuard, "const sessionMatches = true;");
       for (const changedSlot of [false, true]) {
         const raced = await race(functions, changedSlot), wronglyPaired = await race(occupantMutant, changedSlot);

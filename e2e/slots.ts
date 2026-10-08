@@ -44,6 +44,16 @@ export async function run(): Promise<void> {
   const slotCwd = mkdtempSync(resolve(homedir(), "fleet-e2e-slots-"));
   process.once("exit", () => rmSync(slotCwd, { recursive: true, force: true }));
   const slotCwdTilde = `~/${basename(slotCwd)}`;
+  // slotCwd is where this module LEAVES slot 1 (the re-open after the held-bundle section), and the
+  // modules after it in the shard — summary, share, steward-outcomes, … — read /api/slots/1 as a
+  // git slot, as they did while it was ~/claude-fleet before 1ae90e50. So it is a real repository
+  // with a seed commit from the start, and lives until the suite process exits.
+  const slotGit = (...args: string[]) => spawnSync("git", args, { cwd: slotCwd, encoding: "utf8" });
+  writeFileSync(`${slotCwd}/README.md`, "slots fixture\n");
+  const slotRepoReady = slotGit("init", "-q", "-b", "main").status === 0 && slotGit("add", "-A").status === 0
+    && slotGit("-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "slots fixture seed").status === 0;
+  check("slots fixture — SETUP: slot 1's cwd is a git repository with a seed commit",
+    slotRepoReady && /^[0-9a-f]{40}$/.test(slotGit("rev-parse", "HEAD").stdout.trim()), slotGit("status", "--short").stdout);
   await runPerfMarks();
   await runFoundingPlanProbe(slotCwd);
   const permissionsEnvBefore = await tmuxEnvSnapshot();
@@ -11209,8 +11219,18 @@ async function runCodexPermissions(): Promise<void> {
   chmodSync(`${bin}/codex`, 0o700);
   const path = `${bin}:${process.env.PATH ?? ""}`;
   const args = (): string[][] => exists(argvLog) ? readFileSync(argvLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]) : [];
+  // The stand-in is also what server.ts#probeCodexCliVersion runs: every boot (and every stale
+  // 30 s tick) logs a lone ["--version"] here, and on a loaded Mac that line can land AFTER a
+  // caller took `prior` — so the next SPAWN is the first non-probe line from `prior` on, never
+  // simply line `prior` (08.10.: the first open after restartSrv read ["--version"], its spawn
+  // argv one line later). Missing spawn stays `[]`, which no flagsAre accepts.
+  const codexCliVersionProbe = (argv: readonly string[]): boolean => argv.length === 1 && argv[0] === "--version";
   const nextArgs = async (prior: number): Promise<string[]> => {
-    for (let i = 0; i < 100; i++) { const lines = args(); if (lines.length > prior) return lines[prior]; await Bun.sleep(50); }
+    for (let i = 0; i < 100; i++) {
+      const spawn = args().slice(prior).find((argv) => !codexCliVersionProbe(argv));
+      if (spawn) return spawn;
+      await Bun.sleep(50);
+    }
     return [];
   };
   const row = async (): Promise<PermissionRow | undefined> => ((await (await get("/api/sessions")).json()) as
@@ -11240,8 +11260,14 @@ async function runCodexPermissions(): Promise<void> {
     const defaultProfile: PermissionProfile = { sandbox: "danger-full-access", approval: "never" };
     let n = args().length;
     const defaultOpen = await post("/api/slots/16/open", { cwd, harness: "codex", packs: [] });
+    const defaultOpenBody = await defaultOpen.text();
+    const defaultStored = (await row())?.permissions;
+    const defaultWaitFrom = Date.now();
+    const defaultArgv = defaultOpen.ok ? await nextArgs(n) : [];
     check("Codex absence stores and spawns the explicit legacy full-access profile", defaultOpen.ok
-      && profileIs((await row())?.permissions, defaultProfile) && flagsAre(await nextArgs(n), defaultProfile));
+      && profileIs(defaultStored, defaultProfile) && flagsAre(defaultArgv, defaultProfile),
+      JSON.stringify({ open: `${defaultOpen.status} ${defaultOpenBody.slice(0, 160)}`, stored: defaultStored ?? null,
+        argv: defaultArgv, waitedMs: Date.now() - defaultWaitFrom, linesSinceOpen: args().slice(n) }));
     for (const sandbox of ["read-only", "workspace-write", "danger-full-access"] as const) for (const approval of ["on-request", "never"] as const) {
       const profile = { sandbox, approval }; const title = `Codex ${sandbox}/${approval}`;
       n = args().length;
@@ -11314,7 +11340,6 @@ async function runCodexPermissions(): Promise<void> {
     await restartSrv({ PATH: path });
     check("legacy Codex absence reloads the explicit historical full-access default", profileIs((await row())?.permissions, defaultProfile)
       && flagsAre(await nextArgs(n), defaultProfile));
-    const codexCliVersionProbe = (argv: readonly string[]): boolean => argv.length === 1 && argv[0] === "--version";
     const codexInvocationDelta = (before: readonly (readonly string[])[], after: readonly (readonly string[])[]) => {
       const prefixUnchanged = after.length >= before.length && JSON.stringify(after.slice(0, before.length)) === JSON.stringify(before);
       const delta = after.slice(before.length);

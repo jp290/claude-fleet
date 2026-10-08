@@ -51,6 +51,11 @@ const state = {
   dispatch: false, autosOn: false,
 };
 writeFileSync(`${dir}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
+const repo = dirname(resolve(checkout, common.stdout.trim()));
+const sessions = Object.entries(original.slots ?? {}).flatMap(([slot, s]) =>
+  s && typeof s.cwd === "string" && s.cwd.startsWith("/") && Number.isFinite(s.openedAt)
+    ? [{ slot: Number(slot), openedAt: s.openedAt, path: clean(s.cwd) }] : []);
+writeFileSync(`${dir}/.testinstanz.mirror.json`, JSON.stringify({ repo, sessions }), { mode: 0o600 });
 const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
 for (const name of ["lane-outcomes.jsonl", "post-land-audits.jsonl", "audit.jsonl"]) {
   const rows = [];

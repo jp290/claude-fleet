@@ -44,8 +44,24 @@ letzten sieben Tagen aus `lane-outcomes.jsonl`, `post-land-audits.jsonl` und `au
 echte Queue-, Programm- und Reportzeilen lässt sich die overhaul-Oberfläche nicht beurteilen.
 Die Quelle ist der Haupt-Checkout, ermittelt über `git rev-parse --git-common-dir`; für eine
 synthetische Probe kann `FLEET_TI_SNAPSHOT_SRC` ein anderes Verzeichnis setzen. Der Kopiervorgang
-liest die Quelle nur. Zugangswerte, Shares und Helper-Geräte werden ausgelassen, Slot-Pfade
-zeigen ausschließlich in die Instanz, `dispatch` und `autosOn` sind aus. Program-Bindungen werden
+liest die Quelle nur. Zugangswerte, Shares und Helper-Geräte werden ausgelassen. Prozess-CWDs zeigen ausschließlich
+in die Instanz, `dispatch` und `autosOn` sind aus. Die ursprünglichen Belegungen (Slot und
+`openedAt` je Pfad) und das Quell-Repo stehen ohne Zugangswerte in `.testinstanz.mirror.json`.
+`FLEET_SNAPSHOT_MIRROR=1` aktiviert den Zaun; eine fehlende oder ungültige Spiegel-Datei verhindert
+den Start. `workplaces()` liest für `GET /api/worktrees` dieselbe Git-Worktree-Liste des Quell-Repos
+wie im Live-Betrieb, mit echten Pfaden, Branches und HEADs. Jede Zeile trägt `mirrored: true`;
+`session.slot`/`session.openedAt` bezeichnet die Belegung beim Snapshot-Start, keine laufende
+Session im echten Worktree. Die Kopie startet dort weder Agenten noch `testinstanz.sh`.
+
+Die Snapshot-Instanz verweigert alle mutierenden HTTP-Methoden zentral mit **409** und
+`refusal: "snapshot-mirrored-read-only"`, auch Land/Merge, Entfernen/Discard, Lane-Anlage/Attach,
+Commit, Datei-Schreiben/Create/Move/Delete, Testinstanz-Up/Down und Slot-Öffnen. Die Sperre gilt
+vor der Ausführung einer Route und unabhängig davon, ob der Pfad im Body, Query oder Slot steht.
+Lesende Git-Abfragen laufen mit `GIT_OPTIONAL_LOCKS=0`; eine nicht gelesene Testinstanz-Beobachtung
+bleibt `null` mit dem Grund `snapshot-mirrored-read-only`. `mixed` behält seine Fixture-Schreibwege.
+Der Check `e2e/lanes-lifecycle.ts#snapshotMirrorChecks` startet `up snapshot` gegen einen echten
+Git-Fixture mit Worktree, prüft jede dieser Türen und vergleicht HEAD, Status und Kanarien-Bytes.
+Eine Server-Mutation öffnet die Slot-Tür in der Kopie und macht denselben Verweigerungscheck rot. Program-Bindungen werden
 mitgenommen (`main` mit `slot`/`openedAt`/`boundAt`), nur die Session-Id der Bindung wird auf
 `null` gesetzt — der Loader des Servers würde einen `main`-Datensatz ohne dieses Feld ganz
 verwerfen und die Kopie hätte stille „unbekannt“-Bindungen, wo sie den wahren Stand trägt. Die
@@ -53,7 +69,7 @@ isolierte Kopie bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`
 
 1. **Beim Kopieren:** das rsync trägt `.env`, `fleet.json*` und `*.jsonl` nicht über — keine
    private Konfiguration, keine fremden Sessions, keine Transkripte im Klon.
-2. **Beim Start:** der Instanz-Server startet hinter `env -i` und bekommt nur die acht
+2. **Beim Start:** der Instanz-Server startet hinter `env -i` und bekommt nur die expliziten
    `FLEET_*`-Werte, die das Skript selbst setzt. Vor dem Start schreibt das Skript deren NAMEN
    (nie Werte) in `<instanzdir>/env-names`; keiner von `FLEET_HUB_REMOTE`, `FLEET_HELPER_*`,
    `FLEET_SHARE_*` kann darin stehen, und das Skript prüft das mit einer scharfen Verweigerung,

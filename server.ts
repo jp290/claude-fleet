@@ -1376,6 +1376,20 @@ const INSTANCE_NAME = instanceNameFrom(process.env.FLEET_INSTANCE);
 // the live fleet, so the wire carries no `source` there and the board paints no band
 // (src/protocol.ts#instanceSourceFrom carries the fold rules).
 const INSTANCE_SOURCE = instanceSourceFrom(process.env.FLEET_INSTANCE_SOURCE);
+const SNAPSHOT_MIRROR = (() => {
+  if (process.env.FLEET_SNAPSHOT_MIRROR !== "1") return null;
+  const value: unknown = JSON.parse(readFileSync(`${import.meta.dir}/.testinstanz.mirror.json`, "utf8"));
+  if (!INSTANCE_SOURCE || !value || typeof value !== "object" || !("repo" in value)
+    || typeof value.repo !== "string" || !value.repo.startsWith("/") || value.repo === import.meta.dir
+    || !("sessions" in value) || !Array.isArray(value.sessions)) throw new Error("invalid snapshot mirror");
+  const sessions = value.sessions.map((s: unknown) => {
+    if (!s || typeof s !== "object" || !("slot" in s) || !Number.isInteger(s.slot)
+      || !("openedAt" in s) || typeof s.openedAt !== "number" || !Number.isFinite(s.openedAt)
+      || !("path" in s) || typeof s.path !== "string" || !s.path.startsWith("/")) throw new Error("invalid snapshot holder");
+    return { slot: s.slot as number, openedAt: s.openedAt, path: s.path };
+  });
+  return { repo: value.repo, sessions };
+})();
 const INSTANCE: InstanceIdentity = INSTANCE_SOURCE ? { name: INSTANCE_NAME, source: INSTANCE_SOURCE } : { name: INSTANCE_NAME };
 
 // …AND WHICH OTHER FLEETS THE BOARD MAY OFFER A LINK TO (dual-host S3). Read here, beside the name,
@@ -7747,6 +7761,10 @@ const LAND_NOTES_CAP = 20;
 const LAND_NOTES_SCAN_CAP = 200;
 let workplacesCache: { key: string; value: Promise<Workplaces>; at: number } | null = null;
 function workplaceSession(path: string): Slot | undefined {
+  if (SNAPSHOT_MIRROR) {
+    const holder = SNAPSHOT_MIRROR.sessions.find((s) => { try { return realpathSync(s.path) === path; } catch { return s.path === path; } });
+    return holder ? slots.find((s) => s.id === holder.slot && s.openedAt === holder.openedAt) : undefined;
+  }
   return slots.find((s) => { try { return !!s.cwd && realpathSync(s.cwd) === path; } catch { return false; } });
 }
 async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRow["testinstanz"]> {
@@ -8018,10 +8036,10 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
       if (e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT") template = "missing";
       else why.push({ field: "template", reason: "template-unreadable" });
     }
-    if (template === "present") {
+    if (template === "present" && !SNAPSHOT_MIRROR) {
       try { testinstanz = await workplaceInstance({ repo, path: w.path, primary: w.primary, identity: "" }); } catch { /* named below */ }
     }
-    if (!testinstanz) why.push({ field: "testinstanz", reason: template === "missing" ? "missingScript" : "instance-unreadable-or-busy" });
+    if (!testinstanz) why.push({ field: "testinstanz", reason: SNAPSHOT_MIRROR ? "snapshot-mirrored-read-only" : template === "missing" ? "missingScript" : "instance-unreadable-or-busy" });
     else {
       const nulls = (value: Record<string, unknown>, prefix: string) => {
         for (const [key, v] of Object.entries(value)) {
@@ -8283,7 +8301,7 @@ async function workplaces(): Promise<Workplaces> {
   // INSTANCE_SOURCE, the one mark testinstanz.sh hands every instance it starts; the live fleet
   // (unset) keeps REPO_DIR exactly as before.
   const self = (() => { try { return realpathSync(REPO_DIR); } catch { return REPO_DIR; } })();
-  const repos = INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
+  const repos = SNAPSHOT_MIRROR ? [SNAPSHOT_MIRROR.repo] : INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
   const key = JSON.stringify([repos, [...helperDevices.values()].map((d) => [d.id, d.name, d.daemonSha, d.instance, d.repos, d.lastSeen, helperUpdates.get(d.id)]), slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
     const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
@@ -8301,7 +8319,7 @@ async function workplaces(): Promise<Workplaces> {
   return { ...value, repos: value.repos.map((r) => ({ ...r, worktrees: r.worktrees?.map((w) => {
     const holder = workplaceSession(w.path);
     const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;
-    return { ...w, session: sessionMatches && holder ? w.session : null,
+    return { ...w, ...(SNAPSHOT_MIRROR ? { mirrored: true } : {}), session: sessionMatches && holder ? w.session : null,
       reasons: sessionMatches ? w.reasons : [...w.reasons, { field: "session", reason: "session-changed-since-measurement" }] };
   }) ?? null })) };
 }
@@ -44646,6 +44664,8 @@ Bun.serve<WSData>({
     const blocked = guard(req);
     if (blocked) return blocked;
     const url = new URL(req.url);
+    if (SNAPSHOT_MIRROR && !["GET", "HEAD", "OPTIONS"].includes(req.method))
+      return json({ refusal: "snapshot-mirrored-read-only", error: "snapshot-mirrored-read-only: echte Arbeitsorte sind nur gespiegelt" }, 409);
 
     // /intake is a feature-request dropbox behind its own secret (never the owner token).
     // Handled before the share-host gate so it works on BOTH the owner host and the public

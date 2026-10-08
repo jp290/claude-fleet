@@ -249,7 +249,7 @@ ti_serve() {
   # whitelist it cannot fire — but the invariant is CHECKED, not assumed.
   : > "$DIR/env-names"
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
-              FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_TOKEN FLEET_KONZEPT_ROOT; do
+              FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT; do
     echo "$TI_V" >> "$DIR/env-names"
   done
   if grep -Eq '^(FLEET_HUB_REMOTE|FLEET_HELPER_|FLEET_SHARE_)' "$DIR/env-names"; then
@@ -266,9 +266,11 @@ ti_serve() {
   if [ "${TI_KIND:-}" = snapshot ]; then
     TI_TWO=""
     TI_AGENT_CMD='cat'
+    TI_MIRROR=1
   else
     TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"workhorse","url":"'"$(ti_workhorse_url)"'"}]'
     TI_AGENT_CMD='true'
+    TI_MIRROR=0
   fi
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
@@ -294,7 +296,7 @@ ti_serve() {
       LANG=en_US.UTF-8 \
       FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD="$TI_AGENT_CMD" \
       FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_INSTANCE_SOURCE="$TI_SHOWN" FLEET_LANE_SUCCEED_MAX=5 \
-      FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
+      FLEET_SNAPSHOT_MIRROR="$TI_MIRROR" FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
   until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do

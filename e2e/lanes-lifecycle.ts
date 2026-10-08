@@ -35,6 +35,103 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 //             over that answer, is false (the mutation is the real server with the variable set).
 //   client  — the band paints only from `instance.source`, hidden otherwise; mutation: the same
 //             anchors over a copy without the hidden line are false.
+export async function snapshotMirrorChecks(): Promise<void> {
+  const src = realpathSync(`${ROOT}/node_modules/..`);
+  const scratch = realpathSync(mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-mirror-check-")));
+  const repo = `${scratch}/repo`, tree = `${scratch}/worktree`, instance = `${scratch}/instance`;
+  mkdirSync(repo);
+  const copy = spawnSync("rsync", ["-a", "--exclude=.git", "--exclude=node_modules", "--exclude=.env*",
+    "--exclude=fleet.pid", "--exclude=fleet.json*", "--exclude=*.jsonl", `${src}/`, `${repo}/`]);
+  if (copy.status !== 0) throw new Error("mirror fixture copy failed");
+  symlinkSync(`${src}/node_modules`, `${repo}/node_modules`);
+  const git = (...args: string[]) => {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+    if (r.status !== 0) throw new Error(`mirror fixture git ${args[0]} failed`);
+    return r.stdout;
+  };
+  git("init", "-b", "main"); git("config", "user.name", "mirror fixture"); git("config", "user.email", "fixture@example.invalid");
+  writeFileSync(`${repo}/canary.txt`, "untouched canary\n");
+  git("add", "canary.txt", "testinstanz.sh"); git("commit", "-m", "mirror fixture");
+  git("worktree", "add", "-b", "mirror-lane", tree);
+  writeFileSync(`${tree}/testinstanz.sh`, `#!/bin/sh\necho forbidden >> '${scratch}/spawned'\nexit 1\n`);
+  chmodSync(`${tree}/testinstanz.sh`, 0o700);
+  const openedAt = Date.now();
+  const secret = "mirror-fixture-live-secret";
+  writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret } }, tasks: [], programs: [] }));
+  const env = { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? "/tmp",
+    FLEET_TI_DIR: instance, FLEET_TI_SOCK: `fleetmirror${process.pid}`, FLEET_TI_ROOT: scratch,
+    FLEET_TI_SNAPSHOT_SRC: repo, FLEET_TI_INSTANCES: "" };
+  const command = async (...args: string[]) => {
+    const p = Bun.spawn(["sh", `${repo}/testinstanz.sh`, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, exit] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    if (exit !== 0) throw new Error(`mirror fixture ${args[0]} failed (${exit}): ${err.slice(-500)}`);
+    return out;
+  };
+  const before = () => JSON.stringify({ head: git("-C", tree, "rev-parse", "HEAD"),
+    status: git("-C", tree, "status", "--porcelain=v1", "-z"), canary: readFileSync(`${tree}/canary.txt`).toString("hex") });
+  const original = before();
+  let running = false;
+  try {
+    await command("up", "snapshot", "--ttl", "10"); running = true;
+    const state = readFileSync(`${instance}/testinstanz.state`, "utf8");
+    const host = /^host=(.+)$/m.exec(state)![1], port = /^port=(\d+)$/m.exec(state)![1];
+    const token = readFileSync(`${instance}/.testinstanz.token`, "utf8");
+    const request = (path: string, body?: unknown) => fetch(`http://${host}:${port}${path}`, {
+      method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const rows = await (await request("/api/worktrees")).json() as { repos: { repo: string; worktrees: { path: string; branch: string; head: string; mirrored?: boolean; session: { slot: number; openedAt: number } | null }[] | null }[] };
+    const mirrored = rows.repos.find((r) => r.repo === repo)?.worktrees ?? [];
+    const holder = mirrored.find((w) => w.path === tree);
+    check("snapshot mirror: real main and lane path, branch and HEAD come from workplaces; every row is read-only",
+      mirrored.length === 2 && mirrored.every((w) => w.mirrored === true && w.head === git("rev-parse", "HEAD").trim())
+      && mirrored.some((w) => w.path === repo && w.branch === "main") && holder?.branch === "mirror-lane"
+      && holder.session?.slot === 1 && holder.session.openedAt === openedAt, JSON.stringify(mirrored));
+    const planted = readFileSync(`${instance}/fleet.json`, "utf8") + readFileSync(`${instance}/.testinstanz.mirror.json`, "utf8");
+    check("snapshot mirror: source credentials are absent; process CWD stays inside the copy",
+      !planted.includes(secret) && JSON.parse(readFileSync(`${instance}/fleet.json`, "utf8")).slots["1"].cwd === instance);
+    const query = `?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(tree)}`;
+    const doors: [string, unknown][] = [
+      ["/api/slots/1/land", {}], ["/api/slots/1/merge", {}], ["/api/worktrees/remove", { repo, path: tree }],
+      ["/api/worktrees/discard", { repo, path: tree, branch: "mirror-lane" }], ["/api/lanes", { repo, attach: tree }],
+      ["/api/lanes", { repo }], ["/api/slots/1/commit", { mode: "work" }],
+      ["/api/file/write", { slot: 1, path: `${tree}/canary.txt`, text: "overwritten" }],
+      ["/api/file/create", { slot: 1, path: `${tree}/new.txt`, text: "created" }],
+      ["/api/file/move", { slot: 1, path: `${tree}/canary.txt`, to: `${tree}/moved.txt` }],
+      ["/api/file/delete", { slot: 1, path: `${tree}/canary.txt` }],
+      [`/api/worktrees/testinstanz${query}`, { action: "up", mode: "snapshot" }],
+      [`/api/worktrees/testinstanz${query}`, { action: "down" }],
+      ["/api/slots/1/testinstanz", { action: "up", mode: "snapshot" }],
+      ["/api/slots/1/testinstanz", { action: "down" }],
+      ["/api/slots/16/open", { cwd: tree, harness: "claude", packs: [] }],
+      ["/api/slots/16/open-worktree", { repo, path: tree }],
+      ["/api/repos/undo-land", { repo }], ["/api/self/tasks/fixture/land", {}],
+    ];
+    const refused = (r: { status: number; refusal?: string }) => r.status === 409 && r.refusal === "snapshot-mirrored-read-only";
+    for (const [path, body] of doors) {
+      const response = await request(path, body), data = await response.json() as { refusal?: string };
+      check(`snapshot mirror: ${path} refuses with named 409`, refused({ status: response.status, refusal: data.refusal }));
+    }
+    check("snapshot mirror: HEAD, git status and canary bytes survive every write door; no worktree script spawned",
+      before() === original && !existsSync(`${scratch}/spawned`));
+    await command("down"); running = false;
+    const code = readFileSync(`${repo}/server.ts`, "utf8"), guard = 'if (SNAPSHOT_MIRROR && !["GET", "HEAD", "OPTIONS"].includes(req.method))';
+    if (!code.includes(guard)) throw new Error("mirror mutation guard not found");
+    writeFileSync(`${repo}/server.ts`, code.replace(guard, 'if (SNAPSHOT_MIRROR && url.pathname !== "/api/slots/16/open" && !["GET", "HEAD", "OPTIONS"].includes(req.method))'));
+    await command("up", "snapshot", "--ttl", "10"); running = true;
+    const mutantToken = readFileSync(`${instance}/.testinstanz.token`, "utf8");
+    const mutation = await fetch(`http://${host}:${port}/api/slots/16/open`, { method: "POST",
+      headers: { authorization: `Bearer ${mutantToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ cwd: instance, harness: "claude", packs: [] }) });
+    const mutantBody = await mutation.json() as { refusal?: string };
+    check("snapshot mirror MUTATION: opening one slot door makes the same named-refusal check red",
+      mutation.status === 200 && !refused({ status: mutation.status, refusal: mutantBody.refusal }), `${mutation.status}`);
+    check("snapshot mirror MUTATION: the counter-probe also leaves the real canary and git bytes untouched", before() === original);
+  } finally {
+    if (running) await command("down");
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 async function instanceBandChecks(): Promise<void> {
   const clock = () => "12:00";
   const H = "a".repeat(40), T = "b".repeat(40);
@@ -1425,6 +1522,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   await helperRepoChecks();
   await workplacesChecks();
   await instanceBandChecks();
+  await snapshotMirrorChecks();
   await snapshotTruthChecks();
   // Mutation: removing the fork-point guard or deleting every merged branch makes these
   // assertions fail on real teardown paths.

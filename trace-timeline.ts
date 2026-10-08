@@ -183,15 +183,17 @@ export class TimelineIndex {
     this.receipts = receipts;
     const indexedKeys = new Set([...receipts.keys()].slice(0, TIMELINE_BUDGET.sessions));
     for (const key of this.native.keys()) if (!indexedKeys.has(key)) { this.native.delete(key); changed = true; }
+    const occupations = new Map<string, number>();
+    for (const r of receipts.values()) occupations.set(r.session, (occupations.get(r.session) ?? 0) + 1);
     for (const [key, r] of [...receipts].slice(0, TIMELINE_BUDGET.sessions)) {
       let n = this.native.get(key);
-      const bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness]));
+      const bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness, occupations.get(r.session)]));
       if (!n || n.bindingKey !== bindingKey) {
         n = { file: null, stamp: null, offset: 0, generation: 1, bindingKey, gaps: [], chunks: [], verifyTarget: null, verified: 0 }; this.native.set(key, n); changed = true;
       }
       if (!n.file || !timelineStamp(n.file)) {
         const resolved = this.deps.resolve(r);
-        if (resolved && timelineStamp(resolved.file)) { n.file = resolved.file; n.source = resolved; r.harness = resolved.harness; n.bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness])); }
+        if (resolved && timelineStamp(resolved.file)) { n.file = resolved.file; n.source = resolved; r.harness = resolved.harness; n.bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness, occupations.get(r.session)])); }
         else {
           if (n.snapshot) { n.snapshot = undefined; n.offset = 0; n.stamp = null; n.generation++; changed = true; }
           n.gaps = [{ code: r.harness && !["claude", "codex", "pi", "pi-zai", "pi-ox"].includes(r.harness)
@@ -228,9 +230,9 @@ export class TimelineIndex {
       if (!source) { n.gaps = [{ code: "source-binding-unresolved" }]; continue; }
       const b = readRange(n.file!, n.offset, Math.min(left, stamp.size - n.offset));
       const binding: NativeBinding = { sessionId: r.session, cwd: source.cwd,
-        occupation: { sourceHost: this.deps.host, sessionId: r.session, cwd: source.cwd, slot: r.slot,
-          openedAt: r.openedAt, proofHash: r.proof } };
-      const snapshot = await normalizeNative({ sourceHost: this.deps.host, sourceId: `session-${key}`,
+        ...(occupations.get(r.session) === 1 ? { occupation: { sourceHost: this.deps.host, sessionId: r.session,
+          cwd: source.cwd, slot: r.slot, openedAt: r.openedAt, proofHash: r.proof } } : {}) };
+      const snapshot = await normalizeNative({ sourceHost: this.deps.host, sourceId: `source-${digest(JSON.stringify([this.deps.host, r.session, source.file, source.harness]))}`,
         harness: source.harness, format: source.format, version: `generation-${n.generation}`, bytes: b,
         byteOffset: n.offset, observedAt: Date.now(), binding, redactions: this.deps.redactions() }, n.snapshot);
       if (timelineStamp(n.file!)?.key !== stamp.key) {
@@ -296,6 +298,9 @@ export class TimelineIndex {
     const entries: TimelineEntry[] = cached?.revision === revision ? cached.entries : [];
     const ledger: TimelinePage["ledger"] = cached?.revision === revision ? cached.ledger : [];
     if (cached?.revision !== revision) {
+      const nativeSeen = new Set<string>();
+      const occupations = new Map<string, number>();
+      for (const r of this.receipts.values()) occupations.set(r.session, (occupations.get(r.session) ?? 0) + 1);
       for (const [key, r] of this.receipts) {
         if (["project", "program", "session", "harness"].some((k) => q.has(k) && q.get(k) !== r[k as "project" | "program" | "session" | "harness"])) continue;
         const n = this.native.get(key), s = n?.snapshot;
@@ -305,13 +310,22 @@ export class TimelineIndex {
         sessions.push({ key, session: r.session, host: this.deps.host,
           occupation: { slot: r.slot, openedAt: r.openedAt, proofHash: r.proof }, harness: r.harness ?? "unknown",
           project: r.project, program: r.program, task: r.task, branch: r.branch,
-          source: { id: `session-${key}`, version: s?.version ?? null, state: s?.state ?? "unmeasured",
+          source: { id: s?.source ?? `session-${key}`, version: s?.version ?? null, state: s?.state ?? "unmeasured",
             completeBytes: s?.completeBytes ?? 0, indexedBytes: n?.offset ?? 0, availableBytes: n?.stamp?.size ?? null,
-            horizon: s?.horizon ?? null }, gaps: [...n?.gaps ?? [{ code: "session-budget" }], ...(s?.gaps ?? []).slice(0, 16),
+            horizon: s?.horizon ?? null }, gaps: [...n?.gaps ?? [{ code: "session-budget" }],
+            ...(occupations.get(r.session)! > 1 ? [{ code: "occupation-source-ambiguous" }] : []), ...(s?.gaps ?? []).slice(0, 16),
             ...(s && s.gaps.length > 16 ? [{ code: "additional-source-gaps", bytes: s.gaps.length - 16 }] : []),
             ...(n?.stamp && n.offset < n.stamp.size ? [{ code: "source-indexing" }] : [])], observedAt: r.at, clockUncertainty: "unknown" });
         entries.push({ id: `session:${key}`, at: Math.max(from, r.openedAt), sessionKey: key, event: null });
-        for (const e of events) entries.push({ id: e.id, at: e.at, sessionKey: key, event: e });
+        for (const e of events) {
+          const retained = JSON.stringify([n?.file, r.session, e.record.offset, e.record.block, e.detailRef?.fp, e.kind]);
+          if (nativeSeen.has(retained)) continue;
+          nativeSeen.add(retained);
+          const ambiguous = occupations.get(r.session)! > 1;
+          const { slot: _slot, openedAt: _openedAt, ...refs } = e.refs;
+          entries.push({ id: e.id, at: e.at, sessionKey: ambiguous ? null : key,
+            event: ambiguous ? { ...e, refs } : e });
+        }
       }
       const seen = new Set<string>();
       for (const [task, t] of this.traces) {

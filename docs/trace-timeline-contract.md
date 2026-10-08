@@ -258,6 +258,7 @@ reinigt zusätzlich die serialisierte Antwort mit den bekannten Credentialwerten
 | Unbekannter Harness | expliziter Name aus Beleg | `unsupported-source`, keine Claude-Fallbackdatei |
 | Fehlende Harnesszuordnung | genau ein Treffer unter den fünf vorhandenen Resolvern darf den Harness belegen | null/mehrere Treffer = `source-missing`; nicht als ruhige oder vollständige Session darstellen |
 | Wachstum / Rewrite | Bytecursor und Blockhash-Präfixprüfung; inode/shrink/gleichgroße Änderung setzt neue Generation | Während Prüfung `source-change-unverified`; Rewrite invalidiert alte Generation, Teilzeile bleibt pending |
+| Mehrere Belegungen derselben UUID | Header bleiben nach Host+UUID+Belegung getrennt; jeder erhaltene Quellenrecord erscheint einmal | `occupation-source-ambiguous`, `sessionKey:null`, keine geratenen Slot-/openedAt-Refs am Call |
 | Gelöschte Quelle | Beleg bleibt, native Events werden entfernt | `source-missing`; kein Weiterreichen alter Calls als aktuelle Quellenbytes |
 | Ledgerereignisse | ausschließlich `buildTrace`, dessen Generationen und bestehende Quellenref-/Horizontsemantik | Exakte Sessionkante nur mit UUID+Slot+openedAt im Ereignis; sonst unzugeordnet |
 | Vor dem erhaltenen Horizont | kein rekonstruierender Quellenzugriff | `history-before-retained-sources-unknown`, niemals vollständige Maschinenhistorie behaupten |
@@ -331,11 +332,11 @@ Kompression; ein Lauf je Quelle, keine statistische Latenzgarantie:
 
 | Harness | Cold ms / Schritte | Events | Seiten | größte Seite B | Warm ms / native Reads |
 |---|---:|---:|---:|---:|---:|
-| Claude | 27,24 / 1 | 62 | 2 | 63771 | 1,62 / 0 |
-| Codex | 27,77 / 2 | 56 | 2 | 64697 | 1,21 / 0 |
-| Pi | 18,79 / 1 | 142 | 4 | 64251 | 1,04 / 0 |
-| pi-zai | 11,18 / 1 | 126 | 3 | 65063 | 1,41 / 0 |
-| pi-ox | 9,27 / 1 | 92 | 3 | 65068 | 1,42 / 0 |
+| Claude | 26,18 / 1 | 62 | 2 | 65240 | 1,86 / 0 |
+| Codex | 28,52 / 2 | 56 | 2 | 64609 | 1,18 / 0 |
+| Pi | 19,45 / 1 | 142 | 4 | 64168 | 0,97 / 0 |
+| pi-zai | 14,01 / 1 | 126 | 3 | 64975 | 1,6 / 0 |
+| pi-ox | 13,33 / 1 | 92 | 3 | 64980 | 1,05 / 0 |
 
 Dies beweist die gemessenen mittleren Quellen und den unveränderten Poll,
 keine komplette Warm-Latenz über den mehrgigabytegroßen Maschinenbestand.

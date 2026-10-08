@@ -175,10 +175,11 @@ async function timelineProbes(): Promise<void> {
   const recycled = { ...receipt, openedAt: receipt.openedAt + 1, proof: "b".repeat(64) };
   current = [receipt, recycled];
   const two = await read();
-  check("timeline recycle isolates identical session bytes by host and occupation",
+  check("timeline recycle preserves both occupations and emits shared source calls once with unknown attribution",
     two.sessions.length === 2 && new Set(two.sessions.map((s) => s.key)).size === 2
-      && two.entries.filter((e) => e.event?.kind === "tool.call").length === 4
-      && new Set(two.entries.filter((e) => e.event?.kind === "tool.call").map((e) => e.id)).size === 4, JSON.stringify(two.sessions));
+      && two.entries.filter((e) => e.event?.kind === "tool.call").length === 2
+      && two.sessions.every((s) => s.gaps.some((g) => g.code === "occupation-source-ambiguous"))
+      && two.entries.filter((e) => e.event?.kind === "tool.call").every((e) => e.sessionKey === null && e.event?.refs.slot === undefined), JSON.stringify(two.sessions));
   writeFileSync(file, new TextDecoder().decode(f.input.bytes).replace("exec-1", "exec-2"));
   const rewritten = await read();
   check("timeline rewrite changes generation and invalidates the old cursor",
@@ -190,12 +191,12 @@ async function timelineProbes(): Promise<void> {
   const partial = await read();
   check("timeline partial line keeps pending calls and explicit missing-result gaps",
     partial.sessions.every((s) => s.gaps.some((g) => g.code === "partial-record") && s.gaps.some((g) => g.code === "missing-result"))
-      && partial.entries.filter((e) => e.event?.kind === "tool.call").length === 2
+      && partial.entries.filter((e) => e.event?.kind === "tool.call").length === 1
       && !partial.entries.some((e) => e.event?.kind === "tool.result"));
   appendFileSync(file, result.slice(40));
   const late = await read();
-  check("timeline appended late result appears once per occupation and preserves the call identity",
-    late.entries.filter((e) => e.event?.kind === "tool.result").length === 2
+  check("timeline appended late result appears once per retained source and preserves the call identity",
+    late.entries.filter((e) => e.event?.kind === "tool.result").length === 1
       && late.entries.filter((e) => e.event?.kind === "tool.call").every((e) =>
         partial.entries.some((p) => p.id === e.id) && "status" in e.event! && e.event.status === "late")
       && late.sessions.every((s) => !s.gaps.some((g) => g.code === "missing-result" || g.code === "partial-record")));
@@ -204,7 +205,7 @@ async function timelineProbes(): Promise<void> {
   check("timeline growing rewrite cannot reuse an unchecked native prefix",
     grownRewrite.sessions.every((s) => s.gaps.some((g) => g.code === "source-rewritten"))
       && !grownRewrite.entries.some((e) => e.event?.refs.call === "exec-1")
-      && grownRewrite.entries.filter((e) => e.event?.kind === "tool.call").length === 4);
+      && grownRewrite.entries.filter((e) => e.event?.kind === "tool.call").length === 2);
   current = [{ ...receipt, session: "30000000-0000-4000-8000-000000000099" }];
   const foreignUuid = await read();
   check("timeline native UUID fence yields an explicit gap and zero foreign events",
@@ -229,7 +230,7 @@ async function timelineProbes(): Promise<void> {
   rmSync(file);
   const missing = await read();
   check("timeline deleted source keeps both occupations as explicit gaps and removes stale calls",
-    beforeDeletion.entries.filter((e) => e.event?.kind === "tool.call").length === 4
+    beforeDeletion.entries.filter((e) => e.event?.kind === "tool.call").length === 2
       && missing.sessions.length === 2 && missing.sessions.every((s) => s.gaps.some((g) => g.code === "source-missing"))
       && !missing.entries.some((e) => e.event?.kind === "tool.call"));
   check("timeline refuses caller paths and invalid windows",

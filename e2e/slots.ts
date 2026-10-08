@@ -2708,9 +2708,16 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && !/boardFold\("agents"/.test(cliSrc), "src/client.ts");
   // …and the routes themselves are proven ALIVE, not by reading source: the ③ auto-review and the
   // share view still reach them, so a GET must answer for a live slot.
-  const sumProbe = await get("/api/slots/1/summary");
-  check("server: the summary route survives the board's cleanup (cache GET still answers)",
-    sumProbe.status === 200, `status=${sumProbe.status}`);
+  try {
+    const sumOpened = await post("/api/slots/3/open", { cwd: REPO });
+    check("summary fixture: a slot opens on the throwaway git repository", sumOpened.ok,
+      `status=${sumOpened.status}`);
+    const sumProbe = await get("/api/slots/3/summary");
+    check("server: the summary route survives the board's cleanup (cache GET still answers)",
+      sumProbe.status === 200, `status=${sumProbe.status}`);
+  } finally {
+    await post("/api/slots/3/kill", {});
+  }
 
   // --- stable lane anchor creation. Slots 3/4 are deliberately real same-repo mains: the first
   // request names slot 3 exactly; the generic route chooses the last-active eligible main once.

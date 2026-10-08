@@ -414,18 +414,7 @@ export async function run(): Promise<void> {
     rmSync(markCwd, { recursive: true, force: true });
   }
 
-  // --- session brief (slot 1 cwd is ~/claude-fleet, a real git repo) ---
-  const bf1 = await get("/api/slots/1/brief");
-  const bf1j = (await bf1.json()) as { branch: string | null; worktree: unknown;
-    files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] };
-  check("brief returns git facts for a repo slot", bf1.ok && typeof bf1j.branch === "string" && bf1j.branch.length > 0,
-    `branch=${bf1j.branch}`);
-  check("brief lists commits with hash+ts+subject", bf1j.commits.length > 0
-    && bf1j.commits.every((c) => /^[0-9a-f]{7,}$/.test(c.hash) && c.ts > 0 && c.subject.length > 0),
-    `commits=${bf1j.commits.length}`);
-  check("brief caps commit list at 15", bf1j.commits.length <= 15);
-  check("brief files is an array", Array.isArray(bf1j.files));
-  check("brief rejects inactive slot", (await get("/api/slots/4/brief")).status === 400);
+  await runSessionBrief();
 
   // --- THE COUNTS VS THE LISTS. The brief caps every list at 200 lines; the counts beside them
   // must stay TRUE, or the column states a number it invented. Measured against a repo built for
@@ -464,76 +453,131 @@ export async function run(): Promise<void> {
     rmSync(cwd, { recursive: true, force: true });
   }
 
-  // --- THE BRIEF'S NON-GIT HALF: what this session is MADE of (server.ts#sessionSetup). The board
-  // shows profile and context packs, and neither could reach a client before: both hang on the
-  // PROGRAM, and what a pane actually RECEIVED is only in the delivery receipt. The distinction
-  // this family holds is that one: a receipt is delivery, a program's declaration is intent.
-  {
-    type Setup = { profile: string | null; repo: string | null; head: string | null;
-      packs: { id: string; useWhen: string | null; sources: { path: string; anchor: string }[] | null;
-        privateSourceId: string | null }[];
-      omitted: { id: string; why: string }[]; deliveredAt: number | null;
-      deliveredBytes: number | null; packsFrom: string | null };
-    const setupOf = async (slot: number): Promise<Setup | undefined> =>
-      ((await (await get(`/api/slots/${slot}/brief`)).json()) as { setup?: Setup }).setup;
-    const bare = await setupOf(1);
-    check("brief: a session with no program and no receipt answers the setup question, and answers it EMPTY",
-      !!bare && bare.profile === null && bare.packs.length === 0 && bare.omitted.length === 0
-      && bare.packsFrom === null && bare.deliveredAt === null,
-      JSON.stringify(bare));
-    // the receipt this slot's founding brief would have written, on ITS branch — the join is
-    // slot+branch, so a row for another slot or another branch must not be picked up
-    const branch = bf1j.branch!;
-    const at = Date.now();
-    const row = (slot: number, br: string, id: string) => `${JSON.stringify({
-      id: `${slot}-${id}`, at, slot, branch: br, harness: "claude", repo: "/tmp/some-repo", head: "abc1234",
-      selected: [
-        { id, useWhen: `use ${id} when the lane touches it`,
-          anchors: [{ path: "docs/verify-tiering.md", anchor: "## 11.7 A red check is yours" }] },
-        // a PRIVATE pack: its anchors are the opaque id, never a path — the seam must keep the
-        // two apart, because one can be opened and the other provably cannot
-        { id: "private-overlay", anchors: { privateSourceId: "opaque-3f4c19d8a6e2b701" } },
-      ],
-      omitted: [{ id: "left-out-pack", why: "source-unavailable" }],
-      deliveredBytes: 2048,
-    })}\n`;
-    appendFileSync(`${ROOT}/context-receipts.jsonl`,
-      row(1, branch, "delivered-pack") + row(2, branch, "other-slot-pack") + row(1, "some/other-branch", "other-branch-pack"));
-    const got = await setupOf(1);
-    check("brief: the packs come from THIS slot's delivery receipt on THIS branch, with the omitted ones named",
-      !!got && got.packsFrom === "receipt" && got.packs.length === 2 && got.packs[0].id === "delivered-pack"
-      && got.packs[0].useWhen === "use delivered-pack when the lane touches it"
-      && got.omitted.length === 1 && got.omitted[0].id === "left-out-pack"
-      && got.omitted[0].why === "source-unavailable" && got.deliveredBytes === 2048 && got.deliveredAt === at,
-      JSON.stringify(got));
-    // the POINTERS ride along — without them a pack chip has nothing to open — and the repo+commit
-    // they are read at come from the receipt, not from wherever the session happens to stand now
-    check("brief: a pack carries its source pointers, read at the commit the receipt names",
-      !!got && got.repo === "/tmp/some-repo" && got.head === "abc1234"
-      && got.packs[0].sources?.length === 1
-      && got.packs[0].sources[0].path === "docs/verify-tiering.md"
-      && got.packs[0].sources[0].anchor === "## 11.7 A red check is yours"
-      && got.packs[0].privateSourceId === null,
-      JSON.stringify(got?.packs[0]));
-    // a private pack is the case that must NOT be made openable: no path, no anchor, just the
-    // opaque id — its content is outside the repo and the server cannot read it
-    check("brief: a private pack hands over its opaque id and NO source path",
-      !!got && got.packs[1].id === "private-overlay" && got.packs[1].sources === null
-      && got.packs[1].privateSourceId === "opaque-3f4c19d8a6e2b701",
-      JSON.stringify(got?.packs[1]));
-    // …and the cache behind it is keyed on the ledger's own identity, not on a TTL: a receipt
-    // appended a moment later is visible on the very next read, or the board would show a
-    // session's packs from before its last founding.
-    appendFileSync(`${ROOT}/context-receipts.jsonl`, row(1, branch, "refounded-pack"));
-    const after = await setupOf(1);
-    check("brief: a receipt appended after the first read is seen at once, and the LAST one wins",
-      !!after && after.packs.length === 2 && after.packs[0].id === "refounded-pack",
-      JSON.stringify(after?.packs));
-  }
-
   await runNativeQuestions();
   await runForeignConversations();
   runLinks();
+}
+
+async function runSessionBrief(): Promise<void> {
+  const cwd = mkdtempSync(`${tmpdir()}/fleet-e2e-session-brief-`);
+  let slot: number | undefined;
+  let opened = false;
+  try {
+    writeFileSync(`${cwd}/seed.txt`, "session brief fixture\n");
+    const commands = [
+      ["init", "-q", "-b", `brief-${process.pid}`],
+      ["add", "seed.txt"],
+      ["-c", "user.name=e2e", "-c", "user.email=e2e@fleet", "-c", "commit.gpgsign=false", "commit", "-qm", "brief seed"],
+    ];
+    for (const args of commands) {
+      const git = Bun.spawnSync(["git", ...args], { cwd });
+      if (git.exitCode !== 0) {
+        check("brief fixture: a real Git repo with a commit is available", false,
+          `git ${args[0]} exited ${git.exitCode}: ${git.stderr.toString().trim()}`);
+        return;
+      }
+    }
+    slot = await freeSlotId();
+    if (slot === undefined) {
+      check("brief fixture: a free slot exists for its own repo", false, "no free slot");
+      return;
+    }
+    const open = await post(`/api/slots/${slot}/open`, { cwd });
+    opened = open.ok;
+    check("brief fixture: its own slot opens on a real Git repo", opened,
+      `slot=${slot} status=${open.status}`);
+    if (!opened) return;
+
+    const response = await get(`/api/slots/${slot}/brief`);
+    const brief = (await response.json()) as { branch?: string | null; git?: string; error?: string;
+      files?: string[]; commits?: { hash: string; ts: number; subject: string }[] };
+    const hasRepo = response.ok && typeof brief.branch === "string" && brief.branch.length > 0;
+    check("brief returns git facts for a repo slot", hasRepo,
+      `slot=${slot} status=${response.status} git=${brief.git} error=${brief.error} branch=${brief.branch}`);
+    if (!response.ok || typeof brief.branch !== "string" || brief.branch.length === 0) return;
+    check("brief lists commits with hash+ts+subject", Array.isArray(brief.commits) && brief.commits.length > 0
+      && brief.commits.every((c) => /^[0-9a-f]{7,}$/.test(c.hash) && c.ts > 0 && c.subject.length > 0),
+      `commits=${brief.commits?.length ?? "missing"}`);
+    check("brief caps commit list at 15", Array.isArray(brief.commits) && brief.commits.length <= 15,
+      `commits=${brief.commits?.length ?? "missing"}`);
+    check("brief files is an array", Array.isArray(brief.files));
+
+    // --- THE BRIEF'S NON-GIT HALF: what this session is MADE of (server.ts#sessionSetup). The board
+    // shows profile and context packs, and neither could reach a client before: both hang on the
+    // PROGRAM, and what a pane actually RECEIVED is only in the delivery receipt. The distinction
+    // this family holds is that one: a receipt is delivery, a program's declaration is intent.
+    {
+      type Setup = { profile: string | null; repo: string | null; head: string | null;
+        packs: { id: string; useWhen: string | null; sources: { path: string; anchor: string }[] | null;
+          privateSourceId: string | null }[];
+        omitted: { id: string; why: string }[]; deliveredAt: number | null;
+        deliveredBytes: number | null; packsFrom: string | null };
+      const setupOf = async (slot: number): Promise<Setup | undefined> =>
+        ((await (await get(`/api/slots/${slot}/brief`)).json()) as { setup?: Setup }).setup;
+      const bare = await setupOf(slot);
+      check("brief: a session with no program and no receipt answers the setup question, and answers it EMPTY",
+        !!bare && bare.profile === null && bare.packs.length === 0 && bare.omitted.length === 0
+        && bare.packsFrom === null && bare.deliveredAt === null,
+        JSON.stringify(bare));
+      // the receipt this slot's founding brief would have written, on ITS branch — the join is
+      // slot+branch, so a row for another slot or another branch must not be picked up
+      const branch = brief.branch;
+      const at = Date.now();
+      const row = (slot: number, br: string, id: string) => `${JSON.stringify({
+        id: `${slot}-${id}`, at, slot, branch: br, harness: "claude", repo: "/tmp/some-repo", head: "abc1234",
+        selected: [
+          { id, useWhen: `use ${id} when the lane touches it`,
+            anchors: [{ path: "docs/verify-tiering.md", anchor: "## 11.7 A red check is yours" }] },
+          // a PRIVATE pack: its anchors are the opaque id, never a path — the seam must keep the
+          // two apart, because one can be opened and the other provably cannot
+          { id: "private-overlay", anchors: { privateSourceId: "opaque-3f4c19d8a6e2b701" } },
+        ],
+        omitted: [{ id: "left-out-pack", why: "source-unavailable" }],
+        deliveredBytes: 2048,
+      })}\n`;
+      appendFileSync(`${ROOT}/context-receipts.jsonl`,
+        row(slot, branch, "delivered-pack") + row(slot === 1 ? 2 : 1, branch, "other-slot-pack") + row(slot, "some/other-branch", "other-branch-pack"));
+      const got = await setupOf(slot);
+      check("brief: the packs come from THIS slot's delivery receipt on THIS branch, with the omitted ones named",
+        !!got && got.packsFrom === "receipt" && got.packs.length === 2 && got.packs[0].id === "delivered-pack"
+        && got.packs[0].useWhen === "use delivered-pack when the lane touches it"
+        && got.omitted.length === 1 && got.omitted[0].id === "left-out-pack"
+        && got.omitted[0].why === "source-unavailable" && got.deliveredBytes === 2048 && got.deliveredAt === at,
+        JSON.stringify(got));
+      // the POINTERS ride along — without them a pack chip has nothing to open — and the repo+commit
+      // they are read at come from the receipt, not from wherever the session happens to stand now
+      check("brief: a pack carries its source pointers, read at the commit the receipt names",
+        !!got && got.repo === "/tmp/some-repo" && got.head === "abc1234"
+        && got.packs[0].sources?.length === 1
+        && got.packs[0].sources[0].path === "docs/verify-tiering.md"
+        && got.packs[0].sources[0].anchor === "## 11.7 A red check is yours"
+        && got.packs[0].privateSourceId === null,
+        JSON.stringify(got?.packs[0]));
+      // a private pack is the case that must NOT be made openable: no path, no anchor, just the
+      // opaque id — its content is outside the repo and the server cannot read it
+      check("brief: a private pack hands over its opaque id and NO source path",
+        !!got && got.packs[1].id === "private-overlay" && got.packs[1].sources === null
+        && got.packs[1].privateSourceId === "opaque-3f4c19d8a6e2b701",
+        JSON.stringify(got?.packs[1]));
+      // …and the cache behind it is keyed on the ledger's own identity, not on a TTL: a receipt
+      // appended a moment later is visible on the very next read, or the board would show a
+      // session's packs from before its last founding.
+      appendFileSync(`${ROOT}/context-receipts.jsonl`, row(slot, branch, "refounded-pack"));
+      const after = await setupOf(slot);
+      check("brief: a receipt appended after the first read is seen at once, and the LAST one wins",
+        !!after && after.packs.length === 2 && after.packs[0].id === "refounded-pack",
+        JSON.stringify(after?.packs));
+    }
+  } finally {
+    try {
+      if (opened) {
+        await post(`/api/slots/${slot}/kill`, {});
+        check("brief rejects inactive slot", (await get(`/api/slots/${slot}/brief`)).status === 400);
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
 }
 
 // --- links in both views (owner 2026-09-21: „[Zitat entfernt]“) ---

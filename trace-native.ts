@@ -33,7 +33,7 @@ export interface NativeSnapshot {
   gaps: NativeGap[]; horizon: SourceHorizon;
 }
 interface Line { row: Record<string, unknown>; offset: number; bytes: number; fp: string }
-interface NativeReadState { lines: Line[]; tail: Uint8Array; skipping: boolean }
+interface NativeReadState { lines: Line[]; tail: Uint8Array; skipping: boolean; binding: string }
 const readStates = new WeakMap<NativeSnapshot, NativeReadState>();
 interface ToolRecord { line: Line; block: number; call: string; name: string; namespace: string | null;
   family: string; result: boolean; outcome: NativeEvent["outcome"]; paths: string[] }
@@ -114,7 +114,9 @@ function toolRecords(line: Line, input: NativeInput, gaps: NativeGap[]): ToolRec
 // Snapshots contain the supplied generation only. The optional prior snapshot is evidence for
 // append/replay/late detection, never a source of raw bytes or a permission to carry old events.
 export async function normalizeNative(input: NativeInput, previous?: NativeSnapshot): Promise<NativeSnapshot> {
-  const prefix = input.byteOffset > 0 && previous?.inputBytes === input.byteOffset ? readStates.get(previous) : undefined;
+  const bindingKey = JSON.stringify([input.sourceHost, input.sourceId, input.harness, input.format, input.version, input.binding]);
+  const candidateState = input.byteOffset > 0 && previous?.inputBytes === input.byteOffset ? readStates.get(previous) : undefined;
+  const prefix = candidateState?.binding === bindingKey ? candidateState : undefined;
   const safe = (s: string): string => token(s, input) ? s : "redacted";
   const source = safe(input.sourceId), host = safe(input.sourceHost), version = safe(input.version);
   const observed = Number.isFinite(input.observedAt) ? input.observedAt : 0;
@@ -185,7 +187,7 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     snapshot.gaps.push({ code: "oversized-record", offset: baseOffset + offset, bytes: tail.length });
     tail = new Uint8Array(); skipping = true;
   }
-  readStates.set(snapshot, { lines, tail, skipping });
+  readStates.set(snapshot, { lines, tail, skipping, binding: bindingKey });
   if (!lines.length) return stop(offset < bytes.length ? "pending" : "rejected", "missing-identity-record");
   let parentSession: string | null = null;
   if (input.format === "codex-rollout-jsonl" || pi) {

@@ -97,6 +97,15 @@ export async function runNativeProbes(check: Check): Promise<void> {
         && complete.events.every((e) => e.detailRef?.fp && e.record.offset + e.record.bytes <= complete.completeBytes),
       JSON.stringify(complete.gaps));
   }
+  const boundDelta = NATIVE_FIXTURES[1]!;
+  const deltaCut = Math.floor(boundDelta.input.bytes.length / 2);
+  const deltaPrefix = await normalizeNative({ ...boundDelta.input, bytes: boundDelta.input.bytes.slice(0, deltaCut) });
+  for (const field of ["sourceHost", "sourceId", "version"] as const) {
+    const foreign = await normalizeNative({ ...boundDelta.input, [field]: "foreign-generation",
+      bytes: boundDelta.input.bytes.slice(deltaCut), byteOffset: deltaCut }, deltaPrefix);
+    check(`native streamed ${field} change cannot inherit another source prefix`,
+      foreign.state === "rejected" && foreign.events.length === 0 && hasGap(foreign, "invalid-source-metadata"));
+  }
   const piped = NATIVE_FIXTURES[2]!;
   const compound = await normalizeNative({ ...piped.input, bytes: new TextEncoder().encode(
     decode(piped.input.bytes).replaceAll("pi-edit", "call_abc|fc_123")) });

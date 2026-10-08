@@ -19,7 +19,8 @@ Dateiname, mtime oder ähnlichem cwd abgeleiteten Fakten. `inputHash` ist SHA-25
 über die tatsächlich übergebenen Bytes, bei einem Delta also über diesen Block.
 Ein positiver Offset ist nur zusammen mit dem unmittelbar vorherigen Snapshot
 und dessen prozessintern erhaltenem Parserzustand akzeptiert; er muss exakt
-`previous.inputBytes` entsprechen. Der Index prüft bei Wachstum zuerst alle
+`previous.inputBytes` entsprechen und Host, Source-ID, Harness, Format, Generation
+und vollständige Bindung müssen identisch sein. Der Index prüft bei Wachstum zuerst alle
 bereits gelesenen Präfixblöcke gegen ihre SHA-256-Werte. Der Parser hält
 Identitäts-/Record-/Toolmetadaten und maximal 8 MiB Teilzeile; Argumente und
 Resultattexte werden nach dem Parsen verworfen. LF-/UTF-8-Splits bleiben erhalten.

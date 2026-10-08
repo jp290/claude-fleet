@@ -12823,6 +12823,7 @@ function buildLaneSuccessionBrief(facts: { branch: string; base: string; session
     "Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
     "",
     memoryPointer("lane"),
+    "",
     ownerKorrekturenPointer(),
     "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
@@ -13095,6 +13096,7 @@ function buildLaneHarnessBrief(facts: { branch: string; base: string; from: stri
     "Lies zuerst den Auftrag, dann den git-Stand, dann arbeite weiter, wo er aufhört.",
     "",
     memoryPointer("lane"),
+    "",
     ownerKorrekturenPointer(),
     "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
@@ -19463,7 +19465,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     const deliveredBrief = clarify
       ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\n${ownerKorrekturenPointer()}${context.anchorBlock}`
-      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md\n\n${ownerKorrekturenPointer()}`;
+      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -19582,7 +19584,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
   const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
-    free.harness, "lane", undefined, clarify ? "" : `${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
+    free.harness, "lane", undefined, clarify ? "" : `${ownerKorrekturenPointer()}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
   return { sessionAgents, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,

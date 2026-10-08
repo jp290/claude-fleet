@@ -12583,6 +12583,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("S3 session blocks: the required owner heft names its startup reader pointer",
     heft?.grenze.art === "noetig" && heft.source === "server.ts#ownerKorrekturenPointer"
       && heft.lieferart.includes("Prompt") && heft.lieferart.includes("Abruf")
+      && heft.lieferart.includes("native Datei")
       && heft.rollenDefault["nur-ordner"] === "aus"
       && ["lane", "main", "orchestratorin"].every((role) => heft.rollenDefault[role as typeof roles[number]] === "an"));
   pin("S3 session blocks: concept is optional and source pointers/code are separate",

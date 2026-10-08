@@ -724,7 +724,9 @@ process.stdin.on("data", (chunk) => {
   void (async () => {
     firstRecorded = true;
     firstPrompt = "";
-    const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text)?.[1] ?? null;
+    const nativePath = /^Session-Regeln: (\.\/AGENTS\.override\.md)$/m.exec(text)?.[1] ?? null;
+    const native = nativePath ? readFileSync(nativePath, "utf8") : "";
+    const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text + "\n" + native)?.[1] ?? null;
     let status = null, body = null;
     if (pointer) {
       const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
@@ -732,7 +734,7 @@ process.stdin.on("data", (chunk) => {
       body = await response.json();
     }
     const out = outDir + "/heft-" + slot + ".json";
-    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, pointer, status, body }));
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, native, pointer, status, body }));
     renameSync(out + ".tmp", out);
   })();
 });
@@ -1045,7 +1047,7 @@ async function privatePackHandover(): Promise<void> {
       check("konzepte owner delivery fixture: the owner publishes one synthetic correction per position",
         published.status === 200, `${published.status} ${published.text.slice(0, 250)}`);
       if (published.status !== 200) return;
-      type Received = { tag: string; text: string; pointer: string | null; status: number | null;
+      type Received = { tag: string; text: string; native: string; pointer: string | null; status: number | null;
         body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
       const receive = async (slot: number): Promise<Received | null> => {
         for (let n = 0; n < 200; n++) {
@@ -1067,9 +1069,9 @@ async function privatePackHandover(): Promise<void> {
         r?.pointer === `${i.base}${door}` && r.status === 200 && r.tag === (harness === "pi-zai" ? "pi" : harness)
         && r.body?.bindung?.rolle === role && r.body.bindung.harness === harness
         && JSON.stringify(r.body.geltendeEintraege?.map((entry) => entry.id)) === JSON.stringify([`start-${role}`])
-        && r.text.includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"') && r.text.includes("vor deinem ersten Akt")
-        && !r.text.includes("synthetische Startkorrektur") && !r.text.includes("private-fixture.md")
-        && !r.text.includes(`${konzeptRoot}/k-owner-korrekturen`);
+        && (r.text + r.native).includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"') && (r.text + r.native).includes("vor deinem ersten Akt")
+        && !(r.text + r.native).includes("synthetische Startkorrektur") && !(r.text + r.native).includes("private-fixture.md")
+        && !(r.text + r.native).includes(`${konzeptRoot}/k-owner-korrekturen`);
       for (const harness of ["claude", "codex", "pi-zai"]) {
         const spawn = { harness, model: harness === "pi-zai" ? "glm-5.3" : harness === "codex" ? "gpt-6.1-sol" : "opus", effort: "high" };
         for (const role of roles) {

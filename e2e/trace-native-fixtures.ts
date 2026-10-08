@@ -85,6 +85,23 @@ const changeRows = (f: NativeFixture, change: (rows: Record<string, unknown>[]) 
 };
 
 export async function runNativeProbes(check: Check): Promise<void> {
+  for (const f of NATIVE_FIXTURES) {
+    const cut = Math.floor(f.input.bytes.length / 2);
+    const prefix = await normalizeNative({ ...f.input, bytes: f.input.bytes.slice(0, cut) });
+    const complete = await normalizeNative({ ...f.input, bytes: f.input.bytes.slice(cut), byteOffset: cut,
+      observedAt: f.input.observedAt + 1000 }, prefix);
+    check(`native streamed delta ${f.name} retains every call and exact original byte locators`,
+      complete.events.length === 4 && new Set(complete.events.map((e) => e.id)).size === 4
+        && complete.events.filter((e) => e.kind === "tool.call").length === 2
+        && !hasGap(complete, "partial-record") && complete.completeBytes === f.input.bytes.length
+        && complete.events.every((e) => e.detailRef?.fp && e.record.offset + e.record.bytes <= complete.completeBytes),
+      JSON.stringify(complete.gaps));
+  }
+  const piped = NATIVE_FIXTURES[2]!;
+  const compound = await normalizeNative({ ...piped.input, bytes: new TextEncoder().encode(
+    decode(piped.input.bytes).replaceAll("pi-edit", "call_abc|fc_123")) });
+  check("native Pi compound provider call IDs pair on their exact retained identifier",
+    compound.events.length === 4 && compound.events.every((e) => e.refs.call === "call_abc|fc_123" && e.pair !== null));
   const ui = await loadNativeUiFixtures();
   for (const [i, f] of NATIVE_FIXTURES.entries()) {
     const s = ui[i]!.snapshot;

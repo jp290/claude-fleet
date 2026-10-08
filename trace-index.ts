@@ -78,6 +78,8 @@ export interface TraceInput {
   liveRow: TraceTaskRow | null;
   live: TraceLiveLane[];
   git: TraceGit;
+  ledgerCache?: Map<string, { version: string; read: LedgerRead }>;
+  maxLedgerBytes?: number;
   worktreeOf: (repo: string, branch: string) => string; // server.ts#worktreePathFor, injected so there is one derivation
 }
 export interface GenerationFacts { gen: string; rows: number; bytes: number }
@@ -116,7 +118,19 @@ const identity = (path: string): { ino: number; size: number } | null => {
 // rotate, then read `.1` = the old active: the old `.1` was in neither read). So the identities are
 // taken before and after, and a read that saw a rotation is repeated. `.archive` and `.1` change only
 // at a rotation; the active file may GROW meanwhile, which is an append behind the read, not a race.
-async function readGenerations(file: string): Promise<LedgerRead> {
+async function readGenerations(file: string, cache?: TraceInput["ledgerCache"], maxBytes?: number): Promise<LedgerRead> {
+  if (maxBytes !== undefined && TRACE_GENERATIONS.reduce((sum, g) => sum + (identity(file + g)?.size ?? 0), 0) > maxBytes)
+    return { state: "unmeasured", name: base(file), reason: `${base(file)} exceeds the timeline ledger byte budget` };
+  const version = JSON.stringify(TRACE_GENERATIONS.map((g) => {
+    try { const s = statSync(file + g); return [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs]; } catch { return null; }
+  }));
+  const hit = cache?.get(file);
+  if (hit?.version === version) return hit.read;
+  const read = await readGenerationsUncached(file);
+  cache?.set(file, { version, read });
+  return read;
+}
+async function readGenerationsUncached(file: string): Promise<LedgerRead> {
   const name = base(file);
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = TRACE_GENERATIONS.map((g) => identity(`${file}${g}`));
@@ -318,8 +332,8 @@ async function commitFacts(git: TraceGit, id: string, repo: string, ranges: { br
 export async function buildTrace(input: TraceInput): Promise<TraceResult> {
   const { task: id, files, git } = input;
   const [audit, outcomes, plAudits, reports, archive] = await Promise.all([
-    readGenerations(files.audit), readGenerations(files.outcomes), readGenerations(files.postLandAudits),
-    readGenerations(files.reports), readGenerations(files.tasksArchive)]);
+    readGenerations(files.audit, input.ledgerCache, input.maxLedgerBytes), readGenerations(files.outcomes, input.ledgerCache, input.maxLedgerBytes), readGenerations(files.postLandAudits, input.ledgerCache, input.maxLedgerBytes),
+    readGenerations(files.reports, input.ledgerCache, input.maxLedgerBytes), readGenerations(files.tasksArchive, input.ledgerCache, input.maxLedgerBytes)]);
   const ledgers = [{ read: audit, h: horizonOf(audit, "ts") }, { read: outcomes, h: horizonOf(outcomes, "ts") },
     { read: plAudits, h: horizonOf(plAudits, "at") }, { read: reports, h: horizonOf(reports, "at") }];
   const horizon: SourceHorizon[] = [...ledgers.map((x) => x.h), horizonOf(archive, "ts")];

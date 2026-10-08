@@ -10,7 +10,7 @@ import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir, homedir, hostname } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -66,7 +66,8 @@ import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
-import { buildTrace, type TraceLiveLane, type TraceRefs } from "./trace-index";
+import { buildTrace, type TraceInput, type TraceLiveLane, type TraceRefs } from "./trace-index";
+import { TimelineIndex, timelineStamp, type TimelineReceipt, type TimelineSource } from "./trace-timeline";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
   resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
@@ -22056,6 +22057,72 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks, ...(meta && { meta: true }) };
 }
+
+const timelineHost = hostname();
+const timelineFiles = { audit: AUDIT_FILE, outcomes: LANE_OUTCOME_FILE, postLandAudits: POSTLAND_AUDIT_FILE,
+  reports: FLEET_REPORT_LEDGER_FILE, tasksArchive: TASK_ARCHIVE_FILE };
+const timelineLedgerCache: NonNullable<TraceInput["ledgerCache"]> = new Map();
+function timelineReceipt(s: Slot): TimelineReceipt[] {
+  if (!s.cwd || !s.sessionId || !CODEX_UUID_RE.test(s.sessionId)) return [];
+  const evidence = JSON.stringify([timelineHost, s.sessionId, s.cwd, s.id, s.openedAt]);
+  return [{ session: s.sessionId, cwd: s.cwd, slot: s.id, openedAt: s.openedAt,
+    harness: s.harness, project: projectKeyOf(s.worktree?.repo ?? s.cwd), program: s.programId,
+    task: s.taskId, branch: s.worktree?.branch ?? null, at: s.openedAt,
+    proof: createHash("sha256").update(evidence).digest("hex") }];
+}
+function timelineSource(r: TimelineReceipt): TimelineSource | null {
+  const names = r.harness ? [r.harness] : ["claude", "codex", "pi", "pi-zai", "pi-ox"];
+  const found: TimelineSource[] = [];
+  for (const harness of names) {
+    let file: string | null = null, cwd = r.cwd;
+    if (harness === "claude") {
+      const candidate = `${projDir(r.cwd)}/${r.session}.jsonl`;
+      const nativeCwd = transcriptCwd(candidate);
+      if (nativeCwd && sameCwd(nativeCwd, r.cwd)) { file = candidate; cwd = nativeCwd; }
+    } else if (harness === "codex") {
+      const candidate = codexContextFile({ sessionId: r.session, cwd: r.cwd });
+      const meta = candidate ? codexSessionMeta(candidate) : null;
+      if (candidate && meta?.id === r.session && sameCwd(meta.cwd, r.cwd)) { file = candidate; cwd = meta.cwd; }
+    } else {
+      const o = { sessionId: r.session, cwd: r.cwd };
+      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
+        : harness === "pi-ox" ? piOxContextFile(o) : null;
+      if (file) cwd = realpathLoose(r.cwd);
+    }
+    if (file) found.push({ file, cwd, harness, format: harness === "claude" ? "claude-jsonl"
+      : harness === "codex" ? "codex-rollout-jsonl" : "pi-session-jsonl" });
+  }
+  return found.length === 1 ? found[0]! : null;
+}
+const timelineIndex = new TimelineIndex({
+  host: timelineHost,
+  carriers: [{ file: PROMPT_LOG, kind: "prompts" }, { file: STATE_SNAPSHOT_FILE, kind: "snapshots" },
+    { file: TASK_ARCHIVE_FILE, kind: "tasks" }, { file: LANE_OUTCOME_FILE, kind: "outcomes" }],
+  live: () => [...slots.flatMap(timelineReceipt), ...fleetReports.flatMap((report): TimelineReceipt[] => {
+    const w = report.worker;
+    if (!w.sessionId || !CODEX_UUID_RE.test(w.sessionId) || !w.cwd) return [];
+    return [{ session: w.sessionId, cwd: w.cwd, slot: w.slot, openedAt: w.openedAt, harness: null,
+      project: null, program: report.provenance.programId, task: report.provenance.taskId,
+      branch: w.branch, at: report.reportedAt,
+      proof: createHash("sha256").update(JSON.stringify(w)).digest("hex") }];
+  })],
+  tasks: () => tasks.map((t) => ({ id: t.id, repo: t.repo ?? null, branch: null, program: t.programId ?? null })),
+  resolve: timelineSource, worktreeOf: worktreePathFor, projectOf: projectKeyOf,
+  redactions: () => [TOKEN, ...slots.map((s) => s.selfToken ?? ""),
+    ...Object.entries(process.env).filter(([k]) => /TOKEN|SECRET|PASSWORD|API_KEY/.test(k)).map(([, v]) => v ?? "")].filter(Boolean),
+  traceVersion: () => JSON.stringify([Object.values(timelineFiles).flatMap((file) =>
+    [".archive", ".1", ""].map((g) => timelineStamp(file + g)?.key ?? null)),
+    tasks.map((t) => [t.id, t.status, t.programId]), slots.filter((s) => s.cwd).map((s) =>
+      [s.id, s.openedAt, s.sessionId, s.taskId, s.worktree?.branch])]),
+  trace: async (id) => {
+    const t = tasks.find((x) => x.id === id) ?? null;
+    const live: TraceLiveLane[] = slots.flatMap((s) => s.cwd && s.worktree && s.taskId === id
+      ? [{ slot: s.id, openedAt: s.openedAt, session: s.sessionId, repo: s.worktree.repo, branch: s.worktree.branch }] : []);
+    return buildTrace({ task: id, files: timelineFiles, live, ledgerCache: timelineLedgerCache, maxLedgerBytes: 67_108_864,
+      git: gitRead, worktreeOf: worktreePathFor,
+      liveRow: t ? { id, from: "live", created: t.created, status: t.status, kind: t.kind, programId: t.programId ?? null } : null });
+  },
+});
 
 // THE SESSION'S OWN QUEUE (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Fix 4). Claude Code
 // 2.1.288 writes every prompt it holds back as `{type:"queue-operation", operation:"enqueue",
@@ -46443,6 +46510,12 @@ Bun.serve<WSData>({
     // archive copy is read inside) and the lane holding the task now, the one place an occupation
     // key is known without inference. A wave follower is not found here: its lane is on record under
     // its head's id (resolveTaskLane says the same).
+    if (url.pathname === "/api/timeline" && req.method === "GET") {
+      const answer = await timelineIndex.page(url);
+      const clean = exportRedactor().clean(JSON.stringify(answer.body));
+      return new Response(clean, { status: answer.status, headers: {
+        "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    }
     if (url.pathname === "/api/trace" && req.method === "GET") {
       const id = (url.searchParams.get("task") ?? "").trim();
       if (!/^[a-z0-9]{1,64}$/.test(id)) return json({ error: "task must be a queue row id ([a-z0-9]{1,64})" }, 400);

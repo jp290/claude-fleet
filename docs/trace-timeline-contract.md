@@ -2,22 +2,29 @@
 
 `trace-native.ts#normalizeNative` projiziert explizit übergebene native JSONL-Bytes
 in den bestehenden `TraceEvent`-/`TraceRefs`-/`TraceDetailRef`-Vertrag
-(`trace-index.ts:45–60`). Der Adapter ist Produktionscode ohne Dateisuche,
-Dateileser, Provideraufruf, Registry, Backend oder Route. Der vorhandene
-`buildTrace` und `GET /api/trace?task=` bleiben eigenständige Ledgerprojektionen;
-sie liefern diese nativen Events noch nicht. Das Ergebnis ist
-`fleet.trace-native/v1`, keine Behauptung einer laufenden nativen API.
+(`trace-index.ts:45–60`). `GET /api/timeline` bindet seit C2 die serverseitig
+aufgelösten nativen Quellen und die bestehende `buildTrace`-Ledgerprojektion in
+einer seitenweisen Owner-Lesetür zusammen. `GET /api/trace?task=` bleibt erhalten.
+Der Adapter selbst hat weiterhin weder Dateisuche noch Dateileser oder
+Provideraufruf. Native Snapshots tragen `fleet.trace-native/v1`, die gemeinsame
+Liste `fleet.timeline/v1`. Es entsteht kein zweites Ereignismodell.
 
 ## Eingabe und belegte Formatgrenze
 
 `NativeInput` enthält `sourceHost`, einen opaken `sourceId`, Harness, Format,
-Quellgeneration `version`, einen vollständigen Byte-Snapshot ab `byteOffset: 0`,
+Quellgeneration `version`, einen Byte-Snapshot ab `byteOffset: 0` oder einen zusammenhängenden Delta-Block,
 `observedAt`, eine explizite Session-/cwd-Bindung und bekannte Redaktionsmarker.
 Quelle und Version sind vom autorisierten Aufrufer zu liefern, keine aus Slot,
 Dateiname, mtime oder ähnlichem cwd abgeleiteten Fakten. `inputHash` ist SHA-256
-über die tatsächlich übergebenen Bytes. Ein beliebiger Offset ohne Header ist
-gegenwärtig abgewiesen; Fenster-/Cursor-Eingaben brauchen später einen belegten
-Index samt Identität. Es gibt keinen stillen Dateinachladepfad.
+über die tatsächlich übergebenen Bytes, bei einem Delta also über diesen Block.
+Ein positiver Offset ist nur zusammen mit dem unmittelbar vorherigen Snapshot
+und dessen prozessintern erhaltenem Parserzustand akzeptiert; er muss exakt
+`previous.inputBytes` entsprechen. Der Index prüft bei Wachstum zuerst alle
+bereits gelesenen Präfixblöcke gegen ihre SHA-256-Werte. Der Parser hält
+Identitäts-/Record-/Toolmetadaten und maximal 8 MiB Teilzeile; Argumente und
+Resultattexte werden nach dem Parsen verworfen. LF-/UTF-8-Splits bleiben erhalten.
+Eine größere Recordzeile wird ausdrücklich `oversized-record`, ohne erfundene
+Calls. Es gibt keinen stillen Dateinachladepfad.
 
 | Format / Harness | Getrackter Quellenbeleg | Ausführbare Unterstützung / Grenze |
 |---|---|---|
@@ -155,9 +162,9 @@ Proben verlangt diese Zahlen und je vier Events, kein Pass durch leere Mengen.
 
 Das sind deterministische Fixturekosten, keine Produktionsmessung, kein Tagesmittel
 und kein gemessenes globales Budget. 64 KiB bleibt ein vorläufiger UI-Vorschlag.
-C1 parst den übergebenen Snapshot erneut; es behauptet keine persistierte
-inkrementelle Indexkostenmessung. C2 muss Index/Übersicht/Fenster/Detail/Cursor
-mit synthetischer Skalierung separat bemessen und begrenzen.
+C1 parst volle Snapshots; C2 ergänzt zusammenhängende Deltas, ohne einen
+persistierten Index oder eine neue Retentionpolicy einzuführen. Die tatsächlichen
+C2-Messungen und Grenzen stehen unten.
 
 Die Proben unterscheiden UUID, cwd (auch spätere Records), fremde Occupation,
 Recycle, Host-/Sourcewechsel, unbekanntes Format/Harness/Pi-Revision, vollständige
@@ -193,3 +200,146 @@ Adapter muss beide Gegenbeispiele zurückweisen und mit `ALL PASS` schließen.
 Diese Ersatzanforderungen stammen aus dem S5-Zielbild und den getrackten Quellen;
 C1 verändert keinen dieser Einstiege und erbringt keine Gleichwertigkeitsabnahme.
 C2/API, U1/U2 und der spätere Ersatz bleiben nachgelagerte, offene Produktarbeit.
+
+## C2: Owner-Drahtvertrag und Seiten
+
+`GET /api/timeline?from=<ms>&to=<ms>[&project=<key>&program=<id>&session=<uuid>&harness=<name>&limit=<1..100>&cursor=<opaque>]`
+liegt hinter dem vorhandenen Owner-Token-Gate. Zeitraumgrenzen sind inklusive,
+endliche sichere Ganzzahlen ab Unix-Epoch; `from <= to`. Beide sind erforderlich.
+Filter sind UND-verknüpft. `project` ist der vorhandene `projectKeyOf`-Hash des
+belegten Repo-Pfads, bei einer Session ohne Repo-Beleg der ihres cwd. Ein
+Task-/Program-/Projektjoin wird nur aus erhaltenen Belegen gemacht; unbekannte
+Programzugehörigkeit besteht einen benannten Programfilter nicht.
+
+Unbekannte Queryparameter, Dateipfade, ungültige UUIDs, Grenzen und Limits geben
+400; ohne Ownercredential 401. Unbekannte/abgelaufene Cursor, Filterwechsel oder
+eine inzwischen geänderte Indexrevision geben 409 `cursor-stale`; dann ohne
+Cursor neu anfangen. Eine einzelne zu große Metadatenzeile gibt 413. Antwort ist
+JSON mit `cache-control: no-store`; es gibt keinen neuen Share-/Grant-Pfad.
+
+| Feld | Vertrag |
+|---|---|
+| `schema`, `host`, `revision`, `window` | `fleet.timeline/v1`; lokaler OS-Hostname, opake Indexrevision, angefragte Grenzen |
+| `sessions[]` | Nur die auf dieser Seite referenzierten Sessionheader; `key = SHA256([host,session,slot,openedAt])`, nicht Slotnummer allein |
+| `occupation` | `slot`, exaktes `openedAt`, kanonischer Hash des konsistenten Host-/UUID-/cwd-/Belegungsbelegs; kein behaupteter Signaturbeweis |
+| `harness`, `project`, `program`, `task`, `branch` | belegte Zuordnung oder `unknown`/null; cwd und Dateipfad fehlen im Header |
+| `source` | opake Source-ID, Generation, Adapterzustand, gelesene/verfügbare/vollständige Bytes und nativer Horizont |
+| `gaps[]` am Header | Native und Resolver-Lücken; maximal 16 native Diagnosen plus `additional-source-gaps` mit Zahl der weiteren Diagnosen |
+| `entries[]` | `{id,at,sessionKey,event}`; Sessionanker hat `event:null`, echte Ereignisse sind bestehende `TraceEvent`s / `NativeEvent`s |
+| `at` des Sessionankers | Beginn der Belegung, auf die linke Fenstergrenze begrenzt; das echte `openedAt` bleibt im Header |
+| `sessionKey:null` am Ledgerereignis | Task ist belegt, konkrete Sessionbelegung ist nicht belegt; keine Attribution nur aus wiederverwendetem Slot oder Branch |
+| `ledger[]` | Horizonte von `buildTrace` für Tasks mit Ledgerereignissen auf dieser Seite; bei Byteüberlauf ausdrückliche Horizontlücke |
+| `nextCursor` | opaker, serverseitiger Fortsetzungsbeleg; null nach der letzten Seite dieser Indexrevision |
+| `pending`, `coverage`, globale `gaps` | Hintergrundlesung noch nicht fertig / Fehler; Abdeckung bleibt `incomplete`, verlorene Historie wird nicht rekonstruiert |
+| `budget`, `work` | Grenzen sowie gemessene Byte-/Readarbeit des letzten Indexschritts; kein Toolpayload und kein Kontextinhalt |
+
+Sortierung ist `at`, dann stabile Ereignis-ID; gleiche Zeit bedeutet keine
+Kausalfolge. Clock-Uncertainty bleibt `unknown`, Toolruntime bleibt null.
+Original-IDs, Parent-/Sidechain-/Pi-Branchbelege und late/missing/orphan bleiben
+wie im nativen Vertrag erhalten. Innere Codex-exec-Aufrufe sind unsupported.
+Argumente, Resultattexte, Reporttext und Prüflogbytes fehlen in der Liste.
+`detailRef` ist nur der vorhandene Locator/Fingerprint, keine Leseberechtigung;
+die autorisierte Detailtür ist eine andere Karte. Der bestehende Exportredaktor
+reinigt zusätzlich die serialisierte Antwort mit den bekannten Credentialwerten.
+
+## C2: Quellen-, Lücken- und Oberflächenmatrix
+
+| Träger / Quelle | Auflösung / Evidenz | Lücke / Grenze |
+|---|---|---|
+| Live-Slots | UUID, cwd, Harness, Slot+openedAt und Task/Program aus servereigenem Zustand | Ungepinnte oder leere Slots liefern keinen erfundenen UUID-Beleg |
+| Erhaltene Fleet-Reports | `worker{sessionId,cwd,slot,openedAt,branch}` plus Provenienz im bestehenden Serverzustand | Der Reportledger allein enthält keinen Worker-UUID/cwd-Beleg; eviktierte Worker können nur andere Träger belegen |
+| `streams/prompts.jsonl` | erhaltene Empfangs-UUID, cwd und Belegung; Text sofort verworfen | Legacy ohne UUID/cwd/openedAt = `unbound-prompt-record`; Text-/Labelinterpretation ist kein Join |
+| `state-snapshots.jsonl` .archive/.1/aktiv | exakte UUID+Slot+openedAt verbindet Task/Program/Branch/Projekt mit einem bereits belegten cwd | Legacy = `unbound-snapshot-record`; Snapshot ohne passenden cwd-Beleg erzeugt keine Quelle |
+| Taskarchiv / Outcomes | erhaltene Task-/Repo-/Program-/Branchfelder; cwd nur über vorhandenes `worktreePathFor` | Keine Taskidentität aus Brieftext oder Branchslug; fehlende Belege bleiben null |
+| Claude | gepinnter `projDir(cwd)/UUID.jsonl`, bestehendes `transcriptCwd` und `sameCwd`; alle Records nochmals im Adapter geprüft | Slug ist kein Identitätsbeweis; falsche UUID/cwd liefert keine fremden Events |
+| Codex | `codexContextFile` und `codexSessionMeta`, exakte UUID/cwd, danach Adapterprüfung | Kein fremder Rollout aus bloßer Dateireihenfolge; verlorene Quelle bleibt Sessionlücke |
+| Pi / pi-zai / pi-ox | vorhandene jeweiligen Context-Resolver samt UUID-/Header-/cwd-Prüfung | Mehrdeutigkeit oder fehlende Quelle bleibt Lücke; andere v3-Revision unsupported |
+| Unbekannter Harness | expliziter Name aus Beleg | `unsupported-source`, keine Claude-Fallbackdatei |
+| Fehlende Harnesszuordnung | genau ein Treffer unter den fünf vorhandenen Resolvern darf den Harness belegen | null/mehrere Treffer = `source-missing`; nicht als ruhige oder vollständige Session darstellen |
+| Wachstum / Rewrite | Bytecursor und Blockhash-Präfixprüfung; inode/shrink/gleichgroße Änderung setzt neue Generation | Während Prüfung `source-change-unverified`; Rewrite invalidiert alte Generation, Teilzeile bleibt pending |
+| Gelöschte Quelle | Beleg bleibt, native Events werden entfernt | `source-missing`; kein Weiterreichen alter Calls als aktuelle Quellenbytes |
+| Ledgerereignisse | ausschließlich `buildTrace`, dessen Generationen und bestehende Quellenref-/Horizontsemantik | Exakte Sessionkante nur mit UUID+Slot+openedAt im Ereignis; sonst unzugeordnet |
+| Vor dem erhaltenen Horizont | kein rekonstruierender Quellenzugriff | `history-before-retained-sources-unknown`, niemals vollständige Maschinenhistorie behaupten |
+
+Wire, Server, Docs und Probes: `apply`. Client: `not-applicable` in dieser Karte;
+kein Clientfile wurde geändert. Reverse-state/Persistenz: `not-applicable`; Index,
+Parserzustand, Cache und Cursor leben ausschließlich im Serverprozess. Host- und
+Grantpolicy sowie Retention bleiben beim bestehenden System. Externe/entfernte
+Hostquellen sind `unsupported` in dieser lokalen Maschinenliste.
+
+Die vorhandenen Audit-/Outcomes-/Post-Land-/Checks-/Info-Einstiege der obigen
+Ersatzmatrix bleiben bestehen. Ihre Routeanker sind `/api/audit`, `/api/lane`,
+`/api/trace`, `/api/lane-outcomes`, `/api/post-land-audits` samt `/artifact`,
+die Mergezustände in `/api/sessions` und `/api/deploys`. C2 migriert keine Navigation und beweist keine
+Gleichwertigkeit dieser Einstiege; rote/unknown Urteile und Originalprüflogs
+bleiben an ihren vorhandenen Türen erreichbar.
+
+## C2: Vorher gemessene Größen und festgelegte Ladegrenzen
+
+Read-only-Inventur am 08.10.2026 auf dieser Maschine **vor dem Indexbau**:
+Dateistatistik plus maximal 65.536 Header-/Recordbytes pro Datei in den
+vorhandenen Harnesswurzeln. Die Tabelle zählt Dateien mit UUID/cwd im gelesenen
+Bereich, nicht bestätigte Fleet-Sessions. Keine Argumente, Inhalte, Pfade oder
+UUIDs sind Bestandteil dieses Messergebnisses. p90 ist nearest-rank;
+Claude-Sidechainunterverzeichnisse sind nicht Teil der Inventur.
+
+| Harness | Rohdateien / UUID+cwd-Kandidaten | Summe B | Median B | p90 B | Maximum B | Inventur ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Claude | 2152 / 1673 | 2903127305 | 757405 | 4216019 | 33936647 | 1670,09 |
+| Codex | 1192 / 1192 | 4286831221 | 1811113,5 | 6181395 | 419372296 | 937,40 |
+| Pi | 80 / 80 | 56156325 | 612440,5 | 1281839 | 4684351 | 619,96 |
+| pi-zai | 213 / 213 | 106902880 | 408636 | 1023091 | 1702118 | 282,70 |
+| pi-ox | 18 / 18 | 7208331 | 287817,5 | 1400600 | 1901363 | 23,81 |
+
+Erhaltene lokale Trägergrößen: Promptjournal 60106321 B, Reportledger 4054187 B,
+Snapshots 31146113 B über drei Generationen, Taskarchiv 16524905 B, Outcomes
+2700126 B, Audit 22313072 B über drei Generationen, Post-Land-Audits 5802297 B.
+Das sind einzelne Messzeitpunkte laufender Dateien, keine Retentionsgarantie.
+
+Vor Implementierung festgelegt: native/Bindungsträger **1 MiB pro Indexschritt**,
+Seite **64 KiB UTF-8 und höchstens 100 Einträge**, Teilzeile **8 MiB**,
+native Sessionquellen **20000 pro Prozess**, Cursor **10 min / 300**,
+**0 native Byte-Reads bei unveränderten Quellen**. Bei größerem Bestand bleiben
+Sessionheader mit `session-budget` sichtbar. Das bestehende `buildTrace` arbeitet
+separat: Timeline setzt maximal **64 MiB pro Ledger über alle drei Generationen**;
+ein größerer Ledger wird ausdrücklich unmeasured. Erstlesen ist damit höchstens
+320 MiB über fünf Ledger, nicht das native 1-MiB-Budget. Unveränderte Ledger
+verwenden den bestehenden Projektionspfad mit einem Stat-gebundenen Readcache.
+Pro Schritt wird höchstens eine Taskprojektion aktualisiert; veränderte Träger
+werden fair über Tasks verteilt. Git liest `buildTrace` über den bestehenden
+Serverleser, keine eigene Gitprojektion. Resolver-Metadaten und Gitarbeit sind
+nicht in `work.readBytes` enthalten.
+
+Verarbeitung startet bedarfsgesteuert und läuft bei Rückstand seriell in
+100-ms-Schritten im Hintergrund weiter. Seiten bei `pending:true` sind ein
+Teilstand, Cursor binden genau diese Revision. Unveränderte gefilterte/sortierte
+Projektionen werden für höchstens acht Querys wiederverwendet. Budgets begrenzen
+Leseschritte und Antwortbytes, keine neue Quellenaufbewahrung. Die gesamte
+Historie wird nicht bei jedem Poll erneut aus Dateien gelesen.
+
+Je Harness wurde die mittlere nach Bytegröße sortierte echte Kandidatendatei
+normalisiert. Vor dem Bau: Claude 37,79 ms/62 Events, Codex 26,96 ms/56,
+Pi 11,98 ms/0 plus `invalid-tool-metadata`, pi-zai 17,64 ms/126,
+pi-ox 13,31 ms/92. Die Pi-Probe zeigte erhaltene zusammengesetzte Provider-IDs
+mit `|`; C2 akzeptiert und paart deren exakten Identifier, ohne ihn zu kürzen.
+Danach liefert dieselbe Pi-Quelle 142 Events ohne diese Lücke; eine synthetische
+Probe sichert die exakte Paarung. Native Herstellerrevisionen bleiben unknown.
+
+Messung des fertigen Index auf denselben Dateien, ohne Git-/Ledgerarbeit, ohne
+Kompression; ein Lauf je Quelle, keine statistische Latenzgarantie:
+
+| Harness | Cold ms / Schritte | Events | Seiten | größte Seite B | Warm ms / native Reads |
+|---|---:|---:|---:|---:|---:|
+| Claude | 27,24 / 1 | 62 | 2 | 63771 | 1,62 / 0 |
+| Codex | 27,77 / 2 | 56 | 2 | 64697 | 1,21 / 0 |
+| Pi | 18,79 / 1 | 142 | 4 | 64251 | 1,04 / 0 |
+| pi-zai | 11,18 / 1 | 126 | 3 | 65063 | 1,41 / 0 |
+| pi-ox | 9,27 / 1 | 92 | 3 | 65068 | 1,42 / 0 |
+
+Dies beweist die gemessenen mittleren Quellen und den unveränderten Poll,
+keine komplette Warm-Latenz über den mehrgigabytegroßen Maschinenbestand.
+419-MB-Quellen und Änderungen während des Lesens bleiben inkrementell/pending,
+verlorene Abschnitte bleiben unknown. Der ausführbare Trace-Test prüft fünf
+Harnesses, parallele Sessions plus Lücke, UUID/cwd, Recycle, Rewrite einschließlich
+Wachstum, Teilzeile, late/missing, unsupported, Cursor und Payloadfreiheit.
+Jeder neue Timeline-Check hat eine spezifisch rot machende Scratchmutation.

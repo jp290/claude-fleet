@@ -814,7 +814,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // proves existence without touching state
   const fixT = (await (await post("/api/tasks", { text: "sec-matrix-fixture", queue: false })).json()) as { task: { id: string } };
   await post(`/api/tasks/${fixT.task.id}/done`, {});
-  const probes = [...dangerous(idle?.id ?? 16), ...taskSurface(fixT.task.id)];
+  const probes = [...dangerous(idle?.id ?? 16), ...taskSurface(fixT.task.id),
+    { path: "/api/timeline?from=0&to=9999999999999", method: "GET" as const, owner: 200 as const }];
   // A scoped self credential, taken from state rather than a pane probe (deterministic, and it is
   // the same string the pane exports — server.ts reads it from exactly here). SLOT 2 BY NAME, and
   // that name is the point: it is a PLAIN (non-lane) session, and since 2026-08-07 its pane carries

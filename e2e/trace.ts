@@ -18,9 +18,10 @@
 //   no-raw    — copy a report text, a note's verify.out, an audit's out or a task text into an event.
 //   old task  — answer a task older than every horizon with `read`, zero events, or a 404.
 //   malformed — drop a torn line instead of counting it.
-import { runNativeProbes } from "./trace-native-fixtures";
+import { NATIVE_CANARY, NATIVE_FIXTURES, runNativeProbes } from "./trace-native-fixtures";
+import { TimelineIndex, TIMELINE_BUDGET, type TimelinePage, type TimelineReceipt } from "../trace-timeline";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { check, IP, PORT, ROOT, SOCK } from "./harness";
 import { TRACE_FAMILIES, type SourceCoverage, type SourceHorizon, type TraceEvent } from "../trace-index";
@@ -140,6 +141,176 @@ function stage(dir: string): void {
   symlinkSync(`${ROOT}/node_modules`, `${dir}/node_modules`);
 }
 
+async function timelineProbes(): Promise<void> {
+  const dir = `${FIX}/index`; mkdirSync(dir, { recursive: true });
+  const f = NATIVE_FIXTURES[1]!;
+  const receipt: TimelineReceipt = { session: f.input.binding!.sessionId, cwd: f.input.binding!.cwd, slot: 2,
+    openedAt: CREATED, harness: "codex", project: "project-1", program: PROGRAM, task: TASK, branch: BRANCH,
+    at: CREATED, proof: "a".repeat(64) };
+  const file = `${dir}/native.jsonl`; writeFileSync(file, f.input.bytes);
+  let current = [receipt], resolutions = 0;
+  const index = new TimelineIndex({ host: "test-host", carriers: [], live: () => current, tasks: () => [],
+    resolve: (r) => { resolutions++; return { file, harness: "codex", format: f.input.format, cwd: r.cwd }; },
+    worktreeOf: () => receipt.cwd, projectOf: () => "project-1", redactions: () => [NATIVE_CANARY],
+    traceVersion: () => "fixed", trace: async () => ({ result: "trace", task: TASK, row: null, anchorAt: CREATED,
+      events: [{ source: "fleet-reports.jsonl", kind: "report.filed.complete", at: CREATED,
+        refs: { task: TASK }, files: [], detailRef: { source: "fleet-reports.jsonl", locator: "fleet-reports.jsonl@0+1" } }],
+      coverage: [], horizon: [] }) });
+  const url = new URL("http://fixture/api/timeline?from=0&to=9999999999999");
+  const read = async (u = url): Promise<TimelinePage> => (await index.page(u)).body as TimelinePage;
+  const first = await read(), second = await read();
+  check("timeline unchanged poll reads zero source bytes and resolves nothing again",
+    first.work.sourceReads === 1 && second.work.sourceReads === 0 && second.work.readBytes === 0
+      && resolutions === 1 && second.revision === first.revision,
+    JSON.stringify({ first: first.work, second: second.work, resolutions, revisions: [first.revision, second.revision] }));
+  const paged = new URL(url); paged.searchParams.set("limit", "2");
+  const page1 = await read(paged); paged.searchParams.set("cursor", page1.nextCursor!);
+  const page2 = await read(paged);
+  check("timeline stable pagination neither duplicates nor drops calls at equal timestamps",
+    page1.nextCursor !== null && page2.schema === "fleet.timeline/v1"
+      && new Set([...page1.entries, ...page2.entries].map((e) => e.id)).size === 4
+      && page1.entries.every((e) => !page2.entries.some((p) => p.id === e.id)), JSON.stringify([page1.entries, page2.entries]));
+  paged.searchParams.set("program", "different");
+  check("timeline cursor cannot cross filters", (await index.page(paged)).status === 409);
+  const recycled = { ...receipt, openedAt: receipt.openedAt + 1, proof: "b".repeat(64) };
+  current = [receipt, recycled];
+  const two = await read();
+  check("timeline recycle isolates identical session bytes by host and occupation",
+    two.sessions.length === 2 && new Set(two.sessions.map((s) => s.key)).size === 2
+      && two.entries.filter((e) => e.event?.kind === "tool.call").length === 4
+      && new Set(two.entries.filter((e) => e.event?.kind === "tool.call").map((e) => e.id)).size === 4, JSON.stringify(two.sessions));
+  writeFileSync(file, new TextDecoder().decode(f.input.bytes).replace("exec-1", "exec-2"));
+  const rewritten = await read();
+  check("timeline rewrite changes generation and invalidates the old cursor",
+    rewritten.sessions.every((s) => s.source.version === "generation-2" && s.gaps.some((g) => g.code === "source-rewritten"))
+      && (await index.page(new URL(url + "&limit=2&cursor=" + page1.nextCursor))).status === 409);
+  const prefix = new TextEncoder().encode(f.rows.slice(0, 2).map((r) => JSON.stringify(r) + "\n").join(""));
+  const result = JSON.stringify(f.rows[2]) + "\n";
+  writeFileSync(file, prefix); appendFileSync(file, result.slice(0, 40));
+  const partial = await read();
+  check("timeline partial line keeps pending calls and explicit missing-result gaps",
+    partial.sessions.every((s) => s.gaps.some((g) => g.code === "partial-record") && s.gaps.some((g) => g.code === "missing-result"))
+      && partial.entries.filter((e) => e.event?.kind === "tool.call").length === 2
+      && !partial.entries.some((e) => e.event?.kind === "tool.result"));
+  appendFileSync(file, result.slice(40));
+  const late = await read();
+  check("timeline appended late result appears once per occupation and preserves the call identity",
+    late.entries.filter((e) => e.event?.kind === "tool.result").length === 2
+      && late.entries.filter((e) => e.event?.kind === "tool.call").every((e) =>
+        partial.entries.some((p) => p.id === e.id) && "status" in e.event! && e.event.status === "late")
+      && late.sessions.every((s) => !s.gaps.some((g) => g.code === "missing-result" || g.code === "partial-record")));
+  writeFileSync(file, new TextDecoder().decode(f.input.bytes).replaceAll("exec-1", "exec-3") + "{\"type\":\"notice\"}\n");
+  const grownRewrite = await read();
+  check("timeline growing rewrite cannot reuse an unchecked native prefix",
+    grownRewrite.sessions.every((s) => s.gaps.some((g) => g.code === "source-rewritten"))
+      && !grownRewrite.entries.some((e) => e.event?.refs.call === "exec-1")
+      && grownRewrite.entries.filter((e) => e.event?.kind === "tool.call").length === 4);
+  current = [{ ...receipt, session: "30000000-0000-4000-8000-000000000099" }];
+  const foreignUuid = await read();
+  check("timeline native UUID fence yields an explicit gap and zero foreign events",
+    foreignUuid.sessions.length === 1 && foreignUuid.sessions[0]!.gaps.some((g) => g.code === "session-id-mismatch")
+      && !foreignUuid.entries.some((e) => e.event?.kind.startsWith("tool.")));
+  current = [{ ...receipt, cwd: "/foreign/checkout" }];
+  const foreignCwd = await read();
+  check("timeline native cwd fence yields an explicit gap and zero foreign events",
+    foreignCwd.sessions.length === 1 && foreignCwd.sessions[0]!.gaps.some((g) => g.code === "cwd-mismatch")
+      && !foreignCwd.entries.some((e) => e.event?.kind.startsWith("tool.")));
+  current = [{ ...receipt, harness: "future-harness" }];
+  const unsupported = new TimelineIndex({ host: "test-host", carriers: [], live: () => current, tasks: () => [],
+    resolve: () => null, worktreeOf: () => receipt.cwd, projectOf: () => "project-1", redactions: () => [],
+    traceVersion: () => "fixed", trace: async () => ({ result: "unknown-task", task: TASK, searched: [], horizon: [] }) });
+  const unsupportedPage = (await unsupported.page(url)).body as TimelinePage;
+  check("timeline unsupported harness remains a session with a named unsupported source",
+    unsupportedPage.sessions.length === 1 && unsupportedPage.sessions[0]!.gaps.some((g) => g.code === "unsupported-source")
+      && !unsupportedPage.entries.some((e) => e.event));
+  current = [receipt, recycled];
+  writeFileSync(file, f.input.bytes);
+  const beforeDeletion = await read();
+  rmSync(file);
+  const missing = await read();
+  check("timeline deleted source keeps both occupations as explicit gaps and removes stale calls",
+    beforeDeletion.entries.filter((e) => e.event?.kind === "tool.call").length === 4
+      && missing.sessions.length === 2 && missing.sessions.every((s) => s.gaps.some((g) => g.code === "source-missing"))
+      && !missing.entries.some((e) => e.event?.kind === "tool.call"));
+  check("timeline refuses caller paths and invalid windows",
+    (await index.page(new URL(url + "&path=/etc/passwd"))).status === 400
+      && (await index.page(new URL("http://fixture/api/timeline?from=20&to=10"))).status === 400);
+}
+
+const TIMELINE_SIDS = NATIVE_FIXTURES.map((_, i) => `40000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+function timelineFixtures(dir: string): void {
+  const proposedCwd = `${FIX}/native-repo`; mkdirSync(proposedCwd, { recursive: true });
+  const cwd = realpathSync(proposedCwd);
+  mkdirSync(`${dir}/streams`, { recursive: true });
+  const prompts: unknown[] = [], lanes: unknown[] = [];
+  for (const [i, f] of NATIVE_FIXTURES.entries()) {
+    const sid = TIMELINE_SIDS[i]!;
+    const text = new TextDecoder().decode(f.input.bytes).replaceAll(f.input.binding!.sessionId, sid)
+      .replaceAll(f.input.binding!.cwd, cwd).replace(/2026-01-01T00:00:[0-9:.]+Z/g,
+        (at: string) => new Date(DISPATCHED + Date.parse(at) - Date.parse("2026-01-01T00:00:00.000Z")).toISOString());
+    let file: string;
+    if (f.name === "claude") file = `${dir}/native-claude/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}/${sid}.jsonl`;
+    else if (f.name === "codex") file = `${dir}/native-codex/2026/01/01/rollout-test-${sid}.jsonl`;
+    else {
+      const root = f.name === "pi" ? `${dir}/home/.pi/agent` : f.name === "pi-zai" ? `${dir}/native-pi-zai` : `${dir}/native-pi-ox/${sid}`;
+      const real = realpathSync(cwd);
+      file = `${root}/sessions/--${real.replace(/^\/+/, "").replaceAll("/", "-")}--/test_${sid}.jsonl`;
+    }
+    mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true }); writeFileSync(file, text);
+    prompts.push({ ts: DISPATCHED, slot: 20 + i, openedAt: DISPATCHED, sessionId: sid, cwd, text: NATIVE_CANARY });
+    lanes.push({ s: 20 + i, openedAt: DISPATCHED, sessionId: sid, taskId: TASK, programId: PROGRAM,
+      branch: BRANCH, projectKey: "project-fixture" });
+  }
+  const sid = "40000000-0000-4000-8000-000000000099";
+  prompts.push({ ts: DISPATCHED, slot: 29, openedAt: DISPATCHED, sessionId: sid, cwd, text: NATIVE_CANARY });
+  lanes.push({ s: 29, openedAt: DISPATCHED, sessionId: sid, taskId: TASK, programId: PROGRAM,
+    branch: BRANCH, projectKey: "project-fixture" });
+  writeFileSync(`${dir}/streams/prompts.jsonl`, jsonl(prompts));
+  writeFileSync(`${dir}/state-snapshots.jsonl`, jsonl([{ ts: DISPATCHED + 3000, lanes }]));
+}
+
+async function timelineRouteProbes(base: string, headers: Record<string, string>): Promise<void> {
+  const query = `from=${DISPATCHED}&to=${AUDITED}&program=${PROGRAM}&project=project-fixture`;
+  const get = async (extra = "") => {
+    const r = await fetch(`${base}/api/timeline?${query}${extra}`, { headers });
+    return { status: r.status, body: await r.json() as TimelinePage };
+  };
+  let result = await get();
+  for (let i = 0; i < 20 && result.body.pending; i++) { await Bun.sleep(100); result = await get(); }
+  const body = result.body;
+  const tool = body.entries.filter((e) => e.event?.kind.startsWith("tool."));
+  check("timeline owner route shows five native harnesses with every retained call and result exactly once",
+    result.status === 200 && body.schema === "fleet.timeline/v1" && tool.length === 20
+      && new Set(tool.map((e) => e.id)).size === 20
+      && NATIVE_FIXTURES.every((f) => body.sessions.some((s) => s.harness === f.name))
+      && tool.every((e) => e.event?.detailRef?.locator.startsWith("native:")),
+    `${result.status} tools=${tool.length} harnesses=${body.sessions.map((s) => s.harness).join(",")}`);
+  check("timeline window retains parallel sessions and a missing-source session without smoothing clocks or edges",
+    body.sessions.length === 6 && body.sessions.some((s) => s.gaps.some((g) => g.code === "source-missing"))
+      && body.sessions.every((s) => s.host === body.host && s.occupation.openedAt === DISPATCHED && s.clockUncertainty === "unknown")
+      && body.entries.some((e) => e.event?.kind === "report.filed.complete" && e.sessionKey === null)
+      && body.entries.some((e) => e.event?.kind === "audit.green"), JSON.stringify(body.sessions));
+  const codex = await get("&harness=codex&session=" + TIMELINE_SIDS[1]);
+  check("timeline native filters preserve exactly one session and its four events",
+    codex.body.sessions.length === 1 && codex.body.sessions[0]?.harness === "codex"
+      && codex.body.entries.filter((e) => e.event?.kind.startsWith("tool.")).length === 4);
+  const unchanged = await get();
+  check("timeline route second unchanged poll reads no source and fits the measured page budget",
+    unchanged.body.work.sourceReads === 0 && unchanged.body.work.readBytes === 0
+      && Buffer.byteLength(JSON.stringify(unchanged.body)) <= TIMELINE_BUDGET.pageBytes
+      && !JSON.stringify(unchanged.body).includes(NATIVE_CANARY)
+      && !JSON.stringify(unchanged.body).includes("RAW-REPORT-TEXT"));
+  const pages: TimelinePage[] = []; let cursor: string | null = null;
+  do { const r = await get("&limit=3" + (cursor ? "&cursor=" + cursor : "")); pages.push(r.body); cursor = r.body.nextCursor; }
+  while (cursor && pages.length < 50);
+  const all = pages.flatMap((p) => p.entries);
+  check("timeline route pagination preserves every entry once across equal times",
+    pages.length > 1 && !cursor && all.length === body.entries.length && new Set(all.map((e) => e.id)).size === all.length);
+  const bad = await fetch(`${base}/api/timeline?${query}&file=/etc/passwd`, { headers });
+  const anon = await fetch(`${base}/api/timeline?${query}`);
+  check("timeline route is owner-only and has no caller-selected file door", bad.status === 400 && anon.status === 401);
+}
+
 export async function run(): Promise<void> {
   await runNativeProbes(check);
   rmSync(FIX, { recursive: true, force: true });
@@ -149,6 +320,8 @@ export async function run(): Promise<void> {
   stage(dir);
   fixtureLedgers(dir, repo, forkSha, landedSha);
 
+  timelineFixtures(dir);
+  await timelineProbes();
   const port = PORT + OFF;
   const sock = `${SOCK}trace${OFF}`;
   const base = `http://${IP}:${port}`;
@@ -156,6 +329,8 @@ export async function run(): Promise<void> {
   const proc = Bun.spawn(["bun", "server.ts"], {
     cwd: dir, stdout: "pipe", stderr: "pipe",
     env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: TOKEN,
+      HOME: `${dir}/home`, FLEET_CLAUDE_PROJECTS_DIR: `${dir}/native-claude`, FLEET_CODEX_SESSIONS_DIR: `${dir}/native-codex`,
+      FLEET_PI_ZAI_AGENT_DIR: `${dir}/native-pi-zai`, FLEET_PI_OX_AGENT_DIR: `${dir}/native-pi-ox`,
       FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0" },
   });
   const drain = async (s: ReadableStream<Uint8Array>) => { for await (const c of s) out += new TextDecoder().decode(c); };
@@ -174,6 +349,7 @@ export async function run(): Promise<void> {
       return { status: r.status, body: (await r.json().catch(() => ({}))) as Trace };
     };
 
+    await timelineRouteProbes(base, H);
     const { status, body } = await get(TASK);
     const ev = body.events ?? [];
     const first = (pred: (e: TraceEvent) => boolean): number => ev.findIndex(pred);

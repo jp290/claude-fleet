@@ -33,6 +33,8 @@ export interface NativeSnapshot {
   gaps: NativeGap[]; horizon: SourceHorizon;
 }
 interface Line { row: Record<string, unknown>; offset: number; bytes: number; fp: string }
+interface NativeReadState { lines: Line[]; tail: Uint8Array; skipping: boolean }
+const readStates = new WeakMap<NativeSnapshot, NativeReadState>();
 interface ToolRecord { line: Line; block: number; call: string; name: string; namespace: string | null;
   family: string; result: boolean; outcome: NativeEvent["outcome"]; paths: string[] }
 const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
@@ -53,6 +55,8 @@ const hasSecret = (s: string, input: NativeInput): boolean => input.redactions.s
   || /(?:sk-[A-Za-z0-9]{12}|Bearer\s|x-fleet-self-token|-----BEGIN .*PRIVATE KEY)/i.test(s);
 const token = (v: unknown, input: NativeInput): v is string => typeof v === "string"
   && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(v) && !hasSecret(v, input);
+const callToken = (v: unknown, input: NativeInput): v is string => typeof v === "string"
+  && /^[A-Za-z0-9][A-Za-z0-9_.:|=-]{0,255}$/.test(v) && !hasSecret(v, input);
 const recordId = (line: Line, pi: boolean): string | null => text(line.row[pi ? "id" : "uuid"]);
 const parentId = (line: Line, pi: boolean): string | null => text(line.row[pi ? "parentId" : "parentUuid"]);
 const clockOf = (format: string): string => `${format} record.timestamp wallclock`;
@@ -76,7 +80,7 @@ function toolRecords(line: Line, input: NativeInput, gaps: NativeGap[]): ToolRec
   const found: ToolRecord[] = [];
   const add = (block: number, family: string, result: boolean,
     call: unknown, name: unknown, namespace: unknown, error: unknown, path: unknown): void => {
-    if (!token(call, input) || (!result && !token(name, input)) || (namespace != null && !token(namespace, input))) {
+    if (!callToken(call, input) || (!result && !token(name, input)) || (namespace != null && !token(namespace, input))) {
       gaps.push({ code: "invalid-tool-metadata", offset: line.offset, bytes: line.bytes }); return;
     }
     found.push({ line, block, family, result, call, name: result ? "unknown" : name as string,
@@ -110,6 +114,7 @@ function toolRecords(line: Line, input: NativeInput, gaps: NativeGap[]): ToolRec
 // Snapshots contain the supplied generation only. The optional prior snapshot is evidence for
 // append/replay/late detection, never a source of raw bytes or a permission to carry old events.
 export async function normalizeNative(input: NativeInput, previous?: NativeSnapshot): Promise<NativeSnapshot> {
+  const prefix = input.byteOffset > 0 && previous?.inputBytes === input.byteOffset ? readStates.get(previous) : undefined;
   const safe = (s: string): string => token(s, input) ? s : "redacted";
   const source = safe(input.sourceId), host = safe(input.sourceHost), version = safe(input.version);
   const observed = Number.isFinite(input.observedAt) ? input.observedAt : 0;
@@ -129,7 +134,7 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     || pi && ["pi", "pi-zai", "pi-ox"].includes(input.harness);
   if (!supported) return stop("unsupported", "unsupported-harness-format");
   if (![input.sourceId, input.sourceHost, input.version].every((s) => token(s, input))
-    || input.byteOffset !== 0 || !Number.isFinite(input.observedAt)) return stop("rejected", "invalid-source-metadata");
+    || (input.byteOffset !== 0 && !prefix) || !Number.isFinite(input.observedAt)) return stop("rejected", "invalid-source-metadata");
   const binding = input.binding;
   if (!binding || !UUID.test(binding.sessionId) || hasSecret(binding.sessionId, input)
     || !binding.cwd.startsWith("/") || hasSecret(binding.cwd, input)) return stop("rejected", "missing-binding");
@@ -138,20 +143,50 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     || occupation.cwd !== binding.cwd || !Number.isInteger(occupation.slot) || occupation.slot < 0
     || !Number.isFinite(occupation.openedAt) || !/^[0-9a-f]{64}$/.test(occupation.proofHash)))
     return stop("rejected", "occupation-mismatch");
-  const lines: Line[] = [];
-  let offset = 0;
-  for (let end = input.bytes.indexOf(10); end >= 0; end = input.bytes.indexOf(10, offset)) {
-    const raw = input.bytes.subarray(offset, end);
+  const lines: Line[] = prefix ? [...prefix.lines] : [];
+  const bytes = prefix ? new Uint8Array(prefix.tail.length + input.bytes.length) : input.bytes;
+  if (prefix) { bytes.set(prefix.tail); bytes.set(input.bytes, prefix.tail.length); }
+  const baseOffset = prefix ? input.byteOffset - prefix.tail.length : 0;
+  let offset = 0, skipping = prefix?.skipping ?? false;
+  for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, offset)) {
+    const raw = bytes.subarray(offset, end);
+    if (skipping || raw.length > 8_388_608) {
+      snapshot.gaps.push({ code: "oversized-record", offset: baseOffset + offset, bytes: raw.length });
+      skipping = false; offset = end + 1; continue;
+    }
     try {
       const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-      lines.push({ row: obj(parsed), offset, bytes: end - offset, fp: await hash(raw) });
-    } catch { snapshot.gaps.push({ code: "malformed-record", offset, bytes: end - offset }); }
+      const row = obj(parsed), message = obj(row.message), payload = obj(row.payload);
+      const content = Array.isArray(message.content) ? message.content.map((v: unknown) => {
+        const block = obj(v);
+        return { type: block.type, id: block.id, name: block.name, tool_use_id: block.tool_use_id,
+          is_error: block.is_error, input: { file_path: obj(block.input).file_path },
+          arguments: { path: obj(block.arguments).path } };
+      }) : undefined;
+      lines.push({ row: { type: row.type, version: row.version, id: row.id, cwd: row.cwd,
+        uuid: row.uuid, parentUuid: row.parentUuid, parentId: row.parentId, sessionId: row.sessionId,
+        timestamp: row.timestamp, isSidechain: row.isSidechain,
+        payload: { type: payload.type, id: payload.id, cwd: payload.cwd, timestamp: payload.timestamp,
+          thread_source: payload.thread_source, source: { subagent: { thread_spawn: {
+            parent_thread_id: obj(obj(obj(payload.source).subagent).thread_spawn).parent_thread_id } } }, call_id: payload.call_id,
+          name: payload.name, namespace: payload.namespace },
+        message: { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName,
+          isError: message.isError, content } }, offset: baseOffset + offset, bytes: end - offset, fp: await hash(raw) });
+    } catch { snapshot.gaps.push({ code: "malformed-record", offset: baseOffset + offset, bytes: end - offset }); }
     offset = end + 1;
   }
-  snapshot.completeBytes = offset;
-  if (offset < input.bytes.length) snapshot.gaps.push({ code: "partial-record", offset, bytes: input.bytes.length - offset });
-  if (!lines.length) return stop(offset < input.bytes.length ? "pending" : "rejected", "missing-identity-record");
+  snapshot.inputBytes = input.byteOffset + input.bytes.length;
+  snapshot.completeBytes = baseOffset + offset;
+  if (prefix && previous) snapshot.gaps.unshift(...previous.gaps.filter((g) => g.code === "malformed-record" || g.code === "oversized-record"));
+  if (offset < bytes.length) snapshot.gaps.push({ code: "partial-record", offset: baseOffset + offset, bytes: bytes.length - offset });
+  let tail = bytes.slice(offset);
+  if (skipping || tail.length > 8_388_608) {
+    snapshot.gaps.push({ code: "oversized-record", offset: baseOffset + offset, bytes: tail.length });
+    tail = new Uint8Array(); skipping = true;
+  }
+  readStates.set(snapshot, { lines, tail, skipping });
+  if (!lines.length) return stop(offset < bytes.length ? "pending" : "rejected", "missing-identity-record");
   let parentSession: string | null = null;
   if (input.format === "codex-rollout-jsonl" || pi) {
     const first = lines[0]!, p = pi ? first.row : obj(first.row.payload);
@@ -198,9 +233,10 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     occupation: occupation ? { slot: occupation.slot, openedAt: occupation.openedAt, proofHash: occupation.proofHash } : "unknown",
     nativeVersion: pi ? 3 : "unknown", parentSession };
   const same = previous?.identityKey === snapshot.identityKey;
-  const append = same && previous.inputBytes <= input.bytes.length
-    && await hash(input.bytes.subarray(0, previous.inputBytes)) === previous.inputHash;
+  const append = same && (!!prefix || previous.inputBytes <= input.bytes.length
+    && await hash(input.bytes.subarray(0, previous.inputBytes)) === previous.inputHash);
   const prior = append ? previous.events : [];
+  const priorById = new Map(prior.map((e) => [e.id, e]));
   if (previous && !append) {
     snapshot.invalidated = invalidatedRefs(previous, input);
     snapshot.gaps.push({ code: same ? "source-rewritten" : "source-generation-or-binding-changed" });
@@ -243,7 +279,8 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
       ...(parent ? { parent } : {}), ...(occupation ? { slot: occupation.slot, openedAt: occupation.openedAt } : {}) };
     const detailRef: TraceDetailRef = { source, locator: `native:${snapshot.identityKey}@${r.line.offset}+${r.line.bytes}#${r.block}`,
       fp: r.line.fp.slice(0, 16) };
-    const old = prior.find((e) => e.id === eventId && e.detailRef?.fp === detailRef.fp);
+    const candidate = priorById.get(eventId);
+    const old = candidate?.detailRef?.fp === detailRef.fp ? candidate : undefined;
     const e: NativeEvent = { id: eventId, source, kind: r.result ? "tool.result" : "tool.call", at: occurredAt ?? (old?.observedAt ?? observed),
       refs, files: r.paths, detailRef, sourceHost: host, sourceVersion: version, sessionKey: snapshot.identityKey!,
       occurredAt, observedAt: old?.observedAt ?? observed, atClock: occurredAt === null ? "observer wallclock" : clockOf(input.format),
@@ -269,8 +306,8 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     }
     const c = candidates[0]!;
     e.pair = c.id; c.pair = e.id; e.tool = c.tool;
-    const wasPending = prior.some((p) => p.id === c.id && p.status === "pending");
-    const wasLate = prior.some((p) => p.id === e.id && p.status === "late");
+    const wasPending = priorById.get(c.id)?.status === "pending";
+    const wasLate = priorById.get(e.id)?.status === "late";
     e.status = wasPending || wasLate ? "late" : r.outcome; c.status = e.status; c.outcome = r.outcome;
     if (e.occurredAt !== null && c.occurredAt !== null && e.occurredAt >= c.occurredAt) {
       e.separation = c.separation = { ms: e.occurredAt - c.occurredAt, clock: clockOf(input.format),
@@ -280,7 +317,7 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
   if (snapshot.gaps.some((g) => g.code === "conflicting-tool-replay")) return stop("rejected", "ambiguous-call-identity");
   snapshot.events.sort((a, b) => a.at - b.at || a.record.offset - b.record.offset || a.record.block - b.record.block);
   for (const e of snapshot.events) {
-    const old = prior.find((p) => p.id === e.id);
+    const old = priorById.get(e.id);
     if (!old) snapshot.added.push(e.id);
     else if (JSON.stringify(old) !== JSON.stringify(e)) snapshot.updated.push(e.id);
     if (e.status === "pending") snapshot.gaps.push({ code: "missing-result", offset: e.record.offset });
@@ -288,6 +325,6 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
   const times = lines.map((l) => timestamp(l.row.timestamp)).filter((t): t is number => t !== null);
   if (times.length) snapshot.horizon = { source, state: "read", oldestAt: times.reduce((a, b) => Math.min(a, b)), newestAt: times.reduce((a, b) => Math.max(a, b)),
     rows: lines.length, malformed: snapshot.gaps.filter((g) => g.code === "malformed-record").length,
-    generations: [{ gen: version, rows: lines.length, bytes: input.bytes.length }], clock: clockOf(input.format) };
+    generations: [{ gen: version, rows: lines.length, bytes: snapshot.inputBytes }], clock: clockOf(input.format) };
   return snapshot;
 }

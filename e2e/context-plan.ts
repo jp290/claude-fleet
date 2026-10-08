@@ -680,8 +680,9 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
   const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
+  // `src/` in the FLAECHE makes it visible work: the testinstanz acceptance rides along (trigger visible-surface)
   check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the repo's always packs",
-    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,nachfolge-klug", JSON.stringify(code));
+    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,nachfolge-klug,testinstanz-abnahme", JSON.stringify(code));
   check("task catalog: a measurement task adds only the measurement index",
     measurement.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,messnotiz-index,nachfolge-klug", JSON.stringify(measurement));
   check("task catalog: a rulebook edit adds only the generator guidance",

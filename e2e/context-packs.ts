@@ -14,6 +14,7 @@ import {
   type ContextPackCapability,
   type ContextPackHarness,
   type ContextPackMode,
+  type ContextPackSource,
   type ContextPackTrigger,
 } from "../context-packs";
 import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
@@ -346,6 +347,53 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         `selected=[${plan.selected.map((pack) => pack.id).join(",")}]`
           + ` omitted=[${plan.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`
           + ` sources=${JSON.stringify(selection?.sources ?? null)}`);
+
+      // THE TESTINSTANZ ACCEPTANCE (owner promotion 2026-10-08): visible work is done when it was
+      // clicked through in the lane's running test instance. The REAL manifest pack reaches a lane
+      // whose card FLAECHE names `src/` or `public/` (trigger visible-surface, read off the brief the
+      // dispatch delivers) and every MAIN founding (orchestration), and no other lane.
+      const TI_PACK = "testinstanz-abnahme";
+      const TI_SOURCE = { path: "docs/testinstanz.md", anchor: "## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt" };
+      const bootstrap = listOf("BOOTSTRAP_CONTEXT_TRIGGERS", "ContextPackTrigger");
+      const visibleTexts: Record<string, boolean> = {
+        "FLAECHE: src/client.ts": true,
+        "FLAECHE: server.ts · Symbole: src/board.ts#tiLine": true,
+        "FLÄCHE: public/index.html": true,
+        "Fläche: docs/x.md, src/client.ts": true,
+        "FLAECHE: server.ts, docs/testinstanz.md": false,
+        "FLAECHE: drills/src/x.ts, e2e/public/y.ts": false,
+        "ZIEL: src/client.ts lesen": false,
+      };
+      const misread = Object.entries(visibleTexts).filter(([text, want]) =>
+        taskContextTriggers([text], triggers as ContextPackTrigger[]).includes("visible-surface") !== want)
+        .map(([text]) => text);
+      check("context packs: the visible-surface trigger reads a FLAECHE line rooted at src/ or public/, and nothing else",
+        misread.length === 0, `misread=[${misread.join(" | ")}]`);
+      const tiPlan = (texts: readonly string[], base: readonly string[]) => planRepoContext({ manifest,
+        repo: { trackedPaths, sourceBytes }, facts: { ...repoFacts, triggers: taskContextTriggers(texts, base as ContextPackTrigger[]) } });
+      const visibleLane = tiPlan(["KARTE\nZIEL: Leiste\nFLAECHE: src/client.ts, server.ts\nDONE: x"], triggers);
+      const publicLane = tiPlan(["FLAECHE: public/index.html"], triggers);
+      const backendLane = tiPlan(["KARTE\nZIEL: Gate\nFLAECHE: server.ts, e2e/pins.ts\nDONE: x"], triggers);
+      const mainFounding = bootstrap === null ? null : tiPlan([], bootstrap);
+      const tiSelected = (plan: ReturnType<typeof planRepoContext>) => plan.selected.find((pack) => pack.id === TI_PACK);
+      const tiPack = tiSelected(visibleLane);
+      const tiSources = tiPack && Array.isArray(tiPack.sources) ? tiPack.sources as readonly ContextPackSource[] : [];
+      check(`context manifest: ${TI_PACK} reaches a lane whose FLAECHE names src/ or public/, hard, with its own anchor`,
+        tiPack !== undefined && tiSelected(publicLane) !== undefined && tiPack.hardness === "hard"
+          && JSON.stringify(tiSources.map(({ path, anchor }) => ({ path, anchor }))) === JSON.stringify([TI_SOURCE]),
+        `selected=[${visibleLane.selected.map((pack) => pack.id).join(",")}] sources=${JSON.stringify(tiPack?.sources ?? null)}`
+          + ` omitted=[${visibleLane.omitted.map((pack) => `${pack.id}:${pack.why}`).join(",")}]`);
+      check(`context manifest: ${TI_PACK} is boxed into the start text of a lane and a MAIN, never only a pointer`,
+        tiSources.length > 0 && tiSources.every((source) => source.sorte === "anleitung"
+          && source.positions?.lane === "box" && source.positions?.main === "box"),
+        JSON.stringify(tiPack?.sources ?? null));
+      check(`context manifest: a lane without src/ or public/ in its FLAECHE omits ${TI_PACK} by trigger`,
+        tiSelected(backendLane) === undefined
+          && backendLane.omitted.some((pack) => pack.id === TI_PACK && pack.why === "trigger-not-matched"),
+        `selected=[${backendLane.selected.map((pack) => pack.id).join(",")}]`);
+      check(`context manifest: every MAIN founding (server.ts#BOOTSTRAP_CONTEXT_TRIGGERS) carries ${TI_PACK}`,
+        mainFounding !== null && tiSelected(mainFounding) !== undefined,
+        `bootstrap=${bootstrap ?? "not found"} selected=[${mainFounding?.selected.map((pack) => pack.id).join(",") ?? ""}]`);
 
       // THE REAL VERSIONED CODEX PACK (card 91b52b3a): its fassung is its id's suffix, its harness list
       // is codex alone, and it states no model — a pack schema field for one does not exist. The anchor

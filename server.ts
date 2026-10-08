@@ -93,7 +93,7 @@ import { laneHunkDiffArgs, laneHunkRanges } from "./land-collision-stats";
 // tickDispatch starts by it and the wave door resolves its ids in it (pinned in e2e/pins.ts).
 import { orderTextOf, projectStartPlan, releaseVerdict, startPlanCardPaths, startPlanChecks, startPlanLaneClaims, startPlanLaneSurface, startPlanWaitNote, type StartPlan,
   type StartPlanLane, type StartPlanReleaseVerdict, type StartPlanRepoCaps, type StartPlanRow, type StartPlanWave } from "./start-plan";
-import { renderWaveBrief, withCardHead } from "./wave-brief";
+import { renderCardHead, renderWaveBrief, withCardHead } from "./wave-brief";
 // THE WAIT REGISTER: which row waits on what and whose move it is — derived from the plan on every
 // read (waits.ts), the stall sensor below reads its heads.
 import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type BlockerHistory, type BlockerTotals, deriveWaits, stallReadings, stallHeads, namedAfterIds, afterOrderRefusal, type WaitRow, type WaitRowFacts, type WaitLaneFacts,
@@ -3703,7 +3703,10 @@ async function contextCatalogFor(s: Slot, scope: Extract<MemoryScope, { ok: true
     const taskTexts = tasks.filter((row) => row.slot === s.id && row.status === "sent")
       .flatMap((row) => {
         const source = variantSourceOf(row);
+        // the card head is what dispatch delivered (withCardHead): its FLAECHE line, not the prose,
+        // is where a valid card names its surface (context-manifest.ts#taskContextTriggers)
         return [source.text, source.brief?.text ?? "", source.card?.ziel ?? "",
+          source.card?.valid ? renderCardHead(source.card) : "",
           ...(source.comments ?? []).map((comment) => comment.text)];
       });
     facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
@@ -39701,6 +39704,7 @@ const MAIN_ROLE_CARD = `--- ROLLE --- Program-MAIN: fuehrt genau ein Program. Du
 --- DEINE GRENZE --- Scope ueber dein Program hinaus, fremde Programs und Slots, alles unter BLOCKER: fragen statt tun.
 --- DEINE TUEREN --- self/program-execution (Stand, Handover, Phase) · self/tasks (POST, brief, release, hold) · clarifications reply · fleet-report accept|reject · watch lane|merge|audit · ctl.sh land --wait · ctl.sh send an die Orchestratorin.
 --- DER LOOP --- Standard-Fleet-Einstieg: state.sh --brief, benannte Detailtuer bei Bedarf; program-execution lesen → Produkt-Program ohne bestaetigten Entwurf: Prototyp, Kritik, Entwurf, Review, Bestaetigung (Orchestratorin; neues oder geaendertes Erfolgskriterium: Owner), erst dann Zeilen → naechste Zeile schaerfen (nennt den Entwurf, DONE mit Integrationspruefung), bis die Karte gueltig ist → release → Watch auf die Lane → Report = Behauptung: Diff und Verify-Tail lesen → annehmen und landen oder mit Grund zurueck → Audit-Ergebnis lesen → nach je drei Lands Integrations-Checkpoint gegen das Erfolgskriterium → naechste Zeile.
+--- ABNAHME --- Sichtbare Arbeit (FLAECHE an src/ oder public/) nimmst du erst an, wenn du sie in der laufenden Testinstanz der Lane selbst durchgeklickt hast und der Report den token-freien Link und ein Bild des fertigen Ablaufs traegt. Ein fertig ohne gesehene Wirkung geht zurueck.
 --- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
 --- UEBERGABE --- offene Pflichten bleiben in Program-, Task- und Report-Sichten mit ID; succeed auf der Standard-Schiene, kein HANDOFF-Commit; der letzte Integrations-Checkpoint im Entwurf ist der Kopfstand der Nachfolge. Was nicht uebergehen kann, als verloren benennen.`;
 

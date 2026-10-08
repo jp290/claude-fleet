@@ -29,11 +29,15 @@ export function taskContextTriggers(texts: readonly string[], possible: readonly
     String.raw`\b(?:FLAECHE|Fläche|surface)\s*:[^\n]*\b(?:rulebook(?:\.ts|\/)|CLAUDE\.md)\b`,
     String.raw`^(?:rulebook\.ts|rulebook\/[^\n]+|CLAUDE\.md)$`,
   ].join("|"), "iu");
+  // Only the SURFACE line counts, and only a path rooted at `src/` or `public/` (the client bundle
+  // and what it serves): a ZIEL that mentions the client, or `drills/src/`, is no visible work.
+  const visibleSurface = /\b(?:FLAECHE|FLÄCHE|surface)\s*:[^\n]*(?<![\p{L}\p{N}_./-])(?:src|public)\//iu;
   const taskTriggers: readonly [ContextPackTrigger, RegExp][] = [
     ["jev-use", /\bjev\b/i],
     ["harness-selection", /\bharness(?:es|[- ](?:adapter|selection|auswahl))?\b(?!\.ts)|\b(?:HARNESSES|CONTAINER_HARNESS)\b/i],
     ["measurement", /\b(?:mess(?:en|e|t|auftrag|ung(?:en)?|notiz(?:en)?)|misst|vermess\w*|measur(?:e(?:ment(?:s)?|s|d)?|ing))\b|docs\/messungen\//i],
     ["rulebook-edit", rulebookEdit],
+    ["visible-surface", visibleSurface],
   ];
   const selected = new Set(possible.filter((trigger) => !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
   for (const [trigger, pattern] of taskTriggers) {

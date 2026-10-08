@@ -245,6 +245,15 @@ pin("the client universe is derived and holds its bundle entry",
     const changed = pairs.filter(({ docMatches, serverMatches }) => docMatches[0]![1] !== serverMatches[0]![1]);
     pin("role cards: server constants are byte-equal to docs/rollenkarten.md text blocks",
       changed.length === 0, changed.map(({ symbol }) => symbol).join(", "));
+    // THE TESTINSTANZ ACCEPTANCE (owner promotion 2026-10-08) is a MAIN duty on the card; the lane's
+    // half rides in the pack testinstanz-abnahme, so the lane card stays without it.
+    const mainText = pairs.find(({ symbol }) => symbol === "MAIN_ROLE_CARD")!.serverMatches[0]![1]!;
+    const laneText = pairs.find(({ symbol }) => symbol === "LANE_ROLE_CARD")!.serverMatches[0]![1]!;
+    const abnahme = mainText.match(/^--- ABNAHME --- [^\n]*$/m)?.[0] ?? "";
+    pin("role cards: the Program-MAIN accepts visible work only clicked through in the lane's test instance, with token-free link and image; the lane card does not carry it",
+      /Testinstanz/.test(abnahme) && /durchgeklickt/.test(abnahme) && /token-freien Link/.test(abnahme)
+        && /Bild/.test(abnahme) && /zurueck/.test(abnahme) && !/Testinstanz/.test(laneText),
+      `abnahme=${abnahme.slice(0, 80) || "missing"} laneMentions=${/Testinstanz/.test(laneText)}`);
   }
 
   // ROLE DUTY vs HARNESS RUNTIME (owner correction 2026-09-30: codex compacts natively, no Fleet

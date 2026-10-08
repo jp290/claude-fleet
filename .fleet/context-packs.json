@@ -162,5 +162,24 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "testinstanz-abnahme",
+    "useWhen": "Wenn du Sichtbares baust oder abnimmst: fertig ist erst die durchgeklickte Testinstanz mit Link und Bild.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["visible-surface", "orchestration"],
+    "hardness": "hard",
+    "group": "pruefen-landen",
+    "sources": [
+      { "id": "testinstanz-abnahme.ablauf", "path": "docs/testinstanz.md", "anchor": "## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt", "sorte": "anleitung", "positions": { "lane": "box", "main": "box", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1740,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

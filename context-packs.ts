@@ -14,6 +14,9 @@ export type ContextPackAudience = (typeof CONTEXT_PACK_AUDIENCES)[number];
 
 export const CONTEXT_PACK_TRIGGERS = [
   "always", "verification", "landing", "harness-selection", "jev-use", "rulebook-edit", "measurement",
+  // Read off a card's FLAECHE by context-manifest.ts#taskContextTriggers: the work paints
+  // something a person sees (`src/` or `public/`), so it is accepted in a running test instance.
+  "visible-surface",
   // Passed by server.ts#BOOTSTRAP_CONTEXT_TRIGGERS only: founding sessions carry orchestration
   // guidance without any queue seed riding along (the task-queue trigger and pack are removed).
   "orchestration",

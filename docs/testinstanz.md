@@ -7,12 +7,37 @@ fremden Lane). Sie läuft von selbst ab (TTL). Der Modus `snapshot` zeigt dem Ow
 eine bereinigte Kopie echter Daten: „[Zitat entfernt]“.
 
     ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   aufstellen, bauen, starten, Daten pflanzen
+    ./testinstanz.sh refresh                         aktuellen Stand des Worktrees übernehmen; Port, Token, Fixtures bleiben
     ./testinstanz.sh fixtures [mixed|full]           neu pflanzen, ohne Neustart
     ./testinstanz.sh states                          was die Leiste JETZT malt, je Zustand
     ./testinstanz.sh status                          läuft sie, wo, Alter, Restzeit, offene Verbindungen — und wer den Mutex hält
     ./testinstanz.sh list                            jede Testinstanz der Maschine, aus State-Dateien
     ./testinstanz.sh down [--force]                  Server aus, ihr tmux per Socket, Verzeichnis weg — verweigert bei offener Verbindung
     ./testinstanz.sh reap [--dry-run] [--force]      jede abgelaufene Instanz der Maschine abräumen (der TTL-Takt ruft das)
+
+## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt
+
+Owner-Regel vom 2026-10-08: Sichtbare Arbeit (eine Karte, deren FLAECHE `src/` oder `public/`
+nennt) landet erst, wenn sie in der laufenden Testinstanz der Lane durchgeklickt ist und der Report
+den token-freien Link und ein Bild des fertigen Ablaufs trägt. Ein „fertig" ohne gesehene Wirkung
+geht zurück. Anlass, Owner wörtlich: Tasks in Apps seien „[Zitat entfernt]“.
+
+**Lane.**
+1. `./testinstanz.sh up` im eigenen Worktree, einmal zu Beginn der sichtbaren Arbeit.
+2. Nach jedem Commit `./testinstanz.sh refresh`: Port, Token und Fixtures bleiben, der Link hält.
+3. Den Ablauf wie ein Nutzer durchgehen, bei 390 px Breite und am Desktop. Kritisch bewerten: was
+   fehlt, was bricht, was ist halb. Was du dort findest, baust du fertig, bevor du meldest.
+4. Zwischen den Teilen nur `refresh` und Durchklicken, keine Gate-Suite und keine Vorschau. Der
+   volle Beweis (Beweismenge aus `GET /api/self/gate`) läuft einmal am Ende, vor dem Report.
+5. In den Report: der token-freie Link aus `./testinstanz.sh list` oder der `refreshed`-Zeile (nie
+   aus `status`, das druckt den Token) und ein Bild des fertigen Ablaufs (Pfad der Datei).
+6. Die Instanz bleibt stehen, bis die MAIN abgenommen hat: kein `down` nach dem Report. Die
+   Restzeit zeigt `list`; reicht sie nicht, beim `up` eine längere `--ttl` setzen (Default 240 min).
+
+**MAIN.** Vor dem Land öffnest du den Link und klickst den Ablauf selbst durch. Fehlen Link oder
+Bild, oder siehst du die Wirkung nicht, geht der Report mit Grund zurück. Vom Board aus öffnet
+„Öffnen" an der Zeile des Worktrees in Info → Arbeitsorte die Instanz, danach schaltet der
+Instanz-Chip um (beides unten).
 
 ## Die Ableitung — eine Instanz je Worktree
 

@@ -4726,6 +4726,118 @@ await import(pathToFileURL(process.argv[2]).href);
       pin("pi-zai's fence lets SwiftPM stage atomic writes in the per-user temp dir: named tools, create and unlink only",
         Object.values(nsirdParts).every(Boolean), JSON.stringify(nsirdParts));
     }
+    {
+      const wt = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-auth-`));
+      const agentDir = `${wt}/agent`;
+      const auth = `${agentDir}/auth.json`;
+      const keyFile = `${wt}/zai.key`;
+      const grant = `(allow file-read-data (literal "${auth}"))`;
+      const reason = 'pi-zai: credential store is not an empty regular JSON object or is unreadable; auth.json remains blocked';
+      const input = { ...fx, home: wt, agentDir, keyFile, cwd: `${wt}/cwd`, ownTmp: `${wt}/own`,
+        tmpRoots: [realpathSync(tmpdir())], suiteLock: `${wt}/lock`, tmuxDir: `${wt}/tmux`,
+        toolRoots: [], git: null };
+      try {
+        for (const d of [agentDir, input.cwd, input.ownTmp]) mkdirSync(d, { recursive: true });
+        const build = (text: string): string => {
+          writeFileSync(auth, text);
+          return piZaiFenceProfile(input) ?? "";
+        };
+        for (const text of ["", "{}", " \n { } \n"]) {
+          const p = build(text);
+          pin("pi-zai grants exactly credential-store data reads only for an empty regular JSON object",
+            p.includes(grant) && !p.includes(reason)
+              && !p.includes(`(allow file-read-data file-read-metadata (literal "${auth}"))`), JSON.stringify(text));
+        }
+        for (const text of ['{"zai":{"key":"synthetic-login"}}', '{"zai":null}', "[]", "null", "false", "broken"]) {
+          const p = build(text);
+          pin("pi-zai keeps a populated or invalid credential store denied and names the startup refusal",
+            !p.includes(grant) && p.includes(`(literal "${auth}")`) && p.endsWith(`(error "${reason}")`), JSON.stringify(text));
+        }
+        rmSync(auth);
+        pin("pi-zai refuses a missing credential store with its named reason", (piZaiFenceProfile(input) ?? "").includes(reason));
+        writeFileSync(`${wt}/other-auth`, "{}");
+        symlinkSync(`${wt}/other-auth`, auth);
+        pin("pi-zai refuses a symlink credential store even when its target is empty", (piZaiFenceProfile(input) ?? "").includes(reason));
+        rmSync(auth);
+        const p = build("{}");
+        if (process.platform === "darwin") {
+          const sbx = "/usr/bin/sandbox-exec";
+          const run = (profile: string, command: string, args: string[] = []) => spawnSync(sbx,
+            ["-p", profile, command, ...args], { encoding: "utf8", timeout: 20_000, cwd: input.cwd });
+          const self = run(p, "/usr/bin/true");
+          pin("pi-zai empty-store fence self-test stays green", self.status === 0, self.stderr);
+          writeFileSync(keyFile, "synthetic-key");
+          writeFileSync(`${agentDir}/models.json`, JSON.stringify({ providers: { zai: { models: [
+            { id: "glm-5.3", name: "GLM-5.3", contextWindow: 1000000, maxTokens: 131072, reasoning: true },
+          ] } } }));
+          const ext = `${input.cwd}/probe.ts`;
+          writeFileSync(ext, `import { readFileSync, writeFileSync } from "node:fs";
+export default function (pi) {
+  pi.on("session_start", async (_event, ctx) => {
+    try {
+      const key = await ctx.modelRegistry.getApiKeyForProvider("zai");
+      console.error("AUTH_READY=" + (key === "synthetic-key" ? "OK" : "MISSING"));
+    } catch (err) { console.error("AUTH_READY=FAILED " + err.message); }
+  });
+  for (const [name, attempt] of [
+    ["AUTH_WRITE", () => writeFileSync(process.env.PROBE_AUTH, "{}")],
+    ["KEY_READ", () => readFileSync(process.env.PROBE_KEY)],
+  ]) {
+    try { attempt(); console.error(name + "=OPEN"); }
+    catch (err) { console.error(name + "=" + err.code); }
+  }
+}
+`);
+          const pi = (profile: string) => spawnSync(sbx, ["-p", profile, "pi", "--offline", "--mode", "rpc",
+            "--provider", "zai", "--model", "glm-5.3", "--no-session", "--no-approve", "--no-extensions",
+            "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--extension", ext], {
+            encoding: "utf8", timeout: 20_000, cwd: input.cwd,
+            input: '{"id":"fence-ready","type":"get_state"}\n',
+            env: { PATH: process.env.PATH, HOME: input.ownTmp, TMPDIR: input.ownTmp,
+              PI_CODING_AGENT_DIR: agentDir, ZAI_API_KEY: "synthetic-key", PROBE_AUTH: auth, PROBE_KEY: keyFile },
+          });
+          const booted = (r: ReturnType<typeof pi>): boolean => r.status === 0 && r.stderr.includes("AUTH_READY=OK")
+            && r.stdout.split("\n").some((line) => {
+              try {
+                const row: unknown = JSON.parse(line);
+                if (!row || typeof row !== "object" || !("data" in row)) return false;
+                const data = row.data;
+                if (!data || typeof data !== "object" || !("model" in data)) return false;
+                const model = data.model;
+                return "id" in row && row.id === "fence-ready" && "success" in row && row.success === true
+                  && !!model && typeof model === "object" && "provider" in model && model.provider === "zai";
+              }
+              catch { return false; }
+            });
+          const baseline = pi(p);
+          pin("pi-zai installed pi bootstraps beyond credential-store reading under the empty-store profile",
+            booted(baseline), `${baseline.error?.message ?? baseline.status} / ${baseline.stderr.slice(-500)}`);
+          pin("pi-zai the same pi run cannot write auth.json or read the key file",
+            baseline.stderr.includes("AUTH_WRITE=EPERM") && baseline.stderr.includes("KEY_READ=EPERM")
+              && readFileSync(auth, "utf8") === "{}", baseline.stderr.slice(-500));
+          pin("pi-zai mutation: removing the empty-store data grant prevents pi bootstrap",
+            !booted(pi(p.replace(grant, ""))));
+          const writable = pi(p + `(allow file-write* (literal "${auth}"))`);
+          pin("pi-zai mutation: granting credential-store writes is observed by the same pi probe",
+            booted(writable) && writable.stderr.includes("AUTH_WRITE=OPEN"), writable.stderr.slice(-500));
+          const readableKey = pi(p + `(allow file-read-data (literal "${keyFile}"))`);
+          pin("pi-zai mutation: granting key-file reads is observed by the same pi probe",
+            booted(readableKey) && readableKey.stderr.includes("KEY_READ=OPEN"), readableKey.stderr.slice(-500));
+          const populated = build('{"zai":{"key":"synthetic-login"}}');
+          const refusal = run(populated, "/usr/bin/true");
+          const withoutError = populated.replace(`(error "${reason}")`, "");
+          const read = (profile: string) => run(profile, "/bin/sh", ["-c", `: < '${auth}'`]);
+          const denied = read(withoutError);
+          pin("pi-zai populated store names its startup refusal and stays mechanically unreadable",
+            refusal.status !== 0 && refusal.stderr.includes(reason) && denied.status !== 0
+              && denied.stderr.includes("Operation not permitted"), `${refusal.status} / ${denied.stderr.trim()}`);
+          pin("pi-zai mutation: an unconditional auth read grant exposes the populated-store refusal",
+            read(withoutError + grant).status === 0);
+        } else {
+          skip("pi-zai real pi credential-store fence execution", "Darwin sandbox-exec is unavailable; generated-profile checks ran");
+        }
+      } finally { rmSync(wt, { recursive: true, force: true }); }
+    }
     // THE WRITABLE BRANCH COMES FROM FLEET, NEVER FROM THE WORKTREE. <admin>/HEAD lies in the admin dir
     // the fence opens for writing: a lane that re-aimed it at refs/heads/main would have had main
     // granted on its next spawn. Fixture: a worktree whose HEAD names main, handed Fleet's record

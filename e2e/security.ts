@@ -1477,6 +1477,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   if (zaiAgentDir && zaiKeyFile) {
     mkdirSync(zaiAgentDir, { recursive: true });
     writeFileSync(zaiKeyFile, `${zaiStandIn}\n`);
+    writeFileSync(`${zaiAgentDir}/auth.json`, "{}");
   }
   const paneComms = async (target: string): Promise<string[]> => {
     const panePid = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
@@ -1566,6 +1567,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       return `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `spawn:${r.error.message}` : ""}`;
     };
     const opens = (f: string): string => `: < '${f}' && echo OPENED`;
+    const authFile = `${realpathSync(zaiAgentDir)}/auth.json`;
+    check("§6a spawned fence opens empty auth.json for data only",
+      pzProfile.includes(`(allow file-read-data (literal "${authFile}"))`)
+        && pzRun(opens(authFile), true).includes("OPENED"));
+    const authWrite = pzRun(`printf '{}' > '${authFile}' && echo WROTE`, true);
+    check("§6a spawned fence still refuses auth.json writes",
+      authWrite.includes("Operation not permitted") && !authWrite.includes("WROTE")
+        && readFileSync(authFile, "utf8") === "{}", authWrite.trim().slice(-100));
     const fleetJson = `${realpathSync(ROOT)}/fleet.json`;
     const zaiOwn = `${realpathSync(zaiAgentDir)}/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
     const zaiForeign = `${realpathSync(zaiAgentDir)}/sessions/--fleet-e2e-foreign-slot--`;

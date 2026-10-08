@@ -18,7 +18,7 @@
 // only when this server drives it: a test or scratch server's pi-zai pane must not reach the live
 // panes either.
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export const LIVE_TMUX_SOCK = "claudefleet";
@@ -187,6 +187,15 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
   const gitDirs = g ? [g.common, g.admin] : [`${i.cwd}/.git`];
   const gitNeverWrite = [lit(`${i.cwd}/.git`), ...gitDirs.flatMap((d) => [sub(`${d}/hooks`), lit(`${d}/config`),
     lit(`${d}/config.worktree`), lit(`${d}/commondir`), lit(`${d}/gitdir`)])];
+  const auth = `${i.agentDir}/auth.json`;
+  let emptyAuth = false;
+  try {
+    if (lstatSync(auth).isFile()) {
+      const text = readFileSync(auth, "utf8").trim();
+      const store: unknown = text === "" ? {} : JSON.parse(text);
+      emptyAuth = store !== null && typeof store === "object" && !Array.isArray(store) && Object.keys(store).length === 0;
+    }
+  } catch { /* An unreadable or invalid store must never acquire a read grant. */ }
   return "(version 1)(allow default)"
     // (A) CLOSED: home and the shared temp roots — content, directory listings, xattrs and writes.
     // Metadata stays open on purpose: realpath, getcwd and every upward config search (git, bun,
@@ -214,6 +223,10 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // the mkdir of its session directory before any prompt (attic, "Der pi-Zaun").
     + `(allow ${allRead} file-write* ${sub(own)})`
     + `(allow file-read-metadata ${lit(`${i.agentDir}/sessions`)})`
+    // Pi 1.0.2 reads its credential store at startup. Only an empty regular store may be read;
+    // Band C still denies its metadata, xattrs and every write. A populated or uninspectable
+    // store fails the existing sandbox self-test with this reason before pi can start.
+    + (emptyAuth ? `(allow file-read-data ${lit(auth)})` : "")
     // (C2) the private scaffold inside the cwd: content and writes refused, metadata left so that
     // git status can still stat an ignored name
     + `(deny ${content} file-write* ${PRIVATE_SCAFFOLD.map((f) => lit(`${i.cwd}/${f}`)).join(" ")})`
@@ -232,5 +245,6 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // starts every pane as its own session: what stays readable stays inside this pane.
     + "(deny process-info* (target others))"
     + `(deny sysctl-read (sysctl-name-regex #"^kern[.]procargs"))`
-    + `(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.security.agent"))`;
+    + `(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.security.agent"))`
+    + (emptyAuth ? "" : '(error "pi-zai: credential store is not an empty regular JSON object or is unreadable; auth.json remains blocked")');
 }

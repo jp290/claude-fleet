@@ -361,12 +361,16 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
         JSON.stringify(codexDecl ?? null));
       const forHarness = (harness: string) => planRepoContext({ manifest, repo: { trackedPaths, sourceBytes },
         facts: { ...repoFacts, harness, triggers: ordinaryTriggers } });
+      // SUPERSEDED since L16 (MAIN answer 96d8a3f0, 2026-10-08): its anchor lies inside the portable
+      // contract every codex session gets boxed through portable-core, so even a codex founding omits
+      // it — by status, which the ladder checks before the harness. The delivery of its section to a
+      // codex lane is proved in e2e/context-plan.ts.
       const codexPlan = forHarness("codex");
-      const others = ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container"].map((harness) => ({ harness,
+      const all = ["codex", "claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container"].map((harness) => ({ harness,
         why: forHarness(harness).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null }));
-      check("context manifest: a codex founding selects the Codex pack; claude, every pi and container omit it as harness-unsupported",
-        codexPlan.selected.some((pack) => pack.id === CODEX_PACK) && others.every((row) => row.why === "harness-unsupported"),
-        `codex=[${codexPlan.selected.map((pack) => pack.id).join(",")}] others=${JSON.stringify(others)}`);
+      check("context manifest: a codex founding omits the superseded Codex pack as status-not-active, and so does every other harness",
+        !codexPlan.selected.some((pack) => pack.id === CODEX_PACK) && all.every((row) => row.why === "status-not-active"),
+        `codex=[${codexPlan.selected.map((pack) => pack.id).join(",")}] all=${JSON.stringify(all)}`);
     }
   }
 

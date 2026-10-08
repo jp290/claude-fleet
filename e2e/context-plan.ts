@@ -1041,6 +1041,30 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     CONTEXT_PACK_HARNESSES.every((harness) =>
       planRepoContext({ manifest, repo, facts: { ...laneFacts, harness } }).selected.some((pack) => pack.id === "haltung-worker")),
     JSON.stringify(CONTEXT_PACK_HARNESSES));
+  // THE CODEX PACK IS SUPERSEDED, NOT DELETED (L16, MAIN answer 96d8a3f0, 2026-10-08): its one anchor
+  // lies inside AGENTS.md ## Portable operating contract, which session-agents.ts#renderSessionAgents
+  // boxes whole for every codex session, so the pointer told no session anything new. Omission: every
+  // harness, lane and founding alike, omits it as status-not-active — and the same manifest with only
+  // the status flipped back selects it for codex, so the reason is the status and nothing else.
+  // Delivery: the section it pointed at still reaches a codex lane, boxed in portable-core.
+  const CODEX_PACK = "codex-native-context-v1";
+  const codexOmissions = CONTEXT_PACK_HARNESSES.flatMap((harness) => [laneFacts, bootstrapFacts].map((facts) =>
+    ({ harness, why: planRepoContext({ manifest, repo, facts: { ...facts, harness } }).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null })));
+  check("codex-native-context-v1: every harness omits the superseded pack as status-not-active, on lane and founding facts",
+    codexOmissions.every((row) => row.why === "status-not-active"), JSON.stringify(codexOmissions));
+  const activeAgain = { ...manifest, packs: manifest.packs.map((pack) =>
+    (pack as { id?: unknown }).id === CODEX_PACK ? { ...(pack as object), status: "active" } : pack) };
+  check("codex-native-context-v1: flipping only its status back to active selects it for codex — the omission is the status alone",
+    planRepoContext({ manifest: activeAgain, repo, facts: { ...laneFacts, harness: "codex" } }).selected.some((pack) => pack.id === CODEX_PACK));
+  const codexAgents = renderSessionAgents({ role: { text: "role", path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane",
+    harness: "codex", plan: planContext({ sourceTree: "fleet", ...laneFacts, harness: "codex" }),
+    sourceBytes: tree.sourceBytes, footer: "" });
+  const codexSection = sourceSection(tree.sourceBytes.get("AGENTS.md") ?? "", "AGENTS.md", "### Context self-management (§6, §8)");
+  const coreBox = codexAgents.parts.find((part) => part.id === "portable-core.contract");
+  check("codex-native-context-v1: its section still reaches a codex lane, boxed inside portable-core, with no pointer to the pack",
+    !!codexSection && coreBox?.ort === "box" && !!coreBox.content?.includes(codexSection.content)
+      && codexAgents.text.includes(codexSection.content) && !codexAgents.text.includes(CODEX_PACK),
+    JSON.stringify({ section: codexSection?.bytes ?? null, core: coreBox ? { ort: coreBox.ort, bytes: coreBox.bytes } : null }));
   const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
     triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });
   const laneSeeds = planContext({ sourceTree: "fleet", ...laneFacts });

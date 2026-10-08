@@ -396,6 +396,26 @@ async function paneEnvUntimed(target: string, varName: string, timeoutMs: number
   return null;
 }
 
+// WHAT A PANE WAS DOING when paneEnv's null came back — for a caller's check detail, never for a
+// decision. paneEnv itself stays a pure probe (its other callers keep their exact behaviour); a
+// caller that has to say WHY a pane never answered asks this afterwards. Every field is a tmux
+// format or a process NAME (`ps -o comm=`, never a command line: a pane's shell string carries the
+// self-credentials by construction), and the screen rows pass through redactPaneText, so no token
+// value reaches a detail, a log or the trail. `resolvesTo` is the session:pane tmux picks for the
+// caller's target, which is the only way to see a probe typed into a pane other than the one meant.
+export const redactPaneText = (text: string): string =>
+  text.replace(/[0-9a-fA-F]{32,}/g, "[redacted]").replace(/(TOKEN=)\S+/g, "$1[redacted]");
+export async function paneProbeDiag(target: string, lines = 12): Promise<Record<string, unknown>> {
+  const fmt = "#{session_name}:#{pane_id} cmd=#{pane_current_command} pid=#{pane_pid} dead=#{pane_dead} mode=#{pane_in_mode} size=#{pane_width}x#{pane_height}";
+  const shown = await tmuxOut("display-message", "-p", "-t", target, fmt);
+  const pid = /pid=(\d+)/.exec(shown.out)?.[1] ?? "";
+  const kids = pid ? new TextDecoder().decode(Bun.spawnSync(["pgrep", "-P", pid]).stdout).trim().split("\n").filter(Boolean) : [];
+  const names = kids.map((k) => new TextDecoder().decode(Bun.spawnSync(["ps", "-o", "comm=", "-p", k]).stdout).trim());
+  const cap = await tmuxOut("capture-pane", "-t", target, "-p", "-J");
+  const tail = cap.out.replace(/\n+$/, "").split("\n").slice(-lines).map(redactPaneText);
+  return { pane: shown.code === 0 ? shown.out.trim() : `display-message exit ${shown.code}`, children: names, tail };
+}
+
 // The srv pane's OWN process environment, one named variable at a time, WITH A CONTROL — so that
 // "this variable is not set" and "this process's environment could not be read at all" are
 // different answers rather than the same silence. paneEnv() cannot serve here: the srv pane execs

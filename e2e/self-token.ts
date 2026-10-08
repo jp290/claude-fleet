@@ -4,7 +4,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, paneProbeDiag, plantScreen, plogRead, post, redactPaneText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import { MERGE_IDLE_MS } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
@@ -1845,6 +1845,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     const free = (await sessions()).slots.find((x) => x.id === slot);
     detail.freeSlot = killed.ok && free?.cwd === null ? "ready" : `kill=${killed.status}, cwd=${free?.cwd ?? "absent"}`;
     if (!killed.ok || free?.cwd !== null) return { slot: 0, tok: "", openedAt: 0 };
+    const openAt = Date.now();
     const r = await post(`/api/slots/${slot}/open`, { cwd, label });
     const body = await r.json().catch(() => null) as { error?: string; reason?: string } | null;
     detail.openResponse = { status: r.status, error: body?.error ?? (body === null ? "invalid-json" : undefined), reason: body?.reason };
@@ -1854,6 +1855,14 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     const token = await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN", PANE_TOKEN_WAIT_MS);
     detail.paneToken = token === null ? "timeout" : token === "" ? "empty" : /^[0-9a-f]{32}$/.test(token) ? "ready" : "invalid";
     detail.paneTokenWaitMs = PANE_TOKEN_WAIT_MS;
+    // a pane that never answered says what it was doing: its process, its last rows (redacted),
+    // and every server delivery typed into this slot since the open — a delivery is the one writer
+    // besides the probe that can leave a shell somewhere a printf never reaches
+    if (token === null) {
+      detail.paneProbe = await paneProbeDiag(`s${slot}`);
+      detail.deliveriesSinceOpen = (await plogRead()).filter((e) => e.slot === slot && e.ts >= openAt)
+        .map((e) => ({ source: e.source, openedAt: e.openedAt, head: redactPaneText(e.text.slice(0, 120)) }));
+    }
     let openedAt = 0;
     const openedAtDeadline = Date.now() + OPENED_AT_WAIT_MS;
     while (Date.now() < openedAtDeadline) {
@@ -2007,6 +2016,14 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   // NO TURN: the generic door's recorder, on the Program-MAIN's pane
   const rec = `${ROOT}/owner-program-recorder`;
   rmSync(rec, { force: true });
+  // THE RECORDER'S OWN ECHO is the last byte this pane prints: the shell paints the typed line before
+  // `stty -echo` runs. The server stamps lastOutput from its 100 ms stream poll, so for up to a poll
+  // the preview still reads the OLD silence — ready, idleMs in seconds — while the echo is already on
+  // its way, and the POST right behind it lands inside MERGE_IDLE_MS of that stamp: 409 busy
+  // (helper preview 77159614599b: preview idleMs 2345 at standingHandover ageMs 12, row lastOutput
+  // 44 ms after the handover write). So the rest is measured only from a lastOutput the server took
+  // AFTER this send — the echo counted — never from a stamp older than the recorder.
+  const recorderSentAt = Date.now();
   await tmuxOut("send-keys", "-t", `=s${P.slot}:`, `stty -icanon -echo; cat > '${rec}'`, "Enter");
   type Preview = { ready?: boolean; rail?: string; programs?: string[]; refusal?: { reason?: string } | null;
     idleMs?: number; idleThresholdMs?: number;
@@ -2015,10 +2032,14 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const restDeadline = Date.now() + REST_WAIT_MS;
   let resting = false;
   let pv: Preview = {};
+  let echoCounted = false;
   while (Date.now() < restDeadline) {
-    pv = (await (await get(`/api/slots/${P.slot}/succeed`)).json()) as Preview;
+    // row BEFORE preview: lastOutput only grows, so the preview's idleMs is then measured from a stamp
+    // at least as new as the one that showed the echo counted
     const row = (await sessions()).slots.find((x) => x.id === P.slot);
-    resting = existsSync(rec) && row?.openedAt === P.openedAt && pv.ready === true
+    echoCounted = (row?.lastOutput ?? 0) >= recorderSentAt;
+    pv = (await (await get(`/api/slots/${P.slot}/succeed`)).json()) as Preview;
+    resting = existsSync(rec) && row?.openedAt === P.openedAt && echoCounted && pv.ready === true
       && typeof pv.idleMs === "number" && pv.idleMs > MERGE_IDLE_MS + 300;
     if (resting || pv.refusal && pv.refusal.reason !== "busy") break;
     await Bun.sleep(100);
@@ -2026,7 +2047,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   check("owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
     autoRes.ok && wroteP.ok && atP > 0 && resting && pv.ready === true && pv.rail === "program" && pv.programs?.[0] === programP
       && pv.standingHandover?.at === atP && pv.tail?.state === "read" && pv.tail.entries === 2,
-    `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} restWaitMs=${REST_WAIT_MS} preview=${JSON.stringify(pv)}`);
+    `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} echoCounted=${echoCounted} restWaitMs=${REST_WAIT_MS} preview=${JSON.stringify(pv)}`);
   const promptsOfOld = async (): Promise<number> =>
     (await plogRead()).filter((e) => e.slot === P.slot && e.openedAt === P.openedAt).length;
   const oldPromptsBefore = await promptsOfOld();

@@ -47,9 +47,9 @@ export const TL_CLAIM = {
   stale: "an answer that arrives after its window was closed paints nothing into the window opened since",
   // the UI-MAIN's follow-up points 5–9 (card 2026-10-08)
   headBtn: "in the overview each session's track head is the one button into it (name and chevron, touch-high on the phone), no track carries a Zoom button, and the session zoom has none",
-  oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber; no mark, bar or state word carries amber or the wait colour on text, fill or border",
+  oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber; no mark, bar or state word carries amber or the wait colour on text, fill or border — in the overview, the codex session's zoom (a list on the phone) and the claude zoom",
   emptyOne: "without the route the lens says it in one sentence that names GET /api/timeline exactly once, with the status and the server's error text",
-  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary; Kopieren writes exactly the full raw value to the clipboard; the visible Quelle text carries none of it",
+  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary; opening it shows Kopieren, which writes exactly the full raw value to the clipboard; the visible Quelle text carries none of it",
   toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind Mehr and appear on tap; on the desktop they stand in the row and there is no Mehr",
 } as const;
 
@@ -309,7 +309,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         overflow: Math.max(0, ...vis.map((n) => Math.round(n.getBoundingClientRect().right))) - Math.round(tb.closest('.shelltools').getBoundingClientRect().right) } : null;
       const rawEl = sh.querySelector('.tlinspect dd[data-field="Quelle"] .tlraw');
       const raw = rawEl ? { details: rawEl.tagName === 'DETAILS', open: rawEl.open === true, summary: rawEl.querySelector('summary')?.textContent ?? '',
-        code: [...rawEl.querySelectorAll('code')].map((c) => c.textContent).join('\\n'), copy: rawEl.querySelector('.tlcopy')?.textContent ?? null } : null;
+        code: [...rawEl.querySelectorAll('code')].map((c) => c.textContent).join('\\n'), copy: rawEl.querySelector('.tlcopy')?.textContent ?? null,
+        // a closed details keeps its content's boxes (content-visibility), so the rect alone lies: checkVisibility() tells
+        copyVisible: (() => { const b = rawEl.querySelector('.tlcopy'); if (!b) return false; const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && b.checkVisibility(); })() } : null;
       return { colours, heads, tools, raw, lens: sh.querySelector('.actlens button[aria-pressed="true"]')?.textContent ?? null, zoom: canvas?.dataset.zoom ?? null,
         tracks: [...sh.querySelectorAll('.tltrack[data-session]')].map((t) => t.dataset.session), fleetTracks: sh.querySelectorAll('.tltrack.fleet').length,
         ticks: sh.querySelectorAll('.tltick').length, crumbs: [...sh.querySelectorAll('.tlcrumb')].map((b) => b.textContent),
@@ -327,7 +329,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
     type Colours = { amberMarks: number; waitMarks: number; hatch: boolean; hatches: number; gaps: boolean; gapN: number; railGaps: boolean; railGapN: number; legend: { amber: boolean; text: string } | null };
     type Head = { btn: boolean; text: string; chev: boolean; h: number; zoomBtns: number };
     type Tools = { rows: number; controls: number; zoomVisible: boolean; selVisible: boolean; more: { text: string; expanded: string | null; h: number } | null; overflow: number } | null;
-    type Raw = { details: boolean; open: boolean; summary: string; code: string; copy: string | null } | null;
+    type Raw = { details: boolean; open: boolean; summary: string; code: string; copy: string | null; copyVisible: boolean } | null;
     type Read = { colours: Colours; heads: Head[]; tools: Tools; raw: Raw; lens: string | null; zoom: string | null; tracks: string[]; fleetTracks: number; ticks: number; crumbs: string[]; note: string; gapChips: string[];
       pendingBars: number; hatches: string[]; marks: Mark[]; legend: { kind: string; glyph: string; text: string }[]; hatchCut: boolean; hatchWords: string[];
       inspectOpen: boolean; inspectRect: { top: number; left: number; w: number; h: number } | null;
@@ -342,6 +344,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
     let targetId = "";
     const expectedGaps = wire.sessions.reduce((n, s) => n + s.snapshot.gaps.length, 0);
     const claudeKey = wire.sessions[0]?.key ?? "";
+    const codexKey = wire.sessions.find((s) => s.harness === "codex")?.key ?? null;
     const errorCall = wire.sessions[0]?.snapshot.events.find((e) => e.kind === "tool.call" && e.status === "error");
     const pendingCallAt = T + 1000;
     for (const [width, height] of ([[1200, 900], [390, 844]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
@@ -406,10 +409,18 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         zoomBtns: r1.heads.reduce((n, h) => n + h.zoomBtns, 0), sample: r1.heads[0]?.text };
       let headOk = r1.heads.length === wire.sessions.length && r1.heads.every((h) => h.btn && h.chev && h.text.length > 2 && h.zoomBtns === 0 && (!mobile || h.h >= 40));
       // --- 4d. one colour, one meaning (point 6): amber is "not observed", and only that
-      facts.oneAmber = r1.colours;
+      // read in the overview, then in the codex session's zoom — on the phone a list, where the unknown
+      // marks stand alone and large (Kern-MAIN review of 9c96d400) — and once more in the claude zoom below
       const c = r1.colours;
-      claims[TL_CLAIM.oneAmber] = c.amberMarks === 0 && c.waitMarks === 0 && c.hatch && c.hatches >= 1 && c.gaps && c.gapN >= 1 && c.railGaps && c.railGapN >= 1
+      let amberOk = c.amberMarks === 0 && c.waitMarks === 0 && c.hatch && c.hatches >= 1 && c.gaps && c.gapN >= 1 && c.railGaps && c.railGapN >= 1
         && !!c.legend && c.legend.amber && /ungemessen/.test(c.legend.text) && /Lücke/.test(c.legend.text);
+      if (!codexKey) throw new Error("timeline DOM probe: the wire fixture has no codex session");
+      await click(`.tltrack[data-session="${codexKey}"] .tlheadbtn`);
+      const rc = await read();
+      const unknownMarks = rc.marks.filter((m) => m.status === "unknown").length;
+      amberOk = amberOk && rc.zoom === "session" && unknownMarks >= 2 && rc.colours.amberMarks === 0 && rc.colours.waitMarks === 0;
+      facts.oneAmber = { overview: c, codexZoom: { zoom: rc.zoom, list: mobile, unknownMarks, amberMarks: rc.colours.amberMarks, waitMarks: rc.colours.waitMarks } };
+      await click('.tlcrumb[data-zoom="overview"]');
       // --- 4e. the toolbar is one row (point 9): on the phone the rest sits behind Mehr
       const t0 = r1.tools;
       let toolbarOk = !!t0 && t0.rows === 1 && t0.overflow <= 0;
@@ -431,6 +442,8 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const r5a = await read();
       headOk = headOk && r5a.heads.length === 1 && r5a.heads.every((h) => !h.btn && h.zoomBtns === 0);
       claims[TL_CLAIM.headBtn] = headOk;
+      facts.oneAmber = { ...(facts.oneAmber as Record<string, unknown>), claudeZoom: { amberMarks: r5a.colours.amberMarks, waitMarks: r5a.colours.waitMarks } };
+      claims[TL_CLAIM.oneAmber] = amberOk && r5a.colours.amberMarks === 0 && r5a.colours.waitMarks === 0;
       toolbarOk = toolbarOk && r5a.tools?.rows === 1 && (r5a.tools?.overflow ?? 1) <= 0;
       await shot(`${width}-2-session`);
       // --- 5b. no two chips share a pixel in the session zoom — the claude fixture puts eight
@@ -489,16 +502,22 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       // the page runs on a plain-http origin where navigator.clipboard is undefined — plant one that
       // keeps its argument, so the claim reads WHAT was copied, not only that the button answered
       await evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { window.__fleetCopied = String(t); return Promise.resolve(); } } })`);
-      await tryClick(".tlraw .tlcopy");
+      // the way a person takes it: the button is hidden while the fold is closed, the summary opens
+      // it, only then is there a visible button to press (Kern-MAIN review of 9c96d400)
+      const hiddenBefore = r6b.raw ? !r6b.raw.copyVisible : false;
+      await tryClick(".tlraw summary");
+      const opened = (await read()).raw;
+      const copyVisible = !!opened?.open && !!opened.copyVisible;
+      if (copyVisible) await tryClick(".tlraw .tlcopy");
       const copied = (await read()).raw?.copy ?? null;
       const copiedText = await evaluate<string | null>("window.__fleetCopied ?? null");
       const rec = errorCall.record, ref = errorCall.detailRef;
       const expectedRaw = [ref ? `${ref.locator} fp ${ref.fp}` : null,
         `Aufzeichnung ${rec.id ?? "?"}${rec.parent ? ` ← ${rec.parent}` : ""} · Bytes ${rec.offset} + ${rec.bytes} #${rec.block}`].filter((l) => l !== null).join("\n");
-      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), copied,
+      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), hiddenBefore, copyVisible, copied,
         copiedText: (copiedText ?? "").slice(0, 80), expectedRaw: expectedRaw.slice(0, 80), copiedMatches: copiedText === expectedRaw };
       claims[TL_CLAIM.rawSource] = !!r6b.raw && r6b.raw.details && !r6b.raw.open && r6b.raw.summary.startsWith("Rohwert") && r6b.raw.code.includes("native:")
-        && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Kopieren" && copied === "Kopiert"
+        && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Kopieren" && hiddenBefore && copyVisible && copied === "Kopiert"
         && expectedRaw.includes("native:") && copiedText === expectedRaw
         && !(r6b.fields.Quelle ?? "").includes("native:") && !(r6b.fields.Quelle ?? "").includes("Bytes ") && (r6b.fields.Quelle ?? "").includes("Sidechain");
       claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)

@@ -866,7 +866,8 @@ export type WorkplaceChecks = Record<"local" | "preview" | "gate" | "audit", Wor
 export interface WorkplaceRow {
   path: string; primary: boolean; branch: string | null; head: string | null;
   base: { branch: string; head: string } | null; distance: WorktreeDistance | null;
-  session: { slot: number; openedAt: number } | null;
+  dirty: number | null; mirrored?: true;
+  session: { slot: number; openedAt: number; taskId: string | null } | null;
   target: { branch: string; head: string | null; behind: number | null;
     landed: "yes" | "no" | null; landedAs: string | null; basis: "land-note" };
   checks: WorkplaceChecks;

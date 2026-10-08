@@ -7772,10 +7772,10 @@ function workplaceSession(path: string): Slot | undefined {
 function workplaceHolder(path: string): WorkplaceRow["session"] {
   if (SNAPSHOT_MIRROR) {
     const holder = SNAPSHOT_MIRROR.sessions.find((s) => { try { return realpathSync(s.path) === path; } catch { return s.path === path; } });
-    return holder ? { slot: holder.slot, openedAt: holder.openedAt, ...{ taskId: holder.taskId } } : null;
+    return holder ? { slot: holder.slot, openedAt: holder.openedAt, taskId: holder.taskId } : null;
   }
   const holder = workplaceSession(path);
-  return holder ? { slot: holder.id, openedAt: holder.openedAt } : null;
+  return holder ? { slot: holder.id, openedAt: holder.openedAt, taskId: holder.taskId ?? null } : null;
 }
 async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRow["testinstanz"]> {
   const pathIdentity = testinstanzPathIdentity(target.path);
@@ -8014,7 +8014,7 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
     const { session, baseBranch, baseHead } = bindings.get(w.path)!;
     const status = SNAPSHOT_MIRROR ? await statusLines(w.path) : null;
     const dirty = status?.code === 0 ? status.lines.length : null;
-    if (SNAPSHOT_MIRROR && dirty === null) why.push({ field: "dirty", reason: "worktree-status-unreadable" });
+    if (dirty === null) why.push({ field: "dirty", reason: SNAPSHOT_MIRROR ? "worktree-status-unreadable" : "worktree-status-unmeasured" });
     if (SNAPSHOT_MIRROR && (!session || !("taskId" in session) || session.taskId === null))
       why.push({ field: "session.taskId", reason: "snapshot-task-binding-unrecorded" });
     const branch = w.branch === "(detached)" ? null : w.branch;
@@ -8069,7 +8069,7 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
       if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
     }
     return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
-      ...(SNAPSHOT_MIRROR ? { dirty } : {}), session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
+      dirty, session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
   };
   const worktrees: WorkplaceRow[] = new Array(rows.length);
   let next = 0;

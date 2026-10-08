@@ -2386,9 +2386,9 @@ async function memoryDoor(): Promise<void> {
           ["MAIN", mainTok[0]!, rows[0]!, 1]] as const) {
           const ownBorrow = { ...borrow, slot, openedAt: occupant.openedAt };
           writeFileSync(borrowPath, ledgerRows(ownBorrow, borrows, "own-borrow")
-          + ledgerRows({ ...borrow, taskId: T[1], programId: P[1], slot: laneSlot[1] }, 21, "foreign-borrow")
-          + ledgerRows({ ...ownBorrow, openedAt: Number(occupant.openedAt) - 1 }, 21, "recycled-borrow")
-          + ledgerRows({ ...ownBorrow, status: 409 }, 21, "refused-borrow"));
+            + ledgerRows({ ...borrow, taskId: T[1], programId: P[1], slot: laneSlot[1] }, 21, "foreign-borrow")
+            + ledgerRows({ ...ownBorrow, openedAt: Number(occupant.openedAt) - 1 }, 21, "recycled-borrow")
+            + ledgerRows({ ...ownBorrow, status: 409 }, 21, "refused-borrow"));
           const sources = await memJ(token, "?view=sources");
           const d = sources.body.deliveredThen;
           const b = sources.body.borrowed;

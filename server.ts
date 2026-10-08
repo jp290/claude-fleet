@@ -3839,6 +3839,12 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
   }) : [];
   if (declaredNow) declaredNow.selected = withBorrow(declaredNow.selected);
   if (ledgers.borrowsMalformed > 0) unknown.push(`${ledgers.borrowsMalformed} malformed context-borrows rows: an in-scope borrow may be missing.`);
+  const receiptsOmitted = Math.max(0, mine.length - MEMORY_RECEIPTS_MAX);
+  const borrowsOmitted = Math.max(0, borrowed.length - MEMORY_RECEIPTS_MAX);
+  if (receiptsOmitted > 0)
+    unknown.push(`${receiptsOmitted} in-scope context receipts omitted: deliveredThen shows only the newest ${MEMORY_RECEIPTS_MAX} of ${mine.length} readable receipts.`);
+  if (borrowsOmitted > 0)
+    unknown.push(`${borrowsOmitted} in-scope context borrows omitted: borrowed shows only the newest ${MEMORY_RECEIPTS_MAX} of ${borrowed.length} readable borrows.`);
   const body = {
     schema: "fleet.memory.sources/v1", view: "sources",
     scope: { principal: scope.principal, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null,
@@ -3850,12 +3856,13 @@ async function memorySourcesView(s: Slot, scope: Extract<MemoryScope, { ok: true
       receipts: mine.slice(0, MEMORY_RECEIPTS_MAX).map((r) => ({ id: r.id, at: r.at, head: r.head, repo: r.repo,
         branch: r.branch, slot: r.slot, taskId: r.taskId ?? null, programId: r.programId ?? null,
         selected: withBorrow(r.selected), briefHash: r.briefHash ?? null })),
-      total: mine.length, malformed: ledgers.receiptsMalformed,
+      total: mine.length, omitted: receiptsOmitted, malformed: ledgers.receiptsMalformed,
     },
     readByAgent: "unknown",
     borrowed: { basis: "ledger context-borrows.jsonl (.1 + active) — retrieved, not read",
-      rows: borrowed.slice(0, MEMORY_RECEIPTS_MAX), total: borrowed.length, malformed: ledgers.borrowsMalformed },
-    coverage: declaredNow === null || ledgers.receiptsMalformed > 0 || ledgers.borrowsMalformed > 0 ? "incomplete" : "complete",
+      rows: borrowed.slice(0, MEMORY_RECEIPTS_MAX), total: borrowed.length, omitted: borrowsOmitted, malformed: ledgers.borrowsMalformed },
+    coverage: declaredNow === null || ledgers.receiptsMalformed > 0 || ledgers.borrowsMalformed > 0
+      || receiptsOmitted > 0 || borrowsOmitted > 0 ? "incomplete" : "complete",
     missing, unknown,
   };
   return body;

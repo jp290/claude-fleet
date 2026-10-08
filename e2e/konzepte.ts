@@ -647,7 +647,7 @@ async function ledgerDoors(): Promise<void> {
     await programScope();
 
     async function programScope(): Promise<void> {
-      const foreignProgram = "badc0de".repeat(3);
+      const foreignProgram = "badc0d".repeat(4);
       const foreignK = "k-e2e-private-project", sharedK = "k-e2e-shared", unknownK = "k-e2e-unassigned";
       const bytes = "# Synthetic access fixture\n";
       for (const k of [foreignK, sharedK, unknownK]) {
@@ -723,8 +723,14 @@ async function ledgerDoors(): Promise<void> {
       planted.slots[String(CODEX_LANE)]!.programId = null;
       writeFileSync(`${i.dir}/fleet.json`, JSON.stringify(planted), { mode: 0o600 });
       const reboot = await boot(i, bin);
-      check("konzepte scope fixture: the MAIN binds two Programs and the foreign lane binds the second", reboot);
-      if (!reboot) return;
+      const position = reboot ? (await call("/api/self", "GET", { "x-fleet-self-token": mainTok! })).body
+        as { position?: { programIds?: string[] } } : null;
+      const boundPrograms = position?.position?.programIds ?? [];
+      const bound = boundPrograms.length === 2 && boundPrograms.includes(PROGRAM) && boundPrograms.includes(foreignProgram);
+      check("konzepte scope fixture: the MAIN binds two Programs and the foreign lane binds the second",
+        reboot && bound && planted.slots[String(FREMD_LANE)]?.programId === foreignProgram,
+        `boot=${reboot} Programs=${boundPrograms.join(",")} lane=${planted.slots[String(FREMD_LANE)]?.programId}`);
+      if (!bound) return;
       const foreignTok = planted.slots[String(FREMD_LANE)]!.selfToken!;
       const multiMain = await self(mainTok!, "anmerkungen", "POST", { version: 1, text: "bound to second" }, foreignK);
       const ownForeign = await self(foreignTok, "versionen", "GET", undefined, foreignK);

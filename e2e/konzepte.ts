@@ -729,6 +729,12 @@ process.stdin.on("data", (chunk) => {
     const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text + "\n" + native)?.[1] ?? null;
     let status = null, body = null;
     if (pointer) {
+      // The fixture releases its reader when the founding/succession response has committed the binding.
+      // Input recording stays closed during that wait; later prompts cannot supply this pointer.
+      if (process.env.FLEET_READER_AWAIT_READY === "1") {
+        const { existsSync } = await import("node:fs");
+        while (!existsSync(outDir + "/ready-" + slot)) await Bun.sleep(10);
+      }
       const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
       status = response.status;
       body = await response.json();
@@ -897,7 +903,8 @@ async function privatePackHandover(): Promise<void> {
         env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, CODEX_HOME: `${FIXH}/codex-home`,
           FLEET_HOST: IP, FLEET_PORT: String(PORT + HOFF), FLEET_SOCK: i.sock, FLEET_TOKEN: TOKEN,
           FLEET_CMD: `${bin}/fleet-reader`, FLEET_HARNESS_COMMS: "", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
-          FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "300",
+          FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "2000",
+          FLEET_READER_AWAIT_READY: "1",
           FLEET_ACCEPT_WAIT_MS: "800", FLEET_PI_ZAI_AGENT_DIR: `${FIXH}/pi-zai-agent`,
           FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/zai-fixture.key`,
           FLEET_PI_ZAI_SANDBOX_EXEC: `${bin}/sandbox-fixture`, FLEET_PI_ZAI_DENY_ROOTS: `${FIXH}/deny` },
@@ -1050,6 +1057,7 @@ async function privatePackHandover(): Promise<void> {
       type Received = { tag: string; text: string; native: string; pointer: string | null; status: number | null;
         body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
       const receive = async (slot: number): Promise<Received | null> => {
+        writeFileSync(`${reads}/ready-${slot}`, "ready\n");
         for (let n = 0; n < 200; n++) {
           try { return JSON.parse(readFileSync(`${reads}/heft-${slot}.json`, "utf8")) as Received; }
           catch { await Bun.sleep(100); }
@@ -1078,7 +1086,7 @@ async function privatePackHandover(): Promise<void> {
           let programId: string | null = null;
           let slot: number | null = null;
           let opened: Awaited<ReturnType<typeof call>>;
-          for (const file of readdirSync(reads).filter((file) => file.startsWith("heft-"))) rmSync(`${reads}/${file}`);
+          for (const file of readdirSync(reads).filter((file) => /^(heft-|ready-)/.test(file))) rmSync(`${reads}/${file}`);
           if (role === "lane") {
             const made = await call("/api/tasks", "POST", { text: "Owner-Heft Startprobe", repo: product, queue: false });
             const taskId = (made.json.task as { id?: string } | undefined)?.id;
@@ -1115,6 +1123,7 @@ async function privatePackHandover(): Promise<void> {
             await selfCall(slot, "/api/self/fleet-report", { status: "handoff", text: "synthetic handover; reader still owed" });
           }
           rmSync(`${reads}/heft-${slot}.json`, { force: true });
+          rmSync(`${reads}/ready-${slot}`, { force: true });
           const succession = await selfCall(slot, "/api/self/succeed", { model: spawn.model, effort: "high" });
           const second = succession.status === 200 ? await receive(slot) : null;
           check(`konzepte owner delivery (${harness}/${role}): succession delivers the reader pointer under the successor's current position`,

@@ -5138,7 +5138,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      50 min ONE warm turn reaches its pane and the occupant stays. Mutation: drop the
 //      `before-duration` gate (W is warmed at 55) or the work read (W is succeeded instead).
 //   S  switched on, nothing foreseeable: the OWNER DOOR hands it over, and the old occupant gets no
-//      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first.
+//      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first. The
+//      setting belongs to the LINE on the slot (MAIN 4e5ab4bb, 08.10.): the successor carries it
+//      unchanged and is not handed over again at once, and the owner door's route carries it to the
+//      next one too. Mutation: drop server.ts#carryHandoverSetting.
 //   C  no switch at all: neither a warm turn nor a succession. Mutation: drop liveKeepCache's filter.
 //   G  bound game-maker MAIN, T the ⚙ steward: the switch is refused by name (the card's exemptions).
 //   X  a warm turn held at sendText's before-paste latch while the owner switches the session off:
@@ -5430,7 +5433,16 @@ async function runKeepCache(): Promise<void> {
     if (!brief) await Bun.sleep(100);
   }
   const sRec = existsSync(rec(S)) ? readFileSync(rec(S), "utf8") : null;
-  const heirView = await hv(S.slot);
+  type Carried = View["setting"] & { occupant?: { slot?: number; openedAt?: number } };
+  const carriedTo = async (openedAt: number | undefined): Promise<View> => {
+    let v = await hv(S.slot);
+    for (let i = 0; i < 100 && (v.setting as Carried | null)?.occupant?.openedAt !== openedAt; i++) {
+      await Bun.sleep(100);
+      v = await hv(S.slot);
+    }
+    return v;
+  };
+  const heirView = await carriedTo(heir?.openedAt);
   check("keepCache S: at 50 min with nothing foreseeable the decision is succeed, and the owner door opens a successor on the same slot and cwd",
     sOn.status === 200 && sOn.body.succession?.keepCache?.act === "succeed" && sOn.body.succession.keepCache.reason === "no-work-foreseeable"
       && heir?.cwd === S.cwd && (heir.openedAt ?? 0) > S.openedAt && brief.includes("VOM OWNER AUSGELÖST") && brief.includes("KEEP-SESSION-MARK"),
@@ -5438,8 +5450,29 @@ async function runKeepCache(): Promise<void> {
   check("keepCache S: the predecessor got NO turn — its byte recorder stayed empty and the prompt log holds no new row for its occupation",
     sRec === "" && (await promptsOfS()) === sBefore,
     `recorder=${JSON.stringify(sRec?.slice(0, 200))} prompts ${sBefore} → ${await promptsOfS()}`);
-  check("keepCache S: the successor starts without the switch — the setting was its predecessor's",
-    heirView.setting === null && heirView.succession?.keepCache === null, JSON.stringify(heirView.setting));
+  const lineSetting = (v: View, openedAt: number | undefined): boolean => {
+    const h = v.setting as Carried | null;
+    return h?.keepCache === true && h.keepCacheIdleMin === 50 && h.nudge === false && h.thresholdPct === null
+      && h.occupant?.slot === S.slot && h.occupant.openedAt === openedAt;
+  };
+  await Bun.sleep(3000); // a successor handed over again at once would have a third occupant by now
+  const heirStill = (await sessions()).slots.find((x) => x.id === S.slot);
+  check("keepCache S: the successor carries the line's setting unchanged — and is not handed over again at once",
+    lineSetting(heirView, heir?.openedAt) && heirView.succession?.keepCache?.act === null
+      && heirView.succession.keepCache.warmTurns === 0 && heirStill?.openedAt === heir?.openedAt,
+    JSON.stringify({ setting: heirView.setting, keep: heirView.succession?.keepCache, openedAt: heirStill?.openedAt, heir: heir?.openedAt }));
+  // …and the owner door's own route carries it to the next successor as well
+  let ready = false;
+  for (let i = 0; i < 100 && !ready; i++) {
+    ready = ((await (await get(`/api/slots/${S.slot}/succeed`)).json()) as { ready?: boolean }).ready === true;
+    if (!ready) await Bun.sleep(100);
+  }
+  const pressed = ready ? await post(`/api/slots/${S.slot}/succeed`, {}) : null;
+  const heir2 = (await sessions()).slots.find((x) => x.id === S.slot);
+  const heir2View = await carriedTo(heir2?.openedAt);
+  check("keepCache S: the owner door's route POST /api/slots/:id/succeed carries the setting to the next successor too",
+    ready && !!pressed?.ok && (heir2?.openedAt ?? 0) > (heir?.openedAt ?? 0) && lineSetting(heir2View, heir2?.openedAt),
+    JSON.stringify({ ready, pressed: pressed?.status, heir2: heir2?.openedAt, setting: heir2View.setting }));
 
   // C, NO SWITCH: the same fill and the same age, seconds of ticks later — untouched
   const cView = await hv(C.slot);

@@ -13590,6 +13590,9 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
   const identity = predecessorIdentity.selfToken;
   if (!sameSuccessionOccupant(s, predecessorIdentity) || successionInflight.has(identity))
     return no(ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight"));
+  // THE OWNER'S HANDOVER SETTING BELONGS TO THE LINE ON THIS SLOT (MAIN, row 4e5ab4bb, 08.10.: the
+  // owner sets keepCache for the line, not for one session) — read while the predecessor still holds it
+  const lineSetting = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
   successionInflight.add(identity);
   try {
     // THE RAIL, fixed here and re-asked before the kill: a binding that moves while the brief is built
@@ -13636,17 +13639,30 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     // THE PROGRAM RAIL: the same succeedProgramMain the self door takes — founding marker, record
     // capture at the kill, binding cut, companions — with no carry (the predecessor writes nothing
     // now) and the owner section behind the founding brief. game-maker never gets here (rail refusal).
-    if (bound.length)
-      return await succeedProgramMain(bound[0]!, s, s.label, null,
+    const done = bound.length
+      ? await succeedProgramMain(bound[0]!, s, s.label, null,
         { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, bound.slice(1),
-        { appendix: freshSuccessionAppendix(standing, tail, now, "program"), beforeKill });
-    return await succeedGeneric(s, { label: s.label, carry: null,
-      channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
-      spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, memoryGrant: undefined,
-      appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
+        { appendix: freshSuccessionAppendix(standing, tail, now, "program"), beforeKill })
+      : await succeedGeneric(s, { label: s.label, carry: null,
+        channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
+        spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, memoryGrant: undefined,
+        appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
+    carryHandoverSetting(s, lineSetting, predecessorIdentity);
+    return done;
   } finally {
     successionInflight.delete(identity);
   }
+}
+
+// …and onto the successor it goes, unchanged (threshold, hint, keepCache and its duration), once a NEW
+// occupant stands on the same slot and cwd — also when its founding brief was not delivered, because
+// the successor stands either way. Its keepCache bookkeeping starts empty, and it is not handed over
+// again at once: its newest model call is its own, so the duration counts from there.
+function carryHandoverSetting(s: Slot, setting: HandoverSetting | null, pred: SuccessionPredecessorIdentity): void {
+  if (!setting || !s.cwd || s.openedAt === pred.openedAt || s.cwd !== pred.cwd || s.handover) return;
+  s.handover = { ...setting, setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt } };
+  keepCacheRuns.delete(s.id);
+  saveState();
 }
 
 // THE SESSION'S HALF: write (or overwrite) the standing handover, in a turn it runs anyway. Same

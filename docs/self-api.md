@@ -643,13 +643,32 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`),
   `nudgeOn` und `sessionPct` (der gesetzte eigene Wert, auch solange ein Tor `thresholdPct` auf `null`
   hält), und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
-  (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung; eine neue Belegung — auch die
-  Nachfolgerin einer Lane — beginnt auf den Fleet-Werten. Fleet-Werte selbst sind keine Einstellung:
-  `null` + Hinweis an speichert nichts. Ablehnungen: jede Self-Credential (Header oder Bearer) 401 wie an
-  jeder Owner-Route, ein Wert außerhalb der 5er-Schritte oder vom falschen Typ 400 (`bad-threshold`,
-  `bad-nudge`, `nothing-to-set`), eine andere Belegung 409 `occupant-changed`, ein Slot ohne Session 409
-  `not-active`, ein Nicht-claude-Harness 409 `harness` (das Band gilt nur für claude), ein unbekannter Slot
-  404. Gemessen in `e2e/self-token.ts`.
+  (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung. Die Einstellung gehört der
+  LINIE auf dem Slot: eine Nachfolge über die Owner-Tür (`server.ts#handleOwnerSucceed`, auch die von
+  keepCache ausgelöste) trägt sie unverändert zur Nachfolgerin (`server.ts#carryHandoverSetting`); jede
+  andere neue Belegung — auch die Nachfolgerin einer Lane — beginnt auf den Fleet-Werten. Fleet-Werte
+  selbst sind keine Einstellung: `null` + Hinweis an + keepCache aus speichert nichts. Ablehnungen: jede
+  Self-Credential (Header oder Bearer) 401 wie an jeder Owner-Route, ein Wert außerhalb der 5er-Schritte
+  oder vom falschen Typ 400 (`bad-threshold`, `bad-nudge`, `bad-keep-cache`, `bad-keep-cache-idle`,
+  `nothing-to-set`), eine andere Belegung 409 `occupant-changed`, ein Slot ohne Session 409 `not-active`,
+  ein Nicht-claude-Harness 409 `harness` (das Band gilt nur für claude), ein unbekannter Slot 404.
+  Gemessen in `e2e/self-token.ts`.
+- **keepCache — nachfolgen oder warm halten, bevor der Prompt-Cache abläuft** (seit 2026-10-08, Owner
+  07.10.): dieselbe `PATCH`-Route nimmt `keepCache` (Schalter) und `keepCacheIdleMin` (Vielfaches von 5
+  zwischen 5 und 55, Default 50 — unter der gemessenen Lebensdauer von 60 min,
+  `docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md`); `GET`/`PATCH` antworten dazu
+  `keepCacheIdle {step, min, max, default, lifetimeMin}`, und die succession facts tragen
+  `keepCache: null` (aus) oder `{act, reason, thresholdPct, lastUsageAt, dueAt, work, idleMin,
+  lifetimeMin, warmTurns, warmMax, last}`. Der Tick `server.ts#tickKeepCache` liest nur eingeschaltete
+  Sessions; `server.ts#keepCacheDecision` entscheidet: über der wirksamen Schwelle und `keepCacheIdleMin`
+  Minuten nach dem letzten Modellaufruf → ist Arbeit absehbar (`server.ts#keepCacheWork`: armierter
+  Pane-Watch dieser Belegung, aktives Auto am Slot, laufende Lane eines gebundenen Programs), ein kurzer
+  Warm-Turn (Pfad `cache-warm`, höchstens `KEEP_CACHE_WARM_MAX` ohne eigenen Turn); sonst die
+  Owner-Nachfolge ohne Turn an die alte Session. Bis zum Kill bzw. Paste wird erneut gefragt, ob die
+  Einstellung in derselben Fassung gilt und (vor einer Nachfolge) ob inzwischen Arbeit absehbar ist —
+  sonst geschieht nichts (Owner-Tür: 409 `setting-changed`). Ein Warm-Turn wird nur in einen als leer
+  gelesenen Composer getippt. Weitere Ablehnungen beim Einschalten: 409 `steward`, `lane`, `game-maker`
+  (ausgenommen) und `no-threshold`. Gemessen in `e2e/slots.ts#runKeepCache`.
 - **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
   scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
   der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und

@@ -2009,7 +2009,8 @@ function loadReportDelegate(v: unknown): ReportDelegate | null {
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
 // HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
 // FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
-// its hint at all. Bound to `occupant` like a read grant: a successor is a new session.
+// its hint at all. Bound to `occupant` like a read grant; the owner door's succession re-binds it to
+// the successor (server.ts#carryHandoverSetting), every other new occupant starts on the fleet's values.
 // `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
 // session above its effective threshold whose last model call is `keepCacheIdleMin` minutes old is
 // succeeded through the owner door (no turn of its own) or, while further work is foreseeable, kept
@@ -2170,7 +2171,8 @@ interface Slot {
   lineageId: string | null;
   // THE OWNER'S HANDOVER SETTING for this occupant (HandoverSetting), null where the owner set none —
   // the session then runs on the rail's env threshold with the hint on. Reset with the occupant by
-  // openSlot and the teardown, never carried by a succession, persisted in fleet.json.
+  // openSlot and the teardown; a succession through the owner door (server.ts#handleOwnerSucceed, the
+  // keepCache act included) carries it unchanged to the successor on the same slot. Persisted in fleet.json.
   handover: HandoverSetting | null;
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't

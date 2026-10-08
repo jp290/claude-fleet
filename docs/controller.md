@@ -411,7 +411,11 @@ ohne Turn der Vorgängerin (oben); die Session erhält dadurch keine Owner-Befug
 Das ist gemessenes Wissen und eine Handlungsempfehlung für die bestehende Nachfolge. Der
 Server-Hinweis `tickMigrate` prüft Füllstand, Schwelle und Zustellbarkeit und schweigt bei einer
 frischen stehenden Übergabe (`server.ts#standingHandoverFresh`); er implementiert keinen
-Cache-Ablauf und keinen Abschluss laufender Subagenten.
+Cache-Ablauf und keinen Abschluss laufender Subagenten. Den Cache-Ablauf übernimmt je Session der
+Owner-Schalter keepCache (`server.ts#tickKeepCache`, `docs/self-api.md` §keepCache): vor Ablauf der
+gemessenen Stunde wird eine ruhende Session über ihrer Schwelle ohne eigenen Turn nachgefolgt oder,
+solange Arbeit absehbar ist, mit einem kurzen Turn warm gehalten. Einen laufenden Subagenten liest
+auch er nicht; solange einer läuft, ruht die Pane nicht, und keiner der beiden Akte greift.
 
 ## Kontext-Hinweis des Servers
 

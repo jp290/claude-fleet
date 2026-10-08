@@ -4552,6 +4552,21 @@ await import(pathToFileURL(process.argv[2]).href);
     executionBody.length > 0
       && !/\b(?:saveState|saveStateNow|appendEvent|sendText|spawnCmd)\b/.test(executionBody),
     executionBody.length > 0 ? "mutation primitive present" : "ProgramExecutionView handler missing");
+  // THE LANE STAND (row 14dd9154): the per-lane git facts in lanes.rows are the tickGit cache, so the
+  // view runs no git of its own; and the stand a lane may now write moves no lifecycle door — the
+  // lane's own succession, the landbereit list and the auto-close refusal never read it. A git call
+  // in the view, or any of the three starting to read the standing handover, turns this red.
+  const execGit = /\b(?:git|gitRead|laneBaseRef|laneHunkAnchor|gitOpInProgress)\(/.exec(executionBody);
+  const fnBodyOf = (head: string): string => {
+    const at = server.indexOf(head);
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+  };
+  const standBlind = ["async function succeedLane(", "function landReadyRows(", "function laneAutoCloseRefusal("]
+    .map((head) => ({ head, body: fnBodyOf(head) }))
+    .map(({ head, body }) => ({ head, ok: body.length > 0 && !/standingHandover|liveStandingHandover/.test(body) }));
+  pin("ProgramExecutionView runs no git, and succeedLane, landReadyRows and laneAutoCloseRefusal never read a lane's stand",
+    executionBody.length > 0 && execGit === null && standBlind.every((x) => x.ok),
+    `git=${execGit?.[0] ?? "none"} ${standBlind.map((x) => `${x.head}${x.ok ? "ok" : "READS/MISSING"}`).join(" ")}`);
   // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
   // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
   // it — and tsc sees no error when they drift, because two independent literal unions are both

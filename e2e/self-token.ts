@@ -1661,15 +1661,22 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
     tail?: { state?: string; entries?: number } | null };
   const preview = async (slot: number): Promise<Preview> => (await (await get(`/api/slots/${slot}/succeed`)).json()) as Preview;
 
-  // the rails this cut leaves alone answer by name, and the lane's own credential cannot write a
-  // standing handover no door would ever read
+  // the rails this cut leaves alone answer by name. A lane's credential writes its STAND at
+  // /api/self/handover since row 14dd9154 — one free `intent`, read by its MAIN — and the owner door
+  // still refuses the lane: writing a stand opens no succession rail (drop the `lane` refusal from
+  // ownerSucceedRailRefusal, or let a lane write a pointer, and this falls)
   const laneDoor = await post(`/api/slots/${laneSlot}/succeed`, {});
   const laneDoorBody = (await laneDoor.json()) as { reason?: string };
-  const laneWrite = await selfPost(laneTok, "/api/self/handover", { intent: "a lane has its own handoff report" });
-  const laneWriteBody = (await laneWrite.json()) as { reason?: string };
-  check("owner succession door: a lane is refused 409 `lane` at the owner door AND at /api/self/handover",
-    laneDoor.status === 409 && laneDoorBody.reason === "lane" && laneWrite.status === 409 && laneWriteBody.reason === "lane",
-    `${laneDoor.status} ${JSON.stringify(laneDoorBody)} | ${laneWrite.status} ${JSON.stringify(laneWriteBody)}`);
+  const lanePointer = await selfPost(laneTok, "/api/self/handover", { pointer: "docs/x-2026-10-08.md#stand" });
+  const laneWrite = await selfPost(laneTok, "/api/self/handover", { intent: "fertig: nichts · fehlt: alles · blockiert: nichts" });
+  const laneWriteBody = (await laneWrite.json()) as { standingHandover?: { intent?: string } };
+  const laneDoorAfter = await post(`/api/slots/${laneSlot}/succeed`, {});
+  const laneDoorAfterBody = (await laneDoorAfter.json()) as { reason?: string };
+  check("owner succession door: a lane is refused 409 `lane` at the owner door, before AND after it wrote its intent-only stand at /api/self/handover",
+    laneDoor.status === 409 && laneDoorBody.reason === "lane" && lanePointer.status === 400
+      && laneWrite.ok && laneWriteBody.standingHandover?.intent === "fertig: nichts · fehlt: alles · blockiert: nichts"
+      && laneDoorAfter.status === 409 && laneDoorAfterBody.reason === "lane",
+    `${laneDoor.status} ${JSON.stringify(laneDoorBody)} | pointer ${lanePointer.status} | ${laneWrite.status} ${JSON.stringify(laneWriteBody)} | ${laneDoorAfter.status} ${JSON.stringify(laneDoorAfterBody)}`);
 
   const free = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
   const opened = free ? await post(`/api/slots/${free}/open`, { cwd: repo, label: "owner-succession" }) : null;

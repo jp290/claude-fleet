@@ -778,9 +778,13 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   datiert, getrackt und sauber, sonst 400/409; leerer Body = 400). Überschreibt die vorige; die
   Session hält sie in ohnehin laufenden Turns aktuell. Gespeichert als `Slot.standingHandover
   {at, openedAt, intent, pointer}` (`server/types.ts#StandingHandover`), persistiert, an die Belegung
-  gebunden: eine neue Belegung erbt keine. Lane, Game-Maker und Steward: 409 mit `reason`
+  gebunden: eine neue Belegung erbt keine. Game-Maker und Steward: 409 mit `reason`
   (dieselben Gründe wie unten) — niemand pflegt eine Übergabe, die keine Tür liest. Eine Standard-
-  Program-MAIN darf sie seit 2026-10-07 schreiben (zweiter Schnitt, unten).
+  Program-MAIN darf sie seit 2026-10-07 schreiben (zweiter Schnitt, unten). **Eine Lane schreibt
+  hier seit 2026-10-08 ihren STAND** (Zeile 14dd9154, §„Der Stand einer Lane" unten): nur
+  `intent` — ein freier Text, was fertig ist, was fehlt, was blockiert —, ein `pointer` allein ist 400.
+  Leser ist ihre MAIN, nicht die Owner-Tür: die verweigert eine Lane weiter mit `lane`, und der
+  Kontext-Hinweis einer Lane (`tickMigrate`) bleibt auch bei frischem Stand stehen.
   Lesen: `GET /api/self` → `standingHandover` (`null` = keine geschrieben).
 - **`POST /api/slots/:id/succeed`** (Owner-Credential, `server.ts#handleOwnerSucceed`) — beendet die
   RUHENDE Session und öffnet auf demselben Slot und cwd eine frische auf der ungebundenen Schiene
@@ -1928,6 +1932,26 @@ und löscht nichts; Neu-Registrieren bleibt der eigene Akt der Nachfolgerin übe
   solchen Test und werden weiter getragen.
 - **`lost` = nicht übertragbare Zeilen** mit `id`, `kind` (`clarification` oder `fleet-event`) und `reason` (etwa `lane gone`, `program not active`, `no successor bound`). Die Program-Sicht zeigt die Liste unverändert; `dropped` behält seine bisherige Bedeutung.
 - Alte Records ohne `settled` oder `lost` laden mit leeren Listen.
+
+### Der Stand einer Lane (`GET /api/self/program-execution` → `lanes.rows`)
+
+Owner 2026-10-07: „[Zitat entfernt]“
+. Die Lane schreibt ihren Stand mit
+`POST /api/self/handover {"intent": "…"}` (§handover oben); der neue ersetzt den alten, er überlebt
+einen Server-Neustart für dieselbe Belegung und erzeugt keinen fleet-report, keinen Inbox-Eintrag und
+keine Entscheidung. Die MAIN liest ihn neben den Git-Fakten in jeder Zeile von `lanes.rows`:
+
+| Feld | Quelle | `null` heißt |
+|---|---|---|
+| `ahead`, `dirty` | `tickGit`-Cache (`gitInfo`): Commits vor der Basis, Zahl geänderter Pfade | der Takt hat diese Belegung noch nicht vermessen |
+| `idleMs` | `now - lastOutput` | keine Pane-Ausgabe beobachtet |
+| `files` | `server.ts#laneHunkInfo`: berührte Dateien seit dem Fork, sortiert | nicht gelesen (keine gesendete Zeile, kein Anker, Diff fehlgeschlagen) |
+| `ctx` | `contextFill`: Füllstand in Prozent | Harness/Transkript nicht messbar |
+| `cacheWarm` | `deliveryCacheState`: Prompt-Cache vor seiner Kante | keine Cache-Lesung |
+| `stand` | `{at, intent}` der aktuellen Belegung | kein Stand geschrieben |
+
+Fehlende Werte sind `null`, nie `0`. Die View macht keinen Git-Aufruf: Git-Fakten gelten nur, solange
+`tickGit` sie für genau diese Belegung beglaubigt hat (`operationalGitOccupants`), sonst `null`.
 
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 

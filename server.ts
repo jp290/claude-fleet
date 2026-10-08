@@ -3379,12 +3379,28 @@ async function programExecutionView(s: Slot): Promise<Response> {
         byStatus,
       },
       lanes: {
-        rows: slots.filter((x) => x.cwd && x.programId === p.id).map((x) => ({
-          slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId,
-          repo: x.worktree?.repo ?? null, branch: x.worktree?.branch ?? null,
-          taskId: x.taskId ?? null, originId: x.originId ?? null, harness: x.harness ?? null,
-          model: x.model ?? null, effort: x.effort ?? null,
-        })),
+        rows: slots.filter((x) => x.cwd && x.programId === p.id).map((x) => {
+          // WHERE THE LANE STANDS, at one place (row 14dd9154): its own words and the facts beside
+          // them. Every git fact is the tickGit cache, read only while that tick vouched for THIS
+          // occupant (operationalGitOccupants) — this view runs no git. Missing is null, never 0.
+          const gitOk = operationalGitOccupants.get(x.id)?.openedAt === x.openedAt;
+          const g = gitOk ? gitInfo.get(x.id) ?? null : null;
+          const hunks = gitOk ? laneHunkInfo.get(x.id) : undefined;
+          const cache = deliveryCacheState(x, now);
+          const stand = liveStandingHandover(x);
+          return {
+            slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId,
+            repo: x.worktree?.repo ?? null, branch: x.worktree?.branch ?? null,
+            taskId: x.taskId ?? null, originId: x.originId ?? null, harness: x.harness ?? null,
+            model: x.model ?? null, effort: x.effort ?? null,
+            ahead: g ? g.ahead : null, dirty: g ? g.dirty : null,
+            idleMs: x.lastOutput > 0 ? Math.max(0, now - x.lastOutput) : null,
+            files: hunks ? Object.keys(hunks).sort() : null,
+            ctx: contextFill(x)?.pct ?? null,
+            cacheWarm: cache.at === null ? null : cache.cache === "warm",
+            stand: stand ? { at: stand.at, intent: stand.intent } : null,
+          };
+        }),
         total: slots.filter((x) => x.cwd && x.programId === p.id).length,
       },
       outcomes: {
@@ -13726,15 +13742,24 @@ function carryHandoverSetting(s: Slot, setting: HandoverSetting | null, pred: Su
 // channel and the same checks as the generic succeed body (lineageChannelOf, lineagePointerCommitted),
 // exactly one of intent/pointer; the rails the owner door refuses refuse it here too, so nobody
 // keeps a handover current that no door will ever read.
+// A LANE IS THE EXCEPTION, and its reader is a different one (row 14dd9154, owner 2026-10-07: „[Zitat entfernt]“
+// ): its MAIN
+// reads it as the lane's STAND in GET /api/self/program-execution → lanes.rows[].stand. The owner
+// door still refuses a lane (ownerSucceedRailRefusal is unchanged), the lane's own exit is still its
+// handoff report, and the stand is one free text — `intent` only, no pointer, no form, no field it
+// must fill. It files no report, writes no inbox entry and decides nothing.
 async function handleSelfHandover(s: Slot, req: Request): Promise<Response> {
   const railNo = ownerSucceedRailRefusal(s);
-  if (railNo && (railNo.reason === "steward" || railNo.reason === "lane" || railNo.reason === "game-maker"))
+  if (railNo && (railNo.reason === "steward" || railNo.reason === "game-maker"))
     return json({ error: railNo.error, reason: railNo.reason }, railNo.code);
+  const lane = railNo?.reason === "lane";
   const openedAt = s.openedAt, cwd = s.cwd!, token = s.selfToken;
   const body = await readJson(req);
   const parsed = lineageChannelOf(body, null);
   if (!parsed.ok) return json({ error: parsed.error }, parsed.status);
   const { intent, pointer } = parsed.channel;
+  if (lane && intent === null)
+    return json({ error: `a lane's stand is one free text: \`intent\` (at most ${LINEAGE_INTENT_MAX} characters — what is done, what is missing, what blocks)` }, 400);
   if (intent === null && pointer === null)
     return json({ error: `a standing handover names exactly one of \`intent\` (at most ${LINEAGE_INTENT_MAX} characters) or \`pointer\` (a committed, dated section)` }, 400);
   if (pointer !== null && !(await lineagePointerCommitted(cwd, pointer)))
@@ -25518,8 +25543,10 @@ async function tickMigrate(): Promise<void> {
       // rail's instructions, which name an exit it does not have.
       if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane
         || harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
-      // asked after the delivery gate, so the transcript is read only for a nudge that would go out
-      if (await standingHandoverFresh(s)) continue;
+      // asked after the delivery gate, so the transcript is read only for a nudge that would go out.
+      // NOT FOR A LANE: its standing handover is the stand its MAIN reads (handleSelfHandover), no
+      // door hands a lane over on it, so it must not silence the lane's own handoff nudge
+      if (!lane && await standingHandoverFresh(s)) continue;
       if (s.sessionId !== attempt.sessionId || !s.cwd) continue;
       // ANOTHER TICK'S NUDGE MAY HAVE LANDED DURING THESE AWAITS: `attempt` was built before them, and
       // the previous tick's send to this session (in flight when the pending check above ran) stores

@@ -211,7 +211,10 @@ interface ProgramExecutionRow {
     total: number; byStatus: Record<string, number> };
   lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
     branch: string | null; taskId: string | null; originId: string | null; harness: string | null;
-    model: string | null; effort: string | null }[]; total: number };
+    model: string | null; effort: string | null;
+    // where the lane stands (row 14dd9154): cached git facts, its own words; missing is null
+    ahead: number | null; dirty: number | null; idleMs: number | null; files: string[] | null;
+    ctx: number | null; cacheWarm: boolean | null; stand: { at: number; intent: string | null } | null }[]; total: number };
   outcomes: { rows: Record<string, unknown>[]; total: number; malformed: number };
   receipts: { rows: Record<string, unknown>[]; total: number; malformed: number };
   operations: {
@@ -2686,9 +2689,13 @@ export async function run(ctx: Ctx): Promise<void> {
   // after a restart), so they are excluded here for the same reason `at` is: this check asserts that
   // the PERSISTED half reconstructs, and folding a live fact into it would make the check a clock.
   // The phase's own reconstruction is asserted by the reducer rows above, over fixed inputs.
+  // The same holds for a lane row's live facts (row 14dd9154): ahead/dirty/files are the tickGit cache
+  // a restart empties, idleMs/ctx/cacheWarm are read off the pane and transcript now. Its `stand` is
+  // persisted and stays IN the comparison.
   const withoutDerived = (rows: ProgramExecutionRow[] | undefined): unknown => canonical((rows ?? []).map((row) => ({
     ...row,
     tasks: { ...row.tasks, rows: row.tasks.rows.map(({ phase, phaseBasis, note, candidate, nextAction, ...rest }) => rest) },
+    lanes: { ...row.lanes, rows: row.lanes.rows.map(({ ahead, dirty, idleMs, files, ctx, cacheWarm, ...rest }) => rest) },
     unknown: row.unknown.filter((line) => !line.includes("projects as phase UNKNOWN")),
   })));
   check("ProgramExecutionView restart: persisted facts reconstruct field-for-field apart from the fresh timestamp and the live-derived phase",
@@ -11546,6 +11553,66 @@ export async function run(ctx: Ctx): Promise<void> {
         phase: nextWith?.phase, phaseWithout: nextWithout?.phase,
         basis: nextWith?.phaseBasis ?? null, basisWithout: nextWithout?.phaseBasis ?? null,
         unknown: unknownFor(progWith), unknownWithout: unknownFor(progWithout) }));
+
+    // --- THE LANE'S STAND (row 14dd9154), measured on this same idle, clean, ahead lane: the lane
+    // writes its stand through its own credential (POST /api/self/handover, intent only), the newer
+    // replaces the older, its MAIN reads it in lanes.rows beside the cached git facts, a restart
+    // keeps it for the same occupation — and it moves nothing else: no fleet-report, no inbox entry,
+    // no decision, the landbereit list unchanged (and the self-land of THIS lane below still runs
+    // with a stand standing). Mutations: keep the `lane` refusal in handleSelfHandover (the write
+    // falls), read gitInfo without the occupant guard or coerce a missing fact to 0 (the null legs
+    // fall), mint a report from the write (the side-effect leg falls).
+    if (greenLaneSlot !== null) {
+      const standTok = slotToken(greenLaneSlot);
+      const laneRowOf = async () => (await selfExecution(landTok)).view?.programs
+        .find((row) => row.program.id === landProgram.id)?.lanes.rows.find((row) => row.slot === greenLaneSlot);
+      const landbereitOf = async () => JSON.stringify((await selfExecution(landTok)).view?.programs
+        .find((row) => row.program.id === landProgram.id)?.landbereit.rows.map((r) => r.taskId) ?? null);
+      const reportsBefore = (readState().fleetReports ?? []).length;
+      const inboxBefore = (await selfInbox(landTok)).view?.entries.length ?? -1;
+      const landbereitBefore = await landbereitOf();
+      const before = await laneRowOf();
+      const STAND_1 = "fertig: selfland-green.txt · fehlt: Review · blockiert: nichts";
+      const STAND_2 = "fertig: selfland-green.txt · fehlt: Land durch die MAIN · blockiert: nichts";
+      const standPost = (body: unknown) => fetch(`${BASE}/api/self/handover`, { method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": standTok }, body: JSON.stringify(body) });
+      const w1 = await standPost({ intent: STAND_1 });
+      const w1Body = (await w1.json()) as { standingHandover?: { at?: number } };
+      const wPointer = await standPost({ pointer: "docs/stand-2026-10-08.md#stand" });
+      const w2 = await standPost({ intent: STAND_2 });
+      const w2Body = (await w2.json()) as { standingHandover?: { at?: number } };
+      const at2 = w2Body.standingHandover?.at ?? 0;
+      let read: Awaited<ReturnType<typeof laneRowOf>>;
+      try {
+        read = await until(async () => {
+          const row = await laneRowOf();
+          return row?.files !== null && row?.stand?.at === at2 ? row : null;
+        }, { timeoutMs: 15_000, stepMs: 200, what: "the lane row carries the stand and its touched files" });
+      } catch (e) { if (!(e instanceof UntilTimeout)) throw e; read = await laneRowOf(); }
+      check("lane stand: the lane writes an intent-only stand, the newer replaces the older, and its MAIN reads it in lanes.rows with ahead, dirty, idleMs and the touched files — ctx and cacheWarm null on a pane with no transcript, never 0",
+        before?.stand === null && w1.ok && (w1Body.standingHandover?.at ?? 0) > 0 && wPointer.status === 400
+          && w2.ok && at2 >= (w1Body.standingHandover?.at ?? Infinity)
+          && read?.stand?.intent === STAND_2 && read.stand.at === at2
+          && read.ahead === 1 && read.dirty === 0 && typeof read.idleMs === "number" && read.idleMs >= 0
+          && JSON.stringify(read.files) === JSON.stringify(["selfland-green.txt"])
+          && read.ctx === null && read.cacheWarm === null,
+        JSON.stringify({ before: before?.stand, w1: w1.status, pointer: wPointer.status, w2: w2.status, read }));
+      const reportsAfter = (readState().fleetReports ?? []).length;
+      const inboxAfter = (await selfInbox(landTok)).view?.entries.length ?? -2;
+      const landbereitAfter = await landbereitOf();
+      check("lane stand: writing it files no fleet-report, writes no inbox entry and leaves the landbereit list as it was",
+        reportsAfter === reportsBefore && inboxAfter === inboxBefore && landbereitAfter === landbereitBefore,
+        JSON.stringify({ reportsBefore, reportsAfter, inboxBefore, inboxAfter, landbereitBefore, landbereitAfter }));
+      await stopSrv();
+      await restartSrv();
+      const afterRestart = await laneRowOf();
+      check("lane stand: a server restart keeps the stand for the same occupation",
+        afterRestart?.openedAt === read?.openedAt && afterRestart?.stand?.at === at2 && afterRestart.stand.intent === STAND_2,
+        JSON.stringify({ afterRestart: afterRestart?.stand, openedAt: [read?.openedAt, afterRestart?.openedAt] }));
+      // the restart emptied the git cache this fixture's later steps read: wait for it again
+      const reReady = await waitDoneLooking(greenLaneSlot, greenLaneCwd);
+      check("lane stand: the lane is done-looking again after the restart (setup for the steps below)", reReady, doneLookingWhy);
+    }
 
     // --- THE ACCEPTANCE PRECONDITION ON THIS DOOR TOO (server.ts, rung 11), driven LIVE: the lane
     // files its own result through the real route, its bound MAIN judges it through the real door,

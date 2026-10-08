@@ -3363,6 +3363,7 @@ export async function run(ctx: Ctx): Promise<void> {
     `A=slot${mainSlot}/${msgProgramB.id.slice(0, 6)} B=slot${msgBSlot} tokens=${msgAToken.length}/${msgBToken.length}`);
 
   // THE HIN-WEG. A addresses B by PROGRAM ID; the sender is never in the body.
+  const msgRowsBefore = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? 0;
   const msgOutKey = "rail-out-1";
   const msgOutText = "A to B: the addressed question that must outlive the sender's own succession.";
   const msgOut = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
@@ -3431,7 +3432,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgConflictText = await msgConflict.text();
   const msgConflictTo = await selfSend(msgAToken, { to: { kind: "role", role: "orchestrator" },
     payload: { kind: "text", text: msgOutText }, idempotencyKey: msgOutKey });
-  const msgCountAfterReplay = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
+  const msgCountAfterReplay = ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) - msgRowsBefore;
   check("message rail idempotency: the same key replays the SAME message, and the same key with a different body or receiver is a named 409 that appends nothing",
     msgReplay.ok && msgReplayBody.existing === true && msgReplayBody.message?.id === msgOutId
       && msgConflict.status === 409 && msgConflictText.includes("one key names one act")
@@ -3449,7 +3450,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("message rail idempotency: the dedupe is the persisted record, so the same key still replays the same id across a restart",
     msgReplayAfterBoot.ok && msgReplayAfterBootBody.existing === true
       && msgReplayAfterBootBody.message?.id === msgOutId
-      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 2,
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) - msgRowsBefore === 2,
     `${msgReplayAfterBoot.status} existing=${msgReplayAfterBootBody.existing} id=${msgReplayAfterBootBody.message?.id}`);
 
   // THE FOUR REFUSALS, and the two that must NOT be the same answer: an address that does not
@@ -3463,7 +3464,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // `includes` would be comparing against JSON's backslash-escaped quotes and fail on a server
   // that is answering correctly. (It did, on the first helper run — the probe, not the code.)
   const msgControllerText = ((await msgController.json()) as { error?: string }).error ?? "";
-  const msgRowsAfterRefusals = (readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1;
+  const msgRowsAfterRefusals = ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) - msgRowsBefore;
   check("message rail: an address that does not resolve is a NAMED 409 that stores nothing — an unknown Program and the named-but-unaddressable Controller role each say which they are",
     msgUnknownProgram.status === 409 && msgUnknownText.includes("unknown program")
       && msgController.status === 409
@@ -3486,7 +3487,7 @@ export async function run(ctx: Ctx): Promise<void> {
     msgUnheld.ok && msgUnheldBody.holder === null
       && (msgUnheldBody.note ?? "").includes("has no bound MAIN right now")
       && (msgUnheldBody.note ?? "").includes("the next bound MAIN reads it")
-      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 3,
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) - msgRowsBefore === 3,
     `${msgUnheld.status} holder=${JSON.stringify(msgUnheldBody.holder)} note=${msgUnheldBody.note}`);
 
   // THE BODY CANNOT NAME A SENDER, a lane cannot address anyone, and the payload union is closed.
@@ -3512,7 +3513,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && msgLaneSlot > 0 && msgLaneSend.status === 409 && msgLaneText.includes("a lane does not address principals")
       && msgUnknownPayload.status === 400 && msgUnknownPayloadText.includes("payload kind must be one of text")
       && msgEmptyPayload.status === 400 && msgHugePayload.status === 400
-      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) === 3,
+      && ((readState().messages as { entries?: unknown[] } | undefined)?.entries?.length ?? -1) - msgRowsBefore === 3,
     `forge=${msgForgedSender.status} lane=${msgLaneSend.status} kind=${msgUnknownPayload.status} empty=${msgEmptyPayload.status} huge=${msgHugePayload.status}`);
 
   // NON-DISCLOSURE at the two doors that take an id. A principal must not be able to probe for the

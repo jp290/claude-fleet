@@ -5145,6 +5145,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      nothing reaches the pane. Mutation: drop the setting re-check in beforePaste (review 69b3235c/1).
 //   W again: a save with UNCHANGED values neither resets the warm count nor opens the retry window.
 //      Mutation: clear keepCacheRuns on every PATCH (review 69b3235c/2) — a second warm turn follows.
+//   X, C again, parked by the keepCache latch right AFTER the decision (review 138e5be7): X decided
+//      warm, then its threshold is re-set — nothing is typed (mutation: take the setting's version
+//      after canDeliver instead of with the decision); C switched on, decided succeed, then switched
+//      off — no successor (mutation: drop handleOwnerSucceed's `stillWanted` question).
 // Invalid values are refused with the setting left as it was. ---
 async function runKeepCache(): Promise<void> {
   const repos: string[] = [];
@@ -5232,8 +5236,25 @@ async function runKeepCache(): Promise<void> {
   }
   // the before-paste latch parks exactly one send whose text names the marker written into it later
   const latch = `${ROOT}/keep-inflight-latch`;
-  for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
-  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch });
+  const keepLatch = `${ROOT}/keep-decided-latch`;
+  for (const f of [latch, keepLatch].flatMap((l) => [l, `${l}.reached`, `${l}.release`])) rmSync(f, { force: true });
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch, FLEET_TEST_KEEP_CACHE_LATCH: keepLatch });
+  // parks the tick after its decision for `slot`, runs `between`, releases, and says whether it parked
+  const parkAfterDecision = async (slot: number, start: () => Promise<unknown>, between: () => Promise<unknown>): Promise<boolean> => {
+    for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
+    writeFileSync(keepLatch, String(slot));
+    await start();
+    let reached = false;
+    for (let i = 0; i < 100 && !reached; i++) {
+      reached = existsSync(`${keepLatch}.reached`);
+      if (!reached) await Bun.sleep(100);
+    }
+    await between();
+    writeFileSync(`${keepLatch}.release`, "");
+    await Bun.sleep(2000);
+    for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
+    return reached;
+  };
 
   type KeepFacts = { act: string | null; reason: string; thresholdPct: number | null; lastUsageAt: number | null;
     dueAt: number | null; work: string[]; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null };
@@ -5373,6 +5394,21 @@ async function runKeepCache(): Promise<void> {
       && xOff.body.setting?.keepCache === false && xRec === "",
     JSON.stringify({ on: xOn.status, decision: xOn.body.succession?.keepCache?.act, parked, off: xOff.status,
       recorder: xRec?.slice(0, 200) }));
+
+  // X, A NEW VERSION BETWEEN DECISION AND ACT: switched on again (a changed switch is a fresh warm
+  // budget), decided warm under 44 %, parked, re-set to 45 % — the turn decided under 44 is not typed
+  const xGot: { on?: Awaited<ReturnType<typeof hp>>; re?: Awaited<ReturnType<typeof hp>> } = {};
+  const xParked = await parkAfterDecision(X.slot,
+    async () => { xGot.on = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true }); },
+    async () => { xGot.re = await hp(X.slot, { expectedOpenedAt: X.openedAt, thresholdPct: 45 }); });
+  const { on: xOn2, re: xRe } = xGot;
+  const xRec2 = existsSync(rec(X)) ? readFileSync(rec(X), "utf8") : null;
+  check("keepCache X: a setting re-set between the decision and the act — the warm turn decided under the old version types nothing",
+    xOn2?.status === 200 && xOn2.body.succession?.keepCache?.act === "warm" && xParked && xRe?.status === 200
+      && xRe.body.setting?.thresholdPct === 45 && xRec2 === "",
+    JSON.stringify({ on: xOn2?.status, decision: xOn2?.body.succession?.keepCache?.act, parked: xParked,
+      reset: xRe?.status, recorder: xRec2?.slice(0, 200) }));
+  await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: false });
   if (xAuto.auto) await post(`/api/autos/${xAuto.auto.id}/delete`, {});
 
   // S, SUCCEED: nothing foreseeable — the owner door, and the old session gets no turn
@@ -5411,9 +5447,25 @@ async function runKeepCache(): Promise<void> {
       && (await warmRows(C)).length === 0 && !cRec.includes("warmhalten"),
     JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
 
+  // C, SWITCHED OFF BETWEEN DECISION AND SUCCESSION: switched on (nothing foreseeable → succeed),
+  // parked after the decision, switched off — the owner door's last question refuses, no successor
+  const cGot: { on?: Awaited<ReturnType<typeof hp>>; off?: Awaited<ReturnType<typeof hp>> } = {};
+  const cParked = await parkAfterDecision(C.slot,
+    async () => { cGot.on = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: true }); },
+    async () => { cGot.off = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: false }); });
+  const { on: cOn, off: cOff } = cGot;
+  await Bun.sleep(3000); // a succession that went through would have opened its successor by now
+  const cAfter = (await sessions()).slots.find((x) => x.id === C.slot);
+  const cRec2 = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : null;
+  check("keepCache C: switched off between the succeed decision and the kill — nothing is handed over and the old session gets no turn",
+    cOn?.status === 200 && cOn.body.succession?.keepCache?.act === "succeed" && cParked && cOff?.status === 200
+      && cAfter?.openedAt === C.openedAt && cRec2 !== null && !cRec2.includes("warmhalten") && !cRec2.includes("[fleet succession]"),
+    JSON.stringify({ on: cOn?.status, decision: cOn?.body.succession?.keepCache?.act, parked: cParked, off: cOff?.status,
+      openedAt: cAfter?.openedAt, expected: C.openedAt }));
+
   if (auto.auto) await post(`/api/autos/${auto.auto.id}/delete`, {});
   for (const x of [W, S, C, X]) rmSync(rec(x), { force: true });
-  for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
+  for (const f of [latch, keepLatch].flatMap((l) => [l, `${l}.reached`, `${l}.release`])) rmSync(f, { force: true });
   await cleanup();
 }
 

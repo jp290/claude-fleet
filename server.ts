@@ -13449,7 +13449,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
 // The remaining rails keep their own gate and are refused by name: a lane hands over by its own
 // `handoff` report, a game-maker MAIN through a checkpoint only it can commit.
 type OwnerSucceedRefusal = "not-active" | "asleep" | "slot-changing" | "steward" | "lane"
-  | "game-maker" | "in-flight" | "busy" | "pointer-uncommitted";
+  | "game-maker" | "in-flight" | "busy" | "pointer-uncommitted" | "setting-changed";
 type OwnerSucceedNo = { code: number; reason: OwnerSucceedRefusal; error: string };
 const ownerSucceedNo = (code: number, reason: OwnerSucceedRefusal, error: string): OwnerSucceedNo => ({ code, reason, error });
 function ownerSucceedRailRefusal(s: Slot): OwnerSucceedNo | null {
@@ -13575,7 +13575,10 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
     tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null };
 }
 
-async function handleOwnerSucceed(s: Slot): Promise<Response> {
+// `stillWanted` is the unattended caller's own last question (tickKeepCache: is the switch still on,
+// in the version the decision was made under?) — asked with every other one, the last time directly
+// before the kill; a sentence back refuses with nothing handed over. The route passes none.
+async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | null = null): Promise<Response> {
   const no = (r: OwnerSucceedNo): Response => json({ error: r.error, reason: r.reason }, r.code);
   const railNo = ownerSucceedRailRefusal(s);
   if (railNo) return no(railNo);
@@ -13603,6 +13606,8 @@ async function handleOwnerSucceed(s: Slot): Promise<Response> {
     // standing and the door answers 409. What remains open is respawnInPlace's own tmux lookup
     // before kill-pane (milliseconds; a codex target adds its support probe).
     const lastQuestion = async (): Promise<Response | null> => {
+      const unwanted = stillWanted?.() ?? null;
+      if (unwanted) return no(ownerSucceedNo(409, "setting-changed", `${unwanted} — nothing was handed over`));
       if (!sameSuccessionOccupant(s, predecessorIdentity) || liveStandingHandover(s) !== standing)
         return no(ownerSucceedNo(409, "slot-changing", "the session or its standing handover changed while the succession was prepared — nothing was handed over"));
       if (boundProgramsForMain(s).map((p) => p.id).join(",") !== boundKey)
@@ -25041,6 +25046,21 @@ function keepCacheWarmText(d: KeepCacheDecision, now: number): string {
     + "Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
 }
 
+// e2e only: parks the tick right after its decision for the slot named in the latch file, so a probe
+// can change the setting between the decision and the act. One park per arming (the file is removed).
+const KEEP_CACHE_TEST_LATCH = process.env.FLEET_TEST_KEEP_CACHE_LATCH ?? null;
+async function waitForKeepCacheTestLatch(slot: number): Promise<void> {
+  if (!KEEP_CACHE_TEST_LATCH || !existsSync(KEEP_CACHE_TEST_LATCH)) return;
+  if (readFileSync(KEEP_CACHE_TEST_LATCH, "utf8").trim() !== String(slot)) return;
+  rmSync(KEEP_CACHE_TEST_LATCH, { force: true });
+  writeFileSync(`${KEEP_CACHE_TEST_LATCH}.reached`, String(slot), { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${KEEP_CACHE_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("keepCache E2E latch timed out before release");
+}
+
 // THE TICK: registered on the migrate cadence whatever FLEET_MIGRATE_PCT says, because the switch is
 // the owner's per session and may carry its own threshold. Without a switched-on session it returns
 // before any tmux or ps call.
@@ -25049,20 +25069,33 @@ const keepCacheInflight = new Set<number>();
 async function tickKeepCache(): Promise<void> {
   if (keepCacheTickBusy) return;
   const now = Date.now();
-  const due: { s: Slot; d: KeepCacheDecision; run: KeepCacheRun }[] = [];
+  // the setting's version is taken WITH the decision: the warm text and the succeed both come from
+  // `d`, so every later check asks about exactly the setting `d` was read under
+  const due: { s: Slot; d: KeepCacheDecision; run: KeepCacheRun; version: string | null }[] = [];
   for (const s of slots) {
     if (!liveKeepCache(s) || keepCacheInflight.has(s.id)) continue;
     const run = keepCacheRunOf(s);
     if (run.last && now - run.last.at < KEEP_CACHE_RETRY_MS) continue;
     const d = keepCacheDecision(s, now);
-    if (d.act) due.push({ s, d, run });
+    if (d.act) due.push({ s, d, run, version: keepCacheVersion(liveKeepCache(s)) });
   }
   if (!due.length) return;
   keepCacheTickBusy = true;
   try {
-    for (const { s, d, run } of due) {
+    for (const { s, d, run, version } of due) {
       const openedAt = s.openedAt;
       const sessionId = s.sessionId;
+      await waitForKeepCacheTestLatch(s.id);
+      // THE OWNER MAY SWITCH IT OFF WHILE THE ACT IS ON ITS WAY: asked again before every step that
+      // could reach the pane — for a warm turn at the queue (beforeSend) and as the last question
+      // before the paste (beforePaste), for a succession with the owner door's own questions up to
+      // the kill. A switched-off or re-set session gets nothing.
+      const unwanted = (current: Slot): string | null => keepCacheVersion(liveKeepCache(current)) !== version
+        ? `keepCache of slot ${s.id} was switched off or changed after the decision` : null;
+      const stillSet = (current: Slot): void => {
+        const why = unwanted(current);
+        if (why) throw new DeliveryCancelled(`${why} — nothing typed`);
+      };
       if (d.act === "succeed") {
         keepCacheInflight.add(s.id);
         run.last = { at: now, act: "succeed", outcome: "pending" };
@@ -25070,7 +25103,7 @@ async function tickKeepCache(): Promise<void> {
           + `above ${d.thresholdPct} %, no work foreseeable — the owner door hands over without a turn`);
         void (async () => {
           try {
-            const r = await handleOwnerSucceed(s);
+            const r = await handleOwnerSucceed(s, () => unwanted(s));
             const b = (await r.clone().json().catch(() => ({}))) as { reason?: string; error?: string };
             // the run of a succeeded occupant dies with it; a refusal stays on it, by name
             if (s.openedAt === openedAt) run.last = { at: Date.now(), act: "succeed",
@@ -25092,14 +25125,6 @@ async function tickKeepCache(): Promise<void> {
         continue;
       }
       const text = keepCacheWarmText(d, now);
-      const version = keepCacheVersion(liveKeepCache(s));
-      // THE OWNER MAY SWITCH IT OFF WHILE THE TURN IS ON ITS WAY: asked again at the queue (beforeSend)
-      // and as the very last question before the paste (beforePaste) — a switched-off or re-set
-      // session gets nothing typed
-      const stillSet = (current: Slot): void => {
-        if (keepCacheVersion(liveKeepCache(current)) !== version)
-          throw new DeliveryCancelled(`keepCache of slot ${s.id} was switched off or changed before paste`);
-      };
       keepCacheInflight.add(s.id);
       void (async () => {
         try {

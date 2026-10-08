@@ -12823,6 +12823,7 @@ function buildLaneSuccessionBrief(facts: { branch: string; base: string; session
     "Lies zuerst den Auftrag, dann was schon drin ist, dann die Übergabe.",
     "",
     memoryPointer("lane"),
+    ownerKorrekturenPointer(),
     "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
     laneSuccessionRowLines(facts.rows),
@@ -13094,6 +13095,7 @@ function buildLaneHarnessBrief(facts: { branch: string; base: string; from: stri
     "Lies zuerst den Auftrag, dann den git-Stand, dann arbeite weiter, wo er aufhört.",
     "",
     memoryPointer("lane"),
+    ownerKorrekturenPointer(),
     "",
     "--- DER AUFTRAG (unverändert, im Wortlaut)",
     laneSuccessionRowLines(facts.rows),
@@ -16008,6 +16010,12 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
 // reads here although konzeptKontextFor refuses her every write; a free session (role generic) reads
 // nothing, and a session outside any git repository has no project and is refused by name.
 type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
+function ownerKorrekturenPointer(): string {
+  return `OWNER-KORREKTUREN: Lies vor deinem ersten Akt GET http://${HOST}:${PORT}/api/self/konzepte/k-owner-korrekturen/leseansicht mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN".
+Der bestehende Reader bestimmt Projekt, Rolle und Harness aus deiner aktuellen Position (korrekturLeserFor); verwende keine Scope-Parameter.
+Die geltenden Eintraege sind Owner-Korrekturen. Eine Abweisung oder fehlende Fassung ist unknown, kein leeres Heft; modi bleibt ausdruecklich ungefiltert.`;
+}
+
 async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
   const binding = mainBindingOf(s);
   const rolle = positionRole(s, binding);
@@ -19324,7 +19332,7 @@ function laneBrief(next: Task, clarify: boolean, wave: WaveDispatch | null) {
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
-  return { waveRows, sourceRows, brief, briefSource };
+  return { waveRows, sourceRows, brief: `${brief}\n\n${ownerKorrekturenPointer()}`, briefSource };
 }
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
@@ -37835,7 +37843,7 @@ const studioBlockFor = (program: Program, audience: StudioBriefAudience): string
 // Game-Maker Programs receive their specialist role block instead.
 const railBlockFor = (program: Program): string =>
   (isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : `\n\n${MAIN_ROLE_CARD}${PROGRAM_MAIN_RAIL_BLOCK}`)
-  + studioBlockFor(program, "main");
+  + `\n\n${ownerKorrekturenPointer()}` + studioBlockFor(program, "main");
 
 
 function buildProgramMainBrief(program: Program, frame: ProgramMainFrame, anchorBlock: string): string {
@@ -38299,6 +38307,7 @@ function buildOrchestratorSpawnBrief(harness: string | null, anchorBlock: string
     "2. Folge bei Bedarf der benannten Detailtür und entscheide aus den Fakten den nächsten begrenzten Portfolio-Akt.",
     "",
     memoryPortfolioPointer(),
+    ownerKorrekturenPointer(),
   ].join("\n") + anchorBlock;
 }
 
@@ -38322,6 +38331,7 @@ function buildOrchestratorSuccessionBrief(harness: string | null, steps: readonl
     ...next,
     "",
     memoryPortfolioPointer(),
+    ownerKorrekturenPointer(),
   ].join("\n") + anchorBlock;
 }
 

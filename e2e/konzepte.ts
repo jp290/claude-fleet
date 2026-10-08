@@ -707,6 +707,29 @@ const [outDir, tag] = process.argv.slice(2);
 const slot = process.env.FLEET_SELF_SLOT ?? "unknown";
 const RE = /^ {2}(?:(\/.+?) \| )?(k-[a-z0-9-]+)(?: v\d+)? · privat, lesen statt kopieren · hash (match|drift|missing)\b/;
 process.stdout.write("\x1b[?2004h");
+let firstPrompt = "";
+let firstRecorded = false;
+let promptTimer;
+process.stdin.on("data", (chunk) => {
+  if (firstRecorded) return;
+  firstPrompt += chunk.toString("utf8").replace(/\r\n?/g, "\n");
+  clearTimeout(promptTimer);
+  promptTimer = setTimeout(async () => {
+    if (!/fleet|beratende Anker/.test(firstPrompt)) return;
+    firstRecorded = true;
+    const text = firstPrompt.replace(/\x1b\[(?:200|201)~/g, "");
+    const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text)?.[1] ?? null;
+    let status = null, body = null;
+    if (pointer) {
+      const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
+      status = response.status;
+      body = await response.json();
+    }
+    const out = outDir + "/heft-" + slot + ".json";
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, pointer, status, body }));
+    renameSync(out + ".tmp", out);
+  }, 100);
+});
 let buf = "";
 let done = false;
 process.stdin.on("data", (chunk) => {
@@ -805,7 +828,7 @@ async function privatePackHandover(): Promise<void> {
     mkdirSync(reads, { recursive: true });
     writeFileSync(`${FIXH}/reader.ts`, READER_TS);
     symlinkSync(process.execPath, `${FIXH}/runner/codex`);
-    const launcher = (tag: string) => `#!/bin/sh\nprintf '%s\\n' '>_ OpenAI Codex (v0.0.0-e2e-reader)'\n`
+    const launcher = (tag: string) => `#!/bin/sh\nprintf '%s\\n' '>_ OpenAI Codex (v0.0.0-e2e-reader)' '0.0%/1.0M (auto)  glm-5.3 • high'\n`
       + `stty -icanon -echo 2>/dev/null\nexec '${FIXH}/runner/codex' '${FIXH}/reader.ts' '${reads}' '${tag}'\n`;
     writeFileSync(`${bin}/fleet-reader`, launcher("claude"), { mode: 0o755 });
     writeFileSync(`${bin}/codex`, launcher("codex"), { mode: 0o755 });
@@ -813,6 +836,8 @@ async function privatePackHandover(): Promise<void> {
     // through reaches this reader and never a real agent with a provider behind it (measured in this
     // lane's own mutation run: without the shadow, the host's `pi` was spawned and handed the brief)
     writeFileSync(`${bin}/pi`, launcher("pi"), { mode: 0o755 });
+    writeFileSync(`${FIXH}/zai-fixture.key`, "synthetic-not-a-provider-key\n", { mode: 0o600 });
+    writeFileSync(`${bin}/sandbox-fixture`, '#!/bin/sh\n[ "$1" = -p ] && shift 2\nexec "$@"\n', { mode: 0o755 });
     mkdirSync(`${FIXH}/codex-home`, { recursive: true });
     const bootH = async (root: string): Promise<boolean> => {
       i.proc = Bun.spawn(["bun", "server.ts"], {
@@ -822,7 +847,8 @@ async function privatePackHandover(): Promise<void> {
           FLEET_CMD: `${bin}/fleet-reader`, FLEET_HARNESS_COMMS: "", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
           FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "300",
           FLEET_ACCEPT_WAIT_MS: "800", FLEET_PI_ZAI_AGENT_DIR: `${FIXH}/pi-zai-agent`,
-          FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/no-such-key` },
+          FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/zai-fixture.key`,
+          FLEET_PI_ZAI_SANDBOX_EXEC: `${bin}/sandbox-fixture`, FLEET_PI_ZAI_DENY_ROOTS: `${FIXH}/deny` },
       });
       i.log = "";
       const drain = async (st: ReadableStream<Uint8Array>) => { for await (const c of st) i.log += new TextDecoder().decode(c); };
@@ -859,18 +885,24 @@ async function privatePackHandover(): Promise<void> {
     // ONE founding with the pack chosen, and the reader's record of what the pane received. The record
     // is null when the pane never produced one — UNOBSERVED, which no row below accepts as a refusal.
     const found = async (harness: string): Promise<{ slot: number | null; open: { status: number; text: string; json: Record<string, unknown> } | null;
-      record: ReaderRecord | null; receipt: Awaited<ReturnType<typeof receiptFor>> }> => {
+      record: ReaderRecord | null; ownerPointer: string | null | undefined; receipt: Awaited<ReturnType<typeof receiptFor>> }> => {
       const slot = await freeSlot();
-      if (slot === null) return { slot, open: null, record: null, receipt: null };
+      if (slot === null) return { slot, open: null, record: null, ownerPointer: undefined, receipt: null };
       rmSync(`${reads}/read-${slot}.json`, { force: true });
+      rmSync(`${reads}/heft-${slot}.json`, { force: true });
       const open = await call(`/api/slots/${slot}/open`, "POST", { cwd: product, harness, label: `privat-${harness}`, packs: [SEED_ID] });
       let record: ReaderRecord | null = null;
       for (let n = 0; n < 100 && record === null && open.status === 200; n++) {
         try { record = JSON.parse(readFileSync(`${reads}/read-${slot}.json`, "utf8")) as ReaderRecord; } catch { await Bun.sleep(100); }
       }
+      let ownerPointer: string | null | undefined;
+      for (let n = 0; n < 100 && ownerPointer === undefined && open.status === 200; n++) {
+        try { ownerPointer = (JSON.parse(readFileSync(`${reads}/heft-${slot}.json`, "utf8")) as { pointer: string | null }).pointer; }
+        catch { await Bun.sleep(100); }
+      }
       const receipt = await receiptFor(slot);
       await call(`/api/slots/${slot}/kill`, "POST", {});
-      return { slot, open, record, receipt };
+      return { slot, open, record, ownerPointer, receipt };
     };
     const readClaim = (r: ReaderRecord | null): boolean => r?.bytes === SENTINEL;
     const outsideProduct = (path: string | null): boolean =>
@@ -879,6 +911,8 @@ async function privatePackHandover(): Promise<void> {
     // ---- POSITIVE, both released harnesses: the spawned process reads the sentinel bytes
     for (const harness of ["claude", "codex"]) {
       const f = await found(harness);
+      check(`konzepte owner delivery (${harness}/nur-ordner): an observed generic founding receives no Owner-Heft pointer`,
+        f.open?.status === 200 && f.ownerPointer === null, `open=${f.open?.status} pointer=${f.ownerPointer}`);
       check(`konzepte handover (${harness}): the founding delivers the chosen konzept pack, and the process the ${harness} adapter spawned reads the sentinel bytes from the konzept repo`,
         f.open?.status === 200 && f.open.json.packsDelivered === true && f.record?.tag === (harness === "claude" ? "claude" : "codex")
           && f.record.verdict === "match" && outsideProduct(f.record.path) && readClaim(f.record),
@@ -945,6 +979,116 @@ async function privatePackHandover(): Promise<void> {
         && noFile.receipt?.omitted.some((sel) => sel.id === SEED_ID && sel.why === "source-unavailable"
           && sel.reason?.includes("v1.md is absent under the root")) === true,
       `record=${JSON.stringify(noFile.record)} receipt=${JSON.stringify(noFile.receipt)}`);
+
+    await ownerHeftDelivery();
+
+    async function ownerHeftDelivery(): Promise<void> {
+      const door = "/api/self/konzepte/k-owner-korrekturen/leseansicht";
+      const roles = ["lane", "program-main", "orchestrator"] as const;
+      const entries = roles.map((rolle) => ({ id: `start-${rolle}`, aussage: `synthetische Startkorrektur ${rolle}`,
+        quelle: "private-fixture.md#start", geltung: { projekte: "*", rollen: [rolle], harnesses: ["claude", "codex", "pi-zai"], modi: "*" }, ersetzt: [] }));
+      const heft = `# Fixture\n\n\`\`\`owner-korrekturen\n${JSON.stringify({ eintraege: entries })}\n\`\`\`\n`;
+      mkdirSync(`${konzeptRoot}/k-owner-korrekturen`, { recursive: true });
+      writeFileSync(`${konzeptRoot}/k-owner-korrekturen/v1.md`, heft);
+      const published = await call("/api/konzepte/k-owner-korrekturen/versionen", "POST",
+        { sha256: sha(heft), ebene: "owner", anlass: "e2e startup", geltung: "synthetische Startprobe" });
+      check("konzepte owner delivery fixture: the owner publishes one synthetic correction per position",
+        published.status === 200, `${published.status} ${published.text.slice(0, 250)}`);
+      if (published.status !== 200) return;
+      type Received = { tag: string; text: string; pointer: string | null; status: number | null;
+        body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
+      const receive = async (slot: number): Promise<Received | null> => {
+        for (let n = 0; n < 200; n++) {
+          try { return JSON.parse(readFileSync(`${reads}/heft-${slot}.json`, "utf8")) as Received; }
+          catch { await Bun.sleep(100); }
+        }
+        return null;
+      };
+      const tokenFor = (slot: number): string => {
+        const state = JSON.parse(readFileSync(`${i.dir}/fleet.json`, "utf8")) as { slots: Record<string, SlotRow> };
+        return state.slots[String(slot)]?.selfToken ?? "";
+      };
+      const selfCall = async (slot: number, path: string, body: unknown) => {
+        const r = await fetch(`${i.base}${path}`, { method: "POST", headers: { "content-type": "application/json",
+          "x-fleet-self-token": tokenFor(slot) }, body: JSON.stringify(body) });
+        return { status: r.status, text: await r.text() };
+      };
+      const delivered = (r: Received | null, role: typeof roles[number], harness: string): boolean =>
+        r?.pointer === `${i.base}${door}` && r.status === 200 && r.tag === (harness === "pi-zai" ? "pi" : harness)
+        && r.body?.bindung?.rolle === role && r.body.bindung.harness === harness
+        && JSON.stringify(r.body.geltendeEintraege?.map((entry) => entry.id)) === JSON.stringify([`start-${role}`])
+        && r.text.includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"') && r.text.includes("vor deinem ersten Akt")
+        && !r.text.includes("synthetische Startkorrektur") && !r.text.includes("private-fixture.md")
+        && !r.text.includes(`${konzeptRoot}/k-owner-korrekturen`);
+      for (const harness of ["claude", "codex", "pi-zai"]) {
+        const spawn = { harness, model: harness === "pi-zai" ? "glm-5.3" : harness === "codex" ? "gpt-6.1-sol" : "opus", effort: "high" };
+        for (const role of roles) {
+          let programId: string | null = null;
+          let slot: number | null = null;
+          let opened: Awaited<ReturnType<typeof call>>;
+          for (const file of readdirSync(reads).filter((file) => file.startsWith("heft-"))) rmSync(`${reads}/${file}`);
+          if (role === "lane") {
+            const made = await call("/api/tasks", "POST", { text: "Owner-Heft Startprobe", repo: product, queue: false });
+            const taskId = (made.json.task as { id?: string } | undefined)?.id;
+            opened = await call(`/api/tasks/${taskId}/dispatch`, "POST", spawn);
+            slot = typeof opened.json.slot === "number" ? opened.json.slot : null;
+          } else if (role === "program-main") {
+            const made = await call("/api/programs", "POST", { title: `heft-${harness}`, intent: "synthetic startup",
+              successCriterion: "reader pointer", nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+            programId = (made.json.program as { id?: string } | undefined)?.id ?? null;
+            await call(`/api/programs/${programId}/confirm`, "POST", {});
+            await call(`/api/programs/${programId}/activate`, "POST", {});
+            opened = await call(`/api/programs/${programId}/bootstrap-main`, "POST", { cwd: product, ...spawn });
+            slot = typeof opened.json.slot === "number" ? opened.json.slot : null;
+          } else {
+            slot = await freeSlot();
+            opened = await call(`/api/slots/${slot}/open`, "POST", { cwd: product, label: "Orchestrator (heft-fixture)", packs: [], ...spawn });
+          }
+          const first = slot !== null && opened.status === 200 ? await receive(slot) : null;
+          check(`konzepte owner delivery (${harness}/${role}): the first prompt delivers only the reader pointer and the receiver reads its position's correction`,
+            opened.status === 200 && delivered(first, role, harness),
+            `open=${opened.status} ${opened.text.slice(0, 200)} received=${JSON.stringify(first)}`);
+          if (slot === null || opened.status !== 200) continue;
+          if (role === "lane") {
+            const state = JSON.parse(readFileSync(`${i.dir}/fleet.json`, "utf8")) as { slots: Record<string, SlotRow> };
+            const cwd = state.slots[String(slot)]?.cwd;
+            if (cwd) { g(cwd, "add", "-A"); g(cwd, "commit", "-q", "-m", "fixture work"); }
+            await selfCall(slot, "/api/self/fleet-report", { status: "handoff", text: "synthetic handover; reader still owed" });
+          }
+          rmSync(`${reads}/heft-${slot}.json`, { force: true });
+          const succession = await selfCall(slot, "/api/self/succeed", { model: spawn.model, effort: "high" });
+          const second = succession.status === 200 ? await receive(slot) : null;
+          check(`konzepte owner delivery (${harness}/${role}): succession delivers the reader pointer under the successor's current position`,
+            succession.status === 200 && delivered(second, role, harness),
+            `succession=${succession.status} ${succession.text.slice(0, 250)} received=${JSON.stringify(second)}`);
+          await call(`/api/slots/${slot}/kill`, "POST", {});
+          if (programId) await call(`/api/programs/${programId}/complete`, "POST", { force: true });
+        }
+      }
+
+      const sourcePath = `${i.dir}/server.ts`;
+      const original = readFileSync(sourcePath, "utf8");
+      const mutant = original.replace(/function ownerKorrekturenPointer\(\): string \{[\s\S]*?\n\}/, 'function ownerKorrekturenPointer(): string { return ""; }');
+      check("konzepte owner delivery mutation fixture: the scratch server loses only its reader pointer", mutant !== original);
+      await stop(i);
+      spawnSync("tmux", ["-L", i.sock, "kill-server"]);
+      writeFileSync(sourcePath, mutant);
+      try {
+        const mutatedBoot = await bootH(konzeptRoot);
+        const slot = await freeSlot();
+        if (slot !== null) rmSync(`${reads}/heft-${slot}.json`, { force: true });
+        const opened = slot === null ? null : await call(`/api/slots/${slot}/open`, "POST",
+          { cwd: product, label: "Orchestrator (mutation)", harness: "codex", model: "gpt-6.1-sol", effort: "high", packs: [] });
+        const received = slot !== null && opened?.status === 200 ? await receive(slot) : null;
+        check("konzepte owner delivery mutation: removing the startup pointer turns the same receiver claim red despite a successful founding",
+          mutatedBoot && opened?.status === 200 && received !== null && received.pointer === null && received.status === null
+            && !delivered(received, "orchestrator", "codex"), `open=${opened?.status} received=${JSON.stringify(received)}`);
+      } finally {
+        await stop(i);
+        spawnSync("tmux", ["-L", i.sock, "kill-server"]);
+        writeFileSync(sourcePath, original);
+      }
+    }
 
     // ---- MISSING ROOT, and the mutation "root not handed over": the same founding on an instance
     // without FLEET_KONZEPT_ROOT turns the same read claim red, by name

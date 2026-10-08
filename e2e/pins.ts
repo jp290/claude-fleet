@@ -12580,8 +12580,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("S3 session blocks: Nur Ordner receives only native agents and auto-memory",
     folder.join() === "auto-memory,native-agents", folder.join());
   const heft = SESSION_BLOCKS.find((block) => block.id === "owner-heft");
-  pin("S3 session blocks: the required owner heft honestly has no startup delivery",
-    heft?.grenze.art === "noetig" && heft.source === "nicht zugestellt"
+  pin("S3 session blocks: the required owner heft names its startup reader pointer",
+    heft?.grenze.art === "noetig" && heft.source === "server.ts#ownerKorrekturenPointer"
+      && heft.lieferart.includes("Prompt") && heft.lieferart.includes("Abruf")
+      && heft.rollenDefault["nur-ordner"] === "aus"
       && ["lane", "main", "orchestratorin"].every((role) => heft.rollenDefault[role as typeof roles[number]] === "an"));
   pin("S3 session blocks: concept is optional and source pointers/code are separate",
     SESSION_BLOCKS.find((block) => block.id === "konzept")?.grenze.art === "frei"

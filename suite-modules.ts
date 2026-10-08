@@ -484,3 +484,178 @@ export const moduleListFrom = (raw: unknown):
   if (refusal || !plan) return { ok: false, error: `modules: ${refusal ?? "no plan"}` };
   return { ok: true, modules: plan.named };
 };
+
+// ================================================================================================
+// WHICH GATE SUITES A SOURCE DIFF OWES — the land gate's footprint, one level coarser than the above
+// ================================================================================================
+// The table above answers "which CHECK MODULES of ./e2e-isolated.sh does this diff touch"; the land
+// gate asks the same question of its three suite links (`clean-review`, `security`, `claude-gate`).
+// Each of those wrappers runs against an INSTANCE, not the checkout, and e2e-stage.sh#stage_instance
+// says exactly what an instance holds: the import closure of its entry files, the whole of
+// `public/`, `package.json`, `fleet-sync.sh` and `$STAGE_EXTRA` — plus a `node_modules` symlink
+// back to the source tree. So a `src/` or `public/` file a suite can observe is one of:
+//   1. a file in that closure (server.ts's own imports included — every gate suite boots one);
+//   2. a file under `public/` (always staged whole) or under a `STAGE_EXTRA` path;
+//   3. a file a check reaches THROUGH the symlink (`realpathSync(`${ROOT}/node_modules`)`, the way
+//      e2e/history.ts reads src/client.ts) or the wrapper reads straight out of `$SRC`.
+// gateSuitesForPaths derives all three from the CANDIDATE tree itself — the same regex
+// _stage_closure greps, the same resolution order — so the footprint moves with the tree it judges
+// and there is no hand-kept list to drift. A suite whose footprint holds no changed path is not
+// owed; every suite whose footprint holds one is.
+//
+// ABSENCE IS NEVER HARMLESSNESS (docs/verify-tiering.md §6.0b): any wrapper, entry or import that
+// cannot be read or resolved, a `stage_instance` line that cannot be parsed, a `STAGE_EXTRA` that is
+// not a plain word list, or a path outside `src/` and `public/` makes the whole answer `null` — and
+// a `null` buys the full chain at the caller, never a short one.
+// THE LIMIT, stated: this is DERIVED, not measured. A check that reaches the source tree some third
+// way (an absolute path, an env var naming $SRC) is invisible here; the post-land audit runs the
+// whole suite on every non-docs land and is what catches it.
+export const GATE_SUITES = [
+  { step: "clean-review", wrapper: "e2e-clean-review.sh" },
+  { step: "security", wrapper: "e2e-security.sh" },
+  { step: "claude-gate", wrapper: "e2e-claude-gate.sh" },
+] as const;
+export type GateSuiteStep = (typeof GATE_SUITES)[number]["step"];
+/** reads one repo-relative file of the candidate tree; null when it is absent or unreadable */
+export type TreeReader = (path: string) => string | null;
+export interface GateSuiteFootprint {
+  step: GateSuiteStep;
+  /** `src/` and `public/` files the suite observes */
+  files: string[];
+  /** directory prefixes (`public/`, `src/`) the suite observes whole */
+  dirs: string[];
+}
+export interface GateSuiteSelection {
+  owed: GateSuiteStep[];
+  /** per owed suite, the changed paths that put it there */
+  why: Partial<Record<GateSuiteStep, string[]>>;
+  footprints: GateSuiteFootprint[];
+}
+
+const normPath = (p: string): string => {
+  const out: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "." || seg === "") continue;
+    if (seg === ".." && out.length && out[out.length - 1] !== "..") { out.pop(); continue; }
+    out.push(seg);
+  }
+  return out.join("/");
+};
+
+// e2e-stage.sh#_stage_resolve, in its order: the extensionless specifier this repo writes first
+const resolveSpec = (read: TreeReader, p: string): string | null => {
+  for (const ext of [".ts", ".tsx", "/index.ts", ""]) if (read(p + ext) !== null) return p + ext;
+  return null;
+};
+
+// e2e-stage.sh#_stage_closure, import-ANCHORED for the reason it gives (a bare "../../escape" is
+// test DATA in fleet-e2e-security.ts). Per line, as grep reads it: [ \t] never crosses a newline.
+const stageClosure = (read: TreeReader, entries: readonly string[]): string[] | null => {
+  const seen = new Set<string>();
+  const pending = [...entries];
+  while (pending.length) {
+    const file = pending.shift()!;
+    if (seen.has(file)) continue;
+    const text = read(file);
+    if (text === null) return null;
+    seen.add(file);
+    const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : ".";
+    for (const m of text.matchAll(/(?:from|import)[ \t]*\(?[ \t]*"(\.[^"]*)"/g)) {
+      const hit = resolveSpec(read, normPath(`${dir}/${m[1]}`));
+      if (hit === null) return null;
+      pending.push(hit);
+    }
+  }
+  return [...seen];
+};
+
+const SOURCE_DIRS = ["src", "public"] as const;
+const isSourcePath = (p: string): boolean => SOURCE_DIRS.some((d) => p.startsWith(`${d}/`));
+
+// the literal `src/x` / `public/x` paths a piece of code names, and the directories it builds a
+// path into dynamically (`${ROOT}/src/${f}`, `${ROOT}/src` for a readdir) — the second is whole
+const sourceMentions = (code: string, files: Set<string>, dirs: Set<string>): void => {
+  for (const m of code.matchAll(/(?<=[\/"'`])(src|public)\/([\w-]+(?:\.[\w-]+)*)/g)) {
+    files.add(`${m[1]}/${m[2]}`);
+    files.add(`${m[1]}/${m[2]}.ts`);
+  }
+  for (const m of code.matchAll(/(?<=[\/"'`])(src|public)\/?(?=\$\{|["'`])/g)) dirs.add(`${m[1]}/`);
+};
+
+const footprintOf = (read: TreeReader, suite: (typeof GATE_SUITES)[number]): GateSuiteFootprint | null => {
+  const text = read(suite.wrapper);
+  if (text === null) return null;
+  const lines = text.split("\n").filter((l) => !/^\s*#/.test(l));
+  const entries = new Set<string>();
+  const extras: string[] = [];
+  const files = new Set<string>(), dirs = new Set<string>(["public/"]);
+  for (const line of lines) {
+    if (/\bstage_instance\b/.test(line) && !/^\s*stage_instance\(\)/.test(line)) {
+      const m = /^\s*stage_instance "\$SRC" "\$\w+" ((?:[\w./-]+ ?)+?)\s*\|\| exit 1\s*$/.exec(line);
+      if (!m) return null;
+      for (const e of m[1]!.trim().split(/\s+/)) entries.add(e);
+    }
+    if (/\bSTAGE_EXTRA=/.test(line)) {
+      const m = /^\s*(?:export\s+)?STAGE_EXTRA=(?:"([\w./ -]*)"|'([\w./ -]*)'|([\w./-]*))\s*$/.exec(line);
+      if (!m) return null;
+      extras.push(...(m[1] ?? m[2] ?? m[3] ?? "").split(/\s+/).filter(Boolean));
+    }
+    for (const m of line.matchAll(/\$\{?SRC\}?\/((?:src|public)(?:\/[\w.-]*)?)/g)) {
+      const p = m[1]!;
+      if (/^(?:src|public)\/?$/.test(p)) dirs.add(`${p.replace(/\/$/, "")}/`); else files.add(p);
+    }
+  }
+  if (!entries.size) return null;
+  for (const x of extras) {
+    const p = normPath(x);
+    if (!p || p.startsWith("..")) return null;
+    if (read(p) !== null) files.add(p); else dirs.add(`${p}/`);
+  }
+  const closure = stageClosure(read, [...entries]);
+  if (closure === null) return null;
+  for (const f of closure) {
+    if (isSourcePath(f)) { files.add(f); continue; }
+    // only a file that resolves THROUGH the node_modules symlink can see past the instance; every
+    // other path a staged file builds is relative to the instance, which holds the closure alone
+    const raw = read(f) ?? "";
+    if (!raw.includes("node_modules")) continue;
+    const code = executable(raw);
+    if (code === null) return null;
+    if (/(?:realpath|readlink)\w*\([^)]*node_modules/.test(code)) sourceMentions(code, files, dirs);
+  }
+  return {
+    step: suite.step,
+    files: [...files].filter(isSourcePath).sort(),
+    dirs: [...dirs].filter((d) => SOURCE_DIRS.some((s) => d === `${s}/`)).sort(),
+  };
+};
+
+/**
+ * The gate suites a diff of `src/` and `public/` paths owes, derived from the candidate tree read
+ * through `read`. `null` — the conservative answer, which buys the full chain — when any path is
+ * outside those two directories, the list is empty, or any suite's footprint cannot be derived.
+ */
+export function gateSuitesForPaths(paths: readonly string[], readTree: TreeReader): GateSuiteSelection | null {
+  if (!paths.length || !paths.every(isSourcePath)) return null;
+  // every wrapper boots server.ts, so its closure is read three times without this
+  const cache = new Map<string, string | null>();
+  const read: TreeReader = (p) => {
+    if (!cache.has(p)) cache.set(p, readTree(p));
+    return cache.get(p)!;
+  };
+  const footprints: GateSuiteFootprint[] = [];
+  for (const suite of GATE_SUITES) {
+    const fp = footprintOf(read, suite);
+    if (fp === null) return null;
+    footprints.push(fp);
+  }
+  const owed: GateSuiteStep[] = [];
+  const why: GateSuiteSelection["why"] = {};
+  for (const fp of footprints) {
+    const hits = paths.filter((p) => fp.files.includes(p) || fp.dirs.some((d) => p.startsWith(d)));
+    if (!hits.length) continue;
+    owed.push(fp.step);
+    why[fp.step] = hits;
+  }
+  return { owed, why, footprints };
+}

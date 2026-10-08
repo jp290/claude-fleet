@@ -471,6 +471,28 @@ hand-copied at those four sites and had already drifted both ways — the wake r
 awake for a short-chain job the door then refused, and the drain held a repo-worker entry for the
 full `AUDIT_HELPER_GRACE_MS` waiting on an offer that structurally never comes.
 
+**The source class, added 2026-10-08 (owner: „[Zitat entfernt]“
+).** A candidate whose every changed path is `src/`, `public/` or docs no longer runs
+the whole configured chain at the land gate. `verify-proportion.ts#gateChainFor` names the class,
+`suite-modules.ts#gateSuitesForPaths` derives from the CANDIDATE tree which gate suites can observe
+which file — exactly what `e2e-stage.sh#stage_instance` stages for each wrapper (the import closure
+of its entries, server.ts's own imports included; all of `public/`; `STAGE_EXTRA`), plus what a check
+reaches through the `node_modules` symlink back to the source tree — and `server.ts#narrowVerifyCmd`
+cuts the ` && ./e2e-*.sh` link of every suite no changed path reaches. Everything else in the
+configured command stays byte for byte. Measured on the tree of 2026-10-08: `src/client.ts` owes
+`security` (it stages all of `src/`) and `claude-gate` (its closure holds the client); `src/share.ts`
+owes only `security`; a file server.ts imports (`src/protocol.ts`) and anything in `public/` owe all
+three. The note and `mergeLast.verify` carry `steps` and `class` (`docs-or-prose`,
+`source-or-public`, `full`) — `class` names the command that RAN, so a source diff whose cut could
+not be made reads `full`.
+**Absence is still never harmlessness:** an `e2e/`, `server.ts`, `server/` or `watchdog.sh` path,
+a path of no rule (DEFAULT_RULE), an empty diff, a wrapper or import the derivation cannot read, and
+a configured command whose suite links are not in the expected shape all run the full chain.
+**Tier 2 is untouched:** a source land keeps `proportional:false`, so `entryRunsShortChain` never
+shortens its post-land audit — the whole suite runs there and catches what a derived footprint
+cannot see (a check reaching the source tree by an absolute path or an env var). The suite-mutex
+hold still follows `proportional`, so a source land queues for the machine like a full one.
+
 The gate response's `classifiedAs` explains which rule each changed file selected. Local proof and the land gate use the same classification source.
 
 Since 2026-08-25, a docs-only land in this repo runs the short `install` + `pins` proof; since 2026-09-04 a docs-only land gets that same short chain in the post-land audit as well.

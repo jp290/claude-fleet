@@ -1,9 +1,11 @@
 // Local proof is deliberately conservative: an empty or unfamiliar footprint expands to the
 // full local chain, because a fast answer is useful only when it is also honest. The local
-// recommendation is advisory; the authoritative server gate uses this same classification for
-// its docs-only short chain and otherwise runs its full configured chain.
+// recommendation is advisory; the authoritative server gate uses this same classification
+// (gateChainFor below): a docs-only diff runs install+pins, a diff of only `src/`, `public/` and
+// docs runs install, pins, tsc, build plus the gate suites whose staged footprint it touches,
+// and everything else — including every footprint nobody could derive — the full configured chain.
 
-import { modulesForPaths, modulePlanFor, type FootprintEvidence, type FootprintCoverage, type ModulePlan } from "./suite-modules";
+import { gateSuitesForPaths, modulesForPaths, modulePlanFor, type FootprintEvidence, type FootprintCoverage, type GateSuiteStep, type ModulePlan, type TreeReader } from "./suite-modules";
 
 export const LOCAL_PROOF_STEPS = [
   "install",
@@ -110,6 +112,37 @@ export function verificationProportionFor(files: string[]): VerificationProporti
     classifiedAs: Object.fromEntries(classifications),
     ...(modules ? { modules } : {}),
     proportional,
+  };
+}
+
+// THE LAND GATE'S CLASS — which chain the server runs for a candidate, and the word the land note
+// stamps beside `steps` (server.ts#verifyPlanFor). Three values and no fourth, because each names a
+// command: `docs-or-prose` the short install+pins chain, `source-or-public` the configured chain
+// with the gate suites cut that no changed path reaches, `full` the configured chain untouched.
+// `full` is also every answer this function cannot give honestly: an empty diff, a path of any other
+// rule (e2e/, server.ts, server/, watchdog.sh — and DEFAULT_RULE, whose files nobody classified),
+// and a source diff whose suite footprint could not be derived. Absence buys the full chain.
+export type GateClass = "docs-or-prose" | "source-or-public" | "full";
+export interface GateChain {
+  class: GateClass;
+  steps: LocalProofStep[];
+  /** source-or-public only: per suite it keeps, the changed paths in that suite's footprint */
+  owedBy?: Partial<Record<GateSuiteStep, string[]>>;
+}
+
+export function gateChainFor(files: string[], read: TreeReader): GateChain {
+  const full: GateChain = { class: "full", steps: [...LOCAL_PROOF_STEPS] };
+  const proportion = verificationProportionFor(files);
+  if (proportion.proportional) return { class: "docs-or-prose", steps: proportion.steps };
+  const code = files.filter((file) => ruleFor(file) !== DOC_RULE);
+  if (!code.length || !code.every((file) => ruleFor(file) === SOURCE_RULE)) return full;
+  const suites = gateSuitesForPaths(code, read);
+  if (!suites) return full;
+  return {
+    class: "source-or-public",
+    steps: LOCAL_PROOF_STEPS.filter((step) => SOURCE_STEPS.includes(step)
+      || (suites.owed as readonly string[]).includes(step)),
+    owedBy: suites.why,
   };
 }
 

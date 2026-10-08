@@ -38,9 +38,9 @@ import {
 import { makeSimulatorHygiene, simReapArming } from "./simulator-hygiene";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
-import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor,
-  type LocalProof, type LocalProofStep } from "./verify-proportion";
-import { moduleListFrom } from "./suite-modules";
+import { LOCAL_PROOF_STEPS, gateChainFor, localProofFor,
+  type GateClass, type LocalProof, type LocalProofStep } from "./verify-proportion";
+import { GATE_SUITES, moduleListFrom } from "./suite-modules";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
@@ -26671,9 +26671,10 @@ const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
-// The only reduced server-side gate: a non-empty candidate whose EVERY changed path is classified
-// docs-or-prose by verify-proportion.ts. Install establishes the pinned Bun toolchain and pins
-// checks the cross-file prose claims. Any other footprint keeps VERIFY_CMD.
+// The only server-side gate WRITTEN HERE: a non-empty candidate whose EVERY changed path is
+// classified docs-or-prose by verify-proportion.ts. Install establishes the pinned Bun toolchain and
+// pins checks the cross-file prose claims. Any other footprint keeps VERIFY_CMD — whole, or for a
+// `src/`+`public/` candidate cut by narrowVerifyCmd to the gate suites its footprint owes.
 //
 // IT CARRIES THE FULL CHAIN'S REPO GUARD, and must: this string is fleet-shaped (`bun e2e/pins.ts`)
 // yet it REPLACES whatever command a repo configured, for every repo whose candidate happens to be
@@ -27043,7 +27044,35 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // exclusive by construction rather than by a check someone has to remember.
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
-interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[] }
+interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[]; class: GateClass }
+
+// THE SOURCE CHAIN IS THE CONFIGURED CHAIN WITH LINKS CUT, never a second command written beside it.
+// The tsc entry list, the install flags and the guard live in one string (watchdog.sh#VERIFY_CMD,
+// or this repo's FLEET_VERIFY_CMD_REPOS entry) and a copy here would be one more place for them to
+// drift. So the cut is the only edit: each gate suite the diff does not owe loses its ` && ./e2e-*.sh`
+// link, and every other byte stays. A command this cannot read — a suite link missing, doubled, or
+// followed by anything but the next ` && ` — is not narrowed at all: `null`, and the caller runs it
+// whole. That is a loss of speed, never of coverage, and e2e/pins.ts holds watchdog.sh's chain to
+// the shape this reads so the loss cannot happen silently in this repo.
+function narrowVerifyCmd(cmd: string, steps: readonly LocalProofStep[]): string | null {
+  let out = cmd;
+  for (const suite of GATE_SUITES) {
+    const link = ` && ./${suite.wrapper}`;
+    const at = out.indexOf(link);
+    if (at < 0 || out.indexOf(link, at + 1) >= 0) return null;
+    const rest = out.slice(at + link.length);
+    if (rest !== "" && !rest.startsWith(" && ")) return null;
+    if (!steps.includes(suite.step)) out = out.slice(0, at) + rest;
+  }
+  return out;
+}
+// The candidate tree as the footprint derivation reads it: repo-relative paths only, and nothing a
+// `..` or an absolute path could carry out of the worktree. Unreadable is null, which the derivation
+// turns into "footprint unknown" and therefore into the full chain.
+const candidateTreeReader = (cwd: string) => (path: string): string | null => {
+  if (!path || path.startsWith("/") || path.split("/").includes("..")) return null;
+  try { return readFileSync(`${cwd}/${path}`, "utf8"); } catch { return null; }
+};
 
 // Resolve and classify before reportServerRun publishes `running`: that row means the command has
 // actually been spawned, not that an asynchronous git preflight is still deciding what to run.
@@ -27055,8 +27084,8 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   // Classify the exact rebased candidate the gate is about to execute against. A failed diff and an
   // empty diff both become the conservative full chain; no absence is evidence of harmlessness.
   const changed = await gitRead(cwd, "diff", "--no-renames", "--name-only", `${mainSha}...HEAD`, "--");
-  const proportion = verificationProportionFor(changed.code === 0
-    ? changed.out.split("\n").filter(Boolean) : []);
+  const chain = gateChainFor(changed.code === 0 ? changed.out.split("\n").filter(Boolean) : [],
+    candidateTreeReader(cwd));
   // AND the short chain has to be ABOUT this repo. Docs-only is a property of the DIFF; being
   // verifiable by `bun e2e/pins.ts` is a property of the REPO, and until 2026-08-26 only the first
   // was asked. A docs-only candidate in a product repo therefore had its own configured command
@@ -27065,7 +27094,13 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   // example-game lands, 5ddfcea and 6d9a1cd: `proportional:true, steps:["install","pins"],
   // exitCode:42`). The server knows no short form for a foreign repo, so there is none to offer.
   const shortChainRepo = repoRunsShortChain(repo);
-  const proportional = changed.code === 0 && proportion.proportional && shortChainRepo;
+  const proportional = changed.code === 0 && chain.class === "docs-or-prose" && shortChainRepo;
+  // THE SOURCE CHAIN (owner 2026-10-08: „[Zitat entfernt]“), under the same repo lock as
+  // the docs chain: its step names are THIS repo's links, so a foreign repo's command is never cut.
+  // It stays `proportional:false` on purpose — that flag is what the post-land audit's short chain
+  // keys on (entryRunsShortChain), and a source land's audit is still the whole suite.
+  const narrowed = changed.code === 0 && chain.class === "source-or-public" && shortChainRepo
+    ? narrowVerifyCmd(configuredCmd, chain.steps) : null;
   // THREE outcomes, not two, and the third is why this is not one ternary. `steps` names the lines
   // of THIS repo's chain, so it can only describe a run of THIS repo's chain: a foreign repo ran
   // its own configured command, whose lines Fleet does not know and must not invent. Until
@@ -27076,10 +27111,12 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   // steps of a foreign chain has to read that command, which is the only place they exist.
   // ABSENT still means an old verdict that cannot reconstruct any of this (see MergeLast.verify);
   // empty means "asked, and this chain has no fleet step names".
-  const steps: LocalProofStep[] = proportional ? [...proportion.steps]
+  const steps: LocalProofStep[] = proportional || narrowed !== null ? [...chain.steps]
     : shortChainRepo ? [...LOCAL_PROOF_STEPS] : [];
-  const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : configuredCmd;
-  return { cmd, proportional, steps };
+  const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : narrowed ?? configuredCmd;
+  // the class names the command that RUNS, so a source diff whose cut could not be made is `full`
+  const verifyClass: GateClass = proportional ? "docs-or-prose" : narrowed !== null ? "source-or-public" : "full";
+  return { cmd, proportional, steps, class: verifyClass };
 }
 
 // The gate chain's environment is this server's, MINUS every `FLEET_*` — the same RULE
@@ -27148,7 +27185,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
   heldSuiteLock: number | null = null, heldWaitMs = 0): Promise<MergeLast["verify"]> {
   if (!plan) return undefined;
   const heldWait = Math.max(0, Math.floor(heldWaitMs / 1000) * 1000);
-  const { cmd, proportional, steps } = plan;
+  const { cmd, proportional, steps, class: verifyClass } = plan;
   // the serverRuns row this run is reported under (the board's "land check" line), when it runs
   // inside reportServerRun. The chain is decided now, and which suite it is in arrives below with
   // each acquire line — sight only, the verdict never reads either.
@@ -27250,6 +27287,11 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     // the two can never both be written: a chain that reported a wait of its own is by definition
     // not this one.
     else if (proportional && heldSuiteLock === null) notes.push(`[suite mutex: NOT TAKEN — this gate is the docs-only short chain (${steps.join(", ")}), which spawns no suite and needs no machine, so it neither queued for ${SUITE_LOCK} nor held it]`);
+    // the cut, said where a reader of a source land looks for why a suite is missing from the log
+    if (verifyClass === "source-or-public") {
+      const cut = GATE_SUITES.filter((suite) => !steps.includes(suite.step)).map((suite) => suite.step);
+      notes.push(`[gate chain: source-or-public — ran ${steps.join(", ")}; ${cut.length ? `left out ${cut.join(", ")}: no changed path is in ${cut.length === 1 ? "its" : "their"} staged footprint (suite-modules.ts#gateSuitesForPaths)` : "every gate suite's footprint holds a changed path, so none was left out"}; the post-land audit still runs the whole suite]`);
+    }
     // the skip test runs over the FULL output, not the retained window: a command that declines
     // early and then prints past the cap would otherwise have its own declaration truncated away
     const skipped = !timedOut && !waitedOut
@@ -27262,6 +27304,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     const note = notes.length ? `\n${notes.join("\n")}` : "";
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
     return { cmd, ok: timedOut || waitedOut || skipped || serverDown ? null : code === 0, proportional, steps,
+      class: verifyClass,
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
       ...(serverDown ? { serverDown: true as const } : {}),
@@ -27393,10 +27436,11 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // `waitPartial` marks `waitMs` as a LOWER BOUND: a step was still queued when the run ended, so
   // its wait is known only to the last heartbeat (see suiteWait).
   // Every new run also names whether it used the docs-only proportional chain and its exact ordered
-  // steps. Optional only for old persisted verdicts/notes, which cannot honestly reconstruct them.
+  // steps, and since 2026-10-08 its `class` (verify-proportion.ts#GateClass): which of the three
+  // chains ran. Optional only for old persisted verdicts/notes, which cannot honestly reconstruct them.
   verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
     timedOut?: true; waitedOut?: true; serverDown?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
-    exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[] };
+    exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[]; class?: GateClass };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
@@ -36545,6 +36589,7 @@ function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number, round
     ? ` It went back for the machine ${rounds} more time${rounds === 1 ? "" : "s"} — ${rounds + 1} holds of ${VERIFY_WAIT_MS}ms each (FLEET_LAND_WAIT_ROUNDS=${LAND_WAIT_ROUNDS}) — and was refused every one.`
     : "";
   return { cmd: plan.cmd, ok: null, waitedOut: true, proportional: plan.proportional, steps: plan.steps,
+    class: plan.class,
     startedAt: at - waitedMs, ms: waitedMs, waitMs: waitedMs, exitCode: null, at, mainSha,
     out: `[verify NEVER STARTED — ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms, so the chain was never spawned: install, tsc, build and the suites did not run.${asked} That is a fact about the machine, not about this tree.]` };
 }

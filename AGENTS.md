@@ -145,7 +145,7 @@ anything was read.
 ### Kern
 
 1. What gates you is the live `GET /api/self/gate` answer: where they differ, the answer wins.
-2. In this repo a docs-only land runs `install` + `pins` in the gate; every other land runs the full chain.
+2. In this repo a docs-only land runs `install` + `pins` in the gate; a land of only `src/`, `public/` and docs runs `install` `pins` `tsc` `build` plus each gate suite whose staged footprint holds a changed path; every other land, and every footprint that cannot be derived, runs the full chain. The note stamps `steps` and `class`.
 3. Only `ALL PASS` at a suite's tail is green; an early end is red, a remembered check count proves nothing.
 4. A `waitedOut` never looked at the tree: it is neither red nor green.
 5. Never stop a run by name pattern.

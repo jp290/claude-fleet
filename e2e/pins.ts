@@ -1913,6 +1913,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     declaredSteps.length > 0 && declaredSteps.join(">") === proportionalSteps.join(">"),
     `declared=[${declaredSteps.join(">")}] cmd=[${proportionalSteps.join(">")}]`);
 
+  // THE SOURCE CLASS CUTS LINKS OUT OF THE CONFIGURED CHAIN (server.ts#narrowVerifyCmd), and it
+  // finds them by two facts no compiler checks. (1) suite-modules.ts#GATE_SUITES pairs each suite
+  // step with its wrapper — the same pairs STEP_MARKERS holds here, in the chain's order; a drifted
+  // name would cut the wrong link or none. (2) Each wrapper sits in watchdog.sh's VERIFY_CMD exactly
+  // once as ` && ./e2e-*.sh`, followed by the end or the next ` && ` — any other shape makes the
+  // server refuse the cut and run the whole chain, which is safe but silent, so it is held here.
+  const RULE_SOURCE_CUT = "the source-class gate cut reads the chain's own suite links";
+  const gateSuitePairs = [...(/export const GATE_SUITES = \[([\s\S]*?)\] as const;/.exec(read("suite-modules.ts"))?.[1] ?? "")
+    .matchAll(/\{ step: "([a-z-]+)", wrapper: "([\w.-]+)" \}/g)].map((m) => `${m[1]}=./${m[2]}`);
+  const markerSuites = STEP_MARKERS.filter(([, marker]) => marker.startsWith("./e2e-")).map(([step, marker]) => `${step}=${marker}`);
+  const badLinks = markerSuites.map((pair) => pair.split("=")[1]!).filter((wrapper) => {
+    const link = ` && ${wrapper}`;
+    const at = verifyCmd.indexOf(link);
+    const rest = at < 0 ? "" : verifyCmd.slice(at + link.length);
+    return at < 0 || verifyCmd.indexOf(link, at + 1) >= 0 || (rest !== "" && !rest.startsWith(" && "));
+  });
+  pin(RULE_SOURCE_CUT,
+    gateSuitePairs.length > 0 && gateSuitePairs.join(",") === markerSuites.join(",") && badLinks.length === 0,
+    `GATE_SUITES=[${gateSuitePairs}] chain=[${markerSuites}] uncuttable=[${badLinks}]`);
+  // …and the cut never reaches tier 2: `proportional`, the one flag the post-land audit's short chain
+  // keys on (entryRunsShortChain), stays the DOCS class alone, so a source land's audit is the suite
+  pin(`${RULE_SOURCE_CUT} — and only the docs class is \`proportional\` (the audit stays whole for source lands)`,
+    server.includes('const proportional = changed.code === 0 && chain.class === "docs-or-prose" && shortChainRepo;'),
+    "verifyPlanFor's proportional is no longer the docs class alone");
+
   // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
   // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.
   // CLAUDE.md is the one exception and it is named rather than derived: it is git-ignored, so a

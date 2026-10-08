@@ -1,8 +1,8 @@
 // One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { REPO, REPO2, ROOT, check, get, post } from "./harness";
+import { chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { REPO, REPO2, ROOT, check, get, post, restartSrv } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -289,6 +289,8 @@ export async function run(): Promise<void> {
     // command-selection regression therefore changes the observable command/output, not merely a
     // label. All three candidates are clean rebases and green, so each also leaves the authoritative
     // server-written note behind for the chain provenance check.
+    // `class` is the gate's own word for the chain it ran (verify-proportion.ts#GateClass)
+    type ClassedVerify = VerifyField & { class?: string };
     const landProportionCase = async (name: string, files: Record<string, string>) => {
       const l = (await (await post("/api/lanes", { repo: REPO })).json()) as
         { slot: number; cwd: string; branch: string };
@@ -306,7 +308,7 @@ export async function run(): Promise<void> {
       const after = headOf(REPO, "main");
       const note = readNote(REPO, after);
       return { landed: before !== after && (await get(`/api/slots/${l.slot}/merge`)).status === 400,
-        verify: note.json?.verify as VerifyField | undefined, note };
+        verify: note.json?.verify as ClassedVerify | undefined, note };
     };
     const docsGate = await landProportionCase("docs-only", {
       "docs/proportional-only.md": "measurement note\n",
@@ -318,40 +320,137 @@ export async function run(): Promise<void> {
       && docsGate.verify.out.includes("proportional fixture pins PASS"), JSON.stringify(docsGate));
 
     const fullSteps = ["install", "pins", "tsc", "build", "clean-review", "security", "claude-gate"];
+    // The code halves sit OUTSIDE src/ and public/ on purpose: since 2026-10-08 a src/ file is the
+    // source class, whose chain is cut to the suites its footprint owes (the SOURCE-CLASS block
+    // below). `server/` is SERVER_RULE and `tools/` matches no rule at all (DEFAULT_RULE) — both
+    // full for their own reason, which is what these two have always claimed.
     const mixedGate = await landProportionCase("mixed", {
       "docs/proportional-mixed.md": "measurement note\n",
-      "src/proportional-mixed.ts": "export const measured = true;\n",
+      "server/proportional-mixed.ts": "export const measured = true;\n",
     });
     check("docs-proportional gate: a mixed docs+code lane runs the full chain",
       mixedGate.landed && mixedGate.verify?.ok === true
       && mixedGate.verify.cmd === process.env.FLEET_VERIFY_CMD
-      && mixedGate.verify.proportional === false
+      && mixedGate.verify.proportional === false && mixedGate.verify.class === "full"
       && JSON.stringify(mixedGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(mixedGate));
 
     const codeGate = await landProportionCase("one-code-file", {
-      "src/proportional-code.ts": "export const oneCodeFile = true;\n",
+      "tools/proportional-code.ts": "export const oneCodeFile = true;\n",
     });
     check("docs-proportional gate: even one code file runs the full chain",
       codeGate.landed && codeGate.verify?.ok === true
       && codeGate.verify.cmd === process.env.FLEET_VERIFY_CMD
-      && codeGate.verify.proportional === false
+      && codeGate.verify.proportional === false && codeGate.verify.class === "full"
       && JSON.stringify(codeGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(codeGate));
 
     const emptyGate = await landProportionCase("empty-diff", {});
     check("docs-proportional gate: an empty diff never counts as harmless and runs the full chain",
       emptyGate.landed && emptyGate.verify?.ok === true
       && emptyGate.verify.cmd === process.env.FLEET_VERIFY_CMD
-      && emptyGate.verify.proportional === false
+      && emptyGate.verify.proportional === false && emptyGate.verify.class === "full"
       && JSON.stringify(emptyGate.verify.steps) === JSON.stringify(fullSteps), JSON.stringify(emptyGate));
 
     check("docs-proportional gate: the land note marks a short green with its exact steps",
-      docsGate.note.ok && docsGate.verify?.proportional === true
+      docsGate.note.ok && docsGate.verify?.proportional === true && docsGate.verify.class === "docs-or-prose"
       && JSON.stringify(docsGate.verify.steps) === JSON.stringify(["install", "pins"]),
       JSON.stringify(docsGate.note.json?.verify));
     check("docs-proportional gate: the short chain is repo-guarded and the guard passed in THIS repo",
       docsGate.verify?.cmd.startsWith('[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; ') === true
       && docsGate.verify.ok === true && !docsGate.verify.out.includes("verify skipped:"),
       JSON.stringify(docsGate.verify));
+
+    // --- SOURCE-CLASS LAND GATE (owner 2026-10-08: „[Zitat entfernt]“) ----------------
+    // A candidate of only src/ (and docs) runs install, pins, tsc, build plus exactly the gate
+    // suites whose STAGED footprint holds a changed path (suite-modules.ts#gateSuitesForPaths); the
+    // configured command is cut, never replaced. The suite's own repos cannot show it — their gate
+    // is one fake executable with no ` && ./e2e-*.sh` links to cut — so this fixture repo carries
+    // the shape the cut reads: a chain-shaped FLEET_VERIFY_CMD_REPOS entry and three stand-in
+    // wrappers that announce themselves and stop BEFORE their stage_instance line (which only the
+    // footprint derivation reads). The footprint is planted so the three suites differ:
+    //   server.ts imports src/shared.ts          → every suite boots it
+    //   e2e-security.sh stages STAGE_EXTRA=src   → security sees all of src/
+    //   fleet-e2e-claude-gate.ts imports src/client-only.ts → claude-gate sees it, clean-review not
+    // so a change to src/client-only.ts owes security and claude-gate and leaves clean-review out.
+    // Mutation guard: hand verifyPlanFor's source class back to the full chain (narrowed = null) and
+    // the first check goes red on cmd, steps, class and the clean-review line together.
+    {
+      const sg = await freshRepo("srcgate");
+      const plant = async (file: string, content: string, mode?: number): Promise<void> => {
+        if (file.includes("/")) mkdirSync(`${sg.repo}/${file.split("/").slice(0, -1).join("/")}`, { recursive: true });
+        await Bun.write(`${sg.repo}/${file}`, content);
+        if (mode) chmodSync(`${sg.repo}/${file}`, mode);
+      };
+      const standIn = (step: string, entry: string, extra = ""): string =>
+        `#!/bin/sh\necho "srcgate-suite ${step} ran"\nexit 0\n${extra}stage_instance "$SRC" "$DIR" server.ts ${entry} || exit 1\n`;
+      // the specifier is spliced, never written whole: e2e-stage.sh#_stage_closure greps every line
+      // of THIS file for a quoted relative specifier after from/import, and would try to stage the
+      // fixture's own imports into the suite instance (FATAL, measured on the first preview)
+      const from = (spec: string): string => `from ${'"'}./${spec}${'"'}`;
+      await plant("fleet-e2e.ts", "// source-class gate fixture sentinel\n");
+      await plant("server.ts", `import { shared } ${from("src/shared")};\nexport const boot = shared;\n`);
+      await plant("src/shared.ts", "export const shared = 1;\n");
+      await plant("src/client-only.ts", "export const clientOnly = 1;\n");
+      await plant("fleet-e2e-clean-review.ts", "export const cleanReview = 1;\n");
+      await plant("fleet-e2e-security.ts", "export const security = 1;\n");
+      await plant("fleet-e2e-claude-gate.ts", `import { clientOnly } ${from("src/client-only")};\nexport const gate = clientOnly;\n`);
+      await plant("e2e-clean-review.sh", standIn("clean-review", "fleet-e2e-clean-review.ts"), 0o755);
+      await plant("e2e-security.sh", standIn("security", "fleet-e2e-security.ts", "STAGE_EXTRA=src\n"), 0o755);
+      await plant("e2e-claude-gate.sh", standIn("claude-gate", "fleet-e2e-claude-gate.ts"), 0o755);
+      spawnSync("git", ["-C", sg.repo, "add", "-A"]);
+      const sgSeeded = spawnSync("git", ["-C", sg.repo, "commit", "-qm", "source-class gate fixture"]).status === 0;
+      const sgCmd = '[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; '
+        + 'echo "srcgate-install ran" && echo "srcgate-pins ran" && echo "srcgate-tsc ran" && echo "srcgate-build ran"'
+        + " && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh";
+      let sgRepos: Record<string, string> = {};
+      try { sgRepos = JSON.parse(process.env.FLEET_VERIFY_CMD_REPOS ?? "{}") as Record<string, string>; } catch { /* the suite's own map is optional here */ }
+      await restartSrv({ FLEET_VERIFY_CMD_REPOS: JSON.stringify({ ...sgRepos, [sg.repo]: sgCmd }) });
+      try {
+        const landSg = async (name: string, files: Record<string, string>) => {
+          const l = (await (await post("/api/lanes", { repo: sg.repo })).json()) as { slot: number; cwd: string };
+          for (const [file, content] of Object.entries(files)) {
+            mkdirSync(`${l.cwd}/${file.split("/").slice(0, -1).join("/")}`, { recursive: true });
+            await Bun.write(`${l.cwd}/${file}`, content);
+          }
+          spawnSync("git", ["-C", l.cwd, "add", "-A"]);
+          let committed = false;
+          for (let i = 0; i < 20 && !committed; i++) {
+            committed = spawnSync("git", ["-C", l.cwd, "commit", "-qm", `${name} source-class fixture`]).status === 0;
+            if (!committed) await Bun.sleep(150);
+          }
+          const before = headOf(sg.repo, "main");
+          await landClean(l.slot);
+          const after = headOf(sg.repo, "main");
+          const note = readNote(sg.repo, after);
+          return { committed, landed: before !== after, verify: note.json?.verify as ClassedVerify | undefined };
+        };
+        check("source-class gate setup: the fixture repo seeded and its lane candidate committed (an empty diff takes the full chain for another reason)",
+          sgSeeded, `seeded=${sgSeeded}`);
+        const srcOnly = await landSg("src-only", { "src/client-only.ts": "export const clientOnly = 2;\n" });
+        const cutCmd = sgCmd.replace(" && ./e2e-clean-review.sh", "");
+        check("source-class gate: a src/-only land runs install, pins, tsc, build and ONLY the suites its footprint owes — clean-review is cut from the configured chain and the note stamps the class",
+          srcOnly.committed && srcOnly.landed && srcOnly.verify?.ok === true
+          && srcOnly.verify.cmd === cutCmd
+          && srcOnly.verify.class === "source-or-public" && srcOnly.verify.proportional === false
+          && JSON.stringify(srcOnly.verify.steps) === JSON.stringify(["install", "pins", "tsc", "build", "security", "claude-gate"])
+          && srcOnly.verify.out.includes("srcgate-suite security ran")
+          && srcOnly.verify.out.includes("srcgate-suite claude-gate ran")
+          && !srcOnly.verify.out.includes("srcgate-suite clean-review ran")
+          && srcOnly.verify.out.includes("left out clean-review"), JSON.stringify(srcOnly));
+        // …and the same footprint plus ONE e2e/ file is full again: the cut is for src/+public/ alone
+        const withE2e = await landSg("src-and-e2e", {
+          "src/client-only.ts": "export const clientOnly = 3;\n",
+          "e2e/source-class.ts": "export const touched = true;\n",
+        });
+        check("source-class gate: src/ plus one e2e/ file runs the whole configured chain, class full",
+          withE2e.committed && withE2e.landed && withE2e.verify?.ok === true
+          && withE2e.verify.cmd === sgCmd && withE2e.verify.class === "full"
+          && JSON.stringify(withE2e.verify.steps) === JSON.stringify(fullSteps)
+          && ["clean-review", "security", "claude-gate"].every((s) => withE2e.verify!.out.includes(`srcgate-suite ${s} ran`)),
+          JSON.stringify(withE2e));
+      } finally {
+        await restartSrv(); // back to the suite's own verify map for everything after this block
+      }
+    }
 
     // --- W3 · A WAVE LANDS ONCE ----------------------------------------------------------------
     // The hard half of the ▸ start wave done-sentence (docs/queue-wellen-2026-09-06.md §5 S3): n

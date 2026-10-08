@@ -1443,6 +1443,9 @@
   #shell-outcomes.tl .shelldetail { padding: 0; }
   .tlpane { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
   .tltools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .tltop { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .tlfold { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .tlfold[hidden] { display: none; }
   .tlcrumbs { display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
   .tlcrumbs .shrbtn[aria-current="step"] { color: var(--chat-ink); border-color: var(--chat-mute); }
   .tlcrumbs .tlsep { color: var(--chat-faint); padding: 0 2px; }
@@ -1451,7 +1454,7 @@
   #shell-outcomes.tl .shelltools select { background: var(--chat-raised); color: var(--chat-ink); border: 1px solid var(--chat-edge);
     border-radius: var(--r1); font: 500 var(--chat-ui-fs)/1.4 var(--chat-sans); padding: 4px 8px; min-height: 26px; width: auto; }
   .tlrow .tlcount { display: flex; gap: 8px; color: var(--chat-mute); font-size: var(--chat-ui-fs); margin-top: 2px; }
-  .tlrow .tlcount .err { color: var(--danger); } .tlrow .tlcount .pend { color: var(--q-wait); }
+  .tlrow .tlcount .err { color: var(--danger); } .tlrow .tlcount .unk { color: var(--amber); }
   .tlnote { color: var(--chat-mute); font-size: var(--chat-ui-fs); line-height: 1.5; padding: 8px 14px 0; }
   .tlnote b { color: var(--amber); font-weight: 500; }
   .tlcanvas { flex: 1; min-height: 0; overflow: auto; padding: 8px 14px 16px; outline: none; }
@@ -1463,6 +1466,9 @@
   .tllegend { display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 6px 0 2px; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
   .tllegit { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .tllegit .tlglyph { color: var(--chat-ink); font-size: 11px; }
+  .tllegit.tlunk { color: var(--amber); }
+  .tlswatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--chat-edge));
+    background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--amber) 45%, transparent) 3px 4px); }
   /* the phone's session and call zoom: a list in time order — one row per mark, nothing overlaps */
   .tllist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   .tllist li { min-width: 0; }
@@ -1482,14 +1488,20 @@
   .tlhead .tlgaps { display: flex; gap: 4px; flex-wrap: wrap; }
   .tlgap { border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--chat-edge)); color: var(--amber); background: transparent; border-radius: var(--r1); font: 500 10.5px/1.3 var(--chat-sans); padding: 2px 6px; cursor: pointer; }
   .tlgap:hover { background: var(--c-hover); }
-  .tlhead .shrbtn { align-self: flex-start; margin-top: 2px; }
+  /* the head IS the button into a session (review point 5): name, chevron, then the sub line */
+  .tlheadbtn { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; min-width: 0; margin: -3px -6px 0; padding: 3px 6px; text-align: left;
+    background: none; border: 1px solid transparent; border-radius: var(--r1); color: inherit; font: inherit; cursor: pointer; }
+  .tlheadbtn:hover, .tlheadbtn:focus-visible { background: var(--c-hover); border-color: var(--c-edge-hi); outline: none; }
+  .tlheadbtn strong { flex: 0 1 auto; min-width: 0; }
+  .tlheadbtn .tlchev { color: var(--chat-mute); font-size: var(--chat-fs); }
+  .tlheadbtn .tlheadsub { flex-basis: 100%; }
   .tlplot { position: relative; margin: 0 var(--tl-pad, 56px); height: calc(var(--tl-rows, 1) * var(--tl-step, 22px) + 10px + var(--tl-foot, 0px)); }
   .tlplot::before { content: ""; position: absolute; inset: 0; border-left: 1px solid var(--chat-edge-soft); border-right: 1px solid var(--chat-edge-soft); }
   .tlunmeasured { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--amber) 18%, transparent) 6px 7px); }
   /* the hatch's word wraps and is never cut: it may run past a narrow hatch, never past the plot */
   .tlunmeasured span { position: absolute; left: 4px; bottom: 0; max-width: max(calc(100% - 8px), 64px); color: var(--amber); font-size: 10px; line-height: 1.2; white-space: normal; }
   .tlbar { position: absolute; height: 2px; background: var(--chat-faint); margin-top: 5px; }
-  .tlbar.error { background: var(--danger); } .tlbar.pending { background: none; border-top: 2px dashed var(--q-wait); height: 0; }
+  .tlbar.error { background: var(--danger); } .tlbar.pending { background: none; border-top: 2px dashed var(--chat-mute); height: 0; }
   .tlev { position: absolute; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 0; height: 18px; padding: 0 4px;
     border: 1px solid transparent; border-radius: var(--r1); background: transparent; color: var(--chat-prose); font: 500 var(--chat-ui-fs)/1.2 var(--chat-sans); cursor: pointer; white-space: nowrap; }
   .tlev:hover, .tlev:focus-visible { background: var(--c-hover); border-color: var(--c-edge-hi); outline: none; z-index: 3; }
@@ -1497,8 +1509,10 @@
   .tlev .tlglyph { font-size: 11px; line-height: 1; color: var(--chat-mute); }
   .tlev[data-family="ledger"] .tlglyph { color: var(--chat-ink); }
   .tlev[data-status="error"] .tlglyph, .tlev[data-status="error"] .tlst { color: var(--danger); }
-  .tlev[data-status="pending"] .tlglyph, .tlev[data-status="pending"] .tlst { color: var(--q-wait); }
-  .tlev[data-status="late"] .tlglyph, .tlev[data-status="unknown"] .tlglyph, .tlev[data-status="unknown"] .tlst { color: var(--amber); }
+  /* a mark's state is a WORD (wartet, unbekannt) and the one red for an error — never amber:
+     amber means "nicht beobachtet" (hatch, gap, unknown field) and nothing else (review point 6) */
+  .tlev[data-status="pending"] .tlglyph, .tlev[data-status="pending"] .tlst { color: var(--chat-mute); }
+  .tlev[data-status="unknown"] .tlst, .tlev[data-status="late"] .tlst { color: var(--chat-mute); }
   .tlev[data-at-known="false"] .tlglyph { opacity: .55; text-decoration: underline dotted; }
   .tlev .tlname { display: none; } .tlev .tlst { display: none; }
   .tlcanvas[data-zoom="session"] .tlev, .tlcanvas[data-zoom="call"] .tlev { background: var(--chat-raised); border-color: var(--chat-edge); height: 20px; }
@@ -1512,13 +1526,15 @@
   .tlihead h3 { margin: 0; font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); flex: 1; min-width: 0; }
   .tlihead .tlchip { font-size: 10.5px; border: 1px solid var(--chat-edge); border-radius: var(--r1); padding: 1px 6px; color: var(--chat-mute); }
   .tlihead .tlchip[data-status="error"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--chat-edge)); }
-  .tlihead .tlchip[data-status="pending"] { color: var(--q-wait); } .tlihead .tlchip[data-status="unknown"], .tlihead .tlchip[data-status="late"] { color: var(--amber); }
+  .tlihead .tlchip[data-status="pending"], .tlihead .tlchip[data-status="unknown"], .tlihead .tlchip[data-status="late"] { color: var(--chat-mute); }
   .tlidl { margin: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 10px; font-size: 12.5px; }
   .tlidl dt { color: var(--chat-mute); font-size: var(--chat-ui-fs); padding-top: 2px; }
   .tlidl dd { margin: 0; overflow-wrap: anywhere; color: var(--chat-prose); }
   .tlidl dd.unk { color: var(--amber); }
   .tlidl pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: var(--r2); padding: 8px 10px; font: 12px/1.5 var(--chat-mono); max-height: 160px; overflow: auto; }
   .tlidl code { font-family: var(--chat-mono); font-size: 11.5px; }
+  .tlraw { margin-top: 4px; } .tlraw summary { cursor: pointer; color: var(--chat-mute); font-size: var(--chat-ui-fs); user-select: none; }
+  .tlraw code { display: block; margin-top: 4px; overflow-wrap: anywhere; } .tlraw .tlcopy { margin-top: 6px; }
   .tliacts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
   .tlstate { padding: 24px 14px; color: var(--chat-prose); line-height: 1.5; max-width: 560px; }
   .tlstate b { color: var(--amber); font-weight: 500; } .tlstate code { font-family: var(--chat-mono); font-size: 12px; }
@@ -1528,6 +1544,13 @@
     .tlev { height: 40px; min-width: 24px; justify-content: center; }
     .tlcanvas[data-zoom="session"] .tlev, .tlcanvas[data-zoom="call"] .tlev { height: 40px; }
     .tlgap { min-height: 40px; } .tlzoom .shrbtn { min-width: 40px; } #shell-outcomes.tl .shelltools select { min-height: 40px; }
+    .tlheadbtn { min-height: 40px; align-content: center; }
+    /* one toolbar row: the crumbs shrink with an ellipsis, Mehr sits at the right, the fold below it */
+    #shell-outcomes.tl .shelltools .tltools { flex: 1 1 auto; }
+    .tltop { flex: 1 1 100%; } .tltop .tlcrumbs { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+    .tltop .tlcrumb { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tlmorebtn { flex: none; margin-left: auto; min-height: 40px; }
+    .tlfold { flex: 1 1 100%; } .tlfold .tlzoom { margin-left: 0; }
     .tlinspect { position: absolute; inset: 0; max-height: none; z-index: 5; border-top: 0; padding-top: 10px; }
     .tlidl { grid-template-columns: 1fr; gap: 4px 0; } .tlidl dt { padding-top: 6px; }
   }

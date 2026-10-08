@@ -10,8 +10,8 @@
 //
 // Every claim is a DOM fact at 1200×900 and at 390×844, and every claim has a MUTANT (owner card
 // 2026-10-07: „[Zitat entfernt]“): `TIMELINE_MUTANTS` swaps one needle of
-// src/timeline.ts or src/client.ts in the bundle the page runs and expects the named claim to go
-// red. A needle that left the source throws, so a probe that could not apply its mutation fails as
+// src/timeline.ts or src/client.ts in the bundle the page runs — or of public/index.html in the
+// page itself, for a claim about colour — and expects the named claim to go red. A needle that left the source throws, so a probe that could not apply its mutation fails as
 // ITSELF, never as "caught".
 //
 // WHAT IS NOT PROVEN HERE: that the live route answers this wire shape — it does not exist yet
@@ -27,7 +27,7 @@ import type { TimelineWire, TimelineWireSession } from "../src/timeline";
 
 export interface TimelineDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // `width`: the one viewport the mutant is judged at — 1200 unless the claim is a phone claim
-export interface TimelineMutant { name: string; claim: string; file: "src/timeline.ts" | "src/client.ts"; needle: string; with: string; width?: 1200 | 390 }
+export interface TimelineMutant { name: string; claim: string; file: "src/timeline.ts" | "src/client.ts" | "public/index.html"; needle: string; with: string; width?: 1200 | 390 }
 
 // the claims, named once so the mutants can point at them
 export const TL_CLAIM = {
@@ -45,6 +45,12 @@ export const TL_CLAIM = {
   bundle: "the production bundle carries neither the fixture module nor its canary",
   noRoute: "without the route the lens names the 404 of GET /api/timeline and draws no track",
   stale: "an answer that arrives after its window was closed paints nothing into the window opened since",
+  // the UI-MAIN's follow-up points 5–9 (card 2026-10-08)
+  headBtn: "in the overview each session's track head is the one button into it (name and chevron, touch-high on the phone), no track carries a Zoom button, and the session zoom has none",
+  oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber, no mark, bar or state word is amber or wait-coloured",
+  emptyOne: "without the route the lens says it in one sentence that names GET /api/timeline exactly once, with the status and the server's error text",
+  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary with a Kopieren button; the visible Quelle text carries none of them",
+  toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind Mehr and appear on tap; on the desktop they stand in the row and there is no Mehr",
 } as const;
 
 export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
@@ -73,6 +79,17 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `const listMode = mobile && tlZoom !== "overview";`, with: "const listMode = false;" },
   { name: "the packing forgets how wide a chip is", claim: TL_CLAIM.apart, file: "src/client.ts",
     needle: "half = markWidthPx(e) / 2;", with: "half = 0;" },
+  { name: "the track head is a div, not a button", claim: TL_CLAIM.headBtn, file: "src/client.ts",
+    needle: `const headBtn = el("button", "tlheadbtn") as HTMLButtonElement;`, with: `const headBtn = el("div", "tlheadbtn") as HTMLButtonElement;` },
+  { name: "an unknown mark's glyph painted amber again", claim: TL_CLAIM.oneAmber, file: "public/index.html",
+    needle: `.tlev[data-status="unknown"] .tlst, .tlev[data-status="late"] .tlst { color: var(--chat-mute); }`,
+    with: `.tlev[data-status="unknown"] .tlglyph { color: var(--amber); }` },
+  { name: "the empty state names the route a second time", claim: TL_CLAIM.emptyOne, file: "src/client.ts",
+    needle: `" Bis dahin zeigt sie nichts und behauptet nichts."`, with: `" Bis GET /api/timeline antwortet, zeigt sie nichts und behauptet nichts."` },
+  { name: "the raw value stands open as flowing text", claim: TL_CLAIM.rawSource, file: "src/client.ts",
+    needle: `const raw = el("details", "tlraw");`, with: `const raw = el("div", "tlraw");` },
+  { name: "the phone keeps zoom, pan and picker in the toolbar", claim: TL_CLAIM.toolbarRow, file: "src/client.ts", width: 390,
+    needle: "const fold = mobile && !listMode;", with: "const fold = false;" },
 ];
 
 const T = Date.parse("2026-01-01T00:00:00.000Z");
@@ -129,7 +146,8 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
   mkdirSync(scratch, { recursive: true });
   if (artifacts) mkdirSync(artifacts, { recursive: true });
   const mutant = only.mutate;
-  const mutantPath = mutant ? resolve(sourceRoot, mutant.file) : null;
+  const htmlMutant = mutant?.file === "public/index.html" ? mutant : null;
+  const mutantPath = mutant && !htmlMutant ? resolve(sourceRoot, mutant.file) : null;
   let mutationApplied = !mutant;
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
     plugins: mutant && mutantPath ? [{ name: "timeline-mutant", setup(build) {
@@ -141,9 +159,10 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       });
     } }] : [] });
   if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
-  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`timeline mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
   const appJs = await built.outputs[0].text();
-  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (htmlMutant) { mutationApplied = indexHtml.includes(htmlMutant.needle); indexHtml = indexHtml.replace(htmlMutant.needle, htmlMutant.with); }
+  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`timeline mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
   const wire = await timelineWireFixture();
   // `delayMs` holds the next answer back, `narrow` makes it a one-session variant — together they
   // stage the late answer of a window that has been closed meanwhile
@@ -226,10 +245,16 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code: k, windowsVirtualKeyCode: codes[k] });
       await settle(80);
     };
-    const click = async (selector: string) => {
+    // `tryClick` is for a control a MUTANT may have removed: its absence is the claim's red, never
+    // the probe's; `click` is for the fixture's own way through the lens, where nothing to click is
+    // the probe failing as itself
+    const tryClick = async (selector: string): Promise<boolean> => {
       const ok = await evaluate<boolean>(`(() => { const n = document.querySelector(${JSON.stringify(selector)}); if (!n) return false; n.click(); return true; })()`);
-      if (!ok) throw new Error("timeline DOM probe: nothing to click at " + selector);
       await settle(80);
+      return ok;
+    };
+    const click = async (selector: string) => {
+      if (!await tryClick(selector)) throw new Error("timeline DOM probe: nothing to click at " + selector);
     };
     const openLens = async () => {
       const entry = await wait(`document.querySelector('#morepanel [data-lens="timeline"]')`, 15000);
@@ -252,7 +277,34 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const inspect = sh.querySelector('.tlinspect');
       const fields = {}; for (const dd of sh.querySelectorAll('.tlinspect dd[data-field]')) fields[dd.dataset.field] = dd.innerText.trim();
       const ir = inspect && !inspect.hidden ? inspect.getBoundingClientRect() : null;
-      return { lens: sh.querySelector('.actlens button[aria-pressed="true"]')?.textContent ?? null, zoom: canvas?.dataset.zoom ?? null,
+      // colours as the page computes them: the token's hex read into rgb() once
+      const rgbOf = (token) => { const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim(); const m = /^#([0-9a-f]{6})$/i.exec(v);
+        return m ? 'rgb(' + [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)).join(', ') + ')' : v; };
+      const amber = rgbOf('--amber'), waitc = rgbOf('--q-wait');
+      const colorOf = (n) => getComputedStyle(n).color;
+      const tinted = (c) => [...sh.querySelectorAll('.tlev, .tlev *, .tlbar, .tlihead .tlchip')].filter((n) => colorOf(n) === c || getComputedStyle(n).borderTopColor === c).length;
+      const legUnk = sh.querySelector('.tllegend [data-meaning="unmeasured"]');
+      const colours = { amberMarks: tinted(amber), waitMarks: tinted(waitc),
+        hatch: [...sh.querySelectorAll('.tlunmeasured span')].every((n) => colorOf(n) === amber), hatches: sh.querySelectorAll('.tlunmeasured span').length,
+        gaps: [...sh.querySelectorAll('.tlgap')].every((n) => colorOf(n) === amber), gapN: sh.querySelectorAll('.tlgap').length,
+        railGaps: [...sh.querySelectorAll('.tlrow .tlcount .unk')].every((n) => colorOf(n) === amber), railGapN: sh.querySelectorAll('.tlrow .tlcount .unk').length,
+        legend: legUnk ? { amber: colorOf(legUnk) === amber, text: legUnk.textContent.trim() } : null };
+      const heads = [...sh.querySelectorAll('.tltrack[data-session]')].map((t) => { const b = t.querySelector('button.tlheadbtn'); const r = b ? b.getBoundingClientRect() : null;
+        return { btn: !!b, text: (b?.textContent ?? '').trim().slice(0, 40), chev: !!b?.querySelector('.tlchev'), h: r ? Math.round(r.height) : 0,
+          zoomBtns: [...t.querySelectorAll('.tlhead button')].filter((x) => /^Zoom/.test(x.textContent)).length }; });
+      // the lens's own toolbar (.tltools) — the shell's lens tabs above it are not the timeline's row
+      const tb = document.querySelector('#shell-outcomes .shelltools .tltools');
+      const vis = tb ? [...tb.querySelectorAll('button, select')].filter((n) => n.getBoundingClientRect().width > 0) : [];
+      const mid = (n) => { const r = n.getBoundingClientRect(); return Math.round((r.top + r.height / 2) / 20); };
+      const shown = (sel) => { const n = tb?.querySelector(sel); return !!n && n.getBoundingClientRect().width > 0; };
+      const moreBtn = tb?.querySelector('.tlmorebtn');
+      const tools = tb ? { rows: new Set(vis.map(mid)).size, controls: vis.length, zoomVisible: shown('.tlzoom'), selVisible: shown('select'),
+        more: moreBtn ? { text: moreBtn.textContent, expanded: moreBtn.getAttribute('aria-expanded'), h: Math.round(moreBtn.getBoundingClientRect().height) } : null,
+        overflow: Math.max(0, ...vis.map((n) => Math.round(n.getBoundingClientRect().right))) - Math.round(tb.closest('.shelltools').getBoundingClientRect().right) } : null;
+      const rawEl = sh.querySelector('.tlinspect dd[data-field="Quelle"] .tlraw');
+      const raw = rawEl ? { details: rawEl.tagName === 'DETAILS', open: rawEl.open === true, summary: rawEl.querySelector('summary')?.textContent ?? '',
+        code: [...rawEl.querySelectorAll('code')].map((c) => c.textContent).join('\\n'), copy: rawEl.querySelector('.tlcopy')?.textContent ?? null } : null;
+      return { colours, heads, tools, raw, lens: sh.querySelector('.actlens button[aria-pressed="true"]')?.textContent ?? null, zoom: canvas?.dataset.zoom ?? null,
         tracks: [...sh.querySelectorAll('.tltrack[data-session]')].map((t) => t.dataset.session), fleetTracks: sh.querySelectorAll('.tltrack.fleet').length,
         ticks: sh.querySelectorAll('.tltick').length, crumbs: [...sh.querySelectorAll('.tlcrumb')].map((b) => b.textContent),
         note: sh.querySelector('.tlnote')?.innerText ?? '', gapChips: [...sh.querySelectorAll('.tlgap')].map((g) => g.textContent),
@@ -266,7 +318,11 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         pageScroll: document.documentElement.scrollWidth - innerWidth, canvasScroll: canvas ? canvas.scrollWidth - canvas.clientWidth : 0 }; })()`;
     type Mark = { id: string; kind: string; family: string; status: string; atKnown: string; verdict: string | null; at: number; left: number; glyph: string; h: number; w: number; track: string;
       title: string; rect: { t: number; b: number; l: number; r: number }; cut: boolean };
-    type Read = { lens: string | null; zoom: string | null; tracks: string[]; fleetTracks: number; ticks: number; crumbs: string[]; note: string; gapChips: string[];
+    type Colours = { amberMarks: number; waitMarks: number; hatch: boolean; hatches: number; gaps: boolean; gapN: number; railGaps: boolean; railGapN: number; legend: { amber: boolean; text: string } | null };
+    type Head = { btn: boolean; text: string; chev: boolean; h: number; zoomBtns: number };
+    type Tools = { rows: number; controls: number; zoomVisible: boolean; selVisible: boolean; more: { text: string; expanded: string | null; h: number } | null; overflow: number } | null;
+    type Raw = { details: boolean; open: boolean; summary: string; code: string; copy: string | null } | null;
+    type Read = { colours: Colours; heads: Head[]; tools: Tools; raw: Raw; lens: string | null; zoom: string | null; tracks: string[]; fleetTracks: number; ticks: number; crumbs: string[]; note: string; gapChips: string[];
       pendingBars: number; hatches: string[]; marks: Mark[]; legend: { kind: string; glyph: string; text: string }[]; hatchCut: boolean; hatchWords: string[];
       inspectOpen: boolean; inspectRect: { top: number; left: number; w: number; h: number } | null;
       fields: Record<string, string>; inspectTitle: string | null; state: string | null; stateText: string; detailmode: boolean; railRows: number; railVisible: boolean;
@@ -339,9 +395,37 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       claims[TL_CLAIM.legend] = r1.legend.length >= 10 && legendCovers && titled && legendGlyphs
         && !!wordOf.get("tool.call")?.startsWith("Aufruf") && (!wordOf.has("other") || !!wordOf.get("other")?.startsWith("Ereignis"));
 
+      // --- 4c. the head is the button into a session (point 5)
+      facts.headBtn = { heads: r1.heads.length, btn: r1.heads.filter((h) => h.btn).length, chev: r1.heads.filter((h) => h.chev).length, minH: Math.min(...r1.heads.map((h) => h.h)),
+        zoomBtns: r1.heads.reduce((n, h) => n + h.zoomBtns, 0), sample: r1.heads[0]?.text };
+      let headOk = r1.heads.length === wire.sessions.length && r1.heads.every((h) => h.btn && h.chev && h.text.length > 2 && h.zoomBtns === 0 && (!mobile || h.h >= 40));
+      // --- 4d. one colour, one meaning (point 6): amber is "not observed", and only that
+      facts.oneAmber = r1.colours;
+      const c = r1.colours;
+      claims[TL_CLAIM.oneAmber] = c.amberMarks === 0 && c.waitMarks === 0 && c.hatch && c.hatches >= 1 && c.gaps && c.gapN >= 1 && c.railGaps && c.railGapN >= 1
+        && !!c.legend && c.legend.amber && /ungemessen/.test(c.legend.text) && /Lücke/.test(c.legend.text);
+      // --- 4e. the toolbar is one row (point 9): on the phone the rest sits behind Mehr
+      const t0 = r1.tools;
+      let toolbarOk = !!t0 && t0.rows === 1 && t0.overflow <= 0;
+      if (mobile) {
+        toolbarOk = toolbarOk && !!t0?.more && t0.more.h >= 40 && t0.more.expanded === "false" && !t0.zoomVisible && !t0.selVisible;
+        const tapped = await tryClick(".tlmorebtn");
+        const t1 = (await read()).tools;
+        toolbarOk = toolbarOk && tapped && !!t1 && t1.zoomVisible && t1.selVisible && t1.more?.expanded === "true" && t1.overflow <= 0;
+        facts.toolbarRow = { closed: t0, open: t1 };
+        if (tapped) await tryClick(".tlmorebtn");
+      } else {
+        toolbarOk = toolbarOk && !!t0 && t0.more === null && t0.zoomVisible && t0.selVisible;
+        facts.toolbarRow = { overview: t0 };
+      }
+      await shot(`${width}-1b-toolbar`);
+
       // --- 5. zoom in two steps, back one level at a time
-      await click(`.tltrack[data-session="${claudeKey}"] .shrbtn`);
+      await click(`.tltrack[data-session="${claudeKey}"] .tlheadbtn`);
       const r5a = await read();
+      headOk = headOk && r5a.heads.length === 1 && r5a.heads.every((h) => !h.btn && h.zoomBtns === 0);
+      claims[TL_CLAIM.headBtn] = headOk;
+      toolbarOk = toolbarOk && r5a.tools?.rows === 1 && (r5a.tools?.overflow ?? 1) <= 0;
       await shot(`${width}-2-session`);
       // --- 5b. no two chips share a pixel in the session zoom — the claude fixture puts eight
       // ledger events and two results on one instant, more than the old six rows could hold
@@ -364,6 +448,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       await click(".tliacts .shrbtn");  // Zoom Call
       const r5b = await read();
       await shot(`${width}-3-call`);
+      toolbarOk = toolbarOk && r5b.tools?.rows === 1 && (r5b.tools?.overflow ?? 1) <= 0;
+      facts.toolbarRow = { ...(facts.toolbarRow as Record<string, unknown>), session: r5a.tools, call: r5b.tools };
+      claims[TL_CLAIM.toolbarRow] = toolbarOk;
       // back: on the desktop Escape steps (inspector, then one level); on a phone the crumb does the same
       let r5c: NonNullable<Read>, r5d: NonNullable<Read>;
       if (!mobile) { await key("Escape"); r5c = await read(); await key("Escape"); r5d = await read(); }
@@ -390,10 +477,19 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       let pendingResult = "";
       if (pendingMark) { await click(`.tlev[data-id="${pendingMark.id}"]`); pendingResult = (await read()).fields.Resultat ?? ""; }
       facts.inspect = { title: r6.inspectTitle, fields: Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.slice(0, 60)])), pendingResult: pendingResult.slice(0, 60) };
+      // --- 6b. the raw value folded, copyable (point 8): read on the error call's inspector
+      await click(`.tlev[data-id="${errorCall.id}"]`);
+      const r6b = await read();
+      await tryClick(".tlraw .tlcopy");
+      const copied = (await read()).raw?.copy ?? null;
+      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), copied };
+      claims[TL_CLAIM.rawSource] = !!r6b.raw && r6b.raw.details && !r6b.raw.open && r6b.raw.summary.startsWith("Rohwert") && r6b.raw.code.includes("native:")
+        && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Kopieren" && copied === "Kopiert"
+        && !(r6b.fields.Quelle ?? "").includes("native:") && !(r6b.fields.Quelle ?? "").includes("Bytes ") && (r6b.fields.Quelle ?? "").includes("Sidechain");
       claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
         && (f.Argumente ?? "").startsWith("Synthetic tool.call side-1") && (f.Resultat ?? "").startsWith("Synthetic tool.result side-1")
         && (f.Fehler ?? "").startsWith("Synthetic tool.result side-1") && (f.Zeitpunkte ?? "").includes("Aufzeichnung:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
-        && (f.Dauer ?? "").includes("Abstand der Aufzeichnungen") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").includes("native:") && (f.Quelle ?? "").includes("Sidechain")
+        && (f.Dauer ?? "").includes("Abstand der Aufzeichnungen") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").startsWith("claude") && (f.Quelle ?? "").includes("Sidechain")
         && pendingResult.startsWith("wartet");
       await click(".tliclose");
 
@@ -448,6 +544,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       await shot(`${width}-5-keine-quelle`);
       facts.noRoute = { state: r10.state, text: r10.stateText.slice(0, 120), tracks: r10.tracks.length };
       claims[TL_CLAIM.noRoute] = r10.state === "unavailable" && r10.stateText.includes("404") && r10.stateText.includes("/api/timeline") && r10.tracks.length === 0 && r10.marks.length === 0;
+      const routeNamed = (r10.stateText.match(/\/api\/timeline/g) ?? []).length;
+      facts.emptyOne = { routeNamed, text: r10.stateText.slice(0, 160) };
+      claims[TL_CLAIM.emptyOne] = routeNamed === 1 && r10.stateText.startsWith("Die Zeitleiste hat noch keine Quelle: GET /api/timeline antwortet 404 (no such route).");
       await click("#shell-outcomes .shellclose");
 
       // --- 11. a late answer of a closed window: open (answer held back, one session), close, open

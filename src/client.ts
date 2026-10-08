@@ -9629,6 +9629,7 @@ let tlHarness = "all";
 let tlView: { from: number; to: number } | null = null;   // axis window set by zoom/pan; null = fit to data
 let tlRowOf = new Map<HTMLElement, TimelineSession>();
 let tlReturnFocus: string | null = null;
+let tlMore = false;                     // phone: the fold behind "Mehr" (zoom, pan, harness) is open
 // THE WINDOW GENERATION (Kern-MAIN review of e8894ef7): every data answer belongs to the window that
 // asked for it. Closing the Activity window and opening it again bumps the generation, and an
 // answer that arrives for an older one is dropped — it would otherwise paint a closed window's
@@ -9665,7 +9666,7 @@ window.addEventListener("resize", () => { if (ocShell && actLens === "timeline")
 function resetTimeline() {
   tlGen++;
   tlModel = null; tlBusy = false; tlZoom = "overview"; tlScope = null; tlCall = null; tlPick = null;
-  tlHarness = "all"; tlView = null; tlRowOf = new Map(); tlReturnFocus = null;
+  tlHarness = "all"; tlView = null; tlRowOf = new Map(); tlReturnFocus = null; tlMore = false;
 }
 const tlQuery = () => { const to = Date.now(); return { from: to - TL_WINDOW_MS, to }; };
 async function loadTimelineModel() {
@@ -9797,12 +9798,27 @@ function renderTimeline() {
     crumbs.appendChild(el("span", "tlsep", "›"));
     crumbs.appendChild(crumb(`Aufruf ${callEv.sub || callEv.label}`, "call", () => undefined));
   }
-  tools.appendChild(crumbs);
+  const top = el("div", "tltop");
+  top.appendChild(crumbs);
+  tools.appendChild(top);
   // THE PHONE LISTS (UI-MAIN review 2026-10-07): at phone width the session and call zoom show their
   // events as a list in time order instead of a ~190 px axis — chips never overlap, words never cut.
   // The overview keeps the axis (glyph-only marks); the axis window's zoom and pan have no list meaning.
   const listMode = mobile && tlZoom !== "overview";
+  // ONE ROW on the phone (UI-MAIN review point 9): the crumbs stay in the row; zoom, pan and the
+  // harness picker fold behind "Mehr" — on the desktop they stand in the row as before
+  const fold = mobile && !listMode;
   if (m && m.state === "read" && !listMode) {
+    const into = fold ? el("div", "tlfold") : tools;
+    if (fold) {
+      const more = el("button", "shrbtn tlmorebtn", tlMore ? "Weniger" : "Mehr") as HTMLButtonElement;
+      more.type = "button";
+      more.title = tlMore ? "Zeitachse und Harness-Wahl einklappen" : "Zeitachse und Harness-Wahl";
+      more.setAttribute("aria-expanded", String(tlMore));
+      more.onclick = () => { tlMore = !tlMore; renderActivity(); };
+      top.appendChild(more);
+      into.hidden = !tlMore;
+    }
     const zoom = el("div", "tlzoom");
     const zb = (label: string, title: string, on: () => void) => {
       const b = el("button", "shrbtn", label) as HTMLButtonElement;
@@ -9815,7 +9831,7 @@ function renderTimeline() {
     zb("◀", "früher", () => { tlView = { from: axisNow.from - span / 4, to: axisNow.to - span / 4 }; renderActivity(); });
     zb("▶", "später", () => { tlView = { from: axisNow.from + span / 4, to: axisNow.to + span / 4 }; renderActivity(); });
     if (tlView) zb("Alles", "Zeitachse auf die Daten dieser Zoomstufe", () => { tlView = null; renderActivity(); });
-    tools.appendChild(zoom);
+    into.appendChild(zoom);
     const harnesses = [...new Set(m.sessions.map((s) => s.harness))].sort();
     if (tlZoom === "overview" && harnesses.length > 1) {
       const sel = el("select", "") as HTMLSelectElement;
@@ -9826,8 +9842,9 @@ function renderTimeline() {
       }
       sel.value = tlHarness;
       sel.onchange = () => { tlHarness = sel.value; renderActivity(); };
-      tools.appendChild(sel);
+      into.appendChild(sel);
     }
+    if (fold) tools.appendChild(into);
   }
   shell.tools.appendChild(tools);
 
@@ -9850,9 +9867,9 @@ function renderTimeline() {
       const c = el("div", "tlcount");
       c.appendChild(el("span", "", tlN(s.counts.calls, "Aufruf", "Aufrufe")));
       if (s.counts.errors) c.appendChild(el("span", "err", `${s.counts.errors} Fehler`));
-      if (s.counts.pending) c.appendChild(el("span", "pend", tlN(s.counts.pending, "wartet", "warten")));
+      if (s.counts.pending) c.appendChild(el("span", "", tlN(s.counts.pending, "wartet", "warten")));
       if (s.counts.ledger) c.appendChild(el("span", "", tlN(s.counts.ledger, "Ereignis", "Ereignisse")));
-      if (s.gaps.length) c.appendChild(el("span", "pend", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}`));
+      if (s.gaps.length) c.appendChild(el("span", "unk", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}`));
       main.appendChild(c);
       r.appendChild(main);
       r.title = `Session ${s.label} vergrößern`;
@@ -9878,10 +9895,13 @@ function renderTimeline() {
   if (m.state === "unavailable") {
     const box = el("div", "tlstate");
     box.dataset.state = "unavailable";
-    box.appendChild(el("b", "", "Keine Quelle."));
-    box.appendChild(document.createTextNode(` ${m.reason ?? ""} — die Route `));
-    box.appendChild(el("code", "", "GET /api/timeline"));
-    box.appendChild(document.createTextNode(" liefert diese Ansicht; bis sie antwortet, zeigt die Zeitleiste nichts und behauptet nichts."));
+    // one sentence, the route named once (UI-MAIN review point 7); the second sentence is the
+    // principle the review kept: the lens shows nothing and claims nothing until the route answers
+    box.appendChild(el("b", "", "Die Zeitleiste hat noch keine Quelle:"));
+    box.appendChild(document.createTextNode(" "));
+    box.appendChild(el("code", "", `GET ${m.route}`));
+    box.appendChild(document.createTextNode(` ${m.reason ?? "antwortet nicht"}.`));
+    box.appendChild(document.createTextNode(" Bis dahin zeigt sie nichts und behauptet nichts."));
     pane.appendChild(box);
     shell.foot.textContent = tlIntern(m);
     return;
@@ -9948,6 +9968,13 @@ function renderTimeline() {
   }
   if (events.some((e) => e.status === "pending")) legend.appendChild(el("span", "tllegit", "┄ wartet auf Resultat"));
   if (events.some((e) => !e.atKnown)) legend.appendChild(el("span", "tllegit", "⋯ ohne Zeitstempel"));
+  // ONE colour, one meaning (UI-MAIN review point 6): amber is "nicht beobachtet" — the hatch, a
+  // gap, an unknown field — and nothing else; a mark's state is a word, an error the one red
+  const unmeasured = el("span", "tllegit tlunk");
+  unmeasured.dataset.meaning = "unmeasured";
+  unmeasured.appendChild(el("span", "tlswatch", ""));
+  unmeasured.appendChild(document.createTextNode("ungemessen · Lücke · unbekannt"));
+  legend.appendChild(unmeasured);
   canvas.appendChild(legend);
   // one mark, the same button on the axis and in a phone list
   const markButton = (e: TimelineEvent): HTMLButtonElement => {
@@ -9992,8 +10019,22 @@ function renderTimeline() {
     if (t.key !== null) track.dataset.session = t.key;
     if (t.session) track.dataset.harness = t.session.harness;
     const head = el("div", "tlhead");
-    head.appendChild(el("strong", "", t.title));
-    head.appendChild(el("span", "", t.sub));
+    // THE HEAD IS THE WAY IN (UI-MAIN review point 5): in the overview a session's name and chevron
+    // are one button that zooms into the track — no "Zoom" button per track
+    if (t.session && tlZoom === "overview") {
+      const s = t.session;
+      const headBtn = el("button", "tlheadbtn") as HTMLButtonElement;
+      headBtn.type = "button";
+      headBtn.title = `Session ${s.label} vergrößern`;
+      headBtn.appendChild(el("strong", "", t.title));
+      headBtn.appendChild(el("span", "tlchev", "›"));
+      headBtn.appendChild(el("span", "tlheadsub", t.sub));
+      headBtn.onclick = () => tlZoomSession(s);
+      head.appendChild(headBtn);
+    } else {
+      head.appendChild(el("strong", "", t.title));
+      head.appendChild(el("span", "", t.sub));
+    }
     if (t.session) {
       const s = t.session;
       head.appendChild(el("span", "tlcounts", tlCallWords(s.counts)));
@@ -10005,12 +10046,6 @@ function renderTimeline() {
         g.onclick = () => tlOpenPick(`gaps:${s.key}`);
         gaps.appendChild(g);
         head.appendChild(gaps);
-      }
-      if (tlZoom === "overview") {
-        const z = el("button", "shrbtn", "Zoom") as HTMLButtonElement;
-        z.title = `Session ${s.label} vergrößern`;
-        z.onclick = () => tlZoomSession(s);
-        head.appendChild(z);
       }
     }
     track.appendChild(head);
@@ -10162,9 +10197,24 @@ function tlInspector(): HTMLElement {
   field("Dauer", e.separationMs !== null ? `keine Laufzeit belegt · Abstand der Aufzeichnungen Aufruf→Resultat ${e.separationMs} ms` : null, "keine Laufzeit belegt");
   const src = el("div", "");
   src.appendChild(el("div", "", `${e.source.name}${e.source.sidechain ? " · Sidechain derselben Session" : ""}`));
-  if (e.source.locator) src.appendChild(code(`${e.source.locator}${e.source.fp ? ` fp ${e.source.fp}` : ""}`));
-  if (e.source.record) src.appendChild(el("div", "", `Aufzeichnung ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}`));
   if (e.source.edge) src.appendChild(el("div", "", `Kante: ${e.source.edge}`));
+  // THE RAW VALUE (UI-MAIN review point 8): locator, fingerprint and record bytes are a machine
+  // address, not prose — folded behind a summary, with one button that copies them as one line
+  const rawLines = [
+    e.source.locator ? `${e.source.locator}${e.source.fp ? ` fp ${e.source.fp}` : ""}` : null,
+    e.source.record ? `Aufzeichnung ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}` : null,
+  ].filter((l): l is string => l !== null);
+  if (rawLines.length) {
+    const raw = el("details", "tlraw");
+    raw.appendChild(el("summary", "", `Rohwert · ${e.source.locator ? "Lokator" : "Aufzeichnung"}`));
+    for (const line of rawLines) raw.appendChild(code(line));
+    const copy = el("button", "shrbtn tlcopy", "Kopieren") as HTMLButtonElement;
+    copy.type = "button";
+    copy.title = "Rohwert in die Zwischenablage";
+    copy.onclick = () => { copyText(rawLines.join("\n")); copy.textContent = "Kopiert"; setTimeout(() => { copy.textContent = "Kopieren"; }, 1200); };
+    raw.appendChild(copy);
+    src.appendChild(raw);
+  }
   field("Quelle", src);
   if (e.files.length) field("Dateien", e.files.join(", "));
   box.appendChild(dl);

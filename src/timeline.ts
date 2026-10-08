@@ -99,7 +99,7 @@ export interface TimelineSession {
 }
 export interface TimelineModel {
   state: "read" | "empty" | "unavailable";
-  route: string; status: number | null; reason: string | null;
+  route: string; status: number | null; reason: string | null;   // reason: predicate of the route, without its name
   now: number;
   window: { from: number; to: number };
   span: { from: number | null; to: number | null };   // the data's own extent inside the window
@@ -210,18 +210,20 @@ export async function loadTimeline(query: TimelineQuery, fetchFn: typeof fetch =
   if (query.page) params.set("page", query.page);
   let res: Response;
   try { res = await fetchFn(`${ROUTE}?${params}`); }
-  catch (e) { return unavailable(Date.now(), window, null, `Route nicht erreichbar: ${e instanceof Error ? e.message : String(e)}`); }
+  // `reason` is a predicate of the route ("antwortet 404 (no such route)") — the view names the
+  // route ONCE in front of it, so the sentence never carries it twice (UI-MAIN review point 7)
+  catch (e) { return unavailable(Date.now(), window, null, `ist nicht erreichbar (${e instanceof Error ? e.message : String(e)})`); }
   if (!res.ok) {
-    let reason = `${ROUTE} antwortet ${res.status}`;
-    try { const body = (await res.json()) as { error?: unknown }; if (typeof body?.error === "string") reason += ` · ${body.error}`; }
-    catch { reason += " · ohne lesbaren Fehlertext"; }
+    let reason = `antwortet ${res.status}`;
+    try { const body = (await res.json()) as { error?: unknown }; if (typeof body?.error === "string") reason += ` (${body.error})`; }
+    catch { reason += " (ohne lesbaren Fehlertext)"; }
     return unavailable(Date.now(), window, res.status, reason);
   }
   let wire: TimelineWire;
   try { wire = (await res.json()) as TimelineWire; }
-  catch { return unavailable(Date.now(), window, res.status, `${ROUTE}: Antwort ist kein JSON`); }
+  catch { return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber kein JSON`); }
   if (wire?.schema !== "fleet.timeline/v1" || !Array.isArray(wire.sessions))
-    return unavailable(Date.now(), window, res.status, `${ROUTE}: Schema ${JSON.stringify(wire?.schema ?? null)} statt fleet.timeline/v1`);
+    return unavailable(Date.now(), window, res.status, `antwortet mit Schema ${JSON.stringify(wire?.schema ?? null)} statt fleet.timeline/v1`);
 
   const now = typeof wire.now === "number" ? wire.now : Date.now();
   const events: TimelineEvent[] = [];

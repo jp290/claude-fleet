@@ -4023,6 +4023,16 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   Helfer ist voll (`server.ts#helperSaturation`) — dann bis zum frühesten bekannten Claim-Ende plus
   Puffer ab `offeredAt`, nie unter `freeMs`, nie über `FLEET_VERIFY_WAIT_MS`; `saturatedUntil`
   (epoch ms) und `reason` („helper saturated until ~HH:MM") stehen dann daneben, sonst `null`.
+  **Ein Helfer, der seinen Daemon aktualisiert, gilt als voll** (`server.ts#helperUpdateBlocks`,
+  der Spiegel von `helper-daemon/daemon.ts#jobsToStart`): ein gelistetes Update (offen, oder
+  geclaimt, solange sein Beat Arbeit zählt) haelt bis zum SPAETESTEN Claim-Ende dieser Maschine
+  — sie laeuft erst leer, dann tauscht sie —, und `reason` haengt „— <name> is updating its daemon
+  and takes no suite before then" an. Kein Update-Halt sind: ein gemeldetes Update, ein
+  abgelaufener Claim, ein geclaimtes Update neben einem Beat mit `running: 0` (der tote
+  Vorgaenger, dessen Daemon wieder Jobs nimmt) und das Update einer Maschine, die kein
+  Claim-Kandidat ist (`quiet`, Owner-`off`, kein frischer Beat). Die Frist bleibt
+  `FLEET_VERIFY_WAIT_MS`. Ein Post-Land-Audit liest diese Saettigung nicht: auf einer
+  Helfer-Installation wartet es seit `eaef9c74` ohnehin auf den Helfer (`AUDIT_HELPER_ONLY`).
 - `helper{online,name,mode,lastSeenAgeMs,takesModules}` — dieselbe Präsenz-Lesung wie in `/api/self/gate`, und
   sie reist an JEDER Antwort dieser Tür mit (GET, `existing`, frisch gemintet, abgelehnt), damit
   eine Lane nicht in derselben Sekunde hier „online" lesen und dort abgelehnt werden kann.

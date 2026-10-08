@@ -29293,19 +29293,51 @@ const isHelperClaimCandidate = (d: HelperDevice, now: number): boolean =>
 // all, one candidate with a free slot, one that never reported a cap (absent is uncapped, as at the
 // claim door), and one that says it is full while this server knows none of its claims — there is
 // no end to wait for, so there is nothing to extend a wait to.
-interface HelperSaturation { until: number }
+// …AND A MACHINE THAT IS UPDATING ITS DAEMON IS FULL, whatever its slots say. Measured 2026-10-07
+// (docs/messungen/2026-10-07-suiten-auf-den-workhorse.md, "Warum lokal?"): an update queued 17:01,
+// helper-daemon/daemon.ts#jobsToStart let the running jobs drain and started no new suite, the
+// count fell below the cap, this reading said "free", and audit 3e5b5f1f went local at 17:12 for 75
+// minutes — the update was claimed at 17:24 and swapped 15 s later. helperUpdateBlocks is the
+// daemon's own rule read from this side; such a machine frees when EVERY claim it holds has ended,
+// its update's included (it drains first, then swaps), so its end is the LATEST of them, never
+// earlier than now. The caller's cap (FLEET_VERIFY_WAIT_MS) bounds the wait, and `updating` names
+// the machine so the wait says why.
+interface HelperSaturation { until: number; updating: string[] }
 function helperSaturation(now = Date.now()): HelperSaturation | null {
   const held = heldClaimsByDevice();
   let until = 0;
+  const updating: string[] = [];
   for (const d of helperDevices.values()) {
     if (!isHelperClaimCandidate(d, now)) continue;
     const mine = held.get(d.id) ?? [];
+    if (helperUpdateBlocks(d, now)) {
+      const end = Math.max(now, ...mine.map((c) => c.expiresAt));
+      until = until ? Math.min(until, end) : end;
+      updating.push(d.name);
+      continue;
+    }
     if (d.maxParallelSuites === undefined || !mine.length
       || Math.max(d.running ?? 0, mine.length) < d.maxParallelSuites) return null;
     const end = Math.min(...mine.map((c) => c.expiresAt));
     until = until ? Math.min(until, end) : end;
   }
-  return until ? { until } : null;
+  return until ? { until, updating } : null;
+}
+// DOES THIS MACHINE'S OWN UPDATE KEEP IT FROM TAKING A SUITE? The mirror of jobsToStart's first line,
+// over the row helperJobsView lists to that device, and nothing wider:
+//   · OPEN — listed, so the daemon starts nothing beside it and drains toward it;
+//   · CLAIMED with a live claim while the device's last beat counts work — the swap is under way;
+//   · CLAIMED while that beat says `running: 0` — the daemon's own exception: a claim nobody runs
+//     is a dead predecessor's, and ordinary jobs go on beside it (its slot still counts above);
+//   · a LAPSED claim is not listed (expireHelperClaims puts the row back to open on its next sweep,
+//     and from then on the first arm holds again), and a REPORTED row is history.
+// A device that is no candidate never reaches this: a quiet, wished-off or silent machine's update
+// holds nothing back, because nothing would be held FOR it.
+function helperUpdateBlocks(d: HelperDevice, now = Date.now()): boolean {
+  const u = helperUpdates.get(d.id);
+  if (!u || u.state === "reported") return false;
+  if (u.state === "open") return true;
+  return !!(u.claim && now < u.claim.expiresAt) && d.running !== 0;
 }
 // what a saturated wait adds on top of the claim's end: one daemon poll (the same cadence as
 // HELPER_SWEEP_MS) for the freed machine to see the list again, and one more for its claim to land
@@ -29815,6 +29847,7 @@ function suiteOfferWait(offeredAt = Date.now()): SuiteOfferWait {
     ...base, unclaimedMs: Math.min(VERIFY_WAIT_MS, Math.max(SUITE_OFFER_WAIT_FREE_MS, want)),
     saturatedUntil: sat.until,
     reason: `helper saturated until ~${new Date(sat.until).toTimeString().slice(0, 5)}`
+      + (sat.updating.length ? ` — ${sat.updating.join(", ")} is updating its daemon and takes no suite before then` : "")
       + (want > VERIFY_WAIT_MS ? ` — later than the ${Math.round(VERIFY_WAIT_MS / 60_000)} min wait cap, so the wait stops at the cap` : ""),
   };
 }

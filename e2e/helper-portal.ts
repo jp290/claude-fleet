@@ -60,6 +60,7 @@ interface OwnerDeviceView {
   desiredMode: string; desiredSet: boolean;
   claims: { kind: string; repo: string; ref: string; expiresAt: number }[];
   lapses: number;
+  update?: { id: string; state: string; expiresAt?: number } | null;
   // the wake rail. `wakeConfigured` is mandatory here for the same reason `desiredSet` is: the
   // server always sends it, so a server that stopped must fail a check rather than degrade into
   // "the board draws no button". `lastWakeAt` is optional because "never woken" is a real state.
@@ -1937,7 +1938,7 @@ export async function run(h: {
     await killSrv();
     check("(K9) setup: the server restarts with an 8 s grace and a 6 s freshness window",
       await startSrv({ audit: true, extra: { FLEET_AUDIT_HELPER_GRACE_MS: String(SAT_GRACE_MS),
-        FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "2000" } }));
+        FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "2000", FLEET_HELPER_UPDATE_REPO: REPO } }));
     await Bun.sleep(750);
     await setAuditMode("green");
     await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "off" });
@@ -2025,6 +2026,66 @@ export async function run(h: {
         `claim=${satClaim?.status} report=${satReport.status}`
         + ` rows=${JSON.stringify(satRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
+      // (u) A MACHINE UPDATING ITS DAEMON IS FULL, whatever its slots say. Measured 2026-10-07
+      // (docs/messungen/2026-10-07-suiten-auf-den-workhorse.md, "Warum lokal?"): an update listed at
+      // 17:01, helper-daemon/daemon.ts#jobsToStart started no suite while the running jobs drained,
+      // the count fell under the cap, the server read "free", and audit 3e5b5f1f went local for 75
+      // minutes. HERE: one claim (s2's) of a cap of 2 — a free slot by count, so s3's offer reads
+      // today's 180 s until the update is listed. MUTATION: drop the helperUpdateBlocks arm from
+      // helperSaturation ⇒ unclaimedMs 180000, no reason ⇒ the two (u) checks after the baseline go red.
+      const s2Claim = (await satRow())?.claims.find((c) => c.kind === "lane-suite");
+      const gFree = await offerAs(s3.slot, "GET");
+      check("(K9u) baseline: one of two slots held and no update — the open offer waits today's 180 s",
+        gFree.waitPolicy?.unclaimedMs === 180000 && gFree.waitPolicy.saturatedUntil === null
+          && (await satRow())?.claims.length === 1 && !!s2Claim,
+        `${JSON.stringify(gFree.waitPolicy)} claims=${JSON.stringify((await satRow())?.claims)}`);
+      const queued = await post(`/api/helper/devices/${SATBOX}/update`, {});
+      const gOpen = await offerAs(s3.slot, "GET");
+      check("(K9u) A LISTED UPDATE HOLDS THE OFFER: past 180 s, to the end of the claim the daemon drains, and the reason names the update",
+        queued.status === 200 && (await satRow())?.update?.state === "open"
+          && gOpen.waitPolicy?.saturatedUntil === s2Claim?.expiresAt && (gOpen.waitPolicy?.unclaimedMs ?? 0) > 180000
+          && /^helper saturated until ~\d\d:\d\d — capacity box \(e2e\) is updating its daemon/.test(gOpen.waitPolicy?.reason ?? ""),
+        `queue=${queued.status} ${JSON.stringify(gOpen.waitPolicy)} s2end=${s2Claim?.expiresAt}`);
+      const updId = (await satRow())?.update?.id ?? "";
+      const updClaim = await hpost("/api/helper/claim", { jobId: updId, deviceId: SATBOX });
+      satRunning = 2;
+      await beatSat();
+      const updEnd = (await satRow())?.update?.expiresAt;
+      const gClaimed = await offerAs(s3.slot, "GET");
+      check("(K9u) …and a CLAIMED update while the daemon counts work holds it to the LATEST claim end — the swap's own",
+        updClaim.status === 200 && typeof updEnd === "number" && updEnd >= (s2Claim?.expiresAt ?? Infinity)
+          && gClaimed.waitPolicy?.saturatedUntil === updEnd && /is updating its daemon/.test(gClaimed.waitPolicy?.reason ?? ""),
+        `claim=${updClaim.status} updEnd=${updEnd} ${JSON.stringify(gClaimed.waitPolicy)}`);
+      // GEGENPROBE, UNSUITABLE: the same claimed update on a machine the owner wished off holds nothing
+      // back. MUTATION: test helperUpdateBlocks before isHelperClaimCandidate ⇒ stretched ⇒ red.
+      await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "off" });
+      const gOff = await offerAs(s3.slot, "GET");
+      await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "active" });
+      await beatSat();
+      check("(K9u) GEGENPROBE: the update of a machine that is no candidate (wished off) holds nothing — 180 s",
+        gOff.waitPolicy?.unclaimedMs === 180000 && gOff.waitPolicy.saturatedUntil === null && gOff.waitPolicy.reason === null,
+        JSON.stringify(gOff.waitPolicy));
+      // GEGENPROBE, DEAD PREDECESSOR: the s2 lane goes, the machine beats `running: 0` beside its
+      // still-claimed update — jobsToStart's own exception, it takes ordinary jobs again. MUTATION:
+      // drop `&& d.running !== 0` ⇒ the stale claim still stretches ⇒ red.
+      await post(`/api/slots/${s2.slot}/kill`, {});
+      satRunning = 0;
+      await beatSat();
+      const gStale = await offerAs(s3.slot, "GET");
+      check("(K9u) GEGENPROBE: a claimed update beside a beat of running 0 is a dead predecessor's — 180 s",
+        gStale.waitPolicy?.unclaimedMs === 180000 && gStale.waitPolicy.saturatedUntil === null,
+        `${JSON.stringify(gStale.waitPolicy)} claims=${JSON.stringify((await satRow())?.claims)}`);
+      // GEGENPROBE, FINISHED: the update reports; with a beat of one running job the machine is not
+      // full, and the reported row is history. MUTATION: count any update row ⇒ stretched ⇒ red.
+      const updReport = await hpost("/api/helper/result", { jobId: updId, exitCode: 0, tail: "swapped (e2e)" });
+      satRunning = 1;
+      await beatSat();
+      const gDone = await offerAs(s3.slot, "GET");
+      check("(K9u) GEGENPROBE: a REPORTED update holds nothing — 180 s",
+        updReport.status === 200 && (await satRow())?.update?.state === "reported"
+          && gDone.waitPolicy?.unclaimedMs === 180000 && gDone.waitPolicy.saturatedUntil === null,
+        `report=${updReport.status} ${JSON.stringify(gDone.waitPolicy)}`);
+
       // (c) THE GEGENPROBE: no claim-capable helper, the same open offer ⇒ today's 180 s. MUTATION:
       // extend whenever any claim exists, candidate or not ⇒ unclaimedMs stays stretched ⇒ red.
       await post(`/api/helper/devices/${SATBOX}/mode`, { mode: "off" });
@@ -2033,7 +2094,6 @@ export async function run(h: {
         g3off.waitPolicy?.unclaimedMs === 180000 && g3off.waitPolicy.saturatedUntil === null
           && g3off.waitPolicy.reason === null && !!g3off.offer?.id,
         JSON.stringify(g3off.waitPolicy));
-      await post(`/api/slots/${s2.slot}/kill`, {});
       await post(`/api/slots/${s3.slot}/kill`, {});
     } finally {
       clearInterval(beater);

@@ -99,11 +99,14 @@ als „command not found“ — die Instanz sähe kaputt aus. `cat` liest das tt
 als Text wieder, es führt nichts aus. Die State-Datei trägt den Token nicht — der
 bleibt in `.testinstanz.token`, und `list` druckt die URL OHNE Token.
 
-Von einem anderen Gerät kommt der Owner an den Link über das Board: die Testinstanz-Karte listet
-jede Instanz der Maschine mit „öffnen", dahinter `openUrl` aus `GET /api/testinstanzen`, die der
-Server nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der `.testinstanz.token` der Instanz
-liest (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential und anonym enden vorher mit
-401/403 und sehen nie ein Token.
+Von einem anderen Gerät kommt der Owner an den Link über das Board: in Info → Arbeitsorte steht
+unter dem Worktree jeder laufenden Instanz die Zeile „[Zitat entfernt]“ mit „Öffnen"
+(`src/board.ts#tiLine`, seit 2026-10-08 statt der eigenen Testinstanz-Karte, Owner: „[Zitat entfernt]“
+). „Öffnen" ist `POST …/testinstanz {action:"open"}` und bekommt die URL samt
+Token aus `testinstanz.sh status` (`server.ts#testinstanzFact`). `GET /api/testinstanzen` mit
+`openUrl` bleibt: der Server liest es nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der
+`.testinstanz.token` der Instanz (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential
+und anonym enden vorher mit 401/403 und sehen nie ein Token.
 
 Danach schaltet der **Instanz-Chip** um, im selben Tab und ohne Token: der Live-Server hängt die
 laufenden Testinstanzen aus Worktrees seines eigenen Repos (`server.ts#instanceChipLinks`, dieselbe
@@ -118,9 +121,10 @@ Testinstanz, jedes e2e-Staging) listet keine Testinstanzen.
 
 Was die Snapshot-Instanz über sich selbst sagt (Owner-Befund 2026-10-06): die Kopie hat kein
 `.git`, ihr Boot-Head ist unlesbar — sie nennt sich in den Arbeitsorten deshalb nicht „Live“,
-sondern „Testinstanz“ mit dem vor dem Kopieren gemessenen Stand (`instance.source`, dieselben
-Worte wie das Band). Die eigene Kopie erscheint nicht als weiterer Arbeitsort. Helfer-Geräte
-fehlen nicht still: die Gruppe steht als „in der Testinstanz nicht gemeldet“. Eine Session, deren
+sondern „Testinstanz läuft“; der vor dem Kopieren gemessene Stand (`instance.source`, dieselben
+Worte wie das Band) steht im Titel der Zeile. Die eigene Kopie erscheint nicht als weiterer
+Arbeitsort. Helfer-Geräte fehlen nicht still: unter Geräte steht eine Zeile „Helfer · nicht
+angemeldet“, der Grund (die Kopie trägt keine Helfer über) beim Darüberfahren. Eine Session, deren
 Program-Bindung sich nicht lesen lässt, sagt unter Rechte „Im Snapshot nicht belegt“ statt
 „An keinen Auftrag, kein Program gebunden“ — eine unbekannte Bindung darf nirgends als „Keine"
 erscheinen.

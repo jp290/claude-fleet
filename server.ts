@@ -29660,7 +29660,10 @@ async function schedulePostLandAudit(repo: string, main: string, branch: string,
       result: "not-applicable", reason: "no audit command applies to this repo", cmd: "",
       exitCode: null, out: "", checks: null, covers: [{ branch, mainAfter, at }] };
     await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
-    lastPostLandAudit = row;
+    // NOT the board's audit: a repo without an audit command was never meant to be measured, so its
+    // row is neither a pass nor a non-measurement. Taking it here hid the newest real verdict of
+    // every OTHER repo behind an alarm "nothing was measured" (owner 2026-10-08, Info card). The
+    // trail keeps the row; the board keeps the newest verdict that measured or should have.
     return;
   }
   // the flag is written ONLY when the gate proved it, never as `proportional: false` — absence is
@@ -30370,8 +30373,41 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
 }
 // the compact projection the board polls (the full row, minus the byte-heavy suite output — that
 // lives on the trail at /api/post-land-audits)
-function postLandAuditSummary(): PostLandAuditInfo | null {
+// THE VERDICT RAIL FOR THE BOARD'S POLL: /api/sessions is polled every 2 s by every client, and a
+// non-green audit can stay the newest row for days — re-reading and parsing the whole ledger per poll
+// is the cost this route's budget forbids (see helperArtifactByRow). So the parsed map is kept and
+// read again only when the file's size or mtime moved. A read that fails is "no verdict" on the
+// board — the main poll never answers 500 for it — and says so in the log at most once a minute.
+let adjudicationPollCache: { key: string; map: Map<number, AuditAdjudication> } | null = null;
+let adjudicationPollErrAt = 0;
+const ADJUDICATION_POLL_ERR_MS = 60_000;
+async function adjudicationForPoll(auditAt: number): Promise<AuditAdjudication | undefined> {
+  try {
+    const st = await stat(AUDIT_ADJUDICATION_FILE).catch((e: unknown) =>
+      (e as NodeJS.ErrnoException)?.code === "ENOENT" ? null : Promise.reject(e));
+    if (!st) return undefined;
+    const key = `${st.mtimeMs}:${st.size}`;
+    if (adjudicationPollCache?.key !== key) adjudicationPollCache = { key, map: await adjudicationsByAudit() };
+    return adjudicationPollCache.map.get(auditAt);
+  } catch (error) {
+    if (Date.now() - adjudicationPollErrAt > ADJUDICATION_POLL_ERR_MS) {
+      adjudicationPollErrAt = Date.now();
+      console.error(`postLandAuditSummary: verdict rail unreadable, the board shows no verdict — ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return undefined;
+  }
+}
+async function postLandAuditSummary(): Promise<PostLandAuditInfo | null> {
   const r = lastPostLandAudit;
+  // WHO HAS IT (owner 2026-10-08: „[Zitat entfernt]“
+  // ): the two rails GET /api/post-land-audits already joins, projected for one row. The ping is
+  // in memory; the adjudication rail is read only for a non-green row (a green one needs no
+  // judgement) and only when its file changed (#adjudicationForPoll). The ping's `session` is NOT
+  // shipped — for an unbound slot it is built from the slot's self credential (backlogSessionKey) —
+  // only whether the session that received it is still the one in that slot.
+  const ping = r ? auditPings[String(r.at)] : undefined;
+  const pingSlot = ping?.slot !== undefined ? slots.find((x) => x.id === ping.slot) : undefined;
+  const adj = r && r.result !== "green" ? await adjudicationForPoll(r.at) : undefined;
   return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
     mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}),
     // …and which chain produced it, so the board's alarm cannot name a suite that never ran
@@ -30386,7 +30422,11 @@ function postLandAuditSummary(): PostLandAuditInfo | null {
     ...((): Record<string, unknown> => {
       const a = artifactViewFor(r.at);
       return a ? { artifact: a } : {};
-    })() } : null;
+    })(),
+    ...(ping ? { ping: { status: ping.status, ...(ping.slot !== undefined ? { slot: ping.slot } : {}),
+      ...(ping.deliveredAt !== undefined ? { deliveredAt: ping.deliveredAt } : {}),
+      ...(ping.status === "delivered" ? { sameSession: !!pingSlot?.cwd && backlogSessionKey(pingSlot) === ping.session } : {}) } } : {}),
+    ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: typeof adj.by === "string" ? adj.by : "rule" } } : {}) } : null;
 }
 // ...and the projection for the run that has NOT finished. Deliberately a SECOND carrier rather
 // than fields bolted onto the one above: `postLandAudit` is the newest RESULT and a reader may keep
@@ -41549,7 +41589,16 @@ for (const s of slots) {
 if (existsSync(POSTLAND_AUDIT_FILE)) {
   try {
     const lines = (await Bun.file(POSTLAND_AUDIT_FILE).text()).split("\n").filter(Boolean);
-    const last = lines[lines.length - 1];
+    // the newest row that measured or should have: a `not-applicable` row (a repo with no audit
+    // command) is skipped exactly as the live write skips it (runPostLandAudit), so a boot after
+    // a foreign repo's land does not hide claude-fleet's last verdict behind it
+    const notApplicable = (line: string): boolean => {
+      try { return (JSON.parse(line) as { result?: unknown } | null)?.result === "not-applicable"; }
+      catch { return false; } // an unreadable line is the case below names, not one to skip past
+    };
+    let i = lines.length - 1;
+    while (i >= 0 && notApplicable(lines[i])) i--;
+    const last = i >= 0 ? lines[i] : undefined;
     const row = last ? validAuditRow(JSON.parse(last)) : null;
     if (row) lastPostLandAudit = row;
     else if (last)
@@ -46592,7 +46641,7 @@ Bun.serve<WSData>({
         // verification tier 2: the newest post-land audit, or null when none has run (tier 2 off,
         // or no land since boot). Advisory FACT for the owner — it gates nothing; the client's job
         // is to make a `red`/`unknown` result impossible to miss and to name the land it followed.
-        postLandAudit: postLandAuditSummary(),
+        postLandAudit: await postLandAuditSummary(),
         // ...and tier 2 as it is RIGHT NOW: the run in flight (with the elapsed clock's origin and
         // the distribution to read it against) plus the lands still waiting for one. Null when the
         // machine is idle — "no audit is running" is drawn nowhere, exactly like a green result.

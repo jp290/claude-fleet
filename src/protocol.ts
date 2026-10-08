@@ -394,6 +394,15 @@ export interface PostLandAuditInfo {
   // proportional red is a failing pins run, not a failing `./e2e-isolated.sh`, and the difference
   // is the first thing the reader does next.
   proportional?: true;
+  // WHO HAS IT — the two rails GET /api/post-land-audits joins, projected for this one row
+  // (server.ts#postLandAuditSummary). `ping` is the delivery rail: `pending` = no session took it
+  // yet, `delivered` = typed into `slot` (`sameSession`: the session that got it still runs there),
+  // `program-inbox` = it sits in the owning Program's inbox and no pane was typed into,
+  // `adjudicated` = judged before it was delivered. `adjudication` is the newest judgement on the
+  // row. Both absent: nobody was told and nobody judged — which is what every unknown row is,
+  // since only a red is ever delivered. A status this client does not know reads as "not recorded".
+  ping?: { status: string; slot?: number; deliveredAt?: number; sameSession?: boolean };
+  adjudication?: { verdict: string; at: number; by: string };
 }
 
 // --- post-land audit: the run that has NOT finished ---------------------------------------------

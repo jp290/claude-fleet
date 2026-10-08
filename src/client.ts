@@ -2,8 +2,8 @@ import type { CodexFirstTurn } from "../server/conversation-read";
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setMeterOpen, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, applyOpt } from "./composer";
+import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -165,7 +165,7 @@ export let instanceLinks: InstanceLink[] = [];
 // `instanceLinks` because a test instance is not another computer — the "1/2" and the board's
 // "zählt hier nicht" line (src/board.ts) stay about computers.
 type SwitchLink = InstanceLink & { kind: "testinstanz" | "live" };
-let switchLinks: SwitchLink[] = [];
+export let switchLinks: SwitchLink[] = [];
 let instRendered = "";
 let instanceCodexCli: CodexCliSnapshot | null = null;
 let instanceObservedNow = 0;
@@ -194,6 +194,7 @@ const instOriginOf = (url: string): string => new URL(url).origin;
 // no setup path in the board yet, so it is not a button of its own). The menu adds one sentence.
 const MORE_HOSTS = "Claude Fleet kann mehrere Computer zugleich führen — jeder mit eigenen Sessions. "
   + "Verbunden werden sie über FLEET_INSTANCES.";
+const DEV_SIGNS_MAX = 5;
 function hostSign(name: IconName, text: string): HTMLElement[] {
   const ic = el("span", "tricon");
   ic.appendChild(icon(name));
@@ -235,7 +236,8 @@ function renderInstanceBand(source: InstanceSource | null) {
 // free names are a contract with the extracted-source fixture in e2e/tasks.ts (R3c), and an
 // omitted argument is the board without test instances it has always rendered
 function renderInstanceHead(switches: readonly SwitchLink[] = []) {
-  const key = JSON.stringify([instanceName, instanceLinks, switches, instanceCodexCli,
+  const signs = machineSigns();
+  const key = JSON.stringify([signs, instanceName, instanceLinks, switches, instanceCodexCli,
     Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
     instanceLinks.map((link) => codexCliUnknown(link.codexCli, instanceObservedNow))]);
   if (key === instRendered) return; // an open menu must survive the 2 s poll
@@ -251,12 +253,28 @@ function renderInstanceHead(switches: readonly SwitchLink[] = []) {
   // an unnamed single host shows only the screen and its "+": the title row has no room for a word
   const back = switches.some((l) => l.kind === "live");
   const tis = switches.filter((l) => l.kind === "testinstanz").length;
-  instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
+  // THE DEVICES AS INFO DRAWS THEM (owner 2026-10-08: „[Zitat entfernt]“
+  // ): one glyph per machine in
+  // its state's colour (src/board.ts#machineSigns), so the count of green ones IS the count of what
+  // answers. Until the Arbeitsorte were read once the chip keeps its screens and "1/2".
+  if (signs) {
+    const box = el("span", "devsigns");
+    for (const sg of signs.slice(0, DEV_SIGNS_MAX)) {
+      const d = el("span", "devsign");
+      d.dataset.tone = sg.tone;
+      d.appendChild(icon(sg.glyph));
+      box.appendChild(d);
+    }
+    if (signs.length > DEV_SIGNS_MAX) box.appendChild(el("span", "devcount", `+${signs.length - DEV_SIGNS_MAX}`));
+    instBtn.replaceChildren(box, ...(switches.length ? [el("span", "devcount", "⇄")] : []));
+  } else instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
     el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"),
     ...(switches.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
-  instBtn.title = n > 1
-    ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.`
-    : MORE_HOSTS;
+  const answering = signs ? signs.filter((sg) => sg.tone === "live" || sg.tone === "wait").length : 0;
+  instBtn.title = (signs ? `${answering} von ${signs.length} ${signs.length === 1 ? "Gerät antwortet" : "Geräten antworten"}: `
+      + `${signs.map((sg) => `${sg.name} ${sg.word}`).join(", ")}. ` : "")
+    + (n > 1 ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.` : MORE_HOSTS);
+  instBtn.setAttribute("aria-label", instBtn.title);
   if (switches.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
     : ` · Umschalter: ${tis} ${tis === 1 ? "Testinstanz" : "Testinstanzen"} dieser Maschine`;
   instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
@@ -700,17 +718,18 @@ export async function setSlotSetting(slot: number, field: "model" | "effort", va
   const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
   if (!rec.ok) {
     const why = ((await rec.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${rec.status}`;
-    return `record ✗ ${why} — pane not touched`;
+    return `Nicht umgestellt: ${why} — die Session läuft unverändert`;
   }
+  const what = field === "model" ? "Modell" : "Effort";
   if (!switchesInPane(harnessEntry(slot))) {
     const r = await post(`/api/slots/${slot}/restart`, {});
     const j = (await r.json().catch(() => null)) as { resumed?: boolean; error?: string } | null;
-    if (!r.ok) return `record ✓ · restart ✗ ${j?.error ?? `HTTP ${r.status}`} — the pane still runs the old ${field}`;
-    return `${field} ${value} — record ✓ · pane restarted${j?.resumed ? ", conversation resumed" : " FRESH (the conversation could not be resumed)"}`;
+    if (!r.ok) return `Vermerkt, aber der Neustart ging nicht: ${j?.error ?? `HTTP ${r.status}`} — sie läuft noch mit dem alten ${what}`;
+    return `${what} ${value} — neu gestartet${j?.resumed ? ", das Gespräch geht weiter" : ", FRISCH (das Gespräch ließ sich nicht fortsetzen)"}`;
   }
-  const cmd = paneCommand(harnessEntry(slot), field, value)!;
-  const paneOk = await deliver(slot, cmd);
-  return paneOk ? `${field} ${value} — record ✓ · pane ✓` : `record ✓ · pane ✗ — type ${cmd} yourself`;
+  const cmd = paneCommand(harnessEntry(slot), field, value);
+  const paneOk = cmd ? await deliver(slot, cmd) : false;
+  return paneOk ? `${what} ${value} — umgestellt` : `Vermerkt, aber nicht in der Session angekommen — tippe ${cmd ?? `/${field}`} dort selbst`;
 }
 
 export let autosList: AutoInfo[] = [];
@@ -995,7 +1014,8 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
   }
   if (kind === "lane") {
     const s = fleet.find((x) => `${x.id}${x.worktree?.letter ?? ""}` === id);
-    return s ? { meta: `lane ${id} · slot ${s.id}`, title: s.worktree?.branch ?? "lane",
+    const band = s ? laneBandNames(stacksOf()).get(s.id) : undefined;
+    return s ? { meta: band ? `Lane ${band} · Slot ${s.id}` : `lane ${id} · slot ${s.id}`, title: s.worktree?.branch ?? "lane",
       lines: [s.cwd ? "running" : "not occupying slot", ...(s.programId ? [`program ${s.programId}`] : []),
         ...(s.taskId ? [`task ${s.taskId}`] : []), ...(s.awaiting ? [`awaiting ${s.awaiting}`] : [])] } : null;
   }
@@ -1021,13 +1041,16 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
   if (!sl.cwd) return { meta: `slot ${sl.id} · free`, title: "no session in this slot", lines: [] };
   const task = tasksList.find((t) => t.slot === sl.id && t.status === "sent");
   const taskLine = task ? `task ${task.id}${taskText.has(task.id) ? ` · ${qFirstLine(taskText.get(task.id) ?? "")}` : ""}` : "";
+  // THE BOARD'S NAME FIRST (owner 2026-10-08: „[Zitat entfernt]“ was a name the board never shows — it calls
+  // a lane by its band, "4A", and slot numbers above 16 by that band): "Lane 4A · Slot 26"
+  const band = sl.worktree ? laneBandNames(stacksOf()).get(sl.id) : undefined;
   return {
-    meta: [`slot ${sl.id}`, sl.worktree ? "lane" : "session", sl.ctx ? `ctx ${Math.round(sl.ctx.pct)}%` : ""].filter(Boolean).join(" · "),
+    meta: [band ? `Lane ${band}` : "", band ? `Slot ${sl.id}` : `slot ${sl.id}`, band ? "" : sl.worktree ? "lane" : "session",
+      sl.ctx ? `ctx ${Math.round(sl.ctx.pct)}%` : ""].filter(Boolean).join(" · "),
     title: sl.label || sl.cwd.split("/").filter(Boolean).pop() || sl.cwd,
     lines: [
       [sl.harness ?? "claude", sl.model, sl.effort].filter(Boolean).join(" · "),
       sl.worktree ? `branch ${sl.worktree.branch}` : sl.cwd,
-      ...(sl.worktree?.letter ? [`lane ${sl.id}${sl.worktree.letter}`] : []),
       ...(sl.programId ? [`program ${sl.programId}`] : []),
       ...(sl.awaiting ? [`awaiting ${sl.awaiting}`] : []),
       ...(taskLine ? [taskLine] : []),
@@ -1353,6 +1376,11 @@ class Pane {
   private readonly findBar: HTMLElement;
   private readonly findInput: HTMLInputElement;
   private readonly findCount: HTMLElement;
+  // the conversation's own search (card "Insel C": Suchen in beiden Ansichten): the hits as DOM
+  // ranges over the chat's text, the current one, painted through the CSS highlight registry where
+  // the engine has one and as the selection where it does not
+  private chatHits: Range[] = [];
+  private chatHit = -1;
   private pressTimer: ReturnType<typeof setTimeout> | undefined;
   private pressAt: { x: number; y: number } | null = null;
   private pressFired = false;
@@ -1412,7 +1440,13 @@ class Pane {
     this.boardBtn.style.display = "none";
     this.boardBtn.classList.toggle("active", boardOpen);
     // board toggle describes the FOCUSED session, and clicking a pane focuses it first (root mousedown)
-    this.boardBtn.onclick = (e) => { e.stopPropagation(); focusPane(this.index); setBoard(!boardOpen); };
+    // opening moves the focus onto the ℹ in the column's head (it stands back here while open)
+    this.boardBtn.onclick = (e) => {
+      e.stopPropagation();
+      focusPane(this.index);
+      setBoard(!boardOpen);
+      if (boardOpen && !isMobile()) document.getElementById("boardclose")?.focus({ preventScroll: true });
+    };
     this.viewBtn = el("button", "viewtoggle") as HTMLButtonElement;
     this.viewBtn.appendChild(icon("chat"));
     this.viewBtn.title = "Konversation anzeigen";
@@ -1732,7 +1766,7 @@ class Pane {
       if (this.perfChatLoaded) { perfFinish(this.perfChat, true); this.perfChat = null; }
     }
     if (v === "term") { perfFinish(this.perfChat, false); this.perfChat = null; }
-    if (v !== "term") this.closeSearch();
+    if (v !== this.view) this.closeSearch();
     // the terminal view hides the chat (display:none) and a hidden element has no scroll position:
     // read it on the way out, restore it on the way back (applyChatMemo below)
     if (this.view === "chat" && v !== "chat") this.chatMemo ??= this.chatPosition();
@@ -2565,11 +2599,17 @@ class Pane {
     this.refit();
   }
 
+  // the same bar in both views: over the terminal it searches the scrollback (the addon), over the
+  // conversation the transcript as it stands in the page (findChat)
   openSearch(): void {
-    if (this.view !== "term") return;
+    if (this.view !== "term" && this.view !== "chat") return;
+    const chat = this.view === "chat";
+    this.findInput.placeholder = chat ? "Im Gespräch suchen" : "Im Verlauf suchen";
+    this.findInput.setAttribute("aria-label", chat ? "Im Gespräch suchen" : "Im Terminalverlauf suchen");
     this.findBar.classList.add("open");
     this.findInput.focus();
     this.findInput.select();
+    if (this.findInput.value) this.findStep(-1);
   }
 
   closeSearch(): void {
@@ -2577,6 +2617,7 @@ class Pane {
     this.findBar.classList.remove("open");
     this.search.clearDecorations();
     this.term.clearSelection();
+    this.clearChatHits();
     this.findCount.textContent = "";
     if (this.view === "term" && !isMobile()) this.term.focus();
   }
@@ -2584,9 +2625,67 @@ class Pane {
   // -1 = the older hit (upward, where the search starts from the end), 1 = the newer one
   private findStep(dir: -1 | 1): void {
     const q = this.findInput.value;
+    if (this.view === "chat") { this.findChat(q, dir); return; }
     if (!q) { this.search.clearDecorations(); this.term.clearSelection(); this.findCount.textContent = ""; return; }
     if (dir < 0) this.search.findPrevious(q, { decorations: findMarks() });
     else this.search.findNext(q, { decorations: findMarks() });
+  }
+
+  // THE CONVERSATION'S SEARCH: every hit of `q` (case folded) in the chat's text nodes, newest
+  // last; a new query starts at the newest hit, as the terminal's does, and Enter walks older
+  private findChat(q: string, dir: -1 | 1): void {
+    // a conversation drawn again since the last search left its ranges on detached nodes: that is a
+    // new search too, or Enter walks the rects of nothing (review 2026-10-08)
+    const fresh = q !== this.chatQuery || this.chatHits.some((r) => !r.startContainer.isConnected);
+    this.chatQuery = q;
+    if (fresh) {
+      this.clearChatHits();
+      if (!q) { this.findCount.textContent = ""; return; }
+      const needle = q.toLocaleLowerCase();
+      const walk = document.createTreeWalker(this.chatEl, NodeFilter.SHOW_TEXT);
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const text = (n.textContent ?? "").toLocaleLowerCase();
+        for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + needle.length)) {
+          const r = document.createRange();
+          r.setStart(n, i);
+          r.setEnd(n, i + needle.length);
+          this.chatHits.push(r);
+        }
+      }
+      this.chatHit = this.chatHits.length;
+    }
+    const n = this.chatHits.length;
+    if (!n) { this.paintFindCount(-1, 0); return; }
+    this.chatHit = ((fresh ? this.chatHit - 1 : this.chatHit + dir) + n) % n;
+    const cur = this.chatHits[this.chatHit];
+    const reg = "highlights" in CSS ? CSS.highlights : undefined;
+    if (reg && typeof Highlight === "function") {
+      // one add() per hit, never a spread: a one-letter query in a long conversation has more hits
+      // than an engine takes arguments (JSC ~65k), and the input handler would throw
+      const all = new Highlight();
+      for (const r of this.chatHits) all.add(r);
+      reg.set("fleetfind", all);
+      reg.set("fleetfindcur", new Highlight(cur));
+    } else {
+      const sel = getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(cur);
+    }
+    const box = cur.getBoundingClientRect(), view = this.chatEl.getBoundingClientRect();
+    if (box.top < view.top + view.height * 0.2 || box.bottom > view.bottom - view.height * 0.2) {
+      this.chatStuck = false;
+      this.chatEl.scrollTop += box.top - view.top - view.height / 3;
+    }
+    this.paintFindCount(this.chatHit, n);
+  }
+  private chatQuery = "";
+  private clearChatHits(): void {
+    this.chatHits = [];
+    this.chatHit = -1;
+    this.chatQuery = "";
+    const reg = "highlights" in CSS ? CSS.highlights : undefined;
+    reg?.delete("fleetfind");
+    reg?.delete("fleetfindcur");
   }
 
   private paintFindCount(index: number, count: number): void {
@@ -2881,13 +2980,11 @@ const PREF_APPLY: Record<string, () => void> = {
   "fleet.board": () => setBoard(prefBool("fleet.board")),
   "fleet.sidecollapsed": () => setCollapsed(prefBool("fleet.sidecollapsed")),
   "fleet.termlimit": () => setTermLimit(prefBool("fleet.termlimit")),
-  "fleet.meter.open": () => { setMeterOpen(prefBool("fleet.meter.open")); renderSuiteMeter(); },
   "fleet.more": () => { moreOpen = prefBool("fleet.more"); applyMore(); },
   "fleet.histall": () => { histAll = prefBool("fleet.histall"); if (hist.style.display === "flex") void renderHist(); },
   "fleet.bandDepth": () => renderSlots(),
   "fleet.queue.scope": () => { setQueueTreeOn(prefText("fleet.queue.scope") !== "line"); if (qShell?.isOpen()) { invalidateQueueList(); renderQueue(); } },
   "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
-  "fleet.ranke.mode": () => reloadRankePrefs(),
   "fleet.ranke.repos": () => reloadRankePrefs(),
   "fleet.stacks.closed": () => { stackClosed.clear(); renderSlots(); },
   "fleet.plaudit.ack": () => renderPostLandAudit(),
@@ -5041,33 +5138,29 @@ mreadWrite.onclick = () => {
 // block; docs/design/mobil-insel-notiz.md §1b/§1c). The TOP island is glass (card "Die Insel auf
 // dem Telefon wird nach dem freigegebenen Entwurf gebaut", docs/design/insel-glas-notiz.md): closed
 // a 28-px pill with the state shape and the name — a band that runs when the name overflows —,
-// open two rows of icon buttons (to act). A tap on the pill or its 44-px rim opens it; a tap on
-// the name, on its free glass or anywhere outside closes it, and so does every action in it. A
-// swipe on it opens a SIDE — to the right Sessions from the left, to the left Info from the right —
-// and never another session (islandRelease); ← / → on the focused island do the same, Escape
-// closes. It invents no way of its own: each button hands over to the control the board already
-// has — the focused pane's ℹ, view toggle, ↻, ↑ ↓ and search, the tray's History and Schedule —
-// and Sessions and ⋯ open the two sheets below (openSheet). Body classes only; the CSS decides
-// that they mean anything (portrait).
+// open the strip C of Konzept 2 (owner's pick 2026-10-07): dot and name left, four symbols right
+// with no word under them — the view it switches to, Suchen (in both views), Modell und Effort as a
+// popover at its button, Mehr (the sheet) —, under it the word buttons Sessions and Info and one
+// small card: what the session does now, and where it works when that is known. A symbol's word is
+// its aria-label and shows while a finger holds it (holdWord). A tap on the pill or its 44-px rim
+// opens it; a tap on the name, on its free glass or anywhere outside closes it, and so does every
+// action in it but Modell und Effort, whose popover stays until Übernehmen. A swipe on it opens a
+// SIDE — to the right Sessions from the left, to the left Info from the right — and never another
+// session (islandRelease); ← / → on the focused island do the same, Escape closes. It invents no way
+// of its own: each button hands over to the control the board already has — the focused pane's ℹ,
+// view toggle and search, the composer's model and effort switches — and Sessions and Mehr open the
+// two sheets below (openSheet). Body classes only; the CSS decides that they mean anything (portrait).
 const portrait = () => isMobile() && !LANDSCAPE_MQ.matches;
 const mTop = $("mtop"), mPill = $("mpill") as HTMLButtonElement, mName = $("mname") as HTMLButtonElement;
 const mSlot = $("mslot") as HTMLButtonElement, mInfo = $("minfo") as HTMLButtonElement, mView = $("mview") as HTMLButtonElement;
 const mMore = $("mmore") as HTMLButtonElement, mGrip = $("mgrip") as HTMLButtonElement;
-// the terminal search on a phone (card 746e381b): ⌘/Ctrl+F needs a hardware keyboard, so the open
-// island carries it — a pane action outside the terminal text (G6.4), terminal view only. It opens
-// the bar Pane#openSearch opens; the search itself is unchanged.
-const mFind = $("mfind") as HTMLButtonElement;
-const mReload = $("mreload") as HTMLButtonElement, mUp = $("mup") as HTMLButtonElement, mDown = $("mdown") as HTMLButtonElement;
-const mHist = $("mhist") as HTMLButtonElement, mAuto = $("mauto") as HTMLButtonElement, mTools = $("mtools");
-mSlot.appendChild(icon("menu"));
-mInfo.appendChild(icon("info"));
+const mFind = $("mfind") as HTMLButtonElement, mDirect = $("mdirect") as HTMLButtonElement;
+const mDirPop = $("mdirpop"), mHold = $("mhold"), mNowLine = $("mnowl");
 mFind.appendChild(icon("search"));
-mReload.appendChild(icon("reload"));
-mUp.appendChild(icon("up"));
-mDown.appendChild(icon("down"));
-mHist.appendChild(icon("history"));
-mAuto.appendChild(icon("clock"));
+mDirect.appendChild(icon("regler"));
 mMore.appendChild(icon("dots"));
+mSlot.append(icon("chevron"), el("span", "", "Sessions"));
+mInfo.append(el("span", "", "Info"), icon("chevron"));
 // the pill's name sits in a band track; a second copy joins it only while it runs (fitPill)
 const mBand = el("span", "mband"), mSpur = el("span", "mspur");
 mBand.setAttribute("aria-hidden", "true");
@@ -5152,32 +5245,39 @@ function setIsland(open: boolean): void {
   const body = document.body;
   body.classList.toggle("mopen", open);
   mPill.setAttribute("aria-expanded", String(open));
-  if (!open) { body.classList.remove("mda"); return; }
+  if (!open) { body.classList.remove("mda"); setDirect(false); holdEnd(); return; }
   renderIsland();
   // the contents spring in from the next frame on — in the frame that opens they have no start
   if (chatStill.matches) body.classList.add("mda");
   else requestAnimationFrame(() => requestAnimationFrame(() => { if (body.classList.contains("mopen")) body.classList.add("mda"); }));
+}
+// WHAT THE SESSION DOES NOW, as the open island says it in one line (Konzept 1 §2, "Jetzt"): from the
+// states the board already reads — the drawer's (slotState) and the row's awaiting —, nothing
+// guessed. A session the pane does not show yet has no line.
+export function nowSentence(s: SlotInfo | undefined): { text: string; owner: boolean } | null {
+  if (!s?.cwd) return null;
+  if (s.awaiting === "owner") return { text: "Wartet auf dich", owner: true };
+  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return { text: "Hängt — die Session antwortet nicht", owner: false };
+  if (s.awaiting === "main") return { text: "Wartet auf ihre MAIN", owner: false };
+  if (sessionActive(s.id)) return { text: "Arbeitet gerade", owner: false };
+  const quiet = s.lastOutput > 0 ? Date.now() - s.lastOutput : 0;
+  if (quiet >= 60_000) return { text: `Still seit ${agoDe(quiet).replace(/^vor /, "")}`, owner: false };
+  return { text: "Still", owner: false };
 }
 let islandKey = "";
 function renderIsland(): void {
   const pane = panes[focused];
   const slot = pane?.slot ?? 0;
   const s = slot ? fleet.find((x) => x.id === slot) : undefined;
-  const name = mtitle.textContent ?? "";
+  const name = s?.cwd ? nameWithoutModel(s) : mtitle.textContent ?? "";
   // the drawer's own reading of the row (slotState: the shape, STATE_WORD: its word)
   const state = s?.cwd ? slotState(s, serverNow, panes.some((p) => p.slot === s.id)) : null;
-  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
-  const addr = !slot ? "—" : lane ?? String(slot);
-  // model · effort as the composer's switches read them (src/running.ts), display only
-  const model = s?.cwd ? runningModel(s.model, pane?.observedModel) : "";
-  const effort = s?.cwd ? runningEffort(s.effort, pane?.observedEffort) : "";
-  const meta = [model ? modelLabel(model).split(" · ")[0] : "", effort].filter(Boolean).join(" · ");
-  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle"), reload = paneControl("panereload");
-  const jumps = !!paneControl("promptnav.up") && !!paneControl("promptnav.dn");
-  const chat = !!pane?.isChat, more = document.body.classList.contains("keyboard-options");
+  const now = nowSentence(s);
+  const view = paneControl("viewtoggle"), info = paneControl("boardtoggle");
+  const chat = !!pane?.isChat;
   // the pill's type follows Aa up to 15 px, so its measured width does too
   const fs = portrait() ? getComputedStyle(mPill).fontSize : "";
-  const key = [name, state, addr, meta, !!view, chat, !!info, !!reload, jumps, more, slot, fs].join("|");
+  const key = [name, state, now?.text ?? "", now?.owner ?? "", !!view, chat, !!info, slot, fs].join("|");
   if (key === islandKey) return;
   islandKey = key;
   const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
@@ -5185,25 +5285,29 @@ function renderIsland(): void {
   mPill.replaceChildren(...(state ? [dot()] : []), mBand);
   mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
   mTop.setAttribute("aria-label", `Session ${name}`);
-  mSlot.setAttribute("aria-label", `Sessions öffnen — gerade ${addr} ${name}`);
-  mSlot.title = "Sessions öffnen — wechseln, starten, Tasks";
   const line1 = el("span", "ml1");
   line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
-  mName.replaceChildren(line1, el("span", "mrp", meta));
-  // the view button shows where it goes: the keyboard to the terminal, the bubble to the conversation
+  mName.replaceChildren(line1);
+  // the view button shows where it goes: the terminal glyph to the terminal, the bubble to the
+  // conversation — and so does its word
   mView.hidden = !view;
-  mView.replaceChildren(icon(chat ? "keys" : "chat"));
-  const viewWord = chat ? "Terminal anzeigen" : "Konversation anzeigen";
+  mView.replaceChildren(icon(chat ? "terminal" : "chat"));
+  const viewWord = chat ? "Terminal" : "Gespräch";
   mView.setAttribute("aria-label", viewWord);
   mView.title = viewWord;
-  mFind.hidden = !slot || chat;
-  mReload.hidden = chat || !reload;
-  mUp.hidden = mDown.hidden = !chat || !jumps;
+  mFind.hidden = !slot || !view;
+  mDirect.hidden = !slot || !s?.cwd;
+  mSlot.setAttribute("aria-label", "Sessions");
+  mSlot.title = "Sessions";
+  mInfo.setAttribute("aria-label", "Info");
+  mInfo.title = "Info";
   mInfo.hidden = !info;
-  mMore.setAttribute("aria-expanded", String(more));
+  mNowLine.textContent = now?.text ?? "";
+  mNowLine.classList.toggle("owner", !!now?.owner);
   // the stagger counts what is drawn, so the springs follow each other with no gap
   let i = 0;
-  for (const e of [mSlot, mName, mInfo, ...mTools.children] as HTMLElement[]) if (!e.hidden) e.style.setProperty("--i", String(i++));
+  for (const e of [mName, mView, mFind, mDirect, mMore, ...$("mbelow").children] as HTMLElement[]) if (!e.hidden) e.style.setProperty("--i", String(i++));
+  if (directOpen) renderDirect();
   fitPill();
 }
 MOBILE_MQ.addEventListener("change", () => { islandKey = ""; renderIsland(); });
@@ -5212,7 +5316,7 @@ MOBILE_MQ.addEventListener("change", () => { islandKey = ""; renderIsland(); });
 // leaving would fold them away again (sync)
 mTop.addEventListener("pointerdown", (e) => {
   const b = (e.target as Element).closest("button");
-  if (!b || b === mPill || b === mName || b === mMore) e.preventDefault();
+  if (!b || b === mPill || b === mName || b.classList.contains("mib")) e.preventDefault();
 });
 mName.onclick = () => setIsland(false);
 mTop.addEventListener("click", (e) => {
@@ -5220,6 +5324,7 @@ mTop.addEventListener("click", (e) => {
   if (!(e.target as Element).isConnected) return;
   const b = (e.target as Element).closest("button");
   if (!document.body.classList.contains("mopen")) { if (!b || b === mPill) setIsland(true); return; }
+  if (mDirPop.contains(e.target as Node)) return; // the popover's own glass decides nothing
   if (!b) setIsland(false); // the free glass, the rim
 });
 const islandAction = (run: () => void) => () => { setIsland(false); run(); };
@@ -5227,12 +5332,100 @@ mSlot.onclick = islandAction(() => sideTo("sessions", 1));
 mInfo.onclick = islandAction(() => sideTo("info", 1));
 mView.onclick = islandAction(() => paneControl("viewtoggle")?.click());
 mFind.onclick = islandAction(() => panes[focused]?.openSearch());
-mReload.onclick = islandAction(() => paneControl("panereload")?.click());
-mUp.onclick = islandAction(() => paneControl("promptnav.up")?.click());
-mDown.onclick = islandAction(() => paneControl("promptnav.dn")?.click());
-mHist.onclick = islandAction(() => $("histbtn").click());
-mAuto.onclick = islandAction(() => $("autobtn").click());
 mMore.onclick = islandAction(() => openSheet("tools"));
+mDirect.onclick = () => setDirect(!directOpen);
+
+// MODELL UND EFFORT (the owner's „[Zitat entfernt]“, 2026-10-07): the composer's two switches
+// as segments in a popover at the button, ONE Übernehmen. It is the switches' own mechanism
+// (src/composer.ts#optChoices, #stageOpt, #applyOpt) — a press only marks a pick, Übernehmen hands
+// the ONE marked pick to the switch's own Apply, which asks and answers as it does at the desk.
+// One pick at a time: marking a model forgets a marked effort and the other way round, so the one
+// button never has to say which of two changes it would make. The switches are drawn in either
+// view while the popover is open (setOptsAnywhere): Apply lives in them.
+let directOpen = false;
+// the effort levels in words; a level this client does not know stands as the harness names it
+const EFFORT_WORD: Record<string, string> = { minimal: "minimal", low: "niedrig", medium: "mittel", high: "hoch", xhigh: "sehr hoch", max: "maximal" };
+function setDirect(open: boolean): void {
+  if (open === directOpen) return;
+  directOpen = open;
+  mDirect.setAttribute("aria-expanded", String(open));
+  mDirPop.hidden = !open;
+  setOptsAnywhere(open);
+  if (open) renderDirect();
+  else mDirPop.replaceChildren();
+}
+function renderDirect(): void {
+  const choices = optChoices();
+  const parts: HTMLElement[] = [];
+  for (const c of choices) {
+    const word = c.field === "model" ? "Modell" : "Effort";
+    parts.push(el("div", "mdsec", word));
+    const segs = el("div", "mshsegs");
+    segs.setAttribute("role", "group");
+    segs.setAttribute("aria-label", word);
+    segs.dataset.field = c.field;
+    for (const o of c.values) {
+      const b = el("button", "", c.field === "effort" ? EFFORT_WORD[o.v] ?? o.label : o.label) as HTMLButtonElement;
+      b.type = "button";
+      b.title = o.title;
+      b.dataset.v = o.v;
+      b.setAttribute("aria-pressed", String(o.v === c.current));
+      b.classList.toggle("staged", o.v === c.staged && o.v !== c.current);
+      b.onclick = () => {
+        const other = c.field === "model" ? "effort" : "model";
+        if (choices.some((x) => x.field === other && x.staged !== null)) unstageOpt(other);
+        stageOpt(c.field, o.v);
+        renderDirect();
+      };
+      segs.appendChild(b);
+    }
+    parts.push(segs);
+  }
+  const staged = choices.find((c) => c.staged && c.staged !== c.current);
+  if (choices.length) {
+    const apply = el("button", "mdapply", "Übernehmen") as HTMLButtonElement;
+    apply.type = "button";
+    apply.disabled = !staged;
+    apply.title = staged ? `${staged.field === "model" ? "Modell" : "Effort"} dieser Session umstellen — fragt wie der Schalter am Feld` : "Erst eine andere Wahl antippen";
+    apply.onclick = () => {
+      if (!staged) return;
+      applyOpt(staged.field); // first: the switch's popover it opens keeps the switches drawn
+      setIsland(false);
+    };
+    parts.push(apply);
+  } else parts.push(el("div", "mdnone", "Diese Session lässt Modell und Effort hier nicht umstellen."));
+  mDirPop.replaceChildren(...parts);
+}
+
+// THE HELD WORD (Konzept 2 §1, Blatt 17): a finger that rests 300 ms on a symbol of the strip sees
+// its word in a capsule under it; letting go there presses it, moving away cancels (the swipe's
+// own axis lock decides "away" — islandRelease). A mouse or VoiceOver reads the same word from
+// title and aria-label.
+const HOLD_MS = 300;
+let holdTimer: ReturnType<typeof setTimeout> | undefined, holdOn: HTMLButtonElement | null = null;
+function holdStart(b: HTMLButtonElement): void {
+  holdEnd();
+  holdTimer = setTimeout(() => {
+    const word = b.getAttribute("aria-label") ?? "";
+    if (!word || !b.isConnected) return;
+    holdOn = b;
+    const r = b.getBoundingClientRect(), t = mTop.getBoundingClientRect();
+    mHold.textContent = word;
+    mTop.style.setProperty("--mhx", `${Math.round(r.left + r.width / 2 - t.left)}px`);
+    mTop.classList.add("mholding");
+  }, HOLD_MS);
+}
+function holdEnd(): void {
+  clearTimeout(holdTimer);
+  holdTimer = undefined;
+  holdOn = null;
+  mTop.classList.remove("mholding");
+}
+mTop.addEventListener("pointerdown", (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>("#mtools .mib");
+  if (b && e.button <= 0 && document.body.classList.contains("mopen")) holdStart(b);
+});
+
 // a tap outside closes the open island (upright only)
 document.addEventListener("pointerdown", (e) => {
   const t = e.target as Element | null;
@@ -5334,6 +5527,7 @@ mTop.addEventListener("pointermove", (e) => {
   if (!d.axis && Math.hypot(dx, dy) >= SWIPE.lock) {
     d.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     mTop.classList.remove("mpress");
+    holdEnd(); // moving away from a held symbol cancels it
     if (d.axis === "x") {
       document.body.classList.add("mdrag");
       try { mTop.setPointerCapture(e.pointerId); } catch { /* the pointer is gone already */ }
@@ -5361,6 +5555,8 @@ function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, la
   clearTimeout(cancelTimer);
   pendingCancel = null;
   mTop.classList.remove("mpress");
+  const held = holdOn; // a symbol whose word showed: letting go on it presses it
+  holdEnd();
   document.body.classList.remove("mdrag");
   const x = last ? d.x : e.clientX, y = last ? d.y : e.clientY;
   const dx = x - d.x0, dy = y - d.y0, ms = e.timeStamp - d.t0;
@@ -5376,7 +5572,8 @@ function islandRelease(e: PointerEvent, cancelled: boolean, id = e.pointerId, la
     // went down on — its button, else the island itself (the pill's rim opens, free glass closes)
     swallowUntil = performance.now() + 400;
     swallowAt = { x, y };
-    if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && ms < SWIPE.tapMs && d.at.isConnected)
+    if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && held?.isConnected) held.click();
+    else if (!cancelled && !d.axis && Math.hypot(dx, dy) < SWIPE.tapPx && ms < SWIPE.tapMs && d.at.isConnected)
       (d.at.closest<HTMLButtonElement>("#mtop button") ?? mTop).click();
     return;
   }
@@ -5513,7 +5710,7 @@ function sheetSessions(): ActiveSlot[] {
 }
 // the drawer's head row in words (#sidetools; HEAD_BTNS holds the same buttons as glyphs)
 const SHEET_TOOLS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
-  { id: "queuebtn", icon: "list", word: "Tasks" },
+  { id: "queuebtn", icon: "list", word: "Aufträge" },
   { id: "attnbtn", icon: "megaphone", word: "Für dich" },
   { id: "opsbtn", icon: "inbox", word: "Eingang" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
@@ -5524,11 +5721,11 @@ const SHEET_TOOLS: ReadonlyArray<{ id: string; icon: IconName; word: string }> =
 function sessionsSheet(): HTMLElement[] {
   const refs = laneBandNames(stacksOf());
   const rows = sheetSessions();
-  const waiting = rows.filter((s) => s.awaiting === "owner").length;
   const head = el("div", "mshhead");
   const title = el("b", "", "Sessions");
   title.id = "msheettitle";
-  head.append(title, el("span", "mshsub", `${rows.length} offen${waiting ? ` · ${waiting} ${waiting === 1 ? "wartet" : "warten"} auf dich` : ""}`));
+  // no waiting count: each row that waits says so itself, on the same sheet
+  head.append(title, el("span", "mshsub", `${rows.length} offen`));
   // the head row's buttons in words, breaking into a second line on a narrow phone (never scrolling
   // a word off the edge); each one shows when its source shows
   const tray = el("div", "mshtray");
@@ -5598,58 +5795,33 @@ function sessionsSheet(): HTMLElement[] {
   list.appendChild(neu);
   return [head, tray, list];
 }
+// MEHR (Konzept 2 §3): what this session and this device have beyond the strip's four — the
+// Wecker among them (owner 2026-10-07: not in the menu); Modell und Effort live at their own
+// button on the strip, so they are not here a second time
 function toolsSheet(): HTMLElement[] {
   const pane = panes[focused];
   const slot = pane?.slot ?? 0;
   const s = slot ? fleet.find((x) => x.id === slot) : undefined;
-  const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
   const head = el("div", "mshhead");
-  const title = el("b", "", mtitle.textContent ?? "");
+  const title = el("b", "", s?.cwd ? nameWithoutModel(s) : mtitle.textContent ?? "");
   title.id = "msheettitle";
-  head.append(el("span", "maddr", !slot ? "—" : lane ?? String(slot)), title);
+  head.append(title);
   const body = el("div", "mshbody");
   const sec = (word: string) => body.appendChild(el("div", "mshsec", word));
   const corner = (sel: string) => pane?.root.querySelector<HTMLButtonElement>(`.panetools ${sel}`) ?? null;
-  // model and effort as segments — where the composer has its switches (the conversation, or a
-  // harness without one); a press marks a pick, Übernehmen hands it to the switch's own Apply
-  for (const c of optChoices()) {
-    sec(c.field === "model" ? "Modell" : "Effort");
-    const row = el("div", "mshseg");
-    row.dataset.field = c.field;
-    const segs = el("div", "mshsegs");
-    segs.setAttribute("role", "group");
-    segs.setAttribute("aria-label", c.field === "model" ? "Modell" : "Effort");
-    for (const o of c.values) {
-      const b = el("button", "", o.label) as HTMLButtonElement;
-      b.type = "button";
-      b.title = o.title;
-      b.dataset.v = o.v;
-      b.setAttribute("aria-pressed", String(o.v === c.current));
-      b.classList.toggle("staged", o.v === c.staged && o.v !== c.current);
-      b.onclick = () => { stageOpt(c.field, o.v); renderSheet(); };
-      segs.appendChild(b);
-    }
-    const apply = el("button", "mshapply", "Übernehmen") as HTMLButtonElement;
-    apply.type = "button";
-    apply.disabled = !c.staged || c.staged === c.current;
-    apply.title = "Die vorgemerkte Wahl übernehmen — fragt wie der Schalter am Feld";
-    apply.onclick = () => { closeSheet(); applyOpt(c.field); };
-    row.append(segs, apply);
-    body.appendChild(row);
-  }
   sec("Diese Session");
-  body.appendChild(sheetRow("mshrow", "history", "History", () => $("histbtn").click()));
-  body.appendChild(sheetRow("mshrow", "clock", "Schedule", () => $("autobtn").click()));
+  body.appendChild(sheetRow("mshrow", "clock", "Wecker", () => $("autobtn").click()));
+  body.appendChild(sheetRow("mshrow", "history", "Frühere Nachrichten", () => $("histbtn").click()));
   // Live is a touch affordance (index.html: #comptray > #live under any-pointer: coarse only)
-  if (getComputedStyle(live).display !== "none") body.appendChild(sheetRow("mshrow", "keys", "Live", () => live.click(), liveOn ? "an" : "aus"));
+  if (getComputedStyle(live).display !== "none") body.appendChild(sheetRow("mshrow", "keys", "Direkt ins Terminal tippen", () => live.click(), liveOn ? "an" : "aus"));
   const up = corner(".promptnav.up"), dn = corner(".promptnav.dn");
   if (pane?.isChat && up && dn) {
     const pair = el("div", "mshpair");
-    pair.append(sheetRow("mshrow", "up", "Voriger Prompt", () => up.click()), sheetRow("mshrow", "down", "Nächster Prompt", () => dn.click()));
+    pair.append(sheetRow("mshrow", "up", "Vorige Nachricht", () => up.click()), sheetRow("mshrow", "down", "Nächste Nachricht", () => dn.click()));
     body.appendChild(pair);
   }
   const hover = corner(".panehover");
-  if (slot && hover) body.appendChild(sheetRow("mshrow", "search", "Referenzen erklären", () => hover.click(), hover.getAttribute("aria-pressed") === "true" ? "an" : "aus"));
+  if (slot && hover) body.appendChild(sheetRow("mshrow", "search", "Verweise erklären", () => hover.click(), hover.getAttribute("aria-pressed") === "true" ? "an" : "aus"));
   const reload = corner(".panereload");
   if (pane && !pane.isChat && reload && reload.style.display !== "none") body.appendChild(sheetRow("mshrow", "reload", "Neu verbinden", () => reload.click()));
   // the harness's sendable commands (the composer's ⌘ switch) — today's ⋯ reached them too
@@ -11265,64 +11437,10 @@ dropFile.addEventListener("change", () => {
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 initBoard();
-// Every test instance of this machine (GET /api/testinstanzen, owner route): `openUrl` carries the
-// instance's token, so the owner opens one from ANOTHER device without a shell on this one.
-type TestinstanzRow = { worktree: string; port: number; state: string; expiresAt: number | null; openUrl?: string };
-let testinstanzMachine: TestinstanzRow[] | null = null;
-let testinstanzMachineReadAt = 0;
-let testinstanzMachinePending = false;
-let testinstanzMachineError = "";
-
-function paintTestinstanzMachine(card: HTMLElement): void {
-  if (testinstanzMachine?.length) {
-    card.appendChild(el("div", "hint", "Alle Testinstanzen dieser Maschine"));
-    for (const row of testinstanzMachine) {
-      const line = el("div", "bbtnrow");
-      const name = row.worktree.split("/").filter(Boolean).at(-1) ?? row.worktree;
-      line.appendChild(el("span", "hint", `${name} · Port ${row.port} · ${row.state === "up" ? "läuft" : "aus"}`
-        + (row.expiresAt ? ` · bis ${new Date(row.expiresAt).toLocaleString()}` : "")));
-      if (row.openUrl) {
-        const link = el("a", "bbtn", "öffnen") as HTMLAnchorElement;
-        link.href = row.openUrl;
-        link.target = "_blank";
-        link.rel = "noopener";
-        line.appendChild(link);
-      }
-      card.appendChild(line);
-    }
-  }
-  if (testinstanzMachineError) card.appendChild(el("div", "hint", testinstanzMachineError));
-  if (testinstanzMachinePending || Date.now() - testinstanzMachineReadAt <= 15_000) return;
-  testinstanzMachinePending = true;
-  testinstanzMachineReadAt = Date.now();
-  // repaint only on a CHANGED answer: the 15 s re-read must not move the board under a click
-  const before = JSON.stringify([testinstanzMachine, testinstanzMachineError]);
-  void api("/api/testinstanzen").then(async (res) => {
-    const answer = (await res.json()) as { testinstanzen?: TestinstanzRow[]; error?: string };
-    if (!res.ok || !Array.isArray(answer.testinstanzen)) throw new Error(answer.error ?? `testinstanz list failed (${res.status})`);
-    testinstanzMachine = answer.testinstanzen;
-    testinstanzMachineError = "";
-  }).catch((error: unknown) => {
-    testinstanzMachineError = error instanceof Error ? error.message : String(error);
-  }).finally(() => {
-    testinstanzMachinePending = false;
-    if (JSON.stringify([testinstanzMachine, testinstanzMachineError]) === before) return;
-    boardBody.querySelector(".testinstanzmachine")?.remove();
-    paintTestinstanzCard();
-  });
-}
-
-function paintTestinstanzCard(): void {
-  if (!boardOpen || boardBody.querySelector(".testinstanzmachine")) return;
-  const card = el("div", "bsec testinstanzmachine");
-  // carried through the board's swaps (src/board.ts#keptCards): re-added after one, it jumped the column
-  card.dataset.boardKeep = "1";
-  card.appendChild(el("h3", "", "Testinstanzen"));
-  paintTestinstanzMachine(card);
-  if (testinstanzMachine?.length || testinstanzMachineError) boardBody.append(card);
-}
-
-new MutationObserver(paintTestinstanzCard).observe(boardBody, { childList: true });
+// THE TESTINSTANZEN CARD IS GONE (owner 2026-10-08: „[Zitat entfernt]“
+// 
+// ): every worktree's test instance stands at its row under Arbeitsorte, with Öffnen
+// and Stoppen there (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md).
 initQueue();
 initAttention();
 initDevices();

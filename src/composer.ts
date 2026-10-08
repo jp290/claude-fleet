@@ -87,19 +87,18 @@ export function mountComposer(): void {
   renderWorkplaceField();
 }
 
-// THE PLACEHOLDER names the session by the name the pill and the target read (label, else the
-// folder), in every view the same words (card "Auf dem Telefon öffnen Sessions und Werkzeuge als
-// eigene Blätter", the sketch's "Prompt für ‹Name› …"); the desktop adds how to send. A past session
-// on screen reads only, and says so. Rewritten on focus, mount and every poll (src/client.ts#updateTitle),
-// so a rename or the first poll after boot reaches it.
+// THE PLACEHOLDER no longer names the session (owner 2026-10-07: the name stood three times at the
+// foot): the line under the field says it once (src/board.ts#renderWorkplaceField); here only what
+// the field is for, and at the desk how to send. A past session on screen reads only, and says so.
+// Rewritten on focus, mount and every poll (src/client.ts#updateTitle).
 export function promptPlaceholder(): string {
   const pane = panes[focused];
   const slot = pane?.slot ?? 0;
   if (pane?.pastN != null) return `Session ${pane.pastN} liest nur — ↩ oder Esc auf der Zeile führt zur laufenden`;
-  if (!slot) return "Prompt … (diese Pane zeigt keine Session)";
+  if (!slot) return "Diese Ansicht zeigt keine Session";
   const s = fleet.find((x) => x.id === slot);
-  const name = s?.cwd ? s.label ?? baseName(s.cwd) : `Slot ${slot}`;
-  return `Prompt für ${name} …${isMobile() ? "" : " (Enter sendet)"}`;
+  if (!s?.cwd) return "Hier läuft keine Session";
+  return `Nachricht${isMobile() ? "" : " — Enter sendet"}`;
 }
 
 // THE SEND TARGET (Grammatik G2.4, card 929fdbe7): where the composer writes, on screen while the
@@ -140,6 +139,10 @@ export function renderTarget(): void {
   t.classList.toggle("orphan", orphan);
   if (!orphan) {
     t.title = title;
+    // a running session's name is the foot line's (src/board.ts#renderWorkplaceField): the target
+    // draws nothing then; it keeps its word where a send takes nothing ("leer", "liest nur")
+    const takes = !!s?.cwd && pane?.pastN == null;
+    if (takes) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }
     t.setAttribute("aria-label", `Sendeziel: ${addr} ${name}`);
     t.replaceChildren(el("span", "ctaddr", addr), el("span", "ctname", name));
     return;
@@ -339,7 +342,17 @@ reduceMotion.addEventListener("change", tickCacheAge);
 function optSlot(): number {
   const pane = panes[focused];
   const sup = pane?.slot ? harnessEntry(pane.slot)?.supports : undefined;
-  return pane?.slot && (pane.isChat || (sup && !canChatOn(sup))) ? pane.slot : 0;
+  return pane?.slot && (pane.isChat || optsAnywhere || (sup && !canChatOn(sup))) ? pane.slot : 0;
+}
+// the phone island's Modell und Effort (src/client.ts#setDirect) opens over either view: while it
+// is open the switches are drawn for the terminal view too, since its Übernehmen presses theirs —
+// and they stay drawn while the switch popover that press opened is open (closeOpts ends it)
+let optsAnywhere = false;
+export function setOptsAnywhere(on: boolean): void {
+  const next = on || optOpen !== null;
+  if (optsAnywhere === next) return;
+  optsAnywhere = next;
+  renderComposerOpts(true);
 }
 // one entry per NAME: claude-opus-5 and claude-opus-5[1m] read the same ("Opus 5 · 1M") and
 // resolve the same in Claude Code 2.1.278 (both native_1m), so two identical rows would only
@@ -438,7 +451,7 @@ export function renderComposerOpts(force: boolean): void {
     // stand — never a level guessed from a config. Apply compares against THIS value, so picking
     // the level a stale record already names still types it into the pane.
     const running = runningEffort(s?.effort, pane?.observedEffort);
-    compOpts.appendChild(optSwitch("effort", slot, running, running || "default", [], (stage) => {
+    compOpts.appendChild(optSwitch("effort", slot, running, running || "Standard", [], (stage) => {
       const levels = el("div", "cmdlevels");
       for (const lv of h.effortLevels) {
         const b = el("button", "cmdlevel", lv) as HTMLButtonElement;
@@ -486,6 +499,14 @@ export function optChoices(): OptChoice[] {
 }
 export function stageOpt(field: "model" | "effort", v: string): void {
   optStaged = { ...optStaged, [field]: v };
+  optMsg = {};
+  renderComposerOpts(true);
+}
+// takes a pick back, so the switch shows its running value again — "" is a value here (effort
+// Standard), never "no pick"
+export function unstageOpt(field: "model" | "effort"): void {
+  const { [field]: _gone, ...rest } = optStaged;
+  optStaged = rest;
   optMsg = {};
   renderComposerOpts(true);
 }
@@ -552,6 +573,7 @@ function confirmCommand(slot: number, name: string, purpose: string): Promise<bo
 // Close whatever is open and forget what was staged in it — closing without Apply discards.
 function closeOpts(focusField?: OptField): void {
   optOpen = null;
+  optsAnywhere = false;
   optStaged = {};
   optMsg = {};
   optConfirm = false;
@@ -569,15 +591,15 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
   const btn = el("button", "optsw") as HTMLButtonElement;
   const inPane = switchesInPane(harnessEntry(slot));
   const what = inPane
-    ? `sets the slot record AND types ${paneCommand(harnessEntry(slot), field, "")!.trim()} into the pane — only when you press Apply`
-    : `sets the slot record and RESTARTS the pane with it (this harness has no in-session /${field}) — only when you press Apply`;
+    ? `Stellt die Session um und tippt ${paneCommand(harnessEntry(slot), field, "")?.trim() ?? `/${field}`} in sie — erst mit Übernehmen`
+    : `Stellt die Session um und STARTET sie damit neu (dieser Harness kennt kein /${field} in der Session) — erst mit Übernehmen`;
   const tip = (v: string) => `${mark ? `${harnessEntry(slot)?.id ?? ""} · ` : ""}${field} ${v} — ${what}`;
   if (mark) lead[0]?.appendChild(mark);
   const val = el("span", `optval${field === "effort" ? " dim" : ""}`, label(optStaged[field] ?? shown));
   btn.append(...lead, val);
   btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
   const pop = el("div", `optpop ${field}`);
-  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
+  const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
   apply.title = what;
   const status = el("div", "cmdstatus", optMsg[field] ?? "");
   status.hidden = !optMsg[field];
@@ -594,7 +616,7 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
     const v = optStaged[field];
     if (!v || v === current) return;
     apply.disabled = true;
-    apply.textContent = "Applying…";
+    apply.textContent = "Wird umgestellt …";
     const verdict = await setSlotSetting(slot, field, v);
     optStaged = { ...optStaged, [field]: undefined };
     optMsg = { ...optMsg, [field]: verdict };
@@ -616,18 +638,18 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
     box.setAttribute("role", "alertdialog");
     const ms = cacheAge();
     box.appendChild(el("div", "cfmsg", inPane
-      ? "Switching the model drops this session's prompt cache — the next turn re-reads the full context."
-      : `${harnessEntry(slot)?.id ?? "This harness"} has no in-session /${field}: Switch restarts the pane with the new ${field} and resumes the conversation. Whatever it is doing right now stops.`));
+      ? "Ein Modellwechsel verwirft den Zwischenspeicher dieser Session — die nächste Antwort liest das ganze Gespräch neu."
+      : `${harnessEntry(slot)?.id ?? "Dieser Harness"} kennt kein /${field} in der Session: Umstellen startet sie neu und setzt das Gespräch fort. Was sie gerade tut, bricht ab.`));
     const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
-    if (ms !== null) box.appendChild(el("div", "cfage", `Last request ${fmtAge(ms)} ago${ms >= ttl ? " — the cache is probably cold already" : ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null) ? " — the cache expires shortly" : ""}.`));
+    if (ms !== null) box.appendChild(el("div", "cfage", `Letzte Anfrage vor ${fmtAge(ms)}${ms >= ttl ? " — der Zwischenspeicher ist wohl schon kalt" : ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null) ? " — der Zwischenspeicher läuft gleich ab" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    opt.append(cb, document.createTextNode("Don't show again"));
+    opt.append(cb, document.createTextNode("Nicht mehr fragen"));
     opt.hidden = !inPane; // a restart is asked every time
-    const cancel = el("button", "cmdcancel", "Cancel") as HTMLButtonElement;
+    const cancel = el("button", "cmdcancel", "Abbrechen") as HTMLButtonElement;
     cancel.onclick = () => cancelConfirm();
-    const go = el("button", "cmdapply", "Switch") as HTMLButtonElement;
+    const go = el("button", "cmdapply", "Umstellen") as HTMLButtonElement;
     go.onclick = () => {
       if (inPane && cb.checked) setModelWarnOff();
       optConfirm = false;

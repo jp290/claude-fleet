@@ -1921,16 +1921,22 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       && !failedLandVerdict({ status: "error", landed: true })
 , "failedLandVerdict");
   check("B4: both alarm cards keep their detail one gesture away — the check after the land behind Ansehen, the land under one summary",
-    /el\("div", `plasec \$\{al\.tone\}`\)/.test(cliSrc)
+    /el\("div", `plasec \$\{al\.tone\}\$\{owner \? "" : " held"\}`\)/.test(cliSrc)
       && /el\("button", "plaack", plaOpen \? "Weniger" : "Ansehen"\)/.test(cliSrc) && /if \(plaOpen\) \{/.test(cliSrc)
       && /el\("details", `bmergenote/.test(cliSrc)
       && /class="plasummary"/.test(indexSrc) === false
-      && /\.plasec \.plaacts/.test(indexSrc), "audit card and land details");
-  check("B5: expanded checks name their section and show every run once",
-    /el\("h3", "smsectiontitle", "Alle Prüfläufe"\)/.test(cliSrc)
-      && /order\.slice\(0, meterOpen \? undefined : METER_ROWS_MAX\)/.test(cliSrc)
-      && /sec\.appendChild\(gateLockHead\(g\.lock\)\)/.test(cliSrc)
-      && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "meter expand and gate detail");
+      && /\.plasec \.plafoot \{/.test(indexSrc), "audit card and land details");
+  // THE RUNS BESIDE THEIR LANES (owner 2026-10-08: „[Zitat entfernt]“
+  // ): the folded panel „[Zitat entfernt]“ and its meter rows left — a run stands
+  // under its opened lane, or in the block "Prüfungen" of the Arbeitsorte, drawn after the projects so
+  // what found its lane is not said twice
+  check("B5: the checks are the block Prüfungen of the Arbeitsorte, and every run stands once — at its lane or in the block",
+    /checks = block\("runs", "Prüfungen"\)/.test(cliSrc)
+      && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done" && !placedRuns\.has\(b\.key\)\)/.test(cliSrc)
+      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(place\) placedRuns\.add\(b\.key\);/.test(cliSrc)
+      && cliSrc.indexOf("checks.appendChild(runRows(focusSlot === null));") > cliSrc.indexOf("projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));")
+      && !/"Alle Prüfläufe"/.test(cliSrc) && !/meterOpen/.test(cliSrc)
+      && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "runRows + arbeitsorteSection in src/board.ts");
   // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
   // there would leave the checks below measuring code the bundle never runs
   check("client: the poll pump takes pollPlan from src/pollplan.ts, the module under test",
@@ -2085,19 +2091,25 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && cliSrc.includes('lane: ["neue Session im selben Worktree", "Gleicher Branch, gleicher Slot;')
     && !cliSrc.includes("watches, autos and reports carry by id"),
     "contextRow + handoverRows in src/board.ts");
-  check("G0.5 suite stretch: the strip reads Prüfungen, its status lines and run names carry no suite/audit/gate",
-    cliSrc.includes('return { text: `Prüfungen · ${text}`, tone, title };') && !cliSrc.includes('"smtitle", "Suites"')
+  // since 2026-10-08 the strip's head and its panel are gone: the block head says "Prüfungen", a run
+  // speaks one German sentence, the lock gets a row only when it needs someone (src/board.ts#runRows)
+  check("G0.5 suite stretch: the block reads Prüfungen, its run lines and the lock's words carry no suite/audit/gate",
+    cliSrc.includes('checks = block("runs", "Prüfungen")') && !cliSrc.includes('"smtitle", "Suites"')
     && !cliSrc.includes("suite gate ·") && cliSrc.includes("check run busy · ")
-    && cliSrc.includes("⏳ post-land check · ") && !cliSrc.includes("⏳ post-land audit · ")
-    && cliSrc.includes("waiting for its check · ") && !cliSrc.includes("waiting for an audit · ")
+    && cliSrc.includes('const kind = b.kind === "queued check run" ? "Prüflauf" : meterKind(b.kind).label;')
+    && !cliSrc.includes("⏳ post-land audit · ") && !cliSrc.includes("waiting for an audit · ")
     && cliSrc.includes("Angefragt, nicht gestartet") && !cliSrc.includes("asked for, not started")
-    && cliSrc.includes("Die Sperre dieses Rechners ist nicht gemeldet") && !cliSrc.includes("nothing on the gate")
-    && cliSrc.includes("· Klick öffnet die Lane") && !cliSrc.includes("click to open the lane"),
-    "meter head, gate lock head, audit rows in src/client.ts");
-  // since card R4 the due restart is the Arbeitsorte's Live row itself, not a line of its own
+    && cliSrc.includes('word: "Sperre belegt"') && cliSrc.includes('word: "Sperre frei"') && cliSrc.includes("Dieser Server schickt keine Lesung der Sperre")
+    && !cliSrc.includes("nothing on the gate") && !cliSrc.includes("click to open the lane"),
+    "runRows, runSentence and lockState in src/board.ts");
+  // since card R4 the due restart is the Arbeitsorte's Live row itself, not a line of its own; since
+  // 2026-10-08 that row says what it means in a sentence, the chain opens behind a tap
   check("G0.5 deploy due: consequence + action in owner words, the command and srv/bundle live in the tooltip",
-    cliSrc.includes('const due = restartDue || live.target?.codeBehind === true;') && cliSrc.includes('label: due ? "Neustart fällig" : "Live"') && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
-    && cliSrc.includes('nm.append(el("b", "", "Seite neu bauen"), " · der Code im Browser ist älter als src/");') && !cliSrc.includes("client bundle")
+    cliSrc.includes('const due = restartDue || live.target?.codeBehind === true;') && cliSrc.includes('lead = { label: due ? "Neustart fällig" : "Live", st: live, due,')
+    && cliSrc.includes('if (lead.due) say.append("Läuft auf älterem Server-Code.");')
+    && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
+    && cliSrc.includes('nm.append(el("b", "", "Seite neu bauen"), " — der Browser zeigt einen älteren Stand.");')
+    && cliSrc.includes("im Terminal `bun run build` ausführen") && !cliSrc.includes("client bundle")
     && !cliSrc.includes("export function deploySection("),
     "the Live row in src/board.ts#arbeitsorteSection");
   check("G0.5 slotact strip: the hover actions explain in German, not in internal verbs",
@@ -2361,16 +2373,16 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   }
 
   // THE ARBEITSORTE IN INFO (cards e66909b1 + abe74821, docs/design/rechter-tab-notiz.md §3b–§3d),
-  // same rig: the Ranke at the top of Info in the draft's nine states, at 1200 and 390 — rows, beads,
-  // squares, the stand of every carrier, the jump, the worktree field — each a DOM claim, and every
-  // click judged by the request it sent. A browser that cannot run is the PROBE line — red, never a skip.
+  // same rig: the Ranke at the top of Info in the draft's states, at 1200 and 390 — rows, the lane's
+  // flag and the lane opened in place, the stand of every machine, who holds an alarm, the worktree
+  // field — each a DOM claim, and every click judged by the request it sent. A browser that cannot run
+  // is the PROBE line — red, never a skip.
   try {
     for (const result of await runArbeitsorteDom(sourceRoot)) {
       const facts = JSON.stringify(result.facts).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok,
-          claim.includes("the old card") ? JSON.stringify(result.facts.oldCard)
-            : claim.includes("machine-wide") ? JSON.stringify(result.facts.machineList) : facts);
+          claim.includes("the old cards") ? JSON.stringify(result.facts.oldCard) : facts);
     }
   } catch (error) {
     check("arbeitsorte DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
@@ -2406,9 +2418,32 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THE STRIP AND THE FOOT LINE (Konzept 2, Variante C — the owner's pick of 2026-10-07), same rig: the
+  // open island's capsule, its four symbols and their words, what hangs under it, Mehr, Modell und
+  // Effort, Suchen in both views, and the foot line at 390 and 1440 — then each statement against its
+  // mutant (STRIP_MUTANTS): the claim that pins it must go red. A browser that cannot run is the PROBE
+  // line — red, never a skip.
+  try {
+    for (const result of await runStripDom(sourceRoot))
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`strip DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.detail[claim] ?? result.detail.missing).slice(0, 1500));
+  } catch (error) {
+    check("strip DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+  for (const m of STRIP_MUTANTS) {
+    try {
+      const hit = (await runStripDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => m.claims.some((x) => c.includes(x)));
+      check(`strip DOM MUTATION — ${m.name}: ${m.claims.map((x) => `"${x}…"`).join(" and ")} turn${m.claims.length === 1 ? "s" : ""} red`,
+        m.claims.every((x) => hit.some(([c]) => c.includes(x))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      check(`strip DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
   // gebaut", docs/design/insel-glas-notiz.md), same fixture: the pill, the material and its opaque
-  // face, the spring, the icon buttons, the empty place Arbeitsort, the swipes and every way out, the
+  // face, the spring, the strip's four symbols and the card under it, the swipes and every way out, the
   // keys, still — in Chromium and, where a Playwright WebKit resolves, in WebKit. WebKit not resolving
   // is printed, not counted (the repo carries no Playwright); an engine that resolves and cannot run
   // is its PROBE line — red, never a skip.
@@ -2551,13 +2586,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: a session with no packs draws no `none` row — absence is the ordinary case",
     !/row\("Packs", "none"/.test(setupSrc) && /if \(packs\.length\) \{/.test(setupSrc),
     "the packs branch in renderBoard");
-  // I13 (card R4): this session's checks are its lane's own "Check" value (the newest stage with its
-  // age, every stage on hover) and, while it lands, its four steps — no Checks section of its own
+  // I13 (card R4), and since 2026-10-08 (owner: „[Zitat entfernt]“
+  // ): this session's checks are its lane's FLAG and, opened, its five points under
+  // Arbeitsorte — no Check or Land row in the session block, no Checks section of its own
   check("client: the session's checks are a value of its lane, not a section of their own",
-    !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && /const r = kvRow\("Check", v\);/.test(boardSrc)
-    && /const r = kvRow\("Land", \[steps\]\);/.test(boardSrc)
+    !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && !/kvRow\("Check"/.test(cliSrc) && !/kvRow\("Land"/.test(cliSrc)
+    && /const flag = laneFlag\(w, mine\);/.test(boardSrc) && /out\.push\(wayLine\(w\)\);/.test(boardSrc)
     && !/No suite reported in the last few minutes/.test(cliSrc),
-    "checkRow + landStepsRow in src/board.ts");
+    "laneRow + laneFlag + wayLine in src/board.ts");
   // WHOSE FACT: every section head carries one word from the closed set, and the two machine
   // alarms — which have no head of their own — carry it as their first line. A section that
   // re-appears without one is the confusion this cut exists to end (a fleet number read as a
@@ -2576,32 +2612,30 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /type BoardScope = "session" \| "repo" \| "machine" \| "fleet";/.test(cliSrc)
     && /const SCOPE_TITLE: Record<BoardScope, string>/.test(cliSrc),
     "BoardScope in src/client.ts");
-  // …and the meter is the FLEET one, which is the whole reason the vocabulary exists. Its head
-  // says so, and where another instance is configured it names the end of its own reach rather
-  // than letting an empty station read as a quiet fleet — FLEET_INSTANCES is a link list, not a
-  // federation, so nothing here can see that fleet's runs.
-  check("client: the checks strip names what it CANNOT see — another fleet's runs are not counted here",
-    /instanceLinks\.filter\(\(l\) => l\.name !== instanceName\)/.test(cliSrc)
-    && /el\("div", "cnt smscope", `Nur \$\{instanceName \?\? "dieser Rechner"\}/.test(cliSrc) && /kein Verbund/.test(cliSrc),
-    "meterPanel in src/board.ts");
-  // …and the place is the column that may NEVER give way. The row is ~267 px wide at the board's
-  // real width, so something has to: the lane name shrinks, the suite name shrinks, the machine
-  // does not — it is the half a truncated row used to lose. The STATE is not a column at all any
-  // more; it rides the dot and the row's station class, because the tube above already draws it
-  // twice (the ball's position, and the count under its station).
-  // Since 02.10. the NAME goes before the kind (owner: a titled lane „[Zitat entfernt]“ was cut to
-  // ~10 characters by a 38 % cap): no cap on the name, the kind column grows from zero and gives way
-  // first. What that buys in pixels is measured in the settings DOM run (the meter row at 264 px).
-  check("client: a meter row draws the PLACE in its own span, and that span never shrinks",
-    /el\("span", "smplace", b\.where\)/.test(cliSrc)
-    && /\.smplace \{ flex: none; margin-left: auto;/.test(indexSrc)
-    && /\.smname \{ flex: 0 1 auto; min-width: 40px; white-space/.test(indexSrc) && /\.smwhat \{ flex: 1 1 0;/.test(indexSrc),
-    "the meter row + its CSS");
-  check("client: the state is NOT a fourth column — it is the row's station class and its dot",
-    /`smrow tone-\$\{b\.tone\} st-\$\{b\.station\}/.test(cliSrc)
-    && /\.smrow\.st-wait \.smdot \{ background: none;/.test(indexSrc)
+  // …and what this server CANNOT see is said where it would be missed: a linked fleet is only a link
+  // (FLEET_INSTANCES is a link list, not a federation), so its machine row says that its repos and
+  // runs are not read here instead of letting a quiet row read as a quiet fleet
+  check("client: Geräte names what it CANNOT see — a linked fleet's repos and runs are not read here",
+    cliSrc.includes('if (st.basis === "link-only") return "Ihre Repos liest dieser Server nicht.";')
+    && cliSrc.includes('{ tone: "link", word: "verlinkt", title: "Ein Link auf diese Fleet — dieser Server misst sie nicht" }')
+    && cliSrc.includes("Dieser Server misst sie nicht;"),
+    "standSay + machineState + MACHINE_LEGEND in src/board.ts");
+  // …and the place is the part a run line may NEVER lose. Since 2026-10-08 a run is one sentence and
+  // its machine is the glyph Geräte draws for it, behind the sentence, never shrinking — its name on
+  // hover and to VoiceOver. The STATE is not a column of words either: it is the line's tone and
+  // station, drawn as the colour of its glyph (clock while it waits, shield while it runs).
+  check("client: a run line names its PLACE as the machine's own glyph, and that glyph never shrinks",
+    /const at = runMachine\(b\);\n    if \(at\) \{/.test(cliSrc) && /d\.title = `läuft auf \$\{at\.name\}`;/.test(cliSrc)
+    && /d\.setAttribute\("aria-label", d\.title\);/.test(cliSrc)
+    && /#board \.zd\.run \.dv \{ display: inline-grid;/.test(indexSrc) && /#board \.zd\.run \.g \{ flex: none;/.test(indexSrc),
+    "runLines + its CSS");
+  check("client: the state is NOT a fourth column — it is the line's tone and station and its glyph's colour",
+    /line\.dataset\.tone = say\.state\.tone;\n    line\.dataset\.station = b\.station;/.test(cliSrc)
+    && /g\.appendChild\(icon\(b\.station === "wait" \? "clock" : "shield"\)\);/.test(cliSrc)
+    && /#board \.zd\.run\[data-tone="live"\] \.g \{ color: var\(--chat-ink\); \}/.test(indexSrc)
+    && /#board \.zd\.run\[data-tone="off"\] \.g \{ color: var\(--q-wait\); \}/.test(indexSrc)
     && !/el\("span", "smwhere", meterState\(b\)\)/.test(cliSrc),
-    "renderSuiteMeter's rows");
+    "runLines' tone and station");
 
   // model, effort and the sidebar's ctx CHIP are the row's job — the owner called them redundant in
   // the board on 2026-09-19, and a second copy is exactly what a „[Zitat entfernt]“ is made of.
@@ -2628,9 +2662,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       withHex.length === 0 && boardCss.some((l) => l.includes("--b-ink: var(--chat-ink)")),
       withHex.slice(0, 3).join(" | ") || `${boardCss.length} rules, none with a literal colour`);
   }
-  check("client: the board repeats neither the model, the effort nor the context fill",
-    !/s\.model/.test(boardSrc) && !/s\.effort/.test(boardSrc) && !/s\.ctx/.test(boardSrc),
-    "renderBoard vs the sidebar row");
+  // (nameWithoutModel reads s.model for one purpose: to cut the model OFF a label that ends in it —
+  // Konzept 1 §2, the model is no part of who — so its body is the one place the scan leaves out)
+  {
+    const shown = boardSrc.replace(/export function nameWithoutModel\(s: SlotInfo\): string \{[\s\S]*?\n\}/, "");
+    check("client: the board repeats neither the model, the effort nor the context fill",
+      shown !== boardSrc && !/s\.model/.test(shown) && !/s\.effort/.test(shown) && !/s\.ctx/.test(shown),
+      "renderBoard vs the sidebar row");
+  }
   // the lanes list LEFT the folded tools on 2026-09-19 ("[Zitat entfernt]") — it is a section now, and its absence from the fold list is
   // asserted so it cannot quietly fold itself away again.
   // Files and Lanes became SECTIONS (owner, 2026-09-19/20: the lane map read as often as the
@@ -2695,9 +2734,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: the errors fetch can no longer end in an unhandled rejection",
     /void api\("\/api\/errors"\)[\s\S]{0,700}?\}\)\.catch\(\(\) => \{/.test(cliSrc),
     "errorsSection in src/client.ts");
-  // the suite ages in this column are the SERVER's stamps; this pane's clock may sit minutes away
   check("client: a check's age is measured against the corrected server clock",
-    /meterLine\(b, serverClock\(\), true\)/.test(cliSrc) && /mmss\(serverClock\(\) - ball\.at\)/.test(boardSrc), "meterPanel + the land note in src/board.ts");
+    (cliSrc.match(/const ms = b\.at > 0 \? serverClock\(\) - b\.at : 0;/g) ?? []).length === 2
+    && /mmss\(serverClock\(\) - ball\.at\)/.test(boardSrc), "runSay + runSentence + the land note in src/board.ts");
   // THE ADVISORY AGENTS ARE GONE from this column (owner, 2026-09-20: „[Zitat entfernt]“
   // ). Removed, not hidden: no buttons, no
   // caches, no session-only fold machinery. The SERVER routes stay, because the ③ auto-review
@@ -3795,7 +3834,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // buttons beside the name, each with its sentence as hover and accessible name (G1.1).
     // Export opens the menu of choices; the choices travel to the server as switches.
     {
-      const boardSrc = cut("function sessionSection(c: BoardCtx)", "// CHECK — the lane's newest check");
+      const boardSrc = cut("function sessionSection(c: BoardCtx)", "\nconst landBall = (slot");
       const expSrc = cut("type ExportPart = ", "async function killSlot(");
       const bmenuSrc = boardSrc.slice(boardSrc.indexOf("function kopfItems("));
       check("session actions: Umbenennen, Teilen and Exportieren are visible glyph buttons in the Info tab's head, not behind ⋯",
@@ -6454,7 +6493,9 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
   };
   // THE USAGE WIRE AS THE SERVER SERVES IT (src/protocol.ts#SubscriptionUsage): one measurement event
   // fixed for the run (its provenance is the event's identity), the age by the serving clock
-  const USAGE_EVENT_AT = Date.now() - 3 * 60_000, USAGE_STALE_AT = Date.now() - 40 * 60_000;
+  // a measured stand is 3 min old WHEN IT IS SERVED: fixed once at the family's start, the 390 pass read
+  // it after the whole 1200 pass and saw "Alter 4 min" whenever that took over a minute (a slower board)
+  const USAGE_EVENT_AGO = 3 * 60_000, USAGE_STALE_AT = Date.now() - 40 * 60_000;
   const USAGE_SELECTION = { kind: "recent-file-tails", maxFiles: 16, maxBytesPerFile: 262144, historyComplete: false };
   const PROVIDER_REASON = "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced";
   const usageBody = (kind: UsageKind, refresh: Record<string, unknown> = { target: null, status: "not-requested", startedAt: null, finishedAt: null, reason: null }) => {
@@ -6462,7 +6503,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     const win = (used: number, minutes: number, resetMin: number) => ({ used_percent: used, window_minutes: minutes, resets_at: Math.floor((at + resetMin * 60_000) / 1000) });
     const gone = (status: string, reason: string) => ({ status, primary: null, secondary: null, source: { kind: "local-rollout", measuredAt: null,
       fetchedAt: at - 5_000, ageMs: null, staleAfterMs: 900_000, reason, selection: USAGE_SELECTION, limitId: null, accountBound: false, provenance: null } });
-    const event = kind === "stale" ? USAGE_STALE_AT : kind === "late" ? at - 60_000 : USAGE_EVENT_AT;
+    const event = kind === "stale" ? USAGE_STALE_AT : kind === "late" ? at - 60_000 : at - USAGE_EVENT_AGO;
     if (kind === "stale") fx.staleAgeMs = at - event;
     const codex = kind === "missing" ? gone("unknown", "missing-source") : kind === "corrupt-source" ? gone("error", "invalid-json-line")
       : kind === "timeout" ? gone("error", "read-timeout")
@@ -6615,6 +6656,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") { fx.sessions++; return void json(requestId, sessions()); }
+      // the Arbeitsorte (and with them the block Prüfungen the run stands in) are read only while the
+      // titled lane runs — every other step of this fixture keeps its unread Arbeitsorte
+      if (p === "/api/worktrees" && fx.meterLane) return void json(requestId, { repos: [{ repo: REPO_A,
+        branches: [{ branch: "main", head: "a".repeat(40), distance: { ahead: 0, behind: 0 }, reasons: [] }], worktrees: [], landNotes: { truncated: false }, reasons: [] }],
+        stands: [], measuredAt: Date.now(), cacheMs: 3000 });
       if (p === "/api/repo-lane-caps") {
         if (fx.capsStatus !== 200) return void json(requestId, { error: "fixture: caps unreadable" }, fx.capsStatus);
         return void json(requestId, { default: fx.caps.default, max: fx.caps.max, caps: fx.caps.caps, ...(fx.caps.bases ? { bases: fx.caps.bases } : {}) });
@@ -7104,34 +7150,28 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         claims["the explorer opens from the Info column in the fixture"] = false;
       }
 
-      // --- 10. (1) the Checks row of a titled lane at the board's real width (264 px, the card's
-      // "~300"): the NAME goes first, at least 20 characters of the Kurztitel are on screen, the kind
-      // gives way and the place never moves. Desktop only — the phone shows the board as a window.
+      // --- 10. (1) the run of a titled lane at the board's real width (360 px since 2026-10-08): the
+      // run line names its lane in full — "3A · <Kurztitel>" — WRAPPING instead of cut (owner
+      // 2026-10-08: „[Zitat entfernt]“; a 38 % cap once cut it to ~10 characters), and the glyph
+      // of the machine it runs on stays inside the line. Desktop only — the phone shows the board as
+      // a window. The run stands in the block Prüfungen of the Arbeitsorte, beside no lane (it has none
+      // on this fixture's board), named by the lane's own words.
       if (width === 1200) {
         if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
         fx.meterLane = true;
-        // the runs are under the checks strip in the Arbeitsorte's head (card R4): open it once
-        await wait(`document.querySelector('#boardbody .ranke .meterbtn')`, 8000);
-        await evaluate(`(() => { const b = document.querySelector('#boardbody .ranke .meterbtn'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); })()`);
-        const rowUp = await wait(`[...document.querySelectorAll('#boardbody .rkmeter .smrow .smname')].some((n) => n.textContent.includes(' · '))`, 8000);
-        const meter = await evaluate<{ name: string; prefix: number; fit: number; board: number; row: number; what: number; placeInside: boolean } | null>(`(() => {
-          const n = [...document.querySelectorAll('#boardbody .rkmeter .smrow .smname')].find((e) => e.textContent.includes(' · '));
-          if (!n || !n.firstChild) return null;
-          const row = n.parentElement, box = n.getBoundingClientRect(), len = n.textContent.length;
-          const probe = document.createElement('span'); probe.style.font = getComputedStyle(n).font; probe.textContent = '…';
-          document.body.appendChild(probe); const ell = probe.getBoundingClientRect().width; probe.remove();
-          let fit = len;
-          if (n.scrollWidth > n.clientWidth + 0.5) {
-            const r = document.createRange(); fit = 0;
-            for (let i = 1; i <= len; i++) { r.setStart(n.firstChild, 0); r.setEnd(n.firstChild, i); if (r.getBoundingClientRect().right <= box.right - ell + 0.5) fit = i; else break; }
-          }
-          return { name: n.textContent, prefix: n.textContent.indexOf(' · ') + 3, fit, board: document.querySelector('#board').getBoundingClientRect().width,
-            row: row.getBoundingClientRect().width, what: row.querySelector('.smwhat').getBoundingClientRect().width,
-            placeInside: row.querySelector('.smplace').getBoundingClientRect().right <= row.getBoundingClientRect().right + 0.5 }; })()`);
+        const rowUp = await wait(`[...document.querySelectorAll('#boardbody .ranke .rkruns .zd.run .who')].some((n) => n.textContent.includes(' · '))`, 15000);
+        const meter = await evaluate<{ name: string; cut: boolean; lines: number; board: number; glyphInside: boolean; glyph: string | null } | null>(`(() => {
+          const n = [...document.querySelectorAll('#boardbody .ranke .rkruns .zd.run .who')].find((e) => e.textContent.includes(' · '));
+          if (!n) return null;
+          const line = n.closest('.zd.run'), lb = line.getBoundingClientRect(), dv = line.querySelector('.dv');
+          const lh = parseFloat(getComputedStyle(n).lineHeight) || 16;
+          return { name: n.textContent, cut: n.scrollWidth > n.clientWidth + 0.5 || getComputedStyle(n).textOverflow === 'ellipsis' && n.scrollWidth > n.clientWidth,
+            lines: Math.round(n.getBoundingClientRect().height / lh), board: document.querySelector('#board').getBoundingClientRect().width,
+            glyph: dv?.getAttribute('aria-label') ?? null, glyphInside: !!dv && dv.getBoundingClientRect().right <= lb.right + 0.5 && dv.getBoundingClientRect().left >= lb.left - 0.5 }; })()`);
         await shot(width, "meter-row");
         facts.meter = { rowUp, ...meter };
-        claims["Checks at the board's real width (≤ 300 px): a titled lane shows at least 20 characters of its Kurztitel, in calm case, and the place stays in the row"] =
-          !!meter && meter.board <= 300 && meter.fit - meter.prefix >= 20 && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.placeInside;
+        claims["Checks at the board's real width (≤ 360 px): a titled lane's run names the lane in full — its Kurztitel whole, in calm case, wrapped not cut — and its machine stays in the line"] =
+          !!meter && meter.board <= 360 && !meter.cut && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.name.endsWith(` · ${shortTitle(LANE_TITLE)}`) && meter.glyphInside && meter.glyph === "läuft auf Dieser Rechner";
         fx.meterLane = false;
       }
 
@@ -7434,7 +7474,12 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
     const where = () => { const a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.id === 'input') return 'composer';
       const p = a.closest('#panes .pane'); if (p && a.classList.contains('xterm-helper-textarea')) return 'terminal' + [...document.querySelectorAll('#panes .pane')].indexOf(p);
       return a.tagName.toLowerCase() + '.' + String(a.className).split(' ').join('.'); };
-    const target = () => { const t = T(); return t ? { shown: shown(t), slot: t.dataset.slot ?? null, openedAt: t.dataset.openedAt ?? null, text: t.textContent.trim(), title: t.title } : null; };
+    // the target is the chip's binding (slot, openedAt) plus the name the composer's foot line draws:
+    // since the owner's Feinschliff (2026-10-07) a running session's name stands once, in that line
+    // (#compwt at the desk, #compfootwt on the phone), and the chip draws nothing beside it
+    const foot = () => [document.querySelector('#compwt'), document.querySelector('#compfootwt')].find(shown) ?? null;
+    const target = () => { const t = T(), f = foot(); return t ? { shown: shown(t), slot: t.dataset.slot ?? null, openedAt: t.dataset.openedAt ?? null, text: t.textContent.trim(), title: t.title,
+      foot: f ? (f.querySelector('.wtname')?.textContent ?? '') : null } : null; };
     const sent = (slot) => window.__ws.filter((w) => w.url.includes('/ws/' + slot + '?')).map((w) => w.sent).join('');
     return { T, shown, pane, focusedPane, where, target, sent };
   })()`;
@@ -7553,10 +7598,13 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       const png = await send("Page.captureScreenshot", { format: "png" });
       writeFileSync(resolve(artifacts, `${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
     };
-    type Target = { shown: boolean; slot: string | null; openedAt: string | null; text: string; title: string } | null;
+    type Target = { shown: boolean; slot: string | null; openedAt: string | null; text: string; title: string; foot: string | null } | null;
     const tgt = () => evaluate<Target>("window.__fx.target()");
+    // named = bound to the slot and openedAt, the name drawn ONCE (the foot line), the chip itself empty,
+    // and the address still in the chip's title ("Senden geht an Slot 1 · Alpha")
     const names = (t: Target, slot: number, openedAt: number, name: string) =>
-      !!t && t.shown && t.slot === String(slot) && t.openedAt === String(openedAt) && t.text.includes(String(slot)) && t.text.includes(name);
+      !!t && t.slot === String(slot) && t.openedAt === String(openedAt) && t.foot === name && t.text === ""
+      && t.title.includes(`Slot ${slot}`) && t.title.includes(name);
     const results: ComposerTargetDomResult[] = [];
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
       shotIndex = 0;
@@ -7579,7 +7627,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 
       // --- 1. the target is on screen before and while text is in the field
       facts.t0 = await tgt();
-      claims["the composer names its target: slot 1 · Alpha, bound to openedAt 1000"] = names(facts.t0 as Target, 1, 1000, "Alpha");
+      claims["the composer names its target once: Alpha in the foot line, the chip draws no second name, bound to slot 1 · openedAt 1000"] = names(facts.t0 as Target, 1, 1000, "Alpha");
       await click("document.querySelector('#input')");
       await typeText("draft for alpha");
       facts.t1 = await tgt();
@@ -7861,7 +7909,10 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // their place, words, 40-px targets, and that each row does what the board's own control does;
 // at 390 and at 360 × 780 that their tool row and segments break into lines with no word cut off.
 // Since the island is glass (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
-// gebaut") it is the 28-px pill with icon buttons, and Sessions opens as its left side; the phone
+// gebaut") it is the 28-px pill, and Sessions opens as its left side; since the strip C (owner's pick
+// 2026-10-07) it opens as one capsule — the name, four symbols — with Sessions and Info as words under
+// it, the sheet Werkzeuge became Mehr and Modell und Effort a popover at the strip's own button
+// (runStripDom pins the strip and the foot line, each claim against its mutant); the phone
 // runs here under prefers-reduced-motion, so every state stands at once and a box is never read
 // mid-spring — motion, material and the swipes are runGlassIslandDom's.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
@@ -8060,8 +8111,9 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       claims["no island exists here: neither the top island nor the grip is drawn"] = !seen.mtop && !seen.grip;
       facts.placeholder = await evaluate<string>("document.querySelector('#input').placeholder");
       facts.sheet = await shown("#msheetwrap");
-      claims[`no sheet is drawn here, and the field reads "Prompt für Alpha …"${width === 1200 ? " (Enter sendet)" : ""}`] = !facts.sheet
-        && facts.placeholder === (width === 1200 ? "Prompt für Alpha … (Enter sendet)" : "Prompt für Alpha …");
+      // the field says what it is for, never whose it is: the name stands once, in the foot line (owner 2026-10-07)
+      claims[`no sheet is drawn here, and the field reads "Nachricht${width === 1200 ? " — Enter sendet" : ""}" — no name in it`] = !facts.sheet
+        && facts.placeholder === (width === 1200 ? "Nachricht — Enter sendet" : "Nachricht");
       if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
@@ -8117,15 +8169,6 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
           sw: row.scrollWidth, cw: row.clientWidth, l: Math.round(row.getBoundingClientRect().left), r: Math.round(row.getBoundingClientRect().right),
           items: [...row.children].filter(f.shown).map((b) => { const r = b.getBoundingClientRect();
             return { word: word(b), sw: b.scrollWidth, cw: b.clientWidth, l: Math.round(r.left), r: Math.round(r.right), top: Math.round(r.top) }; }) })) }; })()`;
-    // Übernehmen as a finger meets it: brought into view the way the list scrolls (up and down only),
-    // then its height, its edges inside the sheet and the target at its centre; the list goes back up
-    type ApplyRead = { field: string; h: number; l: number; r: number; hit: boolean }[];
-    const APPLY = `(() => { const sh = document.querySelector('#msheet'), s = sh.getBoundingClientRect();
-      const out = [...sh.querySelectorAll('.mshseg')].map((row) => { const b = row.querySelector('.mshapply');
-        b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = b.getBoundingClientRect();
-        return { field: row.dataset.field, h: Math.round(r.height), l: Math.round(r.left - s.left), r: Math.round(s.right - r.right),
-          hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; });
-      sh.querySelector('.mshbody').scrollTop = 0; return out; })()`;
     const fitClaims = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, sheet: string, fit: FitRead, rows: string[]) => {
       for (const name of rows) {
         const row = fit.rows.find((r) => r.row === name);
@@ -8141,10 +8184,40 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         }
       }
     };
-    const applyClaim = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, apply: ApplyRead) => {
-      const c = `${tag}Werkzeuge · Übernehmen stays reachable beside or under both segment rows: 40 px high, inside the sheet, met by a finger at its centre`;
-      claims[c] = apply?.length === 2 && apply.every((a) => a.h >= 40 && a.l >= 0 && a.r >= 0 && a.hit);
-      detail[c] = apply;
+    // MODELL UND EFFORT, the strip's popover (#mdirpop): its sections, segments (* pressed, + marked), the one
+    // Übernehmen, and every target as a finger meets it
+    const DIRECT = `(() => { const f = window.__fx, pop = document.querySelector('#mdirpop'), btns = [...pop.querySelectorAll('button')].filter(f.shown);
+      const ap = pop.querySelector('.mdapply'), r = ap?.getBoundingClientRect(), p = pop.getBoundingClientRect();
+      return { shown: f.shown(pop), box: f.box(pop), islandOpen: document.body.classList.contains('mopen'), expanded: document.querySelector('#mdirect').getAttribute('aria-expanded'),
+        secs: [...pop.querySelectorAll('.mdsec')].map((e) => e.textContent),
+        segs: [...pop.querySelectorAll('.mshsegs')].map((row) => ({ field: row.dataset.field, values: [...row.querySelectorAll('button')]
+          .map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '') + (b.classList.contains('staged') ? '+' : '')) })),
+        applies: pop.querySelectorAll('.mdapply').length, ready: !!ap && !ap.disabled,
+        apply: ap ? { h: Math.round(r.height), l: Math.round(r.left - p.left), r: Math.round(p.right - r.right), b: Math.round(r.bottom),
+          hit: ap.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) } : null,
+        small: btns.filter((b) => b.getBoundingClientRect().height < 40).map((b) => b.textContent),
+        missed: btns.filter((b) => { const q = b.getBoundingClientRect(); return !b.contains(document.elementFromPoint(q.x + q.width / 2, q.y + q.height / 2)); }).map((b) => b.textContent) }; })()`;
+    type DirectRead = { shown: boolean; box: Box; islandOpen: boolean; expanded: string; secs: string[]; segs: { field: string; values: string[] }[]; applies: number; ready: boolean;
+      apply: { h: number; l: number; r: number; b: number; hit: boolean } | null; small: string[]; missed: string[] };
+    const readDirect = () => evaluate<DirectRead>(DIRECT);
+    const openDirect = async () => {
+      if (!await isOpen()) await tap("document.querySelector('#mpill')");
+      await tap("document.querySelector('#mdirect')");
+      const ok = await wait("!document.querySelector('#mdirpop').hidden && window.__fx.shown(document.querySelector('#mdirpop'))", 3000);
+      await settle(200);
+      return ok;
+    };
+    // the popover's segment rows read as fitClaims reads a sheet's (the popover stands for the sheet)
+    const DIRFIT = `(() => { const f = window.__fx, pop = document.querySelector('#mdirpop'), s = pop.getBoundingClientRect();
+      return { sheet: { l: Math.round(s.left), r: Math.round(s.right) },
+        rows: [...pop.querySelectorAll('.mshsegs')].map((row) => ({ row: row.dataset.field, sw: row.scrollWidth, cw: row.clientWidth,
+          l: Math.round(row.getBoundingClientRect().left), r: Math.round(row.getBoundingClientRect().right),
+          items: [...row.children].filter(f.shown).map((b) => { const r = b.getBoundingClientRect();
+            return { word: b.textContent.trim(), sw: b.scrollWidth, cw: b.clientWidth, l: Math.round(r.left), r: Math.round(r.right), top: Math.round(r.top) }; }) })) }; })()`;
+    const directApplyClaim = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, d: DirectRead) => {
+      const c = `${tag}Modell und Effort · its one Übernehmen is at least 44 px high, inside the popover, met by a finger at its centre`;
+      claims[c] = d.applies === 1 && !!d.apply && d.apply.h >= 44 && d.apply.l >= 0 && d.apply.r >= 0 && d.apply.hit;
+      detail[c] = d.apply;
     };
     const sheetIs = (which: string) => `document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === '${which}'`;
     const openVia = async (id: string, which: string) => { await tap("document.querySelector('#mpill')"); await tap(`document.querySelector('${id}')`); const ok = await wait(sheetIs(which), 3000); await settle(250); return ok; };
@@ -8202,11 +8275,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         if (slowOpens) await tap("document.querySelector('#mname')");
         claims[`${tag}a mouse click held 400 ms on the pill opens the island too — the touch tap's 250 ms bound is no mouse's`] = slowOpens && !await isOpen();
       }
-      // 3. a tap on the pill opens; the open island covers the pane without moving it
+      // 3. a tap on the pill opens the strip (Konzept 2, Variante C); the open island covers the pane without moving it
       const termBefore = await box("document.querySelector('.paneterm')");
       await tap("document.querySelector('#mpill')");
       const opened = await isOpen();
-      const ids = ["#mslot", "#mname", "#minfo", "#mview", "#mhist", "#mauto", "#mmore"];
+      const SYMBOLS = ["#mview", "#mfind", "#mdirect", "#mmore"];
+      const ids = ["#mname", ...SYMBOLS, "#mslot", "#minfo"];
       const boxes: Record<string, Box> = {};
       for (const id of ids) boxes[id] = (await shown(id)) ? await box(id) : null;
       facts.open = { opened, boxes, name: await evaluate<string>("document.querySelector('#mname').innerText"), view: await evaluate<string>("document.querySelector('#mview').getAttribute('aria-label')"),
@@ -8214,10 +8288,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const op = facts.open as { opened: boolean; name: string; view: string; term: Box; pane: Box; top: Box; where: string };
       await shot(`${W}${keyboard ? "-tastatur" : ""}-auf`);
       const b = (id: string) => boxes[id];
-      claims[`${tag}a tap on the pill opens the island: Sessions left, name with model · effort, ℹ right; view, History, Schedule, ⋯ under them`] =
-        opened && ids.every((id) => !!b(id)) && b("#mslot")!.x < b("#mname")!.x && b("#mname")!.r <= b("#minfo")!.x
-        && b("#mview")!.y >= b("#mname")!.b && b("#mview")!.x < b("#mhist")!.x && b("#mhist")!.x < b("#mauto")!.x && b("#mauto")!.x < b("#mmore")!.x
-        && /Alpha/.test(op.name) && /Opus 5\.5 · high/.test(op.name) && op.view === "Konversation anzeigen";
+      const midY = (x: Box) => x ? x.y + x.h / 2 : -1;
+      claims[`${tag}a tap on the pill opens the strip: dot and name left, the four symbols right on its line; under it Sessions left, Info right`] =
+        opened && ids.every((id) => !!b(id)) && b("#mname")!.r <= b("#mview")!.x
+        && SYMBOLS.every((id, i) => Math.abs(midY(b(id)) - midY(b("#mname"))) <= 1 && (i === 0 || b(SYMBOLS[i - 1])!.r <= b(id)!.x))
+        && b("#mslot")!.y >= b("#mname")!.b && b("#minfo")!.y === b("#mslot")!.y && b("#mslot")!.r < b("#minfo")!.x
+        && op.name === "Alpha" && op.view === "Gespräch";
       // …and a finger at each centre meets that button, at the default text size and at the largest
       // Aa (24 px, src/chatsize.ts) — the glyphs do not grow, the name's type stops at 15 px
       const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
@@ -8229,11 +8305,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const moreAt24 = await box("#mmore");
       await evaluate("document.documentElement.style.removeProperty('--chat-fs')");
       await settle(100);
-      const sizeClaim = `${tag}every target in the open island is at least 44 px high, the icon buttons 44 × 44, each met by a finger at its centre`;
-      claims[sizeClaim] = ids.every((id) => (b(id)?.h ?? 0) >= 44) && ids.filter((id) => id !== "#mname").every((id) => (b(id)?.w ?? 0) >= 44)
-        && missedAt14.length === 0;
+      // the strip's sizes are the sheet's (K2-Karte-C-Streifen: 56-px strip, 44-px symbols, 36-px word buttons)
+      const sizeClaim = `${tag}the four symbols are 44 × 44, the name the strip's 56 px, the word buttons 36 px high — each met by a finger at its centre`;
+      claims[sizeClaim] = SYMBOLS.every((id) => b(id)?.w === 44 && b(id)?.h === 44) && b("#mname")?.h === 56
+        && ["#mslot", "#minfo"].every((id) => b(id)?.h === 36) && missedAt14.length === 0;
       detail[sizeClaim] = { boxes, missedAt14 };
-      const bigClaim = `${tag}at the largest text size every button of the open island stays on screen and tappable`;
+      const bigClaim = `${tag}at the largest text size every button of the open strip stays on screen and tappable`;
       claims[bigClaim] = missedAt24.length === 0 && !!moreAt24 && moreAt24.r <= W - 10;
       detail[bigClaim] = { missedAt24, moreAt24 };
       claims[`${tag}the open island covers the top of the pane — the pane and the terminal do not move`] = JSON.stringify(op.pane) === JSON.stringify(st.pane)
@@ -8267,15 +8344,15 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
       actions.viewBack = await act("#mview", "!window.__fx.pane().classList.contains('chat')");
       actions.info = await act("#minfo", "window.__fx.shown(document.querySelector('#shell-board'))", escape);
-      actions.hist = await act("#mhist", "getComputedStyle(document.querySelector('#hist')).display === 'flex'", escape);
+      actions.find = await act("#mfind", "!!document.querySelector('.pane .termfind.open') && document.activeElement === document.querySelector('.pane .termfindin')", escape);
       actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action closes the island and does what it names (Sessions, view, ℹ, History, tools sheet)`;
-      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal anzeigen";
+      const actionsClaim = `${tag}every action but Modell und Effort closes the island and does what it names (Sessions, view, Info, Suchen, Mehr)`;
+      claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
       facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
-      claims[`${tag}the field reads "Prompt für Alpha …" in the terminal and in the conversation`] =
-        (facts.placeholder as { term: string; chat: string }).term === "Prompt für Alpha …" && (facts.placeholder as { term: string; chat: string }).chat === "Prompt für Alpha …";
+      claims[`${tag}the field reads "Nachricht" in the terminal and in the conversation — no name in it`] =
+        (facts.placeholder as { term: string; chat: string }).term === "Nachricht" && (facts.placeholder as { term: string; chat: string }).chat === "Nachricht";
 
       // THE TWO SHEETS (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter",
       // docs/design/mobil-insel-notiz.md §1 and §3). With the keyboard up, the field holds it until a
@@ -8332,7 +8409,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
       const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
       const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Für dich, Eingang, Geräte hidden here), Datensparen off`;
-      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Tasks", "Lands", "Protokoll", "Datensparen"]);
+      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Aufträge", "Lands", "Protokoll", "Datensparen"]);
       detail[trayClaim] = { tray: sess.tray, drawerHidden };
       const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "Neue Session" last`;
       const sr = sess.rows;
@@ -8356,13 +8433,15 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await openVia("#mslot", "sessions");
       await tap(`document.querySelector('#msheet .mshrow[data-slot="2"]')`);
       const toBeta = await wait("document.querySelector('#comptarget')?.dataset.slot === '2' && document.querySelector('#mtitle').textContent === 'Beta'", 3000);
-      facts.toBeta = { toBeta, sheet: await shown("#msheetwrap"), placeholder: await evaluate<string>("document.querySelector('#input').placeholder") };
+      facts.toBeta = { toBeta, sheet: await shown("#msheetwrap"), placeholder: await evaluate<string>("document.querySelector('#input').placeholder"),
+        foot: await evaluate<string>("document.querySelector('#compfootwt .wtname')?.textContent ?? ''") };
       await openVia("#mslot", "sessions");
       await tap(`document.querySelector('#msheet .mshrow[data-slot="1"]')`);
       const toAlpha = await wait("document.querySelector('#comptarget')?.dataset.slot === '1' && document.querySelector('#mtitle').textContent === 'Alpha'", 3000);
       await settle(300);
-      const tb = facts.toBeta as { toBeta: boolean; sheet: boolean; placeholder: string };
-      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the field reads "Prompt für Beta …"`] = tb.toBeta && !tb.sheet && tb.placeholder === "Prompt für Beta …" && toAlpha;
+      const tb = facts.toBeta as { toBeta: boolean; sheet: boolean; placeholder: string; foot: string };
+      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the foot line names Beta — the field still reads "Nachricht"`] =
+        tb.toBeta && !tb.sheet && tb.foot === "Beta" && tb.placeholder === "Nachricht" && toAlpha;
       // … Datensparen is the drawer's own switch …
       await openVia("#mslot", "sessions");
       await tapRow("Datensparen");
@@ -8383,35 +8462,36 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       facts.founding = founding;
       claims[`${tag}"Neue Session" opens the founding window`] = founding;
 
-      // --- the tools sheet, in the terminal
+      // --- Mehr (Konzept 2 §3, the sheet behind the strip's last symbol), in the terminal
       await kbUp();
       const ws0 = await evaluate<number>("window.__ws.filter((w) => w.url.includes('/ws/1?')).length");
       const toolsOpened = await openVia("#mmore", "tools");
       const tt = await readSheet();
-      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-terminal`);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-mehr-terminal`);
       facts.toolsTerm = tt;
       const anyCoarse = await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches");
-      const termWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Referenzen erklären", "Neu verbinden", "Schrift und Spalte", "Einstellungen"];
-      const toolsPlaced = `${tag}⋯ opens the sheet Werkzeuge: full width, at the foot of the visible screen, over a shade; head address and name`;
-      claims[toolsPlaced] = toolsOpened && placed(tt) && tt.where === "#msheet" && tt.head[0] === "1" && tt.head[1] === "Alpha";
+      // the Wecker lives here, not on the strip (owner 2026-10-07: „[Zitat entfernt]“)
+      const termWords = ["Wecker", "Frühere Nachrichten", ...(anyCoarse ? ["Direkt ins Terminal tippen"] : []), "Verweise erklären", "Neu verbinden", "Schrift und Spalte", "Einstellungen"];
+      const toolsPlaced = `${tag}Mehr opens its sheet: full width, at the foot of the visible screen, over a shade; its head the session's name, once`;
+      claims[toolsPlaced] = toolsOpened && placed(tt) && tt.where === "#msheet" && JSON.stringify(tt.head) === JSON.stringify(["Alpha"]);
       detail[toolsPlaced] = { sheet: tt.sheet, shade: tt.shade, bottom, head: tt.head, where: tt.where };
-      const termClaim = `${tag}in the terminal: Diese Session (History, Schedule, Live, Referenzen erklären, Neu verbinden) and Dieses Gerät (Schrift und Spalte, Einstellungen) — no model, no effort, no prompt jumps`;
+      const termClaim = `${tag}in the terminal: Diese Session (Wecker, Frühere Nachrichten, Direkt ins Terminal tippen, Verweise erklären, Neu verbinden) and Dieses Gerät (Schrift und Spalte, Einstellungen) — no model, no effort, no message jumps`;
       claims[termClaim] = tt.segs.length === 0 && JSON.stringify(tt.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
         && JSON.stringify(tt.rows.map((r) => r.word)) === JSON.stringify(termWords);
       detail[termClaim] = { rows: tt.rows, secs: tt.secs, segs: tt.segs, anyCoarse };
-      const termTargets = `${tag}every target in the tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      const termTargets = `${tag}every target in Mehr is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[termTargets] = tt.small.length === 0 && tt.missed.length === 0 && !tt.sideways;
       detail[termTargets] = { small: tt.small, missed: tt.missed, sideways: tt.sideways };
       // Neu verbinden is the pane's ↻ (a fresh socket for slot 1)
       await tap(rowSel("Neu verbinden"));
       const reconnected = await wait(`window.__ws.filter((w) => w.url.includes('/ws/1?')).length > ${ws0}`, 3000);
-      // Referenzen erklären is the pane's loupe; the sheet reads its state
+      // Verweise erklären is the pane's loupe; the sheet reads its state
       await openVia("#mmore", "tools");
-      await tap(rowSel("Referenzen erklären"));
+      await tap(rowSel("Verweise erklären"));
       const hoverOn = await evaluate<boolean>("window.__fx.pane().querySelector('.panehover').getAttribute('aria-pressed') === 'true'");
       await openVia("#mmore", "tools");
-      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Referenzen erklären")?.value ?? null;
-      await tap(rowSel("Referenzen erklären"));
+      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Verweise erklären")?.value ?? null;
+      await tap(rowSel("Verweise erklären"));
       // Einstellungen opens the settings window; Escape gives the focus back to the pill
       await openVia("#mmore", "tools");
       await tap(rowSel("Einstellungen"));
@@ -8419,86 +8499,102 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await escape();
       const settingsBack = await evaluate<string>("window.__fx.where()");
       facts.termActs = { reconnected, hoverOn, hoverRead, settingsOpen, settingsBack, sheetAfter: await shown("#msheetwrap") };
-      const termActs = `${tag}its rows do what the board's own controls do: Neu verbinden reconnects, Referenzen erklären switches the loupe (and reads "an"), Einstellungen opens the settings`;
+      const termActs = `${tag}its rows do what the board's own controls do: Neu verbinden reconnects, Verweise erklären switches the loupe (and reads "an"), Einstellungen opens the settings`;
       claims[termActs] = reconnected && hoverOn && hoverRead === "an" && settingsOpen && settingsBack === "#mpill" && !(facts.termActs as { sheetAfter: boolean }).sheetAfter;
       detail[termActs] = facts.termActs;
 
-      // --- the tools sheet, in the conversation: model and effort as segments, a press only marks
+      // --- Mehr in the conversation: the message jumps join, Neu verbinden leaves — and neither Modell
+      // nor Effort: they are the strip's own button (below), not a second copy here
       await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
       await wait("window.__fx.pane().classList.contains('chat')", 3000);
       await kbUp();
       await openVia("#mmore", "tools");
       const tc = await readSheet();
-      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-werkzeuge-konversation`);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-mehr-gespraech`);
       facts.toolsChat = tc;
-      const chatWords = ["History", "Schedule", ...(anyCoarse ? ["Live"] : []), "Voriger Prompt", "Nächster Prompt", "Referenzen erklären", "Schrift und Spalte", "Einstellungen"];
-      // one segment per model NAME of the adapter's list that is not superseded (the composer's rule),
-      // the slot's own pressed; a register notice after " · " is the switch's business, the name is
-      // what is compared here
-      const names = todayNames;
-      const segNames = (tc.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
-      const chatClaim = `${tag}in the conversation: Modell and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), prompt jumps, no Neu verbinden`;
-      claims[chatClaim] = JSON.stringify(tc.secs) === JSON.stringify(["Modell", "Effort", "Diese Session", "Dieses Gerät"])
-        && tc.segs[0]?.field === "model" && tc.segs[0].apply === false && JSON.stringify(segNames) === JSON.stringify(names.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
-        && JSON.stringify(tc.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "xhigh"], apply: false })
+      const chatWords = ["Wecker", "Frühere Nachrichten", ...(anyCoarse ? ["Direkt ins Terminal tippen"] : []), "Vorige Nachricht", "Nächste Nachricht", "Verweise erklären", "Schrift und Spalte", "Einstellungen"];
+      const chatClaim = `${tag}Mehr in the conversation: the message jumps, no Neu verbinden — and neither Modell nor Effort, which are the strip's`;
+      claims[chatClaim] = tc.segs.length === 0 && JSON.stringify(tc.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
         && JSON.stringify(tc.rows.map((r) => r.word)) === JSON.stringify(chatWords);
-      detail[chatClaim] = { secs: tc.secs, segs: tc.segs, names, rows: tc.rows };
-      const chatTargets = `${tag}every target in the conversation's tools sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      detail[chatClaim] = { secs: tc.secs, segs: tc.segs, rows: tc.rows, anyCoarse };
+      const chatTargets = `${tag}every target in Mehr in the conversation is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[chatTargets] = tc.small.length === 0 && tc.missed.length === 0 && !tc.sideways;
       detail[chatTargets] = { small: tc.small, missed: tc.missed, sideways: tc.sideways };
-      fitClaims(claims, detail, tag, "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
-      applyClaim(claims, detail, tag, await evaluate<ApplyRead>(APPLY));
+      await sheetGone();
+
+      // --- MODELL UND EFFORT (the owner's „[Zitat entfernt]“, 2026-10-07): a popover at the strip's
+      // button, the composer's own two switches as segments (src/composer.ts#optChoices); a press only
+      // marks, ONE Übernehmen hands the one marked pick to the switch's own Apply. The strip stays open.
+      const dirOpened = await openDirect();
+      const dp = await readDirect();
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-modell-effort`);
+      facts.direct = dp;
+      const segNames = (dp.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
+      const dirClaim = `${tag}Modell und Effort opens its popover at the button and the strip stays open: Modell and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), the effort in words, ONE Übernehmen, not ready yet`;
+      claims[dirClaim] = dirOpened && dp.shown && dp.islandOpen && dp.expanded === "true" && JSON.stringify(dp.secs) === JSON.stringify(["Modell", "Effort"])
+        && dp.segs[0]?.field === "model" && JSON.stringify(segNames) === JSON.stringify(todayNames.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
+        && JSON.stringify(dp.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig", "mittel", "hoch*", "sehr hoch"] })
+        && dp.applies === 1 && !dp.ready;
+      detail[dirClaim] = { ...dp, todayNames };
+      const dirTargets = `${tag}Modell und Effort · every target is at least 40 px high and met by a finger at its centre, the popover inside the screen${keyboard ? " above the keyboard" : ""}`;
+      claims[dirTargets] = dp.small.length === 0 && dp.missed.length === 0 && !!dp.box && dp.box.x >= 0 && dp.box.r <= W && dp.box.b <= bottom;
+      detail[dirTargets] = { small: dp.small, missed: dp.missed, box: dp.box, bottom };
+      fitClaims(claims, detail, tag, "Modell und Effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
+      directApplyClaim(claims, detail, tag, dp);
       const posts0 = fx.posts.length;
-      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] button[data-v="low"]')`);
-      const staged = await readSheet();
+      await tap(`document.querySelector('#mdirpop .mshsegs[data-field="effort"] button[data-v="low"]')`);
+      const staged = await readDirect();
       const postsAfterPress = fx.posts.length - posts0;
-      await tap(`document.querySelector('#msheet .mshseg[data-field="effort"] .mshapply')`);
+      await tap("document.querySelector('#mdirpop .mdapply')");
+      const closedByApply = !await isOpen();
       await wait(`window.__fx.shown(document.querySelector('#compopts .optpop.effort.open'))`, 3000);
       await settle(400);
       const effortPosts = fx.posts.slice(posts0).filter((x) => x.path === "/api/slots/1/model").map((x) => x.body);
       const effortPop = await box("document.querySelector('#compopts .optpop.effort.open')");
-      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-effort-uebernommen`);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-effort-uebernommen`);
       await tapAt({ x: W / 2, y: Math.round(bottom * 0.4) }, "outside the effort popover"); // the verdict repaint took its focus
-      facts.effort = { staged: staged.segs, still: staged.where, postsAfterPress, effortPosts, effortPop,
+      facts.effort = { staged: staged.segs, ready: staged.ready, postsAfterPress, closedByApply, effortPosts, effortPop,
         popGone: await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')") };
-      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the sheet and the switch's own Apply writes it`;
-      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["low+", "medium", "high*", "xhigh"], apply: true })
-        && postsAfterPress === 0 && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low" })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
+      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the island and the switch's own Apply writes it`;
+      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig+", "mittel", "hoch*", "sehr hoch"] }) && staged.ready
+        && postsAfterPress === 0 && closedByApply && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low" })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
         && (facts.effort as { popGone: boolean }).popGone;
       detail[effortClaim] = facts.effort;
-      // the model asks first, exactly as the switch at the field does — nothing goes out before the answer
-      await openVia("#mmore", "tools");
+      // one pick at a time, and the model asks first, exactly as the switch at the field does — nothing goes out before the answer
+      await openDirect();
       const posts1 = fx.posts.length;
-      // the finger brings Sonnet 5.5 into view first (with the keyboard up the list scrolls)
-      const sonnet = `[...document.querySelectorAll('#msheet .mshseg[data-field="model"] .mshsegs button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
-      await evaluate(`${sonnet}?.scrollIntoView({ inline: 'center', block: 'nearest' })`);
-      await settle(150);
+      await tap(`document.querySelector('#mdirpop .mshsegs[data-field="effort"] button[data-v="medium"]')`);
+      const sonnet = `[...document.querySelectorAll('#mdirpop .mshsegs[data-field="model"] button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
       await tap(sonnet);
-      const stagedModel = (await readSheet()).segs[0];
-      await tap(`document.querySelector('#msheet .mshseg[data-field="model"] .mshapply')`);
+      const stagedModel = await readDirect();
+      const onePick = `${tag}one pick at a time: marking a model takes a marked effort back, so the one Übernehmen makes exactly one change`;
+      claims[onePick] = stagedModel.ready && stagedModel.segs[0]?.values.some((v) => v.startsWith("Sonnet 5.5") && v.endsWith("+"))
+        && JSON.stringify(stagedModel.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig", "mittel", "hoch*", "sehr hoch"] });
+      detail[onePick] = stagedModel.segs;
+      await tap("document.querySelector('#mdirpop .mdapply')");
       const asks = await wait("window.__fx.shown(document.querySelector('#compopts .optpop.model.open .optconfirm'))", 3000);
       const askBox = await box("document.querySelector('#compopts .optpop.model.open .optconfirm')");
-      await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-modell-fragt`);
+      await shot(`${W}${keyboard ? "-tastatur" : ""}-modell-fragt`);
       const modelPosts = fx.posts.slice(posts1).filter((x) => x.path === "/api/slots/1/model").length;
       await tap("document.querySelector('#compopts .optpop.model.open .cmdcancel')");
       await escape();
       const popGone = await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')");
-      facts.model = { staged: stagedModel, asks, askBox, modelPosts, popGone, missing: [...missing] };
+      facts.model = { staged: stagedModel.segs, asks, askBox, modelPosts, popGone, missing: [...missing] };
       const modelClaim = `${tag}Übernehmen on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
       claims[modelClaim] = asks && modelPosts === 0 && !!askBox && askBox.y >= 0 && askBox.b <= bottom && popGone;
       detail[modelClaim] = facts.model;
       if (!keyboard) {
-        // the same session moved onto claude-opus-5: the sheet keeps it as the pressed segment, with its notice
+        // the same session moved onto claude-opus-5: the popover keeps it as the pressed segment, with its notice
         await moveAlpha(OLD_MODEL);
         await settle(400);
-        await openVia("#mmore", "tools");
-        const oldSegs = (await readSheet()).segs[0];
-        await shot(`${W}-blatt-werkzeuge-opus5`);
-        await escape();
+        await openDirect();
+        const oldSegs = (await readDirect()).segs[0];
+        await shot(`${W}-modell-effort-opus5`);
+        await tap("document.querySelector('#mname')");
         await moveAlpha("claude-opus-5-5");
         await settle(400);
         const oldNames = (oldSegs?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
-        const oldClaim = `Werkzeuge · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
+        const oldClaim = `Modell und Effort · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
         claims[oldClaim] = oldSegs?.field === "model" && (oldSegs.values ?? []).includes(`Opus 5 · ${OLD_NOTICE}*`)
           && JSON.stringify(oldNames) === JSON.stringify(oldOffer.map((n) => n === "Opus 5" ? "Opus 5*" : n));
         detail[oldClaim] = { oldSegs, oldOffer };
@@ -8564,11 +8660,16 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
       const chat = await wait("window.__fx.pane().classList.contains('chat')", 3000);
       const toolsOpened = await openVia("#mmore", "tools");
-      fitClaims(claims, detail, "", "Werkzeuge", await evaluate<FitRead>(FIT), ["model", "effort"]);
-      applyClaim(claims, detail, "", await evaluate<ApplyRead>(APPLY));
-      await shot(`${NW}-blatt-werkzeuge-konversation`);
-      Object.assign(facts, { sessOpened, chat, toolsOpened, missing: [...missing] });
-      claims["both sheets open here: Sessions from the slot button, Werkzeuge from ⋯ in the conversation"] = sessOpened && chat && toolsOpened;
+      await shot(`${NW}-blatt-mehr-gespraech`);
+      await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200);
+      // Modell und Effort's segments at the narrow width: they break into lines, nothing cut
+      const directOpened = await openDirect();
+      fitClaims(claims, detail, "", "Modell und Effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
+      directApplyClaim(claims, detail, "", await readDirect());
+      await shot(`${NW}-modell-effort`);
+      await tap("document.querySelector('#mname')");
+      Object.assign(facts, { sessOpened, chat, toolsOpened, directOpened, missing: [...missing] });
+      claims["Sessions, Mehr and Modell und Effort open here, in the conversation"] = sessOpened && chat && toolsOpened && directOpened;
       missing.length = 0;
       results.push({ width: NW, height: NH, claims, facts, detail });
     }
@@ -8657,18 +8758,19 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
             btns: [...c.querySelectorAll('button')].map((x) => x.textContent), hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
       facts.infoCard = card;
       await shot(`${W}-alarm-in-info`);
-      const cardClaim = "…and ℹ on the island opens Info with the alarm as its first card: \"Der Check nach dem Land ist rot\", Ansehen · Gesehen under a finger";
-      claims[cardClaim] = !!card && card.first && card.t === "Der Check nach dem Land ist rot" && JSON.stringify(card.btns) === JSON.stringify(["Ansehen", "Gesehen"]) && card.hit;
+      const cardClaim = "…and Info on the island opens Info with the alarm as its first card: \"Der Check nach dem Land in alpha ist rot\", Gesehen · Ansehen under a finger";
+      claims[cardClaim] = !!card && card.first && card.t === "Der Check nach dem Land in alpha ist rot" && JSON.stringify(card.btns) === JSON.stringify(["Gesehen", "Ansehen"]) && card.hit;
       detail[cardClaim] = card;
       await escape();
       facts.infoClosed = await evaluate<boolean>("!window.__fx.shown(document.querySelector('#board'))");
       fx.alarm = false;
-      // the field, under a name long enough to wrap its placeholder in the island's field
-      const LONG = "Claude Fleet · MAIN · Opus 5.5";
+      // the field, under a name long enough to have wrapped the placeholder that once carried it
+      // the foot line draws the name without the model the label carries (src/client.ts#nameWithoutModel)
+      const LONG = "Claude Fleet · MAIN · Opus 5.5", LONG_NAME = "Claude Fleet · MAIN";
       alpha.label = LONG;
       const seen = fx.sessions;
       while (fx.sessions <= seen + 1) await Bun.sleep(50);
-      await wait(`document.querySelector('#input').placeholder === ${JSON.stringify(`Prompt für ${LONG} …`)}`, 4000);
+      await wait(`document.querySelector('#compfootwt .wtname')?.textContent === ${JSON.stringify(LONG_NAME)}`, 4000);
       // a poll rewrites the placeholder but fits no field; the view switch there and back mounts the
       // composer (src/composer.ts#setComposerSize → fitTextarea), as a boot under that name does
       for (const chat of [true, false]) {
@@ -8679,13 +8781,13 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const FIELD = `(() => { const t = document.querySelector('#input'), c = getComputedStyle(t), r = t.getBoundingClientRect();
         const line = parseFloat(c.lineHeight), pad = parseFloat(c.paddingTop) + parseFloat(c.paddingBottom);
         const m = document.createElement('canvas').getContext('2d'); m.font = c.font;
-        return { h: Math.round(r.height), one: Math.round(line + pad), line, pad, value: t.value, ph: t.placeholder,
+        return { h: Math.round(r.height), one: Math.round(line + pad), line, pad, value: t.value, ph: t.placeholder, foot: document.querySelector('#compfootwt .wtname')?.textContent ?? null,
           phWide: Math.round(m.measureText(t.placeholder).width), inner: Math.round(t.clientWidth - parseFloat(c.paddingLeft) - parseFloat(c.paddingRight)) }; })()`;
-      type Field = { h: number; one: number; line: number; pad: number; value: string; ph: string; phWide: number; inner: number };
+      type Field = { h: number; one: number; line: number; pad: number; value: string; ph: string; foot: string | null; phWide: number; inner: number };
       const empty = await evaluate<Field>(FIELD);
       await shot(`${W}-feld-leer`);
-      const emptyClaim = "the empty field is exactly one text line high, even with a placeholder wider than the field";
-      claims[emptyClaim] = !!empty && empty.value === "" && empty.phWide > empty.inner && Math.abs(empty.h - empty.one) <= 1;
+      const emptyClaim = "under a long name the empty field is exactly one text line high: it reads \"Nachricht\", the name stands once, in the foot line";
+      claims[emptyClaim] = !!empty && empty.value === "" && empty.ph === "Nachricht" && empty.phWide <= empty.inner && empty.foot === LONG_NAME && Math.abs(empty.h - empty.one) <= 1;
       detail[emptyClaim] = empty;
       await tap("document.querySelector('#input')");
       const enter = async () => {
@@ -8715,6 +8817,379 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       Object.assign(facts, { inputs: [...fx.inputs], missing: [...missing] });
       missing.length = 0;
       results.push({ width: W, height: H, claims, facts, detail });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THE STRIP AND THE FOOT LINE (the owner's pick of 2026-10-07 from Konzept 2, Variante C: „[Zitat entfernt]“
+// 
+// 
+// doch vielleicht eher Direkteinstellungen ... The whole thing is too fucking verbose"; and the foot,
+// where the session's name stood three times), measured on the real client bundle behind the fixture
+// origin, same rig as runPhoneIslandDom: upright at 390 × 844 (touch, still) the open island — one
+// capsule with the dot and the name left and exactly four symbols right, no word under them, each
+// word held and heard; Sessions and Info as words under it; one card "jetzt" + Arbeitsort only when
+// known; no Wecker, no hint card, no waiting count —, Mehr, Modell und Effort, Suchen in both views;
+// at 390 and at 1440 × 900 the foot line: the name once, the branch behind it, a rebuild as a dot, no
+// model, no context. Every visible text read on the phone is held against grammatik G0.5 and against
+// repeating what its own surface already says. Every claim reads the DOM; STRIP_MUTANTS turns each one
+// red against a mutated bundle (run() drives them): a mutant boots once, at its one width, and runs
+// only the steps its claim is read in.
+export type StripStep = "island" | "hold" | "direct" | "sessions" | "mehr" | "find" | "ort" | "foot";
+export type StripMutant = { name: string; width: 390 | 1440; steps: readonly StripStep[]; claims: readonly string[];
+  file: "src/client.ts" | "src/composer.ts" | "src/board.ts" | "public/index.html"; needle: string; with: string };
+export const STRIP_MUTANTS: readonly StripMutant[] = [
+  { name: "a fifth symbol (the Wecker) on the strip", width: 390, steps: ["island"], claims: ["exactly four symbols right", "no Wecker, no hint card"],
+    file: "public/index.html", needle: `<button id="mmore" class="mib"`,
+    with: `<button id="mwecker" class="mib" type="button" aria-label="Wecker" title="Wecker"></button><button id="mmore" class="mib"` },
+  { name: "a word beside a symbol", width: 390, steps: ["island"], claims: ["no word with the symbols"],
+    file: "src/client.ts", needle: `mFind.appendChild(icon("search"));`, with: `mFind.append(icon("search"), "Suchen");` },
+  { name: "the view symbol shows where it is, not where it goes", width: 390, steps: ["island"], claims: ["the view symbol shows where it goes"],
+    file: "src/client.ts", needle: `mView.replaceChildren(icon(chat ? "terminal" : "chat"));`, with: `mView.replaceChildren(icon(chat ? "chat" : "terminal"));` },
+  { name: "a held symbol shows no word", width: 390, steps: ["hold"], claims: ["a finger held on a symbol"],
+    file: "src/client.ts", needle: `mHold.textContent = word;`, with: `mHold.textContent = "";` },
+  { name: "Modell und Effort closes the strip", width: 390, steps: ["direct"], claims: ["Modell und Effort opens its popover"],
+    file: "src/client.ts", needle: `mDirect.onclick = () => setDirect(!directOpen);`, with: `mDirect.onclick = islandAction(() => setDirect(true));` },
+  { name: "a second Übernehmen", width: 390, steps: ["direct"], claims: ["Modell und Effort opens its popover"],
+    file: "src/client.ts", needle: `    parts.push(apply);`, with: `    parts.push(apply, apply.cloneNode(true) as HTMLElement);` },
+  { name: "the waiting count back in the Sessions head", width: 390, steps: ["sessions"], claims: ["counts what is open, not who waits"],
+    file: "src/client.ts", needle: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} offen`));",
+    with: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} offen · 1 wartet auf dich`));" },
+  { name: "the Wecker gone from Mehr", width: 390, steps: ["mehr"], claims: ["Mehr holds the Wecker"],
+    file: "src/client.ts", needle: `sheetRow("mshrow", "clock", "Wecker",`, with: `sheetRow("mshrow", "clock", "Geplant",` },
+  { name: "an English word in Mehr", width: 390, steps: ["mehr"], claims: ["German, with none of grammatik G0.5"],
+    file: "src/client.ts", needle: `"Frühere Nachrichten"`, with: `"History"` },
+  { name: "Suchen only in the terminal", width: 390, steps: ["find"], claims: ["Suchen searches in both views"],
+    file: "src/client.ts", needle: `mFind.hidden = !slot || !view;`, with: `mFind.hidden = !slot || !view || chat;` },
+  { name: "an Arbeitsort guessed without a known worktree", width: 390, steps: ["island"], claims: ["no Arbeitsort line while none is known"],
+    file: "src/board.ts", needle: `const where = s?.cwd && (s.git || s.worktree) && repo ? baseName(repo) : "";`, with: `const where = s?.cwd && repo ? baseName(repo) : "";` },
+  { name: "the card repeats the name", width: 390, steps: ["ort"], claims: ["the card names it", "repeats what it already says"],
+    file: "src/board.ts", needle: `b.append(icon("branch"), el("span", "wtname", where));`, with: "b.append(icon(\"branch\"), el(\"span\", \"wtname\", `${name} · ${where}`));" },
+  { name: "the placeholder names the session again", width: 390, steps: ["foot"], claims: ["the foot line names the session once"],
+    file: "src/composer.ts", needle: "return `Nachricht${isMobile() ? \"\" : \" — Enter sendet\"}`;", with: "return `Nachricht an ${s.label ?? \"\"}`;" },
+  { name: "the send target draws the name again", width: 1440, steps: ["foot"], claims: ["the foot line names the session once"],
+    file: "src/composer.ts", needle: `if (takes) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }`, with: `if (false) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }` },
+  { name: "the model back in the foot line", width: 1440, steps: ["foot"], claims: ["the foot line names the session once"],
+    file: "src/board.ts", needle: `const name = s?.cwd ? nameWithoutModel(s) : "";`, with: "const name = s?.cwd ? `${nameWithoutModel(s)} · Opus 5.5` : \"\";" },
+  { name: "the branch before the name", width: 390, steps: ["foot"], claims: ["the foot line names the session once"],
+    file: "src/board.ts", needle: `    b.append(el("span", "wtname", name));\n    if (branch) b.append(el("span", "wtsep", "·"), el("span", "wtref", branch));`,
+    with: `    if (branch) b.append(el("span", "wtref", branch), el("span", "wtsep", "·"));\n    b.append(el("span", "wtname", name));` },
+  { name: "the rebuild as a word", width: 390, steps: ["foot"], claims: ["a rebuild shows as a dot"],
+    file: "src/board.ts", needle: `const d = el("span", "wtdot");`, with: `const d = el("span", "wtdot", "Seite neu bauen");` },
+  { name: "no rebuild dot", width: 1440, steps: ["foot"], claims: ["a rebuild shows as a dot"],
+    file: "src/board.ts", needle: `if (!rebuild && !restart) return null;`, with: `return null;` },
+];
+export interface StripDomResult { width: number; height: number; claims: Record<string, boolean>; detail: Record<string, unknown> }
+export async function runStripDom(sourceRoot: string, only: { mutate?: StripMutant } = {}): Promise<StripDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-strip-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const m = only.mutate;
+  let applied = !m || m.file === "public/index.html";
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
+    plugins: m && m.file !== "public/index.html" ? [{ name: "strip-mutant", setup(build) {
+      const target = resolve(sourceRoot, m.file);
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
+        if (path !== target) return;
+        const source = readFileSync(path, "utf8");
+        applied = source.includes(m.needle);
+        return { contents: source.replace(m.needle, m.with), loader: "ts" };
+      });
+    } }] : [] });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (m?.file === "public/index.html") { applied = indexHtml.includes(m.needle); indexHtml = indexHtml.replace(m.needle, m.with); }
+  if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`strip mutant: needle not in ${m!.file}: ${m!.needle.slice(0, 80)}`); }
+  const appJs = await built.outputs[0].text();
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  // the glyphs the view symbol may show, read from their one source (src/icons.ts#PATHS)
+  const iconsSrc = readFileSync(resolve(sourceRoot, "src/icons.ts"), "utf8");
+  const glyph = (name: string): string => JSON.stringify(JSON.parse(`[${new RegExp(`^  ${name}: \\[(.*)\\],$`, "m").exec(iconsSrc)?.[1] ?? ""}]`));
+  const GLYPH = { chat: glyph("chat"), terminal: glyph("terminal") };
+  const BRANCH = "fleet/261008-insel-1b2c";
+  const alpha: Record<string, unknown> = { id: 1, cwd: "/fixture/nordwerk", repo: "/fixture/nordwerk", label: "Alpha", openedAt: 1000, model: "claude-opus-5-5", effort: "high", lastOutput: 0 };
+  // Beta waits on the owner: the island and the Sessions head must still count no one
+  const slots = [alpha, { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000, lastOutput: 0, awaiting: "owner" },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))];
+  const fx = { sessions: 0, stale: false };
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"], models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  const FAKE = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    window.__fx = { shown: (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]'),
+      box: (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) }; },
+      text: (e) => e && window.__fx.shown(e) ? e.innerText : '' }; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("strip DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const mm = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (mm) return mm[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: [], slots, tasks: [],
+        ...(fx.stale ? { bundleStale: { appJsMtime: 1, shareJsMtime: 1, helperJsMtime: 1, srcNewestMtime: 2, stale: true } } : {}) }); }
+      if (p === "/api/harnesses") return void json(requestId, HARNESSES);
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const wait = (condition: string, ms = 4000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const centre = (expression: string) => evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e || !window.__fx.shown(e)) return null;
+      const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; return e.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`);
+    const mouse = (type: string, at: { x: number; y: number }) => send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+    const tap = async (expression: string): Promise<boolean> => {
+      const at = await centre(expression);
+      if (!at) { missing.push("tap " + expression.slice(0, 100)); return false; }
+      await mouse("mouseMoved", at); await mouse("mousePressed", at); await mouse("mouseReleased", at);
+      await settle();
+      return true;
+    };
+    const escape = async () => { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(300); };
+    // one poll that left after a fixture change carries it; the page paints it in the same task
+    const poll = async () => { const at = fx.sessions; for (let i = 0; i < 80 && fx.sessions < at + 1; i++) await Bun.sleep(50); await settle(250); };
+    const boot = async (width: number, height: number) => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = undefined;
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE });
+      const phone = width < 700;
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setTouchEmulationEnabled", phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: "http://fleet.fixture/blank" }); await Promise.race([done, Bun.sleep(15000)]);
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); localStorage.setItem('fleet.board', '0'); })()`);
+      const done2 = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: "http://fleet.fixture/" }); await Promise.race([done2, Bun.sleep(15000)]);
+      const booted = await wait(`document.querySelector('#panes .pane .xterm') && window.__ws.some((w) => w.readyState === 1) && document.querySelector('#mtitle').textContent === 'Alpha'`, 12000);
+      if (!booted) throw new Error("strip DOM: the client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await settle(400);
+    };
+    const isOpen = () => evaluate<boolean>("document.body.classList.contains('mopen')");
+    const openIsland = async () => { if (!await isOpen()) await tap("document.querySelector('#mpill')"); return wait("document.body.classList.contains('mopen')", 2000); };
+    const closeAll = async () => { for (let i = 0; i < 3; i++) { if (!await evaluate<boolean>("document.body.classList.contains('mopen') || document.body.classList.contains('msheet') || !!document.querySelector('.pane .termfind.open')")) break;
+      if (await isOpen()) await tap("document.querySelector('#mname')"); else await escape(); } };
+    const toView = async (chat: boolean) => {
+      if (await evaluate<boolean>("document.querySelector('#panes .pane').classList.contains('chat')") === chat) return;
+      await openIsland(); await tap("document.querySelector('#mview')");
+      await wait(`${chat ? "" : "!"}document.querySelector('#panes .pane').classList.contains('chat')`, 3000); await settle(200);
+    };
+    // what a surface says, as the eye reads it (innerText: nothing hidden, nothing behind display: none)
+    const count = (text: string, word: string) => text.split(word).length - 1;
+    const FORBIDDEN = /\b(baton|succession|rail|audit|suite|gate|mutex|tier|carry|srv|bundle|seed|ttl|ctx|only|prompts?|history|schedule|live|tasks?|apply|switch|cancel|default|reload|reconnect|tools?)\b/i;
+
+    const results: StripDomResult[] = [];
+    const widths = m ? [m.width] : [390, 1440] as const;
+    for (const width of widths) {
+      const height = width === 390 ? 844 : 900;
+      const claims: Record<string, boolean> = {}, detail: Record<string, unknown> = {};
+      const say = (claim: string, ok: boolean, facts: unknown) => { claims[claim] = ok; detail[claim] = facts; };
+      const steps: readonly StripStep[] = m ? m.steps : width === 390 ? ["island", "direct", "hold", "sessions", "mehr", "find", "ort", "foot"] : ["foot"];
+      // the surfaces read on the phone, for the language and the repeats at the end
+      const surfaces: { surface: string; text: string }[] = [];
+      alpha.git = steps.every((s) => s === "ort" || s === "foot") ? { branch: BRANCH, dirty: 0, ahead: 0, behind: 0 } : undefined;
+      fx.stale = false;
+      await boot(width, height);
+      for (const step of steps) {
+        if (step === "island") {
+          await openIsland();
+          const r = await evaluate<{ capsule: string[]; name: string; dot: boolean; inGlass: boolean; ids: string[]; labels: string[]; words: string[]; svgs: number[];
+            view: string; viewGlyph: string; below: string[]; wordBtns: string[]; now: string; ort: number; ortShown: boolean; strip: string; card: string }>(`(() => { const f = window.__fx;
+            const g = document.querySelector('#mglas').getBoundingClientRect(), inside = (e) => { const r = e.getBoundingClientRect(); return r.left >= g.left - 0.5 && r.right <= g.right + 0.5 && r.top >= g.top - 0.5 && r.bottom <= g.bottom + 0.5; };
+            const syms = [...document.querySelectorAll('#mtools > *')].filter(f.shown), nm = document.querySelector('#mname');
+            const ml1 = nm.querySelector('.ml1');
+            return { capsule: [...document.querySelector('#mopen .mz1').children].filter(f.shown).map((e) => e.id || e.className),
+              name: nm.innerText.trim(), dot: !!ml1 && ml1.firstElementChild?.classList.contains('act') && ml1.lastElementChild?.classList.contains('mnm'),
+              inGlass: [nm, ...syms].every(inside), ids: syms.map((b) => b.id), labels: syms.map((b) => b.getAttribute('aria-label') + '|' + b.title),
+              words: syms.map((b) => b.textContent.trim()), svgs: syms.map((b) => b.tagName === 'BUTTON' ? b.querySelectorAll('svg').length : -1),
+              view: document.querySelector('#mview').getAttribute('aria-label'), viewGlyph: JSON.stringify([...document.querySelectorAll('#mview svg path')].map((p) => p.getAttribute('d'))),
+              below: [...document.querySelector('#mbelow').children].filter(f.shown).map((e) => e.id || e.className),
+              wordBtns: [...document.querySelectorAll('#mbelow .mz2 > *')].filter(f.shown).map((b) => b.tagName + ':' + b.textContent.trim()),
+              now: f.text(document.querySelector('#mnowl')).trim(), ort: document.querySelector('#mort').childNodes.length, ortShown: f.shown(document.querySelector('#mort')),
+              strip: f.text(document.querySelector('#mopen')), card: f.text(document.querySelector('#mbelow')) }; })()`);
+          surfaces.push({ surface: "Insel", text: `${r.strip}\n${r.card}\n${r.labels.map((l) => l.split("|")[0]).join("\n")}` });
+          say("the open island is ONE capsule: the dot and the name left, exactly four symbols right, in the same glass",
+            JSON.stringify(r.capsule) === JSON.stringify(["mname", "msep", "mtools"]) && r.name === "Alpha" && r.dot && r.inGlass
+            && JSON.stringify(r.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]), r);
+          say("no word with the symbols: each is a <button> with one glyph and no text, its word in aria-label and title alike — Gespräch, Suchen, Modell und Effort, Mehr",
+            r.words.every((w) => w === "") && r.svgs.every((n) => n === 1)
+            && JSON.stringify(r.labels) === JSON.stringify(["Gespräch|Gespräch", "Suchen|Suchen", "Modell und Effort|Modell und Effort", "Mehr|Mehr"]), { words: r.words, svgs: r.svgs, labels: r.labels });
+          say("the view symbol shows where it goes: in the terminal it reads Gespräch and draws the conversation's glyph",
+            r.view === "Gespräch" && r.viewGlyph === GLYPH.chat, { view: r.view, glyph: r.viewGlyph, chat: GLYPH.chat });
+          say("under the strip exactly the word buttons Sessions and Info, then ONE card saying what the session does now — and no Arbeitsort line while none is known",
+            JSON.stringify(r.below) === JSON.stringify(["mz2", "mnow"]) && JSON.stringify(r.wordBtns) === JSON.stringify(["BUTTON:Sessions", "BUTTON:Info"])
+            && /^(Still|Arbeitet gerade)/.test(r.now) && r.ort === 0 && !r.ortShown, { below: r.below, wordBtns: r.wordBtns, now: r.now, ort: r.ort, ortShown: r.ortShown });
+          say("no Wecker, no hint card and no waiting count in the island — though Beta waits on the owner",
+            !/Wecker|Geplant/i.test(`${r.strip}\n${r.card}\n${r.labels.join("\n")}`) && !/wartet|warten/i.test(`${r.strip}\n${r.card}`) && r.below.length === 2,
+            { strip: r.strip, card: r.card, labels: r.labels });
+          await closeAll();
+        }
+        if (step === "hold") {
+          await openIsland();
+          const at = await centre("document.querySelector('#mmore')");
+          let held: { shown: boolean; word: string; under: boolean } | null = null;
+          if (at) {
+            await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
+            await Bun.sleep(450);
+            held = await evaluate<{ shown: boolean; word: string; under: boolean }>(`(() => { const h = document.querySelector('#mhold'), r = h.getBoundingClientRect(), b = document.querySelector('#mmore').getBoundingClientRect();
+              return { shown: window.__fx.shown(h), word: h.textContent, under: r.top >= b.bottom && Math.abs((r.left + r.width / 2) - (b.left + b.width / 2)) <= 2 }; })()`);
+            await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          }
+          const pressed = await wait("document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'tools'", 2000);
+          say("a finger held on a symbol for 300 ms shows its word in a capsule under it — Mehr under Mehr — and letting go there presses it",
+            !!held && held.shown && held.word === "Mehr" && held.under && pressed, { held, pressed });
+          await closeAll();
+          await settle(450); // the island swallows the engine's click for 400 ms after a finger lets go (islandRelease)
+        }
+        if (step === "direct") {
+          await openIsland();
+          await tap("document.querySelector('#mdirect')");
+          await wait("!document.querySelector('#mdirpop').hidden", 2000); await settle(150);
+          const d = await evaluate<{ shown: boolean; open: boolean; secs: string[]; segs: string[]; applies: number; below: boolean; text: string }>(`(() => { const p = document.querySelector('#mdirpop');
+            return { shown: window.__fx.shown(p), open: document.body.classList.contains('mopen'), secs: [...p.querySelectorAll('.mdsec')].map((e) => e.textContent),
+              segs: [...p.querySelectorAll('.mshsegs')].map((r) => r.dataset.field + ':' + r.querySelectorAll('button').length),
+              applies: [...p.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Übernehmen').length,
+              below: p.getBoundingClientRect().top >= document.querySelector('#mdirect').getBoundingClientRect().bottom, text: window.__fx.text(p) }; })()`);
+          surfaces.push({ surface: "Modell und Effort", text: d.text });
+          say("Modell und Effort opens its popover at the button, the strip stays open: the Modell and the Effort segments and exactly one Übernehmen",
+            d.shown && d.open && d.below && JSON.stringify(d.secs) === JSON.stringify(["Modell", "Effort"]) && d.segs.length === 2 && d.segs[0].startsWith("model:") && d.segs[1] === "effort:4"
+            && d.applies === 1, d);
+          await closeAll();
+        }
+        if (step === "sessions") {
+          await openIsland(); await tap("document.querySelector('#mslot')");
+          await wait("document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'sessions'", 3000); await settle(200);
+          const sh = await evaluate<{ head: string[]; text: string }>(`({ head: [...document.querySelectorAll('#msheet .mshhead > *')].map((e) => e.textContent), text: window.__fx.text(document.querySelector('#msheet')) })`);
+          surfaces.push({ surface: "Sessions", text: sh.text });
+          say("the Sessions sheet counts what is open, not who waits: \"2 offen\" though Beta waits on the owner",
+            JSON.stringify(sh.head) === JSON.stringify(["Sessions", "2 offen"]) && !/\d+\s+(wartet|warten)/.test(sh.text), sh);
+          await closeAll();
+        }
+        if (step === "mehr") {
+          await openIsland(); await tap("document.querySelector('#mmore')");
+          await wait("document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'tools'", 3000); await settle(200);
+          const sh = await evaluate<{ rows: string[]; text: string }>(`({ rows: [...document.querySelectorAll('#msheet .mshrow')].filter(window.__fx.shown).map((b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim()),
+            text: window.__fx.text(document.querySelector('#msheet')) })`);
+          surfaces.push({ surface: "Mehr", text: sh.text });
+          say("Mehr holds the Wecker, first under Diese Session — the strip does not", sh.rows[0] === "Wecker", sh.rows);
+          await closeAll();
+        }
+        if (step === "find") {
+          const findIn = async () => { await openIsland(); await tap("document.querySelector('#mfind')");
+            const open = await wait("!!document.querySelector('.pane .termfind.open')", 2000);
+            const r = { open, ph: await evaluate<string>("document.querySelector('.pane .termfindin')?.placeholder ?? ''"), focus: await evaluate<boolean>("document.activeElement === document.querySelector('.pane .termfindin')") };
+            await closeAll(); return r; };
+          const term = await findIn();
+          await toView(true);
+          await openIsland();
+          const chatView = await evaluate<{ view: string; glyph: string }>(`({ view: document.querySelector('#mview').getAttribute('aria-label'), glyph: JSON.stringify([...document.querySelectorAll('#mview svg path')].map((p) => p.getAttribute('d'))) })`);
+          const chat = await findIn();
+          surfaces.push({ surface: "Suchen", text: `${term.ph}\n${chat.ph}` });
+          say("Suchen searches in both views: the terminal's history, and the conversation (Im Gespräch suchen), the caret in the field",
+            term.open && term.focus && term.ph === "Im Verlauf suchen" && chat.open && chat.focus && chat.ph === "Im Gespräch suchen", { term, chat });
+          say("…and in the conversation the view symbol reads Terminal and draws the terminal's glyph", chatView.view === "Terminal" && chatView.glyph === GLYPH.terminal, chatView);
+          await toView(false);
+        }
+        if (step === "ort") {
+          if (!alpha.git) { alpha.git = { branch: BRANCH, dirty: 0, ahead: 0, behind: 0 }; await poll(); }
+          await openIsland();
+          const o = await evaluate<{ ort: string; strip: string; card: string }>(`({ ort: window.__fx.text(document.querySelector('#mort')).trim(), strip: window.__fx.text(document.querySelector('#mopen')),
+            card: window.__fx.text(document.querySelector('#mbelow')) })`);
+          surfaces.push({ surface: "Insel mit Arbeitsort", text: `${o.strip}\n${o.card}` });
+          say("once the worktree is known the card names it: the repo and the branch behind it, the session's name not again",
+            o.ort.replace(/\s+/g, " ") === `nordwerk · ${BRANCH}` && count(`${o.strip}\n${o.card}`, "Alpha") === 1, o);
+          await closeAll();
+        }
+        if (step === "foot") {
+          if (!alpha.git) { alpha.git = { branch: BRANCH, dirty: 0, ahead: 0, behind: 0 }; await poll(); }
+          const FOOT = `(() => { const f = window.__fx, w = [document.querySelector('#compwt'), document.querySelector('#compfootwt')].filter(f.shown);
+            const b = w[0], dot = b?.querySelector('.wtdot');
+            return { lines: w.length, parts: b ? [...b.children].filter(f.shown).map((c) => c.className) : [], name: b?.querySelector('.wtname')?.textContent ?? null,
+              branch: b?.querySelector('.wtref')?.textContent ?? null, text: b ? b.innerText : '', dot: dot ? { shown: f.shown(dot), text: dot.textContent, label: dot.getAttribute('aria-label') } : null,
+              comp: f.text(document.querySelector('#comp')), ph: document.querySelector('#input').placeholder }; })()`;
+          type Foot = { lines: number; parts: string[]; name: string | null; branch: string | null; text: string; dot: { shown: boolean; text: string; label: string | null } | null; comp: string; ph: string };
+          const plain = await evaluate<Foot>(FOOT);
+          fx.stale = true; await poll();
+          const stale = await evaluate<Foot>(FOOT);
+          fx.stale = false; await poll();
+          const back = await evaluate<Foot>(FOOT);
+          if (width === 390) surfaces.push({ surface: "Fußzeile", text: `${plain.comp}\n${plain.ph}` });
+          say(`the foot line names the session once — Alpha, the branch behind it — and neither model nor context; in the whole composer, placeholder included, the name stands once`,
+            plain.lines === 1 && JSON.stringify(plain.parts) === JSON.stringify(["wtname", "wtsep", "wtref"]) && plain.name === "Alpha" && plain.branch === BRANCH
+            && !/Opus|Sonnet|Haiku|\d\s?%|Kontext/.test(plain.text) && count(`${plain.comp}\n${plain.ph}`, "Alpha") === 1
+            && plain.ph === (width === 390 ? "Nachricht" : "Nachricht — Enter sendet"), plain);
+          say("a rebuild shows as a dot behind the branch — a dot, no word (its word in aria-label) — and leaves with it",
+            JSON.stringify(stale.parts) === JSON.stringify(["wtname", "wtsep", "wtref", "wtdot"]) && !!stale.dot?.shown && stale.dot.text === "" && stale.dot.label === "Seite neu bauen"
+            && back.dot === null, { stale, back });
+        }
+      }
+      if (width === 390) {
+        // G0.5 and the repeats, over every surface this run read
+        const english = surfaces.map((s) => ({ surface: s.surface, hit: FORBIDDEN.exec(s.text)?.[0] ?? null })).filter((s) => s.hit);
+        say("every visible text of the chat view on the phone this run read — island, sheets, popover, foot line, placeholder — is German, with none of grammatik G0.5's process nouns",
+          surfaces.length > 0 && english.length === 0, { english, surfaces: surfaces.map((s) => s.surface) });
+        const facts = ["Alpha", BRANCH, "nordwerk"];
+        const repeats = surfaces.flatMap((s) => facts.filter((w) => count(s.text, w) > 1).map((w) => `${s.surface}: ${w} ×${count(s.text, w)}`));
+        say("no surface repeats what it already says: the session's name, its branch and its repo stand at most once on each",
+          surfaces.length > 0 && repeats.length === 0, { repeats });
+      }
+      detail.missing = [...missing]; missing.length = 0;
+      results.push({ width, height, claims, detail });
     }
     return results;
   } finally {
@@ -9101,39 +9576,49 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
           return { bd: s.backdropFilter || s.webkitBackdropFilter || '', shadow: s.boxShadow, bg: s.backgroundImage + ' | ' + s.backgroundColor, after: getComputedStyle(document.querySelector('#mglas'), '::after').display }; })()`);
         say("the glass computes its material: blur(18px) saturate(1.6), three inset edges, light over a scrim",
           /blur\(18px\)/.test(mat.bd) && /saturate\(1\.6\)/.test(mat.bd) && (mat.shadow.match(/inset/g) ?? []).length === 3 && /linear-gradient/.test(mat.bg), mat);
-        // 3. a tap opens: the glass springs to --maw × 96, the icon buttons spring in one after the other
+        // 3. a tap opens: the glass springs to --maw × 56 (the strip C of Konzept 2), its contents spring in one after the other
         await ev("window.__g.sample(1100)");
         await tapAt({ x: GLASS_W / 2, y: 22 });
         await pause(1150);
         const frames = await ev<[number, number][]>("window.__frames");
-        const open = await ev<{ open: boolean; expanded: string; glass: Box; ease: string; delays: string[] }>(`(() => ({ open: document.body.classList.contains('mopen'),
+        const open = await ev<{ open: boolean; expanded: string; glass: Box; ease: string; order: string[]; delays: string[] }>(`(() => ({ open: document.body.classList.contains('mopen'),
           expanded: document.querySelector('#mpill').getAttribute('aria-expanded'), glass: window.__g.box(document.querySelector('#mglas')),
           ease: getComputedStyle(document.querySelector('#mglas')).transitionTimingFunction,
-          delays: [...document.querySelectorAll('#mopen .mib, #mname, #mort')].filter(window.__g.shown).map((e) => getComputedStyle(e).transitionDelay.split(',')[0].trim()) }))()`);
+          order: [...document.querySelectorAll('#mname, #mopen .mib, #mbelow > *')].filter(window.__g.shown).map((e) => e.id || e.className),
+          delays: [...document.querySelectorAll('#mname, #mopen .mib, #mbelow > *')].filter(window.__g.shown).map((e) => getComputedStyle(e).transitionDelay.split(',')[0].trim()) }))()`);
         const final = open.glass?.w ?? 0, peak = Math.max(...frames.map((f) => f[1]));
         await shot("auf-terminal");
-        say("a tap on the pill opens it: the glass becomes 370 × 96 (aria-expanded true)", open.open && open.expanded === "true" && !!open.glass && open.glass.w === 370 && open.glass.h === 96, open);
+        say("a tap on the pill opens it: the glass becomes the strip, the screen less 8 px a side (374) × 56 (aria-expanded true)",
+          open.open && open.expanded === "true" && !!open.glass && open.glass.w === GLASS_W - 16 && open.glass.x === 8 && open.glass.h === 56, { ...open, ease: open.ease.slice(0, 60) });
         say("it opens as a spring: the glass overshoots its width by 1–6 % on the way (the linear() curve from response 0.38 / ζ 0.72)",
           /^linear\(/.test(open.ease) && final > 0 && peak / final - 1 > 0.01 && peak / final - 1 < 0.06, { peak, final, ease: open.ease.slice(0, 60), frames });
-        say("the buttons spring in one after another, 22 ms apart from 60 ms", open.delays.length >= 9 && open.delays.every((v, i) => Math.abs(parseFloat(v) * (v.endsWith("ms") ? 1 : 1000) - (60 + 22 * i)) < 1), open.delays);
-        // 4. the buttons of the view: icons, no words
-        type Btns = { ids: string[]; bad: string[]; small: string[]; off: string[] };
+        say("the strip springs in one after another, 22 ms apart from 60 ms: the name, the four symbols, the word buttons, the card",
+          JSON.stringify(open.order) === JSON.stringify(["mname", "mview", "mfind", "mdirect", "mmore", "mz2", "mnow"])
+          && open.delays.every((v, i) => Math.abs(parseFloat(v) * (v.endsWith("ms") ? 1 : 1000) - (60 + 22 * i)) < 1), { order: open.order, delays: open.delays });
+        // 4. the four symbols of the strip: icons, no words (Konzept 2 §1 — the word is the label, shown while held)
+        type Btns = { ids: string[]; view: string | null; bad: string[]; small: string[]; off: string[] };
         const BTNS = `(() => { const bs = [...document.querySelectorAll('#mopen .mib')].filter(window.__g.shown);
-          return { ids: bs.map((b) => b.id), bad: bs.filter((b) => b.tagName !== 'BUTTON' || !b.getAttribute('aria-label') || !b.title || !b.querySelector('svg') || b.textContent.trim() !== '').map((b) => b.id),
+          return { ids: bs.map((b) => b.id), view: document.querySelector('#mview').getAttribute('aria-label'), bad: bs.filter((b) => b.tagName !== 'BUTTON' || !b.getAttribute('aria-label') || !b.title || !b.querySelector('svg') || b.textContent.trim() !== '').map((b) => b.id),
             small: bs.filter((b) => { const r = b.getBoundingClientRect(); return Math.round(r.width) < 44 || Math.round(r.height) < 44; }).map((b) => b.id),
             off: bs.filter((b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; return r.left < 0 || r.right > innerWidth || !b.contains(document.elementFromPoint(x, y)); }).map((b) => b.id) }; })()`;
         const term8 = await ev<Btns>(BTNS);
-        say("in the terminal: eight icon buttons — Sessions, Info, view, search, reconnect, History, Schedule, ⋯ — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
-          JSON.stringify(term8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mfind", "mreload", "mhist", "mauto", "mmore"]) && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
-        const ort = await ev<{ kids: number; text: string; label: string | null; box: Box; more: Box; glass: Box }>(`(() => { const o = document.querySelector('#mort');
-          return { kids: o.childNodes.length, text: o.textContent, label: o.getAttribute('aria-label'), box: window.__g.box(o), more: window.__g.box(document.querySelector('#mmore')), glass: window.__g.box(document.querySelector('#mglas')) }; })()`);
-        say('the place "Arbeitsort" is named and empty: aria-label Arbeitsort, no child, at least 64 px, right of ⋯, inside the glass',
-          ort.label === "Arbeitsort" && ort.kids === 0 && ort.text === "" && !!ort.box && !!ort.more && !!ort.glass && ort.box.w >= 64 && ort.box.x >= ort.more.r && ort.box.r <= ort.glass.r, ort);
+        say("in the terminal: four symbols — Gespräch (the view it switches to), Suchen, Modell und Effort, Mehr — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
+          JSON.stringify(term8.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]) && term8.view === "Gespräch" && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
+        // under the strip: the two sides as words, and the card "jetzt" — with no Arbeitsort line while
+        // no worktree is known for the session (this fixture's rows carry no git and no worktree)
+        const below = await ev<{ words: string[]; now: string; ort: number; ortShown: boolean; glass: Box; card: Box }>(`(() => ({
+          words: [...document.querySelectorAll('#mbelow .mz2 button')].filter(window.__g.shown).map((b) => b.textContent.trim()),
+          now: window.__g.shown(document.querySelector('#mnowl')) ? document.querySelector('#mnowl').textContent : '',
+          ort: document.querySelector('#mort').childNodes.length, ortShown: window.__g.shown(document.querySelector('#mort')),
+          glass: window.__g.box(document.querySelector('#mglas')), card: window.__g.box(document.querySelector('#mnow')) }))()`);
+        say('under the strip the word buttons Sessions and Info, then the card with what the session does now — no Arbeitsort line while no worktree is known',
+          JSON.stringify(below.words) === JSON.stringify(["Sessions", "Info"]) && /^(Still|Arbeitet gerade)/.test(below.now) && below.ort === 0 && !below.ortShown
+          && !!below.card && !!below.glass && below.card.y >= below.glass.b && below.card.x >= 0 && below.card.r <= GLASS_W, below);
         // the open island closes by its name
         await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mname').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
         await pause(200);
         say("a tap on the name closes it", !(await state()).open);
-        // the conversation: ↑ ↓ instead of search and reconnect, and the text runs under the glass
+        // the conversation: the same four symbols, the first now going back to the terminal — search stays (both views)
         await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
         await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
         const toChat = await wait("document.querySelector('#panes .pane').classList.contains('chat')", 3000);
@@ -9142,15 +9627,15 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         const chat8 = { ...await ev<Btns>(BTNS), toChat, state: await state() };
         const fade = await ev<string>("getComputedStyle(document.querySelector('#panes .pane'), '::after').backgroundImage");
         await shot("auf-konversation");
-        say("in the conversation: eight icon buttons — Sessions, Info, view, ↑, ↓, History, Schedule, ⋯ — the same rules",
-          JSON.stringify(chat8.ids) === JSON.stringify(["mslot", "minfo", "mview", "mup", "mdown", "mhist", "mauto", "mmore"]) && !chat8.bad.length && !chat8.small.length && !chat8.off.length, chat8);
+        say("in the conversation: the same four symbols, the first now Terminal — Suchen stays — the same rules",
+          JSON.stringify(chat8.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]) && chat8.view === "Terminal" && !chat8.bad.length && !chat8.small.length && !chat8.off.length, chat8);
         say("the conversation runs on under the glass: no fade over its top", !/gradient/.test(fade ?? ""), fade);
         await reset();
         await tapAt({ x: GLASS_W / 2, y: 22 }); await pause(900);
         await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mview').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
         await wait("!document.querySelector('#panes .pane').classList.contains('chat')", 3000);
         await reset();
-        // a finger's whole tap on Sessions, ℹ and ⋯: each opens a surface under the finger, and the click the
+        // a finger's whole tap on Sessions, Info and Mehr: each opens a surface under the finger, and the click the
         // engine sends after the touchend must not land on that surface's shade and close it again
         const opened: Record<string, string> = {
           mslot: "document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'sessions'",
@@ -9164,7 +9649,7 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
           stays[id] = await ev<boolean>(`!!(${cond})`);
           await reset();
         }
-        say("a finger's whole tap — the engine's click after it included — on Sessions, ℹ and ⋯ opens what it names, and it stays open",
+        say("a finger's whole tap — the engine's click after it included — on Sessions, Info and Mehr opens what it names, and it stays open",
           Object.values(stays).every(Boolean), stays);
         // 5. the swipe: right opens Sessions from the left, left the Info from the right — the session stays
         const before = await state();
@@ -9268,9 +9753,10 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         await pause(320);
         const stillFrames = await ev<[number, number][]>("window.__frames");
         const stillGlass = await box("#mglas");
-        // every frame is the pill (96, or 93 while pressed: scale .97) or the open island — none between
+        // every frame is the pill (96, or 93 while pressed: scale .97) or the open strip — none between
+        const fullW = GLASS_W - 16;
         say("still: the tapped island jumps to its full width — no frame in between, no overshoot",
-          !!stillGlass && stillGlass.w === 370 && stillFrames.some((f) => Math.round(f[1]) === 370) && stillFrames.every((f) => f[1] <= 96.5 || Math.round(f[1]) === 370), { stillFrames, stillGlass });
+          !!stillGlass && stillGlass.w === fullW && stillFrames.some((f) => Math.round(f[1]) === fullW) && stillFrames.every((f) => f[1] <= 96.5 || Math.round(f[1]) === fullW), { stillFrames, stillGlass });
         await reset();
         await swipe(centre, [{ dx: 30 }, { dx: 60 }, { dx: 90 }]);
         await pause(60);
@@ -10602,7 +11088,8 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
         claims["the open bar lies inside the screen and under the pill, not on it"] = !!g.bar && g.open && g.bar.l >= 0 && g.bar.r <= width
           && (!g.pill || g.pill.h === 0 || g.bar.t >= g.pill.b - 0.5) && g.pageScroll <= 0;
         await shot(`${width}-2-suche`);
-        // the conversation has no terminal to search: the island offers no search there
+        // the conversation is searched too (strip C, owner 2026-10-07: Suchen in both views): the
+        // island's Suchen opens the same bar over the transcript (Pane#findChat), not the terminal's
         await evaluate(`document.querySelector('.pane .termfind .termfindbtn:last-child')?.click()`);
         await evaluate(`document.querySelector('#mpill')?.click()`);
         await settle(100);
@@ -10610,8 +11097,16 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
         await wait(`document.querySelector('.pane.chat')`, 3000);
         await evaluate(`document.querySelector('#mpill')?.click()`);
         await settle(150);
-        claims["in the conversation view the island offers no terminal search"] = await evaluate<boolean>(`!!document.querySelector('.pane.chat')
-          && ![...document.querySelectorAll('#mtop button')].some((x) => x.getBoundingClientRect().width > 0 && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')))`);
+        const chatFind = await evaluate<{ chat: boolean; label: string; open: boolean; focus: boolean; ph: string }>(`(() => {
+          const b = document.querySelector('#mfind'), r = b?.getBoundingClientRect();
+          const label = b && r.width > 0 && getComputedStyle(b).visibility !== 'hidden' ? b.getAttribute('aria-label') ?? '' : '';
+          b?.click();
+          const i = document.querySelector('.pane.chat .termfindin');
+          return { chat: !!document.querySelector('.pane.chat'), label, open: !!document.querySelector('.pane.chat .termfind.open'),
+            focus: !!i && document.activeElement === i, ph: i?.placeholder ?? '' }; })()`);
+        facts.chatFind = chatFind;
+        claims["in the conversation view the island's Suchen opens the search over the conversation, the caret in its field"] =
+          chatFind.chat && chatFind.label === "Suchen" && chatFind.open && chatFind.focus && chatFind.ph === "Im Gespräch suchen";
       }
       results.push({ width, height, claims, facts });
     }
@@ -10880,7 +11375,7 @@ async function runCodexPermissions(): Promise<void> {
 // THE MUTATION PROBES of the one-row-per-machine card (owner 2026-10-07): each statement's claim,
 // and the one swap in src/board.ts that must turn it red — run in the narrowed state at 390 px. A
 // needle that left the source throws in runArbeitsorteDom: the probe fails as itself, never "caught".
-export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; needle: string; with: string }[] = [
+export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; needle: string; with: string; file?: ArbeitsorteMutant["file"] }[] = [
   { name: "machines keyed by carrier, not by name", state: "doppelt", claim: "every machine stands once as one row",
     needle: "const key = st.name ? machineKey(st.name) : ", with: "const key = st.name ? `${st.kind}:${machineKey(st.name)}` : " },
   { name: "nameless helpers folded into one machine", state: "doppelt", claim: "every machine stands once as one row",
@@ -10903,6 +11398,32 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; 
     needle: "stemWt.set(w.branch, w);", with: "void w;" },
   { name: "the quiet projects' row opens nothing", state: "doppelt", claim: "the quiet project is one tap away",
     needle: "if (rankeQuietOpen) for (const R of quiet)", with: "if (false) for (const R of quiet)" },
+  // THE LANE'S FLAG AND THE OPENED LANE (owner 2026-10-08): the closed row quiet, a tap opens in place
+  { name: "the closed row draws the five points again", state: "lane", claim: "a closed lane carries no row of points",
+    needle: "  if (flag) rt.appendChild(flag);", with: "  rt.appendChild(laneWay(w));\n  if (flag) rt.appendChild(flag);" },
+  { name: "a tap on a lane jumps to its session", state: "tippen", claim: "a tap on 3B opens it in place",
+    needle: "rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });",
+    with: "rowTarget(row, () => { if (s) jumpTo(s.id); else { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); } });" },
+  // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
+  { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's row says in one sentence how its server runs",
+    needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
+  { name: "a machine silent for days stands among the others", state: "lane", claim: "a machine silent for days is taken back",
+    needle: "const MACHINE_STILL_MS = 3 * 24 * 3600_000;", with: "const MACHINE_STILL_MS = 365 * 24 * 3600_000;" },
+  { name: "a lane's name cut under an ellipsis", state: "lane", claim: "nothing in the top of Info is cut", file: "public/index.html",
+    needle: "  #board .zr.zw .nm:not(.mono) { white-space: normal; overflow-wrap: anywhere; line-height: 1.3; padding: 3px 0; }",
+    with: "  #board .zr.zw .nm:not(.mono) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40px; }" },
+  // WHO HAS THE ALARM (owner 2026-10-08): what a session holds recedes, what needs the owner says what to do
+  { name: "the owner card loses its sentence what to do", state: "alarm", claim: "an alarm nobody holds is a tinted card at the top",
+    needle: `  if (owner) sec.appendChild(el("div", "plad", plaHolderLine(holder, a, al.tone)));`, with: "" },
+  { name: "a held alarm stays at the top", state: "alarm", claim: "an alarm a session holds recedes under the Arbeitsorte",
+    needle: `sec.dataset.place = owner ? "top" : "quiet";`, with: `sec.dataset.place = "top";` },
+  { name: "every holder still needs the owner", state: "alarm", claim: "an alarm in the Program's inbox recedes too", file: "src/plaudit.ts",
+    needle: `export const plaNeedsOwner = (h: PlaHolder): boolean => h.kind === "waiting" || h.kind === "gone" || h.kind === "none";`,
+    with: `export const plaNeedsOwner = (h: PlaHolder): boolean => h.kind !== "judged";` },
+  { name: "a delivery to a session that has gone still counts as held", state: "alarm", claim: "an alarm whose session has gone stands at the top again", file: "src/plaudit.ts",
+    needle: `    : { kind: "gone", slot: p.slot ?? null };`, with: `    : { kind: "session", slot: p.slot ?? 0, since: p.deliveredAt ?? null };` },
+  { name: "not-applicable is an alarm again", state: "alarm", claim: "a check after the land that does not apply to its repo draws no card", file: "src/plaudit.ts",
+    needle: `  if (a.result === "not-applicable") return null;`, with: "" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
@@ -10913,17 +11434,18 @@ export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "ueberga
 // A MUTANT (owner card 2026-10-07, „[Zitat entfernt]“): `mutate`
 // swaps one needle of src/board.ts in the bundle the page runs; a needle that is not in the source
 // throws, so a probe that could not apply its mutation fails as ITSELF and never reads as caught.
-export type ArbeitsorteMutant = { needle: string; with: string };
+export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/plaudit.ts" | "public/index.html" };
 export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   only: { states?: readonly string[]; widths?: readonly number[]; mutate?: ArbeitsorteMutant } = {}): Promise<ArbeitsorteDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-arbeitsorte-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   if (artifacts) mkdirSync(artifacts, { recursive: true });
-  const boardPath = resolve(sourceRoot, "src/board.ts");
-  let mutationApplied = !only.mutate;
+  const mutFile = only.mutate?.file ?? "src/board.ts";
+  const boardPath = resolve(sourceRoot, mutFile);
+  let mutationApplied = !only.mutate || mutFile === "public/index.html";
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
-    plugins: only.mutate ? [{ name: "arbeitsorte-mutant", setup(build) {
-      build.onLoad({ filter: /board\.ts$/ }, ({ path }) => {
+    plugins: only.mutate && mutFile !== "public/index.html" ? [{ name: "arbeitsorte-mutant", setup(build) {
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
         if (path !== boardPath) return;
         const source = readFileSync(path, "utf8");
         mutationApplied = source.includes(only.mutate!.needle);
@@ -10931,9 +11453,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       });
     } }] : [] });
   if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
-  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`arbeitsorte mutant: needle not in src/board.ts: ${only.mutate!.needle.slice(0, 80)}`); }
+  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`arbeitsorte mutant: needle not in ${mutFile}: ${only.mutate!.needle.slice(0, 80)}`); }
   const appJs = await built.outputs[0].text();
-  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (only.mutate && mutFile === "public/index.html") {
+    if (!indexHtml.includes(only.mutate.needle)) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`arbeitsorte mutant: needle not in public/index.html: ${only.mutate.needle.slice(0, 80)}`); }
+    indexHtml = indexHtml.replace(only.mutate.needle, only.mutate.with);
+  }
   type State = typeof ARBEITSORTE_STATES[number];
   // --- the fixture: two repos, lanes on main and on overhaul, a helper machine and a linked instance
   const REPO = "/fixture/claude-fleet", REPO2 = "/fixture/rezepte-app", REPO3 = "/fixture/alte-skripte";
@@ -10944,9 +11470,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     checks?: Partial<Record<"local" | "preview" | "gate" | "audit", Check>>; landed?: "yes" | "no" | null; landedAs?: string;
     ti?: "up" | "expired" | "not-running"; awaiting?: "owner" | "main"; working?: boolean; repo?: string; auditUnreadable?: boolean;
     detached?: boolean; path?: string };
-  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[] };
-  const machineOpenUrl = "http://fleet.fixture/blank?machine-instance";
-  const machineError = "fixture: machine test instances unavailable";
+  // `pla`: the holder rails of the alarm row (server.ts#postLandAuditSummary `ping`/`adjudication`), or a
+  // result that replaces red — set by the alarm state's holder walk
+  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0 };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -10995,8 +11521,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     const rows: Record<string, unknown>[] = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, cwd: null, label: null, lastOutput: 0 }));
     const put = (id: number, v: Record<string, unknown>) => { rows[id - 1] = { id, openedAt: openedAt(id), lastOutput: fx.now - 12 * 60_000, harness: "claude", ...v }; };
     if (st !== "leer") {
-      put(1, { cwd: REPO, repo: REPO, label: "Orchestratorin", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
-      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", lastOutput: fx.now, programId: "0b3e0f1d2c3b4a59", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(1, { cwd: REPO, repo: REPO, label: "Orchestratorin", role: "orchestrator", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
+      put(3, { cwd: REPO, repo: REPO, label: "Program-MAIN Oberfläche", role: "program-main", lastOutput: fx.now, programId: "0b3e0f1d2c3b4a59", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
       put(6, { cwd: REPO2, repo: REPO2, label: "rezepte-app", git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
       // a session that only sits in a project's main checkout marks a place, not running work
       put(7, { cwd: REPO3, repo: REPO3, label: "alte-skripte", lastOutput: fx.now - 2 * 3600_000, git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
@@ -11054,7 +11580,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           target: { ref: "refs/heads/main", head: MAIN2, mergeBase: MAIN2, distance: { ahead: 0, behind: 0 }, codeBehind: false, reasons: [] }, remote: "none", update: null, reasons: [] },
         { kind: "test-instance", repo: REPO, name: null, path: pathOf(zeit), head: null, basis: "copy-unproven", codeScope: "server", observedAt: fx.now, target: null, remote: null, update: null,
           reasons: [{ field: "head", reason: "copy-running-version-unproven" }] },
-        { kind: "helper-daemon", repo: REPO, name: "workhorse", path: null, head: MAIN, basis: "heartbeat", codeScope: "helper-daemon", observedAt: fx.now - 40_000,
+        { kind: "helper-daemon", repo: REPO, name: "workhorse", path: null, head: MAIN, basis: "heartbeat", codeScope: "helper-daemon", observedAt: fx.now - 5_000,
           target: cmp(MAIN, "refs/heads/main", 0, null), remote: null, update: { state: "reported", main: "main", mainSha: MAIN }, reasons: [] },
         { kind: "helper-instance", repo: REPO, name: "workhorse", path: null, head: null, basis: "checkout-unproven", reportedCheckout: { head: hex("helper-checkout"), observedAt: fx.now - 40_000 },
           codeScope: "server", observedAt: fx.now - 40_000, target: null, remote: null, update: null, reasons: [{ field: "head", reason: "helper-instance-running-sha-unreported" }] },
@@ -11154,18 +11680,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" },
         programs: [{ id: "0b3e0f1d2c3b4a59", title: "Oberfläche", status: "active" }],
         gate: gateOf(st), helperDevices: [{ id: "wh", name: "workhorse", lastSeen: fx.now - 5000, maxParallelSuites: 2, running: 0 }], helperOnlineMs: 20_000,
-        ...(st === "alarm" ? { postLandAudit: { at: fx.now - 20 * 60_000, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH],
-          artifact: { bytes: 745_000, sha256: "5e".repeat(32), url: `/api/post-land-audits/artifact?at=${fx.now - 20 * 60_000}` } },
+        ...(st === "alarm" ? { postLandAudit: { at: fx.plaAt, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH],
+          artifact: { bytes: 745_000, sha256: "5e".repeat(32), url: `/api/post-land-audits/artifact?at=${fx.plaAt}` }, ...fx.pla },
           errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
       if (p === "/api/tree") return void json(requestId, { root: REPO, files: Array.from({ length: 412 }, (_, i) => `src/datei-${i}.ts`), total: 412, capped: false });
       if (/^\/api\/slots\/\d+\/memory-grant$/.test(p)) return void json(requestId, { slot: Number(p.split("/")[3]), openedAt: openedAt(Number(p.split("/")[3])), grant: null, inForce: false, knownProjects: [] });
       if (p === "/api/worktrees") return void json(requestId, workplaces(st));
-      if (p === "/api/testinstanzen") return void (st === "alarm"
-        ? json(requestId, { error: machineError }, 503)
-        : json(requestId, { testinstanzen: [
-          { worktree: "/fixture/retained-other-tree", port: 8913, state: "up", expiresAt: fx.now + 3600_000, openUrl: machineOpenUrl },
-          { worktree: "/fixture/retained-stopped-tree", port: 8914, state: "down", expiresAt: null },
-        ] }));
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
@@ -11225,47 +11745,53 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       const vis = (e) => !!e && getComputedStyle(e).visibility !== 'hidden' && e.getBoundingClientRect().width > 0;
       const col = (e, p) => e ? getComputedStyle(e)[p] : null;
       const probe = (v) => { const t = document.createElement('span'); t.style.color = v; sec.append(t); const c = getComputedStyle(t).color; t.remove(); return c; };
-      const rows = [...sec.querySelectorAll('.zr')].map((r) => { const pf = r.querySelector(':scope > .pf'), ti = r.querySelector(':scope > .ti');
+      const rows = [...sec.querySelectorAll('.zr')].map((r) => { const fl = r.querySelector(':scope > .lr > .lflag'), ti = r.querySelector(':scope > .ti, :scope > .lr > .ti');
+        const zs = r.querySelector(':scope > .zs, :scope > .rt > .zs');
         return { cls: r.className, id: r.dataset.id ?? null, slot: r.dataset.slot ?? null, node: r.dataset.node ?? null, kind: r.dataset.kind ?? null,
           text: r.innerText.replace(/\\s+/g, ' ').trim(), title: r.title, box: box(r),
           ref: r.querySelector(':scope > .ref')?.textContent ?? null, name: r.querySelector(':scope > .nm')?.textContent ?? null,
           nd: col(r.querySelector(':scope > .nd'), 'backgroundColor'),
-          pf: pf ? { box: box(pf), aria: pf.getAttribute('aria-label'), beads: [...pf.children].map((c) => ({ tag: c.tagName, stage: c.dataset.stage ?? null, state: c.dataset.state ?? null, landed: c.dataset.landed ?? null, title: c.title, bg: col(c, 'backgroundColor'), cls: c.className })) } : null,
-          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: ti.disabled } : null,
-          tag: r.querySelector('.tag')?.textContent ?? null, tagTitle: r.querySelector('.tag')?.title ?? null,
+          flag: fl ? { look: fl.dataset.flag ?? null, cls: fl.className, title: fl.title, aria: fl.getAttribute('aria-label'), hold: fl.dataset.hold ?? null, box: box(fl), color: col(fl, 'color') } : null,
+          points: r.querySelectorAll('.way i').length, lr: box(r.querySelector(':scope > .lr')),
+          git: r.querySelector(':scope > .lr > .gs')?.innerText.replace(/\\s+/g, ' ').trim() ?? null, gitTitle: r.querySelector(':scope > .lr > .gs')?.title ?? null,
+          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, tag: ti.tagName, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: !!ti.disabled } : null,
+          tag: r.querySelector(':scope > .nm .cnt[data-remote]')?.textContent ?? null,
           machine: r.dataset.machine ?? null, roles: r.querySelector(':scope > .nm .cnt')?.textContent ?? null,
-          say: r.querySelector(':scope > .st')?.textContent ?? null, exp: r.getAttribute('aria-expanded') }; });
-      const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent) }));
+          say: r.querySelector(':scope > .st')?.textContent ?? null, exp: r.getAttribute('aria-expanded'),
+          chip: zs ? zs.textContent : null, chipTitle: zs ? zs.title : null, tone: r.dataset.tone ?? null, nmColor: col(r.querySelector(':scope > .nm'), 'color'),
+          msess: r.querySelector('.msess')?.textContent ?? null }; });
+      const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent),
+        points: [...z.querySelectorAll('.way i')].map((i) => ({ key: i.dataset.key ?? null, cls: i.className })), way: z.querySelector('.way')?.title ?? '', wayAria: z.querySelector('.way')?.getAttribute('aria-label') ?? '' }));
       const body = document.querySelector('#boardbody');
       const kids = [...body.children];
       const field = document.querySelector('#compwt'), tray = document.querySelector('#comptray'), sched = document.querySelector('#autobtn');
       const mort = document.querySelector('#mort .wtfield');
+      // NOTHING CUT in the top of Info (owner 2026-10-08: „[Zitat entfernt]“): any element of
+      // the alarm card, the Arbeitsorte or the session head whose text runs past its box under an ellipsis
+      const cut = [...body.querySelectorAll('.plasec *, .ranke *, .bhead *')].filter((e) => getComputedStyle(e).textOverflow === 'ellipsis'
+        && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
       return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
-        head: sec.querySelector('h3')?.textContent ?? null, seg: [...sec.querySelectorAll('.rkseg button')].map((b) => b.dataset.mode + (b.classList.contains('on') ? '*' : '')),
+        head: sec.querySelector('h3')?.textContent ?? null,
+        blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0 })),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
-        bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'),
-        machineList: (() => { const card = body.querySelector('.testinstanzmachine'); return { count: body.querySelectorAll('.testinstanzmachine').length,
-          title: card?.querySelector('h3')?.textContent ?? null, text: card?.innerText ?? '', linkCount: card?.querySelectorAll('a').length ?? 0,
-          rows: [...(card?.querySelectorAll('.bbtnrow') ?? [])].map((row) => ({ text: row.innerText,
-            links: [...row.querySelectorAll('a')].map((a) => ({ href: a.href, target: a.target, rel: a.rel, text: a.textContent })) })) }; })(),
-        live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'),
+        bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'), machineCards: body.querySelectorAll('.testinstanzmachine').length, cut,
+        live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'), faint: probe('var(--chat-faint)'), ink: probe('var(--chat-ink)'),
         field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
         trayBox: box(tray), schedBox: box(sched), mort: mort ? mort.innerText.replace(/\\s+/g, ' ').trim() : null,
         focusSlot: (window.__fxPane && window.__fxPane()) ?? null }; })()`;
-    type Bead = { tag: string; stage: string | null; state: string | null; landed: string | null; title: string; bg: string; cls: string };
+    type Flag = { look: string | null; cls: string; title: string; aria: string | null; hold: string | null; box: { x: number; r: number }; color: string };
     type Row = { cls: string; id: string | null; slot: string | null; node: string | null; kind: string | null; text: string; title: string; box: { x: number; r: number; y: number; w: number; h: number };
-      ref: string | null; name: string | null; nd: string | null; pf: { box: { x: number; r: number }; aria: string | null; beads: Bead[] } | null;
-      ti: { state: string | null; title: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null; tagTitle: string | null;
-      machine: string | null; roles: string | null; say: string | null; exp: string | null };
-    type Read = { index: number; before: string[]; next: string | null; head: string | null; seg: string[]; rows: Row[];
-      lines: { cls: string; for: string | null; text: string; title: string; buttons: string[] }[]; text: string; svgPaths: number; inkPaths: number;
-      secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean;
-      machineList: { count: number; title: string | null; text: string; linkCount: number;
-        rows: { text: string; links: { href: string; target: string; rel: string; text: string | null }[] }[] };
-      live: string; wait: string; danger: string; amber: string;
+      ref: string | null; name: string | null; nd: string | null; flag: Flag | null; points: number; lr: { x: number; r: number } | null; git: string | null; gitTitle: string | null;
+      ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
+      machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null };
+    type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
+    type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
+      lines: Line[]; text: string; svgPaths: number; inkPaths: number;
+      secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
+      live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
-      trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number } | null; mort: string | null };
+      trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number; y: number } | null; mort: string | null };
     const read = async (): Promise<Read> => {
       const r = await evaluate<Read | null>(READ);
       if (!r) throw new Error("arbeitsorte DOM probe: no .ranke section in #boardbody: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no #boardbody'"));
@@ -11275,7 +11801,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     const byId = (r: Read, id: string) => r.rows.find((x) => x.id === id);
     const branchRows = (r: Read) => r.rows.filter((x) => x.cls.split(" ").includes("zw"));
     const sha7 = (h: string) => h.slice(0, 7);
-    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })`);
+    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString("de-DE", { hour: '2-digit', minute: '2-digit' })`);
     const PROCESS = /\b(baton|gate|audit|suite|deploy|mutex|srv)\b/i;
     const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
     const results: ArbeitsorteDomResult[] = [];
@@ -11285,22 +11811,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const claims: Record<string, boolean> = {};
         const facts: Record<string, unknown> = {};
-        fx.state = st; fx.writes = [];
+        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
         await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
         await send("Page.enable"); await send("Runtime.enable");
         await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
-          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };
-          document.addEventListener('click', (e) => { const link = e.target instanceof Element ? e.target.closest('.testinstanzmachine a') : null;
-            if (link) { e.preventDefault(); (window.__machineOpened = window.__machineOpened || []).push(link.href); } }, true);` });
+          window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };` });
         await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
         await navigate("http://fleet.fixture/blank");
         const focus = focusOf(st);
         handover.slot9 = null;
         await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}');
-          ${st === "land" ? "localStorage.setItem('fleet.meter.open', '1');" : ""}
           ${st === "mehr" ? "localStorage.setItem('fleet.board.folds', JSON.stringify(['setup', 'rechte']));" : ""} })()`);
         await navigate("http://fleet.fixture/");
         if (phone && st === "leer") {
@@ -11334,8 +11857,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const drawn = await wait(`document.querySelectorAll('#boardbody .ranke .zr.repo').length === 3`, 3000)
             && await evaluate<boolean>(`[...document.querySelectorAll('#boardbody .ranke .zr.repo')].every((h) => h.getAttribute('aria-expanded') === 'false')`);
           facts.quiet = { ...quiet, drawn };
-          claims[`${st}: with no running work every project waits behind one row "3 Projekte ohne laufende Arbeit", no head drawn, and one tap draws the three, each still closed`] =
-            quiet.heads === 0 && quiet.fold === "3 Projekte ohne laufende Arbeit" && quiet.exp === "false" && drawn;
+          claims[`${st}: with no running work every project waits behind one row "3 ruhige Projekte", no head drawn, and one tap draws the three, each still closed`] =
+            quiet.heads === 0 && quiet.fold === "3 ruhige Projekte" && quiet.exp === "false" && drawn;
           for (const name of ["claude-fleet", "rezepte-app"]) {
             await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith(${JSON.stringify(name)}))?.click()`);
             await settle(150);
@@ -11347,73 +11870,69 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         const tag = `${st}: `;
         // --- the common claims, every state
         let r = await read();
-        facts.base = { index: r.index, before: r.before, head: r.head, seg: r.seg, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll };
+        facts.base = { index: r.index, before: r.before, head: r.head, blocks: r.blocks, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll, cut: r.cut };
         claims[`${tag}"Arbeitsorte" is the first section of Info after the alarms, above the session`] = r.head?.startsWith("Arbeitsorte") === true
-          && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead/.test(r.next ?? ""));
+          && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
+        // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
+        // the machines — each under its own small head, so the eye finds a kind of thing, not a row; the
+        // block Prüfungen stands only while a run has no lane to stand at (here: `land`, both lanes closed)
+        claims[`${tag}the Arbeitsorte stand in blocks under their own heads: Projekte · Prüfungen (only while a run stands outside a lane) · Geräte`] =
+          JSON.stringify(r.blocks.map((b) => b.title)) === JSON.stringify(["Projekte", "Prüfungen", "Geräte"])
+          && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title)) === JSON.stringify(st === "land" ? ["Projekte", "Prüfungen", "Geräte"] : ["Projekte", "Geräte"]);
         const zw = branchRows(r);
-        const pfX = new Set(zw.map((x) => x.pf?.box.x)), tiX = new Set(zw.map((x) => x.ti?.box.x));
-        facts.columns = { pfX: [...pfX], tiX: [...tiX], heights: [...new Set(zw.map((x) => x.box.h))] };
-        claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and the beads and the square stand in one column across every repo`] =
-          zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && pfX.size === 1 && tiX.size === 1;
-        claims[`${tag}every branch carries five beads in the order local · preview · land check · in its target · after the land, each with a tooltip`] =
-          zw.every((x) => !!x.pf && x.pf.beads.length === 5 && x.pf.beads.map((b) => b.stage ?? b.tag).join(",") === "local,preview,gate,B,audit"
-            && x.pf.beads.every((b) => b.title.length > 4) && !!x.pf.aria);
-        claims[`${tag}every branch says whether it is in its target — "noch nicht auf overhaul" / "gelandet als <sha>" / unknown — from target.landed`] =
-          zw.every((x) => { const b = x.pf?.beads[3]; if (!b) return false;
-            return b.landed === "no" ? /^noch nicht auf (main|overhaul)$/.test(b.title) : b.landed === "yes" ? /^gelandet als [0-9a-f]{7} in /.test(b.title)
-              : /^(nichts zu landen|unbekannt, ob)/.test(b.title); });
+        const flagR = new Set(zw.filter((x) => x.flag).map((x) => x.flag!.box.r)), lrR = new Set(zw.map((x) => x.lr?.r));
+        facts.columns = { flagR: [...flagR], lrR: [...lrR], heights: [...new Set(zw.map((x) => x.box.h))] };
+        claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and every flag stands at the row's end, one under the other across every repo`] =
+          zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && flagR.size <= 1 && lrR.size === 1;
+        // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
+        // ): its git stand and ONE flag; the five points stand in the opened lane only
+        facts.flags = zw.map((x) => `${x.slot ?? x.id}: ${x.flag ? `${x.flag.cls} :: ${x.flag.title.replace(/\n/g, " | ")}` : "-"} · git ${x.git ?? "-"} · points ${x.points}`);
+        claims[`${tag}a closed lane carries no row of points and at most one flag — its words, every stage, are the flag's title, aria-label and held word`] =
+          zw.every((x) => x.points === 0 && (!x.flag || (!!x.flag.look && x.flag.title.length > 4
+            && x.flag.aria === x.flag.title.split("\n").join(". ") && x.flag.hold === x.flag.title)));
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
-        const machineShown = await wait(st === "alarm"
-          ? `document.querySelector('#boardbody .testinstanzmachine')?.innerText.includes(${JSON.stringify(machineError)})`
-          : `document.querySelectorAll('#boardbody .testinstanzmachine .bbtnrow').length === 2`, 8000);
-        const machineRead = await read();
-        claims[`${tag}the old card "Testinstanz · dieser Worktree" and the list "Lanes in ‹repo›" are gone`] =
-          !machineRead.oldCard && !/Testinstanz · dieser Worktree|Lanes in /.test(machineRead.bodyText);
-        facts.oldCard = { present: machineRead.oldCard, retiredWorktreeTitlePresent: /Testinstanz · dieser Worktree/.test(machineRead.bodyText),
-          retiredLaneListPresent: /Lanes in /.test(machineRead.bodyText) };
-        const machine = machineRead.machineList;
-        facts.machineList = { shown: machineShown, ...machine };
-        if (st === "alarm") {
-          claims[`${tag}the machine-wide list keeps its named error without fabricating instance rows or an opening link`] =
-            machineShown && machine.count === 1 && machine.title === "Testinstanzen" && machine.text.includes(machineError)
-              && machine.rows.length === 0 && machine.linkCount === 0;
-        } else {
-          claims[`${tag}the machine-wide list preserves both external worktrees, ports, running state and expiry`] =
-            machineShown && machine.count === 1 && machine.title === "Testinstanzen" && machine.text.includes("Alle Testinstanzen dieser Maschine")
-              && machine.rows.length === 2 && machine.rows[0].text.includes("retained-other-tree · Port 8913 · läuft · bis ")
-              && machine.rows[1].text === "retained-stopped-tree · Port 8914 · aus" && machine.rows[1].links.length === 0;
-          const opening = machine.rows[0]?.links[0];
-          await evaluate(`document.querySelector('#boardbody .testinstanzmachine a')?.click()`);
-          const opened = await evaluate<string[]>("window.__machineOpened || []");
-          facts.machineList = { shown: machineShown, ...machine, opened };
-          claims[`${tag}the machine-wide öffnen link preserves its exact URL, new-tab target and noopener, and a click delivers that URL to the navigation boundary`] =
-            machine.linkCount === 1 && machine.rows[0]?.links.length === 1 && opening?.text === "öffnen" && opening.href === machineOpenUrl
-              && opening.target === "_blank" && opening.rel === "noopener" && JSON.stringify(opened) === JSON.stringify([machineOpenUrl]);
-        }
+        claims[`${tag}nothing in the top of Info is cut — no text of the alarm, the Arbeitsorte or the session head runs out under an ellipsis`] = r.cut.length === 0;
+        // THE MACHINE-WIDE LIST LEFT TOO (owner 2026-10-08, round 2): a test instance opens at its lane
+        // (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md)
+        facts.oldCard = { present: r.oldCard, machineCards: r.machineCards, retiredTitles: /Testinstanz · dieser Worktree|Lanes in |Alle Testinstanzen dieser Maschine/.test(r.bodyText) };
+        claims[`${tag}the old cards "Testinstanz · dieser Worktree" and "Testinstanzen" and the list "Lanes in ‹repo›" are gone — an instance opens at its lane`] =
+          !r.oldCard && r.machineCards === 0 && !/Testinstanz · dieser Worktree|Lanes in |Alle Testinstanzen dieser Maschine/.test(r.bodyText);
         claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
         // abe74821 — the stand of every carrier, ONE ROW PER MACHINE (owner 2026-10-07: „[Zitat entfernt]“
         // ): the fixture reports Mac as this server AND as a link, workhorse as a
-        // helper (daemon + instance) AND as a link — the rule groups by the reported name
-        const machRows = r.rows.filter((x) => x.cls.split(" ").includes("mach"));
+        // helper (daemon + instance) AND as a link — the rule groups by the reported name. ALL MACHINES
+        // STAND TOGETHER (owner 2026-10-08, round 2), the silent ones last and faint.
+        const machRows = r.rows.filter((x) => x.cls.split(" ").includes("mach") && x.machine !== null);
         const stray = r.rows.filter((x) => x.kind && !x.cls.split(" ").includes("mach") && x.kind !== "bundle");
-        facts.stands = { machines: machRows.map((x) => `${x.machine} [${x.roles}] ${x.say}`), stray: stray.map((x) => `${x.kind}: ${x.text}`) };
+        facts.stands = { machines: machRows.map((x) => `${x.machine} [${x.roles}] {${x.chip} ${x.tone}} ${x.say}`), stray: stray.map((x) => `${x.kind}: ${x.text}`) };
         const mach = (name: string) => machRows.find((x) => x.machine === name);
-        claims[`${tag}every machine stands once as one row — this server, the helpers, the links — whatever carriers report under its name`] =
-          JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "mainMacbook", "Zweite Fleet",
-            ...(st === "doppelt" ? ["Helfer ohne Namen 1", "Helfer ohne Namen 2"] : [])])
-          && machRows.every((x) => x.cls.split(" ").includes("one") && !!x.say) && stray.length === 0;
-        claims[`${tag}a machine row carries its roles together: Mac "dieser Rechner · verlinkt", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "verlinkt"`] =
-          mach("Mac")?.roles === "dieser Rechner · verlinkt" && mach("workhorse")?.roles === "Helfer · verlinkt"
-          && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "verlinkt";
-        const liveRow = r.rows.find((x) => x.kind === "live-server");
-        claims[`${tag}Live says the running commit and how far from main`] = !!liveRow && liveRow.machine === "Mac" && (liveRow.say ?? "").includes(`läuft auf ${sha7(st === "alarm" ? BOOT : MAIN)}`)
-          && (st === "alarm" ? (liveRow.say ?? "").startsWith("Neustart fällig · ") && liveRow.say!.includes("5 hinter main") && liveRow.say!.includes("betrifft den Server-Code") && liveRow.nd === r.wait
-            : (liveRow.say ?? "").startsWith("Live · ") && liveRow.say!.includes("neuester Stand von main") && liveRow.nd === r.live);
-        claims[`${tag}each machine row says something: the helper its stand, a silent helper when it last reported, a link that its repos are not read here`] =
-          mach("workhorse")?.say === `Helfer-Dienst · läuft auf ${sha7(MAIN)} · neuester Stand von main` && /zuletzt gemeldet/.test(mach("workhorse")?.title ?? "")
-          && mach("mainMacbook")?.say === "Helfer-Dienst · läuft auf unbekannt · zuletzt gemeldet vor 41 Tagen"
-          && mach("Zweite Fleet")?.say === "läuft auf unbekannt · ihre Repos liest dieser Server nicht";
+        claims[`${tag}every machine stands once as one row — this server, the helpers and links that answer, the silent one last — whatever carriers report under its name`] =
+          JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "Zweite Fleet",
+            ...(st === "doppelt" ? ["Helfer ohne Namen 1", "Helfer ohne Namen 2"] : []), "mainMacbook"])
+          && machRows.every((x) => !!x.chip) && stray.length === 0;
+        claims[`${tag}a machine row names its kind and roles once: Mac "dieser Rechner", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "Fleet-Instanz"`] =
+          mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer · verlinkt"
+          && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "Fleet-Instanz";
+        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"}", workhorse "angemeldet", Zweite Fleet "verlinkt", mainMacbook "still"`] =
+          mach("Mac")?.chip === (st === "alarm" ? "Neustart fällig" : "läuft") && mach("Mac")?.tone === (st === "alarm" ? "wait" : "live")
+          && mach("workhorse")?.chip === "angemeldet" && mach("workhorse")?.tone === "live"
+          && mach("Zweite Fleet")?.chip === "verlinkt" && mach("mainMacbook")?.chip === "still";
+        // SENTENCES FOR PEOPLE (owner 2026-10-08: „[Zitat entfernt]“
+        // ): the commit, the distance and which code stay behind the tap
+        const liveRow = mach("Mac");
+        claims[`${tag}this machine's row says in one sentence how its server runs${st === "alarm" ? ", a due restart in the wait colour" : ""} — no commit, no distance in the row`] =
+          !!liveRow && liveRow.kind === "live-server" && !/[0-9a-f]{7}|hinter main/.test(liveRow.text) && (st === "alarm"
+            ? liveRow.say === "Läuft auf älterem Server-Code." && liveRow.cls.split(" ").includes("due") && liveRow.nd === null
+            : liveRow.say === "Läuft auf dem neuesten Stand.");
+        claims[`${tag}each machine row says what it means: the helper that it is ready, the silent one when it was last heard, a link nothing beside its word (its sentence is the title)`] =
+          mach("workhorse")?.say === "Bereit, auf dem neuesten Stand." && /zuletzt gemeldet/.test(mach("workhorse")?.title ?? "")
+          && mach("mainMacbook")?.say === "Meldet keinen Stand, zuletzt gehört vor 41 Tagen."
+          && mach("Zweite Fleet")?.say === null && /Ihre Repos liest dieser Server nicht\./.test(mach("Zweite Fleet")?.title ?? "");
+        const lastMach = machRows.at(-1);
+        claims[`${tag}a machine silent for days is taken back: mainMacbook stands after every other machine, its name in the faint ink`] =
+          lastMach?.machine === "mainMacbook" && lastMach.tone === "still" && lastMach.nmColor === r.faint
+          && machRows.slice(0, -1).every((x) => x.tone !== "still" && x.nmColor !== r.faint);
         // NO ROW WITHOUT A STATEMENT, NO TWO ALIKE: the words of a worktree without a session
         const slotless = branchRows(r).filter((x) => !x.slot).map((x) => x.name ?? "");
         facts.slotless = slotless;
@@ -11421,43 +11940,58 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           !slotless.some((n) => n === "ohne Branch" || /\b20\d\d\b|\b\d{6,}\b/.test(n)) && new Set(slotless).size === slotless.length;
         const repos = r.rows.filter((x) => x.cls.split(" ").includes("repo"));
         const quietRow = r.rows.find((x) => x.cls.split(" ").includes("zq"));
-        facts.repos = { heads: repos.map((x) => ({ text: x.text, tag: x.tag, cls: x.cls, exp: x.exp })), quiet: quietRow ? { text: quietRow.text, exp: quietRow.exp } : null };
-        claims[`${tag}every repo the server reads is a group; a repo without a remote says "kein Remote" quietly, one with a remote names it`] =
-          repos.length === (st === "leer" ? 3 : 2) && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main/.test(x.tagTitle ?? ""))
-          && repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === "kein Remote");
-        if (st !== "leer") claims[`${tag}a project with running work stands open, a project whose session only sits in its checkout waits behind "1 Projekt ohne laufende Arbeit"`] =
+        facts.repos = { heads: repos.map((x) => ({ text: x.text, tag: x.tag, chip: x.chip, cls: x.cls, exp: x.exp, title: x.title })), quiet: quietRow ? { text: quietRow.text, exp: quietRow.exp } : null };
+        // FEWER WORDS (owner 2026-10-08): the head shows a remote only where the copy and its image differ
+        claims[`${tag}every repo the server reads is a group; its head shows a remote only where copy and image differ ("origin ↑3"), the rest — "ohne Remote" too — is its title`] =
+          repos.length === (st === "leer" ? 3 : 2)
+          && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main: [0-9a-f]{7} · 3 vor, 0 hinter/.test(x.title))
+          && repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === null && !/Remote/.test(x.text) && /ohne Remote/.test(x.title));
+        // THE PROJECT'S STATE (owner 2026-10-08, round 2): dot and word at the head's end
+        const pWord = st === "leer" ? "ruhig" : ["viele", "viele30", "branch"].includes(st) ? "1 wartet auf dich" : "1 arbeitet";
+        claims[`${tag}a project head says its state as a dot and a word: claude-fleet "${pWord}"`] =
+          repos.some((x) => x.text.startsWith("claude-fleet") && x.chip === pWord);
+        if (st !== "leer") claims[`${tag}a project with running work stands open, a project whose session only sits in its checkout waits behind "1 ruhiges Projekt"`] =
           repos.every((x) => x.exp === "true") && !repos.some((x) => x.text.startsWith("alte-skripte"))
-          && quietRow?.text === "1 Projekt ohne laufende Arbeit" && quietRow.exp === "false";
+          && quietRow?.text === "1 ruhiges Projekt" && quietRow.exp === "false";
         const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
-        // overhaul: every claude-fleet worktree aiming at it that has not landed; main: its own lanes plus overhaul itself
-        // (a worktree checked out on the stem overhaul is the stem itself, no lane that lands)
-        const repoLanes = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.landed !== "yes" && l.branch !== "overhaul");
-        const nOver = repoLanes.filter((l) => l.target === "overhaul").length, nMain = repoLanes.filter((l) => l.target === "main").length + 1;
-        const landsWord = (n: number) => `${n} ${n === 1 ? "landet" : "landen"} hier`;
-        facts.lands = { main: mainRow?.text, over: overRow?.text, nMain, nOver };
-        claims[`${tag}the stem main and the branch overhaul say in words how many land there`] = !!mainRow && !!overRow
-          && overRow.text.includes(landsWord(nOver)) && overRow.text.includes("41 vor main") && mainRow.text.includes(landsWord(nMain)) && mainRow.text.includes(sha7(MAIN));
+        // how many land on a stem is said by its lanes' own words, not again on the stem: the tip and the
+        // count are the stems' titles (owner 2026-10-08: the row had crowded into two lines)
+        const nOverT = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.target === "overhaul" && l.branch !== "overhaul").length;
+        // main: the lanes that still want to land on it, and overhaul (41 ahead) — what landed is not counted
+        const nMainT = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.target === "main" && l.landed !== "yes" && l.branch !== "overhaul").length + 1;
+        facts.lands = { main: [mainRow?.text, mainRow?.title], over: [overRow?.text, overRow?.title], nOverT };
+        claims[`${tag}the stem main names its tip and what wants to land there on hover; overhaul says how far ahead it is, and on hover how many land in it`] = !!mainRow && !!overRow
+          && mainRow.title === `main · Spitze ${sha7(MAIN)} · ${nMainT} ${nMainT === 1 ? "Zweig will" : "Zweige wollen"} hierher landen` && overRow.text.includes("41 vor main")
+          && (st === "doppelt" ? /ausgecheckt in /.test(overRow.title) : overRow.title === `overhaul — ${nOverT} ${nOverT === 1 ? "Lane landet" : "Lanes landen"} hier`);
         // the worktree field under the composer (desktop: the tray's right end; phone: the island's Arbeitsort)
         if (focus) {
-          const name = st === "main" ? "claude-fleet" : "Rechter Tab dichter";
-          const addr = st === "main" ? "main" : "3A";
-          claims[`${tag}the worktree field names the address and the lane's name, ${phone ? "in the island's place Arbeitsort" : "right-aligned after Schedule"}`] = phone
-            ? (r.mort ?? "").includes(addr) && (r.mort ?? "").includes(name)
-            : !!r.field && r.field.vis && r.field.text.includes(addr) && r.field.text.includes(name) && !!r.schedBox && r.field.box.x >= r.schedBox.r
+          const name = st === "main" ? "Program-MAIN Oberfläche" : "Rechter Tab dichter";
+          const branch = st === "main" ? "main" : own.branch;
+          facts.field = { field: r.field, mort: r.mort, sched: r.schedBox, tray: r.trayBox };
+          // (desktop: the field may take a line of its own under a narrow composer — it never sits on Schedule)
+          claims[`${tag}the worktree field names ${phone ? "the repo and the branch, in the island's place Arbeitsort" : "the session once and its branch, right-aligned at the tray's end, clear of Schedule"}`] = phone
+            ? (r.mort ?? "").includes("claude-fleet") && (r.mort ?? "").includes(branch)
+            : !!r.field && r.field.vis && r.field.text === `${name} · ${branch}` && !!r.schedBox
+              && (r.field.box.x >= r.schedBox.r || r.field.box.y >= r.schedBox.y + 24)
               && !!r.trayBox && r.trayBox.r - r.field.box.r <= 12;
         }
         // --- the state's own claims
         if (["lane", "laneb", "land", "modell", "tippen", "uebergabe", "menue", "kopf", "mehr"].includes(st)) {
           const mine = lane(r, 9)!, zeitRow = lane(r, 10)!;
-          claims[`${tag}the own lane is the marked row 3A with its name, and its square is visible (Starten without hovering)`] =
-            !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !!mine.ti?.sq && mine.ti.state === "not-running";
+          claims[`${tag}the own lane is the marked row 3A with its name; with no test instance running its closed row carries no square`] =
+            !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !mine.ti;
           claims[`${tag}the own path main → overhaul → 3A is drawn in ink`] = r.inkPaths === 1;
           claims[`${tag}the node says the state: 3A works (green), 3B is still (a ring), the word in the tooltip`] =
             mine.nd === r.live && mine.title.includes("arbeitet") && zeitRow.node === "still" && zeitRow.nd !== r.live && /still/.test(zeitRow.title);
-          const beads = mine.pf!.beads;
-          claims[`${tag}3A's beads: local green · preview ${st === "land" ? "green" : "running (green fill)"} · land check ${st === "land" ? "running" : "none yet"} · not yet on overhaul`] =
-            beads[0].state === "green" && (st === "land" ? beads[1].state === "green" && beads[2].state === "running" && beads[2].bg === r.live
-              : beads[1].state === "running" && beads[1].bg === r.live && beads[2].state === "none") && beads[3].landed === "no" && beads[3].title === "noch nicht auf overhaul";
+          // ONE FLAG (owner 2026-10-08: „[Zitat entfernt]“
+          // ): 3A has a check running — ink; 3B's finished green
+          claims[`${tag}3A's flag runs (ink) and names its stages — Beweis grün, ${st === "land" ? "its land check running" : "Vorschau läuft"}; 3B's is ${st === "land" ? "an ink ring while its preview waits" : "green"}`] =
+            mine.flag?.look === "run" && mine.flag.color === r.ink && /Beweis: grün/.test(mine.flag.title)
+            && (st === "land" ? /^Landprüfung \d+:\d\d von ~4:10/.test(mine.flag.title) && /Landprüfung: läuft/.test(mine.flag.title) : /Vorschau: läuft/.test(mine.flag.title))
+            && (st === "land" ? zeitRow.flag?.cls === "lflag queue" && /^Vorschau wartet/.test(zeitRow.flag.title) && zeitRow.flag.color === r.ink
+              : zeitRow.flag?.look === "ok" && zeitRow.flag.color === r.live);
+          claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
+            && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
         }
         if (st === "lane" && !phone) {
           // the worktree field shows its worktree in Info: a click marks the own row for a moment
@@ -11465,33 +11999,66 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const marked = await wait(`document.querySelector('#boardbody .zr.flash')?.dataset.slot === '9'`, 4000);
           claims[`${tag}a click on the worktree field marks the own branch in Info`] = marked;
         }
-        if (st === "lane") {
-          // a click on the own square opens its line with Starten; Starten asks the slot's route for a 4-h copy
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] .ti')?.click()`);
-          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Starten'))`, 3000);
+        if (st === "lane" || st === "land") {
+          // EVERY LANE OPENS IN PLACE (owner 2026-10-08: „[Zitat entfernt]“
+          // ): a tap on 3A opens "Prüfungen" and the five points in the order a lane goes
+          // them, its run with its machine, its test instance as one sentence with Starten
+          if (st === "land") {
+            const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
+            facts.runsClosed = free0.map((l) => `${l.cls}: ${l.text}`);
+            claims[`${tag}while 3A is closed its land check stands in the Prüfungen block, named by the lane, beside 3B's waiting preview — each run once`] =
+              free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
+              && /^3A · Rechter Tab dichter Landprüfung/.test(free0[0]?.text ?? "") && /^3B · Zeitleiste Vorschau wartet/.test(free0[1]?.text ?? "");
+          }
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"]')?.click()`);
+          await wait(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'true' && document.querySelector('#boardbody .zd.wl')`, 3000);
+          await settle(150);
           r = await read();
-          const line = r.lines.find((l) => l.cls.includes("ti"));
-          facts.tiLine = line;
-          await shot(`${st}-${width}`);
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Starten')?.click()`);
-          await wait(`false`, 400);
-          facts.writes = fx.writes;
-          claims[`${tag}the square opens its line "Testinstanz · keine" with Starten, and Starten asks for a copy of THIS lane for 4 hours`] =
-            !!line && /Testinstanz · keine/.test(line.text) && line.buttons.join(",") === "Starten"
-            && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
+          const wl = r.lines.find((l) => l.cls.split(" ").includes("wl") && l.for === pathOf(own));
+          const tiL = r.lines.find((l) => l.cls.split(" ").includes("ti") && l.for === pathOf(own));
+          facts.opened = r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text} {${l.points.map((p) => `${p.key}:${p.cls}`).join(",")}}`);
+          const want = st === "land" ? ["ok", "ok", "run", "none", "none"] : ["ok", "run", "none", "none", "none"];
+          claims[`${tag}a tap opens 3A in place: "Prüfungen" and five points — Beweis · Vorschau · Landprüfung · gelandet · Nachprüfung as ${want.join(" · ")}, each stage's words on hover`] =
+            lane(r, 9)?.exp === "true" && lane(r, 9)?.cls.includes("here") === true && !!wl && wl.text.startsWith("Prüfungen")
+            && JSON.stringify(wl.points.map((p) => p.key)) === JSON.stringify(["local", "preview", "gate", "landed", "audit"])
+            && JSON.stringify(wl.points.map((p) => p.cls)) === JSON.stringify(want)
+            && wl.way.split("\n").length === 5 && /^1 Beweis: grün/.test(wl.way) && wl.way.includes("\n4 gelandet: noch nicht auf overhaul\n")
+            && wl.wayAria.startsWith("Weg nach overhaul: 1 Beweis: grün");
+          if (st === "land") {
+            const runs = r.lines.filter((l) => l.cls.split(" ").includes("run"));
+            claims[`${tag}opened, 3A's land check stands once — under the lane, with the glyph of its machine; the Prüfungen block keeps only 3B's preview`] =
+              runs.filter((l) => !l.cls.split(" ").includes("free")).length === 1 && /^Landprüfung /.test(runs.find((l) => !l.cls.split(" ").includes("free"))?.text ?? "")
+              && runs.filter((l) => l.cls.split(" ").includes("free")).length === 1 && /^3B · Zeitleiste/.test(runs.find((l) => l.cls.split(" ").includes("free"))?.text ?? "")
+              && await evaluate<boolean>(`!!document.querySelector('#boardbody .zd.run:not(.free) .dv[aria-label="läuft auf Mac"]')`);
+          }
+          await shot(`${st}-offen-${width}`);
+          if (st === "lane") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Starten')?.click()`);
+            await wait(`false`, 400);
+            facts.writes = fx.writes;
+            claims[`${tag}its test instance is one sentence "Testinstanz aus" with Starten, and Starten asks for a copy of THIS lane for 4 hours`] =
+              !!tiL && tiL.text === "Testinstanz aus Starten" && tiL.buttons.join(",") === "Starten"
+              && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
+          }
+          // and closed again, so the claims below read the column as it stands
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"]')?.click()`);
+          await wait(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`, 3000);
+          await settle(150);
+          r = await read();
         }
         if (st === "modell") {
           const zeitRow = lane(r, 10)!, freeRow = byId(r, pathOf(free))!;
           const until = await clock(fx.now + 2 * 3600_000);
-          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session`] =
-            zeitRow.ti?.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && freeRow.ti?.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
-            && zeitRow.ti.title.startsWith(`Testinstanz läuft bis ${until}`);
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"] .ti')?.click()`);
+          facts.ti = { zeit: zeitRow.ti, free: freeRow.ti };
+          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session — a sign, the row opens its line`] =
+            zeitRow.ti?.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && zeitRow.ti.tag === "SPAN" && freeRow.ti?.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
+            && zeitRow.ti.title === `Testinstanz läuft bis ${until}`;
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
           await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
           r = await read();
-          const line = r.lines.find((l) => l.cls.includes("ti"));
+          const line = r.lines.find((l) => l.cls.split(" ").includes("ti"));
           facts.tiLine = line;
-          claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.includes(`bis ${until}`)
+          claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.startsWith(`Testinstanz läuft bis ${until}`)
             && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
           await shot(`${st}-${width}`);
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Öffnen')?.click()`);
@@ -11500,7 +12067,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Stoppen')?.click()`);
           await wait(`false`, 400);
           // the slotless worktree's instance goes through the worktree route, named by repo and path
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"] .ti')?.click()`);
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
           await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})`, 3000);
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))}).querySelector('button')?.click()`);
           await wait(`false`, 400);
@@ -11514,34 +12081,27 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             fx.writes.some((w) => w.path === wtRoute && (w.body as { action?: string })?.action === "open");
         }
         if (st === "tippen") {
-          // a click on a branch with a session jumps there like a click in the session list
           await shot(`${st}-vorher-${width}`);
+          // EVERY LANE OPENS IN PLACE (owner 2026-10-08, decided by the UI-MAIN: „[Zitat entfernt]“
+          // ): a tap on 3B opens it, nothing jumps
           await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
-          const jumped = phone
-            ? await wait(`!document.querySelector('#shell-board')`, 4000)
-            : await wait(`document.querySelector('#boardbody .zr.here')?.dataset.slot === '10'`, 6000);
-          facts.jumped = jumped;
-          if (phone) {
-            claims[`${tag}on the phone a jump closes Info, and the session is the one in the pane`] = jumped
-              && await wait(`document.querySelector('#comptarget')?.dataset.slot === '10'`, 3000);
-            // back into Info for the slotless row
-            await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200);
-            await evaluate("document.querySelector('#minfo')?.click()");
-            await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 8000); await settle(300);
-            r = await read();
-            claims[`${tag}after the jump the marked row is 3B — the Ranke stands as before`] = lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here");
-          } else {
-            r = await read();
-            claims[`${tag}after the jump the pane and Info show 3B, the Ranke stands as before, only the mark moved`] = jumped
-              && lane(r, 10)?.cls.includes("here") === true && !lane(r, 9)?.cls.includes("here") && branchRows(r).length === zw.length;
-          }
+          const opened = await wait(`document.querySelector('#boardbody .zr[data-slot="10"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
+          await settle(300);
+          const infoStays = phone ? await evaluate<boolean>("!!document.querySelector('#shell-board')") : true;
+          r = await read();
+          facts.tapped = { opened, infoStays, here: r.rows.filter((x) => x.cls.includes("here")).map((x) => x.slot ?? x.id), lines: r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text}`) };
+          claims[`${tag}a tap on 3B opens it in place — no jump: Info stays open, 3A stays the marked lane, 3B shows its checks`] =
+            opened && infoStays && lane(r, 9)?.cls.includes("here") === true && !lane(r, 10)?.cls.includes("here") && branchRows(r).length === zw.length
+            && r.lines.some((l) => l.for === pathOf(zeit) && l.cls.split(" ").includes("wl") && l.text.startsWith("Prüfungen"));
           await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
           await wait(`document.querySelector('#boardbody .zd.zx')`, 3000);
           r = await read();
           const x = r.lines.find((l) => l.cls.includes("zx2"));
-          facts.opened = r.lines;
-          claims[`${tag}a branch without a session opens up with its branch, Öffnen and Schließen…`] = !!x && x.buttons.includes("Öffnen") && x.buttons.includes("Schließen…")
-            && r.lines.some((l) => l.cls.includes("zx") && l.text.includes(free.branch));
+          facts.opened = r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text} ${l.buttons.join("/")}`);
+          claims[`${tag}a branch without a session and without a check opens to "Noch keine Prüfung", its branch, Öffnen and Schließen…`] = !!x && x.buttons.includes("Öffnen") && x.buttons.includes("Schließen…")
+            && r.lines.some((l) => l.cls.includes("zx") && l.text.includes(free.branch))
+            && r.lines.some((l) => l.for === pathOf(free) && l.cls.split(" ").includes("wl") && l.text === "Noch keine Prüfung" && l.points.length === 0)
+            && lane(r, 10)?.exp === "false";
           await shot(`${st}-${width}`);
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.zx2 button')].find((b) => b.textContent === 'Öffnen')?.click()`);
           await wait(`false`, 400);
@@ -11553,39 +12113,55 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // the second repo is at work (slot 13 works), so it stands open without a click
           await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') !== 'true')?.click()`);
           await wait(`document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
-          if (st === "branch") {
-            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.dataset.mode === 'branch')?.click()`);
-            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(own.branch)}`, 3000);
-          }
           await settle(200);
           r = await read();
           const z2 = branchRows(r);
           const fold = r.rows.find((x) => x.cls.includes("zf"));
-          facts.many = { rows: z2.length, fold: fold?.text, pfX: [...new Set(z2.map((x) => x.pf?.box.x))], tiX: [...new Set(z2.map((x) => x.ti?.box.x))] };
-          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; beads and squares still flee across both repos`] =
-            !!fold && /\d+ ohne Session/.test(fold.text)
-              && new Set(z2.map((x) => x.pf?.box.x)).size === 1 && new Set(z2.map((x) => x.ti?.box.x)).size === 1 && z2.some((x) => x.slot === "13");
+          const flagR2 = new Set(z2.filter((x) => x.flag).map((x) => x.flag!.box.r));
+          facts.many = { rows: z2.length, fold: fold?.text, flagR: [...flagR2], flags: z2.map((x) => `${x.slot ?? x.id}: ${x.flag?.cls ?? "-"}`) };
+          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; the flags still stand in one column across both repos`] =
+            !!fold && /\d+ ohne Session/.test(fold.text) && flagR2.size === 1 && z2.some((x) => x.slot === "13");
           const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
-          claims[`${tag}the bead states read apart: red stale preview is a red ring, waiting is a green ring, skipped is a dash, an unreadable record is amber`] =
-            c.pf!.beads[1].cls === "bad stale" && d.pf!.beads[1].state === "waiting" && g.pf!.beads[0].state === "skipped" && f.pf!.beads[4].state === "unknown"
-            && /unbekannt/.test(f.pf!.beads[4].title);
-          claims[`${tag}a landed worktree shows the filled diamond "gelandet als <sha> in overhaul" and its check after the land running`] =
-            e.pf!.beads[3].landed === "yes" && e.pf!.beads[3].title === `gelandet als ${sha7(hex("landed-e"))} in overhaul` && e.pf!.beads[4].state === "running";
+          // ONE FLAG, ITS LOOKS (src/board.ts#flagLook): red where a check is red — a ring when that result
+          // is on an older stand; an ink ring while one waits; ink while one runs; nothing where no check
+          // has a result to tell (a skipped proof, an unreadable record alone)
+          claims[`${tag}the flags read apart: a red result on an older stand is a red ring, a waiting run an ink ring, a running check after the land ink, nothing to tell no flag`] =
+            c.flag?.cls === "lflag bad old" && c.flag.color === r.danger && d.flag?.cls === "lflag queue" && d.flag.color === r.ink
+            && e.flag?.cls === "lflag run" && !g.flag && !f.flag;
           claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
-          if (st === "branch") claims[`${tag}the switch shows branches in the name column, still one row per branch`] = r.seg.includes("branch*")
-            && lane(r, 9)?.name === own.branch && z2.every((x) => x.box.h === (phone ? 40 : 24));
           await shot(`${st}-${width}`);
           if (st === "viele") {
+            // the points of an opened lane read apart too: the land a filled point with its commit, a
+            // check after the land that runs, a skipped proof, an unreadable record amber
+            const openLane = async (slot: number) => {
+              await evaluate(`document.querySelector('#boardbody .zr[data-slot="${slot}"]')?.click()`);
+              const path = pathOf(lanesOf(st).find((l) => l.slot === slot)!);
+              await wait(`document.querySelector('#boardbody .zd.wl[data-for=${JSON.stringify(path)}]')`, 3000);
+              const x = await read();
+              return x.lines.find((l) => l.for === path && l.cls.split(" ").includes("wl"));
+            };
+            const we = await openLane(14), wf = await openLane(15), wg = await openLane(16);
+            facts.points = { e: we?.points.map((p) => p.cls), f: wf?.points.map((p) => p.cls), g: wg?.points.map((p) => p.cls) };
+            claims[`${tag}opened, a landed lane fills its land point "gelandet als <sha> in overhaul" and shows its check after the land running`] =
+              JSON.stringify(we?.points.map((p) => p.cls)) === JSON.stringify(["ok", "ok", "ok", "ok", "run"])
+              && (we?.way ?? "").includes(`4 gelandet: gelandet als ${sha7(hex("landed-e"))} in overhaul`);
+            claims[`${tag}opened, the points read apart: a skipped proof "skip", an unreadable record amber "unk" with "unbekannt" in its words`] =
+              wg?.points[0]?.cls === "skip" && /1 Beweis: ausgelassen/.test(wg.way)
+              && wf?.points[4]?.cls === "unk" && /5 Nachprüfung: unbekannt/.test(wf.way);
+            await evaluate(`document.querySelector('#boardbody .zr[data-slot="16"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="16"]')?.getAttribute('aria-expanded') === 'false'`, 3000);
+            r = await read();
             await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
             const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
             claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
           }
           if (st === "branch") {
-            await evaluate(`[...document.querySelectorAll('#boardbody .rkseg button')].find((b) => b.dataset.mode === 'stand')?.click()`);
-            await wait(`document.querySelector('#boardbody .zr[data-slot="9"] .nm')?.textContent === ${JSON.stringify(sha7(hex(own.branch)))}`, 3000);
-            r = await read();
-            claims[`${tag}the switch "Stand" shows the commit every worktree stands on`] = lane(r, 9)?.name === sha7(hex(own.branch)) && lane(r, 11)?.name === sha7(hex("fleet/261005-insel-am-telefon-1b2c"));
-            await shot(`stand-${width}`);
+            // THE NAME COLUMN SHOWS NAMES (owner 2026-10-08, „[Zitat entfernt]“): the switch
+            // Name/Zweig/Stand left — the branch and the commit stand in each row's title
+            const m9 = lane(r, 9);
+            claims[`${tag}no name switch: 3A's row shows its name, its branch and the commit it stands on are its title`] =
+              !await evaluate<boolean>("!!document.querySelector('#boardbody .rkseg')") && m9?.name === "Rechter Tab dichter"
+              && (m9?.title ?? "").includes(own.branch) && (m9?.title ?? "").includes(`läuft auf ${sha7(hex(own.branch))}`);
           }
         }
         if (st === "alarm") await shot(`${st}-${width}`);
@@ -11646,8 +12222,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         }
         if (st === "main") {
           const m = byId(r, `${REPO}#main`)!;
-          claims[`${tag}a session in the main checkout marks the stem, its address is underlined, no lane is marked`] =
-            m.cls.includes("here") && /\b3\b/.test(m.text) && !zw.some((x) => x.cls.includes("here"));
+          // THE SESSIONS ON MAIN BY WHAT THEY ARE (owner 2026-10-08: „[Zitat entfernt]“ said nothing): one
+          // button names them — the Orchestratorin, the MAINs, the rest as a count — and a tap lists them
+          claims[`${tag}a session in the main checkout marks the stem; its sessions are one button "Orchestratorin · 1 MAIN", no lane is marked`] =
+            m.cls.includes("here") && m.msess === "Orchestratorin · 1 MAIN" && !zw.some((x) => x.cls.includes("here"));
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${REPO}#main"] .msess')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.msl')`, 3000);
+          const listed = await evaluate<{ t: string; on: boolean }[]>(`[...document.querySelectorAll('#boardbody .zd.msl')].map((z) => ({ t: z.innerText.trim(), on: z.classList.contains('on') }))`);
+          facts.msl = listed;
+          claims[`${tag}a tap on it lists them by name, this session marked`] =
+            JSON.stringify(listed) === JSON.stringify([{ t: "Orchestratorin", on: false }, { t: "Program-MAIN Oberfläche", on: true }]);
+          await evaluate(`document.querySelector('#boardbody .zr[data-id="${REPO}#main"] .msess')?.click()`);
+          await wait(`!document.querySelector('#boardbody .zd.msl')`, 3000);
           await shot(`${st}-${width}`);
         }
         // --- THE REST OF INFO (cards R1–R4, rechter-tab-notiz.md §3–§4a, Variante 3A): the session
@@ -11685,9 +12271,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                   cnt: p ? txt(p.querySelector('.smcount')) : null, lock: p ? txt(p.querySelector('.smlockrow')) : null }; })(),
               oldMeter: !!document.querySelector('#boardsuites'),
               alarm: (() => { const a = body.querySelector('.plasec'), e = body.querySelector('.berrs');
-                return { card: a ? { cls: a.className, t: txt(a.querySelector('.plat')), d: txt(a.querySelector('.plad')), btns: [...a.querySelectorAll('button')].map((b) => b.textContent.trim()), detail: txt(a.querySelector('.pladetail')) } : null,
+                return { card: a ? { cls: a.className, t: txt(a.querySelector('.plat')), d: txt(a.querySelector('.plad')), btns: [...a.querySelectorAll('button')].map((b) => b.textContent.trim()), detail: txt(a.querySelector('.pladetail')),
+                    place: a.dataset.place ?? null, holder: a.dataset.holder ?? null, state: txt(a.querySelector('.plastate')), stateCls: a.querySelector('.plastate')?.className ?? null,
+                    at: [...body.children].indexOf(a), afterRanke: a.previousElementSibling?.classList.contains('ranke') === true, bg: getComputedStyle(a).backgroundColor } : null,
                   errs: e ? txt(e.querySelector('.errrow')) : null }; })(),
-              live: txt(body.querySelector('.ranke .zr[data-kind="live-server"] > .st')),
+              live: txt(body.querySelector('.ranke .zr[data-kind="live-server"] > .st')), cards: body.querySelectorAll('.plasec').length,
+              raised: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-raised)'; body.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })(),
               bodyText: [...body.querySelectorAll('.btabbody')].reduce((t, b) => t.replace(b.innerText, ''), body.innerText),
               small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
               vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
@@ -11703,7 +12292,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             hist: { rows: number; files: number; folds: number; more: string | null } | null;
             tabs: { key: string; open: boolean; title: string | null; sum: string | null; x: string | null; body: string; h: number }[];
             meter: { btn: string | null; open: string | null; inHead: boolean; rows: string[] | null; cnt: string | null; lock: string | null }; oldMeter: boolean;
-            alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null } | null; errs: string | null }; live: string | null;
+            alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null; place: string | null; holder: string | null; state: string | null;
+              stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
+            cards: number; raised: string;
             bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null;
             boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number };
           const info = async (): Promise<Info> => {
@@ -11720,28 +12311,32 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           let n = await info();
           facts.info = { kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
-          if (!phone && hasSession) claims[`${it}the Arbeitsorte's head — title, the name switch, the checks strip — stays one line at 300 px`] = n.headH > 0 && n.headH <= 26;
-          // …whatever the font: the Linux helper's sans is wider than this Mac's, and its head broke into two
-          // lines in `land`. Letter-spacing stands in for that font on every machine; the checks word is cut
-          // with … instead (public/index.html, `.ranke h3 .meterbtn .mw`), its full text stays its name.
-          if (!phone && st === "land") {
-            const wide = await evaluate<{ h: number; word: string; cut: boolean; inside: boolean } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke h3'); if (!h3) return null;
-              const css = document.createElement('style'); css.textContent = '#board .ranke h3, #board .ranke h3 * { letter-spacing: 1px !important; }'; document.head.append(css);
-              const mw = h3.querySelector('.meterbtn .mw'); const out = { h: Math.round(h3.getBoundingClientRect().height), word: mw ? mw.textContent : '', cut: !!mw && mw.scrollWidth > mw.clientWidth,
-                inside: [...h3.querySelectorAll('*')].every((e) => e.getBoundingClientRect().right <= h3.getBoundingClientRect().right + 0.5) };
+          if (!phone && hasSession) claims[`${it}the Arbeitsorte's head — the title alone, no switch, no strip — stays one line`] = n.headH > 0 && n.headH <= 26;
+          // …WHATEVER THE FONT: the Linux helper's sans is wider than this Mac's, and a head broke into two
+          // lines there once. Letter-spacing stands in for that font on every machine: the head stays one
+          // line, and nothing in the top of Info runs out under an ellipsis (owner 2026-10-08: „[Zitat entfernt]“
+          //  — names and repo heads wrap instead)
+          if (!phone && (st === "land" || st === "viele")) {
+            const wide = await evaluate<{ h: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke h3'); if (!h3) return null;
+              const css = document.createElement('style'); css.textContent = '#board .plasec *, #board .ranke *, #board .bhead * { letter-spacing: 1px !important; }'; document.head.append(css);
+              const cut = [...document.querySelectorAll('#boardbody .plasec *, #boardbody .ranke *, #boardbody .bhead *')].filter((e) => getComputedStyle(e).textOverflow === 'ellipsis'
+                && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
+              const out = { h: Math.round(h3.getBoundingClientRect().height), cut };
               css.remove(); return out; })()`);
             facts.wideHead = wide;
-            claims[`${it}with a wider font the Arbeitsorte's head still stays one line inside the column — the checks word is cut with …, its text whole`] =
-              !!wide && wide.h > 0 && wide.h <= 26 && wide.cut && wide.inside && wide.word === "Prüfungen · 1 läuft";
+            claims[`${it}with a wider font the Arbeitsorte's head stays one line and nothing in the top of Info is cut`] =
+              !!wide && wide.h > 0 && wide.h <= 26 && wide.cut.length === 0;
           }
-          claims[`${it}the checks strip is a word button in the Arbeitsorte's head, the pinned strip under the column head is gone`] =
-            n.meter.inHead && !n.oldMeter && n.meter.btn === (st === "land" ? "Prüfungen · 1 läuft" : st === "leer" ? "Prüfungen · frei · 1 Helfer" : "Prüfungen · frei");
+          // THE RUNS BESIDE THEIR LANES (owner 2026-10-08): the checks are the block „[Zitat entfernt]“ in the
+          // Arbeitsorte and a lane's own flag — no word button in the head, no strip pinned under it
+          claims[`${it}the checks are the block "Prüfungen" in the Arbeitsorte — no button in its head, no strip under the column head`] =
+            !n.meter.inHead && n.meter.btn === null && n.meter.rows === null && !n.oldMeter;
           // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Notizblock → History → Mehr
           const order = n.kids.map((k) => k.includes("ranke") ? "ranke" : k.includes("bhead") ? "sess" : k.includes("bchanges") ? "changes"
             : k.includes("bnotesec") ? "note" : k.includes("bhist") ? "history" : k.includes("bmore") ? "more" : k.includes("bnopane") ? "nopane"
             : /plasec|berrs/.test(k) ? "alarm" : k.includes("testinstanzmachine") ? "machine" : k).filter((k) => k !== "alarm");
-          // the machine's test instances (src/client.ts#paintTestinstanzCard) close the column when there are any
-          const story = order.at(-1) === "machine" ? order.slice(0, -1) : order;
+          // the machine's test instances no longer close the column (an instance opens at its lane)
+          const story = order;
           claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Notizblock → History → Mehr`] = !story.includes("machine") && (!hasSession
             ? JSON.stringify(story) === JSON.stringify(["ranke", "nopane"])
             : JSON.stringify(story) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "note", "history", "more"] : ["ranke", "sess", "changes", "history", "more"]));
@@ -11752,8 +12347,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               JSON.stringify(n.sess.glyphs.map((g) => g.label)) === JSON.stringify(["Umbenennen", "Teilen", "Exportieren", "Weitere Aktionen"])
               && n.sess.glyphs.every((g) => g.title.length > 12 && g.text === "") && !/\b(Rename|Share…|Export…)/.test(n.bodyText);
             const keys = n.sess.kv.map((r) => r.k);
-            claims[`${it}the session's values: ${isLane ? "Branch · Landet in · " + (ownLanded ? "Land" : "Check") + " · " : ""}Kontext · Gehört zu`] =
-              JSON.stringify(keys) === JSON.stringify(isLane ? ["Branch", "Landet in", ownLanded ? "Land" : "Check", "Kontext", "Gehört zu"] : ["Kontext", "Gehört zu"]);
+            // THE SESSION STAYS SIMPLE (owner 2026-10-08: „[Zitat entfernt]“
+            // ): branch, target and checks are the lane's row under Arbeitsorte now
+            claims[`${it}the session's values are Kontext · Gehört zu — no Branch, no Landet in, no Check, no Land`] =
+              JSON.stringify(keys) === JSON.stringify(["Kontext", "Gehört zu"]);
             const kon = n.sess.kv.find((r) => r.k === "Kontext");
             claims[`${it}the handover is ONE line — "${isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus"}" — whether the hint was given only on hover`] = !!kon
               && (kon.v ?? "").startsWith(isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus") && !/Hinweis/.test(kon.v ?? "")
@@ -11761,18 +12358,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}"Gehört zu" carries the links${isLane ? " Auftrag · Akte" : ""}`] = isLane
               ? /^Auftrag [0-9a-f]{8} Akte$/.test(n.sess.kv.find((r) => r.k === "Gehört zu")?.v ?? "") : n.sess.kv.some((r) => r.k === "Gehört zu");
             if (isLane) {
-              const br = n.sess.kv.find((r) => r.k === "Branch"), land = n.sess.kv.find((r) => r.k === "Landet in");
-              claims[`${it}Branch in full with its copy glyph, and where it lands: "overhaul · ${ownLanded ? "3 Commits werden gelandet" : "3 Commits voraus"}"`] =
-                (br?.v ?? "").includes(own.branch) && land?.v === `overhaul ${ownLanded ? "3 Commits werden gelandet" : "3 Commits voraus"}`;
-              if (ownLanded) {
-                const steps = n.sess.kv.find((r) => r.k === "Land");
-                claims[`${it}while it lands, its four steps: wartet ✓ → wird geprüft (now) → gelandet → danach`] = steps?.v === "wartet wird geprüft gelandet danach"
-                  && /✓ wartet auf die Prüfung → ● wird geprüft → gelandet → der Check nach dem Land/.test(steps.title);
-              } else {
-                const ck = n.sess.kv.find((r) => r.k === "Check");
-                claims[`${it}Check names the newest check of the lane with its age, every stage on hover`] = /^läuft · (gerade eben|vor \d+ Min\.) Vorschau$/.test(ck?.v ?? "")
-                  && /Lokale Beweise: grün/.test(ck?.title ?? "") && /Land-Prüfung: noch keiner/.test(ck?.title ?? "");
-              }
+              const row9 = (await read()).rows.find((x) => x.slot === "9");
+              claims[`${it}the lane's branch and where it lands stand in its row under Arbeitsorte, not in the session block`] =
+                !(n.sess.meta ?? "").includes(own.branch) && !n.sess.kv.some((r) => (r.v ?? "").includes(own.branch))
+                && (row9?.title ?? "").includes(own.branch) && (row9?.title ?? "").includes("landet in overhaul");
             }
           }
           if (hasSession && detail && n.work) {
@@ -11803,22 +12392,33 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}on the phone every target below the Arbeitsorte is at least 40 px high (a link 32)`] = small.length === 0;
           }
           if (st === "lane" && !phone) claims[`${it}Land lane stands on the first screen at 1200 × 900`] = n.landBottom !== null && n.landBottom <= n.vh;
-          if (st === "land") claims[`${it}the strip opens every run: 3A's land check and 3B's preview, the stations counted, who holds the machine, the helper`] =
-            n.meter.open === "true" && (n.meter.rows ?? []).length === 2 && /^3A · Rechter Tab dichter/.test(n.meter.rows?.[0] ?? "") && /^3B · Zeitleiste/.test(n.meter.rows?.[1] ?? "")
-            && n.meter.cnt === "wartet 1 · läuft 1 · auf Helfer 0 · fertig 0"
-            && /^Ein Lauf zur Zeit auf diesem Rechner · 3A · Rechter Tab dichter seit 2:4\d · Helfer workhorse bereit$/.test(n.meter.lock ?? "")
-            && /läuft seit 2:4\d \/ ~4:10/.test(n.meter.rows?.[0] ?? "") && /wartet seit 0:5\d/.test(n.meter.rows?.[1] ?? "");
           if (st === "alarm") {
-            claims[`${it}the check after the land is a tinted card at the top: "Der Check nach dem Land ist rot", one sentence, Ansehen · Gesehen`] =
-              !!n.alarm.card && n.alarm.card.cls.includes("red") && n.alarm.card.t === "Der Check nach dem Land ist rot"
-              && /^main@[0-9a-f]{8} ist nach dem Land von .+ rot — die ganze Prüfung scheitert\. Rücknehmen oder reparieren\.$/.test(n.alarm.card.d ?? "")
-              && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Ansehen", "Gesehen"]) && n.kids[0]?.includes("plasec");
+            // NOBODY HAS IT (no ping, no judgement on the row): the card stands at the TOP, tinted, says what
+            // failed with the repo's name, one sentence what to do, and in its foot "Braucht dich"
+            facts.alarm = n.alarm;
+            claims[`${it}an alarm nobody holds is a tinted card at the top: "Der Check nach dem Land in claude‑fleet ist rot", one sentence what to do, "Braucht dich", Gesehen · Ansehen`] =
+              !!n.alarm.card && n.alarm.card.cls.includes("red") && !n.alarm.card.cls.includes("held") && n.alarm.card.place === "top" && n.alarm.card.at === 0
+              && n.alarm.card.t === "Der Check nach dem Land in claude\u2011fleet ist rot" && n.alarm.card.d === "Nimm das Land zurück oder gib die Reparatur in Auftrag."
+              && n.alarm.card.state === "Braucht dich" && n.alarm.card.holder === "none"
+              && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Gesehen", "Ansehen"]);
             claims[`${it}the server errors are one line under it: "3 Serverfehler · 2 verschiedene seit …"`] = /^3 Serverfehler · 2 verschiedene seit /.test(n.alarm.errs ?? "");
-            claims[`${it}the due restart is the Live row itself: "Neustart fällig · läuft auf …"`] = (n.live ?? "").startsWith("Neustart fällig · läuft auf") && !/deploy due/i.test(n.bodyText);
+            claims[`${it}the due restart is this machine's row itself: "Läuft auf älterem Server-Code." beside "Neustart fällig"`] =
+              n.live === "Läuft auf älterem Server-Code." && !/deploy due/i.test(n.bodyText);
+            // …and its chain is a tap away: the commit, the distance and which code it touches
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Mac"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:here"]')`, 3000);
+            const chain = (await read()).lines.filter((l) => l.for === "mach:here").map((l) => l.text);
+            facts.chain = chain;
+            claims[`${it}a tap on this machine opens the chain: "Live · läuft auf <commit> · 5 hinter main · betrifft den Server-Code"`] =
+              chain.some((t) => t.startsWith(`Live · läuft auf ${sha7(BOOT)} · 5 hinter main · betrifft den Server-Code`));
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Mac"]')?.click()`);
+            await wait(`!document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:here"]')`, 3000);
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
             await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
             n = await info();
-            claims[`${it}"Ansehen" opens where, when and the way back ("Undo last land" in the ⋯ beside Land lane)`] = /Undo last land/.test(n.alarm.card?.detail ?? "") && /im ⋯ neben Land lane/.test(n.alarm.card?.detail ?? "");
+            claims[`${it}"Ansehen" opens the raw values — repo, tip, the land before — when, and the way back ("Undo last land" in the ⋯ beside Land lane)`] =
+              /Undo last land/.test(n.alarm.card?.detail ?? "") && /im ⋯ neben Land lane/.test(n.alarm.card?.detail ?? "")
+              && (n.alarm.card?.detail ?? "").startsWith(`claude\u2011fleet · main@${MAIN.slice(0, 8)} · nach `);
             await shot(`info-${st}-${width}`);
             // THE ALARM LIVES IN INFO, on the phone too (card "Du kennst mobile Web-Oberflaechen"): the strip
             // above the island is gone, so everything it led to is read and pressed here — the whole log
@@ -11861,6 +12461,47 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Gesehen')?.click()`);
             claims[`${it}"Gesehen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
               await wait(`document.querySelector('#boardbody .plasec.seen') && localStorage.getItem('fleet.plaudit.ack') !== null`, 3000);
+            // WHO HAS IT (owner 2026-10-08: „[Zitat entfernt]“
+            // ): the rails the row carries, walked one by one. The fixture's `at` moves with every poll,
+            // so the ack above does not hold the next row back.
+            let nextAt = fx.plaAt;
+            const holderCard = async (pla: Record<string, unknown>, holder: string | null) => {
+              fx.pla = { ...pla, at: ++nextAt };
+              await wait(holder ? `document.querySelector('#boardbody .plasec[data-holder="${holder}"]')` : `!document.querySelector('#boardbody .plasec')`, 8000);
+              // the detail "Ansehen" opened above stays open across cards (one switch): closed, the card reads as it stands
+              if (await evaluate<boolean>("!!document.querySelector('#boardbody .plasec .pladetail')")) {
+                await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Weniger')?.click()`);
+                await wait(`!document.querySelector('#boardbody .plasec .pladetail')`, 3000);
+              }
+              await settle(150);
+              return info();
+            };
+            const delivered = fx.now - 30 * 60_000;
+            const since = await evaluate<string>(`new Date(${delivered}).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })`);
+            n = await holderCard({ ping: { status: "delivered", slot: 1, deliveredAt: delivered, sameSession: true } }, "session");
+            facts.heldBySession = n.alarm.card;
+            claims[`${it}an alarm a session holds recedes under the Arbeitsorte: no tint, no sentence what to do, no Gesehen — its foot "Bei der Orchestratorin seit <Uhrzeit>"`] =
+              !!n.alarm.card && n.alarm.card.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.cls.includes("held") && n.alarm.card.bg === n.raised
+              && n.alarm.card.d === null && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Ansehen"])
+              && n.alarm.card.state === `Bei der Orchestratorin seit ${since}` && n.alarm.card.t === "Der Check nach dem Land in claude\u2011fleet ist rot";
+            await shot(`info-${st}-gehalten-${width}`);
+            n = await holderCard({ ping: { status: "program-inbox" } }, "program");
+            claims[`${it}an alarm in the Program's inbox recedes too: "Im Posteingang des Programs"`] =
+              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "Im Posteingang des Programs" && n.alarm.card.d === null;
+            n = await holderCard({ adjudication: { verdict: "flake", at: fx.now - 5 * 60_000, by: "owner" } }, "judged");
+            claims[`${it}a judged alarm recedes and says the verdict: "Von dir beurteilt: ein Flake"`] =
+              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "Von dir beurteilt: ein Flake" && n.alarm.card.d === null;
+            n = await holderCard({ ping: { status: "delivered", slot: 1, deliveredAt: delivered, sameSession: false } }, "gone");
+            facts.heldGone = n.alarm.card;
+            claims[`${it}an alarm whose session has gone stands at the top again: "niemand hat ihn jetzt", what to do, "Braucht dich"`] =
+              n.alarm.card?.place === "top" && n.alarm.card.at === 0 && !n.alarm.card.cls.includes("held")
+              && n.alarm.card.d === "Zugestellt an Slot 1, dort läuft inzwischen eine andere Session — niemand hat ihn jetzt. Nimm das Land zurück oder gib die Reparatur in Auftrag."
+              && n.alarm.card.state === "Braucht dich" && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Gesehen", "Ansehen"]);
+            // NOT-APPLICABLE IS NO ALARM (owner 2026-10-08): a repo without an audit command measured nothing
+            // it was meant to — no card, no receipt (the classifier itself: e2e/outcomes.ts)
+            n = await holderCard({ result: "not-applicable", reason: "no audit command applies to this repo" }, null);
+            claims[`${it}a check after the land that does not apply to its repo draws no card at all`] = n.alarm.card === null && n.cards === 0;
+            fx.pla = {};
           }
           // --- the three popovers: at their button on the desktop, a sheet from the bottom on the phone
           // the phone's sheet spans Info's own window (a side sheet over the session) and sits on its bottom edge
@@ -11963,16 +12604,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await evaluate(`(() => { const ta = document.querySelector('#boardbody .bnotesec textarea'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur(); })()`);
           }
           if (st === "branch") {
-            // the name column's switch and the opened repo survive a reload (src/prefs.ts)
+            // the repos the owner opened or closed by hand survive a reload (src/prefs.ts, fleet.ranke.repos):
+            // rezepte-app stands open because it is at work — closed by hand, it stays closed
+            await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') === 'true')?.click()`);
+            await wait(`!document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
             // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
             if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
             await navigate("http://fleet.fixture/");
             if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); }
-            const back = await wait(`document.querySelector('#boardbody .rkseg button.on')?.dataset.mode === 'stand' && !!document.querySelector('#boardbody .zr[data-slot="13"]')`, 15000);
-            facts.reload = await evaluate(`({ mode: localStorage.getItem('fleet.ranke.mode'), repos: localStorage.getItem('fleet.ranke.repos'),
-              on: document.querySelector('#boardbody .rkseg button.on')?.dataset.mode ?? null, s13: !!document.querySelector('#boardbody .zr[data-slot="13"]'),
+            const back = await wait(`[...document.querySelectorAll('#boardbody .zr.repo')].some((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') === 'false')
+              && !!document.querySelector('#boardbody .zr[data-slot="9"]') && !document.querySelector('#boardbody .zr[data-slot="13"]')`, 15000);
+            facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s13: !!document.querySelector('#boardbody .zr[data-slot="13"]'),
               text: (document.querySelector('#boardbody')?.innerText ?? '').slice(0, 300) })`);
-            claims[`${it}the switch "Stand" and the opened second repo survive a reload`] = back;
+            claims[`${it}a project closed by hand stays closed across a reload, though it is at work`] = back;
           }
           if (st === "viele3") {
             // (the second repo is at work and stands open: its branch is not one of claude-fleet's three)

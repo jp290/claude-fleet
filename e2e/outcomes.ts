@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
-import { postLandAlarm } from "../src/plaudit";
+import { plaHolder, plaNeedsOwner, postLandAlarm } from "../src/plaudit";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import { meterKind, meterLine, meterRuns, suiteMeter, type MeterInput } from "../src/suitemeter";
 
@@ -1681,6 +1681,68 @@ export async function run(): Promise<void> {
     check("alarm: an audit naming no lane says so — coverage-not-recorded never reads as 'after nothing'",
       /not recorded|no lane/i.test(plaCall(plaRow({ covers: [] }))?.where ?? ""),
       JSON.stringify(plaCall(plaRow({ covers: [] }))));
+    // NOT-APPLICABLE IS NO ALARM (owner 2026-10-08): a repo with no audit command was never meant to
+    // be measured; the board drew it as „[Zitat entfernt]“ at the top of
+    // Info. The classifier says nothing for it — and the two real non-greens stay alarms beside it.
+    check("alarm: a NOT-APPLICABLE audit raises nothing — a repo without an audit command is not a non-measurement",
+      plaCall(plaRow({ result: "not-applicable", reason: "no audit command applies to this repo" })) === null
+      && plaCall(plaRow({ result: "red" }))?.tone === "red" && plaCall(plaRow({ result: "unknown" }))?.tone === "unknown",
+      JSON.stringify(plaCall(plaRow({ result: "not-applicable" }))));
+    // …and the server's projection never makes one the board's audit: the not-applicable write keeps
+    // its row on the trail but does not take lastPostLandAudit, and the boot rehydration walks past
+    // such rows to the newest verdict that measured or should have (server.ts#postLandAuditSummary)
+    {
+      const srv = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/server.ts`, "utf8");
+      const naAt = srv.indexOf('result: "not-applicable", reason: "no audit command applies to this repo"');
+      const naBranch = naAt >= 0 ? srv.slice(naAt, srv.indexOf("\n  }\n", naAt)) : "";
+      const boot = srv.slice(srv.indexOf("if (existsSync(POSTLAND_AUDIT_FILE)) {"), srv.indexOf("if (existsSync(POSTLAND_AUDIT_FILE)) {") + 1400);
+      check("server: a not-applicable audit row is written to the trail but never becomes the board's audit",
+        naAt >= 0 && /appendEvent\(POSTLAND_AUDIT_FILE/.test(naBranch) && !/lastPostLandAudit = row/.test(naBranch)
+        && /=== "not-applicable"/.test(boot) && /while \(i >= 0 && notApplicable\(lines\[i\]\)\) i--;/.test(boot),
+        naBranch.slice(0, 160));
+      // …and the board's 2-s poll pays for the verdict rail only when its file moved: the parsed map
+      // is kept under mtime:size, and a read that fails is "no verdict", never a 500 (review 08.10.)
+      const sumAt = srv.indexOf("async function postLandAuditSummary(");
+      const sum = sumAt >= 0 ? srv.slice(sumAt, srv.indexOf("\n}\n", sumAt)) : "";
+      const pollAt = srv.indexOf("async function adjudicationForPoll(");
+      const poll = pollAt >= 0 ? srv.slice(pollAt, srv.indexOf("\n}\n", pollAt)) : "";
+      check("server: the board's poll reads the verdict rail only when its file changed, and a failed read is no verdict, never a 500",
+        sumAt >= 0 && /adjudicationForPoll\(r\.at\)/.test(sum) && !/adjudicationsByAudit\(/.test(sum)
+          && /`\$\{st\.mtimeMs\}:\$\{st\.size\}`/.test(poll) && /adjudicationPollCache\?\.key !== key/.test(poll)
+          && /catch \(error\) \{[\s\S]*return undefined;\s*\}$/.test(poll),
+        (poll || sum).slice(0, 160));
+    }
+    // WHO HAS IT (owner 2026-10-08): the classifier reads the two rails the row carries and nothing
+    // else, and the owner is needed exactly when nobody else holds it. Run, not regexed.
+    type PlaHolderKind = "judged" | "session" | "gone" | "program" | "waiting" | "none";
+    const holderOf = (o: Record<string, unknown>): { kind: PlaHolderKind; owner: boolean } | null => {
+      try {
+        const h = plaHolder({ ...plaRow({}), ...o } as Parameters<typeof plaHolder>[0]);
+        return { kind: h.kind, owner: plaNeedsOwner(h) };
+      } catch { return null; }
+    };
+    const holderCases: [string, Record<string, unknown>, PlaHolderKind, boolean][] = [
+      ["no rail at all", {}, "none", true],
+      ["pending (no eligible session)", { ping: { status: "pending" } }, "waiting", true],
+      ["delivered, the session is still there", { ping: { status: "delivered", slot: 9, deliveredAt: 5, sameSession: true } }, "session", false],
+      ["delivered, the slot runs another session now", { ping: { status: "delivered", slot: 9, deliveredAt: 5, sameSession: false } }, "gone", true],
+      ["delivered without the sameSession answer", { ping: { status: "delivered", slot: 9 } }, "gone", true],
+      ["in the Program's inbox", { ping: { status: "program-inbox" } }, "program", false],
+      ["adjudicated before delivery", { ping: { status: "adjudicated" } }, "judged", false],
+      ["judged on the rail, whatever the delivery", { ping: { status: "pending" }, adjudication: { verdict: "flake", at: 7, by: "owner" } }, "judged", false],
+      ["a status this client does not know", { ping: { status: "teleported" } }, "none", true],
+    ];
+    const holderGot = holderCases.map(([name, o, kind, owner]) => {
+      const got = holderOf(o);
+      return { name, ok: got?.kind === kind && got.owner === owner, got };
+    });
+    check("alarm: WHO HAS IT — judged/session/program take it off the owner, waiting/gone/none leave it there",
+      holderGot.every((c) => c.ok), JSON.stringify(holderGot.filter((c) => !c.ok)));
+    // the board draws exactly that: a held alarm recedes under the Arbeitsorte, only the owner's stays on top
+    check("client: the alarm card is placed by plaNeedsOwner — top when nobody holds it, a quiet line otherwise",
+      /const owner = plaNeedsOwner\(holder\);/.test(cliSrc) && /sec\.dataset\.place = owner \? "top" : "quiet";/.test(cliSrc)
+      && /if \(pla0 && plaTop\) nodes\.push\(pla0\);/.test(cliSrc) && /if \(pla0 && !plaTop\) nodes\.push\(pla0\);/.test(cliSrc),
+      "plaAlarmCard / renderBoard in src/board.ts");
     check("client: the poll payload's postLandAudit is read on every refresh and rendered",
       /postLandAudit\?:/.test(cliSrc) && /setPostLandAudit\(data\.postLandAudit \?\? null\)/.test(cliSrc)
       && /function setPostLandAudit\(value: PostLandAuditInfo \| null\): void \{ postLandAudit = value; \}/.test(cliSrc)

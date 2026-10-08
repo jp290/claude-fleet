@@ -15,6 +15,10 @@ const PATHS = {
   // the clockwise twin of history's sweep, without the clock hands — the Files block's re-read
   reload: ["M20.5 12a8.5 8.5 0 1 1-2.5-6", "M20.5 4v4h-4"],
   clock: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 7.5v4.7l3 1.8"],
+  // the terminal view as Konzept 2 draws it (Blatt 17): a rounded screen with a prompt and a cursor
+  terminal: ["M6 5h12a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z", "M7.5 10l2.5 2-2.5 2", "M12.5 14.5h4"],
+  // two sliders: a running session's model and effort, set at the strip (not Einstellungen — gear)
+  regler: ["M4 8h10", "M18 8h2", "M16 6v4", "M4 16h3", "M11 16h9", "M9 14v4"],
   keys: ["M3 6.5h18v11H3z", "M7 10h.01", "M10.3 10h.01", "M13.7 10h.01", "M17 10h.01", "M8 14h8"],
   // THE HEAD ROW'S SET (#sidetools). Same 24-unit box, stroke 1.8, currentColor as everything
   // above, so an icon row in the bar and the tray under the composer read as one grammar.
@@ -35,6 +39,12 @@ const PATHS = {
   // the computers a fleet runs on: one screen, and two overlapping — the second says "more than one"
   screen: ["M4 5h16v11H4z", "M9 20h6", "M12 16v4"],
   screens: ["M8 9V4h13v9h-5", "M3 9h13v9H3z", "M7.5 21h4", "M9.5 18v3"],
+  // THE KINDS OF MACHINE in Info's Arbeitsorte (owner 2026-10-08: „[Zitat entfernt]“):
+  // this computer is the laptop above; a helper is a rack of two units; the live server sends
+  // (a point with its waves); a fleet that is only linked is the chain (after Lucide "link", ISC)
+  server: ["M4 4.5h16v6H4z", "M4 13.5h16v6H4z", "M7.5 7.5h.01", "M7.5 16.5h.01"],
+  live: ["M12 12h.01", "M8.5 8.5a5 5 0 0 0 0 7", "M15.5 8.5a5 5 0 0 1 0 7", "M5.5 5.5a9.2 9.2 0 0 0 0 13", "M18.5 5.5a9.2 9.2 0 0 1 0 13"],
+  link: ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
   // THE PANE'S CORNER GROUP (Grammatik K4/G0.6): the six emoji/unicode glyphs ↻ ℹ 💬 ↑ ↓ migrate
   // here — ↻ reuses reload, the keyboard is the terminal side of the view toggle — plus the gear
   // (settings, rightmost, G5) and the width arrows (terminal on the chat column's width). Same
@@ -66,6 +76,8 @@ const PATHS = {
   export: ["M12 4v11", "M8 11l4 4 4-4", "M5 20h14"],
   copy: ["M9 9h10v10H9z", "M5 15V6a1 1 0 0 1 1-1h9"],
   check: ["M5 12.5l4.5 4.5L19 7.5"],
+  // the flag at a closed lane (src/board.ts#laneFlag): the pole, then the cloth — its fill is the state
+  flag: ["M6.5 20.5V4", "M6.5 4.5h11l-2.75 4.25 2.75 4.25h-11z"],
   label: ["M4 12V5h7l8.5 8.5-6.5 6.5z", "M8 9h.01"],
   branch: ["M7 4v16", "M17 7v2a4 4 0 0 1-4 4H7", "M7 4h.01", "M17 7h.01", "M7 20h.01"],
   commit: ["M3.5 12h5", "M15.5 12h5", "M12 15.5a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z"],

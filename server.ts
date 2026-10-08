@@ -19332,7 +19332,7 @@ function laneBrief(next: Task, clarify: boolean, wave: WaveDispatch | null) {
   // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
   // and a later reader cannot tell whether an edit came before or after this delivery.
   const briefSource = briefSourceOf(src, clarify);
-  return { waveRows, sourceRows, brief: `${brief}\n\n${ownerKorrekturenPointer()}`, briefSource };
+  return { waveRows, sourceRows, brief, briefSource };
 }
 
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
@@ -19462,8 +19462,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     const deliveredBrief = clarify
-      ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${context.anchorBlock}`
-      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
+      ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\n${ownerKorrekturenPointer()}${context.anchorBlock}`
+      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md\n\n${ownerKorrekturenPointer()}`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -38306,8 +38306,9 @@ function buildOrchestratorSpawnBrief(harness: string | null, anchorBlock: string
     "1. Führe ./state.sh --brief aus.",
     "2. Folge bei Bedarf der benannten Detailtür und entscheide aus den Fakten den nächsten begrenzten Portfolio-Akt.",
     "",
-    memoryPortfolioPointer(),
     ownerKorrekturenPointer(),
+    "",
+    memoryPortfolioPointer(),
   ].join("\n") + anchorBlock;
 }
 
@@ -38330,8 +38331,9 @@ function buildOrchestratorSuccessionBrief(harness: string | null, steps: readonl
     ...briefSteps,
     ...next,
     "",
-    memoryPortfolioPointer(),
     ownerKorrekturenPointer(),
+    "",
+    memoryPortfolioPointer(),
   ].join("\n") + anchorBlock;
 }
 

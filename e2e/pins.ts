@@ -83,7 +83,7 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackSource } from "../context-packs";
-import { SESSION_BLOCKS } from "../session-blocks";
+import { SESSION_BLOCKS, type SessionBlock } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
@@ -12338,49 +12338,111 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     tracked.status === 0 && duplicates.length === 0, duplicates.length ? duplicates.slice(0, 8).join("; ") : "no duplicate model lists");
 }
 
-// S3's inventory is declaration only. Pin the doc's rows to the declaration and every named
-// source symbol to tracked code; a stale inventory must fail before someone designs switches on it.
+// The register is the only current inventory. Sources prove implementation or observation;
+// a native loader observation and an undelivered reader are not Fleet delivery claims.
 {
-  const note = read("docs/messungen/2026-09-26-session-bausteine.md");
-  const listed = [...note.matchAll(/^\| `(.*?)` · /gm)].map((m) => m[1]);
+  const roles = ["lane", "main", "orchestratorin", "nur-ordner"] as const;
+  const escaped = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declares = (text: string, anchor: string): boolean => {
+    const code = text.split("\n").filter((line) => !/^\s*(\/\/|\/\*|\*|\*\/)/.test(line)).join("\n");
+    return new RegExp(`\\b(?:function|const|class|interface|type)\\s+${escaped(anchor)}\\b`).test(code);
+  };
+  const resolves = (ref: string): boolean => {
+    const [path, anchor] = ref.split("#");
+    if (!path || !anchor || !exists(path)) return false;
+    const text = read(path);
+    if (path.endsWith(".md")) return new RegExp(`^#{1,6} ${escaped(anchor)}\\s*$`, "m").test(text);
+    return declares(text, anchor);
+  };
+  const problemsFor = (block: SessionBlock): string[] => {
+    const problems: string[] = [];
+    for (const key of ["id", "wort", "satz", "schicht", "breaksWithout"] as const)
+      if (!block[key].trim()) problems.push(`${key} empty`);
+    if (/[\n\r…]|\.{3}/.test(block.satz)) problems.push("satz abbreviated or multiline");
+    if (block.funktion.length === 0 || block.funktion.some((value) =>
+      !["vertrag", "auftrag", "rueckweg", "beweis", "orientierung", "gedaechtnis-zeiger"].includes(value)))
+      problems.push("funktion invalid");
+    if (block.grenze.art === "noetig" && !block.grenze.grund.trim()) problems.push("grenze lacks reason");
+    if (block.harness.art === "eingeschraenkt"
+      && (!block.harness.grund.trim() || block.harness.werte.length === 0)) problems.push("harness lacks scope/reason");
+    if (block.autor.length === 0 || block.lieferart.length === 0) problems.push("autor/lieferart empty");
+    if (Object.keys(block.rollenDefault).sort().join() !== [...roles].sort().join()) problems.push("role keys differ");
+    for (const role of roles) {
+      const value = block.rollenDefault[role];
+      if (typeof value === "object" ? value.zustand !== "bedingt" || !value.grund.trim()
+        : value !== "an" && value !== "aus") problems.push(`${role} default invalid`);
+    }
+    if (block.bytes !== "unknown" || block.fassung !== "unknown") problems.push("unmeasured delivery bytes/version");
+    if (block.belege.length === 0 || block.belege.some((ref) => !resolves(ref))) problems.push("evidence unresolved");
+    if (block.source !== "nicht zugestellt" && (!block.belege.includes(block.source) || !resolves(block.source)))
+      problems.push("source unresolved or not evidenced");
+    return problems;
+  };
   const declared = SESSION_BLOCKS.map((block) => block.id);
-  pin("S3 session blocks: note and declaration name every block once in the same order",
-    declared.length > 0 && new Set(declared).size === declared.length
-      && JSON.stringify(listed) === JSON.stringify(declared),
-    `declared=${declared.length}, documented=${listed.length}`);
-  const stale = SESSION_BLOCKS.filter((block) => {
-    const [path, symbol] = block.source.split("#");
-    return !path || !symbol || !exists(path)
-      || !new RegExp(`\\b${symbol}\\b`).test(read(path));
-  });
-  pin("S3 session blocks: every declared source symbol resolves in this tree",
-    stale.length === 0, stale.map((block) => `${block.id}:${block.source}`).join(", "));
-  const inventory = note.split("\n").filter((line) => /^\| `[^`]+` · /.test(line))
-    .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()));
-  const byId = new Map(inventory.map((cells) => [cells[0]?.split("`")[1], cells]));
-  const withoutMismatch = SESSION_BLOCKS.filter((block) => block.breaksWithout !== byId.get(block.id)?.[3]);
-  pin("S3 session blocks: breaksWithout is the note's Ohne ihn sentence",
-    withoutMismatch.length === 0, withoutMismatch.map((block) => block.id).join(", "));
-  const visibilityMismatch = SESSION_BLOCKS.filter((block) => {
-    const cells = byId.get(block.id);
-    const state = (index: number): string | undefined => /^(ja|nein|teilweise) · /.exec(cells?.[index] ?? "")?.[1];
-    return block.visibility.setup !== state(4) || block.visibility.running !== state(5)
-      || block.visibility.after !== state(6);
-  });
-  pin("S3 session blocks: visibility agrees with the note's three phases",
-    visibilityMismatch.length === 0, visibilityMismatch.map((block) => block.id).join(", "));
-  const gapRows = [...note.matchAll(/^\| `([^`]+)` \| (Aufsetzen|Im Lauf|Danach) · (nein|teilweise|unknown) \|/gm)]
-    .map((match) => `${match[1]}:${match[2]}:${match[3]}`);
-  const expectedGaps = inventory.flatMap((cells) => [
-    ["Aufsetzen", cells[4]], ["Im Lauf", cells[5]], ["Danach", cells[6]],
-  ].filter(([, cell]) => !cell?.startsWith("ja · "))
-    .map(([phase, cell]) => `${cells[0]?.split("`")[1]}:${phase}:${cell?.split(" · ")[0]}`));
-  pin("S3 session blocks: Luecken has one row for each incomplete phase",
-    JSON.stringify(gapRows) === JSON.stringify(expectedGaps),
-    `gaps=${gapRows.length}, expected=${expectedGaps.length}`);
+  pin("S3 session blocks: the register names each block once",
+    declared.length > 0 && new Set(declared).size === declared.length, declared.join(", "));
+  for (const block of SESSION_BLOCKS) {
+    const problems = problemsFor(block);
+    pin(`S3 session blocks: ${block.id} has complete metadata and a source in this tree`,
+      problems.length === 0, problems.join("; "));
+  }
+  const contract = SESSION_BLOCKS.find((block) => block.id === "portable-contract")!;
+  pin("S3 session blocks: an unresolved symbol fails even when its name appears in a comment",
+    declares("function sourceProof() {}", "sourceProof")
+      && !declares("// function sourceProof() {}", "sourceProof")
+      && !resolves("server.ts#session-blocks-does-not-exist")
+      && problemsFor({ ...contract, source: "server.ts#session-blocks-does-not-exist" }).includes("source unresolved or not evidenced"));
+  pin("S3 session blocks: a required boundary without a reason is rejected",
+    problemsFor({ ...contract, grenze: { art: "noetig", grund: "" } }).includes("grenze lacks reason"));
+  pin("S3 session blocks: abbreviated subtitles are rejected",
+    problemsFor({ ...contract, satz: "Der Vertrag…" }).includes("satz abbreviated or multiline"));
+  const state = (block: SessionBlock, role: typeof roles[number]): string => {
+    const value = block.rollenDefault[role];
+    return typeof value === "object" ? value.zustand : value;
+  };
+  const folder = SESSION_BLOCKS.filter((block) => state(block, "nur-ordner") !== "aus").map((block) => block.id).sort();
+  pin("S3 session blocks: Nur Ordner receives only native agents and auto-memory",
+    folder.join() === "auto-memory,native-agents", folder.join());
+  const heft = SESSION_BLOCKS.find((block) => block.id === "owner-heft");
+  pin("S3 session blocks: the required owner heft honestly has no startup delivery",
+    heft?.grenze.art === "noetig" && heft.source === "nicht zugestellt"
+      && ["lane", "main", "orchestratorin"].every((role) => heft.rollenDefault[role as typeof roles[number]] === "an"));
+  pin("S3 session blocks: concept is optional and source pointers/code are separate",
+    SESSION_BLOCKS.find((block) => block.id === "konzept")?.grenze.art === "frei"
+      && SESSION_BLOCKS.find((block) => block.id === "source-pointers")?.rollenDefault.lane === "an"
+      && SESSION_BLOCKS.find((block) => block.id === "source-code")?.rollenDefault.lane === "aus"
+      && !declared.includes("source-excerpts"));
+  // The dated matrix provides an independent role-default check; the combined source-excerpts
+  // and role-specific Auftrag rows are checked above and below rather than copied into a new list.
+  const matrix = read("docs/messungen/2026-10-08-session-zusammensetzung.md");
+  const mismatches: string[] = [];
+  const matrixRows = [...matrix.matchAll(/^\| `([^`]+)` · .*? \| ([^|]+) \|/gm)];
+  for (const match of matrixRows) {
+    const block = SESSION_BLOCKS.find((entry) => entry.id === match[1]);
+    if (match[1] === "source-excerpts") continue;
+    if (!block) { mismatches.push(`${match[1]} missing from register`); continue; }
+    if (block.id === "task-brief") continue;
+    const expected = match[2]!.split(" / ").map((cell) => cell.trim().split(" ")[0]);
+    for (const [i, role] of roles.slice(0, 3).entries())
+      if (state(block, role) !== expected[i]) mismatches.push(`${block.id}/${role}: ${state(block, role)} != ${expected[i]}`);
+  }
+  pin("S3 session blocks: existing defaults agree with the measured proposal matrix",
+    matrixRows.length > 0 && mismatches.length === 0,
+    `matrix rows=${matrixRows.length}; ${mismatches.join("; ")}`);
+  for (const [id, role] of [["task-brief", "lane"], ["main-rail", "main"], ["orchestrator-card", "orchestratorin"]] as const) {
+    const block = SESSION_BLOCKS.find((entry) => entry.id === id);
+    pin(`S3 session blocks: ${role} Auftrag has the matching role default`,
+      !!block && block.funktion.includes("auftrag") && roles.every((other) => state(block, other) === (other === role ? "an" : "aus")));
+  }
+  pin("S3 session blocks: the dated note is a snapshot pointing to the sole register",
+    read("docs/messungen/2026-09-26-session-bausteine.md").includes("Historischer Snapshot")
+      && read("docs/messungen/2026-09-26-session-bausteine.md").includes("session-blocks.ts#SESSION_BLOCKS"));
+  const tracked = spawnSync("git", ["ls-files", "*.ts", "*.tsx"], { encoding: "utf8" });
+  const readers = tracked.stdout.trim().split("\n").filter((path) => path !== "e2e/pins.ts" && exists(path)
+    && /(?:from\s*|import\s*\(|require\s*\()\s*["'][^"']*session-blocks["']/.test(read(path)));
   pin("S3 session blocks: the list is observational and no server path reads defaultOn",
-    !read("server.ts").includes('from "./session-blocks"')
-      && !read("server.ts").includes("defaultOn"));
+    !read("server.ts").includes('from "./session-blocks"') && !read("server.ts").includes("defaultOn")
+      && tracked.status === 0 && readers.length === 0, readers.join(", "));
 }
 
 console.log(rows.join("\n"));

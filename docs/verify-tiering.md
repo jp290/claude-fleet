@@ -423,6 +423,12 @@ und muss dieselbe negative Probe rot machen. Ein zusätzlicher Claim verankert B
 wiederkehrenden Disk-Takt im Produktionscode, nach Entfernung ganzzeiliger Kommentare.
 Das Entfernen der Produktions-`setInterval`-Zeile macht genau diesen Wiring-Claim rot;
 eine auskommentierte Zeile kann ihn ebenfalls nicht erfüllen. Keine echte Platte wird gefüllt.
+Die isolierte Suite übergibt ihrem Server und Runner ausdrücklich je 0,001 GiB Mindestrest und
+Schreiberreserve: ihre Lane-/Audit-Stand-ins dürfen die Hostkapazität nicht zum Urteil über
+Dispatch- oder Reserve-Checks machen. `host-hygiene` liest die tatsächlichen Overrides aus
+`GET /api/operational-view`. Die eigene Knappheitsprobe setzt ihre ENV-Grenze leer und verlangt
+separat exakt die scharfen Defaults 4/3,6 GiB sowie einen Halt bei 4 GiB. Die CLI-Probe liest
+`state.sh` bei fehlender gestagter Kopie über genau einen `node_modules`-Symlink zum Quellbaum.
 Die wortwörtliche Bestandsregel erlaubt bei 12 GiB auch einen dritten Start: nach zwei Schreibern
 bleiben 4,8 GiB. Für höchstens zwei Starts müsste zusätzlich der neue Schreiber reserviert
 werden; die Zahlen 4/3,6 allein belegen das Zwei-Start-Beispiel nicht.

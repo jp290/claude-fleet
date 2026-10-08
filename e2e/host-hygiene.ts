@@ -30,8 +30,9 @@
 // from the server: AUDIT_SHARDS_MAX caps a sharded run at 8, and at every n in 1..8 this unit
 // shares its shard with units that drive tmux directly.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { check, restartSrv, ROOT } from "./harness";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { check, get, restartSrv, ROOT } from "./harness";
 import { decisionChecks } from "./host-hygiene-table";
 import { scratchReapChecks } from "./scratch-reap-checks";
 
@@ -104,6 +105,11 @@ const serverLog = (): string => {
 // The family itself lives in e2e/scratch-reap-checks.ts, runnable WITHOUT this file's harness
 // import, exactly like the decision table — same reason, same parameter pattern.
 export async function run(): Promise<void> {
+  const hostView = await (await get("/api/operational-view")).json() as { diskSpace?: {
+    minimumFreeBytes: number; writerReserveBytes: number } };
+  check("host-disk suite instance explicitly uses small disk reserves for stand-in writers",
+    hostView.diskSpace?.minimumFreeBytes === 0.001 * 1024 ** 3
+      && hostView.diskSpace.writerReserveBytes === 0.001 * 1024 ** 3, JSON.stringify(hostView.diskSpace));
   await diskSpaceChecks(check);
   decisionChecks(check);
   await scratchReapChecks(check);
@@ -325,7 +331,9 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
       && v.diskSpace.minimumFreeBytes === 4 * 1024 ** 3 && v.diskSpace.writerReserveBytes === 3.6 * 1024 ** 3
       && v.diskSpace.path === '/fixture/tmp' && v.diskSpace.measuredAt > 0 && v.data?.startable.length === 0, JSON.stringify(v.diskSpace));
     writeFileSync(`${fix}/view.json`, JSON.stringify(v));
-    writeFileSync(`${fix}/state.sh`, readFileSync(`${ROOT}/state.sh`, 'utf8'));
+    const stateHome = existsSync(`${ROOT}/state.sh`) ? ROOT
+      : dirname(resolve(ROOT, readlinkSync(`${ROOT}/node_modules`)));
+    writeFileSync(`${fix}/state.sh`, readFileSync(`${stateHome}/state.sh`, 'utf8'));
     writeFileSync(`${fix}/ctl.sh`, '#!/bin/sh\ncat "$(dirname "$0")/view.json"\n');
     chmodSync(`${fix}/ctl.sh`, 0o755);
     const brief = spawnSync('sh', [`${fix}/state.sh`, '--brief'], {encoding: 'utf8', env: {...process.env, FLEET_SELF_TOKEN: ''}});

@@ -1,8 +1,8 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -41,6 +41,9 @@ const restoreTmuxEnv = async (before: (string | null)[]): Promise<void> => {
 };
 
 export async function run(): Promise<void> {
+  const slotCwd = mkdtempSync(resolve(homedir(), "fleet-e2e-slots-"));
+  process.once("exit", () => rmSync(slotCwd, { recursive: true, force: true }));
+  const slotCwdTilde = `~/${basename(slotCwd)}`;
   await runPerfMarks();
   const permissionsEnvBefore = await tmuxEnvSnapshot();
   let permissionsEnvDuring: (string | null)[] = [];
@@ -260,14 +263,14 @@ export async function run(): Promise<void> {
     check("exact-target fixture: decoy s10 removed again", cleaned.code !== 0, `has-session=${cleaned.code}`);
   }
 
-  const o1 = await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
+  const o1 = await post("/api/slots/1/open", { cwd: slotCwdTilde });
   const o2 = await post("/api/slots/2/open", { cwd: "~" });
   check("open slot 1", o1.ok, JSON.stringify(await o1.json()));
   check("open slot 2", o2.ok, JSON.stringify(await o2.json()));
   const bad = await post("/api/slots/3/open", { cwd: "/nonexistent-dir-xyz" });
   check("reject bad cwd", bad.status === 400);
   const rec = (await (await get("/api/dirs?path=~")).json()) as { recents: string[] };
-  check("recents updated (newest first)", rec.recents[0] === `${process.env.HOME}` && rec.recents[1] === `${process.env.HOME}/claude-fleet`, JSON.stringify(rec.recents));
+  check("recents updated (newest first)", rec.recents[0] === `${process.env.HOME}` && rec.recents[1] === slotCwd, JSON.stringify(rec.recents));
   const s1 = await tmuxOut("has-session", "-t", "s1");
   const s2 = await tmuxOut("has-session", "-t", "s2");
   check("tmux s1 exists", s1.code === 0);
@@ -313,13 +316,13 @@ export async function run(): Promise<void> {
   await tmuxOut("send-keys", "-t", "s3", "export FLEET_E2E_RECYCLE_MARK=stale", "Enter");
   check("recycle fixture: the pane carries a marker before the recycle",
     (await paneEnv("s3", "FLEET_E2E_RECYCLE_MARK")) === "stale");
-  const rcB = await post("/api/slots/3/open", { cwd: "~/claude-fleet" });
+  const rcB = await post("/api/slots/3/open", { cwd: slotCwdTilde });
   const rcBJ = (await rcB.json()) as { cwd?: string };
-  check("re-open of an ACTIVE slot answers with the new cwd", rcB.ok && rcBJ.cwd === `${HOME}/claude-fleet`,
+  check("re-open of an ACTIVE slot answers with the new cwd", rcB.ok && rcBJ.cwd === slotCwd,
     JSON.stringify(rcBJ));
-  const rcPath = await panePath("s3", `${HOME}/claude-fleet`);
+  const rcPath = await panePath("s3", slotCwd);
   check("re-opening an active slot moves the tmux pane to the new cwd, not just the state row",
-    rcPath === `${HOME}/claude-fleet`, rcPath);
+    rcPath === slotCwd, rcPath);
   const rcMark = await paneEnv("s3", "FLEET_E2E_RECYCLE_MARK");
   check("...and the pane is a NEW process: the recycled session inherits no env from the old one",
     rcMark === "", `[${rcMark}]`);
@@ -384,7 +387,7 @@ export async function run(): Promise<void> {
     const killedA = await post("/api/slots/3/kill", {});
     check("slot-stream fixture: kill A completes while its post-capture continuation is paused",
       killedA.ok, `${killedA.status} ${await killedA.text()}`);
-    const openedB = await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "stream-race-B" });
+    const openedB = await post("/api/slots/3/open", { cwd: slotCwdTilde, label: "stream-race-B" });
     check("slot-stream fixture: B opens in the same reusable slot while A remains paused",
       openedB.ok, `${openedB.status} ${await openedB.text()}`);
     const bOpened = await waitForPersistedSlot3((row) => row?.label === "stream-race-B");
@@ -414,10 +417,10 @@ export async function run(): Promise<void> {
       await Bun.sleep(50);
     }
     const raceState = await waitForPersistedSlot3((row) =>
-      row?.label === "stream-race-B" && row.cwd === `${HOME}/claude-fleet`);
+      row?.label === "stream-race-B" && row.cwd === slotCwd);
     const leftovers = readdirSync(streamDir).filter((name) => name.startsWith("s3-") && name.endsWith(".stage"));
     check("a stale A continuation cannot overwrite B's stream, retarget B's pipe, or relabel B",
-      raceState?.label === "stream-race-B" && raceState.cwd === `${HOME}/claude-fleet`
+      raceState?.label === "stream-race-B" && raceState.cwd === slotCwd
         && bBody.includes(beforeMarker) && bBody.includes(afterMarker)
         && !bBody.includes("stream-race-A") && !readdirSync(streamDir).includes("s3.raw")
         && !readdirSync(streamDir).includes(aFinal.split("/").pop() ?? "") && leftovers.length === 0,
@@ -554,7 +557,7 @@ export async function run(): Promise<void> {
       JSON.stringify({ open: openedA.status, connected, reached, stateA }));
     const killedA = reached ? await post("/api/slots/3/kill", {}) : null;
     const openedB = killedA?.ok
-      ? await post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "ws-input-race-B" }) : null;
+      ? await post("/api/slots/3/open", { cwd: slotCwdTilde, label: "ws-input-race-B" }) : null;
     const stateB = await waitForPersistedSlot3((row) => row?.label === "ws-input-race-B");
     writeFileSync(`${latch}.release`, "release\n", { mode: 0o600 });
     await Bun.sleep(250);
@@ -587,7 +590,7 @@ export async function run(): Promise<void> {
     let reached = false;
     for (let i = 0; i < 200 && !(reached = await exists(`${latch}.reached`)); i++) await Bun.sleep(25);
     const killTwo = post("/api/slots/3/kill", {});
-    const openB = post("/api/slots/3/open", { cwd: "~/claude-fleet", label: "teardown-race-B" });
+    const openB = post("/api/slots/3/open", { cwd: slotCwdTilde, label: "teardown-race-B" });
     const publishedDuring = await persistedSlot3();
     if (/^%\d+$/.test(paneA)) await tmuxOut("kill-pane", "-t", paneA);
     await Bun.sleep(2300);
@@ -1123,7 +1126,7 @@ export async function run(): Promise<void> {
     await restartSrv();
   }
   await post("/api/slots/3/kill", {});
-  await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
+  await post("/api/slots/1/open", { cwd: slotCwdTilde });
   await post("/api/slots/2/open", { cwd: "~" });
   if (modelBefore) await post("/api/slots/2/rename", { label: modelBefore.label ?? "" });
 

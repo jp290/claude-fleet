@@ -96,7 +96,10 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       remote: { name: "mirror-helper", claimedAt: openedAt - 5_000, reportedAt: openedAt - 2_000, clonedSha: laneSha }, treeSha: "", ms: 3_000 } }];
   const laneSuiteJobs = [{ id: "b2b2b2b2b2b2", slot: 26, slotOpenedAt: openedAt, repo, cwd: tree, branch: "mirror-lane", offeredAt: openedAt - 4_000,
     state: "open", commitSha: laneSha, treeSha: null, untracked: 0, claim: null, result: null }];
-  const merges = { "26": { status: "blocked", detail: "verify red", landed: false, branch: "mirror-lane", at: blockedAt, candidateSha: laneSha,
+  // the full candidate identity: the boot loader keeps candidateSha only beside mainSha and diffHash
+  // (a partial row loads as legacy, and checks.gate.head would read null)
+  const merges = { "26": { status: "blocked", detail: "verify red", landed: false, branch: "mirror-lane", at: blockedAt,
+    mainSha: baseSha, candidateSha: laneSha, diffHash: "d".repeat(40),
     verify: { ok: false, out: "FAIL  mirror gate rejection  (fixture)" } } };
   writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: repo, openedAt, label: "main holder", selfToken: secret }, "26": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret, taskId: "fixturetask", worktree: { base: "main", baseSha, branch: "mirror-lane" } }, "27": { cwd: unknownTree, openedAt, worktree: { base: "missing-target" } } }, tasks: [], programs: [],
     commandJobs, laneSuiteJobs, merges }));

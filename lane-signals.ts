@@ -161,6 +161,47 @@ export function laneWatchSignal(v: LaneSignalView, idleThresholdMs: number): Lan
   return null;
 }
 
+// --- THE STAND REMINDER (row b366597f): when does the server tell a lane its stand is behind?
+//
+// Owner 2026-10-07, on the reminder: „[Zitat entfernt]“ — so exactly
+// two measurable triggers and nothing else, both counted from the lane's LAST STAND (the `ahead` it
+// stored when it wrote it; 0 while it wrote none):
+//   commits — ahead grew by at least `commitsThreshold` since then;
+//   idle    — the lane rested `idleThresholdMs` and ahead grew at all since then (never a pure idle
+//             trigger: a lane with nothing new since its stand is not reminded however long it rests).
+// Each fires at most once per stand (`fired`, reset by the next stand). Never while the lane awaits
+// someone, and never when a stand or a terminal report already stands AFTER the last commit — being
+// done-looking does not block it (an idle, clean lane with commits is exactly the idle trigger).
+// A threshold of 0 switches its trigger off. Unknown is never permission: no ahead, no commit time
+// or no observed output reads as "not now". Whether the pane works is canDeliver's question.
+export type LaneStandTrigger = "commits" | "idle";
+export interface LaneStandView {
+  ahead: number | null;            // commits ahead of the lane's base now (tickGit cache)
+  standAhead: number;              // ahead stored with the last stand; 0 while none was written
+  standAt: number | null;          // when the last stand was written
+  lastCommitAt: number | null;     // the lane HEAD's commit time, ms
+  terminalReportAt: number | null; // newest complete/failed/needs-main report of this occupation
+  idleMs: number | null;           // null = no pane output observed
+  awaiting: boolean;
+  fired: readonly LaneStandTrigger[];
+}
+export function laneStandNudge(v: LaneStandView, commitsThreshold: number, idleThresholdMs: number): LaneStandTrigger | null {
+  if (v.awaiting || v.ahead === null || v.lastCommitAt === null) return null;
+  const grown = v.ahead - v.standAhead;
+  if (grown <= 0) return null;
+  if (v.standAt !== null && v.standAt >= v.lastCommitAt) return null;
+  if (v.terminalReportAt !== null && v.terminalReportAt >= v.lastCommitAt) return null;
+  if (commitsThreshold > 0 && grown >= commitsThreshold && !v.fired.includes("commits")) return "commits";
+  if (idleThresholdMs > 0 && v.idleMs !== null && v.idleMs >= idleThresholdMs && !v.fired.includes("idle")) return "idle";
+  return null;
+}
+// the one line the lane gets — the route and the three things a stand says, nothing to fill in
+export function laneStandNudgeText(trigger: LaneStandTrigger, grown: number, idleMs: number | null): string {
+  const commits = `${grown} ${grown === 1 ? "neuer Commit" : "neue Commits"} seit deinem letzten Stand`;
+  const why = trigger === "commits" ? commits : `seit ${Math.round((idleMs ?? 0) / 60_000)} min ruhig, ${commits}`;
+  return `[fleet] ${why} — schreib deiner MAIN den Stand: POST /api/self/handover {"intent":"fertig … / fehlt … / blockiert …"} (x-fleet-self-token).`;
+}
+
 export type LaneWatchEventKind = "lane-ready" | "host-commit-ready";
 // This is the complete event payload: closed, typed Fleet facts only. In particular it has no
 // text/command/detail escape hatch that could turn persisted state into pane input after reload.

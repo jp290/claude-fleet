@@ -31,7 +31,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_EVENT_TAIL_MAX,
   type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE,
-  laneSpentLooking,
+  laneSpentLooking, laneStandNudge, laneStandNudgeText, type LaneStandTrigger,
   MERGE_ERROR_REASONS, type MergeErrorReason } from "./lane-signals";
 import {
   phaseOf, phaseOutcomeFor, phaseOutcomeIndex, type Phase, type PhaseInput, type PhaseOutcomeFacts,
@@ -166,7 +166,7 @@ import {
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
-  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom,
+  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom, type LaneStandNudged, laneStandNudgedFrom,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -2562,6 +2562,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   codexDisconnectSeenAt: null,
   sleeping: null,
   standingHandover: null,
+  laneStandNudged: null,
   history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
@@ -3398,7 +3399,7 @@ async function programExecutionView(s: Slot): Promise<Response> {
             files: hunks ? Object.keys(hunks).sort() : null,
             ctx: contextFill(x)?.pct ?? null,
             cacheWarm: cache.at === null ? null : cache.cache === "warm",
-            stand: stand ? { at: stand.at, intent: stand.intent } : null,
+            stand: stand ? { at: stand.at, intent: stand.intent, ahead: stand.ahead } : null,
           };
         }),
         total: slots.filter((x) => x.cwd && x.programId === p.id).length,
@@ -6067,11 +6068,11 @@ function stateSnapshot(): string {
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
     handover?: HandoverSetting;
-    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; laneStandNudged?: LaneStandNudged }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9780,6 +9781,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexFirstTurn = null;
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.standingHandover = null; // ...and has written no handover of its own yet
+  s.laneStandNudged = null; // ...and has been reminded of no stand
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
@@ -9997,6 +9999,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexFirstTurn = null;
   s.sleeping = null;
   s.standingHandover = null;
+  s.laneStandNudged = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
   s.inputChain = Promise.resolve();
@@ -10447,6 +10450,7 @@ type SendPath =
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
+  | "stand-nudge"       // the one-line reminder that a lane's stand is behind its commits (tickLaneStand)
   | "cache-warm"        // one short turn that keeps an owner-set session's prompt cache warm (tickKeepCache)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
   // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
@@ -10499,6 +10503,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
+  "stand-nudge": "Stand-Erinnerung einer Lane",
   "cache-warm": "Cache-Warmhalten (Owner-Einstellung dieser Session)",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
   "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
@@ -10524,6 +10529,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
   "backlog-nudge": "naechster Schritt: pruefe den offenen Backlog · Grenze: dein bestaetigtes Program",
   "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
+  "stand-nudge": "naechster Schritt: schreib deiner MAIN den Stand und arbeite weiter · Grenze: deine Lane",
   "cache-warm": "naechster Schritt: antworte nur mit ok · Grenze: keine neue Arbeit, kein Werkzeugaufruf",
   "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
   "rate-limit-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
@@ -13764,11 +13770,24 @@ async function handleSelfHandover(s: Slot, req: Request): Promise<Response> {
     return json({ error: `a standing handover names exactly one of \`intent\` (at most ${LINEAGE_INTENT_MAX} characters) or \`pointer\` (a committed, dated section)` }, 400);
   if (pointer !== null && !(await lineagePointerCommitted(cwd, pointer)))
     return json({ error: "pointer must name a tracked file that is committed and clean in this checkout — a pointer at uncommitted prose is a handover the successor cannot read" }, 409);
+  // a lane's stand remembers how far the lane was ahead when it was written: the stand reminder
+  // counts new commits from here (tickLaneStand). Read fresh — the tickGit cache may predate the
+  // commit the lane made just before writing.
+  const ahead = lane ? await laneAheadNow(s) : null;
   if (s.cwd !== cwd || s.openedAt !== openedAt || s.selfToken !== token)
     return json({ refusal: "occupant-changed", error: "the occupant changed during this write" }, 409);
-  s.standingHandover = { at: Date.now(), openedAt, intent, pointer };
+  s.standingHandover = { at: Date.now(), openedAt, intent, pointer, ahead };
   await saveStateNow();
   return json({ ok: true, standingHandover: s.standingHandover });
+}
+
+// the same count tickGit keeps for a lane (rev-list against laneBaseRef), asked once; null = unknown
+async function laneAheadNow(s: Slot): Promise<number | null> {
+  if (!s.cwd || !s.worktree) return null;
+  const base = await laneBaseRef(s);
+  if (!base) return null;
+  const n = await gitRead(s.cwd, "rev-list", "--count", `${base}..HEAD`);
+  return n.code === 0 && /^\d+$/.test(n.out.trim()) ? Number(n.out.trim()) : null;
 }
 
 async function handleSelfRetire(s: Slot): Promise<Response> {
@@ -25589,6 +25608,90 @@ async function tickMigrate(): Promise<void> {
     }
   } finally {
     migrateTickBusy = false;
+  }
+}
+
+// --- THE STAND REMINDER (row b366597f; docs/messungen/2026-10-07-live-worktree-konzept.md §7–§8).
+// A lane's MAIN reads the lane's stand in program-execution (handleSelfHandover); this tick tells a
+// Program lane, in ONE line, when that stand has fallen behind its commits. Exactly two triggers,
+// each from .env with a default, each counted from the last stand and firing at most once per stand
+// — the rules are lane-signals.ts#laneStandNudge. 0 switches a trigger off; both 0 registers no
+// timer (bottom of this file). Defaults (notiz §8): 3 commits (1507 landed lanes: median 1, p90 3,
+// 14.4 % reach 3) and 20 min (beside FLEET_STALLED_IDLE_MS, well inside the 55 min cache edge).
+// It types only into the lane itself — never a MAIN pane — and only through canDeliver: a pane
+// that is working (output within MERGE_IDLE_MS, or the idle threshold for the idle trigger), asleep
+// past quiet hours, or behind the harness policy gets nothing this tick.
+const LANE_STAND_COMMITS = Math.max(0, Number(process.env.FLEET_LANE_STAND_COMMITS ?? 3) | 0);
+const LANE_STAND_IDLE_MS = Math.max(0, Number(process.env.FLEET_LANE_STAND_IDLE_MS ?? 20 * 60_000) | 0);
+const TERMINAL_REPORT_STATUSES: readonly string[] = ["complete", "failed", "needs-main"];
+let laneStandTickBusy = false;
+const pendingLaneStandNudges = new Set<string>();
+async function tickLaneStand(): Promise<void> {
+  if (laneStandTickBusy) return;
+  laneStandTickBusy = true;
+  try {
+    const now = Date.now();
+    for (const s of slots) {
+      if (!s.cwd || !s.worktree || !s.programId || s.awaiting !== null || s.lastOutput === 0) continue;
+      const g = operationalGitOccupants.get(s.id)?.openedAt === s.openedAt ? gitInfo.get(s.id) ?? null : null;
+      const stand = liveStandingHandover(s);
+      const standAhead = stand?.ahead ?? 0;
+      if (!g || g.ahead - standAhead <= 0) continue; // common case: nothing new since the stand, no git spawn
+      const standAt = stand?.at ?? null;
+      const memo = s.laneStandNudged?.openedAt === s.openedAt && s.laneStandNudged.standAt === standAt
+        ? s.laneStandNudged : { openedAt: s.openedAt, standAt, fired: [] as LaneStandTrigger[] };
+      // the same rules with the commit time read as "just now", which costs no git spawn: ask git only
+      // for a lane that could fire now (the real commit time can only take a trigger away, never add one)
+      const idleMs = Math.max(0, now - s.lastOutput);
+      if (laneStandNudge({ ahead: g.ahead, standAhead, standAt, lastCommitAt: Infinity, terminalReportAt: null, idleMs,
+        awaiting: false, fired: memo.fired }, LANE_STAND_COMMITS, LANE_STAND_IDLE_MS) === null) continue;
+      const pendingKey = `${s.id}:${s.openedAt}`;
+      if (pendingLaneStandNudges.has(pendingKey)) continue;
+      const occupant = { openedAt: s.openedAt, selfToken: s.selfToken, cwd: s.cwd };
+      const head = await gitRead(s.cwd, "log", "-1", "--format=%ct", "HEAD");
+      const lastCommitAt = head.code === 0 && /^\d+$/.test(head.out.trim()) ? Number(head.out.trim()) * 1000 : null;
+      const reports = fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt
+        && TERMINAL_REPORT_STATUSES.includes(r.status)).map((r) => r.reportedAt);
+      const trigger = laneStandNudge({ ahead: g.ahead, standAhead, standAt, lastCommitAt,
+        terminalReportAt: reports.length ? Math.max(...reports) : null, idleMs, awaiting: s.awaiting !== null,
+        fired: memo.fired }, LANE_STAND_COMMITS, LANE_STAND_IDLE_MS);
+      if (!trigger) continue;
+      const gateIdleMs = trigger === "idle" ? Math.max(LANE_STAND_IDLE_MS, MERGE_IDLE_MS) : MERGE_IDLE_MS;
+      const verdict = await canDeliver(s, { now: Date.now(), idleMs: gateIdleMs });
+      const same = (): boolean => s.cwd === occupant.cwd && s.openedAt === occupant.openedAt
+        && s.selfToken === occupant.selfToken && s.awaiting === null && liveStandingHandover(s) === stand;
+      if (!verdict.ok || !same()) continue;
+      const text = laneStandNudgeText(trigger, g.ahead - standAhead, idleMs);
+      pendingLaneStandNudges.add(pendingKey);
+      const fire = (): void => {
+        if (!same()) return;
+        s.laneStandNudged = { ...memo, fired: [...memo.fired, trigger] };
+        saveState();
+      };
+      void (async () => {
+        try {
+          const { acceptance } = await sendText(s, text, true, { path: "stand-nudge", rollbackOwnPayload: true,
+            bundleGate: { idleMs: gateIdleMs },
+            beforeSend: async (current) => {
+              if (current !== s || !same()) throw new DeliveryCancelled(`stand reminder target ${pendingKey} changed before paste`);
+            } });
+          fire(); // the audit row is sendText's own `send` with path=stand-nudge; the trigger is in the text
+          const sentAt = Date.now();
+          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+          saveHistory(s);
+          logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+        } catch (e) {
+          if (!(e instanceof DeliveryCancelled)) {
+            // a failed paste still spent this stand's reminder: "at most once" is not "until it lands"
+            fire();
+            logError("laneStandSend", e);
+            logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+          }
+        } finally { pendingLaneStandNudges.delete(pendingKey); }
+      })();
+    }
+  } finally {
+    laneStandTickBusy = false;
   }
 }
 
@@ -41424,6 +41527,7 @@ if (existsSync(STATE_FILE)) {
             transcript: (psl2 as { transcript: string }).transcript };
         // the standing handover comes back only for the occupation that wrote it (standingHandoverFrom)
         s.standingHandover = standingHandoverFrom((v as { standingHandover?: unknown }).standingHandover, s.openedAt);
+        s.laneStandNudged = laneStandNudgedFrom((v as { laneStandNudged?: unknown }).laneStandNudged, s.openedAt);
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
         if (typeof psr === "object" && psr !== null
           && typeof (psr as { at?: unknown }).at === "number" && Number.isFinite((psr as { at: number }).at)
@@ -42425,6 +42529,7 @@ if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown)
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
+if (LANE_STAND_COMMITS > 0 || LANE_STAND_IDLE_MS > 0) setInterval(() => void tickLaneStand().catch((e: unknown) => logError("tickLaneStand", e)), AUTOS_TICK_MS);
 setInterval(() => void tickKeepCache().catch((e: unknown) => logError("tickKeepCache", e)), MIGRATE_TICK_MS);
 setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);

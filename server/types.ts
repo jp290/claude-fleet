@@ -2059,7 +2059,10 @@ interface SlotSleep { at: number; sessionId: string; transcript: string }
 // succession door (POST /api/slots/:id/succeed) without a turn of the predecessor. Exactly the generic
 // rail's channel — `intent` OR `pointer` — and `at` is where the transcript rest starts. Bound to
 // the occupation that wrote it: a new occupant never inherits it (openedAt, cleared on open/close).
-interface StandingHandover { at: number; openedAt: number; intent: string | null; pointer: string | null }
+// A LANE writes it as its STAND (row 14dd9154), and then `ahead` is how far the lane was ahead of its
+// base when it wrote it — the baseline the stand reminder counts new commits from (row b366597f).
+// null on every non-lane, on a lane whose base could not be read, and on rows persisted before.
+interface StandingHandover { at: number; openedAt: number; intent: string | null; pointer: string | null; ahead: number | null }
 const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover | null => {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
@@ -2067,7 +2070,20 @@ const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover 
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0 || r.openedAt !== openedAt
     || !str(r.intent, LINEAGE_INTENT_MAX) || !str(r.pointer, LINEAGE_POINTER_MAX)
     || (r.intent === null) === (r.pointer === null)) return null;
-  return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null };
+  const ahead = typeof r.ahead === "number" && Number.isInteger(r.ahead) && r.ahead >= 0 ? r.ahead : null;
+  return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null, ahead };
+};
+// WHICH STAND-REMINDER TRIGGERS ALREADY FIRED, for one occupation and one stand (`standAt`, null =
+// before the first stand). Persisted so a server restart does not remind twice for the same stand;
+// a new stand or a new occupant starts it empty (server.ts#tickLaneStand).
+interface LaneStandNudged { openedAt: number; standAt: number | null; fired: ("commits" | "idle")[] }
+const laneStandNudgedFrom = (raw: unknown, openedAt: number): LaneStandNudged | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.openedAt !== openedAt || !(r.standAt === null || (typeof r.standAt === "number" && Number.isFinite(r.standAt)))
+    || !Array.isArray(r.fired)) return null;
+  const fired = r.fired.filter((f): f is "commits" | "idle" => f === "commits" || f === "idle");
+  return { openedAt, standAt: r.standAt as number | null, fired: [...new Set(fired)] };
 };
 
 interface Slot {
@@ -2204,6 +2220,8 @@ interface Slot {
   sleeping: SlotSleep | null;
   // the occupant's own pre-written handover (StandingHandover above); null = none written
   standingHandover: StandingHandover | null;
+  // the stand reminder's once-per-stand memory (LaneStandNudged above); null = nothing fired yet
+  laneStandNudged: LaneStandNudged | null;
   history: { text: string; ts: number; source?: "owner" | "fleet" }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
@@ -3754,7 +3772,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
-  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, Slot,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, LaneStandNudged, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3803,7 +3821,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, standingHandoverFrom,
+  loadLineageHandover, loadLineageHandoverLoss, standingHandoverFrom, laneStandNudgedFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

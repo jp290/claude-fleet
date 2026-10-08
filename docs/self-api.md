@@ -1948,10 +1948,29 @@ keine Entscheidung. Die MAIN liest ihn neben den Git-Fakten in jeder Zeile von `
 | `files` | `server.ts#laneHunkInfo`: berührte Dateien seit dem Fork, sortiert | nicht gelesen (keine gesendete Zeile, kein Anker, Diff fehlgeschlagen) |
 | `ctx` | `contextFill`: Füllstand in Prozent | Harness/Transkript nicht messbar |
 | `cacheWarm` | `deliveryCacheState`: Prompt-Cache vor seiner Kante | keine Cache-Lesung |
-| `stand` | `{at, intent}` der aktuellen Belegung | kein Stand geschrieben |
+| `stand` | `{at, intent, ahead}` der aktuellen Belegung; `ahead` = Stand von `ahead` beim Schreiben (frisch gelesen) | kein Stand geschrieben (`ahead: null`: Basis nicht lesbar) |
 
 Fehlende Werte sind `null`, nie `0`. Die View macht keinen Git-Aufruf: Git-Fakten gelten nur, solange
 `tickGit` sie für genau diese Belegung beglaubigt hat (`operationalGitOccupants`), sonst `null`.
+
+**Die Stand-Erinnerung** (Zeile b366597f, `server.ts#tickLaneStand`, Regeln
+`lane-signals.ts#laneStandNudge`): ein Server-Takt tippt einer Program-Lane EINE Zeile
+(`path=stand-nudge`, „… schreib deiner MAIN den Stand: POST /api/self/handover …"), sobald sie seit
+ihrem letzten Stand Fortschritt hat. Genau zwei Auslöser, beide aus `.env`:
+
+- `FLEET_LANE_STAND_COMMITS` (Default 3) — `ahead` ist seit dem letzten Stand um mindestens so viel
+  gewachsen (ohne Stand zählt es ab 0);
+- `FLEET_LANE_STAND_IDLE_MS` (Default 20 min) — die Lane ruht so lange und `ahead` ist seit dem
+  letzten Stand überhaupt gewachsen. Ein reiner Idle-Auslöser ist das nie.
+
+Jeder Auslöser feuert je Stand höchstens einmal (persistiert in `Slot.laneStandNudged`, ein Neustart
+erinnert nicht doppelt); erst ein neuer Stand setzt das zurück. Nie bei `awaiting`, nie in eine
+arbeitende Pane (`canDeliver`, Ruheschwelle `MERGE_IDLE_MS` bzw. die Idle-Schwelle), nie in eine
+MAIN-Pane, und nicht, wenn nach dem letzten Commit schon ein Stand oder ein terminaler Report
+(`complete`/`failed`/`needs-main`) dieser Belegung steht — done-looking allein sperrt nicht. `0`
+schaltet einen Auslöser ab; beide `0`: kein Timer. Die Suite fährt ihn aus (`e2e-isolated.sh`) und
+misst ihn in `e2e/programs.ts` scharf geschaltet. Defaults: Messnotiz
+`docs/messungen/2026-10-07-live-worktree-konzept.md` §8.
 
 ### Die abgeleitete `phase` (`GET /api/self/program-execution`)
 

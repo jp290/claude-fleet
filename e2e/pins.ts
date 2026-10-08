@@ -59,6 +59,7 @@ import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
+import { laneStandNudge, laneStandNudgeText, type LaneStandView } from "../lane-signals";
 import { quotaPosition, newResetEntries, parseQuotaRollout, readLocalQuota, readIdentityBound, createSubscriptionReader, SUBSCRIPTION_STALE_MS, PROVIDER_UNSUPPORTED } from "../codex-quota";
 import {
   readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, sizeStampOrJoin,
@@ -4567,6 +4568,45 @@ await import(pathToFileURL(process.argv[2]).href);
   pin("ProgramExecutionView runs no git, and succeedLane, landReadyRows and laneAutoCloseRefusal never read a lane's stand",
     executionBody.length > 0 && execGit === null && standBlind.every((x) => x.ok),
     `git=${execGit?.[0] ?? "none"} ${standBlind.map((x) => `${x.head}${x.ok ? "ok" : "READS/MISSING"}`).join(" ")}`);
+  // THE STAND REMINDER'S RULES (row b366597f, lane-signals.ts#laneStandNudge), one case per clause,
+  // fire and no-fire, at the defaults 3 commits / 20 min. Each no-fire case differs from a firing
+  // base in exactly ONE fact, so a dropped clause turns exactly its own case red.
+  const T = 20 * 60_000;
+  const base: LaneStandView = { ahead: 4, standAhead: 1, standAt: 1_000, lastCommitAt: 2_000, terminalReportAt: null,
+    idleMs: 5_000, awaiting: false, fired: [] };
+  const standCases: [string, LaneStandView, ReturnType<typeof laneStandNudge>][] = [
+    ["commits: ahead grew by 3 since the stand", base, "commits"],
+    ["commits: grew by 2 is not enough and the pane is not idle long", { ...base, ahead: 3 }, null],
+    ["commits: no stand yet counts from 0", { ...base, ahead: 3, standAhead: 0, standAt: null }, "commits"],
+    ["commits: already fired for this stand — no second firing", { ...base, fired: ["commits"] }, null],
+    ["idle: rested 20 min with one new commit", { ...base, ahead: 2, idleMs: T }, "idle"],
+    ["idle: one ms short of the threshold", { ...base, ahead: 2, idleMs: T - 1 }, null],
+    ["idle: nothing new since the stand — never a pure idle trigger", { ...base, ahead: 1, idleMs: 10 * T }, null],
+    ["idle: already fired for this stand — no second firing", { ...base, ahead: 2, idleMs: T, fired: ["idle"] }, null],
+    ["idle: after commits fired, the idle trigger still has its one firing", { ...base, idleMs: T, fired: ["commits"] }, "idle"],
+    ["idle: unobserved pane", { ...base, ahead: 2, idleMs: null }, null],
+    ["a stand written after the last commit blocks", { ...base, standAt: 2_000 }, null],
+    ["a terminal report after the last commit blocks", { ...base, terminalReportAt: 2_500 }, null],
+    ["a terminal report before the last commit does not", { ...base, terminalReportAt: 1_500 }, "commits"],
+    ["awaiting blocks", { ...base, awaiting: true }, null],
+    ["unknown ahead blocks", { ...base, ahead: null }, null],
+    ["unknown commit time blocks", { ...base, lastCommitAt: null }, null],
+  ];
+  const standWrong = standCases.filter(([, v, want]) => laneStandNudge(v, 3, T) !== want).map(([name]) => name);
+  const standOff = laneStandNudge(base, 0, T) === null && laneStandNudge({ ...base, ahead: 2, idleMs: T }, 3, 0) === null
+    && laneStandNudge({ ...base, idleMs: T }, 0, 0) === null;
+  const standText = [laneStandNudgeText("commits", 3, 0), laneStandNudgeText("idle", 1, T)];
+  pin("stand reminder: each trigger fires once per stand, never on idle alone, never after a later stand or terminal report, never while awaiting; 0 is off; the hint is one line naming the route",
+    standWrong.length === 0 && standOff
+      && standText.every((t) => !t.includes("\n") && t.includes("POST /api/self/handover") && t.includes("intent")),
+    `wrong=[${standWrong.join(" | ")}] off=${standOff} text=${JSON.stringify(standText)}`);
+  // …and both thresholds read from .env with their defaults, and both 0 registers no timer at all
+  pin("stand reminder: FLEET_LANE_STAND_COMMITS (3) and FLEET_LANE_STAND_IDLE_MS (20 min) come from .env, and with both 0 no timer is registered",
+    server.includes("const LANE_STAND_COMMITS = Math.max(0, Number(process.env.FLEET_LANE_STAND_COMMITS ?? 3) | 0);")
+      && server.includes("const LANE_STAND_IDLE_MS = Math.max(0, Number(process.env.FLEET_LANE_STAND_IDLE_MS ?? 20 * 60_000) | 0);")
+      && /\nif \(LANE_STAND_COMMITS > 0 \|\| LANE_STAND_IDLE_MS > 0\) setInterval\(\(\) => void tickLaneStand\(\)/.test(server)
+      && (server.match(/void tickLaneStand\(\)/g) ?? []).length === 1,
+    "constants or the guarded registration moved");
   // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
   // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
   // it — and tsc sees no error when they drift, because two independent literal unions are both

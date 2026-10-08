@@ -88,16 +88,45 @@ export async function runNativeProbes(check: Check): Promise<void> {
   for (const f of NATIVE_FIXTURES) {
     const cut = Math.floor(f.input.bytes.length / 2);
     const prefix = await normalizeNative({ ...f.input, bytes: f.input.bytes.slice(0, cut) });
+    const retainedPrefix = JSON.stringify(prefix);
     const complete = await normalizeNative({ ...f.input, bytes: f.input.bytes.slice(cut), byteOffset: cut,
       observedAt: f.input.observedAt + 1000 }, prefix);
     check(`native streamed delta ${f.name} retains every call and exact original byte locators`,
       complete.events.length === 4 && new Set(complete.events.map((e) => e.id)).size === 4
         && complete.events.filter((e) => e.kind === "tool.call").length === 2
         && !hasGap(complete, "partial-record") && complete.completeBytes === f.input.bytes.length
-        && complete.events.every((e) => e.detailRef?.fp && e.record.offset + e.record.bytes <= complete.completeBytes),
+        && complete.events.every((e) => e.detailRef?.fp && e.record.offset + e.record.bytes <= complete.completeBytes)
+        && JSON.stringify(prefix) === retainedPrefix,
       JSON.stringify(complete.gaps));
+    const replay = await normalizeNative({ ...f.input, observedAt: f.input.observedAt + 2000 }, complete);
+    check(`native full replay after streamed delta ${f.name} preserves refs and observation metadata`,
+      replay.invalidated.length === 0 && replay.gaps.length === 0 && replay.added.length === 0 && replay.updated.length === 0
+        && JSON.stringify(replay.events) === JSON.stringify(complete.events));
+    const unverified = await normalizeNative(f.input, { ...complete });
+    check(`native transferred delta ${f.name} names missing prefix evidence instead of a rewrite`,
+      hasGap(unverified, "source-prefix-unverified") && !hasGap(unverified, "source-rewritten")
+        && unverified.events.length === 4 && unverified.invalidated.length === 4);
   }
   const boundDelta = NATIVE_FIXTURES[1]!;
+  const orphanFirst = await normalizeNative({ ...boundDelta.input, bytes: encode([boundDelta.rows[0], boundDelta.rows[2]]) });
+  const orphanBefore = JSON.stringify(orphanFirst);
+  const callAfter = await normalizeNative({ ...boundDelta.input, bytes: encode([boundDelta.rows[1]]),
+    byteOffset: orphanFirst.inputBytes, observedAt: boundDelta.input.observedAt + 1000 }, orphanFirst);
+  check("native delta later call pairs a retained orphan without changing the old snapshot",
+    callAfter.events.length === 2 && callAfter.events.every((e) => e.pair !== null)
+      && callAfter.gaps.length === 0 && callAfter.added.length === 1 && callAfter.updated.length === 1
+      && JSON.stringify(orphanFirst) === orphanBefore);
+  for (const field of ["sessionId", "cwd"] as const) {
+    const base = await normalizeNative(NATIVE_FIXTURES[0]!.input);
+    const foreignRow = { type: "assistant", sessionId: NATIVE_FIXTURES[0]!.input.binding!.sessionId,
+      cwd: NATIVE_FIXTURES[0]!.input.binding!.cwd, uuid: "delta-foreign", message: { content: [] },
+      [field]: field === "cwd" ? "/synthetic/foreign" : OTHER };
+    const rejected = await normalizeNative({ ...NATIVE_FIXTURES[0]!.input, bytes: encode([foreignRow]),
+      byteOffset: base.inputBytes }, base);
+    check(`native delta validates new ${field} against the retained identity`,
+      rejected.events.length === 0 && rejected.state === "rejected"
+        && hasGap(rejected, field === "cwd" ? "cwd-mismatch" : "session-id-mismatch"));
+  }
   const deltaCut = Math.floor(boundDelta.input.bytes.length / 2);
   const deltaPrefix = await normalizeNative({ ...boundDelta.input, bytes: boundDelta.input.bytes.slice(0, deltaCut) });
   for (const field of ["sourceHost", "sourceId", "version"] as const) {
@@ -272,11 +301,11 @@ export async function runNativeProbes(check: Check): Promise<void> {
   check("native locators: source-controlled hashed generation plus exact byte/block range", x.events.length === 4
     && x.events.every((e) => /^native:[a-f0-9]{64}@\d+\+\d+#\d+$/.test(e.detailRef!.locator) && /^[a-f0-9]{16}$/.test(e.detailRef!.fp!)));
   check("native bytes: exact measured UTF-8 table for five fixtures", equal(ui.map((f) => ({ name: f.name, ...f.measure })), [
-    { name: "claude", inputBytes: 1261, metadataBytes: 5528, detailBytes: 643, events: 4 },
-    { name: "codex", inputBytes: 973, metadataBytes: 5567, detailBytes: 647, events: 4 },
-    { name: "pi", inputBytes: 1411, metadataBytes: 5539, detailBytes: 650, events: 4 },
-    { name: "pi-zai", inputBytes: 1411, metadataBytes: 5583, detailBytes: 650, events: 4 },
-    { name: "pi-ox", inputBytes: 1411, metadataBytes: 5572, detailBytes: 650, events: 4 },
+    { name: "claude", inputBytes: 1261, metadataBytes: 5548, detailBytes: 643, events: 4 },
+    { name: "codex", inputBytes: 973, metadataBytes: 5587, detailBytes: 647, events: 4 },
+    { name: "pi", inputBytes: 1411, metadataBytes: 5559, detailBytes: 650, events: 4 },
+    { name: "pi-zai", inputBytes: 1411, metadataBytes: 5603, detailBytes: 650, events: 4 },
+    { name: "pi-ox", inputBytes: 1411, metadataBytes: 5592, detailBytes: 650, events: 4 },
   ]));
 }
 

@@ -16,13 +16,22 @@ Quellgeneration `version`, einen Byte-Snapshot ab `byteOffset: 0` oder einen zus
 `observedAt`, eine explizite Session-/cwd-Bindung und bekannte Redaktionsmarker.
 Quelle und Version sind vom autorisierten Aufrufer zu liefern, keine aus Slot,
 Dateiname, mtime oder ähnlichem cwd abgeleiteten Fakten. `inputHash` ist SHA-256
-über die tatsächlich übergebenen Bytes, bei einem Delta also über diesen Block.
+über die tatsächlich übergebenen Bytes, bei einem Delta also über diesen Block;
+`inputHashOffset` benennt dessen Anfang, `inputBytes` das Ende des gesamten Standes.
+Ein nachfolgender Vollsnapshot prüft jeden erhaltenen Blockhash gegen genau seinen
+Bytebereich. Der Delta-Hash wird niemals als Hash des gesamten Präfixes verwendet.
+Fehlt bei einem übertragenen Delta-Snapshot der interne Blockbeleg, bleibt die
+Fortsetzung `source-prefix-unverified`, statt einen Rewrite zu behaupten.
 Ein positiver Offset ist nur zusammen mit dem unmittelbar vorherigen Snapshot
 und dessen prozessintern erhaltenem Parserzustand akzeptiert; er muss exakt
 `previous.inputBytes` entsprechen und Host, Source-ID, Harness, Format, Generation
-und vollständige Bindung müssen identisch sein. Der Index prüft bei Wachstum zuerst alle
+und vollständige Bindung sowie Redaktionsmarker müssen identisch sein. Ein gültiger
+Delta konsumiert diesen Parserzustand einmal; ältere Snapshotwerte bleiben unverändert. Der Index prüft bei Wachstum zuerst alle
 bereits gelesenen Präfixblöcke gegen ihre SHA-256-Werte. Der Parser hält
-Identitäts-/Record-/Toolmetadaten und maximal 8 MiB Teilzeile; Argumente und
+den belegten Header, Record-Eltern, Replay-/Call-/Resultat-Maps, Blockhashes und
+inkrementelle Horizontzähler sowie maximal 8 MiB Teilzeile. Nur neue Zeilen werden
+validiert und in den Elternindex eingetragen; alte Zeilen werden weder kopiert
+noch erneut durchlaufen. Argumente und
 Resultattexte werden nach dem Parsen verworfen. LF-/UTF-8-Splits bleiben erhalten.
 Eine größere Recordzeile wird ausdrücklich `oversized-record`, ohne erfundene
 Calls. Es gibt keinen stillen Dateinachladepfad.
@@ -154,12 +163,12 @@ Proben verlangt diese Zahlen und je vier Events, kein Pass durch leere Mengen.
 
 | Synthetische Quelle | Input B | Metadaten B | Detail B | Events |
 |---|---:|---:|---:|---:|
-| Claude | 1261 | 5528 | 643 | 4 |
-| Codex | 973 | 5567 | 647 | 4 |
-| Pi | 1411 | 5539 | 650 | 4 |
-| Pi-zai | 1411 | 5583 | 650 | 4 |
-| Pi-ox | 1411 | 5572 | 650 | 4 |
-| Summe | 6467 | 27789 | 3240 | 20 |
+| Claude | 1261 | 5548 | 643 | 4 |
+| Codex | 973 | 5587 | 647 | 4 |
+| Pi | 1411 | 5559 | 650 | 4 |
+| Pi-zai | 1411 | 5603 | 650 | 4 |
+| Pi-ox | 1411 | 5592 | 650 | 4 |
+| Summe | 6467 | 27889 | 3240 | 20 |
 
 Das sind deterministische Fixturekosten, keine Produktionsmessung, kein Tagesmittel
 und kein gemessenes globales Budget. 64 KiB bleibt ein vorläufiger UI-Vorschlag.
@@ -332,11 +341,11 @@ Kompression; ein Lauf je Quelle, keine statistische Latenzgarantie:
 
 | Harness | Cold ms / Schritte | Events | Seiten | größte Seite B | Warm ms / native Reads |
 |---|---:|---:|---:|---:|---:|
-| Claude | 26,18 / 1 | 62 | 2 | 65240 | 1,86 / 0 |
-| Codex | 28,52 / 2 | 56 | 2 | 64609 | 1,18 / 0 |
-| Pi | 19,45 / 1 | 142 | 4 | 64168 | 0,97 / 0 |
-| pi-zai | 14,01 / 1 | 126 | 3 | 64975 | 1,6 / 0 |
-| pi-ox | 13,33 / 1 | 92 | 3 | 64980 | 1,05 / 0 |
+| Claude | 35,91 / 1 | 62 | 2 | 65240 | 2,09 / 0 |
+| Codex | 23,00 / 2 | 56 | 2 | 64609 | 1,42 / 0 |
+| Pi | 54,82 / 1 | 142 | 4 | 64168 | 1,00 / 0 |
+| pi-zai | 10,06 / 1 | 126 | 3 | 64975 | 1,33 / 0 |
+| pi-ox | 8,35 / 1 | 92 | 3 | 64980 | 1,30 / 0 |
 
 Dies beweist die gemessenen mittleren Quellen und den unveränderten Poll,
 keine komplette Warm-Latenz über den mehrgigabytegroßen Maschinenbestand.
@@ -345,3 +354,34 @@ verlorene Abschnitte bleiben unknown. Der ausführbare Trace-Test prüft fünf
 Harnesses, parallele Sessions plus Lücke, UUID/cwd, Recycle, Rewrite einschließlich
 Wachstum, Teilzeile, late/missing, unsupported, Cursor und Payloadfreiheit.
 Jeder neue Timeline-Check hat eine spezifisch rot machende Scratchmutation.
+
+
+### Kosten einzelner Deltas bei langen Quellen
+
+Synthetische Codex-Fixtures: jeweils **50.001 vollständige Records**, danach
+**20 zusammenhängende Deltas mit je 149 B / einem neuen Kontextrecord**. Messung
+mit `performance.now()` um ausschließlich `normalizeNative`, ohne Datei-I/O,
+HTTP oder Index-Präfixprüfung; gleicher Prozess, ein Kaltaufbau je Fixture und
+Version, keine Warm-up-Abzüge. Median = Mittel der Positionen 10/11, p95 =
+Position 19 der 20 sortierten Messwerte. Die Vorher-Version verarbeitet erneut
+alle erhaltenen Zeilen; die Danach-Version hält die Record-/Paarungszustände
+inkrementell.
+
+| Fixture | Eingabe B | erhaltene Events | Vorher Median / p95 / Max ms | Danach Median / p95 / Max ms |
+|---|---:|---:|---:|---:|
+| Kontextrecords mit eigenem Record-/Parent-ID | 7427975 | 0 | 29,66 / 45,87 / 45,89 | 0,17 / 0,23 / 0,81 |
+| 25.000 eindeutige Calls samt Resultaten | 7127985 | 50000 | 2570,66 / 2913,52 / 4194,59 | 4,60 / 8,72 / 11,21 |
+
+Die vollständige Metadatenausgabe wird weiterhin aus den erhaltenen Events
+kopiert und sortiert: O(Events) Speicher/Kopie und höchstens O(Events log Events)
+Sortierung. Paarung überprüft die betroffenen Call-ID-Buckets und bei neuen
+Pi-Eltern mögliche erhaltene Orphans. Diese Kosten sind kein O(1)-Versprechen.
+Ein unveränderter Timeline-Poll verwendet hingegen die gecachte Projektion und
+liest keine Quellenbytes. Ein wachsender Dateipräfix muss für Rewrite-Erkennung
+weiterhin blockweise geprüft werden; dafür gilt das bestehende 1-MiB-Schrittbudget.
+
+Die Probe `timeline native full delta full` verlangt nach Vollstand → Delta →
+gleichem Vollstand null Lücken/Invalidierungen und identische Eventwerte; ein
+geänderter Vollstand muss alle vier Refs invalidieren. Gegenmutation: die
+Blockprüfung wieder durch `hash(bytes[0..previous.inputBytes]) ===
+previous.inputHash` ersetzen. Die unveränderte Probe wird damit gezielt rot.

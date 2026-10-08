@@ -28,12 +28,19 @@ export interface NativeSnapshot {
   format: string; harness: string; source: string; sourceHost: string; version: string;
   identity: { session: string; cwdHash: string; occupation: "unknown" | { slot: number; openedAt: number; proofHash: string };
     nativeVersion: 3 | "unknown"; parentSession: string | null } | null;
-  identityKey: string | null; inputHash: string; inputBytes: number; completeBytes: number;
+  identityKey: string | null; inputHash: string; inputHashOffset: number; inputBytes: number; completeBytes: number;
   events: NativeEvent[]; added: string[]; updated: string[]; invalidated: TraceDetailRef[];
   gaps: NativeGap[]; horizon: SourceHorizon;
 }
 interface Line { row: Record<string, unknown>; offset: number; bytes: number; fp: string }
-interface NativeReadState { lines: Line[]; tail: Uint8Array; skipping: boolean; binding: string }
+interface NativeReadState {
+  tail: Uint8Array; skipping: boolean; binding: string; header: Line | undefined;
+  chunks: { offset: number; bytes: number; hash: string }[]; rows: number;
+  oldestAt: number | null; newestAt: number | null; claudeIdentity: boolean;
+  nodes: Map<string, string | null>; seen: Map<string, string>; events: Map<string, NativeEvent>;
+  calls: Map<string, NativeEvent[]>; results: Map<string, NativeEvent[]>;
+  gaps: NativeGap[]; pairGaps: Map<string, NativeGap>; pending: Map<string, NativeEvent>;
+}
 const readStates = new WeakMap<NativeSnapshot, NativeReadState>();
 interface ToolRecord { line: Line; block: number; call: string; name: string; namespace: string | null;
   family: string; result: boolean; outcome: NativeEvent["outcome"]; paths: string[] }
@@ -111,17 +118,19 @@ function toolRecords(line: Line, input: NativeInput, gaps: NativeGap[]): ToolRec
   return found;
 }
 
-// Snapshots contain the supplied generation only. The optional prior snapshot is evidence for
-// append/replay/late detection, never a source of raw bytes or a permission to carry old events.
+// Contiguous deltas consume the prior parser state once; snapshots keep immutable event values.
+// Full snapshots verify retained block hashes before carrying observation times or references.
 export async function normalizeNative(input: NativeInput, previous?: NativeSnapshot): Promise<NativeSnapshot> {
-  const bindingKey = JSON.stringify([input.sourceHost, input.sourceId, input.harness, input.format, input.version, input.binding]);
-  const candidateState = input.byteOffset > 0 && previous?.inputBytes === input.byteOffset ? readStates.get(previous) : undefined;
+  const bindingKey = JSON.stringify([input.sourceHost, input.sourceId, input.harness, input.format, input.version, input.binding, input.redactions]);
+  const previousState = previous ? readStates.get(previous) : undefined;
+  const candidateState = input.byteOffset > 0 && previous?.inputBytes === input.byteOffset ? previousState : undefined;
   const prefix = candidateState?.binding === bindingKey ? candidateState : undefined;
+  if (prefix && previous) readStates.delete(previous);
   const safe = (s: string): string => token(s, input) ? s : "redacted";
   const source = safe(input.sourceId), host = safe(input.sourceHost), version = safe(input.version);
   const observed = Number.isFinite(input.observedAt) ? input.observedAt : 0;
   const snapshot: NativeSnapshot = { schema: "fleet.trace-native/v1", state: "read", format: safe(input.format),
-    harness: safe(input.harness), source, sourceHost: host, version, identity: null, identityKey: null, inputHash: await hash(input.bytes), inputBytes: input.bytes.length,
+    harness: safe(input.harness), source, sourceHost: host, version, identity: null, identityKey: null, inputHash: await hash(input.bytes), inputHashOffset: input.byteOffset, inputBytes: input.bytes.length,
     completeBytes: 0, events: [], added: [], updated: [], invalidated: [], gaps: [],
     horizon: { source, state: "unmeasured", reason: "no complete bound native records", clock: clockOf(safe(input.format)) } };
   const stop = (state: NativeSnapshot["state"], code: string): NativeSnapshot => {
@@ -145,7 +154,12 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     || occupation.cwd !== binding.cwd || !Number.isInteger(occupation.slot) || occupation.slot < 0
     || !Number.isFinite(occupation.openedAt) || !/^[0-9a-f]{64}$/.test(occupation.proofHash)))
     return stop("rejected", "occupation-mismatch");
-  const lines: Line[] = prefix ? [...prefix.lines] : [];
+  const state: NativeReadState = prefix ?? { tail: new Uint8Array(), skipping: false, binding: bindingKey,
+    header: undefined, chunks: [], rows: 0, oldestAt: null, newestAt: null, claudeIdentity: false,
+    nodes: new Map(), seen: new Map(), events: new Map(), calls: new Map(), results: new Map(),
+    gaps: [], pairGaps: new Map(), pending: new Map() };
+  state.chunks.push({ offset: input.byteOffset, bytes: input.bytes.length, hash: snapshot.inputHash });
+  const lines: Line[] = [];
   const bytes = prefix ? new Uint8Array(prefix.tail.length + input.bytes.length) : input.bytes;
   if (prefix) { bytes.set(prefix.tail); bytes.set(input.bytes, prefix.tail.length); }
   const baseOffset = prefix ? input.byteOffset - prefix.tail.length : 0;
@@ -180,18 +194,23 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
   }
   snapshot.inputBytes = input.byteOffset + input.bytes.length;
   snapshot.completeBytes = baseOffset + offset;
-  if (prefix && previous) snapshot.gaps.unshift(...previous.gaps.filter((g) => g.code === "malformed-record" || g.code === "oversized-record"));
+  state.gaps.push(...snapshot.gaps);
   if (offset < bytes.length) snapshot.gaps.push({ code: "partial-record", offset: baseOffset + offset, bytes: bytes.length - offset });
   let tail = bytes.slice(offset);
   if (skipping || tail.length > 8_388_608) {
-    snapshot.gaps.push({ code: "oversized-record", offset: baseOffset + offset, bytes: tail.length });
+    const gap = { code: "oversized-record", offset: baseOffset + offset, bytes: tail.length };
+    snapshot.gaps.push(gap); state.gaps.push(gap);
     tail = new Uint8Array(); skipping = true;
   }
-  readStates.set(snapshot, { lines, tail, skipping, binding: bindingKey });
-  if (!lines.length) return stop(offset < bytes.length ? "pending" : "rejected", "missing-identity-record");
+  state.tail = tail; state.skipping = skipping;
+  state.header ??= lines[0];
+  if (!state.header) {
+    if (offset < bytes.length) readStates.set(snapshot, state);
+    return stop(offset < bytes.length ? "pending" : "rejected", "missing-identity-record");
+  }
   let parentSession: string | null = null;
   if (input.format === "codex-rollout-jsonl" || pi) {
-    const first = lines[0]!, p = pi ? first.row : obj(first.row.payload);
+    const first = state.header, p = pi ? first.row : obj(first.row.payload);
     if (first.offset !== 0 || first.row.type !== (pi ? "session" : "session_meta")) return stop("rejected", "missing-header");
     if (pi && p.version !== 3) return stop("unsupported", "unsupported-pi-version");
     if (!pi && (!text(p.thread_source) || timestamp(p.timestamp) === null)) return stop("rejected", "invalid-codex-header");
@@ -205,7 +224,7 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
       if (parentSession && p.thread_source !== "subagent") return stop("rejected", "contradictory-parent-session");
     }
   }
-  let claudeIdentity = false;
+  let claudeIdentity = state.claudeIdentity;
   for (const line of lines) {
     const r = line.row, p = obj(r.payload);
     if (r.sessionId != null && r.sessionId !== binding.sessionId) return stop("rejected", "session-id-mismatch");
@@ -235,15 +254,27 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     occupation: occupation ? { slot: occupation.slot, openedAt: occupation.openedAt, proofHash: occupation.proofHash } : "unknown",
     nativeVersion: pi ? 3 : "unknown", parentSession };
   const same = previous?.identityKey === snapshot.identityKey;
-  const append = same && (!!prefix || previous.inputBytes <= input.bytes.length
-    && await hash(input.bytes.subarray(0, previous.inputBytes)) === previous.inputHash);
+  let prefixVerified = !!prefix, prefixUnknown = false;
+  if (same && !prefix && previous.inputBytes <= input.bytes.length) {
+    if (previousState?.binding === bindingKey) {
+      prefixVerified = true;
+      for (const chunk of previousState.chunks) {
+        if (await hash(input.bytes.subarray(chunk.offset, chunk.offset + chunk.bytes)) !== chunk.hash) {
+          prefixVerified = false; break;
+        }
+      }
+    } else if (previous.inputHashOffset === 0) {
+      prefixVerified = await hash(input.bytes.subarray(0, previous.inputBytes)) === previous.inputHash;
+    } else prefixUnknown = true;
+  }
+  const append = same && prefixVerified;
   const prior = append ? previous.events : [];
-  const priorById = new Map(prior.map((e) => [e.id, e]));
+  const priorById = prefix ? state.events : new Map(prior.map((e) => [e.id, e]));
   if (previous && !append) {
     snapshot.invalidated = invalidatedRefs(previous, input);
-    snapshot.gaps.push({ code: same ? "source-rewritten" : "source-generation-or-binding-changed" });
+    snapshot.gaps.push({ code: same ? prefixUnknown ? "source-prefix-unverified" : "source-rewritten" : "source-generation-or-binding-changed" });
   }
-  const nodes = new Map<string, string | null>();
+  const nodes = state.nodes;
   for (const line of lines) {
     if (pi && line.row.type === "session") continue;
     const id = recordId(line, pi);
@@ -261,8 +292,13 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
     return false;
   };
   const records = lines.flatMap((l) => toolRecords(l, input, snapshot.gaps));
-  const calls = new Map<string, NativeEvent[]>();
-  const seen = new Map<string, string>();
+  const calls = state.calls, seen = state.seen;
+  const touched = new Map<string, NativeEvent | undefined>();
+  const changedKeys = new Set<string>();
+  const remember = (event: NativeEvent): void => {
+    if (!touched.has(event.id)) touched.set(event.id, priorById.get(event.id));
+    state.events.set(event.id, event);
+  };
   const emit = async (r: ToolRecord): Promise<NativeEvent | null> => {
     const id = recordId(r.line, pi), parent = parentId(r.line, pi);
     if ((pi || input.format === "claude-jsonl") && !id) {
@@ -292,41 +328,71 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
       status: r.result ? r.outcome : "pending", outcome: r.outcome, pair: null, separation: null, duration: null };
     if (parentSession) e.edge = { from: { kind: "occupant", session: parentSession },
       to: { kind: "occupant", session: binding.sessionId }, channel: "native-subagent-parent" };
-    snapshot.events.push(e); return e;
+    remember(e); return e;
   };
   for (const r of records.filter((r) => !r.result)) {
     const e = await emit(r);
-    if (e) { const key = `${r.family}:${r.call}`; calls.set(key, [...calls.get(key) ?? [], e]); }
+    if (e) { const key = `${r.family}:${r.call}`; const bucket = calls.get(key) ?? [];
+      bucket.push(e); calls.set(key, bucket); changedKeys.add(key); }
   }
   for (const r of records.filter((r) => r.result)) {
     const e = await emit(r);
-    if (!e) continue;
-    const candidates = (calls.get(`${r.family}:${r.call}`) ?? []).filter((c) => !pi
-      || c.record.id !== null && ancestor(e.record.parent, c.record.id));
-    if (candidates.length !== 1 || candidates[0]!.pair) {
-      snapshot.gaps.push({ code: candidates.length > 1 ? "ambiguous-result" : "orphan-result", offset: r.line.offset }); continue;
+    if (e) { const key = `${r.family}:${r.call}`; const bucket = state.results.get(key) ?? [];
+      bucket.push(e); state.results.set(key, bucket); changedKeys.add(key); }
+  }
+  // A newly retained ancestor may bind an earlier orphan without revalidating old records.
+  if (pi && lines.length) for (const id of state.pairGaps.keys()) {
+    const e = state.events.get(id)!; changedKeys.add(`${e.tool.family}:${e.refs.call}`);
+  }
+  for (const key of changedKeys) {
+    const callBucket: NativeEvent[] = (calls.get(key) ?? []).map((c) => ({ ...c, pair: null, separation: null }));
+    const resultBucket = state.results.get(key) ?? [];
+    for (let i = 0; i < resultBucket.length; i++) {
+      const oldResult = resultBucket[i]!, e = { ...oldResult, pair: null, separation: null } as NativeEvent;
+      state.pairGaps.delete(e.id);
+      const candidates = callBucket.filter((c) => !pi || c.record.id !== null && ancestor(e.record.parent, c.record.id));
+      if (candidates.length !== 1 || candidates[0]!.pair) {
+        state.pairGaps.set(e.id, { code: candidates.length > 1 ? "ambiguous-result" : "orphan-result", offset: e.record.offset });
+      } else {
+        const c = candidates[0]!;
+        e.pair = c.id; c.pair = e.id; e.tool = c.tool;
+        const wasPending = (touched.has(c.id) ? touched.get(c.id) : priorById.get(c.id))?.status === "pending";
+        const wasLate = oldResult.status === "late" || priorById.get(e.id)?.status === "late";
+        e.status = wasPending || wasLate ? "late" : e.outcome; c.status = e.status; c.outcome = e.outcome;
+        if (e.occurredAt !== null && c.occurredAt !== null && e.occurredAt >= c.occurredAt) {
+          e.separation = c.separation = { ms: e.occurredAt - c.occurredAt, clock: clockOf(input.format),
+            semantics: "record timestamp separation, not tool runtime" };
+        }
+      }
+      resultBucket[i] = e; remember(e);
     }
-    const c = candidates[0]!;
-    e.pair = c.id; c.pair = e.id; e.tool = c.tool;
-    const wasPending = priorById.get(c.id)?.status === "pending";
-    const wasLate = priorById.get(e.id)?.status === "late";
-    e.status = wasPending || wasLate ? "late" : r.outcome; c.status = e.status; c.outcome = r.outcome;
-    if (e.occurredAt !== null && c.occurredAt !== null && e.occurredAt >= c.occurredAt) {
-      e.separation = c.separation = { ms: e.occurredAt - c.occurredAt, clock: clockOf(input.format),
-        semantics: "record timestamp separation, not tool runtime" };
+    for (const c of callBucket) {
+      if (!c.pair) { c.status = "pending"; c.outcome = "unknown"; state.pending.set(c.id, c); }
+      else state.pending.delete(c.id);
+      remember(c);
     }
+    calls.set(key, callBucket);
   }
   if (snapshot.gaps.some((g) => g.code === "conflicting-tool-replay")) return stop("rejected", "ambiguous-call-identity");
-  snapshot.events.sort((a, b) => a.at - b.at || a.record.offset - b.record.offset || a.record.block - b.record.block);
-  for (const e of snapshot.events) {
-    const old = priorById.get(e.id);
-    if (!old) snapshot.added.push(e.id);
-    else if (JSON.stringify(old) !== JSON.stringify(e)) snapshot.updated.push(e.id);
-    if (e.status === "pending") snapshot.gaps.push({ code: "missing-result", offset: e.record.offset });
+  state.gaps.push(...snapshot.gaps.filter((g) => !["partial-record", "malformed-record", "oversized-record"].includes(g.code)));
+  snapshot.gaps = [...state.gaps, ...snapshot.gaps.filter((g) => g.code === "partial-record"),
+    ...state.pairGaps.values(), ...[...state.pending.values()].map((e) => ({ code: "missing-result", offset: e.record.offset }))];
+  snapshot.events = [...state.events.values()].sort((a, b) => a.at - b.at || a.record.offset - b.record.offset || a.record.block - b.record.block);
+  for (const [id, old] of touched) {
+    if (!old) snapshot.added.push(id);
+    else if (JSON.stringify(old) !== JSON.stringify(state.events.get(id))) snapshot.updated.push(id);
   }
-  const times = lines.map((l) => timestamp(l.row.timestamp)).filter((t): t is number => t !== null);
-  if (times.length) snapshot.horizon = { source, state: "read", oldestAt: times.reduce((a, b) => Math.min(a, b)), newestAt: times.reduce((a, b) => Math.max(a, b)),
-    rows: lines.length, malformed: snapshot.gaps.filter((g) => g.code === "malformed-record").length,
-    generations: [{ gen: version, rows: lines.length, bytes: snapshot.inputBytes }], clock: clockOf(input.format) };
+  for (const line of lines) {
+    const time = timestamp(line.row.timestamp);
+    if (time !== null) {
+      state.oldestAt = Math.min(state.oldestAt ?? time, time);
+      state.newestAt = Math.max(state.newestAt ?? time, time);
+    }
+  }
+  state.rows += lines.length; state.claudeIdentity = claudeIdentity;
+  if (state.oldestAt !== null) snapshot.horizon = { source, state: "read", oldestAt: state.oldestAt, newestAt: state.newestAt!,
+    rows: state.rows, malformed: state.gaps.filter((g) => g.code === "malformed-record").length,
+    generations: [{ gen: version, rows: state.rows, bytes: snapshot.inputBytes }], clock: clockOf(input.format) };
+  readStates.set(snapshot, state);
   return snapshot;
 }

@@ -20,6 +20,7 @@
 //   malformed — drop a torn line instead of counting it.
 import { NATIVE_CANARY, NATIVE_FIXTURES, runNativeProbes } from "./trace-native-fixtures";
 import { TimelineIndex, TIMELINE_BUDGET, type TimelinePage, type TimelineReceipt } from "../trace-timeline";
+import { normalizeNative } from "../trace-native";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -144,6 +145,20 @@ function stage(dir: string): void {
 async function timelineProbes(): Promise<void> {
   const dir = `${FIX}/index`; mkdirSync(dir, { recursive: true });
   const f = NATIVE_FIXTURES[1]!;
+  const firstBytes = new TextEncoder().encode(jsonl(f.rows.slice(0, 2)));
+  const nativeFirst = await normalizeNative({ ...f.input, bytes: firstBytes });
+  const nativeDelta = await normalizeNative({ ...f.input, bytes: f.input.bytes.slice(firstBytes.length),
+    byteOffset: firstBytes.length, observedAt: f.input.observedAt + 1000 }, nativeFirst);
+  const nativeReplay = await normalizeNative({ ...f.input, observedAt: f.input.observedAt + 2000 }, nativeDelta);
+  const nativeRewrite = await normalizeNative({ ...f.input, bytes: new TextEncoder().encode(
+    new TextDecoder().decode(f.input.bytes).replaceAll("exec-1", "exec-2")) }, nativeReplay);
+  check("timeline native full delta full verifies the whole retained prefix without false invalidation",
+    nativeDelta.events.length === 4 && nativeReplay.events.length === 4
+      && nativeReplay.invalidated.length === 0 && nativeReplay.gaps.length === 0
+      && nativeReplay.added.length === 0 && nativeReplay.updated.length === 0
+      && JSON.stringify(nativeReplay.events) === JSON.stringify(nativeDelta.events)
+      && nativeRewrite.invalidated.length === 4 && nativeRewrite.gaps.some((g) => g.code === "source-rewritten"),
+    JSON.stringify({ replay: nativeReplay.gaps, invalidated: nativeReplay.invalidated.length }));
   const receipt: TimelineReceipt = { session: f.input.binding!.sessionId, cwd: f.input.binding!.cwd, slot: 2,
     openedAt: CREATED, harness: "codex", project: "project-1", program: PROGRAM, task: TASK, branch: BRANCH,
     at: CREATED, proof: "a".repeat(64) };

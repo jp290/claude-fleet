@@ -5487,6 +5487,21 @@ Default und keine vergleichbare Nachhergruppe. Die älteren Vorherwerte stehen w
 Nachherbestand für den automatischen Default und damit Gewinn je Land: **unknown**.
 Kein neuer Benchmarklauf, keine prognostizierte Ersparnis als Messung.
 
+**Nachher, Gate-Seite (2026-10-08, Lane `fleet/261008-der-server-land-laesst-c7c0`).** Seit
+`server.ts#adoptedGateSteps` übernimmt der Land eine Gate-Suite (clean-review, security,
+claude-gate), wenn ein gemeldeter grüner Command-Job derselben Suite exakt den `HEAD^{tree}` des
+rebasierten Kandidaten bewiesen hat; die Land-Note trägt sie unter `verify.adopted`
+(`jobId`, `treeSha`, `device`, `reportedAt`, `ms` = Helfer-Arbeitszeit), `verify.steps` nennt nur,
+was lokal lief. Läuft danach keine Suite mehr lokal, nimmt der Land den Suite-Mutex gar nicht.
+Vorherwert, den das ersetzen soll: Land von Lane 2A (Note `39892114`) fuhr die drei auf dem
+Workhorse schon grünen Suiten erneut, 692 s, davon 359 s Mutex-Warten.
+Der eigene Land dieser Lane übernimmt **0 Schritte, 0 ms**: er läuft unter dem Code des
+LIVE-Servers, und der hat `adoptedGateSteps` erst nach Land und Deploy. Erste gemessene Übernahme:
+**unknown**, nachzutragen von der MAIN aus der ersten Land-Note mit `verify.adopted`
+(`git log --notes=fleet/land | grep adopted`): Schritte, Summe `adopted[].ms`, und `verify.ms`/`waitMs`
+gegen die 692 s/359 s oben. Ein Land, dessen Main sich seit dem Job bewegt hat, übernimmt nichts —
+das ist der ehrliche Rückfall, keine Lücke der Messung.
+
 ### 16d. Die erste Messung (2026-09-17) — und was die Vorschau NICHT finden konnte
 
 | Lauf | Baum | Checks | Failures | Arbeitszeit | Wartezeit am Suite-Mutex |

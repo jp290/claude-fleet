@@ -5141,7 +5141,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first. The
 //      setting belongs to the LINE on the slot (MAIN 4e5ab4bb, 08.10.): the successor carries it
 //      unchanged and is not handed over again at once, and the owner door's route carries it to the
-//      next one too. Mutation: drop server.ts#carryHandoverSetting.
+//      next one too. Mutation: drop server.ts#carryHandoverSetting. An owner PATCH that lands while
+//      the route's succession is parked at the start of its beforeKill is the setting carried
+//      (review 24095cba). Mutation: read the setting on entry to handleOwnerSucceed instead.
 //   C  no switch at all: neither a warm turn nor a succession. Mutation: drop liveKeepCache's filter.
 //   G  bound game-maker MAIN, T the ⚙ steward: the switch is refused by name (the card's exemptions).
 //   X  a warm turn held at sendText's before-paste latch while the owner switches the session off:
@@ -5473,6 +5475,32 @@ async function runKeepCache(): Promise<void> {
   check("keepCache S: the owner door's route POST /api/slots/:id/succeed carries the setting to the next successor too",
     ready && !!pressed?.ok && (heir2?.openedAt ?? 0) > (heir?.openedAt ?? 0) && lineSetting(heir2View, heir2?.openedAt),
     JSON.stringify({ ready, pressed: pressed?.status, heir2: heir2?.openedAt, setting: heir2View.setting }));
+  // THE LAST SETTING BEFORE THE KILL is carried: the route's succession of heir2 is parked at the start
+  // of its beforeKill, the owner sets 45 min meanwhile, and heir3 carries 45 — not the 50 it began with
+  let ready2 = false;
+  for (let i = 0; i < 100 && !ready2; i++) {
+    ready2 = ((await (await get(`/api/slots/${S.slot}/succeed`)).json()) as { ready?: boolean }).ready === true;
+    if (!ready2) await Bun.sleep(100);
+  }
+  for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
+  writeFileSync(keepLatch, `kill:${S.slot}`);
+  const pressing = ready2 ? post(`/api/slots/${S.slot}/succeed`, {}) : null;
+  let atKill = false;
+  for (let i = 0; i < 150 && pressing && !atKill; i++) {
+    atKill = existsSync(`${keepLatch}.reached`);
+    if (!atKill) await Bun.sleep(100);
+  }
+  const late = await hp(S.slot, { expectedOpenedAt: heir2?.openedAt, keepCacheIdleMin: 45 });
+  writeFileSync(`${keepLatch}.release`, "");
+  const pressed3 = pressing ? await pressing : null;
+  for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
+  const heir3 = (await sessions()).slots.find((x) => x.id === S.slot);
+  const heir3View = await carriedTo(heir3?.openedAt);
+  const h3 = heir3View.setting as Carried | null;
+  check("keepCache S: an owner PATCH between the brief build and the kill is the setting carried — the successor holds 45, not 50",
+    ready2 && atKill && late.status === 200 && !!pressed3?.ok && (heir3?.openedAt ?? 0) > (heir2?.openedAt ?? 0)
+      && h3?.keepCacheIdleMin === 45 && h3.keepCache === true && h3.occupant?.openedAt === heir3?.openedAt,
+    JSON.stringify({ ready2, atKill, late: late.status, pressed: pressed3?.status, heir3: heir3?.openedAt, setting: heir3View.setting }));
 
   // C, NO SWITCH: the same fill and the same age, seconds of ticks later — untouched
   const cView = await hv(C.slot);

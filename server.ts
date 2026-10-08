@@ -13591,8 +13591,9 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
   if (!sameSuccessionOccupant(s, predecessorIdentity) || successionInflight.has(identity))
     return no(ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight"));
   // THE OWNER'S HANDOVER SETTING BELONGS TO THE LINE ON THIS SLOT (MAIN, row 4e5ab4bb, 08.10.: the
-  // owner sets keepCache for the line, not for one session) — read while the predecessor still holds it
-  const lineSetting = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
+  // owner sets keepCache for the line, not for one session) — read in the LAST question before the kill
+  // (beforeKill below), so an owner PATCH that lands while the brief is built is the one carried
+  let lineSetting: HandoverSetting | null = null;
   successionInflight.add(identity);
   try {
     // THE RAIL, fixed here and re-asked before the kill: a binding that moves while the brief is built
@@ -13631,7 +13632,9 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     if (early) return early;
     const now = Date.now();
     const beforeKill = async (): Promise<Response | null> => {
+      await waitForKeepCacheTestLatch(`kill:${s.id}`);
       const refused = await lastQuestion();
+      if (!refused) lineSetting = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
       if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
         + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
       return refused;
@@ -25062,14 +25065,15 @@ function keepCacheWarmText(d: KeepCacheDecision, now: number): string {
     + "Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
 }
 
-// e2e only: parks the tick right after its decision for the slot named in the latch file, so a probe
-// can change the setting between the decision and the act. One park per arming (the file is removed).
+// e2e only: parks at the point the latch file names, so a probe can change the setting in between —
+// `<slot>` right after tickKeepCache's decision for that slot, `kill:<slot>` at the start of the owner
+// door's beforeKill (handleOwnerSucceed). One park per arming (the file is removed).
 const KEEP_CACHE_TEST_LATCH = process.env.FLEET_TEST_KEEP_CACHE_LATCH ?? null;
-async function waitForKeepCacheTestLatch(slot: number): Promise<void> {
+async function waitForKeepCacheTestLatch(at: string): Promise<void> {
   if (!KEEP_CACHE_TEST_LATCH || !existsSync(KEEP_CACHE_TEST_LATCH)) return;
-  if (readFileSync(KEEP_CACHE_TEST_LATCH, "utf8").trim() !== String(slot)) return;
+  if (readFileSync(KEEP_CACHE_TEST_LATCH, "utf8").trim() !== at) return;
   rmSync(KEEP_CACHE_TEST_LATCH, { force: true });
-  writeFileSync(`${KEEP_CACHE_TEST_LATCH}.reached`, String(slot), { mode: 0o600 });
+  writeFileSync(`${KEEP_CACHE_TEST_LATCH}.reached`, at, { mode: 0o600 });
   for (let waited = 0; waited < 10_000; waited += 10) {
     if (existsSync(`${KEEP_CACHE_TEST_LATCH}.release`)) return;
     await Bun.sleep(10);
@@ -25101,7 +25105,7 @@ async function tickKeepCache(): Promise<void> {
     for (const { s, d, run, version } of due) {
       const openedAt = s.openedAt;
       const sessionId = s.sessionId;
-      await waitForKeepCacheTestLatch(s.id);
+      await waitForKeepCacheTestLatch(String(s.id));
       // THE OWNER MAY SWITCH IT OFF WHILE THE ACT IS ON ITS WAY: asked again before every step that
       // could reach the pane — for a warm turn at the queue (beforeSend) and as the last question
       // before the paste (beforePaste), for a succession with the owner door's own questions up to

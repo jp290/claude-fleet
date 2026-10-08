@@ -11259,6 +11259,9 @@ async function runCodexPermissions(): Promise<void> {
         default: { sandbox: "danger-full-access", approval: "never" } }), JSON.stringify(capability));
     const defaultProfile: PermissionProfile = { sandbox: "danger-full-access", approval: "never" };
     let n = args().length;
+    // the order the Mac trails hit (10/33 since 07.10.) forced every run: the boot probe's line
+    // lands after `n`, so this check reads past it or is red
+    appendFileSync(argvLog, JSON.stringify(["--version"]) + "\n");
     const defaultOpen = await post("/api/slots/16/open", { cwd, harness: "codex", packs: [] });
     const defaultOpenBody = await defaultOpen.text();
     const defaultStored = (await row())?.permissions;

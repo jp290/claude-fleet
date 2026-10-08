@@ -1087,6 +1087,7 @@ async function privatePackHandover(): Promise<void> {
           let slot: number | null = null;
           let opened: Awaited<ReturnType<typeof call>>;
           for (const file of readdirSync(reads).filter((file) => /^(heft-|ready-)/.test(file))) rmSync(`${reads}/${file}`);
+          const foundedAfter = Date.now();
           if (role === "lane") {
             const made = await call("/api/tasks", "POST", { text: "Owner-Heft Startprobe", repo: product, queue: false });
             const taskId = (made.json.task as { id?: string } | undefined)?.id;
@@ -1120,8 +1121,8 @@ async function privatePackHandover(): Promise<void> {
             // Dispatch returns before briefAndSend's tail. Recycle only after that tail logged its prompt.
             let dispatchComplete = false;
             for (let n = 0; n < 200; n++) {
-              const prompts = (await call("/api/prompts?limit=100", "GET")).json.prompts as { slot: number; text: string }[] | undefined;
-              if (prompts?.some((prompt) => prompt.slot === slot && prompt.text.includes("Owner-Heft Startprobe"))) {
+              const prompts = (await call("/api/prompts?limit=100", "GET")).json.prompts as { slot: number; text: string; ts: number }[] | undefined;
+              if (prompts?.some((prompt) => prompt.slot === slot && prompt.ts >= foundedAfter && prompt.text.includes("Owner-Heft Startprobe"))) {
                 dispatchComplete = true;
                 break;
               }

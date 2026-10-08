@@ -2713,17 +2713,26 @@ export async function run(ctx: Ctx): Promise<void> {
   // THE PREMISE IS MADE HERE, not assumed: a lane opened without a parent takes the most recent live
   // MAIN by lastOutput (server.ts#decideLaneAnchor), so a later open can land in another band. The
   // first lane's persisted anchor is read back and passed as the parent of the two lanes that join it.
-  const bandParent = loadedExecutionState.slots?.[String(executionLaneBody.slot)]?.worktree?.anchor ?? null;
-  const bandOpenY = await (await post("/api/lanes", { repo: REPO, parent: bandParent ?? undefined })).json() as { slot?: number };
-  const bandOpenZ = await (await post("/api/lanes", { repo: REPO, parent: bandParent ?? undefined })).json() as { slot?: number };
-  check("ProgramExecutionView band prerequisite: the first lane has a persisted anchor and both added lanes opened into the same band",
-    bandParent !== null && typeof bandOpenY.slot === "number" && typeof bandOpenZ.slot === "number",
-    JSON.stringify({ anchor: bandParent, y: bandOpenY.slot ?? null, z: bandOpenZ.slot ?? null }));
+  // A lane with no anchor (band 0) is joined the same way: no parent, and decideLaneAnchor finds none.
+  const bandParent = readState().slots?.[String(executionLaneBody.slot)]?.worktree?.anchor ?? null;
+  const bandOpen = async (): Promise<{ slot?: number; error?: string }> =>
+    await (await post("/api/lanes", bandParent ? { repo: REPO, parent: bandParent } : { repo: REPO })).json()
+      .catch(() => ({ error: "unparsable body" })) as { slot?: number; error?: string };
+  const bandOpenY = await bandOpen();
+  const bandOpenZ = await bandOpen();
   await stopSrv();
   const bandState = readState();
   const bandRowX = bandState.slots?.[String(executionLaneBody.slot)];
   const bandRowY = bandState.slots?.[String(bandOpenY.slot)];
   const bandRowZ = bandState.slots?.[String(bandOpenZ.slot)];
+  const bandAnchorOf = (row: { worktree?: { anchor?: { slot: number } } } | undefined): number | null =>
+    row?.worktree ? row.worktree.anchor?.slot ?? 0 : null;
+  check("ProgramExecutionView band prerequisite: both added lanes opened and joined the first lane's band",
+    typeof bandOpenY.slot === "number" && typeof bandOpenZ.slot === "number"
+      && bandAnchorOf(bandRowX) !== null && bandAnchorOf(bandRowY) === bandAnchorOf(bandRowX)
+      && bandAnchorOf(bandRowZ) === bandAnchorOf(bandRowX),
+    JSON.stringify({ parent: bandParent, y: bandOpenY, z: bandOpenZ,
+      anchors: [bandAnchorOf(bandRowX), bandAnchorOf(bandRowY), bandAnchorOf(bandRowZ)] }));
   for (const row of [bandRowY, bandRowZ]) if (row) row.programId = mainProgram.id;
   if (bandRowZ?.worktree) delete bandRowZ.worktree.letter;
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandState, null, 2), { mode: 0o600 });
@@ -2744,7 +2753,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && bandViewY.band === `${bandPrefix(bandRowY)}${bandLetters[1]}`
       && bandPrefix(bandRowX) === bandPrefix(bandRowY)
       && typeof bandLetters[0] === "string" && typeof bandLetters[1] === "string" && bandLetters[0] !== bandLetters[1],
-    JSON.stringify({ bands: bandRows.map((r) => [r.slot, r.band]), letters: bandLetters }));
+    JSON.stringify({ rows: bandRows.length, bands: bandRows.map((r) => [r.slot, r.band]), letters: bandLetters,
+      slots: [executionLaneBody.slot, bandOpenY.slot, bandOpenZ.slot] }));
   check("ProgramExecutionView band: a lane with no persisted letter reads null, never a positional guess",
     !!bandViewZ && bandViewZ.band === null && !!bandRowZ && bandRowZ.worktree?.letter === undefined,
     JSON.stringify({ z: bandViewZ?.band ?? "missing", letter: bandRowZ?.worktree?.letter ?? null }));

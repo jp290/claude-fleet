@@ -397,6 +397,33 @@ guard: `e2e-stage.sh` exports `FLEET_LANE_AUTOCLOSE=0`, `e2e-isolated.sh` names 
 `e2e/watch.ts`'s `D2 setup` reads the value back off the srv process, so an inherited value would
 fail as a wrong premise instead of as a broken feature.
 
+### Host-Platzhalt vor lokalen schweren Starts
+
+`server.ts#measureHostDiskSpace` misst das Dateisystem des Server-Temp-Pfads (`TMPDIR` oder
+OS-Default) mit `statfs`, read-only. `drainPostLandAudits` hält vor seiner lokalen Startmarke;
+die Queue und ihre Covers werden erst nach einem tatsächlich ausgeführten Audit konsumiert.
+Remote-Helper können weiter claimen. `tickDispatch` hält neue Lane-Starts und prüft vor dem
+Start nach seinem externen Await erneut; eine Startreservierung schließt die Lücke bis zum
+Worktree. Im Dispatch-Takt misst `tickHostDiskSpace` erneut und stößt den Audit-Drain an;
+Lane-Zeilen gehen durch ihren gewöhnlichen Tick weiter. Kein Aufräumen, Reap oder Abbruch.
+
+Admission: freie Bytes minus 3,6 GiB pro schon laufendem lokalen Schreiber müssen **strikt über
+4 GiB** bleiben. Offene Lanes mit Worktree, noch startende Lanes, lokale Server-Gates und das
+lokale Audit zählen; Remote-Audits nicht. Die Defaults haben positive endliche GiB-Overrides
+`FLEET_DISK_MIN_FREE_GIB` und `FLEET_DISK_WRITER_GIB`; ungültige Werte behalten den Default.
+Eine fehlgeschlagene Hostmessung hält ebenfalls. `GET /api/operational-view` und
+`./state.sh --brief` zeigen `disk-space-held` samt Messwert, Reserve, Schwelle, Pfad und Zeit.
+
+`e2e/host-hygiene.ts#diskSpaceChecks` fährt die echten Sensor-, Drain-, Dispatch- und View-Funktionen
+mit Stand-ins nur an den Host-/Schreibgrenzen. Ein lokaler HTTP-GET fährt den echten Route-Arm;
+`state.sh --brief` parst dessen Antwort über eine Fixture-CTL. Vier Ticks bei genau 4 GiB müssen
+beide Starts halten, den Cover behalten und die Lane queued lassen. Nach Freigabe bei 12 GiB
+laufen beide ohne Handgriff genau einmal. Je eine Mutation entfernt den Audit- oder Lane-Halt
+und muss dieselbe negative Probe rot machen. Keine echte Platte wird gefüllt.
+Die wortwörtliche Bestandsregel erlaubt bei 12 GiB auch einen dritten Start: nach zwei Schreibern
+bleiben 4,8 GiB. Für höchstens zwei Starts müsste zusätzlich der neue Schreiber reserviert
+werden; die Zahlen 4/3,6 allein belegen das Zwei-Start-Beispiel nicht.
+
 ### 6.0b proportion — Docs-only gate and audit
 
 **Proportion, added 2026-09-04 (owner).** Tier 2 no longer runs the full suite over a tree whose

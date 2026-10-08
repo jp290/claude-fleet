@@ -157,6 +157,21 @@ Quellenrevision; unveränderte Quellenbeobachtung ist keine neue Snapshot-Messun
 Es gibt keine Nachrichten-, Brief-, Hold- oder freien Fehlertexte und keine Credentials.
 Ein fehlender Ledger oder roter/unbekannter Audit nennt seine offene Grenze.
 
+`diskSpace` zeigt den Host-Platzsensor unabhängig von der Metadatenberechnung: `state: ready | disk-space-held`,
+`reason: low-free-space | measurement-failed | null`, `path` (der Temp-Pfad dieses Servers aus
+`TMPDIR`, sonst der OS-Default), `measuredAt`, `freeBytes`, `minimumFreeBytes`, `writerReserveBytes`,
+`runningWriters`, `reservedBytes` und `availableBytes`. Gemessen wird mit `statfs.bavail * bsize`
+im Dispatch-Takt und unmittelbar vor einem lokalen schweren Start; GET misst nicht nach.
+Defaults sind 4 GiB Mindestrest und 3,6 GiB je laufendem Schreiber; positive endliche Overrides
+stehen in `FLEET_DISK_MIN_FREE_GIB` und `FLEET_DISK_WRITER_GIB`. Ungültige Overrides behalten den
+Default. Starts brauchen strikt `freeBytes - reservedBytes > minimumFreeBytes`.
+Gezählt werden offene lokale Lanes mit Worktree, noch startende Lanes, lokale Server-Gates und
+das lokale Post-Land-Audit; Remote-Claims zählen nicht. Der Halt lässt Audit-Covers dauerhaft
+liegen und Lane-Zeilen startfähig in der Queue. Der nächste Dispatch-Takt nimmt sie automatisch
+wieder auf. Fehlende Messung hält Starts mit explizitem Grund, sie beendet keinen Lauf.
+`data.startable` bleibt während des Platzhalts und bei mindestens zwei Takte alter Messung leer.
+`./state.sh --brief` zeigt Zustand, freie Bytes, Mindestrest, Reserve, Messort und Messzeit.
+
 Diese Sicht ist kein Ledger und keine Policy. Start-, Reverse-, Land- und Deploytüren prüfen
 ihre Quellen weiterhin selbst; keine Handlung liest cached readiness.
 Wire/Server/CLI/Docs/Probes: apply; Browser-UI: not-applicable.

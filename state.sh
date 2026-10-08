@@ -183,6 +183,11 @@ def operational(view):
     emit(f"{schema} scope=owner-metadata freshness={view.get('freshness', 'unknown')} full: ./state.sh --full", door="GET /api/operational-view")
     emit(f"boot={view.get('bootEpoch')} computedAt={view.get('computedAt')} revision={view.get('revision')}", door='GET /api/operational-view')
     emit(f"observedRevision={view.get('observedRevision')} pending={view.get('pending')} inflight={view.get('inflight')} failed={view.get('failed')}", door='GET /api/operational-view')
+    disk = view.get('diskSpace')
+    if isinstance(disk, dict):
+        emit(f"host-disk {disk.get('state', 'unknown')} freeBytes={disk.get('freeBytes')} minimumFreeBytes={disk.get('minimumFreeBytes')} reservedBytes={disk.get('reservedBytes')} path={disk.get('path')} measuredAt={disk.get('measuredAt')} reason={disk.get('reason')}", door='GET /api/operational-view')
+    else:
+        emit('unknown host-disk reason=missing-sensor; detail: GET /api/operational-view')
     sources = view.get('sources')
     group('source-state', [{'id': k, **v} for k, v in sources.items()] if isinstance(sources, dict) else None,
           'GET /api/operational-view', lambda r: f"{r.get('id')} state={r.get('state', 'unknown')} door=GET /api/operational-view revision={r.get('revision')} basis={r.get('basis', 'unknown')}")

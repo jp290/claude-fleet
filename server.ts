@@ -8,7 +8,7 @@ import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
-import { constants as fsConstants, appendFileSync, existsSync, statSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
+import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
@@ -21221,6 +21221,52 @@ async function tickVariantCompare(): Promise<void> {
   }
 }
 
+// --- host disk admission: read only; queued work keeps its existing return path ---
+const DISK_GIB = 1024 ** 3;
+function diskGiBOverride(value: string | undefined, fallback: number): number {
+  const bytes = (value === undefined ? fallback : Number(value)) * DISK_GIB;
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : fallback * DISK_GIB;
+}
+const DISK_MIN_FREE_BYTES = diskGiBOverride(process.env.FLEET_DISK_MIN_FREE_GIB, 4);
+const DISK_WRITER_BYTES = diskGiBOverride(process.env.FLEET_DISK_WRITER_GIB, 3.6);
+const DISK_PATH = tmpdir();
+const diskLaneStarts = new Set<number>();
+let diskGroupStarts = 0;
+type HostDiskSpace = { state: "ready" | "disk-space-held"; reason: "low-free-space" | "measurement-failed" | null;
+  path: string; measuredAt: number; freeBytes: number | null; minimumFreeBytes: number;
+  writerReserveBytes: number; runningWriters: number; reservedBytes: number; availableBytes: number | null };
+let hostDiskSpace: HostDiskSpace | null = null;
+function measureHostDiskSpace(additionalWriters = 0): HostDiskSpace {
+  const lanes = slots.filter((s) => s.cwd && s.worktree);
+  const pending = [...diskLaneStarts].filter((id) => !lanes.some((s) => s.id === id)).length;
+  const gates = [...serverRuns.entries()].filter(([key]) => key !== "audit").length;
+  const runningWriters = lanes.length + pending + diskGroupStarts + gates + (auditRunningRepo ? 1 : 0) + additionalWriters;
+  let freeBytes: number | null = null;
+  try {
+    const fs = statfsSync(DISK_PATH);
+    const bytes = Number(fs.bavail) * Number(fs.bsize);
+    if (Number.isFinite(bytes) && bytes >= 0) freeBytes = bytes;
+  } catch { /* a failed reading holds starts, never retires work */ }
+  const reservedBytes = runningWriters * DISK_WRITER_BYTES;
+  const availableBytes = freeBytes === null ? null : freeBytes - reservedBytes;
+  const held = availableBytes === null || availableBytes <= DISK_MIN_FREE_BYTES;
+  const next: HostDiskSpace = { state: held ? "disk-space-held" : "ready",
+    reason: freeBytes === null ? "measurement-failed" : held ? "low-free-space" : null,
+    path: DISK_PATH, measuredAt: Date.now(), freeBytes, minimumFreeBytes: DISK_MIN_FREE_BYTES,
+    writerReserveBytes: DISK_WRITER_BYTES, runningWriters, reservedBytes, availableBytes };
+  if (next.state !== hostDiskSpace?.state)
+    console.log(`host disk ${next.state}: freeBytes=${freeBytes} reservedBytes=${reservedBytes} minimumFreeBytes=${DISK_MIN_FREE_BYTES} path=${DISK_PATH}`);
+  hostDiskSpace = next;
+  return next;
+}
+function diskSpaceWaitNote(space: HostDiskSpace): string {
+  return `waiting: disk-space-held freeBytes=${space.freeBytes} reservedBytes=${space.reservedBytes} minimumFreeBytes=${space.minimumFreeBytes} path=${space.path}`;
+}
+function tickHostDiskSpace(): void {
+  if (measureHostDiskSpace().state === "ready") kickAuditDrain();
+}
+// --- end host disk admission ---
+
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !DISPATCH_REPO) return;
   tickStallSensor(dispatchOn);
@@ -21274,7 +21320,20 @@ async function tickDispatch(): Promise<void> {
       }
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
-        const g = await startVariantGroup(next, false);
+        const n = variantsOfGroup(variantGroupOf(next) ?? next).length;
+        const space = measureHostDiskSpace(Math.max(0, n - 1));
+        if (space.state === "disk-space-held") {
+          const note = diskSpaceWaitNote(space);
+          let changed = false;
+          for (const row of rows) if (tickOwnsRow(row) && row.note !== note) { row.note = note; changed = true; }
+          if (changed) saveState();
+          continue;
+        }
+        diskGroupStarts += n;
+        let g: VariantGroupStart;
+        try { g = await startVariantGroup(next, false); }
+        finally { diskGroupStarts -= n; }
+
         variantReserveSet(next.variantOf, g); // a CAPACITY hold parks the next lane, nothing else does
 
         if (g.started) await Promise.all(g.tails);
@@ -21469,7 +21528,13 @@ async function tickDispatch(): Promise<void> {
         ? { followers, wasStatus: new Map(followers.map((row) => [row.id, row.status] as const)),
           sharedFiles: land.sharedFiles, klasse: land.klasse, units: land.units }
         : null;
-      const r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover);
+      const space = measureHostDiskSpace();
+      if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }
+      diskLaneStarts.add(free.id);
+      let r: Awaited<ReturnType<typeof dispatchTask>>;
+      try { r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover); }
+      finally { diskLaneStarts.delete(free.id); }
+
       // the machine's sibling of the owner's task_wave_dispatch, written once per started wave
       if (r.ok && handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);
       // the START NOTE of a policy start names the policy and the gaps it started past (the verdict's hints)
@@ -29265,6 +29330,7 @@ async function drainPostLandAudits(): Promise<void> {
         break;
       }
       const [repo, q] = entry;
+      if (measureHostDiskSpace().state === "disk-space-held") break;
       // WHY THIS BOX RUNS IT, one line per local run — so "it ran here although a helper was free
       // in ten minutes" is a question the log answers rather than one the ledger has to be joined
       // against the device register for. Derived from the same three readings the find just used.
@@ -41199,7 +41265,8 @@ type OperationalData = {
 };
 
 function makeOperationalView(deps: { bootEpoch: number; now: () => number; schedule: (run: () => void) => void;
-  observe: () => OperationalSources; produce: (now: number) => Promise<OperationalData> }) {
+  observe: () => OperationalSources; produce: (now: number) => Promise<OperationalData>;
+  diskSpace?: () => HostDiskSpace | null }) {
   let sources: OperationalSources | null = null;
   let computedSources: OperationalSources | null = null;
   let data: OperationalData | null = null;
@@ -41270,10 +41337,12 @@ function makeOperationalView(deps: { bootEpoch: number; now: () => number; sched
       const fresh = !!data && Object.values(sourceViews).every((s) => s.state === "fresh");
       const unknown = names.filter((name) => sourceViews[name].state !== "fresh")
         .map((name) => ({ kind: "source", id: name, reason: failure ?? sourceViews[name].state }));
+      const diskSpace = deps.diskSpace?.() ?? null;
+      const diskHeld = diskSpace && (diskSpace.state === "disk-space-held" || now - diskSpace.measuredAt >= DISPATCH_TICK_MS * 2);
       return { schema: "fleet.operational-view/v1", scope: "owner-metadata", bootEpoch: deps.bootEpoch,
         computedAt, revision: revision(computedSources), observedRevision: revision(sources),
         freshness: fresh ? "fresh" : "unknown", pending, inflight, failed: failure,
-        sources: sourceViews, unknown, data: data ? { ...data, startable: fresh ? data.startable : [] } : null };
+        sources: sourceViews, unknown, diskSpace, data: data ? { ...data, startable: fresh && !diskHeld ? data.startable : [] } : null };
     },
   };
 }
@@ -41436,7 +41505,7 @@ async function produceOperationalData(now: number): Promise<OperationalData> {
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
 withAuditActor({ kind: "machine", why: "tick" }, () => {
 operationalView = makeOperationalView({ bootEpoch: SERVER_BOOT_AT, now: Date.now, schedule: queueMicrotask,
-  observe: operationalSources, produce: produceOperationalData });
+  observe: operationalSources, produce: produceOperationalData, diskSpace: () => hostDiskSpace });
 operationalView.observe();
 setInterval(() => operationalView?.observe(), AUTOS_TICK_MS);
 void codexCliObserver.tick();
@@ -41453,6 +41522,8 @@ setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 
 // the owner inbox must not keep a debt nobody can pay — the read and the resend door settle too
 setInterval(() => { if (settleSuccessionDebts()) saveState(); }, GIT_TICK_MS);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
+tickHostDiskSpace();
+setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
 // no tick or gate reacts to a snapshot row; the one reader is the memory door (view=observations)
 if (STATE_SNAPSHOT_MS > 0) setInterval(() => void appendEvent(STATE_SNAPSHOT_FILE, buildStateSnapshot(Date.now())), STATE_SNAPSHOT_MS);

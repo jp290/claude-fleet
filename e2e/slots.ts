@@ -5128,6 +5128,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   }
 
   await runKeepCache();
+  await runMigrateTickRace();
 }
 
 // --- KEEP THE CACHE OR HAND OVER BEFORE IT IS GONE (server.ts#tickKeepCache; PATCH
@@ -5157,6 +5158,69 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      parked after a succeed decision while an Auto is set on it — no successor (review c545cc32;
 //      mutation: stillWanted asks only the setting's version, not keepCacheWork).
 // Invalid values are refused with the setting left as it was. ---
+// --- tickMigrate: the previous tick's nudge completes DURING this tick's awaits (08.10.: two nudges
+// to one session 307 ms apart under a 900 s cooldown, in a slots+self-token run). Driven on the cut
+// source with every await in hand: tick 1 types B's nudge and holds the send; tick 2 scans B as due
+// with a NEW attempt (tick 1's is stored only when its send completes) and parks in A's canDeliver,
+// before B's pending check; B's send completes; A is released. Mutation: drop the migrateTried
+// re-check after the awaits in server.ts#tickMigrate → B is typed a second time. ---
+async function runMigrateTickRace(): Promise<void> {
+  const source = readFileSync(resolve(import.meta.dir, "../server.ts"), "utf8");
+  const at = source.indexOf("let migrateTickBusy = false;");
+  const until = source.indexOf("\n// --- THE PARKED SEND", at);
+  if (at < 0 || until < 0) {
+    check("tickMigrate race: the tick's source is cut", false, `at=${at} until=${until}`);
+    return;
+  }
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, until));
+  type Fx = { id: number; cwd: string; label: string; awaiting: null; sessionId: string; harness: null; worktree: null;
+    lastOutput: number; history: unknown[] };
+  const fx = (id: number): Fx => ({ id, cwd: `/fixture/migrate-${id}`, label: `m${id}`, awaiting: null,
+    sessionId: `race-${id}`, harness: null, worktree: null, lastOutput: 1, history: [] });
+  const A = fx(1), B = fx(2);
+  const claude = { id: "claude" };
+  let parkA = false;
+  const held: { a?: () => void; send?: () => void } = {};
+  const sends: number[] = [];
+  const asked: number[] = [];
+  const deps = {
+    slots: [A, B], STEWARD_LABEL: "steward", harnessOf: () => claude, CLAUDE_HARNESS: claude,
+    handoverNudgeOn: () => true, handoverPct: () => 44,
+    contextFill: () => ({ pct: 50, usedTokens: 500_000, windowTokens: 1_000_000 }),
+    migrateTried: new Map(), MIGRATE_MAX_NUDGES: 3, MIGRATE_COOLDOWN_MS: 900_000, MIGRATE_IDLE_MS: 0,
+    canDeliver: async (s: Fx) => {
+      asked.push(s.id);
+      if (s === A && parkA) await new Promise<void>((r) => { held.a = r; });
+      return { ok: true };
+    },
+    standingHandoverFresh: async (s: Fx) => s === A, // A's handover is fresh: never typed, only awaited
+    laneMigrateMessage: () => "lane", migrateMessage: () => "[fleet] Dein Kontext ist bei 50%", migrateRailOf: () => null,
+    sendText: async (s: Fx) => {
+      sends.push(s.id);
+      if (sends.length === 1) await new Promise<void>((r) => { held.send = r; });
+      return { acceptance: "accepted" };
+    },
+    DeliveryCancelled: class extends Error {}, audit: () => {}, MAX_HISTORY: 50, saveHistory: () => {}, logPrompt: () => {},
+    logError: () => {}, sendFailureDelivery: () => "send-failed",
+  };
+  const tick = new Function(...Object.keys(deps), `${js}; return tickMigrate;`)(...Object.values(deps)) as () => Promise<void>;
+  const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await Bun.sleep(0); };
+  await tick();
+  await settle();
+  parkA = true;
+  const second = tick();
+  await settle();
+  const parked = held.a !== undefined && held.send !== undefined;
+  held.send?.();
+  await settle();
+  held.a?.();
+  await second;
+  await settle();
+  check("tickMigrate race: a nudge that completes while the next tick awaits another session is not typed again",
+    parked && JSON.stringify(sends) === "[2]" && JSON.stringify(asked) === "[1,2,1,2]",
+    JSON.stringify({ parked, sends, asked }));
+}
+
 async function runKeepCache(): Promise<void> {
   const repos: string[] = [];
   const mkRepo = (name: string): string => {

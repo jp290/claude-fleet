@@ -25467,6 +25467,12 @@ async function tickMigrate(): Promise<void> {
       // asked after the delivery gate, so the transcript is read only for a nudge that would go out
       if (await standingHandoverFresh(s)) continue;
       if (s.sessionId !== attempt.sessionId || !s.cwd) continue;
+      // ANOTHER TICK'S NUDGE MAY HAVE LANDED DURING THESE AWAITS: `attempt` was built before them, and
+      // the previous tick's send to this session (in flight when the pending check above ran) stores
+      // its own attempt when it completes — a newer one for the same session means the hint is out,
+      // or this tick types it a second time (08.10.: two nudges 307 ms apart under a 900 s cooldown)
+      const latest = migrateTried.get(s.id);
+      if (latest && latest !== attempt && latest.sessionId === attempt.sessionId) continue;
       // the rail is read HERE, after the awaits, for the same reason the kind is re-checked: a
       // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
       const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));

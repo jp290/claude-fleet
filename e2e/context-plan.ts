@@ -1472,6 +1472,10 @@ async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {
       && readFileSync(join(repo, "target"), "utf8") === "keep");
     mkdirSync(join(repo, "denied"));
     writeFileSync(join(repo, "denied/canary"), "blocked");
+    // the fence grants pi its startup read of auth.json only for an empty store and otherwise ends
+    // in a named (error) — without this file the real seatbelt below refuses to apply at all
+    mkdirSync(join(repo, "agent"));
+    writeFileSync(join(repo, "agent/auth.json"), "{}");
     const profile = piZaiFenceProfile({ home: repo, fleetDir: repo, agentDir: join(repo, "agent"),
       keyFile: join(repo, "key"), cwd: repo, tmuxDir: join(repo, "tmux"), sockets: [], denyRoots: [join(repo, "denied")],
       tmpRoots: [join(repo, "tmp")], ownTmp: join(repo, "tmp/own"), suiteLock: join(repo, "tmp/suite-lock"),

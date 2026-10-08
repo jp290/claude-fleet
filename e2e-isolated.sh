@@ -952,6 +952,10 @@ PI_ZAI_KEY_FILE="$DIR/pi-zai-coding-plan.key"
 PI_OX_AGENT_DIR="$DIR/pi-ox-agent"
 mkdir -p "$PI_ZAI_AGENT_DIR"
 mkdir -p "$PI_OX_AGENT_DIR"
+# Pi reads its credential store at startup, and server/pi-zai-fence.ts#piZaiFenceProfile grants
+# that read only for an EMPTY regular auth.json — without one the profile ends in a named (error),
+# so on darwin every real seatbelt start of a pi-zai pane fails (Mac audit on 88b36885, d41496ef).
+printf '{}' > "$PI_ZAI_AGENT_DIR/auth.json"
 printf '%s\n' 'fleet-e2e-zai-stand-in-key' > "$PI_ZAI_KEY_FILE"
 chmod 600 "$PI_ZAI_KEY_FILE"
 # pi-zai starts pi only behind a seatbelt read fence (server.ts#PI_ZAI_SANDBOX_EXEC). A host

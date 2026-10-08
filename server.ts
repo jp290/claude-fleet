@@ -44567,6 +44567,9 @@ Bun.serve<WSData>({
       const after = resolveSelfPrincipal(req);
       if (s.openedAt !== p.openedAt || after?.kind !== "session" || after.slot !== s.id || after.openedAt !== p.openedAt)
         return json({ error: "the slot changed occupant while this request ran — nothing is served on the old credential" }, 409);
+      const currentKontext = konzeptKontextFor(s, after);
+      if (!currentKontext.ok || currentKontext.programs.slice().sort().join(",") !== kontext.programs.slice().sort().join(","))
+        return json({ error: "konzept-program-binding-changed: this session's Program binding changed while the request ran — nothing is served under the old binding" }, 409);
       return json(answer.body, answer.status);
     }
 

@@ -218,6 +218,17 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     if (start < 0 || end < start) throw Error(`disk fixture missing ${name}`);
     return source.slice(start, end + 3);
   };
+  const activeCode = (code: string): string => code.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
+  const diskBootWired = (code: string): boolean => /^tickHostDiskSpace\(\);$/m.test(activeCode(code));
+  const diskTickWired = (code: string): boolean => /^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m.test(activeCode(code));
+  assert("host-disk production boot measures space and production interval returns held audits",
+    diskBootWired(source) && diskTickWired(source));
+  const noDiskTick = source.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m, "");
+  assert("host-disk removing production interval makes the same wiring claim red",
+    noDiskTick !== source && !(diskBootWired(noDiskTick) && diskTickWired(noDiskTick)));
+  assert("host-disk a commented production interval cannot satisfy the wiring claim",
+    !diskTickWired(source.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m,
+      "// setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);")));
   const diskStart = source.indexOf("const DISK_GIB =");
   const diskEnd = source.indexOf("// --- end host disk admission ---", diskStart);
   const actual = source.slice(diskStart, diskEnd) + fn("tickDispatch") + fn("drainPostLandAudits")

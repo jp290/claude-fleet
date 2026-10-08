@@ -419,7 +419,10 @@ mit Stand-ins nur an den Host-/Schreibgrenzen. Ein lokaler HTTP-GET fährt den e
 `state.sh --brief` parst dessen Antwort über eine Fixture-CTL. Vier Ticks bei genau 4 GiB müssen
 beide Starts halten, den Cover behalten und die Lane queued lassen. Nach Freigabe bei 12 GiB
 laufen beide ohne Handgriff genau einmal. Je eine Mutation entfernt den Audit- oder Lane-Halt
-und muss dieselbe negative Probe rot machen. Keine echte Platte wird gefüllt.
+und muss dieselbe negative Probe rot machen. Ein zusätzlicher Claim verankert Bootmessung und
+wiederkehrenden Disk-Takt im Produktionscode, nach Entfernung ganzzeiliger Kommentare.
+Das Entfernen der Produktions-`setInterval`-Zeile macht genau diesen Wiring-Claim rot;
+eine auskommentierte Zeile kann ihn ebenfalls nicht erfüllen. Keine echte Platte wird gefüllt.
 Die wortwörtliche Bestandsregel erlaubt bei 12 GiB auch einen dritten Start: nach zwei Schreibern
 bleiben 4,8 GiB. Für höchstens zwei Starts müsste zusätzlich der neue Schreiber reserviert
 werden; die Zahlen 4/3,6 allein belegen das Zwei-Start-Beispiel nicht.

@@ -24571,8 +24571,12 @@ async function tickMessageNudge(): Promise<void> {
       const openedAt = s.openedAt;
       const key = `${session}|${unreadIds.join(",")}`;
       const prior = messageNudgeTried.get(s.id);
-      if (prior?.key === key || (prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
-      const verdict = await canDeliver(s, { now, idleMs: BACKLOG_IDLE_MS, quietHours: true });
+      const lane = !!s.worktree;
+      if (prior?.key === key || (!lane && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
+      // A MAIN's addressed lane message is direct traffic, like a report decision: short idle,
+      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle.
+      const verdict = await canDeliver(s, { now, idleMs: lane ? REPORT_DECISION_IDLE_MS : BACKLOG_IDLE_MS,
+        ...(lane ? { harness: false, quietHours: false } : { quietHours: true }) });
       if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
       const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
         .map((m) => m.id).sort();
@@ -24583,16 +24587,19 @@ async function tickMessageNudge(): Promise<void> {
       void (async () => {
         let recipient = s;
         try {
+          const checkRecipient = (current: Slot) => {
+            const ids = messages.entries.filter((m) => m.readBy === null && messageInboundFor(current, m))
+              .map((m) => m.id).sort();
+            if (current.id !== s.id || current.openedAt !== openedAt || backlogSessionKey(current) !== session
+              || ids.join(",") !== unreadIds.join(","))
+              throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
+            recipient = current;
+          };
           const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+            ...(lane ? { deliveryClass: "sofort" as const, address: { kind: "slot" as const, id: s.id },
+              bypassQueue: true, beforePaste: checkRecipient } : {}),
             bundleGate: { idleMs: BACKLOG_IDLE_MS },
-            beforeSend: async (current) => {
-              const ids = messages.entries.filter((m) => m.readBy === null && messageInboundFor(current, m))
-                .map((m) => m.id).sort();
-              if (current.openedAt !== openedAt || backlogSessionKey(current) !== session
-                || ids.join(",") !== unreadIds.join(","))
-                throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
-              recipient = current;
-            } });
+            beforeSend: async (current) => checkRecipient(current) });
           const sentAt = Date.now();
           messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
           recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);

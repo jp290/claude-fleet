@@ -41,7 +41,115 @@ const inbox = async (slot: number): Promise<{ status: number; body: SlotAnswer }
 const sameSet = (got: number[] | undefined, want: number[]): boolean =>
   !!got && got.length === want.length && want.every((id, i) => got[i] === id);
 
+export async function messageDeliveryChecks(): Promise<void> {
+  type Occupant = { id: number; cwd: string; openedAt: number; sessionId: string;
+    worktree: object | null; lastOutput: number; label: string; history: unknown[] };
+  type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
+  type MessageRow = { id: string; to: Address; from: { kind: "program"; id: string }; readBy: object | null };
+  type Options = { deliveryClass?: string; address?: { kind: string; id: number };
+    bypassQueue?: boolean; beforePaste?: (current: Occupant) => void;
+    beforeSend?: (current: Occupant) => Promise<void> };
+  const source = readFileSync(`${ROOT}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const section = (from: string, to: string): string => {
+    const start = source.indexOf(from), end = source.indexOf(to, start);
+    if (start < 0 || end < 0) throw new Error(`message probe source missing: ${from} -> ${to}`);
+    return source.slice(start, end);
+  };
+  const code = [section("const sameAddress =", "const samePayload ="),
+    section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
+    section("function messageInboundFor(", "function programMessageStatus("),
+    section("async function canDeliver(", "let autoTickBusy ="),
+    section("let messageNudgeBusy =", "let backlogNudgeBusy =")].join("\n");
+  const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
+  const now = Date.now();
+  const make = (lane = true) => {
+    const slot: Occupant = { id: 29, cwd: "/fixture/lane", openedAt: 100, sessionId: "old",
+      worktree: lane ? {} : null, lastOutput: now - 400_000, label: "fixture", history: [] };
+    const rows: MessageRow[] = [{ id: "old-message", to: { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
+      from: { kind: "program", id: "main" }, readBy: null }];
+    const sent: { openedAt: number; options: Options }[] = [];
+    let quiet = false, automatable = true, alive = true, rotateAtProbe = false, rotateAtSend = false;
+    let autosOn = true;
+    const cancelled: unknown[] = [];
+    class Cancelled extends Error {}
+    const deps = { slots: [slot], messages: { entries: rows }, STEWARD_LABEL: "steward",
+      boundProgramsForMain: () => [], programs: [], deliveryRecipient: () => null,
+      isOrchestratorLabel: () => false, slotFrom: () => slot,
+      pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
+      backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
+      BACKLOG_IDLE_MS: 300_000, REPORT_DECISION_IDLE_MS: 3000, INBOX_NUDGE_COOLDOWN_MS: 600_000,
+      get autosOn() { return autosOn; }, harnessAutomatable: () => automatable,
+      inQuietHours: () => quiet, slotWakeInflight: new Map<number, unknown>(),
+      claudeAlive: async () => { if (rotateAtProbe) slot.openedAt++; return alive; },
+      paneReadiness: async () => null, DeliveryCancelled: Cancelled,
+      sendText: async (_s: Occupant, _text: string, _submit: boolean, options: Options) => {
+        if (rotateAtSend) slot.openedAt++;
+        try {
+          if (!options.bypassQueue) await options.beforeSend?.(slot);
+          options.beforePaste?.(slot);
+        } catch (error) { cancelled.push(error); throw error; }
+        sent.push({ openedAt: slot.openedAt, options });
+        return { acceptance: "observed" };
+      }, MAX_HISTORY: 100, saveHistory: () => {}, logPrompt: () => {},
+      logError: (_name: string, error: unknown) => { throw error; }, sendFailureDelivery: () => "failed" };
+    const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickMessageNudge, messageInboundFor, messageAddressesFor }; }`)(deps) as {
+      tickMessageNudge: () => Promise<void>;
+      messageInboundFor: (s: Occupant, m: MessageRow) => boolean;
+      messageAddressesFor: (s: Occupant) => Address[];
+    };
+    const tick = async () => { await api.tickMessageNudge(); await Bun.sleep(0); };
+    return { slot, rows, sent, api, tick, cancelled,
+      policy: (p: { quiet?: boolean; automatable?: boolean; alive?: boolean; autosOn?: boolean;
+        rotateAtProbe?: boolean; rotateAtSend?: boolean }) => {
+        quiet = p.quiet ?? quiet; automatable = p.automatable ?? automatable; alive = p.alive ?? alive;
+        autosOn = p.autosOn ?? autosOn; rotateAtProbe = p.rotateAtProbe ?? rotateAtProbe;
+        rotateAtSend = p.rotateAtSend ?? rotateAtSend;
+      } };
+  };
+  const idle = make();
+  idle.slot.lastOutput = now - 10_000;
+  await idle.tick();
+  check("lane message: ten-second idle delivers without the backlog's five-minute wait",
+    idle.sent.length === 1, `sent=${idle.sent.length}`);
+  check("lane message: explicit MAIN traffic bypasses the fifteen-minute bundle at the exact slot address",
+    idle.sent[0]?.options.deliveryClass === "sofort"
+      && idle.sent[0]?.options.address?.kind === "slot" && idle.sent[0]?.options.address?.id === 29
+      && idle.sent[0]?.options.bypassQueue === true && typeof idle.sent[0]?.options.beforePaste === "function",
+    JSON.stringify(idle.sent[0]?.options ?? null));
+  await idle.tick();
+  check("lane message: the same unread set is nudged once", idle.sent.length === 1);
+  idle.slot.openedAt = 101; idle.slot.sessionId = "replacement";
+  idle.rows.push({ ...idle.rows[0]!, id: "replacement-message", to: { kind: "lane", slot: 29, openedAt: 101 } });
+  await idle.tick();
+  check("lane message: a replacement's own message is not delayed by the predecessor's cooldown",
+    idle.sent.length === 2 && idle.sent[1]?.openedAt === 101, `sent=${idle.sent.length}`);
+  const night = make(); night.policy({ quiet: true, automatable: false }); await night.tick();
+  check("lane message: an idle Codex lane receives its MAIN's message in quiet hours", night.sent.length === 1);
+  const busy = make(); busy.slot.lastOutput = Date.now(); await busy.tick();
+  check("lane message: an active pane is still held", busy.sent.length === 0);
+  const stopped = make(); stopped.policy({ autosOn: false }); await stopped.tick();
+  check("lane message: automation's master stop remains binding", stopped.sent.length === 0);
+  const dead = make(); dead.policy({ alive: false }); await dead.tick();
+  check("lane message: a dead pane receives nothing", dead.sent.length === 0);
+  const generic = make(false); generic.policy({ quiet: true }); await generic.tick();
+  check("session message: quiet hours still hold ambient nudges", generic.sent.length === 0);
+  const genericHarness = make(false); genericHarness.policy({ automatable: false }); await genericHarness.tick();
+  check("session message: harness automation policy still holds ambient nudges", genericHarness.sent.length === 0);
+  for (const seam of ["rotateAtProbe", "rotateAtSend"] as const) {
+    const changed = make(); changed.policy({ [seam]: true }); await changed.tick();
+    check(`lane message: occupant rotation at ${seam} delivers nothing to the replacement`, changed.sent.length === 0);
+  }
+  const recycled = make(); recycled.slot.openedAt = 101; recycled.slot.sessionId = "new";
+  check("lane message: a recycled slot neither inherits the old address nor reads a read or unread predecessor message",
+    !recycled.api.messageInboundFor(recycled.slot, recycled.rows[0]!)
+      && JSON.stringify(recycled.api.messageAddressesFor(recycled.slot)) === JSON.stringify([{ kind: "lane", slot: 29, openedAt: 101 }])
+      && !recycled.api.messageInboundFor(recycled.slot, { ...recycled.rows[0]!, readBy: { openedAt: 100 } }));
+  await recycled.tick();
+  check("lane message: old unread traffic never wakes a recycled slot", recycled.sent.length === 0);
+}
+
 export async function run(): Promise<void> {
+  await messageDeliveryChecks();
   const before = await sessions();
   const vacant = before.slots.filter((s) => !s.cwd).map((s) => s.id);
   const held = before.slots.filter((s) => s.role === "orchestrator").map((s) => s.id);

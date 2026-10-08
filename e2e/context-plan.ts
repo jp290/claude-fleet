@@ -1052,8 +1052,9 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     ({ harness, why: planRepoContext({ manifest, repo, facts: { ...facts, harness } }).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null })));
   check("codex-native-context-v1: every harness omits the superseded pack as status-not-active, on lane and founding facts",
     codexOmissions.every((row) => row.why === "status-not-active"), JSON.stringify(codexOmissions));
-  const activeAgain = { ...manifest, packs: manifest.packs.map((pack) =>
-    (pack as { id?: unknown }).id === CODEX_PACK ? { ...(pack as object), status: "active" } : pack) };
+  const isRecord = (pack: unknown): pack is Record<string, unknown> => !!pack && typeof pack === "object";
+  const activeAgain = manifest.kind === "packs" ? { ...manifest, packs: manifest.packs.map((pack) =>
+    isRecord(pack) && pack.id === CODEX_PACK ? { ...pack, status: "active" } : pack) } : manifest;
   check("codex-native-context-v1: flipping only its status back to active selects it for codex — the omission is the status alone",
     planRepoContext({ manifest: activeAgain, repo, facts: { ...laneFacts, harness: "codex" } }).selected.some((pack) => pack.id === CODEX_PACK));
   const codexAgents = renderSessionAgents({ role: { text: "role", path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane",

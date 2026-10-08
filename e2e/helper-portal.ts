@@ -1454,7 +1454,7 @@ export async function run(h: {
       && tqRows.length === tqRowsBefore + 1 && !!tqRow?.remote && tqRow.trigger === "quiet"
       && tqRow.covers.length === 2 && tqRow.covers.some((c) => c.branch === tqA.branch)
       && tqRow.covers.some((c) => c.branch === tqB.branch),
-    `claim=${tqClaim?.status} ${JSON.stringify(tqRow).slice(0, 400)}`);
+    `claim=${tqClaim?.status} ${String(JSON.stringify(tqRow)).slice(0, 400)}`);
 
   // --- (T.m) THE CEILING -------------------------------------------------------------------------
   // The quiet window is now ten minutes, so it CANNOT fire here; only the ceiling can. Two lands, and
@@ -1508,7 +1508,7 @@ export async function run(h: {
     tmSeenAt >= (tmHeld?.releaseAt ?? Infinity) && tmClaim?.status === 200 && tmClaimBody?.job?.mainSha === tmTip
       && tmReport.ok && !!tmRow?.remote && tmRow.trigger === "max-wait" && tmRow.covers.length === 2
       && tmRow.covers.some((c) => c.branch === tmC.branch) && tmRow.covers.some((c) => c.branch === tmD.branch),
-    `seenAt-releaseAt=${tmSeenAt - (tmHeld?.releaseAt ?? 0)}ms claim=${tmClaim?.status} ${JSON.stringify(tmRow).slice(0, 300)}`);
+    `seenAt-releaseAt=${tmSeenAt - (tmHeld?.releaseAt ?? 0)}ms claim=${tmClaim?.status} ${String(JSON.stringify(tmRow)).slice(0, 300)}`);
   const tmDocsRow = (await waitRowsFor(shortChainRepo, tmDocsBefore + 1, T_MAX_MS + 30_000))[0];
   const tmDocsCover = tmDocsRow?.covers[0]?.at ?? 0;
   check("(T.m) …and the DOCS-ONLY land runs HERE (never offered) but under the same ceiling, its row saying max-wait",
@@ -2532,7 +2532,7 @@ export async function run(h: {
       check("(K11) …and the shard box that comes back takes it as its three shards: one REMOTE row, sharded",
         locClaims.statuses.every((st) => st === 200) && !!locRow && locRow.result === "green"
           && !!locRow.remote && locRow.shards?.length === 3,
-        `${locClaims.statuses} ${JSON.stringify(locRow).slice(0, 300)}`);
+        `${locClaims.statuses} ${String(JSON.stringify(locRow)).slice(0, 300)}`);
     } finally {
       clearInterval(beater);
     }

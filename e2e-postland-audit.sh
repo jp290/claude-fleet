@@ -5,6 +5,7 @@
 # keeps proving the DEFAULT-OFF behaviour untouched.
 #   ./e2e-postland-audit.sh
 set -u
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never collide. The port base comes from the
 # PORT BAND TABLE in e2e-isolated.sh — never pick one here.
@@ -205,7 +206,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 is the server's own floor (Math.max(10_000, …)) — the `hang`
 # mode sleeps well past it.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_POSTLAND_AUDIT_WAIT_MS=12000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_POSTLAND_AUDIT_WAIT_MS=12000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind instead of a fixed sleep
 # --max-time bounds each attempt: this loop runs under the suite mutex, and a port that accepts and
 # never answers would otherwise hold it until the outer timeout (e2e/verify-queue.ts §2d).
@@ -230,7 +231,7 @@ cd "$DIR" || exit 1
 # server has no use for a suite label.
 FLEET_E2E_SUITE=postland-audit \
   FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid \
-  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true \
+  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true \
   FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_MERGE_CMD="$DIR/fakemerge" \
   FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_POSTLAND_AUDIT_WAIT_MS=12000 \
   FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD="$DIR/fakecleanreview" \

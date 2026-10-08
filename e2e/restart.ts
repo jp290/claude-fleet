@@ -1052,7 +1052,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // pairing is the third resolution state and the only server on which it exists: a per-repo map
   // is configured, and a repo named in NEITHER it nor the (absent) global has no gate at all.
   // "kein Eintrag" must stay `verify` ABSENT — unconfigured, never a silent green (P-7c).
-  const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
+  const cmdEnv = ["FLEET_DISK_MIN_FREE_GIB", "FLEET_DISK_WRITER_GIB", "FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
     "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS", "FLEET_CODEX_SESSIONS_DIR",
     "FLEET_PI_ZAI_AGENT_DIR", "FLEET_PI_ZAI_KEY_FILE", "FLEET_PI_OX_AGENT_DIR",
     // without it the restarted server builds no pi-zai fence and the heal below starts no pi

@@ -171,7 +171,7 @@ const killSrv = async (): Promise<void> => {
 // e2e/harness.ts's restartSrv uses, and the way the helper-portal section boots one server with a
 // 10-minute claim timeout and the next with a few seconds without touching the wrapper.
 const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Record<string, string> }): Promise<boolean> => {
-  const env = ["FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
+  const env = ["FLEET_DISK_MIN_FREE_GIB", "FLEET_DISK_WRITER_GIB", "FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
     "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
     "FLEET_POSTLAND_AUDIT_WAIT_MS",
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]

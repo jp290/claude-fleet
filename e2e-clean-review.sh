@@ -8,6 +8,7 @@
 # including would_stop and a broken reviewer — still lands, and is only RECORDED on the outcome row.
 #   ./e2e-clean-review.sh
 set -u
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never collide. The port base comes from the
 # PORT BAND TABLE in e2e-isolated.sh — never pick one here.
@@ -148,7 +149,7 @@ wait_bound() {
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 wait_bound "phase 1 gate (FLEET_CLEAN_REVIEW=1)" || exit $?
 
 cd "$DIR" || exit 1
@@ -157,7 +158,7 @@ echo "--- phase: gate (FLEET_CLEAN_REVIEW=1) ---"
 # "isolated". BOTH phases carry the same label on purpose: they are one suite, they run as two
 # processes so they already get two distinct run ids, and every shadow-phase check name is
 # prefixed "shadow: " — so the phase is legible from the rows without a second suite name.
-FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-clean-review.ts
+FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 bun fleet-e2e-clean-review.ts
 code=$?
 
 # Phase 2: the SAME instance rebooted with FLEET_CLEAN_REVIEW=shadow. A restart (not a second server)
@@ -172,10 +173,10 @@ if [ "$code" = 0 ]; then
   rm -f "$DIR/fleet.pid"
   stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
   wait_bound "phase 2 shadow (FLEET_CLEAN_REVIEW=shadow)" || exit $?
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
-  FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
+  FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
   code=$?
 fi
 

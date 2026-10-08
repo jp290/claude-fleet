@@ -6,6 +6,7 @@
 # socket/port, throwaway copy of the repo — the live fleet is never touched.
 #   ./e2e-claude-gate.sh
 set -u
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never share a socket/port —
 # one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh).
@@ -203,7 +204,7 @@ AUTOS_TICK=250
 DISP_TICK=250
 stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
@@ -225,7 +226,7 @@ cd "$DIR" || exit 1
 # FLEET_E2E_SUITE names this suite in every trail row the run writes (e2e/trail-emit.ts); without
 # it the rows would claim to come from the isolated suite, which is the emitter's default.
 echo "--- phase: claude (FLEET_CMD=claude) ---"
-FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK bun fleet-e2e-claude-gate.ts
+FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK bun fleet-e2e-claude-gate.ts
 code=$?
 
 # Phase 2: the same machinery under a harness that is NOT claude. kill-server, not kill-session:
@@ -235,7 +236,7 @@ if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_WORKER_ROUTE_REVIEW=claude FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_WORKER_ROUTE_REVIEW=claude FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
   # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
   # depends on it being zsh: an unquoted glob model is fatal under zsh ("no matches found" aborts
   # the line, pane and all) and HARMLESS under sh, which leaves an unmatched pattern literal. Under
@@ -259,7 +260,7 @@ if [ "$code" = 0 ]; then
   sleep 0.5
   cd "$DIR2" || exit 1
   echo "--- phase: harness (FLEET_CMD=harn, a harness server.ts has never heard of) ---"
-  FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" WORKER_REPO="$WORKER_REPO" FLEET_AUTOS_TICK_MS=$AUTOS_TICK bun fleet-e2e-harness.ts
+  FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FAKE_CLAUDE_DIR="$FAKEBIN" WORKER_REPO="$WORKER_REPO" FLEET_AUTOS_TICK_MS=$AUTOS_TICK bun fleet-e2e-harness.ts
   code=$?
 fi
 
@@ -270,7 +271,7 @@ if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
   _hc=000
   for _ in $(seq 1 60); do
     _hc=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
@@ -284,7 +285,7 @@ if [ "$code" = 0 ]; then
   sleep 0.5
   cd "$DIR3" || exit 1
   echo "--- phase: harness waiver (FLEET_CMD=true, empty comms) ---"
-  FLEET_E2E_SUITE=claude-gate FLEET_GATE_UNPROBED=1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-harness.ts
+  FLEET_E2E_SUITE=claude-gate FLEET_GATE_UNPROBED=1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 bun fleet-e2e-harness.ts
   code=$?
 fi
 

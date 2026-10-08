@@ -5,6 +5,7 @@
 # instead of claude.
 #   ./e2e-isolated.sh
 set -u
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
 # Hermetic isolation: this suite is often launched from INSIDE a Fleet worktree lane (the
 # land-verify gate runs there), whose pane env carries the scoped FLEET_SELF_TOKEN /
 # FLEET_SELF_SLOT (and, for a steward pane, FLEET_STEWARD_TOKEN). The throwaway tmux server

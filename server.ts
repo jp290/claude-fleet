@@ -10664,11 +10664,20 @@ function auditSend(s: Slot, path: SendPath, bytes: number,
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
+// THE ARRIVAL GRACE: what a payload that is PROVABLY STILL ARRIVING gets after the arrival window,
+// and only that one ("partial" at the window's end). Measured 2026-10-08 under load 30-37: two
+// /send payloads (3013 and 1656 chars) answered "the composer still held only part of the payload
+// after 3000ms; no Enter was sent" while the whole text lay in the composer moments later, idle
+// until someone pressed Enter by hand. Inside the grace only a frame that proves the WHOLE payload
+// earns the Enter; a still-partial, foreign ("differs") or unreadable frame never does, and the
+// grace running out is the same 409 the window gave. A multiple of the window, not a knob of its
+// own, so a suite that shortens the window shortens the grace with it: 3 s + 12 s live.
+const ARRIVAL_GRACE_MS = 4 * ACCEPT_WAIT_MS;
 // FLEET'S OWN EVENT PASTE IS NOT RECEIVER ACTIVITY: every byte the pane paints during a
 // rollbackOwnPayload send is a repaint Fleet caused; counted as output it starved every other
 // pending event behind the idle gate (8ca8c38e). Opened at the paste for the longest a send can
 // take, cut back to a short tail when the send resolves.
-const OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + 2000;
+const OWN_PASTE_QUIET_MS = 150 + 3 * ACCEPT_WAIT_MS + ARRIVAL_GRACE_MS + 2000;
 const OWN_PASTE_QUIET_TAIL_MS = 500;
 interface BoundSlotPane {
   occupant: SlotStreamOccupant;
@@ -11493,13 +11502,22 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         // the normal 3 s ceiling even when a suite shortens ordinary composer probes to 800 ms.
         const watchEvent = options.path === "fleet-event";
         const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
-        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent,
-          (rows) => { deliveryRead.collapsedDisplay ??= composerCollapsedPaste(rows, header ?? ""); });
+        const onRows: (rows: readonly string[]) => void =
+          (rows) => { deliveryRead.collapsedDisplay ??= composerCollapsedPaste(rows, header ?? ""); };
+        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent, onRows);
+        let arrivalBoundMs = arrivalWaitMs;
+        // ARRIVAL_GRACE_MS: a prefix at the window's end gets the bounded grace, read with the Watch
+        // rule (retryDiffers) — only "complete" may become the Enter, anything else stays "partial".
+        if (arrival === "partial" && sameBoundPane(s, bound)) {
+          arrival = await awaitArrival(s, bound, composed, ARRIVAL_GRACE_MS, true, onRows) === "complete"
+            ? "complete" : "partial";
+          arrivalBoundMs += ARRIVAL_GRACE_MS;
+        }
         // identity first: a slot that changed under the window must report THAT, not a verdict.
         if (!sameBoundPane(s, bound)) throw new Error("slot changed during arrival probe");
         if (arrival === "partial") throw new SendNotAccepted(
           `prompt not submitted — the composer still held only part of the ${[...composed].length}-char `
-            + `payload after ${arrivalWaitMs}ms; no Enter was sent`);
+            + `payload after ${arrivalBoundMs}ms; no Enter was sent`);
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
       phase("arrival");

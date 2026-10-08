@@ -3174,8 +3174,6 @@
   #board .zr.zw.mirror .nm { color: var(--chat-mute); }
   /* a check's row: its branch in mono under the name */
   #board .zr.mach.run > .st .mono { color: var(--chat-prose); overflow-wrap: anywhere; }
-  /* a run under its lane (src/board.ts#runLines): it wraps, it is never cut */
-  #board .zd.run { min-height: 0; margin: -2px 0 4px; }
   /* the opened lane's checks (src/board.ts#wayLine) */
   #board .zd.wl { min-height: 0; margin: 0 0 4px; }
   #board .zd.wl > .tx { grid-column: 3 / -1; white-space: normal; flex-wrap: wrap; gap: 4px 8px; line-height: 1.35; }
@@ -3186,28 +3184,6 @@
   /* what the lane in view has not landed yet: a quiet line under its row */
   #board .zd.lands { min-height: 0; margin: -2px 0 4px; }
   #board .zd.lands > .tx { white-space: normal; color: var(--chat-faint); line-height: 1.35; }
-  #board .zd.run > .tx { grid-column: 3 / -1; white-space: normal; overflow: visible; align-items: baseline; gap: 6px; line-height: 1.35; }
-  #board .zd.run .g { flex: none; display: inline-grid; place-items: center; align-self: center; color: var(--chat-faint); }
-  #board .zd.run .g .ico { width: 11px; height: 11px; }
-  /* a running check in the checks' colours: ink, not a pass's green */
-  #board .zd.run[data-tone="live"] .g { color: var(--chat-ink); }
-  #board .zd.run[data-tone="off"] .g { color: var(--q-wait); }
-  #board .zd.run .w { color: var(--chat-mute); }
-  #board .zd.run[data-tone="live"] .w { color: var(--chat-prose); }
-  /* a run under its machine, or with neither: one flowing line of text, never two columns */
-  /* a run without a lane: its name, its sentence under it — a ticking clock moves no word */
-  #board .zd.run.free { display: block; margin: 0 0 4px; padding-left: var(--rk-rail); }
-  #board .zd.run.free > .tx { display: grid; grid-template-columns: 17px minmax(0, 1fr) auto; column-gap: 0; row-gap: 1px; align-items: center; }
-  #board .zd.run.free .g { grid-row: 1 / 3; grid-column: 1; align-self: start; margin-top: 3px; }
-  #board .zd.run.free .who { grid-column: 2 / -1; grid-row: 1; margin: 0; }
-  #board .zd.run.free .w { grid-column: 2; grid-row: 2; }
-  #board .zd.run.free .dv { grid-column: 3; grid-row: 2; }
-  #board .zd.run .w { font-variant-numeric: tabular-nums; }
-  /* the machine a run is on, as a glyph (src/board.ts#runMachine) */
-  #board .zd.run .dv { display: inline-grid; place-items: center; vertical-align: -1px; margin-left: 6px; color: var(--chat-faint); }
-  #board .zd.run .dv .ico { width: 11px; height: 11px; }
-  #board .zd.run .who { color: var(--chat-prose); font-weight: 500; margin-right: 6px; }
-  #board .zd.run[role="button"] { cursor: pointer; }
   /* the Prüfungen block only while something in it has no place */
   #board .rk-runs:not(:has(.rkruns > *)) { display: none; }
   /* the instance's own lane, until the snapshot carries real worktrees */

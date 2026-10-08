@@ -5141,6 +5141,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first.
 //   C  no switch at all: neither a warm turn nor a succession. Mutation: drop liveKeepCache's filter.
 //   G  bound game-maker MAIN, T the ⚙ steward: the switch is refused by name (the card's exemptions).
+//   X  a warm turn held at sendText's before-paste latch while the owner switches the session off:
+//      nothing reaches the pane. Mutation: drop the setting re-check in beforePaste (review 69b3235c/1).
+//   W again: a save with UNCHANGED values neither resets the warm count nor opens the retry window.
+//      Mutation: clear keepCacheRuns on every PATCH (review 69b3235c/2) — a second warm turn follows.
 // Invalid values are refused with the setting left as it was. ---
 async function runKeepCache(): Promise<void> {
   const repos: string[] = [];
@@ -5171,9 +5175,10 @@ async function runKeepCache(): Promise<void> {
   const C = await openFree(mkRepo("keep-control-repo"), "keep-control");
   const G = await openFree(mkRepo("keep-gamemaker-repo"), "keep-gamemaker");
   const T = await openFree(mkRepo("keep-steward-repo"), "⚙ steward");
-  const all = [W, S, C, G, T];
-  check("keepCache setup: five plain sessions open on private checkouts",
-    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 5,
+  const X = await openFree(mkRepo("keep-inflight-repo"), "keep-inflight");
+  const all = [W, S, C, G, T, X];
+  check("keepCache setup: six plain sessions open on private checkouts",
+    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 6,
     JSON.stringify(all.map((x) => ({ slot: x.slot, openedAt: x.openedAt }))));
   const PROGRAM = "6b".repeat(12);
   const statePath = `${ROOT}/fleet.json`;
@@ -5199,7 +5204,7 @@ async function runKeepCache(): Promise<void> {
     programs?: Record<string, unknown>[] };
   const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000003${String(i).padStart(2, "0")}`;
   const plantAt = Date.now();
-  for (const [i, x] of [W, S, C, G].entries()) {
+  for (const [i, x] of [W, S, C, G, X].entries()) {
     const row = state.slots?.[String(x.slot)];
     if (!row) continue;
     row.sessionId = sid(i);
@@ -5214,7 +5219,7 @@ async function runKeepCache(): Promise<void> {
     main: { slot: G.slot, openedAt: G.openedAt, sessionId: sid(3), boundAt: plantAt - 700 } }];
   writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
   const lastCallAt = Date.now() - 51 * 60_000;
-  for (const [i, x] of [W, S, C, G].entries()) {
+  for (const [i, x] of [W, S, C, G, X].entries()) {
     const dir = `${process.env.HOME}/.claude/projects/${x.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/${sid(i)}.jsonl`,
@@ -5225,7 +5230,10 @@ async function runKeepCache(): Promise<void> {
           usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000, cache_read_input_tokens: 300_000, output_tokens: 10,
             cache_creation: { ephemeral_1h_input_tokens: 100_000, ephemeral_5m_input_tokens: 0 } } } })}\n`);
   }
-  await restartSrv();
+  // the before-paste latch parks exactly one send whose text names the marker written into it later
+  const latch = `${ROOT}/keep-inflight-latch`;
+  for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch });
 
   type KeepFacts = { act: string | null; reason: string; thresholdPct: number | null; lastUsageAt: number | null;
     dueAt: number | null; work: string[]; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null };
@@ -5253,7 +5261,7 @@ async function runKeepCache(): Promise<void> {
   }
   // byte recorders take the three panes' stdin (the owner door's no-turn proof), then they rest
   const rec = (x: typeof W): string => `${ROOT}/keep-recorder-${x.slot}`;
-  for (const x of [W, S, C]) {
+  for (const x of [W, S, C, X]) {
     rmSync(rec(x), { force: true });
     await tmuxOut("send-keys", "-t", `=s${x.slot}:`, `stty -icanon -echo; cat > '${rec(x)}'`, "Enter");
   }
@@ -5261,12 +5269,12 @@ async function runKeepCache(): Promise<void> {
   for (let i = 0; i < 100 && !resting; i++) {
     await Bun.sleep(100);
     const sx = await sessions();
-    resting = [W, S, C].every((x) => {
+    resting = [W, S, C, X].every((x) => {
       const r = sx.slots.find((y) => y.id === x.slot);
       return existsSync(rec(x)) && !!r && sx.now - r.lastOutput > MERGE_IDLE_MS + 300;
     });
   }
-  check("keepCache setup: the recorders hold W, S and C and the panes rest past the owner-act idle gate", resting, `resting=${resting}`);
+  check("keepCache setup: the recorders hold W, S, C and X and the panes rest past the owner-act idle gate", resting, `resting=${resting}`);
 
   // INVALID VALUES and EXEMPT SESSIONS: refused by name, and nothing is stored
   const refusals: [string, number, unknown, number, string][] = [
@@ -5335,6 +5343,38 @@ async function runKeepCache(): Promise<void> {
       && (persisted as { keepCacheIdleMin?: number }).keepCacheIdleMin === 50
       && (persisted as { occupant?: { openedAt?: number } }).occupant?.openedAt === W.openedAt, JSON.stringify(persisted));
 
+  // W, AN UNCHANGED SAVE: the same switch and duration again — the warm count and the retry window
+  // stand, so no second turn follows within the window
+  const wSame = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCache: true, keepCacheIdleMin: 50 });
+  await Bun.sleep(1500);
+  const wSameView = await hv(W.slot);
+  check("keepCache W: a save with unchanged values keeps the warm count and the retry window — still exactly one warm turn",
+    wSame.status === 200 && (await warmRows(W)).length === 1 && wSameView.succession?.keepCache?.warmTurns === 1
+      && wSameView.succession.keepCache.last?.act === "warm",
+    JSON.stringify({ status: wSame.status, rows: (await warmRows(W)).length, keep: wSameView.succession?.keepCache }));
+
+  // X, SWITCHED OFF IN FLIGHT: its warm turn is parked before the paste, the owner switches it off,
+  // the latch opens — nothing is typed
+  const xAuto = (await (await post(`/api/slots/${X.slot}/autos`, { text: "keep-inflight-auto", inSec: 3600, idleSec: 0 })).json()) as
+    { auto?: { id: string } };
+  writeFileSync(latch, `auto:${xAuto.auto?.id ?? "none"}`);
+  const xOn = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true, keepCacheIdleMin: 50 });
+  let parked = false;
+  for (let i = 0; i < 100 && !parked; i++) {
+    parked = existsSync(`${latch}.reached`);
+    if (!parked) await Bun.sleep(100);
+  }
+  const xOff = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: false });
+  writeFileSync(`${latch}.release`, "");
+  await Bun.sleep(1500);
+  const xRec = existsSync(rec(X)) ? readFileSync(rec(X), "utf8") : null;
+  check("keepCache X: a warm turn parked before the paste while the owner switches the session off types nothing",
+    xOn.status === 200 && xOn.body.succession?.keepCache?.act === "warm" && parked && xOff.status === 200
+      && xOff.body.setting?.keepCache === false && xRec === "",
+    JSON.stringify({ on: xOn.status, decision: xOn.body.succession?.keepCache?.act, parked, off: xOff.status,
+      recorder: xRec?.slice(0, 200) }));
+  if (xAuto.auto) await post(`/api/autos/${xAuto.auto.id}/delete`, {});
+
   // S, SUCCEED: nothing foreseeable — the owner door, and the old session gets no turn
   const promptsOfS = async (): Promise<number> => (await plogRead()).filter((e) => e.slot === S.slot && e.openedAt === S.openedAt).length;
   const sBefore = await promptsOfS();
@@ -5372,7 +5412,8 @@ async function runKeepCache(): Promise<void> {
     JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
 
   if (auto.auto) await post(`/api/autos/${auto.auto.id}/delete`, {});
-  for (const x of [W, S, C]) rmSync(rec(x), { force: true });
+  for (const x of [W, S, C, X]) rmSync(rec(x), { force: true });
+  for (const f of [latch, `${latch}.reached`, `${latch}.release`]) rmSync(f, { force: true });
   await cleanup();
 }
 

@@ -24904,8 +24904,10 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   // the fleet's own values are no setting: storing them would keep a record that says nothing
   s.handover = next.thresholdPct === null && next.nudge && !next.keepCache
     && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT ? null : next;
-  // a new setting is a new start for the tick's bookkeeping of this occupant (warm turns, last act)
-  keepCacheRuns.delete(s.id);
+  // a CHANGED switch or duration is a new start for the tick's bookkeeping of this occupant (warm
+  // turns, retry window); a save with the same values is none, or saving again and again would
+  // reset the warm cap and keep a session warm without end
+  if (keepCacheRunKey(cur) !== keepCacheRunKey(next)) keepCacheRuns.delete(s.id);
   // no audit row of its own: server/audit-log.ts#AuditEvent is outside this card's surface, and the
   // setting is device-free owner state like a rename — fleet.json carries it with its occupant
   saveState();
@@ -24980,6 +24982,13 @@ function keepCacheRunOf(s: Slot): KeepCacheRun {
 }
 const liveKeepCache = (s: Slot): HandoverSetting | null =>
   s.cwd && s.handover?.keepCache && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
+// what the warm budget is counted under: the switch and the duration, nothing else of the setting
+const keepCacheRunKey = (h: HandoverSetting | null): string =>
+  `${h?.keepCache ?? false}:${h?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT}`;
+// the version a decision was made under: switch, duration and the threshold it was compared with.
+// A warm turn in flight is typed only while the setting still reads exactly this.
+const keepCacheVersion = (h: HandoverSetting | null): string | null =>
+  h?.keepCache ? `${h.keepCacheIdleMin}:${h.thresholdPct}` : null;
 function keepCacheWork(s: Slot): string[] {
   const own = new Set(boundProgramsForMain(s).map((p) => p.id));
   return [
@@ -25083,6 +25092,14 @@ async function tickKeepCache(): Promise<void> {
         continue;
       }
       const text = keepCacheWarmText(d, now);
+      const version = keepCacheVersion(liveKeepCache(s));
+      // THE OWNER MAY SWITCH IT OFF WHILE THE TURN IS ON ITS WAY: asked again at the queue (beforeSend)
+      // and as the very last question before the paste (beforePaste) — a switched-off or re-set
+      // session gets nothing typed
+      const stillSet = (current: Slot): void => {
+        if (keepCacheVersion(liveKeepCache(current)) !== version)
+          throw new DeliveryCancelled(`keepCache of slot ${s.id} was switched off or changed before paste`);
+      };
       keepCacheInflight.add(s.id);
       void (async () => {
         try {
@@ -25094,12 +25111,18 @@ async function tickKeepCache(): Promise<void> {
             beforeSend: async (current) => {
               if (current !== s || s.openedAt !== openedAt || s.sessionId !== sessionId)
                 throw new DeliveryCancelled(`keepCache target slot ${s.id} changed before paste`);
+              stillSet(current);
               const form = harnessOf(s.harness).composer;
               if (!form) return;
               const target = await existingTmuxTarget(sess(s.id));
               const cap = target ? await tmux("capture-pane", "-p", "-e", "-t", target.paneId) : null;
               const held = cap && cap.code === 0 ? composerBuffer(form, cap.out) : null;
               if (held === null) throw new SendRefused("composer not on screen — a draft cannot be ruled out, nothing typed");
+            },
+            beforePaste: (current) => {
+              if (current !== s || s.openedAt !== openedAt || s.sessionId !== sessionId)
+                throw new DeliveryCancelled(`keepCache target slot ${s.id} changed before paste`);
+              stillSet(current);
             } });
           const sentAt = Date.now();
           run.warmTurns++;

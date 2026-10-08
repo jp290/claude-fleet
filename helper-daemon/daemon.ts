@@ -732,11 +732,22 @@ export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number |
 // twice, the second one refused 409, and `running` stood at 8 of 8 with 5 real runs, so the machine
 // took nothing more. `busy` is the ids `start` has launched and not yet finished (plus every run in
 // `inFlight`); it is a parameter so this function stays pure and HD can drive it.
+// …AND A LANE'S JOB GOES BEFORE AN AUDIT SHARD. Measured 2026-10-08 14:4x–15:0x: the list came in
+// FIFO, three shards of one post-land audit took every slot of the work-horse, and lanes 10A and 4B
+// ran e2e-security.sh and e2e-claude-gate.sh on the Mac behind its mutex instead. A `command` job (a
+// gate suite) and a `lane-suite` (a lane's preview) are minutes long and stand in front of a land;
+// a shard is 11–22 min and gates nothing. So the open jobs are taken by rank — command, then
+// lane-suite, then everything else — in list order within a rank, and while a lane job is open the
+// last free slot is its own. NOT a slot held empty for a lane job that is not listed yet: the fleet
+// reads a machine with a free slot as unsaturated (server.ts#helperSaturation), and a shard left
+// unclaimed beside it goes local on the Mac after its grace.
 export function jobsToStart(jobs: readonly JobView[], free: number, running: number,
   busy: ReadonlySet<string>): JobView[] {
   const update = jobs.find((j) => j.kind === "daemon-update");
   if (update && (running > 0 || !update.claim)) return running === 0 ? [update] : [];
+  const rank = (j: JobView): number => j.kind === "command" ? 0 : j.kind === "lane-suite" ? 1 : 2;
   return jobs.filter((j) => j.kind !== "daemon-update" && !j.claim && !j.localRunning && !busy.has(j.id))
+    .map((j, i) => ({ j, i })).sort((a, b) => rank(a.j) - rank(b.j) || a.i - b.i).map(({ j }) => j)
     .slice(0, Math.max(0, free));
 }
 // THE IDS `start` HAS LAUNCHED — filled SYNCHRONOUSLY beside `runningJobs++`, before the claim's

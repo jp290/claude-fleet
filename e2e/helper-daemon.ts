@@ -161,7 +161,7 @@ export async function run(h: {
   const noUpdate = jobsToStart([audit, preview, kindJob("c00000000003", "audit")], 2, 0, none);
   check("(HD) a listed daemon-update starts ALONE and only on an empty machine — nothing is claimed beside it, before it, or while it runs",
     ids(idleWithUpdate) === "u00000000009" && ids(busyWithUpdate) === "" && ids(busyUpdateMine) === ""
-      && ids(idleStaleUpdate) === "a00000000001" && ids(noUpdate) === "a00000000001,b00000000002",
+      && ids(idleStaleUpdate) === "a00000000001" && ids(noUpdate) === "b00000000002,a00000000001",
     `idle=[${ids(idleWithUpdate)}] busy=[${ids(busyWithUpdate)}] inFlight=[${ids(busyUpdateMine)}]`
     + ` staleClaim=[${ids(idleStaleUpdate)}] noUpdate=[${ids(noUpdate)}]`);
   // A JOB STILL BEING CLAIMED IS NOT STARTED AGAIN (2026-09-29 11:17Z/11:23Z, workhorse): the claim
@@ -177,8 +177,28 @@ export async function run(h: {
   const secondTick = jobsToStart([audit, preview], 1, 2, new Set(firstTick.map((j) => j.id)));
   const withThird = jobsToStart([audit, preview, third], 1, 2, new Set(firstTick.map((j) => j.id)));
   check("(HD) a job this daemon is still starting or claiming is not started again while the fleet lists it unclaimed",
-    ids(firstTick) === "a00000000001,b00000000002" && ids(secondTick) === "" && ids(withThird) === "c00000000003",
+    ids(firstTick) === "b00000000002,a00000000001" && ids(secondTick) === "" && ids(withThird) === "c00000000003",
     `first=[${ids(firstTick)}] second=[${ids(secondTick)}] withThird=[${ids(withThird)}]`);
+  // A LANE'S JOB BEFORE AN AUDIT SHARD (2026-10-08 14:4x–15:0x, workhorse): the list came FIFO,
+  // three shards of one audit filled every slot, and lanes 10A and 4B ran their gate suites on the
+  // Mac behind its mutex. The list below is that shape — shards first, the lane's preview and gate
+  // suite listed after them. The last free slot must go to a lane job whatever the list order; a
+  // command (gate suite) goes before a preview; within a rank the list order holds; and with no
+  // lane job open the shards still fill every slot (nothing is held empty for a job not listed).
+  // MUTATION: drop the rank sort in daemon.ts#jobsToStart ⇒ oneSlot starts the shard ⇒ red; swap
+  // the two lane ranks ⇒ bothLane starts the preview first ⇒ red.
+  const shard = (id: string): JobView => ({ ...kindJob(id, "audit"), shard: `${id.slice(-1)}/3` });
+  const s1 = shard("d00000000001"), s2 = shard("d00000000002"), s3 = shard("d00000000003");
+  const gateSuite = kindJob("e00000000004", "command"), lanePreview = kindJob("e00000000005", "lane-suite");
+  const oneSlot = jobsToStart([s1, s2, s3, lanePreview], 1, 2, none);
+  const bothLane = jobsToStart([s1, s2, lanePreview, s3, gateSuite], 2, 1, none);
+  const roomLeft = jobsToStart([s1, gateSuite, s2, s3], 3, 0, none);
+  const shardsOnly = jobsToStart([s1, s2, s3], 3, 0, none);
+  check("(HD) open lane jobs start before audit shards — gate suite, then preview, then shards — and an open lane job always gets the last free slot",
+    ids(oneSlot) === "e00000000005" && ids(bothLane) === "e00000000004,e00000000005"
+      && ids(roomLeft) === "e00000000004,d00000000001,d00000000002"
+      && ids(shardsOnly) === "d00000000001,d00000000002,d00000000003",
+    `oneSlot=[${ids(oneSlot)}] bothLane=[${ids(bothLane)}] roomLeft=[${ids(roomLeft)}] shardsOnly=[${ids(shardsOnly)}]`);
   // THE PRUNE AND THE RUN IN FLIGHT (C1, 2026-09-13). The oldest dir is a run still going — above cap
   // 1 the normal shape of a long suite beside short ones — and each finished run keeps a red
   // instance in its `tmp/`. keepRuns 2 must leave the running one AND the two newest finished.

@@ -1284,7 +1284,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   for (const harness of ["codex", "pi", "pi-zai", "pi-ox", "pi-unfenced"]) {
     const empty = renderSessionAgents({ ...base, harness, plan: { selected: [], omitted: [] } });
     check(`session agents: ${harness} keeps its mandatory portable contract even with optional packs off`,
-      empty.parts.find((part) => part.id === "portable-core.contract")?.bytes === 8229
+      empty.parts.find((part) => part.id === "portable-core.contract")?.bytes === 10335
       && empty.text.split("## Portable operating contract").length === 2 && empty.bytes < SESSION_AGENTS_LIMIT);
   }
   const privateBytes = "Private knowledge supplied at the boundary.\n";

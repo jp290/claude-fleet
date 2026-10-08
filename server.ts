@@ -1383,10 +1383,10 @@ const SNAPSHOT_MIRROR = (() => {
     || typeof value.repo !== "string" || !value.repo.startsWith("/") || value.repo === import.meta.dir
     || !("sessions" in value) || !Array.isArray(value.sessions)) throw new Error("invalid snapshot mirror");
   const sessions = value.sessions.map((s: unknown) => {
-    if (!s || typeof s !== "object" || !("slot" in s) || !Number.isInteger(s.slot)
+    if (!s || typeof s !== "object" || !("slot" in s) || typeof s.slot !== "number" || !Number.isInteger(s.slot) || s.slot < 1 || s.slot > 116
       || !("openedAt" in s) || typeof s.openedAt !== "number" || !Number.isFinite(s.openedAt)
       || !("path" in s) || typeof s.path !== "string" || !s.path.startsWith("/")) throw new Error("invalid snapshot holder");
-    return { slot: s.slot as number, openedAt: s.openedAt, path: s.path };
+    return { slot: s.slot, openedAt: s.openedAt, path: s.path };
   });
   return { repo: value.repo, sessions };
 })();
@@ -2515,7 +2515,7 @@ const MAX_SURFACE_RANGES = 64;
 const MAX_FILES_PROPOSAL_BY = 120;
 
 
-const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
+const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS, ...SNAPSHOT_MIRROR.sessions.map((s) => s.slot)) : MAX_SLOTS }, (_, i) => ({
   id: i + 1,
   cwd: null,
   label: null,
@@ -7767,6 +7767,14 @@ function workplaceSession(path: string): Slot | undefined {
   }
   return slots.find((s) => { try { return !!s.cwd && realpathSync(s.cwd) === path; } catch { return false; } });
 }
+function workplaceHolder(path: string): WorkplaceRow["session"] {
+  if (SNAPSHOT_MIRROR) {
+    const holder = SNAPSHOT_MIRROR.sessions.find((s) => { try { return realpathSync(s.path) === path; } catch { return s.path === path; } });
+    return holder ? { slot: holder.slot, openedAt: holder.openedAt } : null;
+  }
+  const holder = workplaceSession(path);
+  return holder ? { slot: holder.id, openedAt: holder.openedAt } : null;
+}
 async function workplaceInstance(target: TestinstanzTarget): Promise<WorkplaceRow["testinstanz"]> {
   const pathIdentity = testinstanzPathIdentity(target.path);
   const script = lstatSync(`${target.path}/testinstanz.sh`);
@@ -7956,7 +7964,7 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
   }
   const bindings = new Map(rows.map((w) => {
     const holder = workplaceSession(w.path), baseBranch = holder?.worktree?.base ?? "main";
-    return [w.path, { session: holder ? { slot: holder.id, openedAt: holder.openedAt } : null,
+    return [w.path, { session: workplaceHolder(w.path),
       baseBranch, baseHead: holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null }] as const;
   }));
   const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x),
@@ -8317,8 +8325,8 @@ async function workplaces(): Promise<Workplaces> {
   }
   const value = await workplacesCache.value;
   return { ...value, repos: value.repos.map((r) => ({ ...r, worktrees: r.worktrees?.map((w) => {
-    const holder = workplaceSession(w.path);
-    const sessionMatches = w.session?.slot === holder?.id && w.session?.openedAt === holder?.openedAt;
+    const holder = workplaceHolder(w.path);
+    const sessionMatches = w.session?.slot === holder?.slot && w.session?.openedAt === holder?.openedAt;
     return { ...w, ...(SNAPSHOT_MIRROR ? { mirrored: true } : {}), session: sessionMatches && holder ? w.session : null,
       reasons: sessionMatches ? w.reasons : [...w.reasons, { field: "session", reason: "session-changed-since-measurement" }] };
   }) ?? null })) };
@@ -37507,7 +37515,7 @@ const subjectNameStamp = (s: Slot | undefined, branch: string): { subjectName: s
 function slotFrom(raw: unknown): Slot | null {
   if (typeof raw === "string" && LANE_NAME_RE.test(raw)) return slots.find((s) => laneNameOf(s) === raw) ?? null;
   const id = Number(raw);
-  if (!Number.isInteger(id) || id < 1 || id > MAX_SLOTS) return null;
+  if (!Number.isInteger(id) || id < 1 || id > slots.length) return null;
   return slots[id - 1];
 }
 

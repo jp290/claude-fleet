@@ -51,7 +51,9 @@ in die Instanz, `dispatch` und `autosOn` sind aus. Die ursprünglichen Belegunge
 den Start. `workplaces()` liest für `GET /api/worktrees` dieselbe Git-Worktree-Liste des Quell-Repos
 wie im Live-Betrieb, mit echten Pfaden, Branches und HEADs. Jede Zeile trägt `mirrored: true`;
 `session.slot`/`session.openedAt` bezeichnet die Belegung beim Snapshot-Start, keine laufende
-Session im echten Worktree. Die Kopie startet dort weder Agenten noch `testinstanz.sh`.
+Session im echten Worktree. Die Kopie behält auch belegte Plätze über 16 mit ihren Labels
+in der bestehenden Sessions-Antwort, damit die Zeile ihren Halter benennen kann. Die Kopie
+startet dort weder Agenten noch `testinstanz.sh`.
 
 Die Snapshot-Instanz verweigert alle mutierenden HTTP-Methoden zentral mit **409** und
 `refusal: "snapshot-mirrored-read-only"`, auch Land/Merge, Entfernen/Discard, Lane-Anlage/Attach,

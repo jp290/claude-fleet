@@ -36,7 +36,7 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 //   client  — the band paints only from `instance.source`, hidden otherwise; mutation: the same
 //             anchors over a copy without the hidden line are false.
 export async function snapshotMirrorChecks(): Promise<void> {
-  const src = realpathSync(`${ROOT}/node_modules/..`);
+  const src = dirname(realpathSync(`${ROOT}/node_modules`));
   const scratch = realpathSync(mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-mirror-check-")));
   const repo = `${scratch}/repo`, tree = `${scratch}/worktree`, instance = `${scratch}/instance`;
   mkdirSync(repo);
@@ -57,7 +57,7 @@ export async function snapshotMirrorChecks(): Promise<void> {
   chmodSync(`${tree}/testinstanz.sh`, 0o700);
   const openedAt = Date.now();
   const secret = "mirror-fixture-live-secret";
-  writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret } }, tasks: [], programs: [] }));
+  writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: repo, openedAt, label: "main holder", selfToken: secret }, "26": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret } }, tasks: [], programs: [] }));
   const env = { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? "/tmp",
     FLEET_TI_DIR: instance, FLEET_TI_SOCK: `fleetmirror${process.pid}`, FLEET_TI_ROOT: scratch,
     FLEET_TI_SNAPSHOT_SRC: repo, FLEET_TI_INSTANCES: "" };
@@ -82,10 +82,13 @@ export async function snapshotMirrorChecks(): Promise<void> {
     const rows = await (await request("/api/worktrees")).json() as { repos: { repo: string; worktrees: { path: string; branch: string; head: string; mirrored?: boolean; session: { slot: number; openedAt: number } | null }[] | null }[] };
     const mirrored = rows.repos.find((r) => r.repo === repo)?.worktrees ?? [];
     const holder = mirrored.find((w) => w.path === tree);
-    check("snapshot mirror: real main and lane path, branch and HEAD come from workplaces; every row is read-only",
+    check("snapshot mirror: real main and lane path, branch and HEAD come from workplaces; every row is read-only, holder 26 survives the copy slot limit",
       mirrored.length === 2 && mirrored.every((w) => w.mirrored === true && w.head === git("rev-parse", "HEAD").trim())
       && mirrored.some((w) => w.path === repo && w.branch === "main") && holder?.branch === "mirror-lane"
-      && holder.session?.slot === 1 && holder.session.openedAt === openedAt, JSON.stringify(mirrored));
+      && holder.session?.slot === 26 && holder.session.openedAt === openedAt, JSON.stringify(mirrored));
+    const copiedSessions = await (await request("/api/sessions")).json() as { slots: { id: number; cwd: string | null; label: string | null }[] };
+    check("snapshot mirror: source holder 26 retains its label in the existing sessions wire and all process CWDs stay in the copy",
+      copiedSessions.slots.some((s) => s.id === 26 && s.label === "mirror holder") && copiedSessions.slots.every((s) => s.cwd === null || s.cwd === instance));
     const planted = readFileSync(`${instance}/fleet.json`, "utf8") + readFileSync(`${instance}/.testinstanz.mirror.json`, "utf8");
     check("snapshot mirror: source credentials are absent; process CWD stays inside the copy",
       !planted.includes(secret) && JSON.parse(readFileSync(`${instance}/fleet.json`, "utf8")).slots["1"].cwd === instance);

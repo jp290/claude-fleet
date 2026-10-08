@@ -1618,7 +1618,7 @@ export async function run(ctx: Ctx): Promise<void> {
   }
 
   await ownerSuccessionDoor(lnTok.slot, selfTok);
-  await ownerProgramSuccession();
+  await ownerProgramSuccession(lnTok.slot);
 
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.
@@ -1807,7 +1807,7 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 //              rest since the handover reaches a successor whole gets NO nudge, the one whose rest
 //              overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
 //              is nudged; make it "any handover" → the stale one is not).
-async function ownerProgramSuccession(): Promise<void> {
+async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const repos: string[] = [];
   const mkRepo = (name: string, agents: boolean): string => {
     const repo = `${ROOT}/${name}`;
@@ -1828,11 +1828,42 @@ async function ownerProgramSuccession(): Promise<void> {
     (await (await get("/api/sessions")).json()) as { now: number; slots: Row[] };
   const selfPost = (tok: string, path: string, body: unknown): Promise<Response> => fetch(`${BASE}${path}`, {
     method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+  // Slots 1+2 and the token-persistence lane are handed to later modules. Everything else on
+  // this isolated server is disposable; reserve four places even if earlier modules left them full.
+  const setupSlots = (await sessions()).slots.filter((x) => x.id <= 16 && x.id > 2 && x.id !== keptLaneSlot)
+    .sort((a, b) => b.id - a.id).slice(0, 4).map((x) => x.id);
+  const PANE_TOKEN_WAIT_MS = 30_000;
+  const OPENED_AT_WAIT_MS = 5_000;
+  const setupDetails: Record<string, unknown>[] = [];
   const openFree = async (cwd: string, label: string): Promise<{ slot: number; tok: string; openedAt: number }> => {
-    const slot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
-    const r = slot ? await post(`/api/slots/${slot}/open`, { cwd, label }) : null;
-    const tok = r?.ok ? await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
-    return { slot: r?.ok ? slot : 0, tok, openedAt: (await sessions()).slots.find((x) => x.id === slot)?.openedAt ?? 0 };
+    const slot = setupSlots.shift() ?? 0;
+    const detail: Record<string, unknown> = { label, slot, freeSlot: "missing", openResponse: "not-attempted",
+      paneToken: "not-probed", openedAt: "not-observed" };
+    setupDetails.push(detail);
+    if (!slot) return { slot: 0, tok: "", openedAt: 0 };
+    const killed = await post(`/api/slots/${slot}/kill`, {});
+    const free = (await sessions()).slots.find((x) => x.id === slot);
+    detail.freeSlot = killed.ok && free?.cwd === null ? "ready" : `kill=${killed.status}, cwd=${free?.cwd ?? "absent"}`;
+    if (!killed.ok || free?.cwd !== null) return { slot: 0, tok: "", openedAt: 0 };
+    const r = await post(`/api/slots/${slot}/open`, { cwd, label });
+    const body = await r.json().catch(() => null) as { error?: string; reason?: string } | null;
+    detail.openResponse = { status: r.status, error: body?.error ?? (body === null ? "invalid-json" : undefined), reason: body?.reason };
+    if (!r.ok) return { slot: 0, tok: "", openedAt: 0 };
+    // Recycled slots retain their dimensions. A previous tiny pane must not clip the marked reply.
+    await tmuxOut("resize-window", "-t", `=s${slot}:`, "-x", "200", "-y", "50");
+    const token = await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN", PANE_TOKEN_WAIT_MS);
+    detail.paneToken = token === null ? "timeout" : token === "" ? "empty" : /^[0-9a-f]{32}$/.test(token) ? "ready" : "invalid";
+    detail.paneTokenWaitMs = PANE_TOKEN_WAIT_MS;
+    let openedAt = 0;
+    const openedAtDeadline = Date.now() + OPENED_AT_WAIT_MS;
+    while (Date.now() < openedAtDeadline) {
+      const row = (await sessions()).slots.find((x) => x.id === slot);
+      if (row?.cwd === cwd && typeof row.openedAt === "number" && row.openedAt > 0) { openedAt = row.openedAt; break; }
+      await Bun.sleep(100);
+    }
+    detail.openedAt = openedAt || "missing";
+    detail.openedAtWaitMs = OPENED_AT_WAIT_MS;
+    return { slot, tok: token ?? "", openedAt };
   };
   const repoP = mkRepo("owner-program-repo", true);
   const repoF = mkRepo("owner-fresh-repo", false);
@@ -1843,9 +1874,11 @@ async function ownerProgramSuccession(): Promise<void> {
   const T = await openFree(repoT, "owner-stale-handover");
   const G = await openFree(repoG, "owner-gamemaker-main");
   const all = [P, F, T, G];
+  const setupReady = all.every((x) => x.slot > 0 && /^[0-9a-f]{32}$/.test(x.tok) && x.openedAt > 0)
+    && new Set(all.map((x) => x.slot)).size === 4 && new Set(all.map((x) => x.tok)).size === 4;
   check("owner program succession setup: four plain sessions open on private checkouts, each with its own token",
-    all.every((x) => x.slot > 0 && /^[0-9a-f]{32}$/.test(x.tok) && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 4,
-    JSON.stringify(all.map((x) => ({ slot: x.slot, tok: x.tok.length, openedAt: x.openedAt }))));
+    setupReady, JSON.stringify({ sessions: setupDetails, distinctSlots: new Set(all.map((x) => x.slot)).size,
+      distinctTokens: new Set(all.map((x) => x.tok)).size }));
   const cleanup = async (): Promise<void> => {
     for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
     for (const r of repos) {
@@ -1853,7 +1886,7 @@ async function ownerProgramSuccession(): Promise<void> {
       rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
     }
   };
-  if (!all.every((x) => x.slot > 0 && x.tok)) { await cleanup(); return; }
+  if (!setupReady) { await cleanup(); return; }
 
   // THE STANDING HANDOVERS are written while the sessions are still unbound and unmeasured: after the
   // restart below the tick is armed, and a nudge racing the write would measure the race
@@ -1973,20 +2006,25 @@ async function ownerProgramSuccession(): Promise<void> {
   const rec = `${ROOT}/owner-program-recorder`;
   rmSync(rec, { force: true });
   await tmuxOut("send-keys", "-t", `=s${P.slot}:`, `stty -icanon -echo; cat > '${rec}'`, "Enter");
-  let resting = false;
-  for (let i = 0; i < 100 && !resting; i++) {
-    await Bun.sleep(100);
-    const sx = await sessions();
-    const r = sx.slots.find((x) => x.id === P.slot);
-    resting = existsSync(rec) && !!r && sx.now - r.lastOutput > MERGE_IDLE_MS + 300;
-  }
-  type Preview = { ready?: boolean; rail?: string; programs?: string[]; refusal?: unknown;
+  type Preview = { ready?: boolean; rail?: string; programs?: string[]; refusal?: { reason?: string } | null;
+    idleMs?: number; idleThresholdMs?: number;
     standingHandover?: { at?: number } | null; tail?: { state?: string; entries?: number } | null };
-  const pv = (await (await get(`/api/slots/${P.slot}/succeed`)).json()) as Preview;
+  const REST_WAIT_MS = 20_000;
+  const restDeadline = Date.now() + REST_WAIT_MS;
+  let resting = false;
+  let pv: Preview = {};
+  while (Date.now() < restDeadline) {
+    pv = (await (await get(`/api/slots/${P.slot}/succeed`)).json()) as Preview;
+    const row = (await sessions()).slots.find((x) => x.id === P.slot);
+    resting = existsSync(rec) && row?.openedAt === P.openedAt && pv.ready === true
+      && typeof pv.idleMs === "number" && pv.idleMs > MERGE_IDLE_MS + 300;
+    if (resting || pv.refusal && pv.refusal.reason !== "busy") break;
+    await Bun.sleep(100);
+  }
   check("owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
     autoRes.ok && wroteP.ok && atP > 0 && resting && pv.ready === true && pv.rail === "program" && pv.programs?.[0] === programP
       && pv.standingHandover?.at === atP && pv.tail?.state === "read" && pv.tail.entries === 2,
-    `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} preview=${JSON.stringify(pv)}`);
+    `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} restWaitMs=${REST_WAIT_MS} preview=${JSON.stringify(pv)}`);
   const promptsOfOld = async (): Promise<number> =>
     (await plogRead()).filter((e) => e.slot === P.slot && e.openedAt === P.openedAt).length;
   const oldPromptsBefore = await promptsOfOld();

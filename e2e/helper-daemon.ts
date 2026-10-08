@@ -380,6 +380,24 @@ export async function run(h: {
 
   check("(HD) setup: e2e-stage.sh staged helper-daemon/ into this instance (derived, not hand-listed)",
     existsSync(DAEMON), DAEMON);
+  // THE SENTINEL THE OFFER DOOR READS. server.ts#laneLocalProof answers `isolatedPreview: false`
+  // for every lane whose REPO carries no `fleet-e2e.ts` (repoRunsShortChain — "this repo does not
+  // run the claude-fleet chain"), and since 3a5a62b0 the offer door turns that into 409 "preview
+  // not owed": a lane in a plain seeded repo can never offer a preview at all. Measured 2026-10-08
+  // on e5c95085 — every offer in this module came back `""`, status 409, and the card's suspected
+  // 400 was the second door behind it. The lanes here commit a root-level text file, which
+  // verify-proportion.ts maps to its conservative default: SELF-ASSESSED, so the offer carries its
+  // owedReason (OFFER_BODY) and the bare `{}` is the 400 (K8) keeps measured. Committed on REPO's
+  // main once, the way e2e/lane-suite.ts seeds its fixture; idempotent because both helper modules
+  // need it and neither may depend on running first. Nothing after this point reads the short
+  // chain off it: no later lane in REPO is docs-only, so every land keeps the configured stand-ins.
+  if (!existsSync(`${REPO}/fleet-e2e.ts`)) {
+    writeFileSync(`${REPO}/fleet-e2e.ts`, "// Fleet chain sentinel: a repo whose lanes can owe a preview (server.ts#repoRunsShortChain)\n");
+    for (const args of [["add", "fleet-e2e.ts"], ["commit", "-qm", "fleet chain sentinel"]]) spawnSync("git", ["-C", REPO, ...args]);
+  }
+  check("(HD) setup: REPO carries the fleet sentinel, so its lanes' previews are self-assessed rather than not owed",
+    existsSync(`${REPO}/fleet-e2e.ts`) && spawnSync("git", ["-C", REPO, "status", "--porcelain", "fleet-e2e.ts"]).stdout.toString() === "",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-1"]).stdout.toString().trim());
   // the fixture must RESOLVE the way the daemon's own update check will — `bun build --target=bun
   // --outdir=…` over the committed clone, parse + resolve, no execution (helper-daemon/daemon.ts,
   // grep check-failed). Same flags on purpose: `--no-bundle` resolves NOTHING and exits 0 over the

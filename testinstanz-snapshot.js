@@ -54,7 +54,10 @@ writeFileSync(`${dir}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600
 const repo = dirname(resolve(checkout, common.stdout.trim()));
 const sessions = Object.entries(original.slots ?? {}).flatMap(([slot, s]) =>
   s && typeof s.cwd === "string" && s.cwd.startsWith("/") && Number.isFinite(s.openedAt)
-    ? [{ slot: Number(slot), openedAt: s.openedAt, path: clean(s.cwd) }] : []);
+    ? [{ slot: Number(slot), openedAt: s.openedAt, path: clean(s.cwd),
+      taskId: typeof s.taskId === "string" ? clean(s.taskId) : null,
+      base: typeof s.worktree?.base === "string" ? clean(s.worktree.base) : null,
+      baseSha: typeof s.worktree?.baseSha === "string" && /^[0-9a-f]{40}$/.test(s.worktree.baseSha) ? s.worktree.baseSha : null }] : []);
 writeFileSync(`${dir}/.testinstanz.mirror.json`, JSON.stringify({ repo, sessions }), { mode: 0o600 });
 const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
 for (const name of ["lane-outcomes.jsonl", "post-land-audits.jsonl", "audit.jsonl"]) {

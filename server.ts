@@ -1386,7 +1386,9 @@ const SNAPSHOT_MIRROR = (() => {
     if (!s || typeof s !== "object" || !("slot" in s) || typeof s.slot !== "number" || !Number.isInteger(s.slot) || s.slot < 1 || s.slot > 116
       || !("openedAt" in s) || typeof s.openedAt !== "number" || !Number.isFinite(s.openedAt)
       || !("path" in s) || typeof s.path !== "string" || !s.path.startsWith("/")) throw new Error("invalid snapshot holder");
-    return { slot: s.slot, openedAt: s.openedAt, path: s.path };
+    const text = (value: unknown) => typeof value === "string" ? value : null;
+    return { slot: s.slot, openedAt: s.openedAt, path: s.path,
+      taskId: text("taskId" in s ? s.taskId : null), base: text("base" in s ? s.base : null), baseSha: text("baseSha" in s ? s.baseSha : null) };
   });
   return { repo: value.repo, sessions };
 })();
@@ -7770,7 +7772,7 @@ function workplaceSession(path: string): Slot | undefined {
 function workplaceHolder(path: string): WorkplaceRow["session"] {
   if (SNAPSHOT_MIRROR) {
     const holder = SNAPSHOT_MIRROR.sessions.find((s) => { try { return realpathSync(s.path) === path; } catch { return s.path === path; } });
-    return holder ? { slot: holder.slot, openedAt: holder.openedAt } : null;
+    return holder ? { slot: holder.slot, openedAt: holder.openedAt, ...{ taskId: holder.taskId } } : null;
   }
   const holder = workplaceSession(path);
   return holder ? { slot: holder.id, openedAt: holder.openedAt } : null;
@@ -7963,9 +7965,12 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
     if (m) heads.set(m[2], m[1]);
   }
   const bindings = new Map(rows.map((w) => {
-    const holder = workplaceSession(w.path), baseBranch = holder?.worktree?.base ?? "main";
+    const holder = workplaceSession(w.path), mirrored = SNAPSHOT_MIRROR?.sessions.find((s) => {
+      try { return realpathSync(s.path) === w.path; } catch { return s.path === w.path; }
+    });
+    const baseBranch = mirrored?.base ?? holder?.worktree?.base ?? "main";
     return [w.path, { session: workplaceHolder(w.path),
-      baseBranch, baseHead: holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null }] as const;
+      baseBranch, baseHead: mirrored?.baseSha ?? holder?.worktree?.baseSha ?? heads.get(baseBranch) ?? null }] as const;
   }));
   const roots = new Set([...heads.values(), ...rows.map((w) => w.head).filter((x): x is string => !!x),
     ...[...bindings.values()].map((b) => b.baseHead).filter((x): x is string => !!x && /^[0-9a-f]{40}$/.test(x))]);
@@ -8007,6 +8012,11 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
   const readRow = async (w: WtEntry): Promise<WorkplaceRow> => {
     const why: FactReason[] = [];
     const { session, baseBranch, baseHead } = bindings.get(w.path)!;
+    const status = SNAPSHOT_MIRROR ? await statusLines(w.path) : null;
+    const dirty = status?.code === 0 ? status.lines.length : null;
+    if (SNAPSHOT_MIRROR && dirty === null) why.push({ field: "dirty", reason: "worktree-status-unreadable" });
+    if (SNAPSHOT_MIRROR && (!session || !("taskId" in session) || session.taskId === null))
+      why.push({ field: "session.taskId", reason: "snapshot-task-binding-unrecorded" });
     const branch = w.branch === "(detached)" ? null : w.branch;
     const base = baseHead ? { branch: baseBranch, head: baseHead } : null;
     const d = distance(w.head ?? null, base?.head ?? null);
@@ -8059,7 +8069,7 @@ async function workplaceRepo(repo: string, audits: WorkplaceAuditReading = { row
       if (testinstanz.state === "unknown") why.push({ field: "testinstanz.state", reason: "instance-state-unproven" });
     }
     return { path: w.path, primary: w.primary, branch, head: w.head ?? null, base, distance: d,
-      session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
+      ...(SNAPSHOT_MIRROR ? { dirty } : {}), session, target, checks: workplaceChecks(repo, branch, w.head ?? null, observations, audits.reason, why), template, testinstanz, reasons: why };
   };
   const worktrees: WorkplaceRow[] = new Array(rows.length);
   let next = 0;
@@ -11225,6 +11235,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   return bundle.inflight;
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
+  if (SNAPSHOT_MIRROR) throw new DeliveryCancelled("snapshot-mirrored-read-only: Pane-Zustellung in einer Spiegel-Instanz");
   if (!options.senders) {
     const actor = auditActorScope.getStore();
     const sender = actor?.kind === "session" ? slotFrom(actor.slot) : null;

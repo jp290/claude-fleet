@@ -53,11 +53,18 @@ wie im Live-Betrieb, mit echten Pfaden, Branches und HEADs. Jede Zeile trägt `m
 `session.slot`/`session.openedAt` bezeichnet die Belegung beim Snapshot-Start, keine laufende
 Session im echten Worktree. Die Kopie behält auch belegte Plätze über 16 mit ihren Labels
 in der bestehenden Sessions-Antwort, damit die Zeile ihren Halter benennen kann. Die Kopie
-startet dort weder Agenten noch `testinstanz.sh`.
+startet dort weder Agenten noch `testinstanz.sh`. `distance.ahead` misst gegen `base`
+(wie im Live-Betrieb, einschließlich der übernommenen Lane-Basis), `dirty` zählt die Statuszeilen.
+Fehlgeschlagene Messungen bleiben `null` mit `reasons`. `session.taskId` bezeichnet die übernommene
+Queue-Zeile; eine fehlende Bindung bleibt `null` mit `snapshot-task-binding-unrecorded`.
+Der Worktree mit `branch === instance.source.branch` ist die Quelle dieser Instanz; die
+Anzeige kann ihn damit als „Quelle dieser Instanz“ markieren, ohne eine zweite Worktree-Liste.
 
 Die Snapshot-Instanz verweigert alle mutierenden HTTP-Methoden zentral mit **409** und
 `refusal: "snapshot-mirrored-read-only"`, auch Land/Merge, Entfernen/Discard, Lane-Anlage/Attach,
-Commit, Datei-Schreiben/Create/Move/Delete, Testinstanz-Up/Down und Slot-Öffnen. Die Sperre gilt
+Commit, Datei-Schreiben/Create/Move/Delete, Testinstanz-Up/Down, Slot-Öffnen und Pane-Zustellungen
+(`send`, Brief und Clarification-Antwort). Auch interne Zustellungen werden vor der Queue
+in `sendText` als `snapshot-mirrored-read-only` abgebrochen. Die Sperre gilt
 vor der Ausführung einer Route und unabhängig davon, ob der Pfad im Body, Query oder Slot steht.
 Terminal-Eingaben per WebSocket schließen mit Code 1008 und demselben benannten Grund,
 bevor Bytes eine Pane erreichen; lesende Terminal-Verbindungen bleiben möglich.

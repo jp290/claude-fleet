@@ -25103,7 +25103,10 @@ async function tickKeepCache(): Promise<void> {
           + `above ${d.thresholdPct} %, no work foreseeable — the owner door hands over without a turn`);
         void (async () => {
           try {
-            const r = await handleOwnerSucceed(s, () => unwanted(s));
+            // …and whether work became foreseeable meanwhile (a watch armed, an Auto set, a lane of
+            // the bound Program opened): then nothing is handed over, and the next tick decides warm
+            const r = await handleOwnerSucceed(s, () => unwanted(s) ?? (keepCacheWork(s).length
+              ? `work became foreseeable for slot ${s.id} after the decision (${keepCacheWork(s).join(", ")})` : null));
             const b = (await r.clone().json().catch(() => ({}))) as { reason?: string; error?: string };
             // the run of a succeeded occupant dies with it; a refusal stays on it, by name
             if (s.openedAt === openedAt) run.last = { at: Date.now(), act: "succeed",

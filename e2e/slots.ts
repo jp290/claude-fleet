@@ -5148,7 +5148,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //   X, C again, parked by the keepCache latch right AFTER the decision (review 138e5be7): X decided
 //      warm, then its threshold is re-set — nothing is typed (mutation: take the setting's version
 //      after canDeliver instead of with the decision); C switched on, decided succeed, then switched
-//      off — no successor (mutation: drop handleOwnerSucceed's `stillWanted` question).
+//      off — no successor (mutation: drop handleOwnerSucceed's `stillWanted` question); C once more,
+//      parked after a succeed decision while an Auto is set on it — no successor (review c545cc32;
+//      mutation: stillWanted asks only the setting's version, not keepCacheWork).
 // Invalid values are refused with the setting left as it was. ---
 async function runKeepCache(): Promise<void> {
   const repos: string[] = [];
@@ -5462,6 +5464,24 @@ async function runKeepCache(): Promise<void> {
       && cAfter?.openedAt === C.openedAt && cRec2 !== null && !cRec2.includes("warmhalten") && !cRec2.includes("[fleet succession]"),
     JSON.stringify({ on: cOn?.status, decision: cOn?.body.succession?.keepCache?.act, parked: cParked, off: cOff?.status,
       openedAt: cAfter?.openedAt, expected: C.openedAt }));
+
+  // C, WORK FORESEEABLE BETWEEN DECISION AND SUCCESSION: switched on again (nothing foreseeable →
+  // succeed), parked, an Auto is set on it — the owner door's last question refuses, no successor
+  const cWork: { on?: Awaited<ReturnType<typeof hp>>; auto?: string } = {};
+  const cParked2 = await parkAfterDecision(C.slot,
+    async () => { cWork.on = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: true }); },
+    async () => { cWork.auto = ((await (await post(`/api/slots/${C.slot}/autos`, { text: "keep-late-work", inSec: 3600, idleSec: 0 })).json()) as
+      { auto?: { id: string } }).auto?.id; });
+  await Bun.sleep(3000);
+  const cAfter2 = (await sessions()).slots.find((x) => x.id === C.slot);
+  const cView2 = await hv(C.slot);
+  check("keepCache C: work that became foreseeable between the succeed decision and the kill keeps the session — no successor",
+    cWork.on?.status === 200 && cWork.on.body.succession?.keepCache?.act === "succeed" && cParked2 && !!cWork.auto
+      && cAfter2?.openedAt === C.openedAt && (cView2.succession?.keepCache?.work ?? []).includes(`auto:${cWork.auto}`),
+    JSON.stringify({ on: cWork.on?.status, decision: cWork.on?.body.succession?.keepCache?.act, parked: cParked2, auto: cWork.auto,
+      openedAt: cAfter2?.openedAt, expected: C.openedAt, keep: cView2.succession?.keepCache }));
+  await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: false });
+  if (cWork.auto) await post(`/api/autos/${cWork.auto}/delete`, {});
 
   if (auto.auto) await post(`/api/autos/${auto.auto.id}/delete`, {});
   for (const x of [W, S, C, X]) rmSync(rec(x), { force: true });

@@ -37,6 +37,7 @@ import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers"
 //             anchors over a copy without the hidden line are false.
 export async function snapshotMirrorChecks(): Promise<void> {
   const src = dirname(realpathSync(`${ROOT}/node_modules`));
+  console.log(`snapshot mirror fixture source: ${src}`);
   const scratch = realpathSync(mkdtempSync(resolve(process.env.TMPDIR ?? "/tmp", "fleet-mirror-check-")));
   const repo = `${scratch}/repo`, tree = `${scratch}/worktree`, unknownTree = `${scratch}/unknown`, instance = `${scratch}/instance`;
   mkdirSync(repo);
@@ -78,6 +79,29 @@ export async function snapshotMirrorChecks(): Promise<void> {
   const original = before();
   let running = false;
   try {
+    const alternate = `${scratch}/alternate`, probe = `${scratch}/probe`;
+    mkdirSync(alternate); mkdirSync(probe);
+    git("-C", alternate, "init", "-b", "main");
+    git("-C", alternate, "config", "user.name", "mirror fixture"); git("-C", alternate, "config", "user.email", "fixture@example.invalid");
+    writeFileSync(`${alternate}/canary.txt`, "alternate repository\n");
+    git("-C", alternate, "add", "canary.txt"); git("-C", alternate, "commit", "-m", "alternate source");
+    writeFileSync(`${alternate}/fleet.json`, JSON.stringify({ slots: { "1": { cwd: alternate, openedAt } } }));
+    const sourceProbe = (script: string) => {
+      const r = spawnSync("bun", [script], { env: { ...env, FLEET_TI_DIR: probe, FLEET_TI_SRC: repo,
+        FLEET_TI_TOKEN: "isolated-probe-token", FLEET_TI_SNAPSHOT_SRC: alternate }, encoding: "utf8" });
+      if (r.status !== 0) throw new Error("snapshot source override probe failed");
+      return JSON.parse(readFileSync(`${probe}/.testinstanz.mirror.json`, "utf8")) as { repo: string; sessions: { path: string }[] };
+    };
+    const sameSource = (value: { repo: string; sessions: { path: string }[] }) =>
+      value.repo === alternate && value.sessions.length === 1 && value.sessions[0].path === alternate;
+    check("snapshot mirror: an overridden state source also owns the mirror repo, independently of the code checkout",
+      sameSource(sourceProbe(`${repo}/testinstanz-snapshot.js`)));
+    const snapshotCode = readFileSync(`${repo}/testinstanz-snapshot.js`, "utf8");
+    const sourceRepo = "const repo = dirname(resolve(source, sourceCommon.stdout.trim()));";
+    if (!snapshotCode.includes(sourceRepo)) throw new Error("snapshot source mutation target not found");
+    writeFileSync(`${scratch}/mutant-snapshot.js`, snapshotCode.replace(sourceRepo, "const repo = dirname(resolve(checkout, common.stdout.trim()));"));
+    check("snapshot mirror SOURCE MUTATION: taking the code checkout repo makes the same source agreement check red",
+      !sameSource(sourceProbe(`${scratch}/mutant-snapshot.js`)));
     await command("up", "snapshot", "--ttl", "10"); running = true;
     const state = readFileSync(`${instance}/testinstanz.state`, "utf8");
     const host = /^host=(.+)$/m.exec(state)![1], port = /^port=(\d+)$/m.exec(state)![1];

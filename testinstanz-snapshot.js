@@ -51,7 +51,9 @@ const state = {
   dispatch: false, autosOn: false,
 };
 writeFileSync(`${dir}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
-const repo = dirname(resolve(checkout, common.stdout.trim()));
+const sourceCommon = spawnSync("git", ["-C", source, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+if (sourceCommon.status !== 0) throw new Error("snapshot state source is not a git repository");
+const repo = dirname(resolve(source, sourceCommon.stdout.trim()));
 const sessions = Object.entries(original.slots ?? {}).flatMap(([slot, s]) =>
   s && typeof s.cwd === "string" && s.cwd.startsWith("/") && Number.isFinite(s.openedAt)
     ? [{ slot: Number(slot), openedAt: s.openedAt, path: clean(s.cwd),

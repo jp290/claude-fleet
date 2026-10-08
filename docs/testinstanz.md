@@ -43,7 +43,8 @@ auf Tailscale: Der echte overhaul-Server liest eine bereinigte Kopie von `fleet.
 letzten sieben Tagen aus `lane-outcomes.jsonl`, `post-land-audits.jsonl` und `audit.jsonl`. Ohne
 echte Queue-, Programm- und Reportzeilen lässt sich die overhaul-Oberfläche nicht beurteilen.
 Die Quelle ist der Haupt-Checkout, ermittelt über `git rev-parse --git-common-dir`; für eine
-synthetische Probe kann `FLEET_TI_SNAPSHOT_SRC` ein anderes Verzeichnis setzen. Der Kopiervorgang
+synthetische Probe kann `FLEET_TI_SNAPSHOT_SRC` ein anderes Git-Quellverzeichnis setzen; Zustand und
+Spiegel-Repo werden beide aus dieser Quelle abgeleitet. Der Kopiervorgang
 liest die Quelle nur. Zugangswerte, Shares und Helper-Geräte werden ausgelassen. Prozess-CWDs zeigen ausschließlich
 in die Instanz, `dispatch` und `autosOn` sind aus. Die ursprünglichen Belegungen (Slot und
 `openedAt` je Pfad) und das Quell-Repo stehen ohne Zugangswerte in `.testinstanz.mirror.json`.

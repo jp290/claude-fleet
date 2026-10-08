@@ -2646,6 +2646,9 @@ const closeProgramLineageForOccupant = (slot: number, openedAt: number, at: numb
   for (const p of programs) {
     if (!p.main || p.main.slot !== slot || p.main.openedAt !== openedAt) continue;
     if (succeeding && p.status === "active") continue;
+    // a bootstrap's pre-delivery binding is no holding yet — the open lineage entry is the stale
+    // binding it replaces, which its rollback closes as `replaced`
+    if (p.founding?.mode === "bootstrap") continue;
     closeProgramLineage(p, "retire", at);
   }
 };
@@ -6069,7 +6072,15 @@ function stateSnapshot(): string {
     commandJobs: [...commandJobs.values()],
     modelScan: modelScanState,
     slots: active, recents, pins, ...(rolePresets ? { rolePresets } : {}), shares, autos, watches,
-    events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, studios,
+    events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks,
+    // a bootstrap's pre-delivery binding is memory-only (bootstrapProgramMainReserved): beside its
+    // marker the disk keeps the unbound fallback that boot recovery and the loader expect
+    programs: programs.map((p) => {
+      if (p.founding?.mode !== "bootstrap" || !p.main) return p;
+      const { main: _preDelivery, ...persisted } = p;
+      return persisted;
+    }),
+    studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
     lineageHandovers, lineageHandoverLosses,
     ...(successionDebts.length ? { successionDebts } : {}),
@@ -10118,7 +10129,8 @@ const currentProgramFounding = (program: Program, founding: ProgramFounding, s: 
   && (isGameMaker(program) ? "game-maker" : "standard") === foundingProfileKind(founding)
   && sameProgramFounding(program.founding, founding) && exactFoundingCandidate(s, founding)
   && (founding.mode === "bootstrap"
-    ? program.main === undefined
+    // unbound, or bound to exactly this candidate before its brief (bootstrapProgramMainReserved)
+    ? program.main === undefined || (program.main.slot === s.id && program.main.openedAt === s.openedAt)
     : !!founding.predecessor && !!program.main
       && program.main.slot === founding.predecessor.slot
       && program.main.openedAt === founding.predecessor.openedAt);
@@ -10180,7 +10192,10 @@ async function clearProgramFounding(program: Program, founding: ProgramFounding,
   if (!sameProgramFounding(program.founding, founding)) return false;
   delete program.founding;
   // a bootstrap marker dropped the stale binding it was replacing; the rollback leaves the Program
-  // active and unbound, so the holding that binding recorded ends here, without a successor
+  // active and unbound, so the holding that binding recorded ends here, without a successor. The
+  // only binding a bootstrap marker can stand beside is its own pre-delivery one (attach and a
+  // second founding refuse while the marker stands) — it goes with the marker.
+  if (founding.mode === "bootstrap") delete program.main;
   const oldLineage = program.lineage;
   if (founding.mode === "bootstrap" && program.main === undefined)
     closeProgramLineage(program, "replaced", Date.now());
@@ -39286,7 +39301,7 @@ async function attachProgramToLiveMain(program: Program, body: Record<string, un
   if (!target?.cwd || target.worktree || target.label === STEWARD_LABEL)
     return json({ error: `slot ${body.slot} holds no live non-lane session — a Program joins a MAIN that is already running` }, 409);
   const live = program.main ? slotFrom(program.main.slot) : undefined;
-  if (program.main && live?.cwd && live.openedAt === program.main.openedAt) {
+  if (program.main && !program.founding && live?.cwd && live.openedAt === program.main.openedAt) {
     if (live === target) return json({ ok: true, existing: true, program: publicProgram(program) });
     return json({ error: `program ${program.id} is bound to the live MAIN on slot ${program.main.slot} — a live binding is never displaced` }, 409);
   }
@@ -39383,7 +39398,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   // 9 of 13 active Programs stood on a stale binding). So stale falls through into the bootstrap,
   // and the success response NAMES what it replaced — never a silent rebind.
   let replaced: Program["main"] | null = null;
-  if (program.main) {
+  if (program.main && !program.founding) {
     const occupant = slotFrom(program.main.slot);
     if (occupant?.cwd && occupant.openedAt === program.main.openedAt)
       return json({ ok: true, existing: true, program: publicProgram(program) });
@@ -39444,18 +39459,27 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       const candidateIdentity: SuccessionPredecessorIdentity = {
         slot: free.id, openedAt: free.openedAt, cwd: free.cwd!, selfToken: free.selfToken,
       };
-      const expectedMain = program.main ? { ...program.main } : undefined;
+      // `expectedMain` is undefined until this founding binds its candidate (persistProgramFounding
+      // dropped any stale binding), then it is that binding. Compared by slot, openedAt and boundAt:
+      // a session-id backfill (backfillProgramMainSessionId) is the same holding learning its id.
+      let expectedMain = program.main ? { ...program.main } : undefined;
+      let earlyMain: NonNullable<Program["main"]> | undefined;
       const expectedMainCurrent = (): boolean => expectedMain
         ? program.main?.slot === expectedMain.slot && program.main.openedAt === expectedMain.openedAt
-          && program.main.sessionId === expectedMain.sessionId && program.main.boundAt === expectedMain.boundAt
+          && program.main.boundAt === expectedMain.boundAt
         : program.main === undefined;
       const stillCurrent = (): boolean => sameSuccessionOccupant(free, candidateIdentity)
         && program.status === "active" && currentProgramFounding(program, founding, free)
         && expectedMainCurrent();
+      // every failure withdraws the pre-delivery binding first — the exact one this founding wrote,
+      // never a binding someone else made since — so a failed founding leaves no half MAIN behind
       const cleanup = async (): Promise<void> => {
+        const current = stillCurrent();
+        if (earlyMain && program.main?.slot === earlyMain.slot && program.main.openedAt === earlyMain.openedAt
+          && program.main.boundAt === earlyMain.boundAt) delete program.main;
         if (!sameProgramFounding(program.founding, founding)) return;
         const target = slotFrom(founding.target.slot);
-        if (stillCurrent() || !target?.cwd)
+        if (current || !target?.cwd)
           await rollbackProgramFounding(program, founding, "bootstrap-failed");
       };
       await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
@@ -39486,6 +39510,16 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         await cleanup();
         return json({ error: "Program-MAIN slot changed before founding delivery" }, 500);
       }
+      // BOUND BEFORE THE BRIEF, IN MEMORY ONLY (50055013). The brief tells the new MAIN to read its
+      // owner corrections „[Zitat entfernt]“, and that reader (korrekturLeserFor) knows a
+      // Program-MAIN by `program.main` alone; bound after delivery, the immediate first read was 409
+      // for 211–1060 ms (1e5dbabc). The marker stays until the durable cut below, so this binding
+      // never reaches disk (stateSnapshot drops `main` beside a bootstrap marker), gets no lineage entry
+      // and is withdrawn by every failure path (cleanup, clearProgramFounding).
+      earlyMain = { slot: candidateIdentity.slot, openedAt: candidateIdentity.openedAt,
+        sessionId: free.sessionId ?? null, boundAt: Date.now() };
+      program.main = earlyMain;
+      expectedMain = earlyMain;
       try {
         await sendText(free, deliveredBrief, true, { path: "founding" });
       } catch (e) {
@@ -39523,11 +39557,11 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         await cleanup();
         return json({ error: "Program-MAIN slot changed after receipt" }, 409);
       }
-      const oldMain = program.main ? { ...program.main } : undefined;
+      const oldMain = { ...program.main! };
       const oldLineage = program.lineage;
       program.main = { slot: candidateIdentity.slot, openedAt: candidateIdentity.openedAt,
-        sessionId: free.sessionId ?? null, boundAt: at };
-      // the same save moves the authority and records the move. `replaced` is the stale binding
+        sessionId: program.main!.sessionId ?? free.sessionId ?? null, boundAt: earlyMain.boundAt };
+      // the same save makes the binding durable and records the move. `replaced` is the stale binding
       // this bootstrap overwrote (captured before the founding marker dropped it): its entry closes
       // by `rebound` if nothing observed its ending earlier, and the new holding is appended via
       // `rebound`; a first bootstrap appends via `bootstrap` and closes nothing.
@@ -39537,7 +39571,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       try {
         await saveStateNow();
       } catch (e) {
-        if (oldMain) program.main = oldMain; else delete program.main;
+        program.main = oldMain;
         if (oldLineage) program.lineage = oldLineage; else delete program.lineage;
         program.founding = founding;
         await cleanup();

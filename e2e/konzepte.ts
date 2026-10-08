@@ -854,30 +854,19 @@ process.stdin.on("data", (chunk) => {
     const nativePath = /^Session-Regeln: (\.\/AGENTS\.override\.md)$/m.exec(text)?.[1] ?? null;
     const native = nativePath ? readFileSync(nativePath, "utf8") : "";
     const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text + "\n" + native)?.[1] ?? null;
-    let status = null, body = null, firstStatus = null, firstError = null;
-    let firstAt = null, firstAnsweredAt = null, readyAt = null, answeredAt = null;
+    // ONE read, the moment the first prompt arrives — no wait for the founding response: the pointer
+    // says "vor deinem ersten Akt", so the first act is the only read that proves the position.
+    let status = null, body = null, error = null, firstAt = null, answeredAt = null;
     if (pointer) {
       firstAt = Date.now();
       const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
-      firstStatus = status = response.status;
+      status = response.status;
       body = await response.json();
-      firstError = typeof body?.error === "string" ? body.error : null;
-      firstAnsweredAt = answeredAt = Date.now();
-      // The fixture releases its reader when the founding/succession response has committed the binding.
-      // The immediate attempt is retained; input recording stays closed throughout the wait.
-      if (process.env.FLEET_READER_AWAIT_READY === "1") {
-        const { existsSync } = await import("node:fs");
-        while (!existsSync(outDir + "/ready-" + slot)) await Bun.sleep(10);
-        readyAt = Date.now();
-        const bound = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
-        status = bound.status;
-        body = await bound.json();
-        answeredAt = Date.now();
-      }
+      error = typeof body?.error === "string" ? body.error : null;
+      answeredAt = Date.now();
     }
     const out = outDir + "/heft-" + slot + ".json";
-    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, native, pointer, status, body,
-      firstStatus, firstError, firstAt, firstAnsweredAt, readyAt, answeredAt }));
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, native, pointer, status, body, error, firstAt, answeredAt }));
     renameSync(out + ".tmp", out);
   })();
 });
@@ -1041,7 +1030,7 @@ async function privatePackHandover(): Promise<void> {
           FLEET_HOST: IP, FLEET_PORT: String(PORT + HOFF), FLEET_SOCK: i.sock, FLEET_TOKEN: TOKEN,
           FLEET_CMD: `${bin}/fleet-reader`, FLEET_HARNESS_COMMS: "", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0",
           FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "2000",
-          FLEET_READER_AWAIT_READY: "1",
+          FLEET_TEST_SEND_BEFORE_PASTE_LATCH: `${FIXH}/heft-before-paste-latch`,
           FLEET_ACCEPT_WAIT_MS: "800", FLEET_PI_ZAI_AGENT_DIR: `${FIXH}/pi-zai-agent`,
           FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/zai-fixture.key`,
           FLEET_PI_ZAI_SANDBOX_EXEC: `${bin}/sandbox-fixture`, FLEET_PI_ZAI_DENY_ROOTS: `${FIXH}/deny` },
@@ -1192,11 +1181,9 @@ async function privatePackHandover(): Promise<void> {
         published.status === 200, `${published.status} ${published.text.slice(0, 250)}`);
       if (published.status !== 200) return;
       type Received = { tag: string; text: string; native: string; pointer: string | null; status: number | null;
-        firstStatus: number | null; firstError: string | null; firstAt: number | null; firstAnsweredAt: number | null;
-        readyAt: number | null; answeredAt: number | null;
+        error: string | null; firstAt: number | null; answeredAt: number | null;
         body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
       const receive = async (slot: number): Promise<Received | null> => {
-        writeFileSync(`${reads}/ready-${slot}`, "ready\n");
         for (let n = 0; n < 200; n++) {
           try { return JSON.parse(readFileSync(`${reads}/heft-${slot}.json`, "utf8")) as Received; }
           catch { await Bun.sleep(100); }
@@ -1225,7 +1212,7 @@ async function privatePackHandover(): Promise<void> {
           let programId: string | null = null;
           let slot: number | null = null;
           let opened: Awaited<ReturnType<typeof call>>;
-          for (const file of readdirSync(reads).filter((file) => /^(heft-|ready-)/.test(file))) rmSync(`${reads}/${file}`);
+          for (const file of readdirSync(reads).filter((file) => /^heft-/.test(file))) rmSync(`${reads}/${file}`);
           const foundedAfter = Date.now();
           if (role === "lane") {
             const made = await call("/api/tasks", "POST", { text: "Owner-Heft Startprobe", repo: product, queue: false });
@@ -1248,18 +1235,11 @@ async function privatePackHandover(): Promise<void> {
           check(`konzepte owner delivery (${harness}/${role}): the first prompt delivers only the reader pointer and the receiver reads its position's correction`,
             opened.status === 200 && delivered(first, role, harness),
             `open=${opened.status} ${opened.text.slice(0, 200)} received=${JSON.stringify(first)}`);
-          if (role === "program-main") {
-            check(`konzepte owner delivery (${harness}/program-main) binding window: the immediate reader is 409 before the founding commits, then 200`,
-              first?.firstStatus === 409 && first.firstError?.includes("not the current bound MAIN") === true
-                && delivered(first, role, harness) && first.firstAt !== null && first.firstAnsweredAt !== null
-                && first.readyAt !== null && first.answeredAt !== null && first.readyAt >= first.firstAnsweredAt,
-              JSON.stringify({ firstStatus: first?.firstStatus, afterStatus: first?.status,
-                firstAt: first?.firstAt, firstAnsweredAt: first?.firstAnsweredAt, readyAt: first?.readyAt,
-                answeredAt: first?.answeredAt, intervalMs: first?.firstAt != null && first.answeredAt != null
-                  ? first.answeredAt - first.firstAt : null }));
-          } else {
-            check(`konzepte owner delivery (${harness}/${role}): the immediate reader is already position-bound`, first?.firstStatus === 200);
-          }
+          // a Program-MAIN is bound in memory before its brief is pasted (bootstrapProgramMainReserved):
+          // the read its first prompt triggers, before the founding response even returns, is 200
+          check(`konzepte owner delivery (${harness}/${role}): the immediate reader is already position-bound`,
+            first?.status === 200 && first.error === null,
+            JSON.stringify({ status: first?.status, error: first?.error, firstAt: first?.firstAt, answeredAt: first?.answeredAt }));
           if (slot === null || opened.status !== 200) continue;
           const foreign = await fetch(`${i.base}${door}?rolle=${role === "lane" ? "program-main" : "lane"}`,
             { headers: { "x-fleet-self-token": tokenFor(slot) } });
@@ -1286,13 +1266,12 @@ async function privatePackHandover(): Promise<void> {
             await selfCall(slot, "/api/self/fleet-report", { status: "handoff", text: "synthetic handover; reader still owed" });
           }
           rmSync(`${reads}/heft-${slot}.json`, { force: true });
-          rmSync(`${reads}/ready-${slot}`, { force: true });
           const succession = await selfCall(slot, "/api/self/succeed", { model: spawn.model, effort: "high" });
           const second = succession.status === 200 ? await receive(slot) : null;
           check(`konzepte owner delivery (${harness}/${role}): succession delivers the reader pointer under the successor's current position`,
             succession.status === 200 && delivered(second, role, harness),
             `succession=${succession.status} ${succession.text.slice(0, 250)} received=${JSON.stringify(second)}`);
-          check(`konzepte owner delivery (${harness}/${role}): the successor's immediate reader is position-bound`, second?.firstStatus === 200);
+          check(`konzepte owner delivery (${harness}/${role}): the successor's immediate reader is position-bound`, second?.status === 200);
           await call(`/api/slots/${slot}/kill`, "POST", {});
           if (programId) await call(`/api/programs/${programId}/complete`, "POST", { force: true });
         }
@@ -1310,6 +1289,57 @@ async function privatePackHandover(): Promise<void> {
             `open=${opened.status} pointer=${received?.pointer} reader=${denied.status} ${deniedBody}`);
           await call(`/api/slots/${genericSlot}/kill`, "POST", {});
         } else check(`konzepte owner delivery (${harness}/nur-ordner): the fixture has a free slot`, false);
+      }
+
+      // ---- THE FAILURE WAY of binding before the brief: a first delivery that fails takes the binding
+      // back. The latch holds the founding send before its paste — the candidate is already bound
+      // there, which the probe reads with the candidate's own token — then the candidate's pane dies
+      // and the paste fails. Nothing may remain: no binding in memory or on disk, no marker, no
+      // lineage entry for the candidate, no receipt.
+      {
+        const latch = `${FIXH}/heft-before-paste-latch`;
+        const title = `heft-fault-${randomBytes(4).toString("hex")}`;
+        const made = await call("/api/programs", "POST", { title, intent: "synthetic delivery fault",
+          successCriterion: "no half MAIN", nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+        const programId = (made.json.program as { id?: string } | undefined)?.id ?? "";
+        await call(`/api/programs/${programId}/confirm`, "POST", {});
+        await call(`/api/programs/${programId}/activate`, "POST", {});
+        const receiptsOf = async (): Promise<number> => ((await call("/api/context-receipts", "GET")).json as
+          { receipts?: { programId?: string | null }[] }).receipts?.filter((row) => row.programId === programId).length ?? -1;
+        const receiptsBefore = await receiptsOf();
+        writeFileSync(latch, title, { mode: 0o600 });
+        const pending = call(`/api/programs/${programId}/bootstrap-main`, "POST",
+          { cwd: product, harness: "claude", model: "opus", effort: "high" });
+        let reached: { slot?: number } | null = null;
+        for (let n = 0; n < 300 && reached === null; n++) {
+          try { reached = JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as { slot?: number }; }
+          catch { await Bun.sleep(100); }
+        }
+        const faultSlot = typeof reached?.slot === "number" ? reached.slot : null;
+        const held = faultSlot === null ? null
+          : await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(faultSlot) } });
+        const heldStatus = held?.status ?? null;
+        await held?.text();
+        const killed = faultSlot === null ? null : spawnSync("tmux", ["-L", i.sock, "kill-session", "-t", `s${faultSlot}`]).status;
+        writeFileSync(`${latch}.release`, "release\n");
+        const answer = await pending;
+        type ProgramRow = { id: string; main?: unknown; founding?: unknown; lineage?: { entries: { slot: number }[] } };
+        const after = ((await call("/api/programs", "GET")).json.programs as ProgramRow[] | undefined)?.find((p) => p.id === programId);
+        const onDisk = (JSON.parse(readFileSync(`${i.dir}/fleet.json`, "utf8")) as { programs?: ProgramRow[] })
+          .programs?.find((p) => p.id === programId);
+        const receiptsAfter = await receiptsOf();
+        check("konzepte owner delivery (failed first delivery): the candidate is bound before the paste, and a paste that fails leaves no binding, marker, lineage entry or receipt",
+          faultSlot !== null && heldStatus === 200 && killed === 0 && answer.status >= 400
+            && /founding brief failed|slot changed/.test(answer.text)
+            && after !== undefined && after.main === undefined && after.founding === undefined
+            && !after.lineage?.entries.some((entry) => entry.slot === faultSlot)
+            && onDisk !== undefined && onDisk.main === undefined && onDisk.founding === undefined
+            && receiptsBefore >= 0 && receiptsAfter === receiptsBefore,
+          JSON.stringify({ slot: faultSlot, heldStatus, killed, answer: [answer.status, answer.text.slice(0, 200)],
+            after: after ? { main: after.main, founding: after.founding, lineage: after.lineage } : null,
+            onDisk: onDisk ? { main: onDisk.main, founding: onDisk.founding } : null, receipts: [receiptsBefore, receiptsAfter] }));
+        for (const suffix of ["", ".reached", ".release"]) rmSync(`${latch}${suffix}`, { force: true });
+        if (programId) await call(`/api/programs/${programId}/complete`, "POST", { force: true });
       }
 
       const sourcePath = `${i.dir}/server.ts`;

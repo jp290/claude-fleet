@@ -6010,8 +6010,14 @@ fällt. In den beiden letzten Fällen ist die Vorgängerin schon beendet — die
 Lineage-Eintrag wird als `retire` geschlossen, und `bootstrap-main` gründet das Program neu.
 
 Bootstrap: nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar vor dem
-Bindungsschnitt wird die vollständige Live-Identität erneut geprüft; Erfolg schreibt zuerst das Receipt
-und verschiebt danach in genau einem durablen Program-State-Cut die Bindung und entfernt `founding`.
+Bindungsschnitt wird die vollständige Live-Identität erneut geprüft. Unmittelbar VOR dem Brief-Send
+bindet der Bootstrap den Kandidaten nur im Speicher (`program.main`), damit der erste Abruf der
+Owner-Korrekturen, zu dem der Brief „[Zitat entfernt]“ auffordert, schon die Program-MAIN-Position
+liest (50055013). Diese Bindung erreicht nie die Platte, solange der Bootstrap-Marker steht
+(`server.ts#stateSnapshot`), bekommt keinen Lineage-Eintrag und wird von jedem Fehlerweg zurückgenommen
+(Cleanup des Bootstraps, `server.ts#clearProgramFounding`): eine gescheiterte Erstzustellung hinterlässt
+weder Bindung noch Receipt. Erfolg schreibt zuerst das Receipt und macht danach in genau einem durablen
+Program-State-Cut die Bindung dauerhaft, schreibt ihre Lineage und entfernt `founding`.
 Succession (in place): jede Ablehnung VOR dem Kill — Autorität geändert, Handover nicht rückladbar —
 entfernt nur den Marker, die Vorgängerin bleibt gebunden stehen. Nach dem Open prüft ein einziger
 Schnitt, ob der exakte Kandidat noch steht und das Program noch die Vorgängerin nennt; dann verschiebt

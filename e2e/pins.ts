@@ -8722,19 +8722,33 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && server.includes("program.main?.slot === founding.predecessor.slot")
       && server.includes("program.main.openedAt === founding.predecessor.openedAt"),
     "the durable marker does not encode the promised bootstrap/succession fallback");
+  // THE BOOTSTRAP BINDS TWICE, ONE AUTHORITY (50055013): in memory right before the brief, so the
+  // new MAIN's first read of its owner corrections is already position-bound, and durably only after
+  // send and receipt, in the cut that drops the marker. Between the two the binding is withdrawable:
+  // cleanup deletes exactly it, clearProgramFounding drops it with a bootstrap marker, and
+  // stateSnapshot never writes it beside that marker (the loader refuses a bound bootstrap marker).
   const bootstrapCandidateAt = bootstrapBody.indexOf("const candidateIdentity: SuccessionPredecessorIdentity");
+  const bootstrapEarlyBindAt = bootstrapBody.indexOf("program.main = earlyMain;", bootstrapCandidateAt);
   const bootstrapSendAt = bootstrapBody.indexOf("await sendText(free, deliveredBrief, true,", bootstrapCandidateAt);
   const bootstrapAfterSendAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapSendAt);
   const bootstrapReceiptAt = bootstrapBody.indexOf("await appendEventStrict(CONTEXT_RECEIPT_FILE", bootstrapAfterSendAt);
   const bootstrapPreBindAt = bootstrapBody.indexOf("if (!stillCurrent())", bootstrapReceiptAt);
   const bootstrapBindAt = bootstrapBody.indexOf("program.main = { slot: candidateIdentity.slot", bootstrapPreBindAt);
-  pin(`${RULE_GM_FOUNDING} — Standard and Game-Maker bootstrap bind only the full live candidate after send and receipt`,
+  const bootstrapCutAt = bootstrapBody.indexOf("delete program.founding;", bootstrapBindAt);
+  const snapshotBody = server.slice(server.indexOf("function stateSnapshot("), server.indexOf("function stateSnapshot(") + 6000);
+  const clearFoundingBody = server.slice(server.indexOf("async function clearProgramFounding("),
+    server.indexOf("async function clearProgramFounding(") + 1500);
+  pin(`${RULE_GM_FOUNDING} — Standard and Game-Maker bootstrap bind the full live candidate in memory before the brief and durably only after send and receipt`,
     bootstrapCandidateAt >= 0 && bootstrapBody.includes("sameSuccessionOccupant(free, candidateIdentity)")
-      && bootstrapBody.includes("expectedMainCurrent") && bootstrapSendAt > bootstrapCandidateAt
+      && bootstrapBody.includes("expectedMainCurrent") && bootstrapEarlyBindAt > bootstrapCandidateAt
+      && bootstrapSendAt > bootstrapEarlyBindAt
       && bootstrapAfterSendAt > bootstrapSendAt && bootstrapReceiptAt > bootstrapAfterSendAt
-      && bootstrapPreBindAt > bootstrapReceiptAt && bootstrapBindAt > bootstrapPreBindAt
-      && !/\bprogram\.main\s*=(?!=)/.test(bootstrapBody.slice(bootstrapCandidateAt, bootstrapBindAt)),
-    `candidate=${bootstrapCandidateAt} send=${bootstrapSendAt} after=${bootstrapAfterSendAt} receipt=${bootstrapReceiptAt} prebind=${bootstrapPreBindAt} bind=${bootstrapBindAt}`);
+      && bootstrapPreBindAt > bootstrapReceiptAt && bootstrapBindAt > bootstrapPreBindAt && bootstrapCutAt > bootstrapBindAt
+      && (bootstrapBody.slice(bootstrapCandidateAt, bootstrapBindAt).match(/\bprogram\.main\s*=(?!=)/g) ?? []).length === 1
+      && /const cleanup = async[\s\S]*?program\.main\.boundAt === earlyMain\.boundAt\) delete program\.main;/.test(bootstrapBody)
+      && /if \(founding\.mode === "bootstrap"\) delete program\.main;/.test(clearFoundingBody)
+      && /p\.founding\?\.mode !== "bootstrap" \|\| !p\.main\) return p;/.test(snapshotBody),
+    `candidate=${bootstrapCandidateAt} early=${bootstrapEarlyBindAt} send=${bootstrapSendAt} after=${bootstrapAfterSendAt} receipt=${bootstrapReceiptAt} prebind=${bootstrapPreBindAt} bind=${bootstrapBindAt} cut=${bootstrapCutAt}`);
   pin(`${RULE_GM_FOUNDING} — complete checks both the synchronous lease and durable marker before status mutation`,
     completeBody.includes("programBootstrapInflight.has(program.id) || program.founding")
       && completeBody.indexOf("programBootstrapInflight.has(program.id) || program.founding")
@@ -8808,8 +8822,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"))
         > recoveryBody.indexOf("!treePathsOverlap(targetRoot, markerRoot)"),
     recoveryBody);
-  // THE BOOTSTRAP keeps receipt-before-binding: its predecessor, if any, is a stale record, and a
-  // failed delivery leaves the Program unbound. THE SUCCESSION no longer can: it respawns in place
+  // THE BOOTSTRAP keeps receipt-before-the-durable-binding: its predecessor, if any, is a stale
+  // record, and a failed delivery withdraws its in-memory binding and leaves the Program unbound. THE SUCCESSION no longer can: it respawns in place
   // (server.ts#respawnInPlace), so its predecessor ends at the open and the one marker-to-binding
   // cut follows the open directly; the receipt comes after the send as evidence of delivered bytes.
   const succRespawnAt = succeedBody.indexOf("await respawnInPlace(s, predecessor,");

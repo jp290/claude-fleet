@@ -3391,6 +3391,10 @@ async function programExecutionView(s: Slot): Promise<Response> {
           const cache = deliveryCacheState(x, now);
           const stand = liveStandingHandover(x);
           return {
+            // THE BOARD NAME of the lane ("10B"): the persisted letter read through laneNameOf, the
+            // same string its lane events carry as subjectName, so the MAIN's view and the event
+            // text cannot disagree. null = a lane older than the letter field (no name to give).
+            band: laneNameOf(x),
             slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId,
             repo: x.worktree?.repo ?? null, branch: x.worktree?.branch ?? null,
             taskId: x.taskId ?? null, originId: x.originId ?? null, harness: x.harness ?? null,

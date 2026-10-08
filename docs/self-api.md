@@ -1950,7 +1950,9 @@ keine Entscheidung. Die MAIN liest ihn neben den Git-Fakten in jeder Zeile von `
 | `cacheWarm` | `deliveryCacheState`: Prompt-Cache vor seiner Kante | keine Cache-Lesung |
 | `stand` | `{at, intent, ahead}` der aktuellen Belegung; `ahead` = Stand von `ahead` beim Schreiben (frisch gelesen) | kein Stand geschrieben (`ahead: null`: Basis nicht lesbar) |
 
-Fehlende Werte sind `null`, nie `0`. Die View macht keinen Git-Aufruf: Git-Fakten gelten nur, solange
+Fehlende Werte sind `null`, nie `0`. `band` trägt den Board-Namen der Lane (`10B` = Band 10, Buchstabe B),
+gelesen über `server.ts#laneNameOf` aus dem persistierten Buchstaben — dieselbe Zeichenkette, die ihre
+Lane-Ereignisse als `subjectName` tragen; `null` heißt: Lane vor dem Buchstabenfeld, kein Name. Die View macht keinen Git-Aufruf: Git-Fakten gelten nur, solange
 `tickGit` sie für genau diese Belegung beglaubigt hat (`operationalGitOccupants`), sonst `null`.
 
 **Die Stand-Erinnerung** (Zeile b366597f, `server.ts#tickLaneStand`, Regeln

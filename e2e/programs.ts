@@ -177,7 +177,7 @@ interface FleetState {
   slots?: Record<string, { cwd?: string; label?: string | null; selfToken?: string; openedAt?: number; sessionId?: string | null;
     harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
     taskId?: string | null; originId?: string | null; programId?: string | null;
-    worktree?: { repo?: string; branch?: string; anchor?: { slot: number; openedAt: number } } }>;
+    worktree?: { repo?: string; branch?: string; anchor?: { slot: number; openedAt: number }; letter?: string } }>;
 }
 
 interface ProgramExecutionRow {
@@ -209,7 +209,7 @@ interface ProgramExecutionRow {
     nextAction: string | null;
     candidate: { sha: string | null; basis: string } }[];
     total: number; byStatus: Record<string, number> };
-  lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
+  lanes: { rows: { band: string | null; slot: number; openedAt: number; sessionId: string | null; repo: string | null;
     branch: string | null; taskId: string | null; originId: string | null; harness: string | null;
     model: string | null; effort: string | null;
     // where the lane stands (row 14dd9154): cached git facts, its own words; missing is null
@@ -2704,6 +2704,45 @@ export async function run(ctx: Ctx): Promise<void> {
         === JSON.stringify({ session: beforeExecutionReload.session, programs: withoutDerived(beforeExecutionReload.programs) })
       && (afterExecutionReload.view?.at ?? 0) >= beforeExecutionReload.at,
     JSON.stringify({ beforeAt: beforeExecutionReload.at, afterAt: afterExecutionReload.view?.at }));
+
+  // --- THE BOARD NAME IN THE LANE ROW (lanes.rows[].band, from server.ts#laneNameOf): two lanes of
+  // one band carry their own persisted letters, and a lane older than the letter field carries null.
+  // Two fresh lanes join the bound Program while stopped; one of them loses its letter, the way a
+  // pre-field row reads. Both are killed again at the end, so the land door below sees the same
+  // single lane it always did.
+  const bandOpenY = await (await post("/api/lanes", { repo: REPO })).json() as { slot?: number };
+  const bandOpenZ = await (await post("/api/lanes", { repo: REPO })).json() as { slot?: number };
+  await stopSrv();
+  const bandState = readState();
+  const bandRowX = bandState.slots?.[String(executionLaneBody.slot)];
+  const bandRowY = bandState.slots?.[String(bandOpenY.slot)];
+  const bandRowZ = bandState.slots?.[String(bandOpenZ.slot)];
+  for (const row of [bandRowY, bandRowZ]) if (row) row.programId = mainProgram.id;
+  if (bandRowZ?.worktree) delete bandRowZ.worktree.letter;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(bandState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const bandRows = (await selfExecution(mainSelfToken)).view?.programs
+    .find((x) => x.program.id === mainProgram.id)?.lanes.rows ?? [];
+  const bandViewX = bandRows.find((r) => r.slot === executionLaneBody.slot);
+  const bandViewY = bandRows.find((r) => r.slot === bandOpenY.slot);
+  const bandViewZ = bandRows.find((r) => r.slot === bandOpenZ.slot);
+  // the band prefix is the anchor's slot, or 0 for a lane with no anchor — the same reading as laneNameOf
+  const bandPrefix = (row: { worktree?: { anchor?: { slot: number } } } | undefined): string =>
+    `${row?.worktree?.anchor ? row.worktree.anchor.slot : 0}`;
+  const bandLetters = [bandRowX?.worktree?.letter, bandRowY?.worktree?.letter];
+  check("ProgramExecutionView band: every lanes.rows entry carries a band key, and two lanes of one band show their own persisted letters",
+    bandRows.length === 3 && bandRows.every((r) => "band" in r)
+      && !!bandViewX && !!bandViewY && !!bandRowX && !!bandRowY
+      && bandViewX.band === `${bandPrefix(bandRowX)}${bandLetters[0]}`
+      && bandViewY.band === `${bandPrefix(bandRowY)}${bandLetters[1]}`
+      && bandPrefix(bandRowX) === bandPrefix(bandRowY)
+      && typeof bandLetters[0] === "string" && typeof bandLetters[1] === "string" && bandLetters[0] !== bandLetters[1],
+    JSON.stringify({ bands: bandRows.map((r) => [r.slot, r.band]), letters: bandLetters }));
+  check("ProgramExecutionView band: a lane with no persisted letter reads null, never a positional guess",
+    !!bandViewZ && bandViewZ.band === null && !!bandRowZ && bandRowZ.worktree?.letter === undefined,
+    JSON.stringify({ z: bandViewZ?.band ?? "missing", letter: bandRowZ?.worktree?.letter ?? null }));
+  await post(`/api/slots/${bandOpenY.slot}/kill`, {});
+  await post(`/api/slots/${bandOpenZ.slot}/kill`, {});
 
   // --- THE LAND DOOR ON THE ROUTE (2026-09-18 queue inspection, topic B) — the same bound MAIN,
   // the same fixture row: (i) a complete report over a tree with nothing to land is R11b

@@ -61,6 +61,19 @@ Queue-Zeile; eine fehlende Bindung bleibt `null` mit `snapshot-task-binding-unre
 Der Worktree mit `branch === instance.source.branch` ist die Quelle dieser Instanz; die
 Anzeige kann ihn damit als „Quelle dieser Instanz“ markieren, ohne eine zweite Worktree-Liste.
 
+Prüf- und Land-Daten für den rechten Tab reisen mit: `commandJobs` und `laneSuiteJobs` als
+Projektion (`testinstanz-snapshot.js#mirrorJob`: `repo` bleibt der echte Pfad, `cwd` zeigt in die
+Kopie, Geräte-Id, Bundle-Pfad, Ausgabe-Tail und Artefakte sind geleert), die Land-Verdikte
+`merges`/`mergeParked`, und die Ledger-Zeilen behalten ihr echtes `repo`, damit
+`checks.local/preview/gate/audit` und `suiteOffers` dieselbe Zuordnung wie live treffen. Weil die
+Kopie `slot.worktree` entfernt, nennt `.testinstanz.mirror.json` je Belegung zusätzlich `branch`;
+`server.ts#snapshotLaneOf` liest ihn nur im Snapshot-Modus für die Merge-Bindung und den Besitzer der
+Suite-Sperre (live bleibt `slot.worktree.branch` die einzige Antwort). `target.landed` liest die echten
+`fleet/land`-Notes des Quell-Repos; dass eine ungelandete Lane dort `null` mit
+`land-notes-truncated` trägt, ist die Kappung in `workplaceLandNotes` und live identisch.
+`FLEET_TI_SUITE_LOCK` (nur `up snapshot`) zeigt die Instanz auf ein anderes Sperrverzeichnis, damit
+ein Fixture einen Lane-Besitzer zeigen kann, ohne die Maschinen-Sperre anzufassen.
+
 Die Snapshot-Instanz verweigert alle mutierenden HTTP-Methoden zentral mit **409** und
 `refusal: "snapshot-mirrored-read-only"`, auch Land/Merge, Entfernen/Discard, Lane-Anlage/Attach,
 Commit, Datei-Schreiben/Create/Move/Delete, Testinstanz-Up/Down, Slot-Öffnen und Pane-Zustellungen

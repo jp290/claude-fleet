@@ -45,9 +45,34 @@ const slots = Object.fromEntries(Object.entries(original.slots ?? {}).filter(([,
     taskId: s.taskId, originId: s.originId, programId: s.programId,
     laneSuccessions: s.laneSuccessions, lineageId: s.lineageId,
   }]));
+// THE CHECK AND LAND FACTS of the right tab: the lanes' local command jobs and preview offers ride
+// along so GET /api/worktrees can read checks.local/preview and /api/sessions its suiteOffers. A
+// projection, not a copy: `repo` stays the real path (workplaceCheckObservations matches the mirror
+// repo by it), `cwd` points into the copy (a bundle built from it finds no git), and everything that
+// names a helper machine or carries output is emptied — deviceId, bundle path, tail, trail,
+// artifacts. The server's write fence (SNAPSHOT_MIRROR) refuses every claim and report anyway.
+const realRepo = (value) => typeof value === "string" && value.startsWith("/") ? value : null;
+function mirrorJob(value, key = "") {
+  if (key === "deviceId") return "snapshot";
+  if (key === "bundle") return typeof value === "string" ? "" : value;
+  if (key === "tail" || key === "trail") return "";
+  if (key === "artifacts") return [];
+  if (key === "cwd") return dir;
+  if (key === "repo" && realRepo(value)) return value;
+  if (Array.isArray(value)) return value.map((v) => mirrorJob(v));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
+    .filter(([k]) => !hiddenKeys.test(k)).map(([k, v]) => [k, mirrorJob(v, k)]));
+  return typeof value === "string" ? clean(value) : value;
+}
+const jobs = (rows) => (Array.isArray(rows) ? rows : []).filter((j) => j && realRepo(j.repo)).map((j) => mirrorJob(j));
 const state = {
   sock, token, slots, tasks: clean(original.tasks ?? []), programs: clean(original.programs ?? []),
   fleetReports: clean(original.fleetReports ?? []), attentionRequests: clean(original.attentionRequests ?? []),
+  laneSuiteJobs: jobs(original.laneSuiteJobs), commandJobs: jobs(original.commandJobs),
+  // the land verdicts per slot (checks.gate): the server restores a row only for a slot whose
+  // mirrored session names the same branch (server.ts#snapshotLaneOf), since slot.worktree is gone
+  merges: clean(Object.fromEntries(Object.entries(original.merges ?? {}).filter(([id]) => id in slots))),
+  mergeParked: clean(original.mergeParked ?? {}),
   dispatch: false, autosOn: false,
 };
 writeFileSync(`${dir}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -58,6 +83,7 @@ const sessions = Object.entries(original.slots ?? {}).flatMap(([slot, s]) =>
   s && typeof s.cwd === "string" && s.cwd.startsWith("/") && Number.isFinite(s.openedAt)
     ? [{ slot: Number(slot), openedAt: s.openedAt, path: clean(s.cwd),
       taskId: typeof s.taskId === "string" ? clean(s.taskId) : null,
+      branch: typeof s.worktree?.branch === "string" ? clean(s.worktree.branch) : null,
       base: typeof s.worktree?.base === "string" ? clean(s.worktree.base) : null,
       baseSha: typeof s.worktree?.baseSha === "string" && /^[0-9a-f]{40}$/.test(s.worktree.baseSha) ? s.worktree.baseSha : null }] : []);
 writeFileSync(`${dir}/.testinstanz.mirror.json`, JSON.stringify({ repo, sessions }), { mode: 0o600 });
@@ -73,7 +99,11 @@ for (const name of ["lane-outcomes.jsonl", "post-land-audits.jsonl", "audit.json
       try { row = JSON.parse(line); } catch { continue; }
       const when = row.ts ?? row.at ?? row.time;
       if (typeof when !== "number" || when < cutoff) continue;
-      rows.push(JSON.stringify(clean(row)));
+      // `repo` stays the real path: the audit reader matches the mirror repo by it, and clean()
+      // would otherwise fold it into the instance directory, where no audit can ever cover a lane
+      const out = clean(row);
+      if (realRepo(row.repo)) out.repo = row.repo;
+      rows.push(JSON.stringify(out));
     }
   }
   writeFileSync(`${dir}/${name}`, rows.join("\n") + (rows.length ? "\n" : ""), { mode: 0o600 });

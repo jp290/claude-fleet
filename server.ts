@@ -1390,7 +1390,8 @@ const SNAPSHOT_MIRROR = (() => {
       || !("path" in s) || typeof s.path !== "string" || !s.path.startsWith("/")) throw new Error("invalid snapshot holder");
     const text = (value: unknown) => typeof value === "string" ? value : null;
     return { slot: s.slot, openedAt: s.openedAt, path: s.path,
-      taskId: text("taskId" in s ? s.taskId : null), base: text("base" in s ? s.base : null), baseSha: text("baseSha" in s ? s.baseSha : null) };
+      taskId: text("taskId" in s ? s.taskId : null), base: text("base" in s ? s.base : null), baseSha: text("baseSha" in s ? s.baseSha : null),
+      branch: text("branch" in s ? s.branch : null) };
   });
   return { repo: value.repo, sessions };
 })();
@@ -7798,6 +7799,16 @@ const WORKPLACES_GRAPH_CAP = 100_000;
 const LAND_NOTES_CAP = 20;
 const LAND_NOTES_SCAN_CAP = 200;
 let workplacesCache: { key: string; value: Promise<Workplaces>; at: number } | null = null;
+// THE LANE A SNAPSHOT SLOT HELD AT COPY TIME. A snapshot instance strips slot.worktree (a mirrored
+// slot must never run lane logic against the real repo), so the three readers that name a lane by
+// its branch — the restored merge verdicts, their gate observation, the suite lock's owner — ask the
+// mirror for the same slot + openedAt instead. null on every other fleet: there slot.worktree stays
+// the only answer, exactly as before (docs/testinstanz.md, snapshot mode).
+function snapshotLaneOf(s: { id: number; openedAt: number }): { branch: string; path: string } | null {
+  if (!SNAPSHOT_MIRROR) return null;
+  const held = SNAPSHOT_MIRROR.sessions.find((m) => m.slot === s.id && m.openedAt === s.openedAt);
+  return held?.branch ? { branch: held.branch, path: held.path } : null;
+}
 function workplaceSession(path: string): Slot | undefined {
   if (SNAPSHOT_MIRROR) {
     const holder = SNAPSHOT_MIRROR.sessions.find((s) => { try { return realpathSync(s.path) === path; } catch { return s.path === path; } });
@@ -7904,7 +7915,8 @@ function workplaceCheckObservations(repo: string, notes: WorkplaceLandNotes, aud
   const merges = [...mergeLast.entries(), ...[...mergeParked.values()].map((m) => [null, m] as const)];
   for (const [slot, m] of merges) {
     const recordedRepo = "repo" in m && typeof m.repo === "string" && m.repo ? m.repo : null;
-    const holder = slot === null ? null : slots.find((s) => s.id === slot && s.worktree?.branch === m.branch && sameRepo(s.worktree.repo));
+    const holder = slot === null ? null : slots.find((s) => s.id === slot && (s.worktree ? s.worktree.branch === m.branch && sameRepo(s.worktree.repo)
+      : !!SNAPSHOT_MIRROR && sameRepo(SNAPSHOT_MIRROR.repo) && snapshotLaneOf(s)?.branch === m.branch));
     if (recordedRepo ? !sameRepo(recordedRepo) : !holder && !notes.rows?.some((n) => n.branch === m.branch && n.sha === m.candidateSha)) continue;
     const v = m.verify;
     out.push({ repo, branch: m.branch, stage: "gate", at: m.at, head: m.candidateSha ?? null,
@@ -35841,8 +35853,11 @@ function suiteOwner(raw: string): SuiteOwner | null {
   if (!cwd || !branch || cwd.length > 500 || branch.length > 200) return null;
   const claimed = /^\d+$/.test(slotText ?? "") ? Number(slotText) : null;
   const live = slots.find((s) => {
-    if (!s.cwd || s.worktree?.branch !== branch || (claimed !== null && s.id !== claimed)) return false;
-    try { return realpathSync(s.cwd) === cwd; } catch { return s.cwd === cwd; }
+    // a snapshot slot's cwd is the copy; the lane it held is the mirror's path and branch
+    const mirrored = s.worktree ? null : snapshotLaneOf(s);
+    if (!s.cwd || (s.worktree?.branch ?? mirrored?.branch) !== branch || (claimed !== null && s.id !== claimed)) return false;
+    const path = mirrored?.path ?? s.cwd;
+    try { return realpathSync(path) === cwd; } catch { return path === cwd; }
   });
   return { slot: live?.id ?? null, branch };
 }
@@ -41720,10 +41735,11 @@ if (existsSync(STATE_FILE)) {
     if (typeof pm === "object" && pm !== null && !Array.isArray(pm))
       for (const [k, v] of Object.entries(pm as Record<string, unknown>)) {
         const s = slotFrom(k);
-        if (s?.worktree && typeof v === "object" && v !== null
+        const laneBranch = s ? s.worktree?.branch ?? snapshotLaneOf(s)?.branch ?? null : null;
+        if (s && laneBranch !== null && typeof v === "object" && v !== null
           && ["merged", "blocked", "error", "resolved", "interrupted", "awaiting-author"].includes((v as MergeLast).status)
           && typeof (v as MergeLast).detail === "string" && typeof (v as MergeLast).branch === "string"
-          && (v as MergeLast).branch === s.worktree.branch) {
+          && (v as MergeLast).branch === laneBranch) {
           const row = v as MergeLast;
           const identityComplete = /^[0-9a-f]{40,64}$/.test(row.mainSha ?? "")
             && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")

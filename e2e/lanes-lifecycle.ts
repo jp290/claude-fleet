@@ -78,10 +78,37 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
   chmodSync(`${tree}/testinstanz.sh`, 0o700);
   const openedAt = Date.now();
   const secret = "mirror-fixture-live-secret";
-  writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: repo, openedAt, label: "main holder", selfToken: secret }, "26": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret, taskId: "fixturetask", worktree: { base: "main", baseSha } }, "27": { cwd: unknownTree, openedAt, worktree: { base: "missing-target" } } }, tasks: [], programs: [] }));
+  // THE CHECK AND LAND FACTS the right tab reads, one per stage, all on the mirrored lane: a land note
+  // on main (target.landed yes, an older green gate), its post-land audit, a green local command job,
+  // an open preview offer, a newer blocked land verdict (checks.gate red), and a suite lock this lane
+  // holds — in a scratch lock dir, never the machine's. The markers name what must NOT cross: the
+  // helper's device id, its bundle path, the job's output and its artifacts.
+  const landedAt = openedAt - 60_000, blockedAt = openedAt - 1_000;
+  git("notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ branch: "mirror-lane", at: landedAt, verify: { ok: true, out: "" } }), baseSha);
+  writeFileSync(`${repo}/post-land-audits.jsonl`, JSON.stringify({ repo, mainSha: baseSha, at: landedAt + 1_000, result: "green",
+    covers: [{ branch: "mirror-lane", mainAfter: baseSha, at: landedAt }], fails: [] }) + "\n");
+  const leak = { device: "mirror-device-id-marker", bundle: `${scratch}/mirror-bundle-marker`, tail: "mirror-tail-marker", artifact: "mirror-artifact-marker" };
+  const claim = { deviceId: leak.device, name: "mirror-helper", claimedAt: openedAt - 5_000, expiresAt: openedAt + 600_000, bundle: leak.bundle };
+  const commandJobs = [{ id: "a1a1a1a1a1a1", slot: 26, slotOpenedAt: openedAt, repo, cwd: tree, branch: "mirror-lane", cmd: "./e2e-security.sh",
+    argv: ["./e2e-security.sh"], timeoutMs: 900_000, artifactGlobs: [], offeredAt: openedAt - 6_000, state: "reported", commitSha: laneSha,
+    treeSha: null, untracked: 0, claim: null, previousClaim: claim, settledAt: openedAt - 2_000,
+    result: { exitCode: 0, result: "green", tail: leak.tail, fails: [], artifacts: [{ path: "a.txt", data: leak.artifact }],
+      remote: { name: "mirror-helper", claimedAt: openedAt - 5_000, reportedAt: openedAt - 2_000, clonedSha: laneSha }, treeSha: "", ms: 3_000 } }];
+  const laneSuiteJobs = [{ id: "b2b2b2b2b2b2", slot: 26, slotOpenedAt: openedAt, repo, cwd: tree, branch: "mirror-lane", offeredAt: openedAt - 4_000,
+    state: "open", commitSha: laneSha, treeSha: null, untracked: 0, claim: null, result: null }];
+  const merges = { "26": { status: "blocked", detail: "verify red", landed: false, branch: "mirror-lane", at: blockedAt, candidateSha: laneSha,
+    verify: { ok: false, out: "FAIL  mirror gate rejection  (fixture)" } } };
+  writeFileSync(`${repo}/fleet.json`, JSON.stringify({ token: secret, slots: { "1": { cwd: repo, openedAt, label: "main holder", selfToken: secret }, "26": { cwd: tree, openedAt, label: "mirror holder", selfToken: secret, taskId: "fixturetask", worktree: { base: "main", baseSha, branch: "mirror-lane" } }, "27": { cwd: unknownTree, openedAt, worktree: { base: "missing-target" } } }, tasks: [], programs: [],
+    commandJobs, laneSuiteJobs, merges }));
+  const suiteLock = `${scratch}/suite.lock`, lockHolder = Bun.spawn(["sleep", "600"], { stdout: "ignore", stderr: "ignore" });
+  const lockBirth = spawnSync("ps", ["-o", "lstart=", "-p", String(lockHolder.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } })
+    .stdout.trim().replace(/\s+/g, " ");
+  mkdirSync(suiteLock);
+  writeFileSync(`${suiteLock}/pid`, `${lockHolder.pid}\n`); writeFileSync(`${suiteLock}/birth`, `${lockBirth}\n`);
+  writeFileSync(`${suiteLock}.owner`, `${lockHolder.pid}\n${lockBirth}\n${tree}\nmirror-lane\n26\n`);
   const env = { PATH: `${shimDir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? "/tmp",
     FLEET_TI_DIR: instance, FLEET_TI_SOCK: `fleetmirror${process.pid}`, FLEET_TI_ROOT: scratch,
-    FLEET_TI_SNAPSHOT_SRC: repo, FLEET_TI_INSTANCES: "" };
+    FLEET_TI_SNAPSHOT_SRC: repo, FLEET_TI_INSTANCES: "", FLEET_TI_SUITE_LOCK: suiteLock };
   const command = async (...args: string[]) => {
     const p = Bun.spawn(["sh", `${repo}/testinstanz.sh`, ...args], { env, stdout: "pipe", stderr: "pipe" });
     const [out, err, exit] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
@@ -93,6 +120,26 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
   const original = before();
   let running = false;
   try {
+    // THE LOCK OWNER from the same source, live path and mirror path: without a mirror only
+    // slot.worktree.branch names the holder's slot; with one, the mirrored branch and path of the
+    // same slot + openedAt do — the copy's own cwd never matches the lane's worktree
+    const serverCode = readFileSync(`${repo}/server.ts`, "utf8");
+    const cut = (from: string, to: string) => {
+      const i = serverCode.indexOf(from), j = serverCode.indexOf(to, i);
+      if (i < 0 || j <= i) throw new Error(`lock owner source cannot resolve ${from}`);
+      return serverCode.slice(i, j);
+    };
+    const ownerJs = new Bun.Transpiler({ loader: "ts" }).transformSync(cut("function snapshotLaneOf(", "function workplaceSession(")
+      + cut("interface SuiteOwner {", "function readSuiteOwner("));
+    const ownerSlot = (occupants: unknown[], mirror: unknown) => (new Function("slots", "SNAPSHOT_MIRROR", "realpathSync",
+      `${ownerJs}\nreturn suiteOwner;`)(occupants, mirror, realpathSync) as (raw: string) => { slot: number | null } | null)(`${tree}\nmirror-lane\n26`)?.slot;
+    const mirrorSessions = { repo, sessions: [{ slot: 26, openedAt, path: tree, taskId: null, base: null, baseSha: null, branch: "mirror-lane" }] };
+    check("snapshot mirror: without FLEET_SNAPSHOT_MIRROR the lock owner's slot is still named only by slot.worktree.branch",
+      ownerSlot([{ id: 26, openedAt, cwd: tree, worktree: { branch: "mirror-lane" } }], null) === 26
+      && ownerSlot([{ id: 26, openedAt, cwd: tree }], null) === null);
+    check("snapshot mirror: in a snapshot the lock owner's slot is the mirrored lane of the same slot and openedAt",
+      ownerSlot([{ id: 26, openedAt, cwd: instance }], mirrorSessions) === 26
+      && ownerSlot([{ id: 26, openedAt: openedAt + 1, cwd: instance }], mirrorSessions) === null);
     const alternate = `${scratch}/alternate`, probe = `${scratch}/probe`;
     mkdirSync(alternate); mkdirSync(probe);
     git("-C", alternate, "init", "-b", "main");
@@ -145,6 +192,21 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
     const planted = readFileSync(`${instance}/fleet.json`, "utf8") + readFileSync(`${instance}/.testinstanz.mirror.json`, "utf8");
     check("snapshot mirror: source credentials are absent; process CWD stays inside the copy",
       !planted.includes(secret) && JSON.parse(readFileSync(`${instance}/fleet.json`, "utf8")).slots["1"].cwd === instance);
+    check("snapshot mirror: the mirrored jobs carry no helper device id, bundle path, output tail or artifact",
+      Object.values(leak).every((marker) => !planted.includes(marker)), Object.entries(leak).filter(([, m]) => planted.includes(m)).map(([k]) => k).join(","));
+    const checks = (holder as { checks?: WorkplaceChecks } | undefined)?.checks, target = (holder as { target?: { landed: string | null; landedAs: string | null } } | undefined)?.target;
+    check("snapshot mirror: the lane's local, preview, gate and audit checks arrive with their source values",
+      checks?.local?.state === "green" && checks.local.head === laneSha && checks.preview?.state === "waiting"
+      && checks.gate?.state === "red" && checks.gate.fails[0] === "mirror gate rejection" && checks.gate.head === laneSha
+      && checks.audit?.state === "green" && checks.audit.head === baseSha, JSON.stringify(checks));
+    check("snapshot mirror: target.landed is read from the source's land note, not null",
+      target?.landed === "yes" && target.landedAs === baseSha, JSON.stringify(target));
+    const wire = copiedSessions as unknown as { suiteOffers: { slot: number; branch: string; state: string }[];
+      gate: { lock: { pid: number | null; owner?: { slot: number | null; branch: string } } | null } | null };
+    check("snapshot mirror: the open preview offer reaches the sessions wire of the copy",
+      wire.suiteOffers.some((o) => o.slot === 26 && o.branch === "mirror-lane" && o.state === "open"), JSON.stringify(wire.suiteOffers));
+    check("snapshot mirror: the suite lock names the mirrored lane as its owner",
+      wire.gate?.lock?.pid === lockHolder.pid && wire.gate.lock.owner?.slot === 26 && wire.gate.lock.owner.branch === "mirror-lane", JSON.stringify(wire.gate?.lock));
     const query = `?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(tree)}`;
     const doors: [string, unknown][] = [
       ["/api/slots/1/land", {}], ["/api/slots/1/merge", {}], ["/api/worktrees/remove", { repo, path: tree }],
@@ -197,6 +259,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
     check("snapshot mirror MUTATION: the counter-probe also leaves the real canary and git bytes untouched", before() === original);
   } finally {
     if (running) await command("down");
+    lockHolder.kill();
     rmSync(scratch, { recursive: true, force: true });
   }
 }
@@ -1316,6 +1379,23 @@ async function workplacesChecks(): Promise<void> {
     check("workplaces checks parked audit is skipped rather than waiting", observe("audit", "skipped").checks.audit?.state === "skipped");
     const recycled = observe("gate", "green", checkHead, { merges: new Map([[42, { branch: "previous-lane", candidateSha: checkHead, at: 300, verify: { ok: true, out: "" } }]]) });
     check("workplaces checks recycled slot never lends its old gate to the current branch", recycled.checks.gate === null);
+    // THE SNAPSHOT BINDING of a merge verdict (server.ts#snapshotLaneOf), against the live path it must
+    // leave alone: without FLEET_SNAPSHOT_MIRROR only slot.worktree.branch binds the verdict to a slot
+    const bare = { id: 42, openedAt: 100, cwd: realpathSync(b) } as unknown as FixtureOccupant;
+    const mirrorOf = (branch: string, openedAt = 100) => ({ SNAPSHOT_MIRROR: { repo: checkRepo,
+      sessions: [{ slot: 42, openedAt, path: realpathSync(b), taskId: null, base: null, baseSha: null, branch }] } });
+    const gateWith = (occupant: FixtureOccupant, stands: Record<string, unknown>) => {
+      const f = compile(functions, [occupant], false, undefined, false, undefined, { ...fixtureSources("gate", "green"), stands });
+      return f.checks(checkRepo, checkBranch, checkHead, f.observations(checkRepo, { rows: [] }, { rows: [], reason: "audit-not-retained" }),
+        "audit-not-retained", []).gate;
+    };
+    check("workplaces checks without FLEET_SNAPSHOT_MIRROR a merge verdict binds only through slot.worktree.branch",
+      gateWith(checkHolder, {})?.state === "green" && gateWith(bare, {}) === null);
+    check("workplaces checks a snapshot binds a merge verdict through the mirrored branch of the same slot and openedAt only",
+      gateWith(bare, mirrorOf(checkBranch))?.state === "green" && gateWith(bare, mirrorOf("previous-lane")) === null
+      && gateWith(bare, mirrorOf(checkBranch, 101)) === null);
+    check("workplaces checks a present slot.worktree outranks the mirror's branch",
+      gateWith({ ...checkHolder, worktree: { ...checkHolder.worktree, branch: "previous-lane" } }, mirrorOf(checkBranch)) === null);
     const remoteCovers = [{ branch: checkBranch, mainAfter: checkHead, at: 100 }];
     const remoteClaim = { repo: checkRepo, mainSha: checkHead, claimedAt: 200, expiresAt: Number.MAX_SAFE_INTEGER, covers: remoteCovers };
     const remoteAudit = observe("audit", "waiting", checkHead, { claims: new Map([[checkRepo, remoteClaim]]) });

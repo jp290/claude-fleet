@@ -248,6 +248,15 @@ ti_serve() {
   # live token the lane happens to carry. The refusal underneath is belt and braces — with the
   # whitelist it cannot fire — but the invariant is CHECKED, not assumed.
   : > "$DIR/env-names"
+  # THE SUITE LOCK a snapshot reads its owner from: the machine's own by default (the server's
+  # FLEET_SUITE_LOCK default, nothing passed), or — for a fixture that must show a lane holding it
+  # without touching the machine's mutex — the directory named in FLEET_TI_SUITE_LOCK. Snapshot only:
+  # mixed lands and gates take the lock, and that one must stay the machine's.
+  set --
+  if [ "${TI_KIND:-}" = snapshot ] && [ -n "${FLEET_TI_SUITE_LOCK:-}" ]; then
+    set -- "FLEET_SUITE_LOCK=$FLEET_TI_SUITE_LOCK"
+    echo FLEET_SUITE_LOCK >> "$DIR/env-names"
+  fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT; do
     echo "$TI_V" >> "$DIR/env-names"
@@ -296,7 +305,7 @@ ti_serve() {
       LANG=en_US.UTF-8 \
       FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD="$TI_AGENT_CMD" \
       FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_INSTANCE_SOURCE="$TI_SHOWN" FLEET_LANE_SUCCEED_MAX=5 \
-      FLEET_SNAPSHOT_MIRROR="$TI_MIRROR" FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
+      FLEET_SNAPSHOT_MIRROR="$TI_MIRROR" FLEET_KONZEPT_ROOT="$TI_KONZ" "$@" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
   until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do
@@ -408,10 +417,13 @@ const dir=process.env.TI_SNAPSHOT_DIR;
 // string), so a dropped key silently deleted EVERY Program binding in the copy — the owner read
 // „[Zitat entfernt]“ (2026-10-06). null keeps the binding (slot+openedAt survive
 // intact) and honestly reports the session-id half as unmatched.
+// commandJobs and laneSuiteJobs are NOT on this list: testinstanz-snapshot.js already planted them as
+// a projection without helper identity, bundle path or output (mirrorJob), and the right tab reads
+// checks.local/preview and the open offers from them.
 const strip=(v,parent)=>Array.isArray(v)?v.map((x)=>strip(x,parent)):v&&typeof v==='object'
  ?Object.fromEntries(Object.entries(v).flatMap(([k,x])=>{
    if(k==='sessionId'&&parent==='main')return [[k,null]];
-   if(['selfToken','sessionId','worktree','helperDevices','shares','commandJobs','suiteOffers','watches','autos','lanePreviews'].includes(k))return [];
+   if(['selfToken','sessionId','worktree','helperDevices','shares','suiteOffers','watches','autos','lanePreviews'].includes(k))return [];
    return [[k,strip(x,k)]];
   }))
  :v;

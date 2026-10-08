@@ -1,3 +1,4 @@
+// Paged local session timeline over identity-bound native sources and the existing buildTrace ledger projection.
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { normalizeNative, type NativeBinding, type NativeGap, type NativeSnapshot } from "./trace-native";

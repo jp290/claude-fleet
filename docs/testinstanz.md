@@ -59,6 +59,8 @@ Die Snapshot-Instanz verweigert alle mutierenden HTTP-Methoden zentral mit **409
 `refusal: "snapshot-mirrored-read-only"`, auch Land/Merge, Entfernen/Discard, Lane-Anlage/Attach,
 Commit, Datei-Schreiben/Create/Move/Delete, Testinstanz-Up/Down und Slot-Öffnen. Die Sperre gilt
 vor der Ausführung einer Route und unabhängig davon, ob der Pfad im Body, Query oder Slot steht.
+Terminal-Eingaben per WebSocket schließen mit Code 1008 und demselben benannten Grund,
+bevor Bytes eine Pane erreichen; lesende Terminal-Verbindungen bleiben möglich.
 Lesende Git-Abfragen laufen mit `GIT_OPTIONAL_LOCKS=0`; eine nicht gelesene Testinstanz-Beobachtung
 bleibt `null` mit dem Grund `snapshot-mirrored-read-only`. `mixed` behält seine Fixture-Schreibwege.
 Der Check `e2e/lanes-lifecycle.ts#snapshotMirrorChecks` startet `up snapshot` gegen einen echten

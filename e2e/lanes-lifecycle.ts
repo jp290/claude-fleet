@@ -114,6 +114,15 @@ export async function snapshotMirrorChecks(): Promise<void> {
       const response = await request(path, body), data = await response.json() as { refusal?: string };
       check(`snapshot mirror: ${path} refuses with named 409`, refused({ status: response.status, refusal: data.refusal }));
     }
+    const input = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      const ws = new WebSocket(`ws://${host}:${port}/ws/1?token=${encodeURIComponent(token)}`);
+      const timer = setTimeout(() => { ws.close(); reject(new Error("snapshot WebSocket input was not refused")); }, 10000);
+      ws.onopen = () => ws.send("mirror input canary\n");
+      ws.onclose = (event) => { clearTimeout(timer); resolve({ code: event.code, reason: event.reason }); };
+      ws.onerror = () => { clearTimeout(timer); reject(new Error("snapshot WebSocket probe did not connect")); };
+    });
+    check("snapshot mirror: terminal input closes with the named read-only refusal before reaching the pane",
+      input.code === 1008 && input.reason === "snapshot-mirrored-read-only", JSON.stringify(input));
     check("snapshot mirror: HEAD, git status and canary bytes survive every write door; no worktree script spawned",
       before() === original && !existsSync(`${scratch}/spawned`));
     await command("down"); running = false;

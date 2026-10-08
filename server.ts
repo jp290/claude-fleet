@@ -50113,6 +50113,7 @@ Bun.serve<WSData>({
     // live input: client sends raw keystroke bytes, forwarded verbatim to the pane.
     // serialized per slot through a promise chain — concurrent send-keys spawns reorder keystrokes
     message(ws, msg) {
+      if (SNAPSHOT_MIRROR) { ws.close(1008, "snapshot-mirrored-read-only"); return; }
       // guests are strictly read-only — their input is dropped server-side, never merely
       // hidden in their UI. Unconditional on purpose: there is no mode to look up any more,
       // so this cannot be weakened by a share record, a body field or a stale ws.data.

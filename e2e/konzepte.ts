@@ -828,8 +828,9 @@ async function privatePackHandover(): Promise<void> {
     mkdirSync(reads, { recursive: true });
     writeFileSync(`${FIXH}/reader.ts`, READER_TS);
     symlinkSync(process.execPath, `${FIXH}/runner/codex`);
+    symlinkSync(process.execPath, `${FIXH}/runner/pi`);
     const launcher = (tag: string) => `#!/bin/sh\nprintf '%s\\n' '>_ OpenAI Codex (v0.0.0-e2e-reader)' '0.0%/1.0M (auto)  glm-5.3 • high'\n`
-      + `stty -icanon -echo 2>/dev/null\nexec '${FIXH}/runner/codex' '${FIXH}/reader.ts' '${reads}' '${tag}'\n`;
+      + `stty -icanon -echo 2>/dev/null\nexec '${FIXH}/runner/${tag === "pi" ? "pi" : "codex"}' '${FIXH}/reader.ts' '${reads}' '${tag}'\n`;
     writeFileSync(`${bin}/fleet-reader`, launcher("claude"), { mode: 0o755 });
     writeFileSync(`${bin}/codex`, launcher("codex"), { mode: 0o755 });
     // every Pi adapter spawns `pi` by name: shadowed here too, so a regression that lets a Pi founding
@@ -1049,6 +1050,13 @@ async function privatePackHandover(): Promise<void> {
             opened.status === 200 && delivered(first, role, harness),
             `open=${opened.status} ${opened.text.slice(0, 200)} received=${JSON.stringify(first)}`);
           if (slot === null || opened.status !== 200) continue;
+          const foreign = await fetch(`${i.base}${door}?rolle=${role === "lane" ? "program-main" : "lane"}`,
+            { headers: { "x-fleet-self-token": tokenFor(slot) } });
+          const foreignBody = await foreign.text();
+          check(`konzepte owner delivery (${harness}/${role}): asking for a foreign position is refused without correction bytes`,
+            foreign.status === 400 && foreignBody.includes("never from the request")
+              && !foreignBody.includes("geltendeEintraege") && !foreignBody.includes("synthetische Startkorrektur"),
+            `${foreign.status} ${foreignBody}`);
           if (role === "lane") {
             const state = JSON.parse(readFileSync(`${i.dir}/fleet.json`, "utf8")) as { slots: Record<string, SlotRow> };
             const cwd = state.slots[String(slot)]?.cwd;
@@ -1064,6 +1072,20 @@ async function privatePackHandover(): Promise<void> {
           await call(`/api/slots/${slot}/kill`, "POST", {});
           if (programId) await call(`/api/programs/${programId}/complete`, "POST", { force: true });
         }
+        const genericSlot = await freeSlot();
+        if (genericSlot !== null) {
+          rmSync(`${reads}/heft-${genericSlot}.json`, { force: true });
+          const opened = await call(`/api/slots/${genericSlot}/open`, "POST", { cwd: product, label: "Nur Ordner", packs: [], ...spawn });
+          await call("/send", "POST", { slot: genericSlot, text: "fleet generic fixture prompt", submit: true });
+          const received = opened.status === 200 ? await receive(genericSlot) : null;
+          const denied = await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(genericSlot) } });
+          const deniedBody = await denied.text();
+          check(`konzepte owner delivery (${harness}/nur-ordner): the first prompt has no pointer and the reader refuses the generic position`,
+            opened.status === 200 && received !== null && received.pointer === null && denied.status === 409
+              && !deniedBody.includes("geltendeEintraege"),
+            `open=${opened.status} pointer=${received?.pointer} reader=${denied.status} ${deniedBody}`);
+          await call(`/api/slots/${genericSlot}/kill`, "POST", {});
+        } else check(`konzepte owner delivery (${harness}/nur-ordner): the fixture has a free slot`, false);
       }
 
       const sourcePath = `${i.dir}/server.ts`;

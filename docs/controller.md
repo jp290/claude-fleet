@@ -112,6 +112,120 @@ Zeilen nennt jede Gruppe einen Overflow samt Detailtür und druckt ihre Zeilen w
 `./state.sh --full` und `./register.sh --full` wählen die vollständige Diagnose; ein unbekanntes
 Flag endet mit exit 2. Game-Maker, Fremdrepo- und Lane-Einstieg behalten ihren Vertrag.
 
+## Ein fremdes Repo als Fleet-Projekt aufnehmen
+
+Diese Reihenfolge bereitet die Gruendung vor dem ersten `bootstrap-main` vor. Sie beschreibt
+den gebauten Serververtrag; Konfigurations-, Trust- und Loeschakte bleiben beim Owner oder
+seiner konkreten Delegation. Sie fuehrt keinen dieser Akte selbst aus. Fuer spaetere Lane-Karten
+gilt der Nachbar `AGENTS.md` §Rows for a repo that is not claude-fleet.
+
+1. **Repo und Regelrahmen zuerst.** Den Ziel-Checkout als Git-Repo mit lesbarem HEAD und
+   Branch benennen. Eine nicht leere Root-`AGENTS.md` muss bereits **committiert in HEAD** liegen;
+   eine Datei nur im Arbeitsbaum oder Index reicht nicht. `server.ts#preflightProgramMain`
+   (`server.ts:37057`) prueft `git cat-file -s HEAD:AGENTS.md` und verweigert sonst mit
+   `target repository requires a tracked, non-empty root AGENTS.md` (400). Nicht-Git-CWD und
+   unlesbarer HEAD/Branch haben eigene Refusals. Die Datei traegt die eigenen Repo-Regeln und
+   Verify-Anweisung; Fleet-Prozesszustand gehoert nicht ins Produktrepo. Ein Game-Maker braucht
+   zusaetzlich einen eigenen linked Worktree des Produktrepos, keinen primaeren Checkout und
+   keinen Fleet-Worktree (`server.ts#gameMakerMachineError`, `server.ts:37105`).
+
+2. **Harness-Trust vor der Gruendung klaeren.** Bei Claude muss der Zielordner im Harness
+   bereits vertrauenswuerdig sein. `server.ts#CLAUDE_TRUST_DIALOG` (`server.ts:713`) erkennt
+   den sichtbaren Selektor; `server.ts#canDeliver` (`server.ts:18394`) verweigert ihn als
+   `blocked-screen: claude trust dialog`. `server.ts#bootstrapProgramMainReserved`
+   (`server.ts:38940`) rollt die Gruendung dann zurueck und antwortet mit
+   `Program-MAIN delivery held (...)` (500). Der Server akzeptiert den Dialog nicht selbst.
+   Die Abhilfe ist eine autorisierte Trust-Bestaetigung im Harness fuer den exakten Zielpfad.
+   Der in der Aufnahme berichtete Eintrag `projects[<pfad>].hasTrustDialogAccepted` in
+   `~/.claude.json` ist ein Harness-Konfigurationsweg, **kein von Fleet gelesener oder
+   validierter Schluessel**; seine Wirksamkeit muss am verschwundenen Dialog beobachtet werden.
+   Diese Anleitung verlangt keine automatische Aenderung der Datei.
+
+3. **Den eigenen Verify-Befehl vor Arbeitsfreigabe konfigurieren.** Der Operator hinterlegt
+   einen nicht leeren Befehl pro Repo in `FLEET_VERIFY_CMD_REPOS` und startet den Server nach
+   einer Env-Aenderung autorisiert neu. `server.ts#VERIFY_CMD_REPOS` (`server.ts:26186`)
+   liest einmal beim Modulstart ein JSON-Objekt; ungueltiges JSON, falsche Form oder leere
+   Befehle werden mit Warnung ignoriert. Schluessel sind kanonische Repo-Toplevels;
+   `server.ts#verifyRepoKey` (`server.ts:26225`) findet fuer linked Worktrees auch den Eintrag
+   des primaeren Repos ueber die gemeinsame Git-Ablage. **Ohne Eintrag ist das Gate nicht
+   pauschal unbekannt:** `server.ts#verifyCmdFor` (`server.ts:26253`) faellt auf
+   `FLEET_VERIFY_CMD` zurueck; fehlt auch der, ist Verify unkonfiguriert. Die globale Fleet-Standardkette
+   bricht ohne `fleet-e2e.ts` mit `SKIPPED` ab. Nach Gruendung liest die erste Lane
+   `GET /api/self/gate` und prueft `verify.cmd` sowie den Fremdrepo-Befehl in `localProof.note`.
+   Das ist ein Vorab-Abgleich, kein bereits bestandener Verify und keine Bootstrap-Voraussetzung.
+
+4. **Parallelitaet bewusst setzen.** Vor dem Release den effektiven Repo-Deckel mit
+   `GET /api/repo-lane-caps` lesen. `server.ts#repoLaneCap` (`server.ts:5463`) nimmt ohne
+   Eintrag `FLEET_DISPATCH_MAX_LANES`; der Code-Fallback ist **3**, kein festes 1
+   (`server.ts#DISPATCH_MAX_LANES`, `server.ts:5384`). Eine Betriebs-Env kann 1 setzen.
+   Fuer einen autorisierten anderen Deckel nimmt `POST /api/repo-lane-cap`
+   (`server.ts:47211`) `{repo,maxLanes}`: Git-Toplevel muss lesbar sein, der Wert ganzzahlig
+   zwischen 1 und `REPO_MAX_LANES_MAX`. Sonst 400, ohne bestehende Werte zu aendern;
+   0/null entfernt den Eintrag und stellt den Maschinendefault wieder her. Die Antwort nennt
+   `effective` und `source`; Speicherung wirkt ohne Neustart. Repo-Deckel hebt Program-
+   Deckel oder fehlende freie Slots nicht auf. Ein zu kleiner Deckel haelt Dispatch wartend,
+   verhindert aber keine MAIN-Gruendung.
+
+5. **Wissen nach Heimat und Leser vorbereiten.** Die Zuordnung in
+   [Projektwissen und Loeschwege](messungen/2026-10-08-projektwissen-fremdrepo-schichten.md#ergebnis-vier-eindeutige-heimaten)
+   ist eine begruendete Empfehlung: Entscheide im Program-Record, Arbeitsregeln im Repo-
+   `AGENTS.md`, erklaerendes Projektverstaendnis im privaten Projektkonzept, operative Auswahl
+   als Pack-Zeiger. Fuer Startwissen prueft `server.ts#repoManifestContextPlan`
+   (`server.ts:37213`) das **Zielrepo-Manifest am receiptierten HEAD** und dessen getrackte
+   Quellen/Anker. Fehlende oder unlesbare Quellen und ungueltige Packs werden als Omission
+   ausgewiesen (`context-manifest.ts#planRepoContext`, `context-manifest.ts:98`), nicht
+   durch Fleet-Wissen ersetzt. Program-Packs kann erst die gebundene aktive MAIN schreiben
+   (`server.ts#boundProgramForMain`, `server.ts:15946`); die Self-Tuer
+   `/api/self/program-context-packs` (`server.ts:44400`) prueft maximal 5 Packs mit je 4
+   getrackten Quellen am Integration-HEAD. Ungueltige Pfade/Anker ergeben 400 mit `issues`
+   (`context-plan.ts#validateProgramContextPacks`, `context-plan.ts:174`). Sie erreichen
+   Program-Lanes, nicht den MAIN-Gruendungsbrief. Beliebige private Projektkonzepte sind
+   heute keine automatisch zustellbaren Program-Packs: expliziten privaten Lesezeiger mit
+   Fassung/Hash im autorisierten Auftrag vorsehen. `ebene:projekt` ist keine Projekt-
+   Zugriffssperre (`server.ts#konzeptKontextFor`, `server.ts:15984`;
+   `konzept-ledger.ts#konzeptRequest`, `konzept-ledger.ts:414`).
+
+6. **Erst jetzt das aktive Program gruenden und Zustellung belegen.** Der Owner bestaetigt
+   den Vorschlag und aktiviert ihn (`server.ts#handleOwnerProgramRoute`, `server.ts:39462`,
+   `server.ts:39507`). Danach nimmt `POST /api/programs/:id/bootstrap-main` `cwd`, Harness,
+   Modell und Effort; nicht aktive Programs ergeben 409, ungueltige Spawn-Felder 400
+   (`server.ts#bootstrapProgramMainReserved`, `server.ts:38834`). Kein freier MAIN-Platz
+   oder eine laufende Gruendung ergibt 409. Eine bereits lebende MAIN ergibt `existing:true`,
+   ohne zweite Gruendung. Nach Boot-/Delivery-/Readiness-Pruefung muss Briefzustellung und
+   Context-Receipt gelingen, bevor die Bindung als Erfolg gilt. Antwort und exakte neue
+   Identitaet/Program-Zuordnung lesen; ein offener Slot allein belegt keine Gruendung.
+   Danach prueft die MAIN die vorbereiteten Wissenszeiger und die erste Lane den eigenen
+   Gate-Vertrag, bevor weitere Arbeit freigegeben wird.
+
+7. **Die Loeschpflicht schon bei der Aufnahme auffindbar machen.** Im autorisierten
+   Projektinventar Leser, Ablagen, zulaessige Aufbewahrung und den spaeteren Loeschnachweis
+   benennen. Der Server verweigert `complete` bei offenen Pflichten ohne `{force:true}`, fuehrt aber
+   **keine Vertraulichkeit-Loeschung** aus (`server.ts#handleOwnerProgramRoute`, `server.ts:39516`).
+   `context-plan.ts#planProgramContext` (`context-plan.ts:266`) unterdrueckt nach Abschluss
+   lediglich weitere Pack-Zustellung; `konzept-ledger.ts#konzeptOpOf`
+   (`konzept-ledger.ts:406`) hat keinen DELETE-Weg, `verwerfen` appendiert einen Status.
+   Repo/Git-Kopien, ehemalige Worktrees, Scratch, Harness-Transkripte/Memory, Konzeptfassungen,
+   Fleet-State und Ledger samt Rotationen sowie Backups/weitere Hosts/Provider gehoeren ins
+   Inventar der genannten Wissensnotiz. Jeder Loeschakt braucht eigene Autorisierung und
+   Nachpruefung; `complete`, leere Packs oder ein entfernter Checkout beweisen ihn nicht.
+
+**Start-Pack und Grenze.** `projekt-aufnahme` ist ein aktiver Hinweis mit Trigger
+`orchestration`: `server.ts#BOOTSTRAP_CONTEXT_TRIGGERS` (`server.ts:37025`) liefert ihn
+Orchestratorin und neuer MAIN **im Fleet-Repo** beim Start; normale Lane-Dispatches setzen
+diesen Trigger nicht. `server.ts#programMainContextPlan` (`server.ts:37244`) und
+`server.ts#orchestratorFoundingContext` (`server.ts:38181`) lesen das Manifest ihres CWD-Repos.
+Eine MAIN im Fremdrepo bekommt deshalb dessen eigene Packs, nicht diesen Fleet-Manifest-Eintrag.
+Die Orchestratorin muss die benoetigten Aufnahmehinweise vorab weitergeben; automatische
+Zustellung dieses Fleet-Abschnitts ueber Repo-Grenzen waere ein eigener Serverschnitt.
+
+**Folgeschnitt: Abhilfe am Fehler statt weiterer Fehlversuche.** Die AGENTS-400 sollte
+`HEAD:AGENTS.md` und „nicht leer committen, dann erneut gruenden“ nennen. Die Trust-500 sollte
+den Zielpfad und die autorisierte Harness-Bestaetigung nennen. Bei fremdem Verify-Fallback
+waere ein Hinweis auf fehlenden Repo-Eintrag und den tatsaechlich gewaehlten globalen Befehl
+sinnvoll; am Dispatch-Warten sollten effektiver Deckel, Herkunft und `/api/repo-lane-cap`
+sichtbar sein. Wissen und Vertraulichkeit-Loeschung sind keine vorhandenen Bootstrap-400er: dort fehlt
+jeweils eine Funktion bzw. ein Nachweis, den ein besserer Fehlertext allein nicht ersetzt.
+
 ## Werkzeuge
 
 `ctl.sh` fügt keine Autorität hinzu; jedes Verb behält Credential, Scope und Server-Gate seiner Route.

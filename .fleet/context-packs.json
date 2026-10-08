@@ -73,6 +73,24 @@
     "status": "active"
   },
   {
+    "id": "projekt-aufnahme",
+    "useWhen": "Bevor du als Orchestratorin oder neue MAIN ein fremdes Repo als Fleet-Projekt aufnimmst.",
+    "scope": "repo-contract",
+    "audience": "maintainer",
+    "triggers": ["orchestration"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "docs/controller.md", "anchor": "## Ein fremdes Repo als Fleet-Projekt aufnehmen" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 9053,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "owner-instanzweg",
     "useWhen": "Wenn im Owner-Gespraech Arbeit auf einer anderen Fleet-Instanz ansteht: den bestehenden Weg dorthin nachlesen.",
     "scope": "repo-contract",

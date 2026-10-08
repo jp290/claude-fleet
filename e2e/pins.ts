@@ -12343,9 +12343,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 {
   const roles = ["lane", "main", "orchestratorin", "nur-ordner"] as const;
   const escaped = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const scanner = new Bun.Transpiler({ loader: "ts" });
   const declares = (text: string, anchor: string): boolean => {
-    const code = text.split("\n").filter((line) => !/^\s*(\/\/|\/\*|\*|\*\/)/.test(line)).join("\n");
-    return new RegExp(`\\b(?:function|const|class|interface|type)\\s+${escaped(anchor)}\\b`).test(code);
+    let probe = "__fleet_session_source_probe__";
+    while (text.includes(probe)) probe += "_";
+    // Only a real module declaration becomes this export. Renaming text inside comments,
+    // strings, templates or regex literals cannot make the parser report the probe as code.
+    const candidate = text.replace(new RegExp(`(?:export\\s+)?(async\\s+)?(function|const|class)\\s+${escaped(anchor)}\\b`, "g"),
+      (_match, async: string | undefined, kind: string) => `export ${async ?? ""}${kind} ${probe}`);
+    try { return scanner.scan(candidate).exports.includes(probe); }
+    catch { return false; }
   };
   const resolves = (ref: string): boolean => {
     const [path, anchor] = ref.split("#");
@@ -12387,10 +12394,26 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       problems.length === 0, problems.join("; "));
   }
   const contract = SESSION_BLOCKS.find((block) => block.id === "portable-contract")!;
-  pin("S3 session blocks: an unresolved symbol fails even when its name appears in a comment",
-    declares("function sourceProof() {}", "sourceProof")
-      && !declares("// function sourceProof() {}", "sourceProof")
-      && !resolves("server.ts#session-blocks-does-not-exist")
+  const sourceMutations = [
+    ["real declaration", "function sourceProof() {}", true],
+    ["exported async declaration", "export async function sourceProof() {}", true],
+    ["real declaration beside strings/comments", 'const text = "/*"; /* omitted */ function sourceProof() {}', true],
+    ["line comment", "// function sourceProof() {}", false],
+    ["inline block comment", "/* function sourceProof() {} */", false],
+    ["multiline block comment", "/*\nfunction sourceProof() {}\n*/", false],
+    ["double-quoted string", 'const text = "function sourceProof() {}";', false],
+    ["single-quoted string", "const text = 'function sourceProof() {}';", false],
+    ["escaped quote", 'const text = "escaped \\\" function sourceProof() {}";', false],
+    ["multiline template", "const text = `\nfunction sourceProof() {}\n`;", false],
+    ["nested template string", 'const text = `outer ${`function sourceProof() {}`} end`;', false],
+    ["regex literal", "const text = /function sourceProof/;", false],
+    ["export alias beside a fake declaration", 'const original = 1; export { original as sourceProof }; const text = "function sourceProof() {}";', false],
+  ] as const;
+  for (const [name, text, expected] of sourceMutations)
+    pin(`S3 session blocks: source declaration mutation — ${name}`,
+      declares(text, "sourceProof") === expected, `expected=${expected}`);
+  pin("S3 session blocks: an unresolved source is rejected",
+    !resolves("server.ts#session-blocks-does-not-exist")
       && problemsFor({ ...contract, source: "server.ts#session-blocks-does-not-exist" }).includes("source unresolved or not evidenced"));
   pin("S3 session blocks: a required boundary without a reason is rejected",
     problemsFor({ ...contract, grenze: { art: "noetig", grund: "" } }).includes("grenze lacks reason"));

@@ -1117,6 +1117,17 @@ async function privatePackHandover(): Promise<void> {
               && !foreignBody.includes("geltendeEintraege") && !foreignBody.includes("synthetische Startkorrektur"),
             `${foreign.status} ${foreignBody}`);
           if (role === "lane") {
+            // Dispatch returns before briefAndSend's tail. Recycle only after that tail logged its prompt.
+            let dispatchComplete = false;
+            for (let n = 0; n < 200; n++) {
+              const prompts = (await call("/api/prompts?limit=100", "GET")).json.prompts as { slot: number; text: string }[] | undefined;
+              if (prompts?.some((prompt) => prompt.slot === slot && prompt.text.includes("Owner-Heft Startprobe"))) {
+                dispatchComplete = true;
+                break;
+              }
+              await Bun.sleep(100);
+            }
+            check(`konzepte owner delivery (${harness}/lane): dispatch finished before the fixture recycles its receiver`, dispatchComplete);
             const state = JSON.parse(readFileSync(`${i.dir}/fleet.json`, "utf8")) as { slots: Record<string, SlotRow> };
             const cwd = state.slots[String(slot)]?.cwd;
             if (cwd) { g(cwd, "add", "-A"); g(cwd, "commit", "-q", "-m", "fixture work"); }

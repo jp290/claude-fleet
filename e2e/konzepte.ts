@@ -727,20 +727,30 @@ process.stdin.on("data", (chunk) => {
     const nativePath = /^Session-Regeln: (\.\/AGENTS\.override\.md)$/m.exec(text)?.[1] ?? null;
     const native = nativePath ? readFileSync(nativePath, "utf8") : "";
     const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text + "\n" + native)?.[1] ?? null;
-    let status = null, body = null;
+    let status = null, body = null, firstStatus = null, firstError = null;
+    let firstAt = null, firstAnsweredAt = null, readyAt = null, answeredAt = null;
     if (pointer) {
+      firstAt = Date.now();
+      const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
+      firstStatus = status = response.status;
+      body = await response.json();
+      firstError = typeof body?.error === "string" ? body.error : null;
+      firstAnsweredAt = answeredAt = Date.now();
       // The fixture releases its reader when the founding/succession response has committed the binding.
-      // Input recording stays closed during that wait; later prompts cannot supply this pointer.
+      // The immediate attempt is retained; input recording stays closed throughout the wait.
       if (process.env.FLEET_READER_AWAIT_READY === "1") {
         const { existsSync } = await import("node:fs");
         while (!existsSync(outDir + "/ready-" + slot)) await Bun.sleep(10);
+        readyAt = Date.now();
+        const bound = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
+        status = bound.status;
+        body = await bound.json();
+        answeredAt = Date.now();
       }
-      const response = await fetch(pointer, { headers: { "x-fleet-self-token": process.env.FLEET_SELF_TOKEN } });
-      status = response.status;
-      body = await response.json();
     }
     const out = outDir + "/heft-" + slot + ".json";
-    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, native, pointer, status, body }));
+    writeFileSync(out + ".tmp", JSON.stringify({ tag, text, native, pointer, status, body,
+      firstStatus, firstError, firstAt, firstAnsweredAt, readyAt, answeredAt }));
     renameSync(out + ".tmp", out);
   })();
 });
@@ -1055,6 +1065,8 @@ async function privatePackHandover(): Promise<void> {
         published.status === 200, `${published.status} ${published.text.slice(0, 250)}`);
       if (published.status !== 200) return;
       type Received = { tag: string; text: string; native: string; pointer: string | null; status: number | null;
+        firstStatus: number | null; firstError: string | null; firstAt: number | null; firstAnsweredAt: number | null;
+        readyAt: number | null; answeredAt: number | null;
         body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
       const receive = async (slot: number): Promise<Received | null> => {
         writeFileSync(`${reads}/ready-${slot}`, "ready\n");
@@ -1109,6 +1121,18 @@ async function privatePackHandover(): Promise<void> {
           check(`konzepte owner delivery (${harness}/${role}): the first prompt delivers only the reader pointer and the receiver reads its position's correction`,
             opened.status === 200 && delivered(first, role, harness),
             `open=${opened.status} ${opened.text.slice(0, 200)} received=${JSON.stringify(first)}`);
+          if (role === "program-main") {
+            check(`konzepte owner delivery (${harness}/program-main) binding window: the immediate reader is 409 before the founding commits, then 200`,
+              first?.firstStatus === 409 && first.firstError?.includes("not the current bound MAIN") === true
+                && delivered(first, role, harness) && first.firstAt !== null && first.firstAnsweredAt !== null
+                && first.readyAt !== null && first.answeredAt !== null && first.readyAt >= first.firstAnsweredAt,
+              JSON.stringify({ firstStatus: first?.firstStatus, afterStatus: first?.status,
+                firstAt: first?.firstAt, firstAnsweredAt: first?.firstAnsweredAt, readyAt: first?.readyAt,
+                answeredAt: first?.answeredAt, intervalMs: first?.firstAt != null && first.answeredAt != null
+                  ? first.answeredAt - first.firstAt : null }));
+          } else {
+            check(`konzepte owner delivery (${harness}/${role}): the immediate reader is already position-bound`, first?.firstStatus === 200);
+          }
           if (slot === null || opened.status !== 200) continue;
           const foreign = await fetch(`${i.base}${door}?rolle=${role === "lane" ? "program-main" : "lane"}`,
             { headers: { "x-fleet-self-token": tokenFor(slot) } });
@@ -1141,6 +1165,7 @@ async function privatePackHandover(): Promise<void> {
           check(`konzepte owner delivery (${harness}/${role}): succession delivers the reader pointer under the successor's current position`,
             succession.status === 200 && delivered(second, role, harness),
             `succession=${succession.status} ${succession.text.slice(0, 250)} received=${JSON.stringify(second)}`);
+          check(`konzepte owner delivery (${harness}/${role}): the successor's immediate reader is position-bound`, second?.firstStatus === 200);
           await call(`/api/slots/${slot}/kill`, "POST", {});
           if (programId) await call(`/api/programs/${programId}/complete`, "POST", { force: true });
         }

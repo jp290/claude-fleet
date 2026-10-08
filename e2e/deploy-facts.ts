@@ -518,6 +518,126 @@ export async function run(): Promise<void> {
         respawn.total === before.total + 1, `${before.total} → ${respawn.total}`);
     }
 
+    // --- §7 A DEPLOY GOES LIVE ONLY ON A TIP THE FULL SUITE SAW ----------------------------------
+    // Owner 2026-10-08 ~16:0x: „[Zitat entfernt]“
+    // . The day's deploy 2bd1f716 put 39892114 live
+    // although its audit row was red, because deployBlocker only asked whether an audit was RUNNING.
+    // server.ts#deployAuditOf is the precondition: a row of post-land-audits.jsonl with
+    // mainSha == target, full chain, green or red WITH an adjudication.
+    // THE FIXTURE is a HELPER deployment (grace > 0) with a one-hour quiet window, so the audit this
+    // section queues is offered only if the deploy released it past the cadence; nothing runs it
+    // here, and this suite plays the helper over the portal routes WITHOUT registering a device (no
+    // heartbeat, so no presence reading leaks into the modules after this one).
+    {
+      const AUD = { FLEET_REPO_DIR: FIX, FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_AUDIT_HELPER_GRACE_MS: "60000",
+        FLEET_AUDIT_QUIET_MS: "3600000", FLEET_AUDIT_MAX_WAIT_MS: "7200000", FLEET_AUDIT_SHARDS: "1" };
+      const headNow = (): string => spawnSync("git", ["-C", FIX, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      interface DeployAnswer { ok?: unknown; stage?: string; id?: string; reason?: string; next?: string;
+        audit?: { mainAfter?: string; queued?: boolean; redAt?: number }; unaudited?: string }
+      interface AuditJob { id: string; kind?: string; repo: string; claim: unknown; covers: number; branches: string[] }
+      interface LedgerRow { at: number; mainSha: string; result: string; remote?: unknown }
+      interface DeployRowX extends Row { audit?: { at: number; result: string; adjudication?: string }; unaudited?: string }
+      await restartSrv(AUD);
+      const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
+      const HH = { "x-fleet-helper-token": helperToken, "content-type": "application/json" };
+      const DEV = "e2edeployaudit1";
+      const fixRepo = FIX.split("/").pop();
+      const deployAsk = async (body: unknown = {}): Promise<{ status: number; b: DeployAnswer }> => {
+        const r = await post("/api/deploy", body);
+        return { status: r.status, b: (await r.json().catch(() => ({}))) as DeployAnswer };
+      };
+      const auditJobs = async (): Promise<AuditJob[]> =>
+        (((await (await fetch(`${BASE}/api/helper/jobs`, { headers: HH })).json()) as { jobs?: AuditJob[] }).jobs ?? [])
+          .filter((j) => j.kind === "audit" && j.repo === fixRepo);
+      const ledgerFor = (sha: string): LedgerRow[] => {
+        try {
+          return readFileSync(`${ROOT}/post-land-audits.jsonl`, "utf8").split("\n").filter(Boolean)
+            .map((l) => JSON.parse(l) as LedgerRow).filter((r) => r.mainSha === sha);
+        } catch { return []; }
+      };
+      // the helper's half: claim the offered job, report its exit — the row is written by that POST
+      const measure = async (jobId: string, exitCode: number): Promise<number> => {
+        const c = await post("/api/helper/claim", { jobId, deviceId: DEV }, HH);
+        const r = await post("/api/helper/result", { jobId, exitCode,
+          tail: exitCode === 0 ? "PASS  deploy tip (e2e)\nALL PASS" : "FAIL  deploy tip (e2e)\n1 failed" }, HH);
+        return c.ok && r.ok ? 200 : c.ok ? r.status : c.status;
+      };
+      // a 202 kills this srv 250 ms later: wait for that, then play the watchdog
+      const rebootAfterDeploy = async (): Promise<void> => {
+        for (let i = 0; i < 80; i++) {
+          if (!(await get("/api/sessions").then((x) => x.ok).catch(() => false))) break;
+          await Bun.sleep(250);
+        }
+        await restartSrv(AUD);
+      };
+      const deployRow = async (id: string | undefined): Promise<DeployRowX | undefined> =>
+        ((await deploys()).deploys as DeployRowX[]).find((x) => x.id === id && x.stage === "boot");
+
+      // (a) THE REFUSAL. MUTATION: delete PHASE 0 from server.ts#deployRun ⇒ 202, the srv restarts
+      // onto a tip nobody measured ⇒ red. (This is the check that was red before the fix.)
+      commit("server.ts", "// v8 — a tip nobody audited");
+      const tipA = headNow();
+      const a = await deployAsk();
+      check("§7a POST /api/deploy on a tip with no audit row answers 409 tip not audited, queues its audit and names the way back",
+        a.status === 409 && /^tip not audited — /.test(a.b.reason ?? "") && a.b.audit?.mainAfter === tipA
+          && a.b.audit.queued === true && (a.b.next ?? "").includes(`"kind":"audit"`) && (a.b.next ?? "").includes(tipA),
+        `${a.status} ${JSON.stringify(a.b).slice(0, 400)}`);
+      if (a.status === 202) await rebootAfterDeploy();
+      // (b) …at once: the quiet window is an hour, and the job is on the helper's list now.
+      // MUTATION: drop the `deploy` arm of auditCadenceOf ⇒ the entry is cadence-held ⇒ not listed ⇒ red.
+      const again = await deployAsk();
+      const jobA = (await auditJobs())[0];
+      check("§7b the queued audit is offered NOW, past the hour-long quiet window — one cover, the deploy's own",
+        !!jobA && jobA.claim === null && jobA.covers === 1 && JSON.stringify(jobA.branches) === JSON.stringify(["(deploy)"]),
+        JSON.stringify(jobA));
+      check("§7b a second deploy while it is queued is refused again and queues nothing twice",
+        again.status === 409 && again.b.audit?.queued === true && /already queued/.test(again.b.reason ?? ""),
+        `${again.status} ${JSON.stringify(again.b).slice(0, 300)}`);
+      // (c) the helper measures it green ⇒ the deploy goes, and its ledger row names that audit
+      const measuredA = jobA ? await measure(jobA.id, 0) : 0;
+      const greenA = ledgerFor(tipA).find((r) => r.result === "green");
+      const c = await deployAsk();
+      if (c.status === 202) await rebootAfterDeploy();
+      const rowC = await deployRow(c.b.id);
+      check("§7c once the tip's full audit is GREEN the deploy goes, and its row names that audit",
+        measuredA === 200 && !!greenA && c.status === 202 && rowC?.ok === true && rowC.target === tipA
+          && rowC.audit?.result === "green" && rowC.audit.at === greenA.at && rowC.unaudited === undefined,
+        `measure=${measuredA} green=${JSON.stringify(greenA)} deploy=${c.status} row=${JSON.stringify(rowC).slice(0, 300)}`);
+      // (d) RED: the refusal names the adjudication door and re-queues nothing; an adjudicated red goes
+      commit("server.ts", "// v9 — a tip whose audit comes back red");
+      const tipB = headNow();
+      const d1 = await deployAsk();
+      const jobB = (await auditJobs())[0];
+      const measuredB = jobB ? await measure(jobB.id, 1) : 0;
+      const redB = ledgerFor(tipB).find((r) => r.result === "red");
+      const d2 = await deployAsk();
+      check("§7d a RED tip without a verdict is refused, names the adjudication door and queues no second run",
+        d1.status === 409 && measuredB === 200 && !!redB && d2.status === 409 && d2.b.audit?.queued === false
+          && d2.b.audit.redAt === redB.at && /RED and nobody has adjudicated/.test(d2.b.reason ?? "")
+          && (d2.b.next ?? "").includes("/api/post-land-audits/adjudicate") && (await auditJobs()).length === 0,
+        `d1=${d1.status} measure=${measuredB} red=${JSON.stringify(redB)} d2=${d2.status} ${JSON.stringify(d2.b).slice(0, 300)}`);
+      const judged = redB ? await post("/api/post-land-audits/adjudicate", { at: redB.at, verdict: "flake", note: "e2e deploy-facts §7d" }) : null;
+      const d3 = await deployAsk();
+      if (d3.status === 202) await rebootAfterDeploy();
+      const rowD = await deployRow(d3.b.id);
+      check("§7d …and once the red is adjudicated it counts as seen: the deploy goes, and its row carries the verdict",
+        judged?.ok === true && d3.status === 202 && rowD?.target === tipB && rowD.audit?.result === "red"
+          && rowD.audit.adjudication === "flake" && rowD.audit.at === redB?.at,
+        `judge=${judged?.status} deploy=${d3.status} row=${JSON.stringify(rowD).slice(0, 300)}`);
+      // (e) FORCE, the owner's: past an unmeasured tip, stamped, and no audit queued behind the restart
+      commit("server.ts", "// v10 — forced live unaudited");
+      const tipC = headNow();
+      const e = await deployAsk({ force: true });
+      const queuedOnForce = (await auditJobs()).length;
+      if (e.status === 202) await rebootAfterDeploy();
+      const rowE = await deployRow(e.b.id);
+      check("§7e force with the owner token deploys an unaudited tip and the ledger row says `unaudited: forced`",
+        e.status === 202 && e.b.unaudited === "forced" && queuedOnForce === 0
+          && rowE?.target === tipC && rowE.unaudited === "forced" && rowE.audit === undefined,
+        `${e.status} ${JSON.stringify(e.b).slice(0, 200)} queued=${queuedOnForce} row=${JSON.stringify(rowE).slice(0, 300)}`);
+      await restartSrv({ FLEET_REPO_DIR: FIX });
+    }
+
     if (priorRepoDir === undefined) delete process.env.FLEET_REPO_DIR;
     else process.env.FLEET_REPO_DIR = priorRepoDir;
     if (priorBuildCmd === undefined) delete process.env.FLEET_DEPLOY_BUILD_CMD;

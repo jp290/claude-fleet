@@ -28549,7 +28549,11 @@ const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL
 // is what closes the window a remote claim could slip through, and helperJobsView, which is a pure
 // projection. The note stays the durable, human-readable record of the same fact; this is the same
 // fact on the queue, and verify-proportion.ts remains the single place that classifies anything.
-interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true }
+interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true; deploy?: true }
+// `deploy` marks the ONE cover that is not a land: POST /api/deploy found its target tip without a
+// full audit and queued one for exactly that tip (deployAuditOf). Its branch is the label
+// DEPLOY_AUDIT_BRANCH, its mainAfter the tip the deploy wants live, and it releases the cadence at
+// once (auditCadenceOf) — the deploy is waiting on it, so the quiet window has nothing left to buy.
 // …and its identity AS A VALUE. The drain can consume its own frozen slice positionally, because
 // it holds the machine for the whole run and never lets go of the objects. Nothing else may: a
 // remote claim outlives a `kill-session -t srv`, and both sides of it — the queue file and the
@@ -28930,7 +28934,7 @@ function markAuditClaimable(repo: string, now = Date.now()): void {
   if (!auditQueue.has(repo)) { auditClaimableSince.delete(repo); return; }
   auditClaimableSince.set(repo, now);
 }
-type AuditTrigger = "quiet" | "max-wait";
+type AuditTrigger = "quiet" | "max-wait" | "deploy";
 type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number };
 // ONE READING for every door that asks "may this entry start now?" — the drain, the job list, both
 // claim doors, the wake rail and the live view. Over the WHOLE entry (every group), because both
@@ -28938,6 +28942,9 @@ type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; release
 // A function of (covers, now) and nothing else, so a land that arrives after the release but before
 // a claim re-closes the window — the burst was not over — and the ceiling still bounds it.
 function auditCadenceOf(q: AuditQueueEntry, now = Date.now()): AuditCadence {
+  // …save ONE exception, and the only one: a deploy waiting on this tree (AuditCover.deploy) releases
+  // it now — the owner's „[Zitat entfernt]“ (2026-10-08), not a third number
+  if (auditQueueGroups(q).some((g) => g.covers.some((c) => c.deploy))) return { due: true, trigger: "deploy" };
   const ats = auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.at));
   if (!ats.length) return { due: true, trigger: "quiet" };
   const youngest = Math.max(...ats), oldest = Math.min(...ats);
@@ -42166,7 +42173,8 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
       !!c && typeof c === "object" && typeof (c as AuditCover).branch === "string"
       && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number")
       .map((c): AuditCover => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at,
-        ...(c.proportional === true ? { proportional: true as const } : {}) }));
+        ...(c.proportional === true ? { proportional: true as const } : {}),
+        ...(c.deploy === true ? { deploy: true as const } : {}) }));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       for (const [repo, v] of Object.entries(parsed as Record<string, unknown>)) {
         const e = v as { main?: unknown; covers?: unknown; behind?: unknown };
@@ -44282,7 +44290,15 @@ interface DeployMarker {
   target: string;                 // the HEAD this deploy set out to put in the running process
   bootHeadBefore: string | null;  // what was running when it was pulled — makes a no-op deploy visible
   buildMs: number; buildCmd: string; restartCmd: string;
+  audit?: DeployAuditStamp;       // which full audit of `target` admitted it (deployAuditOf)
+  unaudited?: DeployUnaudited;    // …or why none did. Exactly one of the two on every new marker
 }
+// THE TIP'S AUDIT, AS THE LEDGER ROW CARRIES IT. `audit` names the row that let the deploy through;
+// `unaudited` says why none did — `forced` (the owner's {„[Zitat entfernt]“:true}) or `no-audit-command` (no
+// tier-2 command applies to this repo, so there is nothing to wait for). Absent on both: a row
+// written before the precondition existed.
+interface DeployAuditStamp { at: number; result: "green" | "red"; adjudication?: AdjudicationVerdict }
+type DeployUnaudited = "forced" | "no-audit-command";
 interface DeployRow {
   at: number; id: string; by: DeployBy;
   stage: "build" | "restart" | "boot";
@@ -44294,6 +44310,8 @@ interface DeployRow {
   exitCode?: number | null;
   out?: string;
   ms?: number;
+  audit?: DeployAuditStamp;
+  unaudited?: DeployUnaudited;
 }
 
 function appendDeployRow(row: DeployRow): Promise<void> {
@@ -44382,6 +44400,8 @@ async function judgeDeploy(m: DeployMarker, stage: DeployRow["stage"], extra?: s
     bundleStale: bundle.stale,
     ...(reasons.length ? { reason: reasons.join("; ") } : {}),
     ms: Date.now() - m.at,
+    ...(m.audit ? { audit: m.audit } : {}),
+    ...(m.unaudited ? { unaudited: m.unaudited } : {}),
   };
 }
 
@@ -44505,6 +44525,66 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
   audit("deploy", undefined, `${m.id} FAILED: restart command exit ${exitCode}`);
 }
 
+// THE DEPLOY'S AUDIT PRECONDITION (owner 2026-10-08 ~16:0x: „[Zitat entfernt]“
+// ). Until then
+// deployBlocker asked only whether an audit was RUNNING, never whether the tip had ever been
+// measured: deploy 2bd1f716 (15:0x that day) put 39892114 live although its audit row was red
+// (2 fails, Summary family) — nobody read the ledger. With the bundled cadence the deploy is the
+// natural checkpoint: what goes live is what the full suite saw.
+// SEEN means a row of post-land-audits.jsonl for THIS repo whose `mainSha` is exactly the target and
+// that measured the FULL chain (`proportional` absent — a docs-only short chain is install+pins, not
+// the suite): green, or red WITH an adjudication (the judgement is the proof somebody looked,
+// rulebook §Deploy). A red without one is UNSEEN and names the adjudication door — re-running it
+// would only buy a second red nobody read. Anything else (no row, only `unknown`) is UNSEEN too and,
+// when `enqueue` is set, queues exactly one full audit of the target at once: a `deploy` cover,
+// released past the cadence, skipped when one is already queued or a helper already measures the
+// target. NOT-APPLICABLE is a repo no tier-2 command applies to: there is nothing to wait for.
+const DEPLOY_AUDIT_BRANCH = "(deploy)";
+type DeployAuditOf =
+  | { state: "seen"; stamp: DeployAuditStamp }
+  | { state: "not-applicable" }
+  | { state: "unseen"; repo: string; why: string; queued: boolean; redAt?: number; next: string };
+async function deployAuditOf(target: string, enqueue: boolean): Promise<DeployAuditOf> {
+  const top = await git(REPO_DIR, "rev-parse", "--show-toplevel");
+  if (top.code !== 0 || !top.out || !auditCmdFor(top.out)) return { state: "not-applicable" };
+  const repo = top.out;
+  const canon = repoCanon(repo);
+  const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+  const full = rows.map(validAuditRow).filter((r): r is PostLandAuditRow => !!r && repoCanon(r.repo) === canon
+    && r.mainSha === target && r.proportional !== true);
+  const green = full.filter((r) => r.result === "green").at(-1);
+  if (green) return { state: "seen", stamp: { at: green.at, result: "green" } };
+  const red = full.filter((r) => r.result === "red").at(-1);
+  if (red) {
+    const adj = (await adjudicationsByAudit()).get(red.at);
+    if (adj) return { state: "seen", stamp: { at: red.at, result: "red", adjudication: adj.verdict } };
+    return { state: "unseen", repo, queued: false, redAt: red.at,
+      why: `its full audit (row at ${red.at}) is RED and nobody has adjudicated it`,
+      next: `adjudicate it — POST /api/post-land-audits/adjudicate {"at":${red.at},"verdict":"real|flake|stale-test|unknowable","note":"…"} — then POST /api/deploy again` };
+  }
+  const watch = `watch {"kind":"audit","repo":${JSON.stringify(repo)},"mainAfter":"${target}"}`
+    + " (POST /api/self/watch), then POST /api/deploy again once it is green or its red adjudicated";
+  const claim = helperClaimOf(repo);
+  const shardRun = auditShardRuns.get(repo);
+  const remote = claim?.mainSha === target ? claim.name : shardRun?.mainSha === target ? "a sharded helper run" : null;
+  if (remote) return { state: "unseen", repo, queued: true, next: watch,
+    why: `its full audit is running on ${remote} — nothing was queued twice` };
+  const already = [...auditQueue.entries()].some(([r, q]) => repoCanon(r) === canon
+    && auditQueueGroups(q).some((g) => g.covers.some((c) => c.deploy && c.mainAfter === target)));
+  if (already) return { state: "unseen", repo, queued: true, next: watch,
+    why: "its full audit is already queued for this deploy — nothing was queued twice" };
+  if (!enqueue) return { state: "unseen", repo, queued: false, next: watch, why: "no full audit of this tip exists" };
+  const main = await integrationBranch(repo);
+  if (!main) return { state: "unseen", repo, queued: false, next: "resolve the repo's integration branch, then POST /api/deploy again",
+    why: `no full audit of this tip exists, and ${basename(repo)}'s integration branch could not be resolved to queue one` };
+  enqueueAuditCover(repo, main, { branch: DEPLOY_AUDIT_BRANCH, mainAfter: target, at: Date.now(), deploy: true });
+  savePostLandAuditQueue();
+  audit("deploy", undefined, `refused ${target.slice(0, 7)}: tip not audited — queued its full audit now`);
+  kickAuditDrain();
+  return { state: "unseen", repo, queued: true, next: watch,
+    why: "no full audit of this tip exists — its audit was queued now, past the cadence's quiet window" };
+}
+
 // In-memory one-at-a-time lock, held across the BUILD. The durable marker cannot cover this window
 // — it is written only after the build succeeds — so two requests arriving a second apart would
 // otherwise run two builds over the same tree and mint two markers, the second of which would
@@ -44513,19 +44593,19 @@ let deployRunning = false;
 landBundleBuildReady = true; // every name rebuildBundleAfterLand reads is initialised from here on
 // The verb itself. Both principals reach it (owner below tokenGate, steward via handleStewardRoute)
 // — the steward is the pulse that SEES the gap, the owner is the hand that has always closed it.
-async function deployVerb(by: DeployPrincipal): Promise<Response> {
+async function deployVerb(by: DeployPrincipal, force = false): Promise<Response> {
   if (deployRunning)
     return json({ ok: false, stage: "preflight", reason: "a deploy is already building — one at a time" }, 409);
   deployRunning = true;
   try {
-    return await deployRun(by);
+    return await deployRun(by, force);
   } finally {
     // released even on the success path: from here the DURABLE marker is what keeps a second
     // deploy out, and this process may not live long enough to release anything later
     deployRunning = false;
   }
 }
-async function deployRun(by: DeployPrincipal): Promise<Response> {
+async function deployRun(by: DeployPrincipal, force: boolean): Promise<Response> {
   const blocked = deployBlocker();
   if (blocked) return json({ ok: false, stage: "preflight", reason: blocked }, 409);
   const pending = readDeployMarker();
@@ -44546,6 +44626,19 @@ async function deployRun(by: DeployPrincipal): Promise<Response> {
     return json({ ok: false, stage: "preflight",
       reason: "HEAD is unreadable — a deploy whose target cannot be named cannot be verified either" }, 409);
   const target = hd.out;
+  // PHASE 0 — THE TIP WAS MEASURED, OR THIS DEPLOY WAITS FOR IT (deployAuditOf). Only the owner's
+  // explicit force goes past an unmeasured tip, and the row says so.
+  const tip = await deployAuditOf(target, !force);
+  if (tip.state === "unseen" && !force)
+    return json({ ok: false, stage: "preflight", target, reason: `tip not audited — ${tip.why}`,
+      audit: { repo: tip.repo, mainAfter: target, queued: tip.queued, ...(tip.redAt ? { redAt: tip.redAt } : {}) },
+      next: tip.next,
+      force: by === "owner" ? "POST /api/deploy {\"force\":true} deploys this tip unaudited and stamps the row `unaudited: forced`"
+        : "only the owner can force a deploy past an unaudited tip" }, 409);
+  const auditStamp: Pick<DeployMarker, "audit" | "unaudited"> = tip.state === "seen" ? { audit: tip.stamp }
+    : tip.state === "not-applicable" ? { unaudited: "no-audit-command" } : { unaudited: "forced" };
+  if (auditStamp.unaudited === "forced")
+    audit("deploy", undefined, `${target.slice(0, 7)} FORCED past an unaudited tip by the owner — ${tip.state === "unseen" ? tip.why : ""}`.slice(0, 240));
   const id = randomBytes(4).toString("hex");
 
   // PHASE 1 — the build, judged by the process that ran it. A failing build returns here and the
@@ -44559,7 +44652,7 @@ async function deployRun(by: DeployPrincipal): Promise<Response> {
       reason: build.exitCode === null
         ? `the build timed out after ${DEPLOY_BUILD_TIMEOUT_MS}ms — srv was not restarted`
         : `the build failed (exit ${build.exitCode}) — srv was not restarted`,
-      exitCode: build.exitCode, out: build.out, ms: build.ms,
+      exitCode: build.exitCode, out: build.out, ms: build.ms, ...auditStamp,
     });
     audit("deploy", undefined, `${id} FAILED: build exit ${build.exitCode ?? "timeout"}`);
     return json({ ok: false, stage: "build", id, target, exitCode: build.exitCode, out: build.out, ms: build.ms,
@@ -44569,13 +44662,13 @@ async function deployRun(by: DeployPrincipal): Promise<Response> {
   // PHASE 2 — the marker, durable BEFORE anything can kill us, then the answer, then the kill.
   const marker: DeployMarker = {
     id, at: Date.now(), by, target, bootHeadBefore: BOOT_HEAD,
-    buildMs: build.ms, buildCmd: DEPLOY_BUILD_CMD, restartCmd: DEPLOY_RESTART_CMD,
+    buildMs: build.ms, buildCmd: DEPLOY_BUILD_CMD, restartCmd: DEPLOY_RESTART_CMD, ...auditStamp,
   };
   writeDeployMarker(marker);
   audit("deploy", undefined, `${id} build ok in ${build.ms}ms, restarting for ${target.slice(0, 7)}`);
   setTimeout(() => { void runDeployRestart(marker); }, DEPLOY_RESTART_DELAY_MS);
   return json({
-    ok: null, stage: "restarting", id, target, buildMs: build.ms,
+    ok: null, stage: "restarting", id, target, buildMs: build.ms, ...auditStamp,
     note: "the restart kills this process — the verdict is written by the next boot; read it at GET /api/deploys",
   }, 202);
 }
@@ -47619,7 +47712,8 @@ Bun.serve<WSData>({
     // POSITION here; the steward reaches the same two functions through handleStewardRoute. Nothing
     // else calls them — no tick, no auto.
     if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
-    if (url.pathname === "/api/deploy" && req.method === "POST") return await deployVerb("owner");
+    if (url.pathname === "/api/deploy" && req.method === "POST")
+      return await deployVerb("owner", (await readJson(req))?.force === true);
     // THE SUCCESSION DEBTS (server.ts#recordSuccessionDebt): what an in-place succession still owes
     // after its predecessor ended — read them, and resend a held brief to the exact successor it was
     // built for. Owner-only by POSITION.

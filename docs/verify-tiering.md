@@ -480,7 +480,8 @@ its newest unmeasured land, or until `FLEET_AUDIT_MAX_WAIT_MS` (default 60 min) 
 whichever comes first — exactly two numbers, no daily cap, no night run. The quiet window bundles a
 burst into one run on the newest tip that names every land as a cover; the ceiling is what keeps a
 day that is never quiet from never being measured. A held entry is not on the helper's job list, its
-claim is a 409, and it wakes nobody; the ledger row carries `trigger: "quiet" | "max-wait"`.
+claim is a 409, and it wakes nobody; the ledger row carries `trigger: "quiet" | "max-wait"` (or
+`"deploy"`, the one exception — see the deploy paragraph below).
 **And a helper's audit no longer falls back onto this Mac** (`server.ts#AUDIT_HELPER_ONLY`): an
 offerable entry waits for a helper however long that takes — visible as `hold: "waiting for helper"`
 in `GET /api/post-land-audits` → `pending` and in the land's memory view, and as a
@@ -493,6 +494,25 @@ this applies — the local drain is the runner and starts on the land, as before
 20 full audits on claude-fleet between 02:31 and 15:43, median 32 min, ~10 h of helper wall time.
 Proof: `e2e/helper-portal.ts` sections (K7), (K7e), (T), (W4), (K11), run by
 `./e2e-postland-audit.sh`.
+
+**The deploy waits for the tip's full audit, added 2026-10-08 (owner: „[Zitat entfernt]“
+).** With the
+cadence above, the deploy is the natural checkpoint, and until then `server.ts#deployBlocker` only
+asked whether an audit was RUNNING: deploy `2bd1f716` that afternoon put `39892114` live although
+its audit row was red (2 fails, Summary family). `server.ts#deployAuditOf` is now PHASE 0 of
+`POST /api/deploy`: the target tip counts as seen only with a row in `post-land-audits.jsonl` for
+that repo whose `mainSha` IS the target, that ran the FULL chain (`proportional` absent — a docs-only
+tip's install+pins row does not count), and that is green or red WITH an adjudication. Otherwise the
+answer is `409` with `reason: "tip not audited — …"`, `audit{repo,mainAfter,queued,redAt?}` and
+`next`: an unmeasured tip gets exactly one full audit queued at once — a cover with branch
+`(deploy)` and `deploy: true`, which `auditCadenceOf` releases past the quiet window (row
+`trigger: "deploy"`) — and `next` names the audit watch (`{"kind":"audit","repo",…,"mainAfter":<tip>}`)
+and the second `POST /api/deploy`; a red without a verdict queues nothing and names
+`POST /api/post-land-audits/adjudicate` instead. `{"force":true}` with the OWNER token (not the
+steward's door) deploys anyway, queues nothing behind the restart, and stamps the `deploys.jsonl`
+row `unaudited: "forced"`; an admitted deploy carries `audit{at,result,adjudication?}`, and a repo
+no tier-2 command applies to is `unaudited: "no-audit-command"` — nothing to wait for. Proof:
+`e2e/deploy-facts.ts` §7 (run by `./e2e-isolated.sh`).
 
 **The source class, added 2026-10-08 (owner: „[Zitat entfernt]“
 ).** A candidate whose every changed path is `src/`, `public/` or docs no longer runs

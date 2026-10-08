@@ -235,11 +235,22 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
   type Fixture = { clock: { free: number; unreadable: boolean }; queue: Map<string, { covers: { mainAfter: string }[] }>;
     tasks: { status: string; note?: string }[]; override(value: string | undefined, fallback: number): number; counts: { audits: number; lanes: number; ticks: number; measurements: number };
     measure(): Space; timer(): ReturnType<typeof setInterval>; view: { read(): View }; flush(): Promise<void>;
-    occupancy(n: number, audit?: boolean, pending?: boolean): void };
+    occupancy(n: number, gates?: number, audit?: boolean, holder?: "foreign" | "own" | "child" | "dead" | "missing" | "invalid" | "denied"): void };
   const setup = `
-    const clock = {free: 4 * 1024 ** 3, unreadable: false};
+    const clock = {free: 3 * 1024 ** 3, unreadable: false};
     const counts = {audits: 0, lanes: 0, ticks: 0, measurements: 0};
-    const process = {env: {}};
+    let holder = 'missing';
+    const SUITE_LOCK = '/fixture/suite-lock';
+    const process = {env: {}, pid: 10, kill(pid, signal) {
+      if (signal !== 0) throw Error('sensor must not signal a process');
+      if (holder === 'dead') throw Object.assign(Error('gone'), {code: 'ESRCH'});
+      if (holder === 'denied') throw Object.assign(Error('permission'), {code: 'EPERM'});
+    }};
+    const readFileSync = (path) => {if (path !== SUITE_LOCK + '/pid') throw Error('wrong lock path');
+      if (holder === 'missing') throw Error('absent');
+      return holder === 'invalid' ? '0' : holder === 'own' ? '10' : '20';};
+    const Bun = {spawnSync(args) {if (args.join(' ') !== 'ps -o ppid= -p 20') throw Error('unexpected ancestry command');
+      return {exitCode: 0, stdout: new TextEncoder().encode(holder === 'child' ? '10' : '1')};}};
     const tmpdir = () => '/fixture/tmp';
     const statfsSync = (path) => {counts.measurements++; if (clock.unreadable) throw Error('no reading');
       if (path !== '/fixture/tmp') throw Error('wrong measurement path'); return {bavail: clock.free, bsize: 1};};
@@ -281,14 +292,18 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
       observe: source, produce: async () => ({startable: [{id: 'released'}]}), diskSpace: () => hostDiskSpace});
     const flush = async () => {view.observe(); for (let i = 0; i < 5; i++) {while (scheduled.length) scheduled.shift()(); await Promise.resolve();}};
     return {clock, counts, queue: auditQueue, tasks, view, flush, measure: measureHostDiskSpace, override: diskGiBOverride,
-      occupancy(n, audit = false, pending = false) {slots.length = 0; for (let i = 0; i < n; i++) slots.push({id: i, cwd: '/lane', worktree: {}});
-        auditRunningRepo = audit ? '/fixture/repo' : null; diskLaneStarts.clear(); if (pending) diskLaneStarts.add(100);},
+      occupancy(n, gates = 0, audit = false, lock = 'missing') {slots.length = 0; for (let i = 0; i < n; i++) slots.push({id: i, cwd: '/lane', worktree: {}});
+        auditRunningRepo = audit ? '/fixture/repo' : null; holder = lock; serverRuns.clear();
+        for (let i = 0; i < gates; i++) serverRuns.set('land:' + i, {});
+        if (audit) serverRuns.set('audit', {});},
       timer() {kickAuditDrain(); return setInterval(() => {counts.ticks++; tickHostDiskSpace(); void tickDispatch();}, DISPATCH_TICK_MS);}};
   `;
-  const build = (mutation: "audit" | "lane" | null): Fixture => {
+  const build = (mutation: "audit" | "lane" | "lanes-count" | "suite-reserve" | null): Fixture => {
     let code = actual;
     if (mutation === "audit") code = code.replace('if (measureHostDiskSpace().state === "disk-space-held") break;', 'if (false) break;');
     if (mutation === "lane") code = code.replace('if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }', 'if (false) { waiting(diskSpaceWaitNote(space)); continue; }');
+    if (mutation === "lanes-count") code = code.replace('const runningWriters = gates +', 'const runningWriters = slots.length + gates +');
+    if (mutation === "suite-reserve") code = code.replace('const runningWriters = gates + (auditRunningRepo ? 1 : 0) + foreignDiskSuiteCount();', 'const runningWriters = 0;');
     if (mutation && code === actual) throw Error(`missing ${mutation} admission mutation`);
     return new Function(new Bun.Transpiler({loader: "ts"}).transformSync(setup + code + finish))() as Fixture;
   };
@@ -315,8 +330,8 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
   const fix = mkdtempSync(`${tmpdir()}/fleet-e2e-disk-view-`);
   try {
     const v = await (await fetch(`http://127.0.0.1:${srv.port}/api/operational-view`)).json() as View;
-    assert("host-disk operational GET shows measured free bytes, strict threshold, reserve and TMPDIR location",
-      v.diskSpace.state === 'disk-space-held' && v.diskSpace.freeBytes === 4 * 1024 ** 3
+    assert("host-disk operational GET shows measured free bytes, threshold, reserve and TMPDIR location",
+      v.diskSpace.state === 'disk-space-held' && v.diskSpace.freeBytes === 3 * 1024 ** 3
       && v.diskSpace.minimumFreeBytes === 4 * 1024 ** 3 && v.diskSpace.writerReserveBytes === 3.6 * 1024 ** 3
       && v.diskSpace.path === '/fixture/tmp' && v.diskSpace.measuredAt > 0 && v.data?.startable.length === 0, JSON.stringify(v.diskSpace));
     writeFileSync(`${fix}/view.json`, JSON.stringify(v));
@@ -327,23 +342,36 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     chmodSync(`${fix}/ctl.sh`, 0o755);
     const brief = spawnSync('sh', [`${fix}/state.sh`, '--brief'], {encoding: 'utf8', env: {...process.env, FLEET_SELF_TOKEN: ''}});
     assert("host-disk state.sh --brief renders the held measurement, threshold and location from operational GET",
-      brief.status === 0 && brief.stdout.includes('host-disk disk-space-held freeBytes=4294967296 minimumFreeBytes=4294967296')
+      brief.status === 0 && brief.stdout.includes('host-disk disk-space-held freeBytes=3221225472 minimumFreeBytes=4294967296')
         && brief.stdout.includes('path=/fixture/tmp'), brief.stdout.split('\n').filter((l) => l.includes('host-disk')).join(' '));
   } finally { srv.stop(true); rmSync(fix, {recursive: true, force: true}); }
   f.clock.free = 12 * 1024 ** 3;
-  f.occupancy(0);
-  assert("host-disk 12 GiB permits first start", f.measure().state === 'ready');
-  f.occupancy(1);
-  assert("host-disk 12 GiB permits second beside one writer", f.measure().state === 'ready');
-  f.occupancy(2);
-  assert("host-disk literal existing-writer rule permits third at 12 GiB (4.8 GiB remains)", f.measure().state === 'ready');
-  f.occupancy(3);
-  assert("host-disk existing-writer rule holds fourth at 12 GiB", f.measure().state === 'disk-space-held');
+  const suitesOnly = (probe: Fixture): boolean => {
+    probe.clock.free = 12 * 1024 ** 3;
+    probe.occupancy(10);
+    const idle = probe.measure();
+    probe.occupancy(10, 1, true, 'foreign');
+    const busy = probe.measure();
+    return idle.state === 'ready' && idle.runningWriters === 0 && idle.reservedBytes === 0
+      && busy.state === 'disk-space-held' && busy.runningWriters === 3 && busy.reservedBytes === 10.8 * 1024 ** 3;
+  };
+  assert("host-disk 12 GiB and ten open lanes are ready without suites, held with three local suites", suitesOnly(f));
+  for (const mutation of ['lanes-count', 'suite-reserve'] as const)
+    assert(`host-disk ${mutation} mutation makes the same suites-only admission claim red`, !suitesOnly(build(mutation)));
+  f.occupancy(10, 2);
+  assert("host-disk two local suites leave 4.8 GiB at 12 GiB and permit a lane start", f.measure().state === 'ready');
+  for (const holder of ['own', 'child', 'dead', 'missing', 'invalid'] as const) {
+    f.occupancy(10, 0, true, holder);
+    assert(`host-disk ${holder} mutex adds no suite; local audit is counted once`, f.measure().runningWriters === 1);
+  }
+  f.occupancy(10, 0, false, 'denied');
+  assert("host-disk signal-zero EPERM counts a live foreign suite", f.measure().runningWriters === 1);
   assert("host-disk positive GiB override takes effect; invalid, zero and negative keep defaults",
     f.override('5', 4) === 5 * 1024 ** 3 && ['bad', '0', '-1', 'Infinity', '1e308', ''].every((v) => f.override(v, 4) === 4 * 1024 ** 3));
-  f.occupancy(0, true, true);
-  assert("host-disk counts local audit and pending lane before it has a worktree", f.measure().runningWriters === 2 && f.measure().reservedBytes === 7.2 * 1024 ** 3);
-  f.occupancy(0);
+  f.occupancy(10);
+  f.clock.free = 4 * 1024 ** 3;
+  assert("host-disk corrected floor permits exactly 4 GiB with zero local suites", f.measure().state === 'ready');
+  f.clock.free = 12 * 1024 ** 3;
   f.clock.unreadable = true;
   assert("host-disk unreadable filesystem holds starts with explicit failed measurement",
     f.measure().reason === 'measurement-failed' && f.measure().freeBytes === null);

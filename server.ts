@@ -21230,17 +21230,35 @@ function diskGiBOverride(value: string | undefined, fallback: number): number {
 const DISK_MIN_FREE_BYTES = diskGiBOverride(process.env.FLEET_DISK_MIN_FREE_GIB, 4);
 const DISK_WRITER_BYTES = diskGiBOverride(process.env.FLEET_DISK_WRITER_GIB, 3.6);
 const DISK_PATH = tmpdir();
-const diskLaneStarts = new Set<number>();
-let diskGroupStarts = 0;
 type HostDiskSpace = { state: "ready" | "disk-space-held"; reason: "low-free-space" | "measurement-failed" | null;
   path: string; measuredAt: number; freeBytes: number | null; minimumFreeBytes: number;
   writerReserveBytes: number; runningWriters: number; reservedBytes: number; availableBytes: number | null };
 let hostDiskSpace: HostDiskSpace | null = null;
-function measureHostDiskSpace(additionalWriters = 0): HostDiskSpace {
-  const lanes = slots.filter((s) => s.cwd && s.worktree);
-  const pending = [...diskLaneStarts].filter((id) => !lanes.some((s) => s.id === id)).length;
+function foreignDiskSuiteCount(): number {
+  let raw: string;
+  try { raw = readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim(); } catch { return 0; }
+  if (!/^[1-9]\d*$/.test(raw)) return 0;
+  let pid = Number(raw);
+  if (!Number.isSafeInteger(pid)) return 0;
+  try { process.kill(pid, 0); }
+  catch (e: unknown) { if ((e as { code?: string }).code !== "EPERM") return 0; }
+  // A child holding our audit's mutex is already counted by auditRunningRepo, not a second suite.
+  for (let depth = 0; depth < 32; depth++) {
+    if (pid === process.pid) return 0;
+    if (pid <= 1) break;
+    try {
+      const p = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)]);
+      if (p.exitCode !== 0) break;
+      const parent = Number(new TextDecoder().decode(p.stdout).trim());
+      if (!Number.isSafeInteger(parent) || parent <= 0 || parent === pid) break;
+      pid = parent;
+    } catch { break; }
+  }
+  return 1;
+}
+function measureHostDiskSpace(): HostDiskSpace {
   const gates = [...serverRuns.entries()].filter(([key]) => key !== "audit").length;
-  const runningWriters = lanes.length + pending + diskGroupStarts + gates + (auditRunningRepo ? 1 : 0) + additionalWriters;
+  const runningWriters = gates + (auditRunningRepo ? 1 : 0) + foreignDiskSuiteCount();
   let freeBytes: number | null = null;
   try {
     const fs = statfsSync(DISK_PATH);
@@ -21249,7 +21267,7 @@ function measureHostDiskSpace(additionalWriters = 0): HostDiskSpace {
   } catch { /* a failed reading holds starts, never retires work */ }
   const reservedBytes = runningWriters * DISK_WRITER_BYTES;
   const availableBytes = freeBytes === null ? null : freeBytes - reservedBytes;
-  const held = availableBytes === null || availableBytes <= DISK_MIN_FREE_BYTES;
+  const held = availableBytes === null || availableBytes < DISK_MIN_FREE_BYTES;
   const next: HostDiskSpace = { state: held ? "disk-space-held" : "ready",
     reason: freeBytes === null ? "measurement-failed" : held ? "low-free-space" : null,
     path: DISK_PATH, measuredAt: Date.now(), freeBytes, minimumFreeBytes: DISK_MIN_FREE_BYTES,
@@ -21320,8 +21338,7 @@ async function tickDispatch(): Promise<void> {
       }
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
-        const n = variantsOfGroup(variantGroupOf(next) ?? next).length;
-        const space = measureHostDiskSpace(Math.max(0, n - 1));
+        const space = measureHostDiskSpace();
         if (space.state === "disk-space-held") {
           const note = diskSpaceWaitNote(space);
           let changed = false;
@@ -21329,10 +21346,7 @@ async function tickDispatch(): Promise<void> {
           if (changed) saveState();
           continue;
         }
-        diskGroupStarts += n;
-        let g: VariantGroupStart;
-        try { g = await startVariantGroup(next, false); }
-        finally { diskGroupStarts -= n; }
+        const g = await startVariantGroup(next, false);
 
         variantReserveSet(next.variantOf, g); // a CAPACITY hold parks the next lane, nothing else does
 
@@ -21530,10 +21544,7 @@ async function tickDispatch(): Promise<void> {
         : null;
       const space = measureHostDiskSpace();
       if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }
-      diskLaneStarts.add(free.id);
-      let r: Awaited<ReturnType<typeof dispatchTask>>;
-      try { r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover); }
-      finally { diskLaneStarts.delete(free.id); }
+      const r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover);
 
       // the machine's sibling of the owner's task_wave_dispatch, written once per started wave
       if (r.ok && handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);

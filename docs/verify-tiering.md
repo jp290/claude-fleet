@@ -403,20 +403,22 @@ fail as a wrong premise instead of as a broken feature.
 OS-Default) mit `statfs`, read-only. `drainPostLandAudits` hält vor seiner lokalen Startmarke;
 die Queue und ihre Covers werden erst nach einem tatsächlich ausgeführten Audit konsumiert.
 Remote-Helper können weiter claimen. `tickDispatch` hält neue Lane-Starts und prüft vor dem
-Start nach seinem externen Await erneut; eine Startreservierung schließt die Lücke bis zum
-Worktree. Im Dispatch-Takt misst `tickHostDiskSpace` erneut und stößt den Audit-Drain an;
+Start nach seinem externen Await erneut. Im Dispatch-Takt misst `tickHostDiskSpace` erneut und stößt den Audit-Drain an;
 Lane-Zeilen gehen durch ihren gewöhnlichen Tick weiter. Kein Aufräumen, Reap oder Abbruch.
 
-Admission: freie Bytes minus 3,6 GiB pro schon laufendem lokalen Schreiber müssen **strikt über
-4 GiB** bleiben. Offene Lanes mit Worktree, noch startende Lanes, lokale Server-Gates und das
-lokale Audit zählen; Remote-Audits nicht. Die Defaults haben positive endliche GiB-Overrides
+Admission: freie Bytes minus 3,6 GiB pro tatsächlich laufender lokaler Suite müssen
+**mindestens 4 GiB** bleiben. Gezählt werden lokale Server-Gates (`serverRuns` ohne Audit),
+das lokale Audit (`auditRunningRepo`) und ein lebender fremder Suite-Mutex-Holder. Eigene
+Holder und eigene Kindprozesse werden nicht zusätzlich gezählt. Die Mutex-Sonde liest nur
+PID/Eltern-PIDs und prüft Signal 0, ohne zu räumen oder zu reapen. Offene/startende Lanes,
+Remote-Audits und Remote-Vorschauen zählen 0. Die Defaults haben positive endliche GiB-Overrides
 `FLEET_DISK_MIN_FREE_GIB` und `FLEET_DISK_WRITER_GIB`; ungültige Werte behalten den Default.
 Eine fehlgeschlagene Hostmessung hält ebenfalls. `GET /api/operational-view` und
 `./state.sh --brief` zeigen `disk-space-held` samt Messwert, Reserve, Schwelle, Pfad und Zeit.
 
 `e2e/host-hygiene.ts#diskSpaceChecks` fährt die echten Sensor-, Drain-, Dispatch- und View-Funktionen
 mit Stand-ins nur an den Host-/Schreibgrenzen. Ein lokaler HTTP-GET fährt den echten Route-Arm;
-`state.sh --brief` parst dessen Antwort über eine Fixture-CTL. Vier Ticks bei genau 4 GiB müssen
+`state.sh --brief` parst dessen Antwort über eine Fixture-CTL. Vier Ticks bei 3 GiB müssen
 beide Starts halten, den Cover behalten und die Lane queued lassen. Nach Freigabe bei 12 GiB
 laufen beide ohne Handgriff genau einmal. Je eine Mutation entfernt den Audit- oder Lane-Halt
 und muss dieselbe negative Probe rot machen. Ein zusätzlicher Pin in `e2e/pins.ts` verankert
@@ -430,11 +432,14 @@ Dispatch- oder Reserve-Checks machen. `host-hygiene` liest die tatsächlichen Ov
 `GET /api/operational-view`. `e2e/pins.ts` liest ausschließlich seinen geprüften Baum, ohne
 Symlink-Fallback, und prüft jeden Wrapper-Start sowie die eigenen Restart-Whitelists in `e2e/restart.ts` und `fleet-e2e-postland-audit.ts`; das Entfernen eines
 Wrapper-Overrides macht dessen Claim rot. Die eigene Knappheitsprobe setzt ihre ENV-Grenze leer und verlangt
-separat exakt die scharfen Defaults 4/3,6 GiB sowie einen Halt bei 4 GiB. Die CLI-Probe liest
+separat exakt die scharfen Defaults 4/3,6 GiB sowie einen Halt bei 3 GiB und Freigabe bei genau 4 GiB. Die CLI-Probe liest
 `state.sh` bei fehlender gestagter Kopie über genau einen `node_modules`-Symlink zum Quellbaum.
-Die wortwörtliche Bestandsregel erlaubt bei 12 GiB auch einen dritten Start: nach zwei Schreibern
-bleiben 4,8 GiB. Für höchstens zwei Starts müsste zusätzlich der neue Schreiber reserviert
-werden; die Zahlen 4/3,6 allein belegen das Zwei-Start-Beispiel nicht.
+Ein zusätzlicher Claim verlangt bei 12 GiB: zehn offene Lanes und keine lokale Suite ergeben
+`ready`; dieselben Lanes mit einem Gate, einem Audit und einem fremden lebenden Suite-Holder
+(drei lokale Suiten) ergeben `disk-space-held`. Mutationen, die Lanes wieder mitzählen oder
+die Suite-Reserve entfernen, machen denselben Claim rot. Zwei lokale Suiten lassen bei
+12 GiB noch 4,8 GiB und erlauben einen Lane-Start; ein Lane-Start selbst reserviert keine Suite.
+
 
 ### 6.0b proportion — Docs-only gate and audit
 

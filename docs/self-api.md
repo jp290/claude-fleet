@@ -162,11 +162,15 @@ Ein fehlender Ledger oder roter/unbekannter Audit nennt seine offene Grenze.
 `TMPDIR`, sonst der OS-Default), `measuredAt`, `freeBytes`, `minimumFreeBytes`, `writerReserveBytes`,
 `runningWriters`, `reservedBytes` und `availableBytes`. Gemessen wird mit `statfs.bavail * bsize`
 im Dispatch-Takt und unmittelbar vor einem lokalen schweren Start; GET misst nicht nach.
-Defaults sind 4 GiB Mindestrest und 3,6 GiB je laufendem Schreiber; positive endliche Overrides
+Defaults sind 4 GiB Mindestrest und 3,6 GiB je laufender lokaler Suite; positive endliche Overrides
 stehen in `FLEET_DISK_MIN_FREE_GIB` und `FLEET_DISK_WRITER_GIB`. Ungültige Overrides behalten den
-Default. Starts brauchen strikt `freeBytes - reservedBytes > minimumFreeBytes`.
-Gezählt werden offene lokale Lanes mit Worktree, noch startende Lanes, lokale Server-Gates und
-das lokale Post-Land-Audit; Remote-Claims zählen nicht. Der Halt lässt Audit-Covers dauerhaft
+Default. Starts brauchen `freeBytes - reservedBytes >= minimumFreeBytes`.
+Gezählt werden lokale Server-Gates (`serverRuns` ohne Audit-Doppelzählung), das lokale
+Post-Land-Audit (`auditRunningRepo`) und ein lebender fremder Holder des Suite-Mutex
+(`FLEET_SUITE_LOCK`, sonst `/tmp/fleet-e2e.lock`). Eigene Mutex-Holder und eigene
+Kindprozesse zählen nicht zusätzlich. Die Mutex-Sonde liest nur PID und Eltern-PIDs und
+prüft mit Signal 0; sie verändert den Mutex nicht. Offene/startende Lanes, Remote-Audits
+und Remote-Vorschauen zählen 0. Der Halt lässt Audit-Covers dauerhaft
 liegen und Lane-Zeilen startfähig in der Queue. Der nächste Dispatch-Takt nimmt sie automatisch
 wieder auf. Fehlende Messung hält Starts mit explizitem Grund, sie beendet keinen Lauf.
 `data.startable` bleibt während des Platzhalts und bei mindestens zwei Takte alter Messung leer.

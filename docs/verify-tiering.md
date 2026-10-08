@@ -5642,3 +5642,67 @@ Scratch-Worktree hatte keins) und §11.2ab (Backspace-Burst).
   nichts. Derselbe Baum lokal ALL PASS; der nächste Gate-Lauf (25b3ca7d) und der Wiederholungs-Land
   (1d0807d4) grün. `e2e/pins.ts` behandelt nur einen `ps`, der NICHT startet, als SKIP. Bei der
   zweiten Sichtung: Reparatur-Zeile auf die Ursache des leeren `ps` im Gate-Kind.
+
+### 11.2af Wocheninventur 2026-10-01 bis 2026-10-08 — erhaltene Belege, keine Flake-Rate
+
+Die [Messnotiz vom 08.10.](messungen/2026-10-08-flake-register-audits.md) wertet die
+bestehenden Audit-, Helfer- und Trail-Belege aus; sie ersetzt weder diese Ledger noch §11.0b.
+Sie nennt jeden erhaltenen roten Checknamen mit Lauf-/Job-ID, Commit/Tree, ausloesender Lane,
+Einordnung und gegebenenfalls einem Kartenentwurf. Alle Zahlen sind **Untergrenzen**, keine
+Haeufigkeiten: von 908 im Artefakt-Ledger genannten Wochen-Uploads sind nur 84 Logs lokal
+vorhanden, `fleet.json` haelt 20 Vorschau-Jobs. Die Vorschau-Ereignisse bewahren nur drei
+FAIL-Namen plus `+N`. Auch Audit `1791119530747` hat 131 Fail-Positionen, aber nur 50 Namen
+in `fails`; sein gehaltenes Tail ergaenzt vier. Verlorene Namen bleiben unknown.
+
+**Neue mechanisch belegte Familie: Journal-Identitaet (F04).**
+`server.ts#writeStewardJournal:41952` stempelt beim Append, die POST-Antwort
+`server.ts:44268` separat. `e2e/steward-core.ts#jSettled:626` verlangt ihre Gleichheit.
+Alle sechs erhaltenen roten Logzeilen zeigen genau 1 ms Differenz, etwa
+`streams/helper-artifacts/cf46ab0578a8/1791427257511/suite.log:7535`:
+`expected tail ts 1791426998854, last observed 1791426998853 after 60×50 ms`.
+Kosten: sechs belegte rote Laeufe, ohne dass mehr Warten die falsche Identitaet herstellen
+koennte. Reparatur `6ee5e133` identifiziert die eigene eindeutige `note`, mit benannter
+Append-Frist. Zeile `57e18812` besteht bereits; der Fix liegt am Messstand noch nicht im
+untersuchten HEAD `155a418a`. Das Rot auf dem anderen Fix-Ast `f42ecb4b` ist kein Rueckfall.
+
+**Neue Setup-Familie: Owner-Program-Nachfolge (F08).**
+`e2e/self-token.ts#ownerProgramSuccession:1810` verwendet `openFree`; die alte Sammelassertion
+bei Zeile 1846 unterscheidet freie Slots, Open-Antwort, Token und openedAt nicht.
+`e2e/harness.ts#paneEnv:380` hat eine 20-s-Standardfrist. Der gelesene Reparaturdiff
+`f42ecb4b` reserviert eigene Slots, vergroessert die Pane und diagnostiziert jeden Schritt;
+Zeile `3aaa1dc3` besteht. Die Messnotiz trennt das Vier-Session-Setup von den spaeteren
+Rest-/Standing-Handover-Checks. Kosten: mindestens drei Laufbelege fuer den Vier-Session-Namen;
+kein Beweis, dass jedes Setup-Rot derselbe paneEnv-Timeout war. Auch dieser Fix liegt im Git,
+aber am Messstand noch nicht im untersuchten HEAD.
+
+**Weitere neue, mit Reparaturdiff zugeordnete Sondenfamilien:**
+
+| Familie | Kosten als belegte Untergrenze | Reparatur und Anker |
+| --- | --- | --- |
+| Native Pack-Label F01 | 16 Laeufe | `a651f1d5`, `e2e/programs.ts#run:9401`: Label enthaelt `[hardness]`. |
+| Task-Katalog F02 | je 8 fuer drei Namen | `bee62c62`, `e2e/context-plan.ts#taskCatalogChecks:656`: exakte Manifest-Reihenfolge inklusive nachfolge-klug. |
+| LP.api Closure F03 | target 7, symbol 6 | `0d284c3b`, `e2e/lane-suite.ts#run:1620`: Closure aus modulePlanFor statt fauler Literale. |
+| Snapshot-DOM F05 | je 6 Desktop-, je 4 Handy-Belege | `197f63e4`, `e2e/lanes-lifecycle.ts#snapshotBoardDom:311`: Rechte-Tab oeffnen, wirklichen Live-Traeger lesen. |
+| Message-Rail-Zaehlung F09 | drei Namen je 3, zwei je 2 | `86123987`, `e2e/programs.ts#run:3364`: Delta zu msgRowsBefore statt globaler Absolutzaehlung. |
+| Start-Live-Size F10 | je 3 fuer zwei Namen | `173db294`, `e2e/ctl.ts#run:457`: armed/spent sind normalisierte Zaehler. |
+
+Diese Fix-Zuordnung behauptet weder eine unveraenderte Basisrate noch, dass alle historischen
+Rots mit demselben Namen denselben Mechanismus hatten. Die Notiz haelt weitere Fixes zu
+Owner-Send, Restart-Readiness und Role-Bundle getrennt fest. Bestehende Reparaturzeilen nicht
+noch einmal filen.
+
+**Offene Kandidaten, keine nachgewiesenen gemeinsamen Ursachen:** Die Messnotiz liefert
+Karten K01–K20 mit exakter Namenszuordnung. Insbesondere `rollback live falsifier: edit`
+(K18) ist ein einzelner erhaltener Vorschau-Beleg; Arbeitsorte 390x844 modell (K19) sind drei
+verschiedene Assertions ueber zwei Laeufe; Q6 (K20) bleibt an §11.2q angeschlossen.
+`streams/helper-artifacts/107a615cc63e/1791430145214/suite.log:356` zeigt Q6 erst bei
+`abc`, attempts 4, als `blocked` mit `rollback residue`; Zeile 358 scheitert danach an
+`parked5:false`. `e2e/watch.ts#run:3659` und `:3680` erklaeren diese Folge, nicht die
+Ursache des Residue. Das ist kein Beleg fuer einen falschen Default-Cap.
+
+Settings 390x844 Usage (K17, `e2e/slots.ts#runSettingsDom:5935`) hat 13 lokale Trail-Belege,
+aber keine daraus bewiesene Helfer-Zuordnung; weder Modul-Reihenfolge noch Last ist damit
+als Ursache belegt. Der einzelne backlog-nudge-Audit `1791096915234` bleibt §11.2z zugeordnet,
+nicht als neue Familie gezaehlt. Wrapper-Rot ausserhalb des Fensters (`a8fec55a`), Audit-Timeout
+(`0065d176`), Temp-/ENOSPC (`7b87ff1c`) und stummer Agent-Tod (`66b47e57`) sind in der Notiz
+benannte Grenzen, keine erfundenen Checknamen. Fuer diese Inventur wurde keine Suite gefahren.

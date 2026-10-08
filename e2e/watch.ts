@@ -30,6 +30,18 @@ import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { sendFailureMessage } from "../src/pendingsend";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, results, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
+const composerByteDetail = (text: string, expected: string) => {
+  const got = Buffer.from(text);
+  const want = Buffer.from(expected);
+  let offset = 0;
+  while (offset < got.length && offset < want.length && got[offset] === want[offset]) offset++;
+  const equal = offset === got.length && offset === want.length;
+  return { equal, gotBytes: got.length, expectedBytes: want.length,
+    firstDifference: equal ? null : offset,
+    gotByte: equal ? null : got[offset] ?? null,
+    expectedByte: equal ? null : want[offset] ?? null };
+};
+
 // A plain `cat` in the pane for the deliveries a check reads back off the screen: the tty echoes what
 // was typed as it arrived, where the shell's line editor redraws a long multibyte line and overwrote
 // the header's start locally ("~%ehenden Rolle]", 2026-09-28). C-c first: a shell left at a quote>
@@ -1324,11 +1336,20 @@ export async function run(): Promise<void> {
       const expectedInternal = ownerCase.mode === "append" ? `${live.expected}${ownerCase.suffix}`
         : ownerCase.mode === "edit" ? `${live.expected[0]}${live.expected[1] === "f" ? "F" : "X"}${live.expected.slice(2)}`
         : live.expected;
+      const observed = live.event
+        ? (await eventRows()).find((e) => e.id === live.event?.id) : undefined;
+      const frame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
+      const residue = composerResidue({ kind: "rules" }, frame);
+      const bytes = composerByteDetail(internal.text, expectedInternal);
+      const matches = { status: observed?.status === "send-uncertain",
+        deliveredAt: observed?.deliveredAt === null, bytes: internal.text === expectedInternal };
       check(`rollback live falsifier: ${ownerCase.mode} leaves the complete internal composer byte-for-byte`,
-        live.event?.status === "send-uncertain" && live.event.deliveredAt === null
-        && internal.text === expectedInternal,
-        JSON.stringify({ status: live.event?.status, deliveredAt: live.event?.deliveredAt,
-          phase: internal.phase, gotBytes: internal.text.length, expectedBytes: expectedInternal.length }));
+        matches.status && matches.deliveredAt && matches.bytes,
+        JSON.stringify({ status: observed?.status ?? null, deliveredAt: observed?.deliveredAt ?? null,
+          eventPresent: observed !== undefined, phase: internal.phase,
+          phaseMatchesEvent: !!live.event && internal.phase === `entered:${live.event.id}`,
+          residue: residue === null ? null : { visibleBytes: Buffer.byteLength(residue) }, bytes,
+          failed: Object.entries(matches).filter(([, ok]) => !ok).map(([field]) => field) }));
       if (live.event) await fetch(`${BASE}/api/self/events/${live.event.id}/ack`, {
         method: "POST", headers: { "x-fleet-self-token": uTok },
       });
@@ -3554,6 +3575,16 @@ export async function run(): Promise<void> {
           state: row.recovery?.state ?? null,
           reason: reason.length > 200 ? `…${reason.slice(-199)}` : reason };
       };
+      const reportComposer = async () => {
+        const statePath = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+        const raw = statePath && existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
+        const nl = raw?.indexOf("\n") ?? -1;
+        const frame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${main}`)).out;
+        const residue = composerResidue({ kind: "rules" }, frame);
+        return { phase: raw === null ? null : nl < 0 ? raw : raw.slice(0, nl),
+          bytes: raw === null || nl < 0 ? null : composerByteDetail(raw.slice(nl + 1), ""),
+          residue: residue === null ? null : { visibleBytes: Buffer.byteLength(residue) } };
+      };
       const waitReportRow = async (id: string,
         accepts: (row: FleetReportEventRow) => boolean): Promise<FleetReportEventRow | undefined> => {
         let row: FleetReportEventRow | undefined;
@@ -3605,7 +3636,7 @@ export async function run(): Promise<void> {
       // also drives the FIRST transport attempt (tickWatches, not recovery) through the same
       // recorder; the acknowledged `complete` row rides all three restarts and is never re-counted.
       const knobRounds: { value: string; attempts: number; latchReached?: boolean;
-        row?: FleetReportEventRow }[] = [
+        row?: FleetReportEventRow; composer?: Awaited<ReturnType<typeof reportComposer>> }[] = [
         { value: "0", attempts: 2 }, { value: "-2", attempts: 3 }, { value: "abc", attempts: 4 },
       ];
       let firstTransport: FleetReportEventRow | undefined;
@@ -3616,7 +3647,12 @@ export async function run(): Promise<void> {
         // A missed precondition aborts the dependent probe HERE: no release (the parked attempt
         // stays parked), no further restarts, no downstream verdicts — the named precondition
         // check below is the only red. The success path measures every contract unchanged.
-        if (!round.latchReached) { knobLatchOk = false; break; }
+        if (!round.latchReached) {
+          round.row = await reportRow(rowId);
+          round.composer = await reportComposer();
+          knobLatchOk = false;
+          break;
+        }
         if (round.value === "0") firstTransport = await reportRow(rowId);
         writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
         // The counter is monotonic; the observation ends at the FIRST decisive rest: the round's
@@ -3629,11 +3665,14 @@ export async function run(): Promise<void> {
           return row.attempts >= round.attempts && row.recovery !== undefined
             && row.recovery.reason.includes(`attempt ${row.attempts} of`);
         });
+        round.composer = await reportComposer();
       }
       check("Q6 fixture precondition: the recovery latch is reached on every knob round",
         rowId !== "" && knobRounds.every((round) => round.latchReached === true),
         JSON.stringify({ rowIdPresent: rowId !== "",
           rounds: knobRounds.map((r) => [r.value, r.latchReached ?? null]),
+          missed: knobRounds.filter((r) => r.latchReached === false)
+            .map((r) => ({ value: r.value, observed: rowBrief(r.row), composer: r.composer ?? null })),
           onMiss: "no release, no further restarts — dependent transport/cap/ack contracts and the cap-6 ladder stay unclaimed" }));
       const bareReportText = await readReportText();
       check("S3d fleetReportMessage: the same report row without its stamp falls back to 'slot N (branch)', no name derived",
@@ -3661,8 +3700,12 @@ export async function run(): Promise<void> {
             && round.row.attempts === round.attempts && round.row.recovery?.state === "retryable"
             && round.row.recovery.reason.includes(`attempt ${round.attempts} of 5`)),
           JSON.stringify({ rounds: knobRounds.map((r) => ({ value: r.value, latch: r.latchReached ?? null,
-            observed: rowBrief(r.row), expected: { status: "send-uncertain", attempts: r.attempts,
-              state: "retryable", reason: `attempt ${r.attempts} of 5` } })) }));
+            observed: rowBrief(r.row), composer: r.composer ?? null,
+            failed: Object.entries({ status: r.row?.status === "send-uncertain",
+              attempts: r.row?.attempts === r.attempts, state: r.row?.recovery?.state === "retryable",
+              reason: r.row?.recovery?.reason.includes(`attempt ${r.attempts} of 5`) === true })
+              .filter(([, ok]) => !ok).map(([field]) => field),
+            expected: { attempts: r.attempts, reason: `attempt ${r.attempts} of 5` } })) }));
         check("Q6 fleet-report ack: an acknowledged row is never re-counted across the knob restarts",
           completeAfterKnobs?.status === "acknowledged" && completeAfterKnobs.attempts === 2,
           JSON.stringify({ observed: rowBrief(completeAfterKnobs),
@@ -3678,7 +3721,8 @@ export async function run(): Promise<void> {
         const parked5 = await reachedLatch(recoveryLatch);
         const rowAtPark5 = await reportRow(rowId);
         check("Q6 fixture precondition: the recovery latch is reached with the report's fifth attempt parked under cap 6",
-          parked5, JSON.stringify({ parked5, observed: rowBrief(rowAtPark5) }));
+          parked5, JSON.stringify({ parked5, observed: rowBrief(rowAtPark5),
+            composer: await reportComposer() }));
         if (parked5) {
           check("Q6 fixture: the report row carries four counted attempts while its fifth parks at the recovery latch under cap 6",
             parked5 && rowAtPark5?.attempts === 4,

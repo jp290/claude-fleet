@@ -4967,6 +4967,18 @@ unbekannt. Eine Fassung nennt das Fenster nur aus dem Suffix `-v<N>` der Paket-I
 (`src/protocol.ts#packIdFassung`, erstes echtes: `codex-native-context-v1`); kein Pack nennt ein
 Modell, die Harness-Liste ist erlaubt, nicht Herkunft.
 
+**Der aufgeloeste Plan (seit 2026-10-08, Owner-Ja F1).** Dieselbe Route liefert zusaetzlich `plan`
+aus dem einen Register (`session-blocks.ts#resolveSessionPlan`): `role` (auch `nur-ordner`; `mode`
+darf dann fehlen), `ort` (`worktree` · `repo` · `ordner`, sonst aus Rolle und Mode), `model`,
+`effort` und `bausteine=<id>=<an|aus|ersetzt:id>,…` ergeben `planHash`, `planSatz`,
+`bytesVorAuftrag` (`bytes`, die `unknown`-ids, die nicht gezaehlten Auftrag-ids) und je Baustein
+`id`, `wort`, `satz`, `grenze`, `zustand`, `rollenDefault`, `harness` (gueltig mit Grund), `bytes`
+(Zahl oder `unknown`) und `ersatzKandidaten`. Packs sind Zeilen `pack:<id>`, ihre Teile stehen in
+`details`; `packs=` bleibt die aeltere Schreibweise derselben Schalter. Der Hash ist eine Funktion der
+Entscheidung (Rolle, Ort, Commit, Tripel, Zustand je Zeile), nicht der gemessenen Bytes. `sessionAgents`
+ist der Render GENAU dieses Plans. `rollen` nennt das Standard-Tripel aus
+`model-register.ts#MODEL_DEFAULTS` mit Verfuegbarkeit. Kein Spawn-Pfad liest den Plan bisher.
+
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 
 `server.ts#capTasks` verdrängt ab `MAX_TASKS` terminale Zeilen (`done`/`archived`) aus

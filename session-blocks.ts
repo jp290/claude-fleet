@@ -1,4 +1,6 @@
-// Declarative inventory of Fleet-added session material; spawn paths do not consume this list.
+// The one register of Fleet-added session material; GET /api/founding-plan resolves it, no spawn path reads it yet.
+import { createHash } from "node:crypto";
+
 export type SessionRole = "lane" | "main" | "orchestratorin" | "nur-ordner";
 export type SessionFunction = "vertrag" | "auftrag" | "rueckweg" | "beweis" | "orientierung" | "gedaechtnis-zeiger";
 export type SessionSource = `${string}.ts#${string}` | `${string}.md#${string}`;
@@ -9,7 +11,8 @@ export interface SessionBlock {
   readonly wort: string;
   readonly satz: string;
   readonly funktion: readonly SessionFunction[];
-  readonly grenze: { readonly art: "noetig"; readonly grund: string } | { readonly art: "frei" };
+  // `gesperrt`: owner decision — required AND not replaceable, not even by an equal function
+  readonly grenze: { readonly art: "noetig"; readonly grund: string; readonly gesperrt?: true } | { readonly art: "frei" };
   readonly schicht: string;
   readonly autor: readonly ("Owner-Promotion" | "MAIN" | "Repo-Autor" | "Fleet" | "Session selbst")[];
   readonly harness: { readonly art: "alle" }
@@ -19,6 +22,8 @@ export interface SessionBlock {
   readonly source: SessionSource | "nicht zugestellt";
   readonly belege: readonly SessionSource[];
   readonly breaksWithout: string;
+  // The harness loads it itself; Fleet has no switch, a plan only shows it (with its reason).
+  readonly nichtSchaltbar?: string;
   // These describe no concrete delivery; hashes and UTF-8 bytes need a measured plan/receipt.
   readonly fassung: "unknown";
   readonly bytes: "unknown";
@@ -49,7 +54,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Vertrag",
     satz: "Der Vertrag legt Rolle, Grenzen und Beweise fest.",
     funktion: ["vertrag"],
-    grenze: {"art": "noetig", "grund": "Owner-Entscheid: noetig und gesperrt; ohne Vertrag fehlen die eingebundenen Grenzen."},
+    grenze: {"art": "noetig", "grund": "Owner-Entscheid: noetig und gesperrt; ohne Vertrag fehlen die eingebundenen Grenzen.", "gesperrt": true},
     schicht: "AGENTS.md §Portable operating contract",
     autor: ["Owner-Promotion"],
     harness: {"art": "alle"},
@@ -65,7 +70,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Owner-Korrekturen",
     satz: "Das Owner-Heft haelt die geltenden Korrekturen fest.",
     funktion: ["vertrag"],
-    grenze: {"art": "noetig", "grund": "Owner-Entscheid: noetig und gesperrt wie der Vertrag; ohne Heft fehlen geltende Korrekturen."},
+    grenze: {"art": "noetig", "grund": "Owner-Entscheid: noetig und gesperrt wie der Vertrag; ohne Heft fehlen geltende Korrekturen.", "gesperrt": true},
     schicht: "Konzept k-owner-korrekturen",
     autor: ["Owner-Promotion"],
     harness: {"art": "alle"},
@@ -90,6 +95,22 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "rulebook.ts#FRAGMENTS_FOR",
     belege: ["rulebook.ts#FRAGMENTS_FOR"],
     breaksWithout: "Claude verliert private rollenbezogene Regeln; Codex laedt diesen Render laut `AGENTS.md#Loader boundary` nicht als Vertrag.",
+    fassung: "unknown", bytes: "unknown",
+  },
+  {
+    id: "role-card",
+    wort: "Rolle",
+    satz: "Die Rollenkarte nennt Position, Empfaenger und Tueren.",
+    funktion: ["vertrag"],
+    grenze: {"art": "noetig", "grund": "Ohne Rollenkarte fehlen der Session Empfaenger, Grenzen und Tueren ihrer Position."},
+    schicht: "Rollenkarte in der Session-Datei",
+    autor: ["Owner-Promotion", "Fleet"],
+    harness: {"art": "alle"},
+    lieferart: ["Session-Datei"],
+    rollenDefault: {"lane": "an", "main": "an", "orchestratorin": "aus", "nur-ordner": "aus"},
+    source: "server.ts#LANE_ROLE_CARD",
+    belege: ["server.ts#LANE_ROLE_CARD", "server.ts#MAIN_ROLE_CARD", "server.ts#foundingSessionInput"],
+    breaksWithout: "Lane und MAIN verlieren den Abschnitt Rolle ihrer Session-Datei; die Orchestratorin traegt ihre Karte als eigenen Baustein.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -346,6 +367,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
     belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "session-agents.ts#renderSessionAgents"],
     breaksWithout: "Die nativen Regeln fehlen; Laden und Dateiauswahl folgen dem Harness, nicht einem Fleet-Schalter.",
+    nichtSchaltbar: "Der Harness laedt den Ordner selbst; Fleet hat dafuer keinen Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -362,6 +384,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
     belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe"],
     breaksWithout: "Claudes eigener Notizblock fehlt; Fleet-Arbeitsstand und Self-Memory sind davon getrennt.",
+    nichtSchaltbar: "Claude laedt sein Auto-Memory selbst; Fleet hat dafuer keinen Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -381,3 +404,210 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     fassung: "unknown", bytes: "unknown",
   },
 ];
+
+// --- THE PLAN (Objektmodell Fassung 2 §1; Owner-Ja F1 via the Orchestratorin, 07.10.) ---------------
+// What THIS session gets: role, place, triple, and per Baustein one state an | aus | ersetzt:<id>. A
+// pure function of its inputs — the caller measures (session file, native files, memory) and this
+// resolver decides; the window, and later the receipt, read the result instead of deciding again.
+// The two templates (founding-packs, konzept) describe one row PER pack: a plan carries instances
+// `pack:<packId>` in their place, their parts only in `details` (owner 01.10.: no card list).
+export type PlanZustand = "an" | "aus" | `ersetzt:${string}`;
+export type PlanOrt = "worktree" | "repo" | "ordner";
+export type HarnessFamilie = "claude" | "codex" | "pi" | "container";
+export type PlanBytes = number | "unknown";
+
+export const SESSION_BLOCK_VORLAGEN = ["founding-packs", "konzept"] as const;
+export const ROLLE_WORT: Readonly<Record<SessionRole, string>> =
+  { lane: "Lane", main: "MAIN", orchestratorin: "Orchestratorin", "nur-ordner": "Nur Ordner" };
+
+// The register's harness words are families: every pi-* adapter is "pi"; `container` is named by no
+// block and so is valid only where a block holds for all harnesses.
+export function harnessFamilie(harness: string): HarnessFamilie {
+  return harness === "codex" ? "codex" : harness === "container" ? "container" : harness.startsWith("pi") ? "pi" : "claude";
+}
+
+export interface PlanPackInstanz {
+  readonly packId: string;
+  readonly vorlage: (typeof SESSION_BLOCK_VORLAGEN)[number];
+  /** null = the context plan selected it; otherwise its omission reason (context-plan.ts ladder) */
+  readonly ausgelassen: string | null;
+  /** the pack's declared harnesses, named when it is omitted as harness-unsupported */
+  readonly harnesses: readonly string[] | null;
+  /** the renderer carries it whatever the switch says (a Codex/Pi contract pack); the reason */
+  readonly erzwungen?: string;
+  readonly details?: unknown;
+}
+
+export interface SessionPlanInput {
+  readonly rolle: SessionRole;
+  readonly ort: { readonly art: PlanOrt; readonly pfad: string; readonly branch: string | null; readonly head: string };
+  readonly harness: string;
+  readonly modell: string | null;
+  readonly effort: string | null;
+  /** the sentence words the caller owns (harness, model and effort labels, the place) */
+  readonly woerter: { readonly harness: string; readonly modell: string | null; readonly effort: string | null; readonly ort: string };
+  readonly packs: readonly PlanPackInstanz[];
+  /** conditions of `bedingt` defaults the caller could decide; absent = unknown */
+  readonly bedingungen: Readonly<Partial<Record<string, boolean | "unknown">>>;
+  /** the requested switches, id → "an" | "aus" | "ersetzt:<id>" */
+  readonly schalter: Readonly<Record<string, string>>;
+}
+
+export interface SessionPlanMessung {
+  readonly bytes: Readonly<Partial<Record<string, PlanBytes>>>;
+  /** a row whose bytes another row already carries (commit-expectation in lane-footer, packs in context-anchors) */
+  readonly enthaltenIn: Readonly<Partial<Record<string, string>>>;
+  readonly details?: Readonly<Partial<Record<string, unknown>>>;
+}
+
+export interface SessionPlanBaustein {
+  readonly id: string;
+  readonly wort: string;
+  readonly satz: string;
+  readonly funktion: readonly SessionFunction[];
+  readonly grenze: SessionBlock["grenze"];
+  readonly schicht: string;
+  readonly lieferart: SessionBlock["lieferart"];
+  readonly zustand: PlanZustand;
+  readonly quelle: "default" | "schalter";
+  readonly rollenDefault: SessionDefault;
+  readonly bedingung?: { readonly grund: string; readonly erfuellt: boolean | "unknown" };
+  readonly harness: { readonly gueltig: boolean; readonly grund: string | null };
+  readonly schaltbar: { readonly ja: true } | { readonly ja: false; readonly grund: string };
+  readonly bytes: PlanBytes;
+  readonly enthaltenIn?: string;
+  readonly ersatzKandidaten: readonly string[];
+  readonly vorlage?: string;
+  readonly details?: unknown;
+}
+
+export interface SessionPlan {
+  readonly planHash: string;
+  readonly planSatz: string;
+  readonly rolle: SessionRole;
+  readonly ort: SessionPlanInput["ort"];
+  readonly harness: string;
+  readonly modell: string | null;
+  readonly effort: string | null;
+  /** an rows outside the Auftrag; a row carried by an an container counts there */
+  readonly bytesVorAuftrag: { readonly bytes: number; readonly unknown: readonly string[]; readonly auftrag: readonly string[] };
+  readonly bausteine: readonly SessionPlanBaustein[];
+}
+
+type Row = { readonly block: SessionBlock; readonly id: string; readonly wort: string; readonly pack?: PlanPackInstanz };
+
+const stateOf = (value: SessionDefault): "an" | "aus" | "bedingt" => typeof value === "object" ? value.zustand : value;
+
+export function resolveSessionPlan(input: SessionPlanInput, messe: (zustaende: ReadonlyMap<string, PlanZustand>) => SessionPlanMessung):
+  { ok: true; plan: SessionPlan } | { ok: false; error: string } {
+  const familie = harnessFamilie(input.harness);
+  const vorlagen = new Set<string>(SESSION_BLOCK_VORLAGEN);
+  const rows: Row[] = SESSION_BLOCKS.filter((block) => !vorlagen.has(block.id)).map((block) => ({ block, id: block.id, wort: block.wort }));
+  for (const pack of input.packs) {
+    const block = SESSION_BLOCKS.find((entry) => entry.id === pack.vorlage)!;
+    rows.push({ block, id: `pack:${pack.packId}`, wort: block.wort.replace("<Name>", pack.packId), pack });
+  }
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const harnessOf = (row: Row): { gueltig: boolean; grund: string | null } => {
+    if (row.block.harness.art === "eingeschraenkt" && !(row.block.harness.werte as readonly string[]).includes(familie))
+      return { gueltig: false, grund: row.block.harness.grund };
+    if (row.pack?.ausgelassen === "harness-unsupported")
+      return { gueltig: false, grund: `Das Pack erklaert nur ${(row.pack.harnesses ?? []).join(", ") || "keinen Harness"}.` };
+    return { gueltig: true, grund: null };
+  };
+  const nativ = (row: Row): boolean => stateOf(row.block.rollenDefault["nur-ordner"]) !== "aus";
+  const erzwungen = (row: Row): string | undefined => input.rolle === "nur-ordner" ? undefined : row.pack?.erzwungen;
+  const defaultOf = (row: Row): SessionDefault => row.pack
+    ? (input.rolle !== "nur-ordner" && (row.pack.erzwungen || row.pack.ausgelassen === null) ? "an" : "aus")
+    : row.block.rollenDefault[input.rolle];
+  const bedingungOf = (row: Row): { grund: string; erfuellt: boolean | "unknown" } | undefined => {
+    const value = defaultOf(row);
+    return typeof value === "object" ? { grund: value.grund, erfuellt: input.bedingungen[row.id] ?? "unknown" } : undefined;
+  };
+  // An unknown condition keeps the default on: the row may deliver, and its bytes stay unknown.
+  const resolvedDefault = (row: Row): "an" | "aus" => {
+    if (!harnessOf(row).gueltig) return "aus";
+    const value = defaultOf(row);
+    if (typeof value !== "object") return value;
+    return bedingungOf(row)!.erfuellt === false ? "aus" : "an";
+  };
+  const kandidatenOf = (row: Row): string[] => row.pack || (row.block.grenze.art === "noetig" && row.block.grenze.gesperrt) ? []
+    : rows.filter((other) => !other.pack && other.id !== row.id && harnessOf(other).gueltig
+      && row.block.funktion.every((f) => other.block.funktion.includes(f))).map((other) => other.id);
+
+  const zustand = new Map<string, PlanZustand>(rows.map((row) => [row.id, resolvedDefault(row)]));
+  const gesetzt = new Set<string>();
+  for (const [id, raw] of Object.entries(input.schalter)) {
+    const row = byId.get(id);
+    if (!row) return { ok: false, error: vorlagen.has(id) ? `${id} is a template: switch its rows pack:<id>` : `unknown Baustein ${id}` };
+    const value = raw === "an" || raw === "aus" ? raw : /^ersetzt:[a-z0-9:._-]+$/i.test(raw) ? raw as PlanZustand : null;
+    if (!value) return { ok: false, error: `${id}: state must be an, aus or ersetzt:<id>` };
+    if (row.block.nichtSchaltbar && value !== resolvedDefault(row)) return { ok: false, error: `${id}: ${row.block.nichtSchaltbar}` };
+    const forced = erzwungen(row);
+    if (forced && value !== "an") return { ok: false, error: `${id}: ${forced}` };
+    if (input.rolle === "nur-ordner" && !nativ(row) && value !== "aus")
+      return { ok: false, error: `${id}: Nur Ordner liefert nur native-agents und auto-memory` };
+    if (value === "an") {
+      const harness = harnessOf(row);
+      if (!harness.gueltig) return { ok: false, error: `${id} gilt nicht fuer ${input.harness}: ${harness.grund}` };
+      if (row.pack && row.pack.ausgelassen !== null && !erzwungen(row)) return { ok: false, error: `${id} ist nicht im Plan (${row.pack.ausgelassen})` };
+      const bedingung = bedingungOf(row);
+      if (bedingung?.erfuellt === false) return { ok: false, error: `${id}: Bedingung nicht erfuellt — ${bedingung.grund}` };
+    }
+    if (value === "aus" && row.block.grenze.art === "noetig" && resolvedDefault(row) === "an" && bedingungOf(row)?.erfuellt !== "unknown")
+      return { ok: false, error: `${id} ist noetig: ${row.block.grenze.grund}` };
+    if (value.startsWith("ersetzt:")) {
+      if (row.block.grenze.art === "noetig" && row.block.grenze.gesperrt) return { ok: false, error: `${id} ist gesperrt: ${row.block.grenze.grund}` };
+      if (row.pack) return { ok: false, error: `${id}: ein Pack wird nur an- oder ausgeschaltet` };
+      const ersatz = value.slice("ersetzt:".length);
+      if (!kandidatenOf(row).includes(ersatz)) return { ok: false, error: `${ersatz} traegt nicht die Funktion von ${id} (${row.block.funktion.join(", ")})` };
+    }
+    zustand.set(id, value);
+    gesetzt.add(id);
+  }
+  // Packs deliver only through the reading pointers: with context-anchors off, a defaulted pack is
+  // off and an explicitly switched one is a contradiction.
+  if (zustand.get("context-anchors") !== "an") for (const row of rows) if (row.pack && !erzwungen(row) && zustand.get(row.id) === "an") {
+    if (gesetzt.has(row.id)) return { ok: false, error: `${row.id}: Packs liefern nur ueber context-anchors, und das ist aus` };
+    zustand.set(row.id, "aus");
+  }
+  for (const [id, value] of zustand) if (value.startsWith("ersetzt:") && zustand.get(value.slice("ersetzt:".length)) !== "an")
+    return { ok: false, error: `${id} ${value}, aber ${value.slice("ersetzt:".length)} ist nicht an` };
+
+  const messung = messe(zustand);
+  const bausteine: SessionPlanBaustein[] = rows.map((row) => {
+    const bedingung = bedingungOf(row);
+    const enthaltenIn = messung.enthaltenIn[row.id];
+    return {
+      id: row.id, wort: row.wort, satz: row.block.satz, funktion: row.block.funktion, grenze: row.block.grenze,
+      schicht: row.block.schicht, lieferart: row.block.lieferart,
+      zustand: zustand.get(row.id)!, quelle: gesetzt.has(row.id) ? "schalter" : "default",
+      rollenDefault: defaultOf(row), ...(bedingung ? { bedingung } : {}),
+      harness: harnessOf(row),
+      schaltbar: row.block.nichtSchaltbar ? { ja: false, grund: row.block.nichtSchaltbar }
+        : erzwungen(row) ? { ja: false, grund: erzwungen(row)! }
+        : input.rolle === "nur-ordner" && !nativ(row) ? { ja: false, grund: "Nur Ordner liefert nur native-agents und auto-memory." }
+        : { ja: true },
+      bytes: messung.bytes[row.id] ?? "unknown", ...(enthaltenIn ? { enthaltenIn } : {}),
+      ersatzKandidaten: kandidatenOf(row),
+      ...(row.pack ? { vorlage: row.pack.vorlage } : {}),
+      ...((row.pack?.details ?? messung.details?.[row.id]) !== undefined ? { details: row.pack?.details ?? messung.details?.[row.id] } : {}),
+    };
+  });
+  const an = bausteine.filter((b) => b.zustand === "an");
+  const auftrag = an.filter((b) => b.funktion.includes("auftrag")).map((b) => b.id);
+  const counted = an.filter((b) => !b.funktion.includes("auftrag")
+    && !(b.enthaltenIn !== undefined && zustand.get(b.enthaltenIn) === "an"));
+  const bytesVorAuftrag = {
+    bytes: counted.reduce((sum, b) => sum + (typeof b.bytes === "number" ? b.bytes : 0), 0),
+    unknown: counted.filter((b) => b.bytes === "unknown").map((b) => b.id), auftrag,
+  };
+  const planSatz = [ROLLE_WORT[input.rolle], input.woerter.harness, input.woerter.modell, input.woerter.effort, input.woerter.ort]
+    .filter((word): word is string => !!word).join(" · ");
+  // The hash names the DECISION — who, where, at which commit, on what, and every row's state —
+  // not the measured bytes: the receipt measures delivery against this hash.
+  const planHash = createHash("sha256").update(JSON.stringify([input.rolle, input.ort.art, input.ort.pfad, input.ort.branch,
+    input.ort.head, input.harness, input.modell, input.effort, bausteine.map((b) => [b.id, b.zustand])])).digest("hex");
+  return { ok: true, plan: { planHash, planSatz, rolle: input.rolle, ort: input.ort, harness: input.harness,
+    modell: input.modell, effort: input.effort, bytesVorAuftrag, bausteine } };
+}

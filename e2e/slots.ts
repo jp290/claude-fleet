@@ -45,6 +45,7 @@ export async function run(): Promise<void> {
   process.once("exit", () => rmSync(slotCwd, { recursive: true, force: true }));
   const slotCwdTilde = `~/${basename(slotCwd)}`;
   await runPerfMarks();
+  await runFoundingPlanProbe(slotCwd);
   const permissionsEnvBefore = await tmuxEnvSnapshot();
   let permissionsEnvDuring: (string | null)[] = [];
   try {
@@ -5203,6 +5204,75 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 // with a NEW attempt (tick 1's is stored only when its send completes) and parks in A's canDeliver,
 // before B's pending check; B's send completes; A is released. Mutation: drop the migrateTried
 // re-check after the awaits in server.ts#tickMigrate → B is typed a second time. ---
+// THE RESOLVED FOUNDING PLAN (GET /api/founding-plan → `plan`, session-blocks.ts#resolveSessionPlan): for
+// each role the route answers one plan whose hash is a function of its inputs, every row carries its
+// own facts, Nur Ordner delivers only what the folder loads natively, and the session file the window
+// shows is the plan's own render. A fixture repo of its own, so no other section's tree is read.
+async function runFoundingPlanProbe(scratch: string): Promise<void> {
+  const repo = resolve(scratch, "founding-plan");
+  mkdirSync(repo, { recursive: true });
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  writeFileSync(`${repo}/CLAUDE.md`, "# Plan fixture\n@rules.md\n");
+  writeFileSync(`${repo}/rules.md`, "imported rule\n");
+  writeFileSync(`${repo}/AGENTS.md`, "# Fixture contract\n");
+  git("init", "-q", "-b", "main");
+  const ready = git("add", "-A").status === 0
+    && git("-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "plan fixture").status === 0;
+  check("founding plan — SETUP: the fixture repo has a commit", ready, git("status", "--short").stdout);
+  if (!ready) return;
+  type PlanRow = { id: string; wort: string; satz: string; grenze: { art: string }; zustand: string; quelle: string;
+    rollenDefault: unknown; harness: { gueltig: boolean; grund: string | null }; bytes: number | "unknown";
+    ersatzKandidaten: string[]; details?: { dateien?: { pfad: string; bytes: number }[] } };
+  type Plan = { planHash: string; planSatz: string; bytesVorAuftrag: { bytes: number; unknown: string[] }; bausteine: PlanRow[] };
+  const plan = async (query: string): Promise<{ status: number; plan: Plan | null; file: { bytes: number; text: string } | null; error: string }> => {
+    const res = await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=claude&${query}`);
+    const body = await res.json() as { plan?: Plan; sessionAgents?: { bytes: number; text: string } | null; error?: string };
+    return { status: res.status, plan: body.plan ?? null, file: body.sessionAgents ?? null, error: body.error ?? "" };
+  };
+  const rowShape = (row: PlanRow): boolean => !!row.wort && !!row.satz && !!row.grenze?.art && /^(an|aus|ersetzt:.+)$/.test(row.zustand)
+    && row.rollenDefault !== undefined && typeof row.harness?.gueltig === "boolean" && (row.harness.gueltig || !!row.harness.grund)
+    && (typeof row.bytes === "number" || row.bytes === "unknown") && Array.isArray(row.ersatzKandidaten);
+  for (const role of ["lane", "main", "orchestratorin", "nur-ordner"]) {
+    const [first, again] = [await plan(`role=${role}&effort=high`), await plan(`role=${role}&effort=high`)];
+    const p = first.plan;
+    check(`founding plan: ${role} — the same inputs give the same plan-hash, every row carries its facts`,
+      first.status === 200 && !!p && again.plan?.planHash === p.planHash && /^[0-9a-f]{64}$/.test(p.planHash)
+        && p.planSatz.includes(" · hoch · ") && typeof p.bytesVorAuftrag.bytes === "number"
+        && Array.isArray(p.bytesVorAuftrag.unknown) && p.bausteine.length > 0 && p.bausteine.every(rowShape)
+        && p.bytesVorAuftrag.unknown.every((id) => p.bausteine.find((row) => row.id === id)?.bytes === "unknown"),
+      `${first.status} ${first.error} ${p?.planSatz ?? ""} ${p?.planHash ?? ""}/${again.plan?.planHash ?? ""}`);
+  }
+  const folder = (await plan("role=nur-ordner")).plan;
+  const native = folder?.bausteine.find((row) => row.id === "native-agents");
+  const files = native?.details?.dateien ?? [];
+  check("founding plan: Nur Ordner delivers only native-agents and auto-memory, the folder's files with their bytes",
+    !!folder && folder.bausteine.filter((row) => row.zustand !== "aus").every((row) => ["native-agents", "auto-memory"].includes(row.id))
+      && native?.zustand === "an" && native.bytes === files.reduce((sum, f) => sum + f.bytes, 0)
+      && files.some((f) => f.pfad.endsWith("/founding-plan/CLAUDE.md") && f.bytes === Buffer.byteLength("# Plan fixture\n@rules.md\n"))
+      && files.some((f) => f.pfad.endsWith("/founding-plan/rules.md") && f.bytes === Buffer.byteLength("imported rule\n")),
+    JSON.stringify(native ?? null).slice(0, 400));
+  const base = await plan("role=lane");
+  const switched = await plan("role=lane&bausteine=source-code=an");
+  const explicitDefault = await plan("role=lane&bausteine=source-code=aus");
+  check("founding plan: a switch moves the hash, the explicit default does not",
+    !!base.plan && !!switched.plan && switched.plan.planHash !== base.plan.planHash
+      && switched.plan.bausteine.find((row) => row.id === "source-code")?.quelle === "schalter"
+      && explicitDefault.plan?.planHash === base.plan.planHash,
+    `${base.plan?.planHash} ${switched.plan?.planHash} ${explicitDefault.plan?.planHash} ${switched.error}`);
+  const bytesOf = (p: Plan | null, id: string): number | "unknown" | undefined => p?.bausteine.find((row) => row.id === id)?.bytes;
+  check("founding plan: the window's session file is the plan's own render, row by row",
+    !!base.plan && !!base.file && base.file.bytes === Buffer.byteLength(base.file.text)
+      && base.file.bytes === [bytesOf(base.plan, "role-card"), bytesOf(base.plan, "lane-footer"), bytesOf(base.plan, "context-anchors")]
+        .reduce<number>((sum, b) => sum + (typeof b === "number" ? b : Number.NaN), 0),
+    `file=${base.file?.bytes} role=${bytesOf(base.plan, "role-card")} footer=${bytesOf(base.plan, "lane-footer")} anchors=${bytesOf(base.plan, "context-anchors")}`);
+  const replaced = await plan("role=lane&bausteine=lane-footer=ersetzt:self-credential");
+  const [required, locked] = [await plan("role=lane&bausteine=lane-footer=aus"), await plan("role=lane&bausteine=owner-heft=ersetzt:portable-contract")];
+  check("founding plan: a replaced footer leaves the file, a required row refuses aus, a locked one refuses replacement",
+    !!replaced.plan && !!replaced.file && !!base.file && replaced.file.bytes < base.file.bytes && !replaced.file.text.includes("## Lane-Ende") && base.file.text.includes("## Lane-Ende")
+      && required.status === 400 && required.error.includes("ist noetig") && locked.status === 400 && locked.error.includes("ist gesperrt"),
+    `${replaced.error} | ${required.status} ${required.error} | ${locked.status} ${locked.error}`);
+}
+
 async function runMigrateTickRace(): Promise<void> {
   const source = readFileSync(resolve(import.meta.dir, "../server.ts"), "utf8");
   const at = source.indexOf("let migrateTickBusy = false;");

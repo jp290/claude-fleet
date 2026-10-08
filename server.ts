@@ -1,6 +1,8 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionRole } from "./session-blocks";
+import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
@@ -37930,6 +37932,13 @@ async function foundingPlanOf(repo: string, harness: string | null,
 
 async function foundingSessionAgents(fp: Pick<FoundingPlan, "repoRoot" | "head" | "plan">, harness: string | null,
   position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>, footer?: string): Promise<SessionAgents> {
+  return renderSessionAgents(await foundingSessionInput(fp, harness, position, selection, footer));
+}
+
+// The renderer's whole input for a founding — the source bytes read once at `head`. The plan route
+// renders it again per pack switch to measure what each pack adds, so it needs the input, not one file.
+async function foundingSessionInput(fp: Pick<FoundingPlan, "repoRoot" | "head" | "plan">, harness: string | null,
+  position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>, footer?: string): Promise<SessionAgentsInput> {
   const sourceBytes = new Map<string, string>();
   const paths = new Set(fp.plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [] : pack.sources.map((source) => source.path)));
   if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi")) paths.add("AGENTS.md");
@@ -37949,14 +37958,209 @@ async function foundingSessionAgents(fp: Pick<FoundingPlan, "repoRoot" | "head" 
     pointerLines.set(pack.id, footer !== undefined && position === "lane"
       ? renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId))
       : [`  private source ${pack.sources.privateSourceId} (resolved at delivery)`]);
-  return renderSessionAgents({ role: { ...role, path: "server.ts" }, position, harness, plan: fp.plan,
+  return { role: { ...role, path: "server.ts" }, position, harness, plan: fp.plan,
     sourceBytes, selection, pointerLines,
-    footer: footer ?? (position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "") });
+    footer: footer ?? (position === "lane" ? laneExitFooter(harness, null) : position === "main" ? PROGRAM_MAIN_RAIL_BLOCK : "") };
 }
 
 // A planned pack's DECLARED rule facts, for the founding window: a Fleet seed's from its code entry, a
 // repo pack's from the manifest the plan read at its head. Only arrays of strings are carried — the
 // ladder already judged this declaration, and a shape it could not have read is no fact to show.
+// --- THE RESOLVED FOUNDING PLAN (session-blocks.ts#resolveSessionPlan) ---------------------------
+// The server MEASURES and the register's resolver DECIDES: every byte number below is read off a
+// render or a file now, and an unmeasured row stays "unknown" — never a 0 standing in for it.
+const PLAN_EFFORT_WORT: Readonly<Record<string, string>> = { off: "aus", minimal: "minimal", low: "niedrig",
+  medium: "mittel", high: "hoch", xhigh: "sehr hoch", max: "max", ultra: "ultra" };
+const planHarnessWort = (harness: string): string => harness === "claude" ? "Claude" : harness === "codex" ? "Codex"
+  : harness === "container" ? "Container" : harness === "pi" ? "Pi" : harness.startsWith("pi-") ? `Pi (${harness.slice(3)})` : harness;
+
+function readPresent(path: string): { ok: true; bytes: Buffer | null } | { ok: false } {
+  try { return { ok: true, bytes: readFileSync(path) }; }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? { ok: true, bytes: null } : { ok: false };
+  }
+}
+
+type NativeLoaderBytes = { bytes: number; dateien: { pfad: string; bytes: number }[]; nachgeladen: string[]; regel: string }
+  | { bytes: "unknown"; grund: string };
+// WHAT A PLAIN FOLDER SESSION LOADS BY ITSELF (role Nur Ordner, no Fleet cut), counted in the working
+// tree as the harness opens it. Claude: the config dir's CLAUDE.md, CLAUDE.md / CLAUDE.local.md /
+// .claude/CLAUDE.md of the folder and each ancestor below `/`, whole-line `@path` imports up to five
+// deep, and every `.claude/rules/**.md` without `paths:` frontmatter — a path-scoped rule loads on
+// demand and is named in `nachgeladen`, not counted. Codex: the
+// CODEX_HOME file and the folder's, AGENTS.override.md before AGENTS.md. Any other harness: unknown.
+function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
+  const familie = harnessFamilie(harness);
+  const dateien: { pfad: string; bytes: number }[] = [];
+  const seen = new Set<string>();
+  const nachgeladen: string[] = [];
+  const unreadable = (pfad: string): NativeLoaderBytes => ({ bytes: "unknown", grund: `${pfad} ist nicht lesbar` });
+  if (familie === "claude") {
+    const configDir = dirname(dirname(projDir("x"))); // projDir = <config>/projects/<slug>
+    const roots: string[] = [];
+    for (let d = resolve(dir); dirname(d) !== d; d = dirname(d)) roots.unshift(d);
+    const visit = (pfad: string, depth: number): NativeLoaderBytes | null => {
+      if (seen.has(pfad)) return null;
+      seen.add(pfad);
+      const read = readPresent(pfad);
+      if (!read.ok) return unreadable(pfad);
+      if (!read.bytes) return null;
+      dateien.push({ pfad, bytes: read.bytes.length });
+      if (depth >= 5) return null;
+      for (const m of read.bytes.toString("utf8").matchAll(/^@(\S+)\s*$/gm)) {
+        const target = m[1]!.startsWith("~/") ? `${HOME}/${m[1]!.slice(2)}` : resolve(dirname(pfad), m[1]!);
+        const failed = visit(target, depth + 1);
+        if (failed) return failed;
+      }
+      return null;
+    };
+    for (const pfad of [`${configDir}/CLAUDE.md`, ...roots.flatMap((root) => [`${root}/CLAUDE.md`, `${root}/CLAUDE.local.md`, `${root}/.claude/CLAUDE.md`])]) {
+      const failed = visit(pfad, 0);
+      if (failed) return failed;
+    }
+    for (const rules of [...new Set([`${configDir}/rules`, ...roots.map((root) => `${root}/.claude/rules`)])]) {
+      let names: string[];
+      try { names = existsSync(rules) ? (readdirSync(rules, { recursive: true }) as string[]).filter((name) => name.endsWith(".md")).sort() : []; }
+      catch { return unreadable(rules); }
+      for (const name of names) {
+        const pfad = `${rules}/${name}`;
+        const read = readPresent(pfad);
+        if (!read.ok) return unreadable(pfad);
+        if (!read.bytes || seen.has(pfad)) continue;
+        const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(read.bytes.toString("utf8"));
+        if (front && /^paths\s*:/m.test(front[1]!)) { nachgeladen.push(pfad); continue; }
+        seen.add(pfad);
+        dateien.push({ pfad, bytes: read.bytes.length });
+      }
+    }
+    return { bytes: dateien.reduce((sum, d) => sum + d.bytes, 0), dateien, nachgeladen,
+      regel: "Claude: Config-CLAUDE.md, je Ordner bis unter / CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md, @-Importe bis Tiefe 5, rules/**.md ohne paths:" };
+  }
+  if (familie === "codex") {
+    for (const base of [process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), resolve(dir)]) {
+      for (const name of ["AGENTS.override.md", "AGENTS.md"]) {
+        const read = readPresent(`${base}/${name}`);
+        if (!read.ok) return unreadable(`${base}/${name}`);
+        if (read.bytes) { dateien.push({ pfad: `${base}/${name}`, bytes: read.bytes.length }); break; }
+      }
+    }
+    return { bytes: dateien.reduce((sum, d) => sum + d.bytes, 0), dateien, nachgeladen,
+      regel: "Codex: CODEX_HOME und Ordner, je AGENTS.override.md vor AGENTS.md" };
+  }
+  return { bytes: "unknown", grund: `der Loader von ${harness} ist nicht vermessen` };
+}
+
+// Claude's auto-memory lives under the MAIN checkout's namespace — a linked worktree finds the same
+// one (docs/messungen/2026-10-07-session-start-wirklich.md, Die Loader-Probe).
+async function autoMemoryBytes(repoRoot: string): Promise<{ erfuellt: boolean | "unknown"; bytes: PlanBytes; pfad: string }> {
+  const common = await gitRead(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const namespace = common.code === 0 && common.out.endsWith("/.git") ? dirname(common.out) : repoRoot;
+  const pfad = `${projDir(namespace)}/memory/MEMORY.md`;
+  const read = readPresent(pfad);
+  return !read.ok ? { erfuellt: "unknown", bytes: "unknown", pfad }
+    : read.bytes ? { erfuellt: true, bytes: read.bytes.length, pfad } : { erfuellt: false, bytes: 0, pfad };
+}
+
+function declaredPackScope(id: string, manifest: ContextManifestRead): string | null {
+  const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
+  if (seed) return seed.scope;
+  const raw = manifest.kind === "packs" ? manifest.packs.find((pack): pack is Record<string, unknown> =>
+    !!pack && typeof pack === "object" && !Array.isArray(pack) && (pack as Record<string, unknown>).id === id) : undefined;
+  return typeof raw?.scope === "string" ? raw.scope : null;
+}
+
+async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; ort: PlanOrt; harness: string | null;
+  modell: string | null; effort: string | null; schalter: Readonly<Record<string, string>>; packs: readonly string[] | null;
+  selection?: Readonly<Record<string, "box" | "ausleihe">> }) {
+  const harness = resolveContextHarness(o.harness);
+  const input = o.rolle === "nur-ordner" ? null : await foundingSessionInput(fp, o.harness, o.rolle, o.selection);
+  // which packs the renderer carries whatever the plan selects — measured on an empty selection,
+  // never re-derived here (session-agents.ts boxes the contract pack for Codex and Pi)
+  const forced = new Set(input ? renderSessionAgents({ ...input, plan: { selected: [], omitted: [] } }).parts
+    .flatMap((part) => part.packId ? [part.packId] : []) : []);
+  const packs: PlanPackInstanz[] = [];
+  for (const id of [...fp.plan.selected.map((pack) => pack.id), ...fp.plan.omitted.map((entry) => entry.id), ...forced]) {
+    if (packs.some((pack) => pack.packId === id)) continue;
+    const omitted = fp.plan.selected.some((pack) => pack.id === id) ? null : fp.plan.omitted.find((entry) => entry.id === id)?.why ?? null;
+    packs.push({ packId: id, vorlage: declaredPackScope(id, fp.manifest) === "konzept" ? "konzept" : "founding-packs",
+      ausgelassen: omitted, harnesses: declaredPackRule(id, fp.manifest)?.harnesses ?? null,
+      ...(forced.has(id) ? { erzwungen: `Unter ${harness} traegt die Session-Datei dieses Pack immer: es liefert den Vertrag (session-agents.ts#renderSessionAgents).` } : {}) });
+  }
+  // packs= is the older spelling of the pack rows' switches: a carried (forced) pack stays as the
+  // renderer has it, and bausteine= wins where both name a pack
+  const schalter: Record<string, string> = { ...o.schalter };
+  if (o.packs !== null && input) for (const pack of fp.plan.selected) if (!forced.has(pack.id))
+    schalter[`pack:${pack.id}`] ??= o.packs.includes(pack.id) ? "an" : "aus";
+  const memory = harnessFamilie(harness) === "claude" ? await autoMemoryBytes(fp.repoRoot) : null;
+  const native = o.rolle === "nur-ordner" && o.ort === "ordner" ? nativeLoaderBytes(fp.repoRoot, harness) : null;
+  const laneRulebook = o.rolle === "lane" ? laneRulebookFor(fp.repoRoot, new Date(0).toISOString()) : null;
+  const ownRulebook = resolve(fp.repoRoot) === import.meta.dir && RULEBOOK_CUT_MODE !== "voll" && readRulebookFragments(import.meta.dir) !== null;
+  let rendered: SessionAgents | null = null;
+  const result = resolveSessionPlan({
+    rolle: o.rolle, ort: { art: o.ort, pfad: fp.repoRoot, branch: fp.branch, head: fp.head },
+    harness, modell: o.modell, effort: o.effort,
+    woerter: { harness: planHarnessWort(harness), modell: o.modell ? modelLabel(o.modell) : null,
+      effort: o.effort ? PLAN_EFFORT_WORT[o.effort] ?? o.effort : null,
+      ort: o.ort === "worktree" ? `neuer Worktree aus ${fp.branch ?? fp.head.slice(0, 8)}`
+        : o.ort === "repo" ? `direkt in ${basename(fp.repoRoot)}` : `Ordner ${basename(fp.repoRoot)}` },
+    packs,
+    bedingungen: {
+      "private-rulebook": o.rolle === "lane" ? laneRulebook !== null : ownRulebook,
+      "commit-expectation": o.ort === "worktree",
+      "delivery-header": harnessFamilie(harness) === "claude",
+      ...(memory ? { "auto-memory": memory.erfuellt } : {}),
+    },
+    schalter,
+  }, (zustand) => {
+    const bytes: Record<string, PlanBytes> = {};
+    const enthaltenIn: Record<string, string> = { "commit-expectation": "lane-footer" };
+    const details: Record<string, unknown> = {};
+    // a plan-only row (triple, self credential) puts no text into the context: zero by construction
+    for (const block of SESSION_BLOCKS) if (block.lieferart.every((l) => l === "plan")) bytes[block.id] = 0;
+    bytes["owner-heft"] = Buffer.byteLength(ownerKorrekturenPointer());
+    bytes["portfolio-memory-pointer"] = Buffer.byteLength(memoryPortfolioPointer());
+    if (o.rolle === "lane" || o.rolle === "main") bytes["memory-pointer"] = Buffer.byteLength(memoryPointer(o.rolle));
+    if (laneRulebook !== null) bytes["private-rulebook"] = Buffer.byteLength(laneRulebook);
+    if (memory) { bytes["auto-memory"] = memory.bytes; details["auto-memory"] = { pfad: memory.pfad }; }
+    if (native) { bytes["native-agents"] = native.bytes; details["native-agents"] = "grund" in native ? { grund: native.grund } : { dateien: native.dateien, nachgeladen: native.nachgeladen, regel: native.regel }; }
+    if (!input) return { bytes, enthaltenIn, details };
+    // the role and footer rows are measured on the full render; the plan's own file leaves out what
+    // the plan switched off or replaced, so the window shows exactly this plan
+    const roleRow = o.rolle === "orchestratorin" ? "orchestrator-card" : "role-card";
+    const footerRow = o.rolle === "lane" ? "lane-footer" : o.rolle === "main" ? "main-rail" : null;
+    const planInput: SessionAgentsInput = { ...input,
+      role: zustand.get(roleRow) === "an" ? input.role : { ...input.role, text: "" },
+      footer: footerRow === null || zustand.get(footerRow) === "an" ? input.footer : "" };
+    const render = (selected: typeof fp.plan.selected, from: SessionAgentsInput = planInput) =>
+      renderSessionAgents({ ...from, plan: { selected, omitted: fp.plan.omitted } });
+    const on = fp.plan.selected.filter((pack) => zustand.get(`pack:${pack.id}`) === "an");
+    const full = render(on, input);
+    rendered = render(on);
+    const role = full.parts.find((part) => part.id === "role")?.bytes ?? 0;
+    const footer = full.parts.find((part) => part.id === "footer")?.bytes ?? 0;
+    bytes[roleRow] = role;
+    if (o.rolle === "lane") bytes["lane-footer"] = footer;
+    bytes["context-anchors"] = full.bytes - role - footer;
+    if (forced.size) enthaltenIn["portable-contract"] = "context-anchors";
+    for (const pack of packs) {
+      const id = `pack:${pack.packId}`;
+      enthaltenIn[id] = "context-anchors";
+      const sel = fp.plan.selected.find((entry) => entry.id === pack.packId);
+      const isOn = !!sel && on.includes(sel);
+      // what the pack adds: the file with it minus the file without it, both from the one renderer
+      const other = sel && !pack.erzwungen ? render(fp.plan.selected.filter((entry) => entry === sel ? !isOn : on.includes(entry))) : null;
+      const parts = (isOn || !other ? rendered : other).parts.filter((part) => part.packId === pack.packId);
+      details[id] = { teile: parts.map((part) => ({ id: part.id, sorte: part.sorte, ort: part.ort, bytes: part.bytes ?? "unknown" })) };
+      const box = parts.filter((part) => part.ort === "box");
+      bytes[id] = other ? (isOn ? rendered.bytes - other.bytes : other.bytes - rendered.bytes)
+        : pack.erzwungen && box.length && box.every((part) => part.bytes !== null) ? box.reduce((sum, part) => sum + part.bytes!, 0) : "unknown";
+    }
+    return { bytes, enthaltenIn, details };
+  });
+  return result.ok ? { ok: true as const, plan: result.plan, sessionAgents: rendered as SessionAgents | null } : result;
+}
+
 function declaredPackRule(id: string, manifest: ContextManifestRead): { harnesses: string[]; triggers: string[] } | null {
   const strings = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? [...v] : null;
   const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
@@ -48699,15 +48903,36 @@ Bun.serve<WSData>({
     // PLANNING — repo, harness, main-or-lane — what planContext would choose. A reader, nothing
     // else: it delivers nothing, writes nothing, and assembles the same plan the doors below
     // validate a `packs` list against, so what the window showed is what the door will judge by.
+    // THE RESOLVED PLAN rides along as `plan` (session-blocks.ts#resolveSessionPlan): role (also
+    // nur-ordner), place `ort`, the triple (harness, model, effort) and `bausteine=<id>=<an|aus|ersetzt:id>,…`
+    // give one plan with its hash and sentence; the window shows that plan and decides nothing itself.
+    // `mode` may be left out once `role` names the founding; `ort` defaults from role and mode.
     if (url.pathname === "/api/founding-plan" && req.method === "GET") {
       const repo = url.searchParams.get("repo") ?? "";
-      const mode = url.searchParams.get("mode") ?? "";
+      const roleParam = url.searchParams.get("role");
+      const ortParam = url.searchParams.get("ort");
       if (!repo) return json({ error: "repo is required" }, 400);
-      if (mode !== "main" && mode !== "lane") return json({ error: "mode must be 'main' or 'lane'" }, 400);
+      const modeParam = url.searchParams.get("mode") ?? (roleParam === null ? "" : null);
+      if (modeParam !== null && modeParam !== "main" && modeParam !== "lane") return json({ error: "mode must be 'main' or 'lane'" }, 400);
       const ho = harnessIdOf({ harness: url.searchParams.get("harness") ?? undefined });
       if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
-      const position = url.searchParams.get("role") ?? mode;
-      if (!["lane", "main", "orchestratorin"].includes(position)) return json({ error: "role must be lane, main or orchestratorin" }, 400);
+      if (roleParam !== null && !["lane", "main", "orchestratorin", "nur-ordner"].includes(roleParam))
+        return json({ error: "role must be lane, main, orchestratorin or nur-ordner" }, 400);
+      if (ortParam !== null && !["worktree", "repo", "ordner"].includes(ortParam)) return json({ error: "ort must be worktree, repo or ordner" }, 400);
+      const mode: FoundingPlanMode = modeParam ?? (ortParam === "worktree" || (ortParam === null && roleParam === "lane") ? "lane" : "main");
+      const rolle = (roleParam ?? mode) as SessionRole;
+      const ort: PlanOrt = (ortParam as PlanOrt | null) ?? (mode === "lane" ? "worktree" : rolle === "nur-ordner" ? "ordner" : "repo");
+      const harnessObj = HARNESSES.find((h) => h.id === (ho.harness ?? CLAUDE_HARNESS.id)) ?? CLAUDE_HARNESS;
+      const mo = modelOf({ model: url.searchParams.get("model") ?? undefined }, harnessObj);
+      if (!mo.ok) return json({ error: mo.error }, 400);
+      const eo = effortOf({ effort: url.searchParams.get("effort") ?? undefined }, harnessObj);
+      if (!eo.ok) return json({ error: effortErrFor(harnessObj) }, 400);
+      const schalter: Record<string, string> = {};
+      for (const entry of (url.searchParams.get("bausteine") ?? "").split(",").filter(Boolean)) {
+        const at = entry.indexOf("=");
+        if (at <= 0) return json({ error: `bausteine entry '${entry}' must be <id>=<an|aus|ersetzt:id>` }, 400);
+        schalter[entry.slice(0, at)] = entry.slice(at + 1);
+      }
       const fp = await foundingPlanOf(repo, ho.harness, mode);
       if (!fp.ok) return json({ error: fp.error }, 400);
       const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
@@ -48724,9 +48949,11 @@ Bun.serve<WSData>({
       const packsParam = url.searchParams.get("packs");
       const packIds = packsParam === null ? null : packsParam.split(",").filter(Boolean);
       if (packIds?.some((id) => !plan.selected.some((pack) => pack.id === id))) return json({ error: "packs contains an unknown pack id" }, 400);
-      const rendered = packIds === null ? fp.value
-        : { ...fp.value, plan: { ...plan, selected: plan.selected.filter((pack) => packIds.includes(pack.id)) } };
-      const sessionAgents = await foundingSessionAgents(rendered, ho.harness, position as "lane" | "main" | "orchestratorin", selection);
+      const resolved = await foundingSessionPlan(fp.value, { rolle, ort, harness: ho.harness, modell: mo.model,
+        effort: eo.effort, schalter, packs: packIds, selection });
+      if (!resolved.ok) return json({ error: resolved.error }, 400);
+      // the session file IS the plan's render — one source for the window's preview and the plan's bytes
+      const sessionAgents = resolved.sessionAgents;
       // Every field below is the PLAN'S OWN: anchors and sourceHash exactly as the receipt would write
       // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
       // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at
@@ -48737,7 +48964,7 @@ Bun.serve<WSData>({
         return {
           id: pack.id, bytes: pack.estimatedBytes,
           group: pack.group ?? contextPackGroup(pack.id),
-          parts: sessionAgents.parts.filter((part) => part.packId === pack.id),
+          parts: sessionAgents?.parts.filter((part) => part.packId === pack.id) ?? [],
           source: seedIds.has(pack.id) ? "fleet-seed" : "repo-manifest",
           ...(pack.useWhen !== undefined ? { useWhen: pack.useWhen } : {}),
           ...(rule ? { harnesses: rule.harnesses, triggers: rule.triggers } : {}),
@@ -48754,7 +48981,16 @@ Bun.serve<WSData>({
       });
       return json({
         repo: fp.value.repoRoot, head: fp.value.head, branch: fp.value.branch,
-        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted, role: position, sessionAgents,
+        mode, harness: resolveContextHarness(ho.harness), plannedAt, selected, omitted, role: rolle, sessionAgents,
+        plan: resolved.plan,
+        // the role cards' standard triple (model-register.ts#MODEL_DEFAULTS) and whether it runs here
+        rollen: (["lane", "main", "orchestratorin", "nur-ordner"] as const).map((id) => {
+          const d = id === "lane" ? MODEL_DEFAULTS.worker : id === "main" ? MODEL_DEFAULTS.main
+            : id === "orchestratorin" ? MODEL_DEFAULTS.orchestrator : null;
+          return { id, wort: ROLLE_WORT[id], standard: d ? { harness: d.harness, modell: d.id, effort: d.effort } : null,
+            verfuegbarkeit: !d ? "available" : !HARNESSES.some((h) => h.id === d.harness) ? "unavailable"
+              : d.harness === "codex" ? codexAvailability(readCodexModelsCache(), d.id) : "unknown" };
+        }),
       });
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:

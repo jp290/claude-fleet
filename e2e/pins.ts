@@ -83,7 +83,7 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackSource } from "../context-packs";
-import { SESSION_BLOCKS, type SessionBlock } from "../session-blocks";
+import { SESSION_BLOCKS, resolveSessionPlan, type SessionBlock, type SessionPlanInput, type SessionPlanMessung, type SessionRole } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
@@ -12658,9 +12658,88 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const tracked = spawnSync("git", ["ls-files", "*.ts", "*.tsx"], { encoding: "utf8" });
   const readers = tracked.stdout.trim().split("\n").filter((path) => path !== "e2e/pins.ts" && exists(path)
     && /(?:from\s*|import\s*\(|require\s*\()\s*["'][^"']*session-blocks["']/.test(read(path)));
-  pin("S3 session blocks: the list is observational and no server path reads defaultOn",
-    !read("server.ts").includes('from "./session-blocks"') && !read("server.ts").includes("defaultOn")
-      && tracked.status === 0 && readers.length === 0, readers.join(", "));
+  // THE REGISTER IS READ, by one door (Owner-Ja F1, 07.10.): server.ts resolves it for GET
+  // /api/founding-plan only. No spawn path reads it yet — that is the next cut, and this pin moves then.
+  const serverSrc = read("server.ts");
+  const routeAt = serverSrc.indexOf('url.pathname === "/api/founding-plan" && req.method === "GET"');
+  const routeEnd = routeAt < 0 ? -1 : serverSrc.indexOf("\n    }\n", routeAt);
+  const planCalls = [...serverSrc.matchAll(/\bfoundingSessionPlan\(/g)].map((m) => m.index!);
+  const planDef = serverSrc.indexOf("async function foundingSessionPlan(");
+  pin("S3 session blocks: server.ts is the only reader, and only the founding-plan route resolves the register",
+    tracked.status === 0 && readers.join() === "server.ts" && !serverSrc.includes("defaultOn")
+      && [...serverSrc.matchAll(/\bresolveSessionPlan\(/g)].length === 1 && serverSrc.indexOf("resolveSessionPlan(") > planDef
+      && planCalls.length === 2 && planCalls.includes(planDef + "async function ".length)
+      && planCalls.every((at) => at === planDef + "async function ".length || (at > routeAt && at < routeEnd)),
+    `readers=${readers.join(", ")}; foundingSessionPlan sites=${planCalls.length}; route=${routeAt}..${routeEnd}`);
+
+  // THE PLAN RESOLVER, pure: the same inputs give the same plan-hash, a switch moves it, and every
+  // refusal names its rule. Measured bytes come from the caller; unknown stays unknown.
+  const planInput = (rolle: SessionRole, harness: string, schalter: Record<string, string> = {}): SessionPlanInput => ({
+    rolle, ort: { art: rolle === "lane" ? "worktree" : rolle === "nur-ordner" ? "ordner" : "repo", pfad: "/repo", branch: "main", head: "a".repeat(40) },
+    harness, modell: null, effort: "high",
+    woerter: { harness: harness === "codex" ? "Codex" : "Claude", modell: null, effort: "hoch", ort: "neuer Worktree aus main" },
+    packs: [
+      { packId: "portable-core", vorlage: "founding-packs", ausgelassen: null, harnesses: null,
+        ...(harness === "codex" ? { erzwungen: "traegt den Vertrag" } : {}) },
+      { packId: "verify-e2e", vorlage: "founding-packs", ausgelassen: null, harnesses: null },
+      { packId: "konzept-x", vorlage: "konzept", ausgelassen: harness === "codex" ? null : "harness-unsupported", harnesses: ["codex"] },
+    ],
+    bedingungen: { "auto-memory": true, "commit-expectation": true, "private-rulebook": true }, schalter,
+  });
+  const measure = (): SessionPlanMessung => ({ bytes: { "lane-footer": 100, "role-card": 50, "context-anchors": 400,
+    "pack:portable-core": 300, "pack:verify-e2e": 80, "native-agents": 1000, "auto-memory": 2000, "commit-expectation": "unknown" },
+    enthaltenIn: { "commit-expectation": "lane-footer", "pack:portable-core": "context-anchors", "pack:verify-e2e": "context-anchors" } });
+  const planOf = (input: SessionPlanInput) => resolveSessionPlan(input, measure);
+  const errorOf = (input: SessionPlanInput): string => { const r = planOf(input); return r.ok ? "" : r.error; };
+  const lane = planOf(planInput("lane", "claude"));
+  const laneAgain = planOf(planInput("lane", "claude"));
+  const laneSwitched = planOf(planInput("lane", "claude", { "source-code": "an" }));
+  const laneRow = (id: string) => lane.ok ? lane.plan.bausteine.find((b) => b.id === id) : undefined;
+  pin("S3 plan: the same inputs give the same plan-hash, one switch gives another",
+    lane.ok && laneAgain.ok && laneSwitched.ok && lane.plan.planHash === laneAgain.plan.planHash
+      && /^[0-9a-f]{64}$/.test(lane.plan.planHash) && laneSwitched.plan.planHash !== lane.plan.planHash
+      && laneSwitched.plan.bausteine.find((b) => b.id === "source-code")?.quelle === "schalter",
+    lane.ok ? lane.plan.planHash : lane.error);
+  pin("S3 plan: the sentence is one line from role, triple and place",
+    lane.ok && lane.plan.planSatz === "Lane · Claude · hoch · neuer Worktree aus main", lane.ok ? lane.plan.planSatz : "");
+  pin("S3 plan: every row carries word, sentence, boundary, state, role default, harness verdict, bytes and candidates",
+    lane.ok && lane.plan.bausteine.every((b) => b.wort && b.satz && b.grenze && ["an", "aus"].includes(b.zustand)
+      && b.rollenDefault !== undefined && typeof b.harness.gueltig === "boolean"
+      && (typeof b.bytes === "number" || b.bytes === "unknown") && Array.isArray(b.ersatzKandidaten))
+      && !lane.plan.bausteine.some((b) => b.id === "founding-packs" || b.id === "konzept"));
+  pin("S3 plan: bytes before the task count measured rows once and NAME the unknown ones — never 0 for unknown",
+    lane.ok && lane.plan.bytesVorAuftrag.bytes === 100 + 50 + 400 + 1000 + 2000
+      && lane.plan.bytesVorAuftrag.unknown.includes("source-pointers") && lane.plan.bytesVorAuftrag.unknown.includes("portable-contract")
+      && !lane.plan.bytesVorAuftrag.unknown.includes("commit-expectation") && lane.plan.bytesVorAuftrag.auftrag.join() === "task-brief"
+      && laneRow("task-brief")?.bytes === "unknown",
+    lane.ok ? JSON.stringify(lane.plan.bytesVorAuftrag) : "");
+  pin("S3 plan: a harness-limited row is off with its reason, and switching it on is refused",
+    laneRow("pack:konzept-x")?.harness.gueltig === false && laneRow("pack:konzept-x")?.zustand === "aus"
+      && errorOf(planInput("lane", "codex", { "private-rulebook": "an" })).includes("gilt nicht fuer codex"));
+  pin("S3 plan: a required row cannot be switched off, a locked one cannot be replaced, a stranger cannot replace",
+    errorOf(planInput("lane", "claude", { "lane-footer": "aus" })).includes("ist noetig")
+      && errorOf(planInput("lane", "claude", { "owner-heft": "ersetzt:portable-contract" })).includes("ist gesperrt")
+      && errorOf(planInput("lane", "claude", { "lane-footer": "ersetzt:memory-pointer" })).includes("traegt nicht die Funktion")
+      && laneRow("lane-footer")?.ersatzKandidaten.includes("self-credential") === true
+      && laneRow("owner-heft")?.ersatzKandidaten.length === 0);
+  const replaced = planOf(planInput("lane", "claude", { "lane-footer": "ersetzt:self-credential" }));
+  pin("S3 plan: an equal-function replacement is a state of its own and moves the hash",
+    replaced.ok && lane.ok && replaced.plan.bausteine.find((b) => b.id === "lane-footer")?.zustand === "ersetzt:self-credential"
+      && replaced.plan.planHash !== lane.plan.planHash, replaced.ok ? "" : replaced.error);
+  pin("S3 plan: native rows are shown, not switched; a carried contract pack stays on",
+    errorOf(planInput("lane", "claude", { "auto-memory": "aus" })).includes("Fleet hat dafuer keinen Schalter")
+      && errorOf(planInput("lane", "codex", { "pack:portable-core": "aus" })).includes("traegt den Vertrag")
+      && errorOf(planInput("lane", "claude", { "konzept": "an" })).includes("is a template"));
+  const folderPlan = planOf(planInput("nur-ordner", "claude"));
+  pin("S3 plan: Nur Ordner delivers only native-agents and auto-memory, with their bytes",
+    folderPlan.ok && folderPlan.plan.bausteine.filter((b) => b.zustand !== "aus").map((b) => b.id).sort().join() === "auto-memory,native-agents"
+      && folderPlan.plan.bytesVorAuftrag.bytes === 3000 && folderPlan.plan.bytesVorAuftrag.unknown.length === 0
+      && errorOf(planInput("nur-ordner", "claude", { "memory-pointer": "an" })).includes("Nur Ordner liefert nur"),
+    folderPlan.ok ? JSON.stringify(folderPlan.plan.bytesVorAuftrag) : folderPlan.error);
+  const anchorsOff = planOf(planInput("lane", "claude", { "context-anchors": "aus" }));
+  pin("S3 plan: packs deliver only through the reading pointers",
+    anchorsOff.ok && anchorsOff.plan.bausteine.filter((b) => b.id.startsWith("pack:")).every((b) => b.zustand === "aus")
+      && errorOf(planInput("lane", "claude", { "context-anchors": "aus", "pack:verify-e2e": "an" })).includes("context-anchors"));
 }
 
 console.log(rows.join("\n"));

@@ -90,7 +90,7 @@ Scope and sources, so the omissions are not silent:
 - `scratch-reap.sh` — scratch-reap.sh — the owner of the e2e-isolated scratch heap.
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `session-agents.ts` — session-agents.ts — pure session AGENTS rendering with measured part receipts.
-- `session-blocks.ts` — Declarative inventory of Fleet-added session material; spawn paths do not consume this list.
+- `session-blocks.ts` — The one register of Fleet-added session material; GET /api/founding-plan resolves it, no spawn path reads it yet.
 - `simulator-hygiene.ts` — simulator-hygiene.ts — may an idle iOS Simulator be shut down? The pure decision, and the probe it reads.
 - `slotstats.ts` — The slot fact — whether a slot is the thing it claims to be.
 - `start-plan.ts` — Deterministic, read-only START PLAN — what the dispatcher WOULD start next, and what each row passed.

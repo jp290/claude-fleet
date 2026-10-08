@@ -126,7 +126,7 @@ export const CONTEXT_PACKS = [
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,
-    estimatedBytes: 7900,
+    estimatedBytes: 10335,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",

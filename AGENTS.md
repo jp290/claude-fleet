@@ -51,12 +51,34 @@ bounds, not on a scripted workflow. **Act Lead is not built**: `delegate_act` in
   isolated worker lane.
 - Only by owner promotion may a **Game-Maker Program-MAIN** do substantial serial work where
   implementation, launch, control, perception, repair and replay form one
-  causally coupled product act. Every new Game Program first completes one Preflight,
-  **Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review -> MAIN
-  `ACCEPT|RETHINK|OWNER`**, and no implementation task is filed or released before `ACCEPT`. THIS
-  PREFLIGHT IS A BINDING ROLE OBLIGATION, NOT A SERVER GATE; EXISTING DOORS DO NOT AUTHORIZE A
-  BYPASS. SENSORY CRITIC IS POST-PLAY ONLY. Card, receipt, Direct Slice and the sealed Critic pack:
-  `docs/product-studio-working-circle.md` §The Game-Maker profile.
+  causally coupled product act. Every new Game Program runs the product preflight below in its
+  game form, **Architect -> 0-2 named fact/risk probes -> fresh independent cross-model Review ->
+  MAIN `ACCEPT|RETHINK|OWNER`**, and no implementation task is filed or released before `ACCEPT`.
+  SENSORY CRITIC IS POST-PLAY ONLY. Role paragraph, Card, receipt, Direct Slice, the sealed Critic
+  pack and checkpoint: `docs/product-studio-working-circle.md` §The Game-Maker profile.
+- Every **product Program** — one whose `successCriterion` names a result a person uses, not a
+  repair, a measurement or a rule — builds from a prototype under one committed product draft.
+  First, each open question the criterion depends on goes to the owner. Then, in this order:
+  **Prototype -> Critic -> Draft -> fresh independent cross-model Review -> MAIN
+  `ACCEPT|RETHINK|OWNER` -> draft confirmation**. The prototype is the one implementation row
+  allowed before the confirmation: the smallest end-to-end build of the criterion's user flow,
+  crude and disposable. The Critic is one fresh look at that running prototype through a sealed
+  pack of build, launch, real input and capture — evidence, not authority. The draft states the
+  criterion as checkable product sentences, the user flow, the interfaces, one integration command
+  that runs the whole, and one to four first-slice briefs. The Orchestratorin confirms a draft that
+  stays inside the owner-confirmed success criterion; only a NEW or CHANGED criterion goes to the
+  owner, as one yes/no question with a link. No further implementation row is filed or released
+  before that confirmation. Every row names the draft at its SHA, and its DONE carries an
+  integration check: the draft's integration command still runs the whole. A Direct Slice is a
+  small, bounded, reversible change inside a confirmed draft. After every three lands MAIN writes
+  one integration checkpoint into the draft, as a gap matrix
+  `criterion sentence | landed rows | gap | next row`, before releasing more, and reports status
+  against the criterion, never as a land count. A core pivot starts a new draft. The rule binds
+  newly founded Programs and new product strands: a running Program with existing rows (hard DONE,
+  Verify) builds on and owes a draft once a new user-visible strand begins there, and no held card
+  is held by this preflight. THIS PREFLIGHT IS A BINDING ROLE OBLIGATION, NOT A SERVER GATE;
+  EXISTING DOORS DO NOT AUTHORIZE A BYPASS. THE CRITIC LOOKS ONLY AT A RUNNING PROTOTYPE. Receipt,
+  sealed pack and checkpoint: `docs/product-studio-working-circle.md` §The product preflight.
 - A result is a claim until diff and exact verification output are read. Missing or failed
   evidence is `unknown`, never zero, false or pass; `PLAYABLE` means seen to run, never
   owner-played. Workers may **propose** findings, rules or retirement; only the owner **promotes** a

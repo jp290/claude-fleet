@@ -8329,10 +8329,29 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "NO IMPLEMENTATION TASK MAY BE FILED OR RELEASED BEFORE ACCEPT",
   ] as const;
   const preflightOrderAt = preflightOrder.map((step) => railRoleGameMaker.indexOf(step));
-  const preflightDocs = [agents, selfApiDoc, studioDoc].every((text) =>
-    /Architect -> 0-2 named\s+fact\/risk probes -> fresh independent cross-model Review/.test(text)
-      && text.includes("ACCEPT|RETHINK|OWNER")
-      && text.includes("SENSORY CRITIC IS POST-PLAY ONLY"));
+  // ONE PREFLIGHT, TWO FORMS (owner promotion 2026-10-08, docs/entwurf-produkt-preflight.md): the
+  // game form keeps its Architect order in all three docs; the product form binds every product
+  // Program from a prototype and lives in AGENTS.md and the studio doc. Its paragraph carries no game
+  // vocabulary, so a product MAIN never reads a game rule as its own.
+  const productOrder = "**Prototype -> Critic -> Draft -> fresh independent cross-model Review -> MAIN `ACCEPT|RETHINK|OWNER` -> draft confirmation**";
+  const productParagraph = agents.match(/^- Every \*\*product Program\*\*[\s\S]*?(?=^- |^###)/m)?.[0] ?? "";
+  const laneRoleCard = server.match(/const LANE_ROLE_CARD = `([^`]*)`;/)?.[1] ?? "";
+  const preflightDocs = {
+    game: [agents, selfApiDoc, studioDoc].every((text) =>
+      /Architect -> 0-2 named\s+fact\/risk probes -> fresh independent cross-model Review/.test(text)
+        && text.includes("ACCEPT|RETHINK|OWNER")
+        && text.includes("SENSORY CRITIC IS POST-PLAY ONLY")),
+    product: productParagraph !== ""
+      && [productParagraph, studioDoc].every((text) => text.replace(/\s+/g, " ").includes(productOrder)
+        && text.includes("THE CRITIC LOOKS ONLY AT A RUNNING PROTOTYPE"))
+      && /integration command/.test(productParagraph)
+      && productParagraph.replace(/\s+/g, " ").includes("never as a land count")
+      && productParagraph.replace(/\s+/g, " ").includes("only a NEW or CHANGED criterion goes to the owner")
+      && productParagraph.replace(/\s+/g, " ").includes("no held card is held by this preflight")
+      && !/\b(game|play\w*|GAME-CARD)\b/i.test(productParagraph)
+      && mainCard.includes("Integrations-Checkpoint gegen das Erfolgskriterium")
+      && laneRoleCard.includes("zuerst Lesart und Plan"),
+  };
   pin(`${RULE_RAIL} — every new Game Program completes one independent Preflight before implementation, while sensory Critic stays blind and post-play`,
     preflightOrderAt.every((at, i) => at >= 0 && (i === 0 || at > preflightOrderAt[i - 1]!))
       && railRoleGameMaker.includes("DRAFT GAME-CARD.md")
@@ -8345,8 +8364,12 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && railRoleGameMaker.includes("DIRECT SLICE")
       && railRoleGameMaker.includes("no Game Card, no HANDOFF.md and no hypotheses")
       && railRoleGameMaker.includes("sealed build, launch, real-input and capture pack")
-      && preflightDocs,
-    `order=[${preflightOrderAt.join(",")}] docs=${preflightDocs}`);
+      && preflightDocs.game,
+    `order=[${preflightOrderAt.join(",")}] docs=${preflightDocs.game}`);
+  pin(`${RULE_RAIL} — every product Program builds from a prototype under one confirmed draft, and every row and checkpoint checks the whole`,
+    preflightDocs.product,
+    `paragraph=${productParagraph.length} studio=${studioDoc.replace(/\s+/g, " ").includes(productOrder)} `
+      + `mainCard=${mainCard.includes("Integrations-Checkpoint gegen das Erfolgskriterium")} laneCard=${laneRoleCard.includes("zuerst Lesart und Plan")}`);
   const preflightTruthMarkers = [
     "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
     "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
@@ -8383,6 +8406,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
     "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
     "`docs/product-studio-working-circle.md` §The Game-Maker profile",
+    "`docs/product-studio-working-circle.md` §The product preflight",
   ] as const;
   const docTruthSurfaces = [
     ["AGENTS.md", agents, agentsTruthMarkers],

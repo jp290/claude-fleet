@@ -17,6 +17,12 @@ Vorlieben, keine Regeln — die Kartenform selbst (Kopfzeilen, DONE, VERIFY) ble
 - **Ziel, Warum, Fertig, Material.** Was soll danach anders sein, mit dem Owner-Wort, warum es zählt,
   woran man das Ende erkennt, und wo das Material liegt. Das Wie gehört dem Agenten: Methoden,
   Report-Gliederungen und ausgeschriebene Prüfketten nehmen ihm die Arbeit, für die wir ihn holen.
+  Bei einem Produkt-Program nennt die Karte den bestätigten Entwurf mit SHA und den Satz des
+  Erfolgskriteriums, dem sie dient, und ihr Fertig-Satz enthält die Integrationsprüfung: Der
+  Integrationsbefehl des Entwurfs läuft danach über den ganzen Ablauf, nicht nur die eigene Prüfung.
+  Vor der Bestätigung des Entwurfs (Orchestratorin; ein neues oder geändertes Erfolgskriterium: der
+  Owner) ist der Prototyp die einzige Implementierungszeile. Ein laufendes Program baut weiter, bis
+  dort ein neuer nutzersichtbarer Strang beginnt (`AGENTS.md` §Hard invariants).
 - **Nur echte Grenzen.** VERBOTEN nennt, was wirklich nicht geht (fremde Flächen, Außenwirkung,
   Owner-Akte), nicht jeden denkbaren Fehler; eine lange Verbotsliste liest sich als Misstrauen und
   macht klein.

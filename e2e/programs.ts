@@ -2710,8 +2710,15 @@ export async function run(ctx: Ctx): Promise<void> {
   // Two fresh lanes join the bound Program while stopped; one of them loses its letter, the way a
   // pre-field row reads. Both are killed again at the end, so the land door below sees the same
   // single lane it always did.
-  const bandOpenY = await (await post("/api/lanes", { repo: REPO })).json() as { slot?: number };
-  const bandOpenZ = await (await post("/api/lanes", { repo: REPO })).json() as { slot?: number };
+  // THE PREMISE IS MADE HERE, not assumed: a lane opened without a parent takes the most recent live
+  // MAIN by lastOutput (server.ts#decideLaneAnchor), so a later open can land in another band. The
+  // first lane's persisted anchor is read back and passed as the parent of the two lanes that join it.
+  const bandParent = loadedExecutionState.slots?.[String(executionLaneBody.slot)]?.worktree?.anchor ?? null;
+  const bandOpenY = await (await post("/api/lanes", { repo: REPO, parent: bandParent ?? undefined })).json() as { slot?: number };
+  const bandOpenZ = await (await post("/api/lanes", { repo: REPO, parent: bandParent ?? undefined })).json() as { slot?: number };
+  check("ProgramExecutionView band prerequisite: the first lane has a persisted anchor and both added lanes opened into the same band",
+    bandParent !== null && typeof bandOpenY.slot === "number" && typeof bandOpenZ.slot === "number",
+    JSON.stringify({ anchor: bandParent, y: bandOpenY.slot ?? null, z: bandOpenZ.slot ?? null }));
   await stopSrv();
   const bandState = readState();
   const bandRowX = bandState.slots?.[String(executionLaneBody.slot)];

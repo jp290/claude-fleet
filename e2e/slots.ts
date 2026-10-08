@@ -9000,6 +9000,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       await send("Page.addScriptToEvaluateOnNewDocument", { source: NET });
     };
     const missing: string[] = [];
+    const timedOut: string[] = [];
     const evaluate = async <T>(expression: string): Promise<T> => {
       const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
       if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
@@ -9011,8 +9012,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       await send("Page.navigate", { url });
       await Promise.race([done, Bun.sleep(15000)]);
     };
-    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
-      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 40); }; tick(); })`);
+    const wait = async (condition: string, ms = 8000) => {
+      const ok = await evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+        const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 40); }; tick(); })`);
+      if (!ok) timedOut.push(`${ms}ms: ${condition}`);
+      return ok;
+    };
     const click = async (expression: string): Promise<boolean> => {
       const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
         e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -9076,6 +9081,14 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
+      const failures: Record<string, string[]> = {};
+      const all = (parts: Record<string, boolean>) => Object.values(parts).every((ok) => ok);
+      const claim = (key: string, name: string, parts: Record<string, boolean>) => {
+        claims[name] = all(parts);
+        if (!claims[name]) failures[key] = Object.keys(parts).filter((part) => !parts[part]);
+      };
+      missing.length = 0;
+      timedOut.length = 0;
       try {
         // --- the instance: four plain sessions, a lane on the fixture repo, a lane on a throwaway repo
         const A = await openPlain("Rechte A");
@@ -9195,17 +9208,31 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         await click(rk(`p:${kRepo}`));
         const delta = await evaluate<string>(`${RB}?.querySelector('.rgdelta')?.innerText ?? ''`);
         await shot(width, "auswahl");
-        claims["board: \"Zuweisen …\" opens the choice in the block; nothing is sent while choosing"] = edOpen
-          && delta.includes(`+ ${basename(o.repo)}`) && (await patches(A.slot)).length === 0;
+        claim("choice", "board: \"Zuweisen …\" opens the choice in the block; nothing is sent while choosing", {
+          editor: edOpen, selectedProject: delta.includes(`+ ${basename(o.repo)}`), noPatch: (await patches(A.slot)).length === 0,
+        });
         await click(rk("apply"));
         const set1 = await wait(`${GR}?.innerText.includes('Fassung 1') && !${RB}.querySelector('.rged')`);
         const a1 = await grantOf(A.slot);
         const p1 = await patches(A.slot);
-        claims["board: Zuweisen is one PATCH with expectedOpenedAt + expectedRevision 0, and the block paints the server's grant"] = set1
-          && p1.length === 1 && p1[0].body?.expectedOpenedAt === A.openedAt && p1[0].body?.expectedRevision === 0
-          && JSON.stringify(p1[0].body?.projectKeys) === JSON.stringify([kRepo]) && JSON.stringify(p1[0].body?.views) === JSON.stringify(["work"])
-          && a1.grant?.revision === 1 && a1.inForce && (await grantText()).includes(basename(o.repo))
-          && (await grantText()).includes("Arbeitsstand · nur lesen") && (await grantText()).includes("von dir");
+        const assignedText = await grantText();
+        const assignmentParts = (patch: typeof p1[number] | undefined, grant: GrantGet) => ({
+          paintedRevision: set1, onePatch: p1.length === 1, slotRevision: patch?.body?.expectedOpenedAt === A.openedAt,
+          grantRevision: patch?.body?.expectedRevision === 0,
+          projectKeys: JSON.stringify(patch?.body?.projectKeys) === JSON.stringify([kRepo]),
+          views: JSON.stringify(patch?.body?.views) === JSON.stringify(["work"]),
+          serverGrant: grant.grant?.revision === 1, inForce: grant.inForce,
+          paintedProject: assignedText.includes(basename(o.repo)), paintedView: assignedText.includes("Arbeitsstand · nur lesen"),
+          paintedOwner: assignedText.includes("von dir"),
+        });
+        const assignment = assignmentParts(p1[0], a1);
+        claim("assign", "board: Zuweisen is one PATCH with expectedOpenedAt + expectedRevision 0, and the block paints the server's grant", assignment);
+        claims["MUTATION: the assignment predicate rejects a missing server grant"] = all(assignment)
+          && !all(assignmentParts(p1[0], { ...a1, grant: null }));
+        claims["MUTATION: the assignment predicate rejects a missing slot revision"] = all(assignment)
+          && !all(assignmentParts({ ...p1[0], body: { ...p1[0]?.body, expectedOpenedAt: undefined } }, a1));
+        claims["MUTATION: the assignment predicate rejects a missing grant revision"] = all(assignment)
+          && !all(assignmentParts({ ...p1[0], body: { ...p1[0]?.body, expectedRevision: undefined } }, a1));
         await shot(width, "zugewiesen");
         // Abbrechen — in the choice and in the revoke question — sends nothing
         await click(rk("open"));
@@ -9214,9 +9241,10 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         await click(rk("revoke"));
         const asked = await evaluate<string>(`${GR}?.innerText ?? ''`);
         await click(rk("revoke-cancel"));
-        claims["board: Abbrechen sends nothing — neither in the choice nor in the revoke question"] =
-          (await patches(A.slot)).length === 1 && asked.includes("Widerrufen?") && !(await grantText()).includes("Beobachtung")
-          && (await grantOf(A.slot)).grant?.revision === 1;
+        claim("cancel", "board: Abbrechen sends nothing — neither in the choice nor in the revoke question", {
+          noExtraPatch: (await patches(A.slot)).length === 1, revokeQuestion: asked.includes("Widerrufen?"),
+          noDraftView: !(await grantText()).includes("Beobachtung"), serverRevision: (await grantOf(A.slot)).grant?.revision === 1,
+        });
         // 409: another window revokes while the choice is open
         await click(rk("open"));
         await click(rk("v:observations"));
@@ -9254,7 +9282,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         // whole — and the full path only in the tooltip. The long path is injected into the page's read
         // (NET, probe.longProject): no folder outside the scratch, and it is under a home on every host.
         const LONG = { projectKey: "probe-long-path", repo: "/Users/probe-owner/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer/projekt-mit-langem-namen" };
-        claims["PROBE: the Info opens on slot A with a long fixture path among the known projects"] = await openOn(width, height, A.slot, false, LONG);
+        claim("probeLong", "PROBE: the Info opens on slot A with a long fixture path among the known projects", { rightsBlock: await openOn(width, height, A.slot, false, LONG) });
         await wait(`${GR}?.innerText.includes('Fassung 4')`);
         await click(rk("open"));
         const picked = await wait(`${rk(`p:${LONG.projectKey}`)}`);
@@ -9272,15 +9300,21 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         const repoOf = new Map([...(await grantOf(A.slot)).knownProjects, LONG].map((p) => [`p:${p.projectKey}`, p.repo]));
         const long = picks.find((x) => x.rk === `p:${LONG.projectKey}`);
         facts.projectChoice = picks.map(({ rk: k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }) => ({ k, name, nameLines, pathLines, start, tail, cut, tailWhole, pathFits }));
-        claims["board: in the project choice every project is its name over one line of path — never more than two lines, nothing sent"] = picked
-          && picks.length >= 2 && picks.every((x) => x.nameLines === 1 && x.pathLines === 1 && x.pathFits && x.name === basename(repoOf.get(x.rk) ?? ""))
-          && (await patches(A.slot)).length === 0;
-        claims["board: a long path is cut — home as ~, the middle as …, the last segment whole"] = !!long && long.name === "projekt-mit-langem-namen"
-          && long.start === "~/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer"
-          && long.tail === "/projekt-mit-langem-namen" && long.cut && long.tailWhole && !long.text.includes("/Users/");
-        claims["board: the full path stands only in the tooltip — every project's title opens with it, the long one's text never holds it"] =
-          picks.length >= 2 && picks.every((x) => x.title.startsWith(`${repoOf.get(x.rk) ?? "\0"} (intern: projectKey `))
-          && !!long && long.title.startsWith(`${LONG.repo} (`) && !long.text.includes(LONG.repo);
+        claim("projectChoice", "board: in the project choice every project is its name over one line of path — never more than two lines, nothing sent", {
+          fixtureOption: picked, twoProjects: picks.length >= 2, nameLine: picks.every((x) => x.nameLines === 1),
+          pathLine: picks.every((x) => x.pathLines === 1), pathFits: picks.every((x) => x.pathFits),
+          names: picks.every((x) => x.name === basename(repoOf.get(x.rk) ?? "")), noPatch: (await patches(A.slot)).length === 0,
+        });
+        claim("longPath", "board: a long path is cut — home as ~, the middle as …, the last segment whole", {
+          option: !!long, name: long?.name === "projekt-mit-langem-namen",
+          home: long?.start === "~/Developer/kunden/archiv-2026-herbst/ein-sehr-langer-ordnername-der-die-mitte-fuellt/noch-eine-ebene-tiefer",
+          tail: long?.tail === "/projekt-mit-langem-namen", cut: long?.cut === true, tailWhole: long?.tailWhole === true,
+          noFullHome: !!long && !long.text.includes("/Users/"),
+        });
+        claim("tooltip", "board: the full path stands only in the tooltip — every project's title opens with it, the long one's text never holds it", {
+          twoProjects: picks.length >= 2, titles: picks.every((x) => x.title.startsWith(`${repoOf.get(x.rk) ?? "\0"} (intern: projectKey `)),
+          longOption: !!long, longTitle: !!long && long.title.startsWith(`${LONG.repo} (`), noFullPath: !!long && !long.text.includes(LONG.repo),
+        });
 
         // --- a lane: no button, no read
         claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);
@@ -9292,18 +9326,26 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         await shot(width, "lane");
 
         // --- unknown is never "keine": a project the server no longer names, and a read that failed
-        claims["PROBE: the Info opens on slot C"] = await openOn(width, height, C.slot);
+        claim("probeC", "PROBE: the Info opens on slot C", { rightsBlock: await openOn(width, height, C.slot) });
         await wait(`${GR}?.innerText.includes('Fassung')`);
         const cText = await grantText();
-        claims["board: a granted project the server no longer names reads \"unbekanntes Projekt\" — never \"Keine\""] =
-          cText.includes(`unbekanntes Projekt ${kGone.slice(0, 8)}`) && cText.includes("nennt der Server heute nicht mehr") && !/^Keine/.test(cText);
+        claim("unknownGrant", "board: a granted project the server no longer names reads \"unbekanntes Projekt\" — never \"Keine\"", {
+          unknownKey: cText.includes(`unbekanntes Projekt ${kGone.slice(0, 8)}`), serverMissingProject: cText.includes("nennt der Server heute nicht mehr"),
+          notNone: !/^Keine/.test(cText),
+        });
         await click(rk("open"));
         const cFoot = await evaluate<string>(`${RB}?.querySelector('.rgfoot')?.innerText ?? ''`);
         const cBlocked = await evaluate<boolean>(`${rk("apply")}?.disabled === true`);
+        const cEditor = await evaluate<boolean>(`!!${RB}?.querySelector('.rged')`);
+        const cSelected = await evaluate<boolean>(`${rk(`p:${kGone}`)}?.getAttribute('aria-checked') === 'true'`);
         await shot(width, "unbekannt");
         await click(rk("cancel"));
-        claims["board: an unknown project can only be dropped — Zuweisen stays off while it is chosen, and nothing is sent"] =
-          cBlocked && cFoot.includes("kann nicht neu zugewiesen werden") && (await patches(C.slot)).length === 0;
+        const unknownParts = { editor: cEditor, selectedUnknown: cSelected, disabled: cBlocked,
+          explanation: cFoot.includes("kann nicht neu zugewiesen werden"), noPatch: (await patches(C.slot)).length === 0 };
+        claim("unknownChoice", "board: an unknown project can only be dropped — Zuweisen stays off while it is chosen, and nothing is sent", unknownParts);
+        facts.unknownChoice = { cBlocked, cEditor, cSelected, foot: cFoot, patches: (await patches(C.slot)).length };
+        claims["MUTATION: the unknown-project predicate rejects an enabled Zuweisen"] = all(unknownParts)
+          && !all({ ...unknownParts, disabled: false });
         claims["PROBE: the Info opens on slot D (its first read answered 502 inside the page)"] = await openOn(width, height, D.slot, true);
         await wait(`${GR}?.innerText.includes('Unbekannt')`);
         const dText = await grantText();
@@ -9312,11 +9354,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           && await evaluate<boolean>(`!${rk("open")} && !!${rk("reread")}`);
         await shot(width, "nichtlesbar");
         await click(rk("reread"));
-        claims["board: \"Neu lesen\" asks the server again and then shows what it says"] =
-          await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
+        claim("reread", "board: \"Neu lesen\" asks the server again and then shows what it says", {
+          paintedServerAnswer: await wait(`${GR}?.innerText.includes('Nie zugewiesen')`),
+        });
 
         // --- slot B is re-occupied while a choice is open: nothing goes out, the old answer is dropped
-        claims["PROBE: the Info opens on slot B"] = await openOn(width, height, B.slot);
+        claim("probeB", "PROBE: the Info opens on slot B", { rightsBlock: await openOn(width, height, B.slot) });
         await wait(`${GR}?.innerText.includes('Nie zugewiesen')`);
         await click(rk("open"));
         await click(rk(`p:${kRepo}`));
@@ -9330,9 +9373,10 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         const bText = await grantText();
         const bGrant = await grantOf(B.slot);
         facts.reoccupied = { bText, B2, before: B.openedAt };
-        claims["board: a slot re-occupied during an open choice sends no PATCH, says so, and the new session holds nothing"] = said
-          && B2 !== B.openedAt && (await patches(B.slot)).length === 0 && bText.includes("ging nicht raus")
-          && bGrant.openedAt === B2 && bGrant.grant === null;
+        claim("reoccupied", "board: a slot re-occupied during an open choice sends no PATCH, says so, and the new session holds nothing", {
+          notice: said, changedOccupant: B2 !== B.openedAt, noPatch: (await patches(B.slot)).length === 0,
+          notSent: bText.includes("ging nicht raus"), serverOccupant: bGrant.openedAt === B2, noGrant: bGrant.grant === null,
+        });
         await shot(width, "neubelegt");
         await stopVideo();
         facts.missing = missing.slice(0, 12);
@@ -9344,7 +9388,12 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       } finally {
         await cleanup();
       }
-      results.push({ width, height, claims, facts });
+      results.push({ width, height, claims, facts: {
+        failedParts: failures, missing: missing.slice(-3).map((x) => x.slice(0, 100)),
+        timedOut: timedOut.slice(-3).map((x) => x.slice(0, 140)),
+        unknownChoice: facts.unknownChoice, error: facts.error, ...Object.fromEntries(Object.entries(facts)
+          .filter(([key]) => !["missing", "unknownChoice", "error"].includes(key))),
+      } });
     }
     return results;
   } finally {

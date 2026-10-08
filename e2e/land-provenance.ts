@@ -515,11 +515,22 @@ export async function run(): Promise<void> {
           if (!adCommitted) await Bun.sleep(150);
         }
         const candTree = headOf(ad.cwd, "HEAD^{tree}");
-        check("helper adoption setup: four receipts beside one committed candidate — green on the old tree, green and red on the candidate tree, one still open",
+        // THE DEVICE LEAVES BEFORE THIS BLOCK DOES. Its last beat would otherwise still sit inside the
+        // short online window (FLEET_DEVICE_ONLINE_MS) when e2e/lane-suite.ts measures its LS.0
+        // precondition "no helper online" — measured: run together, all five LS.0 rows went red on
+        // `land adoption box`. Read through the same presence the gate serves, never slept out; the
+        // land itself needs no device.
+        let adOnline: boolean | undefined = true;
+        for (let i = 0; i < 120 && adOnline !== false; i++) {
+          adOnline = ((await (await fetch(`${BASE}/api/self/gate`, { headers: { "x-fleet-self-token": adTok } }))
+            .json().catch(() => ({}))) as { helper?: { online?: boolean } }).helper?.online;
+          if (adOnline !== false) await Bun.sleep(250);
+        }
+        check("helper adoption setup: four receipts beside one committed candidate — green on the old tree, green and red on the candidate tree, one still open — and the reporting device out of the online window again",
           adCommitted && before.reported && proven.reported && red.reported && !!open.id && !open.claimed
           && before.tree !== candTree && proven.tree === candTree && red.tree === candTree
-          && headOf(ad.cwd) !== headOf(sg.repo, "main"),
-          JSON.stringify({ adCommitted, before, proven, red, open, candTree }));
+          && headOf(ad.cwd) !== headOf(sg.repo, "main") && adOnline === false,
+          JSON.stringify({ adCommitted, before, proven, red, open, candTree, adOnline }));
         const adBefore = headOf(sg.repo, "main");
         await landClean(ad.slot);
         const adAfter = headOf(sg.repo, "main");

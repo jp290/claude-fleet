@@ -3,7 +3,7 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
@@ -2836,6 +2836,112 @@ export async function run(lc: LaneCtx): Promise<void> {
   await codexWritingWorkers();
   await preserveMergeHistory();
   await reverifyHeldCandidate();
+  await rebuildBundleAfterClientLand();
+}
+
+// THE LIVE CLIENT FOLLOWS A CLIENT LAND (server.ts#rebuildBundleAfterLand). The fixture repo IS the
+// server's live checkout (FLEET_REPO_DIR), with src/, a tracked public/index.html and four gitignored
+// bundles made old on purpose — the 2026-10-08 shape, where ab6c00d5 landed src/client.ts and
+// public/app.js stayed on the build before it. The build is a stub that records where it ran and
+// touches the four bundles, so the check measures the land's decision and its note, not bun build.
+// Three lands in a fixed order: a docs land over a stale bundle (never builds), a client land
+// (builds, note says ok), a client land whose build exits 3 (lands anyway, note carries the error).
+async function rebuildBundleAfterClientLand(): Promise<void> {
+  const repo = `${ROOT}/bundle-build-repo`;
+  const verify = `${ROOT}/bundle-build-verify`;
+  const runs = `${ROOT}/bundle-build-runs`;
+  const failMode = `${ROOT}/bundle-build-fail`;
+  const bundles = ["app.js", "share.js", "helper.js", "hub.js"].map((f) => `${repo}/public/${f}`);
+  const git = (cwd: string, ...args: string[]): string => {
+    const r = spawnSync("git", ["-C", cwd, ...args]);
+    if (r.status !== 0) throw new Error(`bundle build fixture ${args.join(" ")}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  };
+  // older than anything the fixture commits from here on — bundleStale reads true until a build ran
+  const ageBundles = (): void => {
+    const past = new Date(Date.now() - 120_000);
+    for (const b of bundles) utimesSync(b, past, past);
+  };
+  const ranIn = (): string[] => existsSync(runs) ? readFileSync(runs, "utf8").split("\n").filter(Boolean) : [];
+  type Note = { mainAfter?: string; bundleBuild?: { ok: boolean | null; ms?: number; exitCode?: number | null;
+    reason?: string; out?: string; skipped?: string } };
+  type Lane = { slot: number; cwd: string; branch: string };
+  let lane: Lane | null = null;
+  const land = async (file: string, body: string): Promise<{ landed: boolean; head: string; note: Note | null }> => {
+    const r = await post("/api/lanes", { repo });
+    const l = await r.json() as Lane;
+    if (!r.ok || !l.slot || !l.cwd) throw new Error(`bundle build lane: ${JSON.stringify(l)}`);
+    lane = l;
+    mkdirSync(`${l.cwd}/${file.replace(/\/[^/]+$/, "")}`, { recursive: true });
+    writeFileSync(`${l.cwd}/${file}`, body);
+    git(l.cwd, "add", file);
+    git(l.cwd, "commit", "-m", `lane changes ${file}`);
+    const candidate = git(l.cwd, "rev-parse", "HEAD");
+    await settleForMerge(l.slot);
+    await post(`/api/slots/${l.slot}/merge`, {});
+    const verdict = await waitMerge(l.slot);
+    if (!verdict.gone) await post(`/api/slots/${l.slot}/kill`, {});
+    lane = null;
+    const head = git(repo, "rev-parse", "main");
+    const raw = spawnSync("git", ["-C", repo, "notes", "--ref=fleet/land", "show", head]);
+    return { landed: head === candidate, head, note: raw.status === 0 ? JSON.parse(raw.stdout.toString()) as Note : null };
+  };
+  try {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(runs, { force: true });
+    rmSync(failMode, { force: true });
+    mkdirSync(`${repo}/src`, { recursive: true });
+    mkdirSync(`${repo}/public`, { recursive: true });
+    mkdirSync(`${repo}/docs`, { recursive: true });
+    git(repo, "init", "-b", "main");
+    git(repo, "config", "user.name", "E2E");
+    git(repo, "config", "user.email", "e2e@example.invalid");
+    git(repo, "config", "commit.gpgsign", "false");
+    writeFileSync(`${repo}/.gitignore`, "public/*.js\n");
+    writeFileSync(`${repo}/src/client.ts`, "export const v = 1;\n");
+    writeFileSync(`${repo}/public/index.html`, "<!doctype html><script src=app.js></script>\n");
+    writeFileSync(`${repo}/docs/notes.md`, "root\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "root");
+    for (const b of bundles) writeFileSync(b, "// old build\n");
+    ageBundles();
+    writeFileSync(verify, "#!/bin/sh\necho 'ALL PASS'\n", { mode: 0o755 });
+    await restartSrv({
+      FLEET_REPO_DIR: repo, FLEET_VERIFY_CMD: verify, FLEET_VERIFY_CMD_REPOS: JSON.stringify({ [repo]: verify }),
+      FLEET_DEPLOY_BUILD_CMD: `if [ -f '${failMode}' ]; then echo 'fixture build broke' >&2; exit 3; fi; `
+        + `pwd -P >> '${runs}' && touch public/app.js public/share.js public/helper.js public/hub.js`,
+    });
+    await setMergeMode("blocked");
+
+    const appBefore = statSync(bundles[0]).mtimeMs;
+    const docs = await land("docs/notes.md", "root\ndocs only\n");
+    check("bundle build: a docs-only land over a stale bundle lands and builds nothing — no run, no note field",
+      docs.landed && ranIn().length === 0 && statSync(bundles[0]).mtimeMs === appBefore
+        && docs.note?.mainAfter === docs.head && docs.note.bundleBuild === undefined,
+      JSON.stringify({ docs, ran: ranIn() }));
+
+    const client = await land("src/client.ts", "export const v = 2;\n");
+    const committedMs = Number(git(repo, "show", "-s", "--format=%ct", client.head)) * 1000;
+    const facts = await (await get("/api/sessions")).json() as { bundleStale?: { stale?: boolean | null } | null };
+    check("bundle build: a client land rebuilds the bundle in the live checkout and says so on its land note",
+      client.landed && client.note?.mainAfter === client.head && client.note.bundleBuild?.ok === true
+        && typeof client.note.bundleBuild.ms === "number"
+        && ranIn().length === 1 && ranIn()[0] === realpathSync(repo)
+        && statSync(bundles[0]).mtimeMs > committedMs && facts.bundleStale?.stale === false,
+      JSON.stringify({ client, ran: ranIn(), appJsMtime: statSync(bundles[0]).mtimeMs, committedMs, facts: facts.bundleStale }));
+
+    writeFileSync(failMode, "fail\n");
+    ageBundles();
+    const broken = await land("src/client.ts", "export const v = 3;\n");
+    check("bundle build: a failing build does not undo the land — the note carries ok:false, the exit code and the output",
+      broken.landed && broken.note?.bundleBuild?.ok === false && broken.note.bundleBuild.exitCode === 3
+        && (broken.note.bundleBuild.out ?? "").includes("fixture build broke") && ranIn().length === 1,
+      JSON.stringify({ broken, ran: ranIn() }));
+  } finally {
+    rmSync(failMode, { force: true });
+    if (lane) await post(`/api/slots/${(lane as Lane).slot}/kill`, {});
+    await restartSrv();
+  }
 }
 
 // THE RE-VERIFY DOOR (`{reverify:true}`, server.ts#reverifyRefusal/#reverifyJob), against the shape

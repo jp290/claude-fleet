@@ -28114,6 +28114,10 @@ interface LandProvenance {
   // …or that it went NOWHERE because this repo has no remote under FLEET_HUB_REMOTE's name
   // (5857e934). Only ever beside a configured hub — with the variable unset neither field appears.
   hubSkipped?: { remote: string; reason: "no-remote" };
+  // …and whether the LIVE CLIENT was rebuilt for this land (rebuildBundleAfterLand). Absent on every
+  // land that did not move the live checkout's src/ or public/ — a docs land, another repo, a branch
+  // the live checkout does not hold — so a reader never mistakes "nothing to build" for a build.
+  bundleBuild?: LandBundleBuild;
   // …and where the lane FORKED (LaneOutcome.forkSha, the same `worktree.baseSha`). The note's own
   // `mainBefore` is the rebase target, so without this a note cannot say what main did while the
   // lane lived. Absent where the slot recorded no fork — never `mainBefore` standing in for it.
@@ -28234,6 +28238,7 @@ async function writeLandNote(repo: string, base: string, branch: string, mainBef
       ...(prov.verify ? { verify: prov.verify } : {}),
       ...(prov.hubPush ? { hubPush: prov.hubPush } : {}),
       ...(prov.hubSkipped ? { hubSkipped: prov.hubSkipped } : {}),
+      ...(prov.bundleBuild ? { bundleBuild: prov.bundleBuild } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       actor: prov.actor,
       at: Date.now(),
@@ -28258,6 +28263,60 @@ async function markLandIntent(repo: string, main: string, branch: string, mainBe
 function clearLandIntent(repo: string): void {
   if (!landPending.delete(repo)) return;
   saveState();
+}
+// THE LIVE CLIENT FOLLOWS A CLIENT LAND. public/*.js are gitignored build output, and until this
+// existed only the watchdog built them, before an srv start — so a land that moved src/ left the
+// served bundle on its old bytes. 2026-10-08 18:35: ab6c00d5 changed index.html and src/client.ts,
+// public/app.js stayed on the 18:16 build, and the client died at boot (app.js null.appendChild,
+// empty page, no sidebar) until the owner ran `bun run build` by hand. bundleStale() saw it and
+// only reported it.
+// So the land rebuilds, here and under three conditions; whatever fails one of them builds nothing:
+//   · the land moved THE LIVE CHECKOUT — REPO_DIR's HEAD is now mainAfter. A land into another repo,
+//     onto a branch the live checkout does not hold, or into a lane worktree: no build, no field.
+//   · its diff touches src/ or public/. A docs-only land never builds, stale bundle or not: no field.
+//   · bundleStale() reads true. Fresh, or unknown, is written on the note as skipped — never built
+//     blindly, because `null` also means "this checkout has no src/ to build".
+// It reuses the deploy verb's build (runDeployBuild: same command, cwd, timeout and output cap) and
+// it does NOT restart srv: a landed server.ts still waits for a deploy, which is the owner's verb.
+// A deploy building at this moment is waited out rather than raced over the same public/.
+// `false` until the deploy region below has initialised its constants: the boot replay of a land
+// in flight (finishLandsInFlight) runs above that region, and touching REPO_DIR there would throw.
+let landBundleBuildReady = false;
+type LandBundleBuild =
+  | { ok: boolean; ms: number; exitCode?: number | null; reason?: string; out?: string }
+  | { ok: null; skipped: string };
+const LAND_BUNDLE_OUT_CAP = 800; // the note is JSON in a git note — the build's tail, not its log
+async function rebuildBundleAfterLand(repo: string, mainBefore: string, mainAfter: string): Promise<LandBundleBuild | undefined> {
+  const live = landBundleBuildReady ? REPO_DIR : process.env.FLEET_REPO_DIR || import.meta.dir; // REPO_DIR's own expression
+  if (repoCanon(repo) !== repoCanon(live)) return undefined;
+  const head = await git(live, "rev-parse", "HEAD");
+  if (head.code !== 0 || head.out !== mainAfter) return undefined;
+  const diff = await gitReadRaw(repo, "diff", "--name-only", "--no-renames", "-z", mainBefore, mainAfter);
+  if (diff.code !== 0) return { ok: null, skipped: `the land's diff ${mainBefore.slice(0, 8)}..${mainAfter.slice(0, 8)} could not be read` };
+  if (!diff.out.split("\0").some((f) => f.startsWith("src/") || f.startsWith("public/"))) return undefined;
+  if (!landBundleBuildReady)
+    return { ok: null, skipped: "boot replay of a land in flight — the build is not initialised yet; bundleStale stays on the board" };
+  const before = bundleStale().stale;
+  if (before !== true) {
+    return { ok: null, skipped: before === false ? "the bundle is already newer than src/"
+      : "bundle staleness is unknown — the bundle or src/ could not be stat'd" };
+  }
+  const waitUntil = Date.now() + DEPLOY_BUILD_TIMEOUT_MS;
+  while (deployRunning && Date.now() < waitUntil) await Bun.sleep(250);
+  if (deployRunning) {
+    const skipped = "a deploy was still building after the build timeout — not raced over the same public/";
+    logError("rebuildBundleAfterLand", `${mainAfter.slice(0, 8)} ${skipped}`);
+    return { ok: null, skipped };
+  }
+  const build = await runDeployBuild();
+  await refreshDeployFacts(); // the board's alarm clears on this reading, not on the next tick
+  if (build.exitCode === 0) return { ok: true, ms: build.ms };
+  const reason = build.exitCode === null
+    ? `the build timed out after ${DEPLOY_BUILD_TIMEOUT_MS}ms`
+    : `the build failed (exit ${build.exitCode})`;
+  // the note is a pull surface; the errors channel is what the owner's board already reads loudly
+  logError("rebuildBundleAfterLand", `${mainAfter.slice(0, 8)} ${reason} — the served bundle is stale`);
+  return { ok: false, ms: build.ms, exitCode: build.exitCode, reason, out: build.out.slice(-LAND_BUNDLE_OUT_CAP) };
 }
 // record a land that moved main. Skipped when main did not advance (already-merged lands),
 // where mainBefore === mainAfter and an "undo" would be a no-op — those paths also write no
@@ -28293,6 +28352,11 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
     ? { remote: HUB_REMOTE, reason: "no-remote" as const } : undefined;
   if (hubSkipped) audit("hub_skip", undefined,
     `${basename(repo)} ${branch} ${mainAfter.slice(0, 8)}: no remote named ${HUB_REMOTE} in this repo — landed here, no hub`);
+  // THE LIVE CLIENT, before the note for the hub push's reason: its outcome travels ON the note.
+  // Bounded by DEPLOY_BUILD_TIMEOUT_MS, and absent (no build, no field) on every land that did not
+  // move the live checkout's client sources.
+  const bundleBuild = await rebuildBundleAfterLand(repo, mainBefore, mainAfter);
+  if (bundleBuild) prov = { ...prov, bundleBuild };
   await writeLandNote(repo, main, branch, mainBefore, mainAfter,
     hubPush ? { ...prov, hubPush } : hubSkipped ? { ...prov, hubSkipped } : prov); // best-effort — never throws
   // ACP-17 · THE ONE READER WHO IS NOT AT THE BOARD. Everything written above this line is a PULL
@@ -44413,6 +44477,7 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
 // otherwise run two builds over the same tree and mint two markers, the second of which would
 // silently overwrite the first and leave one deploy that no boot will ever account for.
 let deployRunning = false;
+landBundleBuildReady = true; // every name rebuildBundleAfterLand reads is initialised from here on
 // The verb itself. Both principals reach it (owner below tokenGate, steward via handleStewardRoute)
 // — the steward is the pulse that SEES the gap, the owner is the hand that has always closed it.
 async function deployVerb(by: DeployPrincipal): Promise<Response> {

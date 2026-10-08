@@ -1944,25 +1944,27 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
 
   // the default (claude) adapter is automatable without FLEET_HARNESS_AUTOMATION, so the plain boot arms the tick
   await restartSrv();
-  const migratePrompts = async (slot: number) => (await plogRead())
-    .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+  // by OCCUPANT, not slot number (server.ts#logPrompt writes openedAt for exactly this): an earlier
+  // module's session on the same recycled slot can carry its own migrate nudge in the same log
+  const migratePrompts = async (x: { slot: number; openedAt: number }) => (await plogRead())
+    .filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
   type CtxRow = { id: number; ctx: { pct: number } | null };
   const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
   check("owner program succession setup: both handover subjects wrote a standing handover and measure 50 %",
     atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 50
       && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 50,
     JSON.stringify({ atF, atT, ctx: ctxRows.filter((x) => [F.slot, T.slot].includes(x.id)) }));
-  let staleNudges = await migratePrompts(T.slot);
+  let staleNudges = await migratePrompts(T);
   for (let i = 0; i < 100 && staleNudges.length === 0; i++) {
     await Bun.sleep(100);
-    staleNudges = await migratePrompts(T.slot);
+    staleNudges = await migratePrompts(T);
   }
   // negative proof, so it is a window: the fresh subject sat in every due scan the stale one was nudged in, plus four
   const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
   await Bun.sleep(tickMs * 4 + 500);
   check("tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
-    staleNudges.length === 1 && (await migratePrompts(F.slot)).length === 0 && (await migratePrompts(T.slot)).length === 1,
-    `fresh=${(await migratePrompts(F.slot)).length} stale=${(await migratePrompts(T.slot)).length}`);
+    staleNudges.length === 1 && (await migratePrompts(F)).length === 0 && (await migratePrompts(T)).length === 1,
+    `fresh=${(await migratePrompts(F)).length} stale=${(await migratePrompts(T)).length}`);
   // …and FRESH IS RE-ASKED WHEN THE CONVERSATION GROWS, not when the pane paints (MAIN review): the
   // fresh subject's transcript now grows past FRESH_TAIL_MAX while its pane prints nothing at all, so
   // its lastOutput stays put. Mutation: key the memo on lastOutput instead of the file → the memoised
@@ -1974,10 +1976,10 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     line(repoF, k % 2 ? "assistant" : "user", atF + 10 + k, k % 2 ? [{ type: "text", text: `GREW-${k} ${"x".repeat(1490)}` }]
       : `GREW-${k} ${"y".repeat(1490)}`)).join("") + usage);
   const fLastOutput = (await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput;
-  let grownNudges = await migratePrompts(F.slot);
+  let grownNudges = await migratePrompts(F);
   for (let i = 0; i < 100 && grownNudges.length === 0; i++) {
     await Bun.sleep(100);
-    grownNudges = await migratePrompts(F.slot);
+    grownNudges = await migratePrompts(F);
   }
   check("tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
     grownNudges.length === 1 && fLastOutput !== undefined && fLastOutput === fSilentBefore,

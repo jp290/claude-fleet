@@ -1,7 +1,7 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -5126,6 +5126,254 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     await post(`/api/slots/${F}/kill`, {});
     await tmuxOut("kill-session", "-t", `=${anchor}`);
   }
+
+  await runKeepCache();
+}
+
+// --- KEEP THE CACHE OR HAND OVER BEFORE IT IS GONE (server.ts#tickKeepCache; PATCH
+// /api/slots/:id/handover `keepCache` + `keepCacheIdleMin`). Five sessions, each planted at 50 % of
+// its window with its newest model call 51 min old — above the suite's 44 % and past a 50-minute
+// duration, before the measured 60-minute cache lifetime:
+//   W  switched on with an Auto armed (work foreseeable): first at 55 min nothing happens, then at
+//      50 min ONE warm turn reaches its pane and the occupant stays. Mutation: drop the
+//      `before-duration` gate (W is warmed at 55) or the work read (W is succeeded instead).
+//   S  switched on, nothing foreseeable: the OWNER DOOR hands it over, and the old occupant gets no
+//      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first.
+//   C  no switch at all: neither a warm turn nor a succession. Mutation: drop liveKeepCache's filter.
+//   G  bound game-maker MAIN, T the ⚙ steward: the switch is refused by name (the card's exemptions).
+// Invalid values are refused with the setting left as it was. ---
+async function runKeepCache(): Promise<void> {
+  const repos: string[] = [];
+  const mkRepo = (name: string): string => {
+    const repo = `${ROOT}/${name}`;
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo, { recursive: true });
+    spawnSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+    spawnSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", repo, "config", "user.name", "t"]);
+    writeFileSync(`${repo}/README.md`, `${name}\n`);
+    spawnSync("git", ["-C", repo, "add", "README.md"]);
+    spawnSync("git", ["-C", repo, "commit", "-qm", "init"]);
+    repos.push(repo);
+    return repo;
+  };
+  type Row = { id: number; cwd: string | null; openedAt?: number; lastOutput: number };
+  const sessions = async (): Promise<{ now: number; slots: Row[] }> =>
+    (await (await get("/api/sessions")).json()) as { now: number; slots: Row[] };
+  const openFree = async (cwd: string, label: string): Promise<{ slot: number; openedAt: number; cwd: string }> => {
+    const free = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+    const r = free ? await post(`/api/slots/${free}/open`, { cwd, label }) : null;
+    const openedAt = (await sessions()).slots.find((x) => x.id === free)?.openedAt ?? 0;
+    return { slot: r?.ok ? free : 0, openedAt, cwd };
+  };
+  const W = await openFree(mkRepo("keep-warm-repo"), "keep-warm");
+  const S = await openFree(mkRepo("keep-succeed-repo"), "keep-succeed");
+  const C = await openFree(mkRepo("keep-control-repo"), "keep-control");
+  const G = await openFree(mkRepo("keep-gamemaker-repo"), "keep-gamemaker");
+  const T = await openFree(mkRepo("keep-steward-repo"), "⚙ steward");
+  const all = [W, S, C, G, T];
+  check("keepCache setup: five plain sessions open on private checkouts",
+    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 5,
+    JSON.stringify(all.map((x) => ({ slot: x.slot, openedAt: x.openedAt }))));
+  const PROGRAM = "6b".repeat(12);
+  const statePath = `${ROOT}/fleet.json`;
+  const cleanup = async (): Promise<void> => {
+    for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
+    for (const r of repos) {
+      rmSync(r, { recursive: true, force: true });
+      rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
+    }
+    await stopSrv();
+    const st = JSON.parse(readFileSync(statePath, "utf8")) as { programs?: { id?: string }[] };
+    st.programs = (st.programs ?? []).filter((p) => p.id !== PROGRAM);
+    writeFileSync(statePath, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  if (!all.every((x) => x.slot > 0 && x.openedAt > 0)) { await cleanup(); return; }
+
+  // PLANTED, not driven (watch.ts's migrate fixture, for its reason): FLEET_CMD=true pins no session,
+  // and the fill and the newest model call are read off the pinned conversation. W, S and G carry
+  // the hint OFF as their setting, so the armed migrate tick types nothing into them; C keeps none.
+  await stopSrv();
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown }>;
+    programs?: Record<string, unknown>[] };
+  const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000003${String(i).padStart(2, "0")}`;
+  const plantAt = Date.now();
+  for (const [i, x] of [W, S, C, G].entries()) {
+    const row = state.slots?.[String(x.slot)];
+    if (!row) continue;
+    row.sessionId = sid(i);
+    if (x !== C) row.handover = { thresholdPct: null, nudge: false, keepCache: false, keepCacheIdleMin: 50, setAt: plantAt,
+      occupant: { slot: x.slot, openedAt: x.openedAt } };
+  }
+  state.programs = [...(state.programs ?? []), {
+    id: PROGRAM, title: "keepCache game-maker fixture", intent: "Refuse keepCache on a game-maker MAIN",
+    successCriterion: "PATCH answers 409 game-maker", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    status: "active", createdAt: plantAt - 1000, proposedBy: { kind: "owner" }, confirmedAt: plantAt - 900, activatedAt: plantAt - 800,
+    profile: { v: 1, kind: "game-maker", confirmedAt: plantAt - 850 },
+    main: { slot: G.slot, openedAt: G.openedAt, sessionId: sid(3), boundAt: plantAt - 700 } }];
+  writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+  const lastCallAt = Date.now() - 51 * 60_000;
+  for (const [i, x] of [W, S, C, G].entries()) {
+    const dir = `${process.env.HOME}/.claude/projects/${x.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/${sid(i)}.jsonl`,
+      `${JSON.stringify({ type: "user", cwd: x.cwd, timestamp: new Date(lastCallAt - 1000).toISOString(),
+        message: { role: "user", content: "KEEP-OWNER-MARK was vor einer Stunde gefragt wurde" } })}\n`
+      + `${JSON.stringify({ type: "assistant", cwd: x.cwd, timestamp: new Date(lastCallAt).toISOString(),
+        message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "KEEP-SESSION-MARK" }],
+          usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000, cache_read_input_tokens: 300_000, output_tokens: 10,
+            cache_creation: { ephemeral_1h_input_tokens: 100_000, ephemeral_5m_input_tokens: 0 } } } })}\n`);
+  }
+  await restartSrv();
+
+  type KeepFacts = { act: string | null; reason: string; thresholdPct: number | null; lastUsageAt: number | null;
+    dueAt: number | null; work: string[]; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null };
+  type View = { setting: { thresholdPct: number | null; nudge: boolean; keepCache: boolean; keepCacheIdleMin: number } | null;
+    openedAt: number | null; keepCacheIdle?: { min: number; max: number; step: number; lifetimeMin: number };
+    succession: { fill: { pct: number } | null; keepCache: KeepFacts | null } | null };
+  const hv = async (slot: number): Promise<View> => (await (await get(`/api/slots/${slot}/handover`)).json()) as View;
+  const hp = async (slot: number, body: unknown): Promise<{ status: number; body: View & { refusal?: string } }> => {
+    const r = await fetch(`${BASE}/api/slots/${slot}/handover`, { method: "PATCH",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: r.status, body: (await r.json().catch(() => ({}))) as View & { refusal?: string } };
+  };
+  const v0 = await Promise.all([W, S, C].map((x) => hv(x.slot)));
+  check("keepCache setup: W, S and C are measurably at 50 % with the switch off, and the route names the 5..55 duration under the 60-min lifetime",
+    v0.every((v) => v.succession?.fill?.pct === 50 && v.succession.keepCache === null)
+      && v0[0]!.keepCacheIdle?.min === 5 && v0[0]!.keepCacheIdle.max === 55 && v0[0]!.keepCacheIdle.lifetimeMin === 60,
+    JSON.stringify(v0.map((v) => ({ fill: v.succession?.fill, keep: v.succession?.keepCache, idle: v.keepCacheIdle }))));
+
+  // C has no setting, so the armed migrate tick nudges it once (unchanged behaviour, cooldown 15 min):
+  // that paste is awaited first, or it could land in the shell line that starts C's recorder
+  let cNudged = false;
+  for (let i = 0; i < 50 && !cNudged; i++) {
+    cNudged = (await plogRead()).some((e) => e.slot === C.slot && e.openedAt === C.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+    if (!cNudged) await Bun.sleep(100);
+  }
+  // byte recorders take the three panes' stdin (the owner door's no-turn proof), then they rest
+  const rec = (x: typeof W): string => `${ROOT}/keep-recorder-${x.slot}`;
+  for (const x of [W, S, C]) {
+    rmSync(rec(x), { force: true });
+    await tmuxOut("send-keys", "-t", `=s${x.slot}:`, `stty -icanon -echo; cat > '${rec(x)}'`, "Enter");
+  }
+  let resting = false;
+  for (let i = 0; i < 100 && !resting; i++) {
+    await Bun.sleep(100);
+    const sx = await sessions();
+    resting = [W, S, C].every((x) => {
+      const r = sx.slots.find((y) => y.id === x.slot);
+      return existsSync(rec(x)) && !!r && sx.now - r.lastOutput > MERGE_IDLE_MS + 300;
+    });
+  }
+  check("keepCache setup: the recorders hold W, S and C and the panes rest past the owner-act idle gate", resting, `resting=${resting}`);
+
+  // INVALID VALUES and EXEMPT SESSIONS: refused by name, and nothing is stored
+  const refusals: [string, number, unknown, number, string][] = [
+    ["the switch takes only true/false", S.slot, { expectedOpenedAt: S.openedAt, keepCache: "ja" }, 400, "bad-keep-cache"],
+    ["60 min is the measured lifetime itself", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: 60 }, 400, "bad-keep-cache-idle"],
+    ["0 min is below the floor", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: 0 }, 400, "bad-keep-cache-idle"],
+    ["33 is not a 5-step", S.slot, { expectedOpenedAt: S.openedAt, keepCache: true, keepCacheIdleMin: 33 }, 400, "bad-keep-cache-idle"],
+    ["a string is no duration", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: "50" }, 400, "bad-keep-cache-idle"],
+    ["a game-maker MAIN is exempt", G.slot, { expectedOpenedAt: G.openedAt, keepCache: true }, 409, "game-maker"],
+    ["the ⚙ steward is exempt", T.slot, { expectedOpenedAt: T.openedAt, keepCache: true }, 409, "steward"],
+  ];
+  const seen: string[] = [];
+  let allRefused = true;
+  for (const [what, slot, body, status, refusal] of refusals) {
+    const r = await hp(slot, body);
+    seen.push(`${what}=${r.status}:${r.body.refusal ?? "-"}`);
+    if (r.status !== status || r.body.refusal !== refusal) allRefused = false;
+  }
+  const [sAfter, gAfter, tAfter] = await Promise.all([hv(S.slot), hv(G.slot), hv(T.slot)]);
+  check("keepCache refusals: a non-boolean switch and a duration off 5..55 in 5-steps are 400, game-maker and steward 409 — no setting moved",
+    allRefused && sAfter.setting?.keepCache === false && sAfter.setting.keepCacheIdleMin === 50
+      && gAfter.setting?.keepCache === false && tAfter.setting === null,
+    `${seen.join(" ")} · S=${JSON.stringify(sAfter.setting)} G=${JSON.stringify(gAfter.setting)} T=${JSON.stringify(tAfter.setting)}`);
+
+  const WARM = "[fleet] Prompt-Cache warmhalten";
+  const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
+    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith(WARM));
+
+  // W, THE DURATION: work is foreseeable (an Auto an hour out), but 51 min is before 55 — nothing
+  const auto = (await (await post(`/api/slots/${W.slot}/autos`, { text: "keep-warm-auto", inSec: 3600, idleSec: 0 })).json()) as
+    { auto?: { id: string } };
+  const w55 = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCache: true, keepCacheIdleMin: 55 });
+  const k55 = w55.body.succession?.keepCache;
+  await Bun.sleep(1500);
+  check("keepCache W: switched on at 55 min while the last call is 51 min old — the answer says before-duration with its due time, and no turn is typed",
+    w55.status === 200 && w55.body.setting?.keepCache === true && w55.body.setting.keepCacheIdleMin === 55
+      && k55?.act === null && k55.reason === "before-duration" && k55.dueAt === (k55.lastUsageAt ?? 0) + 55 * 60_000
+      && k55.work.includes(`auto:${auto.auto?.id}`) && (await warmRows(W)).length === 0,
+    JSON.stringify({ status: w55.status, setting: w55.body.setting, keep: k55 }));
+
+  // W, WARM: the same session at 50 min — one short turn, the occupant stays
+  const w50 = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCacheIdleMin: 50 });
+  let warmed: PromptLogEntry[] = [];
+  for (let i = 0; i < 100 && !warmed.length; i++) {
+    await Bun.sleep(100);
+    warmed = await warmRows(W);
+  }
+  await Bun.sleep(1500); // six more ticks: the retry window holds a second turn back
+  const wView = await hv(W.slot);
+  const wRec = existsSync(rec(W)) ? readFileSync(rec(W), "utf8") : "";
+  check("keepCache W: at 50 min with work foreseeable the decision is warm, ONE turn reaches the pane, and the occupant stays",
+    w50.status === 200 && w50.body.succession?.keepCache?.act === "warm" && w50.body.succession.keepCache.reason === "work-foreseeable"
+      && (await warmRows(W)).length === 1 && wRec.includes("Prompt-Cache warmhalten") && wRec.includes("Antworte nur mit")
+      && wView.openedAt === W.openedAt && wView.succession?.keepCache?.warmTurns === 1
+      && wView.succession.keepCache.last?.act === "warm" && wView.succession.keepCache.last.outcome.startsWith("sent"),
+    JSON.stringify({ decision: w50.body.succession?.keepCache, rows: warmed.length, recorder: wRec.slice(0, 200), after: wView.succession?.keepCache }));
+  let persisted: unknown = null;
+  for (let i = 0; i < 40; i++) {
+    try { persisted = (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { handover?: unknown }> })
+      .slots?.[String(W.slot)]?.handover ?? null; } catch { /* mid-write */ }
+    if ((persisted as { keepCacheIdleMin?: number } | null)?.keepCacheIdleMin === 50) break;
+    await Bun.sleep(100);
+  }
+  check("keepCache: fleet.json keeps the switch and the duration with the occupant",
+    (persisted as { keepCache?: boolean } | null)?.keepCache === true
+      && (persisted as { keepCacheIdleMin?: number }).keepCacheIdleMin === 50
+      && (persisted as { occupant?: { openedAt?: number } }).occupant?.openedAt === W.openedAt, JSON.stringify(persisted));
+
+  // S, SUCCEED: nothing foreseeable — the owner door, and the old session gets no turn
+  const promptsOfS = async (): Promise<number> => (await plogRead()).filter((e) => e.slot === S.slot && e.openedAt === S.openedAt).length;
+  const sBefore = await promptsOfS();
+  const sOn = await hp(S.slot, { expectedOpenedAt: S.openedAt, keepCache: true });
+  let heir: Row | undefined;
+  for (let i = 0; i < 300; i++) {
+    heir = (await sessions()).slots.find((x) => x.id === S.slot);
+    if (heir?.cwd === S.cwd && (heir.openedAt ?? 0) > S.openedAt) break;
+    await Bun.sleep(100);
+  }
+  let brief = "";
+  for (let i = 0; i < 100 && !brief; i++) {
+    brief = (await plogRead()).findLast((e) => e.slot === S.slot && e.openedAt === heir?.openedAt
+      && e.text.startsWith("[fleet succession]"))?.text ?? "";
+    if (!brief) await Bun.sleep(100);
+  }
+  const sRec = existsSync(rec(S)) ? readFileSync(rec(S), "utf8") : null;
+  const heirView = await hv(S.slot);
+  check("keepCache S: at 50 min with nothing foreseeable the decision is succeed, and the owner door opens a successor on the same slot and cwd",
+    sOn.status === 200 && sOn.body.succession?.keepCache?.act === "succeed" && sOn.body.succession.keepCache.reason === "no-work-foreseeable"
+      && heir?.cwd === S.cwd && (heir.openedAt ?? 0) > S.openedAt && brief.includes("VOM OWNER AUSGELÖST") && brief.includes("KEEP-SESSION-MARK"),
+    JSON.stringify({ decision: sOn.body.succession?.keepCache, heir: { cwd: heir?.cwd, openedAt: heir?.openedAt }, brief: brief.slice(0, 300) }));
+  check("keepCache S: the predecessor got NO turn — its byte recorder stayed empty and the prompt log holds no new row for its occupation",
+    sRec === "" && (await promptsOfS()) === sBefore,
+    `recorder=${JSON.stringify(sRec?.slice(0, 200))} prompts ${sBefore} → ${await promptsOfS()}`);
+  check("keepCache S: the successor starts without the switch — the setting was its predecessor's",
+    heirView.setting === null && heirView.succession?.keepCache === null, JSON.stringify(heirView.setting));
+
+  // C, NO SWITCH: the same fill and the same age, seconds of ticks later — untouched
+  const cView = await hv(C.slot);
+  const cRec = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : "";
+  check("keepCache C: a session without the switch at the same fill and age gets neither a warm turn nor a successor",
+    cView.openedAt === C.openedAt && cView.setting === null && cView.succession?.keepCache === null
+      && (await warmRows(C)).length === 0 && !cRec.includes("warmhalten"),
+    JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
+
+  if (auto.auto) await post(`/api/autos/${auto.auto.id}/delete`, {});
+  for (const x of [W, S, C]) rmSync(rec(x), { force: true });
+  await cleanup();
 }
 
 // --- THE SESSION MARK (src/marks.ts, Fassung B "Zweig"). Derived, never stored: the same facts must

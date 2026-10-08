@@ -2010,22 +2010,41 @@ function loadReportDelegate(v: unknown): ReportDelegate | null {
 // HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
 // FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
 // its hint at all. Bound to `occupant` like a read grant: a successor is a new session.
-interface HandoverSetting { thresholdPct: number | null; nudge: boolean; setAt: number; occupant: MemoryGrantOccupant }
+// `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
+// session above its effective threshold whose last model call is `keepCacheIdleMin` minutes old is
+// succeeded through the owner door (no turn of its own) or, while further work is foreseeable, kept
+// warm by one short turn — always before the prompt cache's measured lifetime runs out
+// (KEEP_CACHE_LIFETIME_MIN, docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md).
+interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean; keepCacheIdleMin: number;
+  setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
 const handoverPctOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
   && n >= HANDOVER_PCT_MIN && n <= HANDOVER_PCT_MAX && n % HANDOVER_PCT_STEP === 0;
-// fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values)
+// 3 043/3 043 warm resumptions at 5–60 min, 270/270 cold from 62 min on (the 07.10. measurement):
+// the duration must end before that edge, and 55 is the measurement's own five-minute planning buffer
+const KEEP_CACHE_LIFETIME_MIN = 60;
+const KEEP_CACHE_IDLE_MIN_MIN = 5;
+const KEEP_CACHE_IDLE_MIN_MAX = 55;
+const KEEP_CACHE_IDLE_MIN_STEP = 5;
+const KEEP_CACHE_IDLE_MIN_DEFAULT = 50;
+const keepCacheIdleMinOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
+  && n >= KEEP_CACHE_IDLE_MIN_MIN && n <= KEEP_CACHE_IDLE_MIN_MAX && n % KEEP_CACHE_IDLE_MIN_STEP === 0;
+// fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values).
+// A record written before the keepCache pair existed reads with the pair off at its default duration.
 function loadHandoverSetting(v: unknown): HandoverSetting | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "setAt", "occupant"].includes(k))) return null;
+  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "setAt", "occupant"].includes(k))) return null;
   const o = g.occupant as Record<string, unknown> | null;
+  const keepCache = g.keepCache ?? false;
+  const keepCacheIdleMin = g.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
   if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
+    || typeof keepCache !== "boolean" || !keepCacheIdleMinOk(keepCacheIdleMin)
     || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
     || typeof o.openedAt !== "number") return null;
-  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, setAt: g.setAt,
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, setAt: g.setAt,
     occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
 }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
@@ -3757,6 +3776,8 @@ export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
+  KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
+  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,

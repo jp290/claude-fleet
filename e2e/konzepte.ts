@@ -113,6 +113,7 @@ const jsonl = (path: string): Record<string, unknown>[] => existsSync(path)
   ? readFileSync(path, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as Record<string, unknown>) : [];
 
 export async function run(): Promise<void> {
+  await firstInputBoundary();
   await ledgerDoors();
   await privatePackHandover();
 }
@@ -709,15 +710,20 @@ const RE = /^ {2}(?:(\/.+?) \| )?(k-[a-z0-9-]+)(?: v\d+)? · privat, lesen statt
 process.stdout.write("\x1b[?2004h");
 let firstPrompt = "";
 let firstRecorded = false;
-let promptTimer;
+function firstInputText(input) {
+  const paste = input.indexOf("\x1b[200~");
+  const enter = input.indexOf("\n");
+  const end = enter !== -1 && (paste === -1 || enter < paste) ? enter : input.indexOf("\x1b[201~");
+  return end === -1 ? null : input.slice(0, end).replace(/\x1b\[200~/g, "");
+}
 process.stdin.on("data", (chunk) => {
   if (firstRecorded) return;
   firstPrompt += chunk.toString("utf8").replace(/\r\n?/g, "\n");
-  clearTimeout(promptTimer);
-  promptTimer = setTimeout(async () => {
-    if (!/fleet|beratende Anker/.test(firstPrompt)) return;
+  const text = firstInputText(firstPrompt);
+  if (text === null) return;
+  void (async () => {
     firstRecorded = true;
-    const text = firstPrompt.replace(/\x1b\[(?:200|201)~/g, "");
+    firstPrompt = "";
     const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text)?.[1] ?? null;
     let status = null, body = null;
     if (pointer) {
@@ -728,7 +734,7 @@ process.stdin.on("data", (chunk) => {
     const out = outDir + "/heft-" + slot + ".json";
     writeFileSync(out + ".tmp", JSON.stringify({ tag, text, pointer, status, body }));
     renameSync(out + ".tmp", out);
-  }, 100);
+  })();
 });
 let buf = "";
 let done = false;
@@ -758,6 +764,49 @@ process.stdin.on("data", (chunk) => {
 });
 setInterval(() => {}, 1 << 30);
 `;
+
+async function firstInputBoundary(): Promise<void> {
+  const dir = `${FIX}-first-input`;
+  mkdirSync(dir, { recursive: true });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) =>
+    new URL(req.url).pathname === "/api/self/konzepte/k-owner-korrekturen/leseansicht"
+      && req.headers.get("x-fleet-self-token") === "synthetic-reader-token"
+      ? Response.json({ geltendeEintraege: [{ id: "first-input" }] }) : Response.json({ error: "fixture refusal" }, { status: 403 }) });
+  const pointer = `GET http://127.0.0.1:${server.port}/api/self/konzepte/k-owner-korrekturen/leseansicht`;
+  type InputRecord = { text: string; pointer: string | null; status: number | null;
+    body: { geltendeEintraege?: { id: string }[] } | null };
+  const read = async (tag: string, source: string, input: string): Promise<InputRecord | null> => {
+    const path = `${dir}/${tag}.ts`;
+    writeFileSync(path, source);
+    const proc = Bun.spawn([process.execPath, path, dir, tag], { stdin: "pipe", stdout: "ignore", stderr: "ignore",
+      env: { ...process.env, FLEET_SELF_SLOT: tag, FLEET_SELF_TOKEN: "synthetic-reader-token" } });
+    try {
+      proc.stdin.write(input);
+      await proc.stdin.end();
+      for (let n = 0; n < 200; n++) {
+        try { return JSON.parse(readFileSync(`${dir}/heft-${tag}.json`, "utf8")) as InputRecord; }
+        catch { await Bun.sleep(10); }
+      }
+      return null;
+    } finally { proc.kill(); await proc.exited; }
+  };
+  const claim = (r: InputRecord | null): boolean => r?.pointer === pointer.slice(4) && r.status === 200
+    && JSON.stringify(r.body?.geltendeEintraege) === '[{"id":"first-input"}]';
+  const rejected = (r: InputRecord | null): boolean => r?.text === "unrecognized first input" && r.pointer === null && r.status === null && r.body === null;
+  const late = `\x1b[200~unrecognized first input\x1b[201~\n\x1b[200~fleet second input: ${pointer}\x1b[201~\n`;
+  try {
+    const first = await read("first", READER_TS, `\x1b[200~${pointer}\x1b[201~\n`);
+    check("konzepte first input: a reader pointer in the first input yields the synthetic reader bytes", claim(first), JSON.stringify(first));
+    const second = await read("second", READER_TS, late);
+    check("konzepte first input: a pointer only in the second input turns the startup delivery claim red", rejected(second) && !claim(second), JSON.stringify(second));
+    const unframed = await read("unframed", READER_TS, `unrecognized first input\n\x1b[200~fleet second input: ${pointer}\x1b[201~\n`);
+    check("konzepte first input: an unframed first Enter also closes the record before a later paste", rejected(unframed), JSON.stringify(unframed));
+    const mutant = READER_TS.replace("input.slice(0, end)", "input");
+    const concatenated = await read("mutation", mutant, late);
+    check("konzepte first input mutation: concatenating the second input fails the same boundary assertion and falsely passes the startup claim",
+      mutant !== READER_TS && concatenated !== null && !rejected(concatenated) && claim(concatenated), JSON.stringify(concatenated));
+  } finally { server.stop(true); rmSync(dir, { recursive: true, force: true }); }
+}
 
 async function privatePackHandover(): Promise<void> {
   const FIXH = `${FIX}-handover`;

@@ -612,30 +612,42 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("FLEET_STEWARD_TOKEN absent for a non-steward slot", plainStewTok === "", `[${plainStewTok}]`);
 
   // --- steward journal: the typed durable pulse ledger (POST/GET /api/steward/journal), the
-  // delta anchor that survives /clear. The route acks without awaiting the append chain, so
-  // every read below waits on the record itself — its server-stamped ts at the tail — never on
-  // a guessed flush delay. ---
-  const jSettled = async (ts: number | undefined): Promise<void> => {
+  // delta anchor that survives /clear. The route acks without awaiting the append chain and
+  // stamps the response separately from the record, so an exact unique note identifies each
+  // append at the tail; the response ts is not the stored record's identity. ---
+  const jNote = `e2e-journal:${crypto.randomUUID()}`;
+  const jSettled = async (ts: number | undefined, note: string): Promise<void> => {
     if (ts === undefined) {
-      check("steward journal precondition: the POST carried its server-stamped ts for the flush wait", false,
-        "the append chain cannot be waited on without the record's own ts — the reads below run unanchored");
+      check("steward journal precondition: the POST carried its server-stamped ts before the tail wait", false,
+        "the POST did not acknowledge the append — the reads below run unanchored");
       return;
     }
-    let last: number | undefined;
-    for (let i = 0; i < 60; i++) {
-      const tail = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as
-        { records?: { ts?: number }[] }).records?.[0]?.ts;
-      if (tail === ts) return;
-      last = tail;
-      await Bun.sleep(50);
+    // The 30 s monotonic deadline starts after the POST ack and measures the server's queued
+    // append chain becoming readable under co-resident shard load, not timestamp equality.
+    const appendDeadline = performance.now() + 30_000;
+    let last: { ts?: number; note?: string } | undefined;
+    while (performance.now() < appendDeadline) {
+      const readBudget = appendDeadline - performance.now();
+      if (readBudget <= 0) break;
+      const signal = AbortSignal.timeout(Math.ceil(readBudget));
+      try {
+        last = ((await (await fetch(BASE + "/api/steward/journal?tail=1", { headers: stewH, signal })).json()) as
+          { records?: { ts?: number; note?: string }[] }).records?.[0];
+      } catch (error) {
+        if (signal.aborted) break;
+        throw error;
+      }
+      if (last?.note === note && typeof last.ts === "number" && performance.now() <= appendDeadline) return;
+      const remaining = appendDeadline - performance.now();
+      if (remaining > 0) await Bun.sleep(Math.min(50, remaining));
     }
     check("steward journal precondition: the just-anchored record reached the tail before the reads that follow", false,
-      `expected tail ts ${ts}, last observed ${last === undefined ? "absent" : last} after 60×50 ms`);
+      `expected tail note ${note}, POST ts ${ts}, last observed ${last === undefined ? "absent" : JSON.stringify(last)} at the 30 s append-chain deadline`);
   };
-  const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true });
+  const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true, note: `${jNote}:record` });
   const jPost1J = (await jPost1.json()) as { ok?: boolean; ts?: number };
   check("steward journal accepts a typed record", jPost1.ok && jPost1J.ok === true && typeof jPost1J.ts === "number", JSON.stringify(jPost1J));
-  await jSettled(jPost1J.ts);
+  await jSettled(jPost1J.ts, `${jNote}:record`);
   const jGet1J = (await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean; ts?: number }[] };
   const r1 = jGet1J.records?.[0];
   check("steward journal returns the record it stored, server-stamped",
@@ -658,10 +670,10 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   const lnStewBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
     .slots.find((x) => x.id === lnStew.slot)?.worktree?.branch ?? "";
   const jInject = await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false,
-    lanes: { evil: { head: "deadbeef", landed: true } } });
+    lanes: { evil: { head: "deadbeef", landed: true } }, note: `${jNote}:lanes` });
   const jInjectJ = (await jInject.json()) as { ok?: boolean; ts?: number };
   check("journal POST carrying a body-supplied lanes key is still accepted", jInject.ok, String(jInject.status));
-  await jSettled(jInjectJ.ts);
+  await jSettled(jInjectJ.ts, `${jNote}:lanes`);
   type LaneRec = { kind?: string; lanes?: Record<string, { head?: string | null; base?: string | null; landed?: boolean; repo?: string }> };
   const jLanesRec = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: LaneRec[] }).records?.[0];
   check("rundgang record carries the SERVER-stamped lane map with the lane's real HEAD sha",
@@ -1070,8 +1082,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   const getSLL = async (): Promise<SLL> =>
     ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { sinceLastLook?: SLL }).sinceLastLook ?? null;
   // anchor a fresh prior (stamps the lane at its current HEAD), then commit → advanced
-  const jAnchorA = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
-  await jSettled(jAnchorA.ts);
+  const jAnchorA = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false, note: `${jNote}:anchorA` })).json()) as { ts?: number };
+  await jSettled(jAnchorA.ts, `${jNote}:anchorA`);
   writeFileSync(`${lnStew.cwd}/cursor-probe.txt`, "commit-cursor probe\n");
   laneGit(lnStew.cwd, "add", "cursor-probe.txt");
   laneGit(lnStew.cwd, "commit", "-qm", "cursor probe");
@@ -1084,8 +1096,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     `${JSON.stringify({ ts: Date.now(), kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
   check("a prior record without lanes yields sinceLastLook null (honest, not fake-empty)", (await getSLL()) === null);
   // fresh prior with the commit stamped; then land the branch owner-side + open a new lane
-  const jAnchorB = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
-  await jSettled(jAnchorB.ts);
+  const jAnchorB = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false, note: `${jNote}:anchorB` })).json()) as { ts?: number };
+  await jSettled(jAnchorB.ts, `${jNote}:anchorB`);
   const lv = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const lvBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
     .slots.find((x) => x.id === lv.slot)?.worktree?.branch ?? "";
@@ -1101,8 +1113,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // stamp a prior that includes the unlanded lane, then tear its slot down WITHOUT merging →
   // vanishedUnlanded (the "sessions vanished" insurance); amend the landed lane's head →
   // rewritten (prior head no longer an ancestor), flagged honestly with no fake delta
-  const jAnchorC = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false })).json()) as { ts?: number };
-  await jSettled(jAnchorC.ts);
+  const jAnchorC = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false, note: `${jNote}:anchorC` })).json()) as { ts?: number };
+  await jSettled(jAnchorC.ts, `${jNote}:anchorC`);
   await post(`/api/slots/${lv.slot}/kill`, {});
   laneGit(lnStew.cwd, "commit", "--amend", "-qm", "cursor probe rewritten");
   const sllGone = await getSLL();

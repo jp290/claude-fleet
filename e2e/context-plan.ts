@@ -1393,6 +1393,8 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
       json: (body: unknown, status = 200) => Response.json(body, { status }),
       canDeliver: async () => ({ ok: true }), transcriptPayload: async () => ({ source: null, entries: [] }),
       lineagePointerCommitted: async () => true, audit: () => {},
+      // the keepCache latch is a test hook that stands still without FLEET_TEST_KEEP_CACHE_LATCH — so here
+      waitForKeepCacheTestLatch: async () => {},
       succeedGeneric: async (_slot: unknown, options: { spawn: unknown; beforeKill: () => Promise<Response | null> }) => {
         spawn = options.spawn;
         if (fixture.late) slot.permissions = fixture.late;

@@ -194,6 +194,10 @@ job and reads `GET /api/self/jobs/<jobId>`. A MAIN has no suite-offer (it is lan
 watch (`docs/self-api.md` §jobs).
 Before running a gate suite locally, withdraw its own open command job with
 `POST /api/self/jobs/<jobId>/withdraw`; only the 200 with `mayRunLocally: true` permits the local run.
+At the land, a reported green job of one of these three suites whose `treeSha` is the rebased
+candidate's `HEAD^{tree}` replaces that step of the chain, and the land note names it in
+`verify.adopted` (`server.ts#adoptedGateSteps`); another tree, red, unknown or open counts nothing —
+so post the jobs on the final, rebased commit.
 ### MAIN
 
 6. You have no `self/gate` and no suite-offer: your own preview goes through `POST /api/self/jobs` with `{"cmd":"./e2e-isolated.sh"}` and a job watch.

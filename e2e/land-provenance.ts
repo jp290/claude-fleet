@@ -2,8 +2,24 @@
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { REPO, REPO2, ROOT, check, get, post, restartSrv } from "./harness";
+import { BASE, REPO, REPO2, ROOT, check, get, post, restartSrv } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { DAEMON_FEATURES } from "../helper-daemon/daemon";
+
+// a slot's own scoped credential, out of the persisted state — polled for the shape, because
+// openSlot queues saveState before it awaits the pane spawn (the same reader e2e/lane-suite.ts uses)
+async function selfTokenOf(slot: number): Promise<string> {
+  let seen = "";
+  for (let i = 0; i < 60; i++) {
+    try {
+      seen = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "";
+    } catch { /* mid-write */ }
+    if (/^[0-9a-f]{32}$/.test(seen)) return seen;
+    await Bun.sleep(50);
+  }
+  return seen;
+}
 
 export async function run(): Promise<void> {
   // === Lane A: one-gesture land (commit-if-dirty → land) + ↩ undo-last-land ===
@@ -447,6 +463,80 @@ export async function run(): Promise<void> {
           && JSON.stringify(withE2e.verify.steps) === JSON.stringify(fullSteps)
           && ["clean-review", "security", "claude-gate"].every((s) => withE2e.verify!.out.includes(`srcgate-suite ${s} ran`)),
           JSON.stringify(withE2e));
+
+        // --- A GREEN HELPER RECEIPT ON THE CANDIDATE TREE REPLACES ITS SUITE ------------------------
+        // Owner 2026-10-08: a lane's three gate suites ran green as command jobs on the helper, and
+        // the land ran all three again here. The land now adopts a reported GREEN command job whose
+        // tree is the rebased candidate's `HEAD^{tree}`, and stamps jobId, treeSha and device into
+        // the note. Four receipts sit beside the candidate and only one may count:
+        //   security    — green, on the candidate tree               → ADOPTED, not run here
+        //   claude-gate — green, but on the tree BEFORE the change   → runs here (another tree)
+        //   claude-gate — red, on the candidate tree                  → runs here (red is no proof)
+        //   claude-gate — still open, never claimed                   → runs here (no verdict yet)
+        // The proven tree is the lane's UNCOMMITTED work (the bundle's `git stash create`), committed
+        // only afterwards: same tree, different commit, the shape a rebase also produces. Mutation
+        // guard: compare the receipt by commit (`j.commitSha` against HEAD) instead of by tree in
+        // server.ts#adoptedGateSteps and nothing is adopted — the check goes red on `adopted`, on
+        // `steps` and on the security line together.
+        const helperToken = (await (await get("/api/helper/token")).json() as { token?: string }).token ?? "";
+        const hpost = (path: string, body: unknown): Promise<Response> =>
+          post(path, body, { "x-fleet-helper-token": helperToken, "content-type": "application/json" });
+        const DEVICE = "landadopt0001", DEVICE_NAME = "land adoption box";
+        const beat = (): Promise<Response> => hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME,
+          features: [...DAEMON_FEATURES], daemonSha: spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim() });
+        const ad = (await (await post("/api/lanes", { repo: sg.repo })).json()) as { slot: number; cwd: string };
+        const adTok = await selfTokenOf(ad.slot);
+        const offerJob = async (cmd: string): Promise<string> => {
+          const r = await fetch(`${BASE}/api/self/jobs`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": adTok }, body: JSON.stringify({ cmd }) });
+          return ((await r.json()) as { jobId?: string }).jobId ?? "";
+        };
+        // offer, claim and report one command job; `null` leaves it open
+        const settle = async (cmd: string, exitCode: number | null): Promise<{ id: string; claimed: boolean; reported: boolean; tree: string }> => {
+          const id = await offerJob(cmd);
+          if (exitCode === null) return { id, claimed: false, reported: false, tree: "" };
+          await beat();
+          const claim = await hpost("/api/helper/claim", { jobId: id, deviceId: DEVICE });
+          const tree = ((await claim.clone().json().catch(() => ({}))) as { job?: { treeSha?: string } }).job?.treeSha ?? "";
+          const rep = await hpost("/api/helper/result", { jobId: id, exitCode, artifacts: [],
+            tail: exitCode === 0 ? "ALL PASS" : "FAIL  adoption fixture\n1 FAILURES" });
+          return { id, claimed: claim.ok, reported: rep.ok, tree };
+        };
+        const before = await settle("./e2e-claude-gate.sh", 0);
+        await Bun.write(`${ad.cwd}/src/client-only.ts`, "export const clientOnly = 4;\n");
+        const proven = await settle("./e2e-security.sh", 0);
+        const red = await settle("./e2e-claude-gate.sh", 1);
+        const open = await settle("./e2e-claude-gate.sh", null);
+        // the one tracked file the receipts proved, and nothing else the lane's cwd may carry
+        spawnSync("git", ["-C", ad.cwd, "add", "src/client-only.ts"]);
+        let adCommitted = false;
+        for (let i = 0; i < 20 && !adCommitted; i++) {
+          adCommitted = spawnSync("git", ["-C", ad.cwd, "commit", "-qm", "adoption fixture"]).status === 0;
+          if (!adCommitted) await Bun.sleep(150);
+        }
+        const candTree = headOf(ad.cwd, "HEAD^{tree}");
+        check("helper adoption setup: four receipts beside one committed candidate — green on the old tree, green and red on the candidate tree, one still open",
+          adCommitted && before.reported && proven.reported && red.reported && !!open.id && !open.claimed
+          && before.tree !== candTree && proven.tree === candTree && red.tree === candTree
+          && headOf(ad.cwd) !== headOf(sg.repo, "main"),
+          JSON.stringify({ adCommitted, before, proven, red, open, candTree }));
+        const adBefore = headOf(sg.repo, "main");
+        await landClean(ad.slot);
+        const adAfter = headOf(sg.repo, "main");
+        const adVerify = readNote(sg.repo, adAfter).json?.verify as (ClassedVerify & {
+          adopted?: { step: string; jobId: string; treeSha: string; device: string }[] }) | undefined;
+        check("helper adoption: the land adopts ONLY the green receipt on its exact candidate tree — security does not run here and the note names jobId, treeSha and device; the other-tree green, the red and the open job adopt nothing",
+          adBefore !== adAfter && adVerify?.ok === true && adVerify.class === "source-or-public"
+          && JSON.stringify(adVerify.adopted) === JSON.stringify([{ step: "security", jobId: proven.id, treeSha: candTree,
+            device: DEVICE_NAME, reportedAt: (adVerify.adopted?.[0] as { reportedAt?: number } | undefined)?.reportedAt,
+            ms: (adVerify.adopted?.[0] as { ms?: number } | undefined)?.ms }])
+          && JSON.stringify(adVerify.steps) === JSON.stringify(["install", "pins", "tsc", "build", "claude-gate"])
+          && adVerify.cmd === cutCmd.replace(" && ./e2e-security.sh", "")
+          && !adVerify.out.includes("srcgate-suite security ran")
+          && adVerify.out.includes("srcgate-suite claude-gate ran")
+          && adVerify.out.includes(`security NOT RUN HERE — adopted from helper command job ${proven.id}`)
+          && adVerify.out.includes("left out clean-review") && !adVerify.out.includes("left out clean-review, security"),
+          JSON.stringify({ landed: adBefore !== adAfter, verify: adVerify }));
       } finally {
         await restartSrv(); // back to the suite's own verify map for everything after this block
       }

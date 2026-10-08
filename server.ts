@@ -42,7 +42,7 @@ import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { LOCAL_PROOF_STEPS, gateChainFor, localProofFor,
   type GateClass, type LocalProof, type LocalProofStep } from "./verify-proportion";
-import { GATE_SUITES, moduleListFrom } from "./suite-modules";
+import { GATE_SUITES, moduleListFrom, type GateSuiteStep } from "./suite-modules";
 import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
@@ -27046,7 +27046,53 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // exclusive by construction rather than by a check someone has to remember.
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
-interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[]; class: GateClass }
+interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[]; class: GateClass;
+  adopted?: AdoptedGateStep[] }
+// A GATE SUITE THIS LAND DID NOT RUN, because a helper already ran it green on the very tree the
+// land verifies (owner 2026-10-08: Lane 2A had all three suites green as command jobs on the
+// workhorse, and its land ran the same three again on this machine — 692 s, 359 s of it queueing
+// for the mutex). The receipt the step is replaced by, carried into the verify record and with it
+// into the fleet/land note: `jobId` is readable on GET /api/self/jobs/<jobId> while the job row is
+// kept, `treeSha` is the candidate tree it was matched on, `device` is who ran it.
+interface AdoptedGateStep { step: GateSuiteStep; jobId: string; treeSha: string; device: string;
+  reportedAt: number; ms: number }
+// THE ONE PLACE A HELPER RECEIPT BECOMES A GATE STEP, and every clause is a refusal the card names:
+//   · the TREE — the job's own `treeSha` AND its result's must both be the candidate's
+//     `HEAD^{tree}`, read in the worktree the gate is about to execute in. A tree, never a commit:
+//     the rebase rewrites every commit sha while leaving an up-to-date lane's tree byte-identical,
+//     and a commit compare would therefore adopt nothing — or, worse, adopt across a rebase whose
+//     tree did change. A main that moved since the proof yields a different tree, and the suite
+//     runs here again: the honest fallback, not an error.
+//   · GREEN, REPORTED — `red`, `unknown`, an open, claimed, lapsed or withdrawn job is no proof.
+//   · PROVENANCE — a named device, and a helper that ran the commit it was handed (the audit line
+//     already shouts when `clonedSha` differs; here that difference disqualifies the receipt).
+//   · THE SAME REPO — a tree sha is content-addressed, but the wrapper it ran is this repo's.
+// The newest green wins when several match; an unreadable tree adopts nothing.
+async function adoptedGateSteps(cwd: string, repo: string, steps: readonly LocalProofStep[]): Promise<AdoptedGateStep[]> {
+  const head = await gitRead(cwd, "rev-parse", "HEAD^{tree}");
+  const tree = head.code === 0 ? head.out.trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(tree)) return [];
+  const repoKey = repoCanon(repo);
+  const adopted: AdoptedGateStep[] = [];
+  for (const suite of GATE_SUITES) {
+    if (!steps.includes(suite.step)) continue;
+    let best: CommandJob | null = null;
+    for (const j of commandJobs.values()) {
+      const r = j.result;
+      if (j.cmd !== `./${suite.wrapper}` || j.state !== "reported" || !r || r.result !== "green") continue;
+      if (j.treeSha !== tree || r.treeSha !== tree || repoCanon(j.repo) !== repoKey || !r.remote.name) continue;
+      if (r.remote.clonedSha && j.commitSha && r.remote.clonedSha !== j.commitSha) continue;
+      if (!best || r.remote.reportedAt > best.result!.remote.reportedAt) best = j;
+    }
+    if (best) adopted.push({ step: suite.step, jobId: best.id, treeSha: tree, device: best.result!.remote.name,
+      reportedAt: best.result!.remote.reportedAt, ms: best.result!.ms });
+  }
+  return adopted;
+}
+// whether the chain this plan spawns runs a gate suite here, and so needs this machine's mutex.
+// A plan without fleet step names (a foreign repo's own command) is opaque and is assumed to.
+const planRunsSuite = (plan: VerifyPlan): boolean => !plan.proportional
+  && (plan.steps.length === 0 || GATE_SUITES.some((suite) => plan.steps.includes(suite.step)));
 
 // THE SOURCE CHAIN IS THE CONFIGURED CHAIN WITH LINKS CUT, never a second command written beside it.
 // The tsc entry list, the install flags and the guard live in one string (watchdog.sh#VERIFY_CMD,
@@ -27113,12 +27159,20 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   // steps of a foreign chain has to read that command, which is the only place they exist.
   // ABSENT still means an old verdict that cannot reconstruct any of this (see MergeLast.verify);
   // empty means "asked, and this chain has no fleet step names".
-  const steps: LocalProofStep[] = proportional || narrowed !== null ? [...chain.steps]
+  const owed: LocalProofStep[] = proportional || narrowed !== null ? [...chain.steps]
     : shortChainRepo ? [...LOCAL_PROOF_STEPS] : [];
-  const cmd = proportional ? VERIFY_PROPORTIONAL_CMD : narrowed ?? configuredCmd;
+  const baseCmd = proportional ? VERIFY_PROPORTIONAL_CMD : narrowed ?? configuredCmd;
   // the class names the command that RUNS, so a source diff whose cut could not be made is `full`
   const verifyClass: GateClass = proportional ? "docs-or-prose" : narrowed !== null ? "source-or-public" : "full";
-  return { cmd, proportional, steps, class: verifyClass };
+  // A GREEN HELPER RECEIPT ON THIS TREE REPLACES ITS SUITE (adoptedGateSteps). Only a fleet-shaped
+  // chain can be cut — its links are named — and the cut is narrowVerifyCmd's, so a command it
+  // cannot read keeps every link and adopts nothing. `steps` stays what RUNS here; the adopted
+  // steps ride beside it, and `steps` + `adopted` is the chain the class owed.
+  const adopted = shortChainRepo && !proportional ? await adoptedGateSteps(cwd, repo, owed) : [];
+  const local = adopted.length ? owed.filter((step) => !adopted.some((a) => a.step === step)) : owed;
+  const cut = adopted.length ? narrowVerifyCmd(baseCmd, local) : null;
+  if (cut === null) return { cmd: baseCmd, proportional, steps: owed, class: verifyClass };
+  return { cmd: cut, proportional, steps: local, class: verifyClass, adopted };
 }
 
 // The gate chain's environment is this server's, MINUS every `FLEET_*` — the same RULE
@@ -27187,7 +27241,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
   heldSuiteLock: number | null = null, heldWaitMs = 0): Promise<MergeLast["verify"]> {
   if (!plan) return undefined;
   const heldWait = Math.max(0, Math.floor(heldWaitMs / 1000) * 1000);
-  const { cmd, proportional, steps, class: verifyClass } = plan;
+  const { cmd, proportional, steps, class: verifyClass, adopted } = plan;
   // the serverRuns row this run is reported under (the board's "land check" line), when it runs
   // inside reportServerRun. The chain is decided now, and which suite it is in arrives below with
   // each acquire line — sight only, the verdict never reads either.
@@ -27289,9 +27343,14 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     // the two can never both be written: a chain that reported a wait of its own is by definition
     // not this one.
     else if (proportional && heldSuiteLock === null) notes.push(`[suite mutex: NOT TAKEN — this gate is the docs-only short chain (${steps.join(", ")}), which spawns no suite and needs no machine, so it neither queued for ${SUITE_LOCK} nor held it]`);
+    else if (!planRunsSuite(plan) && heldSuiteLock === null) notes.push(`[suite mutex: NOT TAKEN — no gate suite runs here in this chain (${steps.join(", ")}), so it neither queued for ${SUITE_LOCK} nor held it]`);
+    // the adoption, said where a reader looks for why a suite owed by the class is missing from the log
+    for (const a of adopted ?? [])
+      notes.push(`[gate chain: ${a.step} NOT RUN HERE — adopted from helper command job ${a.jobId}, green on ${a.device} on this exact candidate tree ${a.treeSha.slice(0, 12)} (${Math.round(a.ms / 1000)}s there)]`);
     // the cut, said where a reader of a source land looks for why a suite is missing from the log
     if (verifyClass === "source-or-public") {
-      const cut = GATE_SUITES.filter((suite) => !steps.includes(suite.step)).map((suite) => suite.step);
+      const cut = GATE_SUITES.filter((suite) => !steps.includes(suite.step) && !adopted?.some((a) => a.step === suite.step))
+        .map((suite) => suite.step);
       notes.push(`[gate chain: source-or-public — ran ${steps.join(", ")}; ${cut.length ? `left out ${cut.join(", ")}: no changed path is in ${cut.length === 1 ? "its" : "their"} staged footprint (suite-modules.ts#gateSuitesForPaths)` : "every gate suite's footprint holds a changed path, so none was left out"}; the post-land audit still runs the whole suite]`);
     }
     // the skip test runs over the FULL output, not the retained window: a command that declines
@@ -27306,7 +27365,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     const note = notes.length ? `\n${notes.join("\n")}` : "";
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
     return { cmd, ok: timedOut || waitedOut || skipped || serverDown ? null : code === 0, proportional, steps,
-      class: verifyClass,
+      class: verifyClass, ...(adopted?.length ? { adopted } : {}),
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
       ...(serverDown ? { serverDown: true as const } : {}),
@@ -27442,7 +27501,10 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // chains ran. Optional only for old persisted verdicts/notes, which cannot honestly reconstruct them.
   verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
     timedOut?: true; waitedOut?: true; serverDown?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
-    exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[]; class?: GateClass };
+    exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[]; class?: GateClass;
+    // the gate suites this run did NOT execute because a green helper command job had already
+    // proven this exact candidate tree (adoptedGateSteps); absent = every owed step ran here
+    adopted?: AdoptedGateStep[] };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
@@ -36866,7 +36928,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     const entryPlan = await verifyPlanFor(cwd, root, mainAtEntry);
     const entryDirty = entryPlan ? await dirtyMainStop(root, main, mainAtEntry, branch, {}) : null;
     gateInherited = inheritedSuiteHolder();
-    if (gateInherited === null && entryPlan && !entryPlan.proportional && entryDirty === null) {
+    if (gateInherited === null && entryPlan && planRunsSuite(entryPlan) && entryDirty === null) {
       const askedAt = Date.now();
       for (;;) {
         // inside gateRun, so the board keeps saying "running land gate" while this job is
@@ -37096,7 +37158,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // authoritative one, computed against the REBASED tree, and if that one says docs-only
         // while the entry plan did not, the hold is given back here rather than parked across a
         // chain that has no staged step to inherit it.
-        const gateProportional = firstVerifyPlan?.proportional === true;
+        // …and the same for a chain whose every suite was adopted from a helper receipt: nothing
+        // staged runs under the hold, so it is given back exactly as the docs chain's is.
+        const gateProportional = firstVerifyPlan ? !planRunsSuite(firstVerifyPlan) : false;
         if (gateProportional && gateHoldPid !== null) {
           releaseSuiteLock(holdOwner);
           gateHoldPid = null;
@@ -37261,8 +37325,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // `gateHoldBy` covers the other inheritance too: a hold a wrapper is keeping for us is
             // just as much "we already have the machine" as one we took.
             let ffHeld = gateHoldBy !== null;
-            // The short docs gate needs no suite hold, including after a lost fast-forward.
-            if (gateProportional) ffHeld = true;
+            // The short docs gate needs no suite hold, including after a lost fast-forward. A chain
+            // that ran no suite only because helper receipts matched THIS tree does: a retry rebases
+            // onto a moved main, the tree changes, no receipt matches it, and its suites run here.
+            if (gateProportional && !firstVerifyPlan?.adopted?.length) ffHeld = true;
             let ffLockDenied = false; // we wanted it, the machine never gave it to us
             let landMain = mainSha;   // the main THIS round is rebased onto and verified against
             // W5d · which of the two races the CURRENT round lost, and it is per round rather than

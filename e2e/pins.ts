@@ -1215,12 +1215,16 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
       // remembered: the day someone puts an `e2e-*.sh` into the short chain, this row fails
       // instead of a docs-only land quietly running a suite beside somebody else's.
       const shortCmd = /const VERIFY_PROPORTIONAL_CMD = '([^']+)'/.exec(server)?.[1] ?? "";
-      const m5Plan = server.includes("const gateProportional = firstVerifyPlan?.proportional === true;");
+      // Since 2026-10-08 both halves ask planRunsSuite, which widens the exemption to a chain whose
+      // every suite was adopted from a helper receipt — and whose FIRST clause is still this one: a
+      // proportional plan runs no suite, whatever its steps say.
+      const m5Plan = server.includes("const gateProportional = firstVerifyPlan ? !planRunsSuite(firstVerifyPlan) : false;")
+        && server.includes("const planRunsSuite = (plan: VerifyPlan): boolean => !plan.proportional\n");
       // TWO HALVES since the take moved ahead of the rebase (2026-09-12), and both are needed: the
       // ENTRY plan keeps a docs-only land out of the queue in the first place (that queue is the
       // 710 s M5 measured), and the authoritative plan gives the hold BACK if it disagrees — a
       // chain with no staged step must never be parked on the machine, whichever plan noticed.
-      const m5Skip = server.includes("if (gateInherited === null && entryPlan && !entryPlan.proportional && entryDirty === null) {")
+      const m5Skip = server.includes("if (gateInherited === null && entryPlan && planRunsSuite(entryPlan) && entryDirty === null) {")
         && server.includes("if (gateProportional && gateHoldPid !== null) {");
       const m5NoMint = server.includes("const gateChildHold = gateProportional ? null : gateHoldBy;");
       const m5CmdIsSuiteless = shortCmd !== "" && !/e2e-[a-z0-9-]*\.sh|e2e-stage/.test(shortCmd);

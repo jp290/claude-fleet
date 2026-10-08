@@ -27166,11 +27166,14 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   const verifyClass: GateClass = proportional ? "docs-or-prose" : narrowed !== null ? "source-or-public" : "full";
   // A GREEN HELPER RECEIPT ON THIS TREE REPLACES ITS SUITE (adoptedGateSteps). Only a fleet-shaped
   // chain can be cut — its links are named — and the cut is narrowVerifyCmd's, so a command it
-  // cannot read keeps every link and adopts nothing. `steps` stays what RUNS here; the adopted
-  // steps ride beside it, and `steps` + `adopted` is the chain the class owed.
+  // cannot read keeps every link and adopts nothing. It cuts the CONFIGURED command, never the
+  // source chain already cut above: narrowVerifyCmd reads a command missing a link as unreadable,
+  // so a second cut over the first would always come back null and adopt nothing (measured on the
+  // first preview of this check). `steps` stays what RUNS here; the adopted steps ride beside it,
+  // and `steps` + `adopted` is the chain the class owed.
   const adopted = shortChainRepo && !proportional ? await adoptedGateSteps(cwd, repo, owed) : [];
   const local = adopted.length ? owed.filter((step) => !adopted.some((a) => a.step === step)) : owed;
-  const cut = adopted.length ? narrowVerifyCmd(baseCmd, local) : null;
+  const cut = adopted.length ? narrowVerifyCmd(configuredCmd, local) : null;
   if (cut === null) return { cmd: baseCmd, proportional, steps: owed, class: verifyClass };
   return { cmd: cut, proportional, steps: local, class: verifyClass, adopted };
 }

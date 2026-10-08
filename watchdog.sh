@@ -191,6 +191,18 @@ while true; do
     # WITHOUT hanging its clock on eligibility instead of cover.at is "the expensive half of the
     # cheap repair". The cost of this ceiling, accepted knowingly: a blocked audit can hold the
     # suite mutex 75 min instead of 45.
+    #
+    # THE AUDIT CADENCE — two knobs, NOT on this line on purpose: the server's own defaults are the
+    # owner's numbers (2026-10-08), and like FLEET_VERIFY_WAIT_MS above a value here would only
+    # restate them. Both bind ONLY on a helper deployment, i.e. with FLEET_AUDIT_HELPER_GRACE_MS > 0
+    # in .env (live: 60000) — which since that day is an on-switch: its number is no longer read, and
+    # a helper's audit never falls back onto this Mac (server.ts, grep AUDIT_HELPER_ONLY).
+    #   FLEET_AUDIT_QUIET_MS    default 1200000 (20 min) — the audit starts once the repo has had no
+    #                           land for this long, one run on the newest tip covering the whole burst
+    #   FLEET_AUDIT_MAX_WAIT_MS default 3600000 (60 min) — …and at the latest this long after the
+    #                           OLDEST unmeasured land, so a day that is never quiet is still measured
+    # Either at 0 releases at once (the harnesses do this). Set them in .env, never in this line —
+    # the line is the deploy path. Rule and proof: docs/verify-tiering.md §6.0b, server.ts#auditCadenceOf.
     if tmux -L claudefleet new-session -d -s srv \
       "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=\${FLEET_VERIFY_TIMEOUT_MS:-480000} FLEET_VERIFY_WAIT_MS=\${FLEET_VERIFY_WAIT_MS:-2700000} FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"

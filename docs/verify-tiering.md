@@ -460,16 +460,39 @@ that asked for the change, read off `post-land-audits.jsonl` rather than quoted:
 1530 s, both RED, 9 and 1 failed of 3633 checks, both adjudicated flake. Both of those two ran on
 the helper, so the cost was 52 minutes of the OTHER machine plus its claim window; run locally the
 same pair would have held this machine's suite mutex for that long.
-A proportional entry is also never offered to a remote helper and never held in the helper grace:
+A proportional entry is also never offered to a remote helper and never held for one:
 the daemon runs the full fleet suite, so taking the job would measure something other than the
 question, and the local answer costs seconds. Since 2026-09-08 that is not a rule of its own but one
 arm of `server.ts#helperClaimBar` — the single predicate the claim door, the job list, the wake rail
-and the drain's grace all ask. Its other two arms are a repo whose audit is its own repo-worker
+and the drain all ask. Its other two arms are a repo whose audit is its own repo-worker
 executable and a parked entry with no command at all, and the general rule is the one sentence that
 covers all three: **an entry no helper could ever claim is never held for one.** The list used to be
 hand-copied at those four sites and had already drifted both ways — the wake rail packeted a machine
 awake for a short-chain job the door then refused, and the drain held a repo-worker entry for the
 full `AUDIT_HELPER_GRACE_MS` waiting on an offer that structurally never comes.
+
+**The cadence, added 2026-10-08 (owner: „[Zitat entfernt]“
+).** On a helper deployment
+(`FLEET_AUDIT_HELPER_GRACE_MS > 0`, live 60000 — since this date the key is an on-switch and its
+number is no longer read) tier 2 no longer starts on the land. `server.ts#auditCadenceOf` holds the
+repo's queue entry until the repo has been quiet for `FLEET_AUDIT_QUIET_MS` (default 20 min) since
+its newest unmeasured land, or until `FLEET_AUDIT_MAX_WAIT_MS` (default 60 min) after its OLDEST one,
+whichever comes first — exactly two numbers, no daily cap, no night run. The quiet window bundles a
+burst into one run on the newest tip that names every land as a cover; the ceiling is what keeps a
+day that is never quiet from never being measured. A held entry is not on the helper's job list, its
+claim is a 409, and it wakes nobody; the ledger row carries `trigger: "quiet" | "max-wait"`.
+**And a helper's audit no longer falls back onto this Mac** (`server.ts#AUDIT_HELPER_ONLY`): an
+offerable entry waits for a helper however long that takes — visible as `hold: "waiting for helper"`
+in `GET /api/post-land-audits` → `pending` and in the land's memory view, and as a
+`post-land audit WAITING: … — waiting for helper` line in `server.log` — and a lapsed claim reopens
+it for the next claim, never for the local drain. Local-only work (`helperClaimBar` names it:
+short chain, repo-worker command, a tree the command's guard declines) still runs here, under the
+same two numbers. The suite itself is unchanged: full chain for code, short chain for docs-only.
+Without a helper on the deployment (`FLEET_AUDIT_HELPER_GRACE_MS` unset, every harness) nothing of
+this applies — the local drain is the runner and starts on the land, as before. Measured that day:
+20 full audits on claude-fleet between 02:31 and 15:43, median 32 min, ~10 h of helper wall time.
+Proof: `e2e/helper-portal.ts` sections (K7), (K7e), (T), (W4), (K11), run by
+`./e2e-postland-audit.sh`.
 
 **The source class, added 2026-10-08 (owner: „[Zitat entfernt]“
 ).** A candidate whose every changed path is `src/`, `public/` or docs no longer runs

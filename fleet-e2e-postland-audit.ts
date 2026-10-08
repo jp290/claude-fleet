@@ -177,6 +177,11 @@ const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Rec
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
     .map((k) => envArg(k, process.env[k])).join("")
     + (opts.audit ? "" : "FLEET_POSTLAND_AUDIT_CMD='' ")
+    // THE CADENCE IS OFF unless a section asks for it (`extra` comes after and wins). It only ever
+    // applies on a helper deployment (FLEET_AUDIT_HELPER_GRACE_MS > 0), and its production numbers
+    // are 20 and 60 MINUTES — every section that boots a helper deployment to test something else
+    // would otherwise wait them out. Section (T) in e2e/helper-portal.ts sets its own.
+    + "FLEET_AUDIT_QUIET_MS=0 FLEET_AUDIT_MAX_WAIT_MS=0 "
     + Object.entries(opts.extra ?? {}).map(([k, v]) => envArg(k, v)).join("");
   const pingEnv = opts.auditPing
     ? "FLEET_AUDIT_PING_MS=250 FLEET_BACKLOG_NUDGE_IDLE_MS=100 "

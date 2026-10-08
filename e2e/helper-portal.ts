@@ -120,7 +120,13 @@ interface Row {
     failed: number | null; exitCode: number | null; name?: string; trail?: string;
     coResident?: { with: number[]; ms: number; unknownWindows: number } }[];
   fails?: string[];
+  // which cadence number released the run (section T). Optional and a plain string for the reason
+  // every field above is: a server that never writes it must fail the named check, not throw.
+  trigger?: string;
 }
+// what GET /api/post-land-audits says is QUEUED and what each entry waits for (section T)
+interface PendingAudit { repo: string; main: string; covers: number; oldestAt?: number; newestAt?: number;
+  hold: string | null; releaseAt?: number }
 interface LiveView {
   postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
 }
@@ -220,6 +226,9 @@ export async function run(h: {
     }
     return false;
   };
+  // what the audit trail says is QUEUED, and what each entry waits for (server.ts#auditHoldOf)
+  const pending = async (): Promise<PendingAudit[]> =>
+    ((await (await get("/api/post-land-audits?limit=1")).json()) as { pending?: PendingAudit[] }).pending ?? [];
   const waitRowsFor = async (repo: string, n: number, timeoutMs = 90_000): Promise<Row[]> => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -613,9 +622,11 @@ export async function run(h: {
   // fleet audit in live operation. The grace is the owner's answer: for that long the drain leaves
   // a fresh entry alone, IF a machine that could actually claim it is standing there.
   //
-  // Four checks, and they are one statement split four ways: the grace HOLDS (1), the grace never
-  // STARVES (2), the default is untouched (3), and it never holds for a machine that cannot take
-  // the work (4). Each of the last three changes exactly ONE variable against the first.
+  // Four checks, and they are one statement split four ways: the job is HELD for the helper (1),
+  // and since 2026-10-08 (server.ts#AUDIT_HELPER_ONLY — `> 0` names a helper deployment, and a
+  // helper's audit never falls back onto this box) it stays held past the old grace (2) and with no
+  // claim-capable device at all (4), visibly and without loss; the default — no helper on the
+  // deployment — is untouched (3). Each of the last three changes exactly ONE variable against (1).
   const GRACE_MS = 8000;
   await killSrv();
   check("(K7) setup: the server restarts with a grace, and a claim timeout a claim fits inside",
@@ -658,8 +669,12 @@ export async function run(h: {
       && graceRows.find((r) => r.mainSha === graceSha)?.remote?.name === DEVICE_NAME,
     `${graceReport.status} ${JSON.stringify(graceRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
-  // ===== (K7a2) THE GRACE'S CLOCK IS CLAIMABILITY, NOT THE LAND =================================
-  // The repair of 2026-09-07 (server.ts, grep `auditClaimableSince`). The grace above measures from
+  // ===== (K7a2) A LAND BEHIND A CLAIM IS NOT TAKEN HERE WHEN THE CLAIM ENDS ======================
+  // SINCE 2026-10-08 the property below holds by a stronger rule than the one it was written for: a
+  // helper deployment's audit never falls back onto this box at all (server.ts#AUDIT_HELPER_ONLY),
+  // so the claimability clock this section measured (`auditClaimableSince`) is gone with the grace
+  // it fed. The section stays because the moment it stages — the instant the helper is provably
+  // free — is still the one where a local run would be most tempting. The history: the grace measured from
   // `cover.at`; a claim locks PER REPO, so a land that arrives BEHIND a live claim spends its whole
   // grace unofferable and reaches the drain with it already spent. Measured three times in five
   // local runs: the drain started 7 / 5 / 14 ms after the `helper_result` of the same repo — the
@@ -697,7 +712,7 @@ export async function run(h: {
   const rowsAfterFirst = (await newRepoRows()).length;
   await Bun.sleep(2500);                        // a (wrong) local run has had 2.5 s to appear
   const qFreed = await jobFor(REPO);
-  check("(K7a2) THE GRACE RESTARTS WHEN THE CLAIM ENDS — the drain does not pounce on the queued land",
+  check("(K7a2) WHEN THE CLAIM ENDS THE DRAIN DOES NOT POUNCE on the land queued behind it — it stays the helper's",
     qReport1.ok && !!qFreed && qFreed.claim === null && qFreed.localRunning === false
       && (await liveRepo()) === null && (await newRepoRows()).length === rowsAfterFirst,
     `${qReport1.status} ${JSON.stringify(qFreed)} live=${await liveRepo()}`
@@ -866,31 +881,52 @@ export async function run(h: {
     existsSync(`${artDir}/${auditAt}/suite.log`),
     `${artDir} => ${existsSync(artDir) ? readdirSync(artDir).join(",") : "absent"}`);
 
-  // (2) THE GRACE NEVER STARVES. Nobody claims this one, and NOTHING ELSE would ever wake the
-  // drain: the land's own kick already happened, and the only other kicks in the server are a claim
-  // lapsing and a helper reporting — neither of which occurs here. So the row below can only exist
-  // because the skip armed its own return (armAuditGraceKick). That is what this check measures.
+  // (2) NO MAC FALLBACK (owner 2026-10-08, server.ts#AUDIT_HELPER_ONLY). Until that day this arm
+  // was „[Zitat entfernt]“: nobody claimed, the grace ran out, and the LOCAL drain took the
+  // job. On a helper deployment that fallback is gone — a helper's audit waits for a helper however
+  // long it takes, VISIBLY, and nothing is lost because the entry stays queued and offered. So the
+  // same fixture now proves the opposite outcome: past the old grace, still nothing here, the hold
+  // named on the read surface and in server.log — and the tree is still the helper's to take.
+  // MUTATION: put back `if (!bar) return true` after the cadence in the drain ⇒ a local row appears
+  // at ~0 s ⇒ every check below goes red.
   const rowsBeforeFall = (await newRepoRows()).length;
+  const fallLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
   const fallLane = await openLane(REPO, "gracefall");
   await driveMerge(fallLane, fallLane.branch);
   const fallSha = headOf();
   const landedAt = Date.now();
-  await Bun.sleep(2500);
+  await Bun.sleep(GRACE_MS + 4000);            // past the whole old grace, where the fallback used to fire
   const stillOpen = await jobFor(REPO);
-  check("(K7) setup: 2.5s in, the unclaimed job is still open and still un-audited here",
+  const fallPending = (await pending()).find((p) => p.repo === base(REPO));
+  check("(K7) NO MAC FALLBACK: past the old grace, unclaimed, the job is STILL offered and nothing ran here",
     !!stillOpen && stillOpen.claim === null && stillOpen.localRunning === false
-      && (await newRepoRows()).length === rowsBeforeFall,
-    JSON.stringify(stillOpen));
-  const fallRows = await waitNewRepoRows(rowsBeforeFall + 1, 60_000);
-  const fellBackRow = fallRows.find((r) => r.mainSha === fallSha);
-  check("(K7) NOTHING STARVES: the grace lapses and the LOCAL drain takes the job after all",
-    !!fellBackRow && !fellBackRow.remote && fellBackRow.result === "green"
-      && fellBackRow.covers.some((c) => c.branch === fallLane.branch),
-    `after ${Date.now() - landedAt}ms ${JSON.stringify(fellBackRow).slice(0, 220)}`);
-  await waitNoLocalRun();
+      && (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeFall,
+    `after ${Date.now() - landedAt}ms ${JSON.stringify(stillOpen)} live=${await liveRepo()}`
+    + ` rows=${(await newRepoRows()).length}/${rowsBeforeFall}`);
+  const fallLog = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(fallLogFrom) : "";
+  check("(K7) …and it is VISIBLY waiting: the audit trail's `pending` says `waiting for helper`, and server.log says why",
+    fallPending?.hold === "waiting for helper" && fallPending.covers === 1
+      && fallLog.split("\n").some((l) => l.includes("post-land audit WAITING:") && l.includes(base(REPO))
+        && l.includes("waiting for helper"))
+      && !fallLog.includes(`post-land audit LOCAL: ${base(REPO)}`),
+    `pending=${JSON.stringify(fallPending)} waitingLine=${fallLog.includes("waiting for helper")}`
+    + ` localLine=${fallLog.includes(`post-land audit LOCAL: ${base(REPO)}`)}`);
+  const fallClaim = stillOpen ? await hpost("/api/helper/claim", { jobId: stillOpen.id, deviceId: DEVICE }) : null;
+  const fallBody = (await fallClaim?.json()) as { job?: { mainSha: string } } | undefined;
+  const fallReport = await hpost("/api/helper/result",
+    { jobId: stillOpen?.id ?? "", exitCode: 0, tail: "PASS  taken after the old grace\nALL PASS" });
+  const fallRows = await waitNewRepoRows(rowsBeforeFall + 1);
+  const fellRow = fallRows.find((r) => r.mainSha === fallSha);
+  check("(K7) …and nothing was lost by waiting: the helper takes that exact tree and it closes REMOTE, once",
+    fallClaim?.ok === true && fallBody?.job?.mainSha === fallSha && fallReport.ok
+      && fallRows.filter((r) => r.mainSha === fallSha).length === 1 && fellRow?.remote?.name === DEVICE_NAME
+      && fellRow.covers.some((c) => c.branch === fallLane.branch),
+    `claim=${fallClaim?.status} ${JSON.stringify(fallRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
-  // (4) NO CLAIM-CAPABLE DEVICE, SAME GRACE. One variable changed against (1): the owner's wish.
-  // A grace held for a machine that would refuse the job is pure delay on this box's own work.
+  // (4) NO CLAIM-CAPABLE DEVICE, SAME DEPLOYMENT. One variable changed against (1): the owner's
+  // wish. Before 2026-10-08 the drain took this at once — a grace held for nobody was pure delay. On
+  // a helper deployment there is no "at once" here any more: the entry waits for a helper to come
+  // back, and the wish turning active again is what lets one take it.
   const wishOff = await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "off" });
   check("(K7) setup: the only device is wished OFF — nothing here could claim now",
     wishOff.ok && ((await wishOff.json()) as { device: DeviceView }).device.desiredMode === "off",
@@ -899,12 +935,23 @@ export async function run(h: {
   const offLane = await openLane(REPO, "nohelper");
   await driveMerge(offLane, offLane.branch);
   const offSha = headOf();
-  const offLandedAt = Date.now();
-  const offRows = await waitNewRepoRows(rowsBeforeOff + 1, 60_000);
-  const offElapsed = Date.now() - offLandedAt;
-  check("(K7) with NO claim-capable device the grace does not apply — the drain takes it at once",
-    offRows.some((r) => r.mainSha === offSha && !r.remote) && offElapsed < GRACE_MS,
-    `row after ${offElapsed}ms, grace ${GRACE_MS}ms`);
+  await Bun.sleep(4000);                       // the old behaviour wrote its local row well inside this
+  const offPending = (await pending()).find((p) => p.repo === base(REPO));
+  check("(K7) with NO claim-capable device the entry WAITS FOR A HELPER — no local run, no row, and it says so",
+    (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeOff
+      && offPending?.hold === "waiting for helper",
+    `live=${await liveRepo()} rows=${(await newRepoRows()).length}/${rowsBeforeOff} pending=${JSON.stringify(offPending)}`);
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.2 });
+  const offJob = await jobFor(REPO);
+  const offClaim = offJob ? await hpost("/api/helper/claim", { jobId: offJob.id, deviceId: DEVICE }) : null;
+  const offReport = await hpost("/api/helper/result",
+    { jobId: offJob?.id ?? "", exitCode: 0, tail: "PASS  taken once the helper was back\nALL PASS" });
+  const offRows = await waitNewRepoRows(rowsBeforeOff + 1);
+  check("(K7) …and the helper that comes back takes it: one REMOTE row for that tree, no local twin",
+    offClaim?.ok === true && offReport.ok && offRows.filter((r) => r.mainSha === offSha).length === 1
+      && !!offRows.find((r) => r.mainSha === offSha)?.remote,
+    `claim=${offClaim?.status} ${JSON.stringify(offRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
   // (3) THE DEFAULT. Grace unset, and the live helper from (1) put back exactly as it was — the one
   // variable that differs is the env key itself. This is the "byte for byte" half of the contract.
@@ -1209,9 +1256,10 @@ export async function run(h: {
   //
   // THE CLOCK IS SET, not waited out: the sweep is turned down so the freshness window is 3 s while
   // the online window stays a minute, which is the same shape as production (fresh ≪ online) at a
-  // size a suite can observe. Three checks, one per arm, and each changes ONE variable against the
-  // others: the beat is stale-but-online (1), it is stale-but-online and NOBODY comes back (2), and
-  // there is no beat inside the online window at all (3) — the arm that must still run at once.
+  // size a suite can observe. Two arms, each changing ONE variable against the other: the beat is
+  // stale-but-online (1), and there is no beat inside the online window at all (2). Since 2026-10-08
+  // both end the same way — the helper's tree waits for a helper (server.ts#AUDIT_HELPER_ONLY) — and
+  // (2) is the arm that proves it without any clock reading that could call the machine present.
   const K7E_GRACE_MS = 8000;
   const K7E_SWEEP_MS = 1000;
   const K7E_FRESH_MS = 3 * K7E_SWEEP_MS;   // server.ts: HELPER_FRESH_MS = 3 × HELPER_SWEEP_MS
@@ -1220,9 +1268,6 @@ export async function run(h: {
     FLEET_AUDIT_HELPER_GRACE_MS: String(K7E_GRACE_MS), FLEET_HELPER_SWEEP_MS: String(K7E_SWEEP_MS),
     FLEET_DEVICE_ONLINE_MS: String(onlineMs), FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000",
   });
-  // the youngest cover of a row — the very number the grace is computed from (`readyAt = max(
-  // youngest cover, claimable-since) + GRACE`), so the measurements below carry no harness stopwatch
-  const youngestCover = (r: Row | undefined): number => r?.covers.reduce((m, c) => Math.max(m, c.at), 0) ?? 0;
   await killSrv();
   check("(K7e) setup: the server restarts with a 3 s freshness window inside a 60 s online window",
     await startSrv({ audit: true, extra: k7eEnv(K7E_ONLINE_MS) }));
@@ -1272,30 +1317,14 @@ export async function run(h: {
       && staleRows.find((r) => r.mainSha === staleSha)?.remote?.name === DEVICE_NAME,
     `${staleReport.status} ${JSON.stringify(staleRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
 
-  // (2) THE SAME ARM, AND NOBODY COMES BACK. The widened grace must not invent a wait that never
-  // ends: the entry falls back to this box when the grace runs out, and the measurement is the one
-  // the row carries itself — `startedAt − youngest cover` against the promise.
-  check("(K7e) setup: idle again before the arm nobody returns to", await waitNoLocalRun(60_000));
-  const outSeen0 = await k7eBeat();
-  const outSeen = await k7eSeen();
-  await Bun.sleep(K7E_FRESH_MS + 800);
-  const outBefore = (await newRepoRows()).length;
-  const outLane = await openLane(REPO, "graceout");
-  const outLanded = await driveMerge(outLane, outLane.branch);
-  const outRows = await waitNewRepoRows(outBefore + 1, 90_000);
-  const outRow = outRows.find((r) => r.covers.some((c) => c.branch === outLane.branch));
-  const outWaited = outRow ? outRow.startedAt - youngestCover(outRow) : -1;
-  check("(K7e) THE LINGERING GRACE NEVER STARVES: nobody claimed, and the drain took it AFTER the grace rather than at once",
-    outSeen0.ok && outLanded.gone && !!outRow && !outRow.remote && outRow.result === "green"
-      && outWaited >= K7E_GRACE_MS - 250          // the armed timer's own moment, ±the setTimeout floor
-      && outRow.startedAt - outSeen > K7E_FRESH_MS && outRow.startedAt - outSeen < K7E_ONLINE_MS,
-    `waited=${outWaited}ms grace=${K7E_GRACE_MS} beatAge=${outRow ? outRow.startedAt - outSeen : "no row"}ms`
-    + ` remote=${!!outRow?.remote} result=${outRow?.result}`);
-
-  // (3) NO BEAT INSIDE THE ONLINE WINDOW AT ALL — the arm that must keep today's behaviour byte for
-  // byte. One variable against (2): the online window is now shorter than the silence this device
-  // is already in, so there is no machine to hold anything for and the drain takes the tree at once.
-  check("(K7e) setup: idle again, with an empty queue", await waitNoLocalRun(90_000));
+  // (2) NO BEAT INSIDE THE ONLINE WINDOW AT ALL. Until 2026-10-08 this was the arm that had to keep
+  // "the drain takes the tree at once" byte for byte, and before that arm (2) here proved a stale
+  // beat that never came back fell to this box after the grace. Both were the Mac fallback, and the
+  // owner ended it (server.ts#AUDIT_HELPER_ONLY): on a helper deployment the tree waits for a helper
+  // however long that machine is gone, and the machine that returns takes it. One variable against
+  // (1): the silence is now longer than the whole online window, so no clock reading anywhere can
+  // call that machine present — the arm where a fallback would be most tempting.
+  check("(K7e) setup: idle again, with an empty queue", await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0);
   await killSrv();
   const K7E_TIGHT_MS = 4000;
   check("(K7e) setup: the server restarts with an online window shorter than the silence already running",
@@ -1307,16 +1336,188 @@ export async function run(h: {
   const goneBefore = (await newRepoRows()).length;
   const goneLane = await openLane(REPO, "helpergone");
   const goneLanded = await driveMerge(goneLane, goneLane.branch);
-  const goneRows = await waitNewRepoRows(goneBefore + 1, 90_000);
-  const goneRow = goneRows.find((r) => r.covers.some((c) => c.branch === goneLane.branch));
-  const goneWaited = goneRow ? goneRow.startedAt - youngestCover(goneRow) : -1;
-  check("(K7e) WITH NO BEAT INSIDE THE ONLINE WINDOW THE DRAIN STILL TAKES THE TREE AT ONCE",
-    goneLanded.gone && !!goneRow && !goneRow.remote && goneWaited >= 0 && goneWaited < K7E_GRACE_MS
-      && goneRow.startedAt - goneSeen > K7E_TIGHT_MS,   // …and the silence really was past the window
-    `waited=${goneWaited}ms grace=${K7E_GRACE_MS} beatAge=${goneRow ? goneRow.startedAt - goneSeen : "no row"}ms`
-    + ` online=${K7E_TIGHT_MS} remote=${!!goneRow?.remote}`);
+  const goneSha = headOf();
+  await Bun.sleep(K7E_GRACE_MS + 2000);      // past the old grace too: neither old arm may fire
+  const goneJob = await jobFor(REPO);
+  const gonePending = (await pending()).find((p) => p.repo === base(REPO));
+  check("(K7e) WITH NO BEAT INSIDE THE ONLINE WINDOW THE TREE STILL WAITS FOR A HELPER — nothing runs here",
+    goneLanded.gone && !!goneJob && goneJob.claim === null && goneJob.localRunning === false
+      && (await liveRepo()) === null && (await newRepoRows()).length === goneBefore
+      && gonePending?.hold === "waiting for helper"
+      && Date.now() - goneSeen > K7E_TIGHT_MS,   // …and the silence really was past the window
+    `${JSON.stringify(goneJob)} pending=${JSON.stringify(gonePending)} beatAge=${Date.now() - goneSeen}ms`
+    + ` online=${K7E_TIGHT_MS} rows=${(await newRepoRows()).length}/${goneBefore}`);
+  const goneBack = await k7eBeat();
+  const goneClaim = goneJob ? await hpost("/api/helper/claim", { jobId: goneJob.id, deviceId: DEVICE }) : null;
+  const goneBody = (await goneClaim?.json()) as { job?: { mainSha: string } } | undefined;
+  const goneReport = await hpost("/api/helper/result",
+    { jobId: goneJob?.id ?? "", exitCode: 0, tail: "PASS  remote after a long silence\nALL PASS" });
+  const goneRows = await waitNewRepoRows(goneBefore + 1);
+  check("(K7e) …and the machine that comes back takes exactly that tree, and it closes REMOTE once",
+    goneBack.ok && goneClaim?.ok === true && goneBody?.job?.mainSha === goneSha && goneReport.ok
+      && goneRows.filter((r) => r.mainSha === goneSha).length === 1
+      && goneRows.find((r) => r.mainSha === goneSha)?.remote?.name === DEVICE_NAME,
+    `claim=${goneClaim?.status} ${JSON.stringify(goneRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
   check("(K7e) …and the machine is left idle with an empty queue for what follows",
     await waitNoLocalRun(120_000) && (await jobs()).jobs.length === 0,
+    JSON.stringify((await jobs()).jobs));
+
+  // ===== (T) THE CADENCE — two numbers, one run on the newest tip ==============================
+  // Owner 2026-10-08 (~16:0x): „[Zitat entfernt]“
+  // . That day 20 full audits ran on claude-fleet,
+  // one per land or burst, ~10 h of helper wall time. server.ts#auditCadenceOf is the answer and it
+  // has exactly two numbers: a helper deployment's audit starts once the repo has been QUIET for
+  // FLEET_AUDIT_QUIET_MS since its newest land, or FLEET_AUDIT_MAX_WAIT_MS after its OLDEST one —
+  // whichever comes first, so a day that is never quiet still measures every land.
+  //
+  // Measured in seconds rather than the production 20/60 minutes; what is under test is the rule.
+  // Two boots, one per number, so each trigger is the ONLY one that can fire: (T.q) a short quiet
+  // window under a ten-minute ceiling, (T.m) a ten-minute quiet window under a short ceiling.
+  const tJobId = createHash("sha256").update(realpathSync(REPO)).digest("hex").slice(0, 12);
+  const tMine = async (): Promise<PendingAudit | undefined> => (await pending()).find((p) => p.repo === base(REPO));
+  // poll the helper's own list until REPO's audit appears; returns WHEN it was first seen (0 = never)
+  const tListedAt = async (timeoutMs: number): Promise<number> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await jobFor(REPO)) return Date.now();
+      await Bun.sleep(200);
+    }
+    return 0;
+  };
+  const tCadenceEnv = (quietMs: number, maxWaitMs: number): Record<string, string> => ({
+    FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: String(quietMs),
+    FLEET_AUDIT_MAX_WAIT_MS: String(maxWaitMs), FLEET_HELPER_CLAIM_TIMEOUT_MS: "600000", FLEET_HELPER_SWEEP_MS: "15000",
+  });
+  const tBeat = (): Promise<Response> => hpost("/api/helper/device",
+    { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+
+  // --- (T.q) THE QUIET WINDOW --------------------------------------------------------------------
+  // 12 s: long enough that the land's own return path (the lane closing) fits inside it on a loaded box
+  const T_QUIET_MS = 12_000;
+  await killSrv();
+  check("(T.q) setup: a helper deployment with a 12 s quiet window under a 10 min ceiling",
+    await startSrv({ audit: true, extra: tCadenceEnv(T_QUIET_MS, 600_000) }));
+  await Bun.sleep(750);
+  await setAuditMode("green");
+  await post(`/api/helper/devices/${DEVICE}/mode`, { mode: "active" });
+  check("(T.q) setup: the helper is beating and active, the queue is empty and nothing runs here",
+    (await tBeat()).ok && (await jobs()).jobs.length === 0 && (await liveRepo()) === null,
+    JSON.stringify((await jobs()).jobs));
+  const tqRowsBefore = (await newRepoRows()).length;
+  const tqLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
+  const tqA = await openLane(REPO, "cadencea");
+  await driveMerge(tqA, tqA.branch);
+  const tqHeldA = await tMine();
+  const tqListedEarly = await jobFor(REPO);
+  const tqEarlyClaim = await hpost("/api/helper/claim", { jobId: tJobId, deviceId: DEVICE });
+  const tqEarlyErr = (await tqEarlyClaim.json()) as { error?: string; job?: unknown };
+  // MUTATION: drop the `auditCadenceHolds` gate from helperJobsView ⇒ the job is listed at once ⇒ red;
+  // drop it from helperClaim ⇒ the claim answers 200 with a bundle ⇒ red.
+  check("(T.q) A FRESH LAND IS HELD BY THE QUIET WINDOW: not on the helper's list, its claim a 409, and the hold says until when",
+    !tqListedEarly && tqEarlyClaim.status === 409 && tqEarlyErr.job === undefined
+      && (tqEarlyErr.error ?? "").includes("not offered yet")
+      && tqHeldA?.hold === "quiet" && tqHeldA.covers === 1
+      && tqHeldA.releaseAt === (tqHeldA.newestAt ?? 0) + T_QUIET_MS
+      && (await liveRepo()) === null && (await newRepoRows()).length === tqRowsBefore,
+    `listed=${!!tqListedEarly} claim=${tqEarlyClaim.status} ${JSON.stringify(tqEarlyErr)} pending=${JSON.stringify(tqHeldA)}`);
+  const tqLog = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(tqLogFrom) : "";
+  check("(T.q) …and server.log names the hold in words: QUIET, the repo, and the moment it is released",
+    tqLog.split("\n").some((l) => l.includes("post-land audit QUIET:") && l.includes(base(REPO))),
+    tqLog.split("\n").filter((l) => l.includes("post-land audit")).slice(-3).join(" | ").slice(0, 400));
+  // a SECOND land inside the window: the burst is not over, so the window restarts from it
+  const tqB = await openLane(REPO, "cadenceb");
+  await driveMerge(tqB, tqB.branch);
+  const tqTip = headOf();
+  const tqHeldB = await tMine();
+  check("(T.q) A SECOND LAND RESTARTS THE WINDOW: two covers, held until the NEWEST land plus the quiet window",
+    tqHeldB?.hold === "quiet" && tqHeldB.covers === 2
+      && tqHeldB.releaseAt === (tqHeldB.newestAt ?? 0) + T_QUIET_MS
+      && (tqHeldB.newestAt ?? 0) > (tqHeldA?.newestAt ?? Infinity),
+    `before=${JSON.stringify(tqHeldA)} after=${JSON.stringify(tqHeldB)}`);
+  const tqSeenAt = await tListedAt(T_QUIET_MS + 15_000);
+  const tqJob = await jobFor(REPO);
+  check("(T.q) THE QUIET WINDOW RELEASES IT: offered no earlier than newest land + window, with BOTH lands on one job",
+    tqSeenAt > 0 && tqSeenAt >= (tqHeldB?.releaseAt ?? Infinity) && tqJob?.covers === 2
+      && tqJob.branches.includes(tqA.branch) && tqJob.branches.includes(tqB.branch) && tqJob.claim === null
+      && (await liveRepo()) === null,
+    `seenAt-releaseAt=${tqSeenAt - (tqHeldB?.releaseAt ?? 0)}ms job=${JSON.stringify(tqJob)}`);
+  const tqClaim = tqJob ? await hpost("/api/helper/claim", { jobId: tqJob.id, deviceId: DEVICE }) : null;
+  const tqClaimBody = (await tqClaim?.json()) as { job?: { mainSha?: string; covers?: number } } | undefined;
+  const tqReport = await hpost("/api/helper/result",
+    { jobId: tqJob?.id ?? "", exitCode: 0, tail: "PASS  one run for the burst\nALL PASS" });
+  const tqRows = await waitNewRepoRows(tqRowsBefore + 1);
+  const tqRow = tqRows.find((r) => r.mainSha === tqTip);
+  // MUTATION: drop `trigger` from the helperResult row ⇒ red; stamp it unconditionally as one value ⇒
+  // (T.m) below goes red.
+  check("(T.q) ONE RUN ON THE NEWEST TIP NAMES BOTH LANDS, and the ledger row says the QUIET window released it",
+    tqClaim?.status === 200 && tqClaimBody?.job?.mainSha === tqTip && tqReport.ok
+      && tqRows.length === tqRowsBefore + 1 && !!tqRow?.remote && tqRow.trigger === "quiet"
+      && tqRow.covers.length === 2 && tqRow.covers.some((c) => c.branch === tqA.branch)
+      && tqRow.covers.some((c) => c.branch === tqB.branch),
+    `claim=${tqClaim?.status} ${JSON.stringify(tqRow).slice(0, 400)}`);
+
+  // --- (T.m) THE CEILING -------------------------------------------------------------------------
+  // The quiet window is now ten minutes, so it CANNOT fire here; only the ceiling can. Two lands, and
+  // the second one does NOT push the release out — the ceiling runs from the OLDEST land.
+  // 45 s: three lands (two here, one docs-only) must fit before it, or the probe measured nothing
+  const T_MAX_MS = 45_000;
+  await killSrv();
+  check("(T.m) setup: a helper deployment with a 10 min quiet window under a 45 s ceiling",
+    await startSrv({ audit: true, extra: tCadenceEnv(600_000, T_MAX_MS) }));
+  await Bun.sleep(750);
+  await tBeat();
+  const tmRowsBefore = (await newRepoRows()).length;
+  const tmDocsBefore = (await rowsFor(shortChainRepo)).length;
+  const tmC = await openLane(REPO, "cadencec");
+  await driveMerge(tmC, tmC.branch);
+  const tmD = await openLane(REPO, "cadenced");
+  await driveMerge(tmD, tmD.branch);
+  const tmTip = headOf();
+  // …and a DOCS-ONLY land into the short-chain repo in the same window: local-only work (install+pins,
+  // never offered) is under the same two numbers on a helper deployment — its row carries the trigger too
+  const tmDocs = (await (await post("/api/lanes", { repo: shortChainRepo })).json()) as Lane;
+  mkdirSync(`${tmDocs.cwd}/docs`, { recursive: true });
+  await Bun.write(`${tmDocs.cwd}/docs/cadence.md`, "cadence measurement note\n");
+  spawnSync("git", ["-C", tmDocs.cwd, "add", "-A"]);
+  for (let i = 0; i < 12; i++) {   // the index-lock retry openLane pays, for a lane it does not build
+    spawnSync("git", ["-C", tmDocs.cwd, "commit", "-qm", "cadence docs-only lane work"]);
+    if (spawnSync("git", ["-C", tmDocs.cwd, "log", "--oneline", "-1"]).stdout.toString()
+      .includes("cadence docs-only lane work")) break;
+    await Bun.sleep(300);
+  }
+  const tmDocsLanded = await driveMerge(tmDocs, tmDocs.branch);
+  const tmSnapAt = Date.now();
+  const tmHeld = await tMine();
+  const tmListedEarly = await jobFor(REPO);
+  check("(T.m) TWO LANDS UNDER A QUIET WINDOW THAT NEVER ENDS ARE HELD UNTIL THE OLDEST ONE PLUS THE CEILING",
+    tmSnapAt < (tmHeld?.releaseAt ?? 0)          // the probe looked BEFORE the release, or it measured nothing
+      && !tmListedEarly && tmHeld?.hold === "quiet" && tmHeld.covers === 2
+      && tmHeld.releaseAt === (tmHeld.oldestAt ?? 0) + T_MAX_MS
+      && (await newRepoRows()).length === tmRowsBefore,
+    `snap-releaseAt=${tmSnapAt - (tmHeld?.releaseAt ?? 0)}ms listed=${!!tmListedEarly} pending=${JSON.stringify(tmHeld)}`);
+  const tmSeenAt = await tListedAt(T_MAX_MS + 20_000);
+  const tmJob = await jobFor(REPO);
+  const tmClaim = tmJob ? await hpost("/api/helper/claim", { jobId: tmJob.id, deviceId: DEVICE }) : null;
+  const tmClaimBody = (await tmClaim?.json()) as { job?: { mainSha?: string } } | undefined;
+  const tmReport = await hpost("/api/helper/result",
+    { jobId: tmJob?.id ?? "", exitCode: 0, tail: "PASS  released by the ceiling\nALL PASS" });
+  const tmRows = await waitNewRepoRows(tmRowsBefore + 1);
+  const tmRow = tmRows.find((r) => r.mainSha === tmTip);
+  // MUTATION: drop the `max-wait` arm of auditCadenceOf ⇒ nothing is offered inside the 65 s poll ⇒ red
+  check("(T.m) THE CEILING RELEASES A BURST THAT NEVER GOES QUIET: one run on the newest tip, both lands, trigger max-wait",
+    tmSeenAt >= (tmHeld?.releaseAt ?? Infinity) && tmClaim?.status === 200 && tmClaimBody?.job?.mainSha === tmTip
+      && tmReport.ok && !!tmRow?.remote && tmRow.trigger === "max-wait" && tmRow.covers.length === 2
+      && tmRow.covers.some((c) => c.branch === tmC.branch) && tmRow.covers.some((c) => c.branch === tmD.branch),
+    `seenAt-releaseAt=${tmSeenAt - (tmHeld?.releaseAt ?? 0)}ms claim=${tmClaim?.status} ${JSON.stringify(tmRow).slice(0, 300)}`);
+  const tmDocsRow = (await waitRowsFor(shortChainRepo, tmDocsBefore + 1, T_MAX_MS + 30_000))[0];
+  const tmDocsCover = tmDocsRow?.covers[0]?.at ?? 0;
+  check("(T.m) …and the DOCS-ONLY land runs HERE (never offered) but under the same ceiling, its row saying max-wait",
+    tmDocsLanded.gone && !!tmDocsRow && tmDocsRow.proportional === true && !tmDocsRow.remote
+      && tmDocsRow.trigger === "max-wait" && tmDocsCover > 0 && tmDocsRow.startedAt - tmDocsCover >= T_MAX_MS,
+    `waited=${tmDocsRow ? tmDocsRow.startedAt - tmDocsCover : "no row"}ms ceiling=${T_MAX_MS}`
+    + ` trigger=${tmDocsRow?.trigger} remote=${!!tmDocsRow?.remote}`);
+  check("(T) teardown: the machine is idle with an empty queue",
+    await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0 && !(await tMine()),
     JSON.stringify((await jobs()).jobs));
 
   // ===== (W) WAKE-ON-LAN — THE ONE NAMED EXCEPTION TO "NO PUSH" ===================================
@@ -1487,9 +1688,9 @@ export async function run(h: {
   check("(W4) NO WORK, NO PACKET: eight ticks pass over an active, long-silent device in silence",
     wakePkts.length === beforeIdle, `${wakePkts.length - beforeIdle} packet(s) in 2s`);
 
-  // …and now work that nobody has taken. The grace is what keeps it unclaimed for a while: the
-  // local drain leaves a fresh entry alone while a claim-capable device is registered, which is
-  // precisely the situation a wake exists for — a job waiting for a machine that is not there.
+  // …and now work that nobody has taken. On a helper deployment (the grace key above) the local
+  // drain never takes it, which is precisely the situation a wake exists for — a job waiting for a
+  // machine that is not there.
   const rowsBeforeWake = (await newRepoRows()).length;
   const wakeLane = await openLane(REPO, "wakework");
   await driveMerge(wakeLane, wakeLane.branch);
@@ -1509,12 +1710,17 @@ export async function run(h: {
   check("(W4) …and the auto-wake stamped the same field the button does, on its own row",
     typeof autoStamped?.lastWakeAt === "number" && autoStamped.lastWakeAt > (wakeBody.at ?? 0),
     `${autoStamped?.lastWakeAt} vs button ${wakeBody.at}`);
-  // nothing is lost by any of this: the grace lapses and the local drain takes the job, exactly as
-  // it does when no wake rail exists at all.
+  // nothing is lost by any of this: the job is still the helper's (on a helper deployment it never
+  // falls back here — server.ts#AUDIT_HELPER_ONLY), and a machine that is there takes it.
+  const wakeJob = await jobFor(REPO);
+  const wakeClaim = wakeJob ? await hpost("/api/helper/claim", { jobId: wakeJob.id, deviceId: DEVICE }) : null;
+  const wakeReport = await hpost("/api/helper/result",
+    { jobId: wakeJob?.id ?? "", exitCode: 0, tail: "PASS  taken after the wake\nALL PASS" });
   const wakeRows = await waitNewRepoRows(rowsBeforeWake + 1, 90_000);
-  check("(W4) the wake changed nothing about the work itself — the local drain still takes it",
-    wakeRows.some((r) => r.mainSha === wakeSha && !r.remote), 
-    JSON.stringify(wakeRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`)));
+  check("(W4) the wake changed nothing about the work itself — the job waited, unrun here, and a helper took it",
+    wakeClaim?.ok === true && wakeReport.ok && wakeRows.some((r) => r.mainSha === wakeSha && !!r.remote)
+      && !wakeRows.some((r) => r.mainSha === wakeSha && !r.remote),
+    `claim=${wakeClaim?.status} ${JSON.stringify(wakeRows.map((r) => `${r.mainSha.slice(0, 8)}:${r.remote ? "remote" : "local"}`))}`);
   await waitNoLocalRun();
 
   // (W5) UNCONFIGURED IS THE DEFAULT, and it is a REFUSAL, not a throw. The message matters as much
@@ -1785,8 +1991,10 @@ export async function run(h: {
         g3.waitPolicy?.unclaimedMs === w3?.unclaimedMs && g3.waitPolicy?.saturatedUntil === earliest,
         `get=${JSON.stringify(g3.waitPolicy)} post=${JSON.stringify(w3)}`);
 
-      // (b') THE AUDIT'S GRACE, same reading. MUTATION: drop the `saturation ?` arm of the drain's
-      // readyAt ⇒ the drain takes the land at ~8 s ⇒ a local row appears ⇒ red.
+      // (b') THE AUDIT behind a saturated helper. Until 2026-10-08 this was the grace stretching to the
+      // claim end; since then a helper deployment's audit is never run here at all
+      // (server.ts#AUDIT_HELPER_ONLY), so the job simply waits for the machine. MUTATION: put back a
+      // local arm for an offerable entry in the drain ⇒ the drain takes the land ⇒ a local row ⇒ red.
       const rowsBeforeSat = (await newRepoRows()).length;
       const satLand = await openLane(REPO, "satland");
       const satLanded = await driveMerge(satLand, satLand.branch);
@@ -1794,7 +2002,7 @@ export async function run(h: {
       await Bun.sleep(SAT_GRACE_MS + 4000);
       const heldAudit = await jobFor(REPO);
       const stillFull = await satRow();
-      check("(K9) A SATURATED HELPER STRETCHES THE AUDIT GRACE: 12 s after the land, past the 8 s grace, the job is still offered and unrun here",
+      check("(K9) THE AUDIT WAITS FOR THE SATURATED HELPER: 12 s after the land, past the old 8 s grace, the job is still offered and unrun here",
         satLanded.gone && !!heldAudit && heldAudit.claim === null && heldAudit.localRunning === false
           && (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeSat
           && stillFull?.claims.length === 2 && Date.now() - (stillFull?.lastSeen ?? 0) < 6000,
@@ -2295,20 +2503,36 @@ export async function run(h: {
       // leave the register as (6) needs it: the second box must be no candidate for the drain's grace
       await post(`/api/helper/devices/${BOX2}/mode`, { mode: "off" });
 
-      // (6) NO SHARD-CAPABLE HELPER ⇒ LOCAL, UNSHARDED, AT ONCE. DEVICE keeps beating active without the
-      // feature. MUTATION: drop the feature from the drain's grace candidate ⇒ the entry is held the whole
-      // 120 s grace for a machine that is never offered its shards ⇒ no row inside 30 s ⇒ red.
+      // (6) NO SHARD-CAPABLE HELPER ⇒ THE ENTRY WAITS FOR ONE. DEVICE keeps beating active without the
+      // feature. Until 2026-10-08 this arm ran the tree HERE, unsharded, at once — the Mac fallback the
+      // owner ended (server.ts#AUDIT_HELPER_ONLY). Now an old daemon beating beside it changes nothing:
+      // it is never offered the shards, the drain never takes them, and the shard box that comes back
+      // takes the run. MUTATION: put back the local arm for an offerable entry in the drain ⇒ a local,
+      // unsharded row appears inside the wait ⇒ red.
       beatBox = false;
       await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "off" });
       const rowsBeforeLocal = (await newRepoRows()).length;
       const loc = await openLane(REPO, "shardlocal");
       await driveMerge(loc, loc.branch);
       const locSha = headOf();
-      const locRows = await waitNewRepoRows(rowsBeforeLocal + 1, 30_000);
+      await Bun.sleep(5000);
+      const locPending = (await pending()).find((p) => p.repo === base(REPO));
+      check("(K11) with NO shard-capable helper nothing runs HERE — no local row, the entry waits for a helper",
+        (await liveRepo()) === null && (await newRepoRows()).length === rowsBeforeLocal
+          && locPending?.hold === "waiting for helper" && repoJobs(await jobs()).length === 0,
+        `rows=${(await newRepoRows()).length - rowsBeforeLocal} pending=${JSON.stringify(locPending)}`
+        + ` oldDaemonJobs=${repoJobs(await jobs()).length}`);
+      beatBox = true;
+      await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "active" });
+      await beat();
+      const locClaims = await claimAll(ids);
+      for (const id of ids) await report(id, { exitCode: 0, fails: [], tail: "PASS  back again\nALL PASS" });
+      const locRows = await waitNewRepoRows(rowsBeforeLocal + 1, 20_000);
       const locRow = locRows.find((r) => r.mainSha === locSha);
-      check("(K11) with NO shard-capable helper the drain runs it HERE at once — a local row, unsharded, no remote",
-        !!locRow && locRow.result === "green" && !locRow.remote && locRow.shards === undefined,
-        `rows=${locRows.length - rowsBeforeLocal} ${JSON.stringify(locRow).slice(0, 300)}`);
+      check("(K11) …and the shard box that comes back takes it as its three shards: one REMOTE row, sharded",
+        locClaims.statuses.every((st) => st === 200) && !!locRow && locRow.result === "green"
+          && !!locRow.remote && locRow.shards?.length === 3,
+        `${locClaims.statuses} ${JSON.stringify(locRow).slice(0, 300)}`);
     } finally {
       clearInterval(beater);
     }
@@ -2341,7 +2565,9 @@ export async function run(h: {
       bootLog.includes('FLEET_AUDIT_SHARDS="three" is not a shard count') && badList.length === 1
         && badList[0]?.shard === undefined && badList[0]?.id === wholeIdOf(REPO)
         && badClaim.status === 200 && badReport.ok && badRow?.result === "green" && badRow.shards === undefined
-        && badKeys === "at,startedAt,ms,repo,main,mainSha,result,cmd,exitCode,out,checks,covers,remote",
+        // `trigger` rides on every helper deployment's row since 2026-10-08 (the cadence's stamp) and
+        // is not a shard field — this boot is a helper deployment (the grace key), so it is expected
+        && badKeys === "at,startedAt,ms,repo,main,mainSha,result,cmd,exitCode,out,checks,covers,trigger,remote",
       `log=${bootLog.includes("FLEET_AUDIT_SHARDS")} list=${JSON.stringify(badList.map((j) => j.shard ?? j.id))} claim=${badClaim.status} keys=${badKeys}`);
     // leave the register as the harness after this one expects it: the shard box is no candidate
     await post(`/api/helper/devices/${SHARDBOX}/mode`, { mode: "off" });

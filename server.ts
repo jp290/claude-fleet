@@ -3545,7 +3545,10 @@ type MemoryAuditState =
   | { state: "not-landed"; basis: "ledger lane-outcomes.jsonl" }
   | { state: "running"; startedAt: number; basis: "volatile (process memory)" }
   | { state: "starting"; basis: "volatile (process memory)" }
-  | { state: "queued"; queuedAt: number; basis: "persisted audit queue" }
+  // `hold` says what a queued land waits FOR on a helper deployment (auditHoldOf): `quiet` — the
+  // cadence releases it at `releaseAt`; `waiting for helper` — released, and only a helper runs it.
+  // Absent: nothing holds it (a deployment without a helper runs it on the land).
+  | { state: "queued"; queuedAt: number; hold?: AuditHold["hold"]; releaseAt?: number; basis: "persisted audit queue" }
   | { state: "terminal"; result: string; at: number; mainSha: string | null;
     adjudication: string | null; basis: "ledger post-land-audits.jsonl" }
   | { state: "not-configured"; basis: "server env" }
@@ -3563,8 +3566,11 @@ function memoryAuditState(land: Record<string, unknown> | null, auditRows: reado
   for (const [qRepo, q] of auditQueue) {
     if (!sameRepo(qRepo)) continue;
     const c = auditQueueGroups(q).flatMap((g) => g.covers).find(names);
-    if (c) return auditDraining && !r ? { state: "starting", basis: "volatile (process memory)" }
-      : { state: "queued", queuedAt: c.at, basis: "persisted audit queue" };
+    if (!c) continue;
+    if (auditDraining && !r) return { state: "starting", basis: "volatile (process memory)" };
+    const h = auditHoldOf(qRepo, q);
+    return { state: "queued", queuedAt: c.at, ...(h ? { hold: h.hold } : {}),
+      ...(h?.hold === "quiet" ? { releaseAt: h.releaseAt } : {}), basis: "persisted audit queue" };
   }
   for (let i = auditRows.length - 1; i >= 0; i--) {
     const row = auditRows[i]!;
@@ -28661,6 +28667,11 @@ interface PostLandAuditRow {
   // machine, and every row written before this field existed says nothing whatever about it.
   workMs?: number;
   covers: AuditCover[];
+  // WHICH OF THE TWO CADENCE NUMBERS RELEASED THIS RUN (auditCadenceOf, owner 2026-10-08): `quiet` —
+  // the repo had been quiet for FLEET_AUDIT_QUIET_MS since its newest land in the run; `max-wait` —
+  // its oldest land had waited FLEET_AUDIT_MAX_WAIT_MS and the burst was still going. Absent where no
+  // cadence applies: a deployment without a helper, and every row written before it existed.
+  trigger?: AuditTrigger;
   // Present ONLY on a row a SHARDED run produced (FLEET_AUDIT_SHARDS, see AuditShardRun): one entry per
   // shard, in `k` order, including the ones that produced nothing — `result:"unknown"` with `ms`,
   // `ran`, `failed` and `exitCode` null is a shard that lapsed or never ran; its own `unmeasured`
@@ -28752,10 +28763,10 @@ let runningPostLandAudit: RunningAudit | null = null;
 // and that gap is exactly where a remote claim could slip in and make two machines run one tree.
 // This exists so "who owns this repo's audit right now" has an answer with NO interleaving point.
 let auditRunningRepo: string | null = null;
-// The ONE armed re-kick for a grace skip (armAuditGraceKick, beside kickAuditDrain). Declared here
-// with the drain's other state because that is what it is: the drain's memory that it left work
-// lying on purpose and owes itself a second look.
-let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
+// The ONE armed re-kick for an entry the cadence held (armAuditCadenceKick, beside kickAuditDrain).
+// Declared here with the drain's other state because that is what it is: the drain's memory that it
+// left work lying on purpose and owes itself a second look.
+let auditCadenceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // --- THE REMOTE HELPER PORTAL (stage 1) --------------------------------------------------------
 // A second machine takes a tier-2 audit off this one. The whole design is one invariant, stated by
@@ -28765,8 +28776,9 @@ let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 //     are each atomic within their own turn, and `auditRunningRepo` closes the other direction;
 //   · a claim EXPIRES. A helper that is unplugged, sleeps, or simply loses interest cannot park a
 //     job forever: past `expiresAt` the claim counts as absent everywhere (helperClaimOf), so the
-//     job falls back to the local drain even if the sweep that books the lapse is late. The failure
-//     direction is chosen: too much local work, never a tree nobody audited.
+//     job is open again even if the sweep that books the lapse is late — for the next claim on a
+//     helper deployment, for the local drain on one without a helper (since 2026-10-08 a helper's
+//     audit never falls back onto this box: AUDIT_HELPER_ONLY). Never a tree nobody audited.
 //   · a RESULT is a row on the SAME ledger, marked `remote`. Not a second trail — the questions
 //     tier 2 exists to answer ("which land was the last green audit") are joins over one file, and
 //     a second file would silently answer them wrong.
@@ -28788,55 +28800,96 @@ let auditGraceTimer: ReturnType<typeof setTimeout> | null = null;
 // runs this rail at a few seconds, because the property under test is the FALLBACK, not the wait.
 const HELPER_CLAIM_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_HELPER_CLAIM_TIMEOUT_MS ?? 2_700_000) | 0);
 const HELPER_SWEEP_MS = Math.max(500, Number(process.env.FLEET_HELPER_SWEEP_MS ?? 15_000) | 0);
-// THE PORTAL'S RIGHT OF FIRST REFUSAL, and the measurement that asked for it. A land kicks the
-// drain SYNCHRONOUSLY (schedulePostLandAudit), so an audit job is the local drain's before the
-// helper daemon's 15 s poll has ever seen it exist — measured 2026-08-29
-// (docs/messungen/workhorse-baseline-2026-08-29.md): in live operation a helper machine could not
-// take a single fleet audit, and even e2e/helper-daemon.ts has to land into a DECOY repo to make
-// one claimable at all. With a grace above zero the drain LEAVES a fresh entry alone for that long,
-// so a machine that is actually there gets the first look at it.
-// Zero — the default, and what an unset or unparseable value falls to — is today's behaviour byte
-// for byte: the skip below is not reached, no timer is armed, no path changes.
+// WHETHER THIS DEPLOYMENT HANDS ITS AUDITS TO A HELPER, and since 2026-10-08 the only thing this
+// number still says. It was the portal's right of first refusal (2026-08-29): a land kicked the
+// drain synchronously, so without a wait the local drain had every job before the daemon's 15 s
+// poll saw it, and the grace left a fresh entry alone for this long before running it HERE.
+// WHAT ENDED THE WAIT (owner 2026-10-08, ~16:0x: „[Zitat entfernt]“
+// ): an audit that is a
+// helper's work is the helper's ONLY — there is no Mac fallback any more, so there is nothing for a
+// grace to time out into. The measurement that day: 20 full audits on claude-fleet between 02:31
+// and 15:43, median 32 min, ~10 h of helper wall time; three shards fill the helper, lane previews
+// fell back to this box, and a lapsed or ungraced audit put a ~35-minute suite on its one mutex.
+// SO: `> 0` names a deployment whose offerable audits wait for a helper however long that takes —
+// visible as `waiting for helper` (auditHoldOf), woken by the wake rail — and its number is no
+// longer read. Zero — the default, every harness and a deployment that never enrolled a helper —
+// is the local drain as the only runner it always was: not a fallback, there is nothing to fall
+// back FROM. The live .env carries 60000 (2026-09-02), which is the on switch.
+// THE DRAIN READS THE RAW CONSTANT, not a derived name: e2e/host-hygiene.ts evaluates the drain's
+// source against a fixture that declares exactly this identifier.
 const AUDIT_HELPER_GRACE_MS = Math.max(0, Number(process.env.FLEET_AUDIT_HELPER_GRACE_MS ?? 0) | 0);
-// THE GRACE'S CLOCK — repo toplevel -> the moment this entry last became CLAIMABLE, and the whole
-// of the 2026-09-07 repair (docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md).
-//
-// THE MEASUREMENT. The grace was failing on its CLOCK, not its length: five local full runs, and in
-// THREE of them the drain started 7 / 5 / 14 ms after the `helper_result` of the SAME repo — the
-// instant the helper became provably free. `helperClaimOf` locks PER REPO, so the new entry had
-// spent its whole 60 s standing behind a claim nobody could take it from, and arrived with the
-// grace already spent (`graceRest` −204 806 / −848 351 / −1 846 864 ms). Raising the number does
-// not touch that: a grace measured from `cover.at` is consumed while the entry is UNOFFERABLE, so
-// any length large enough to survive a 45-minute claim would be a length that idles this box for
-// 45 minutes on every land nobody takes. The empirical half of the same argument: the audit work
-// budget was raised twice in early September and the per-day timeout rate DOUBLED rather than fell.
-//
-// SO THE OFFSET RUNS FROM CLAIMABILITY. `readyAt` below is `max(youngest cover, this) + GRACE`:
-// seconds an entry spent behind a blocker were never seconds anyone was offered it, and only the
-// seconds after the blocker fell are a promise this box actually kept. Two blockers release into
-// here, and they are the two the drain's own selection and helperClaim both name — a helper CLAIM
-// ending (lapsed in expireHelperClaims, reported in helperResult) and a LOCAL run of that repo
-// finishing. There is no third state and no new persisted phase: an entry is claimed, running here,
-// or claimable, exactly as before; this is a timestamp about the last transition, nothing else.
-//
-// NOT PERSISTED, deliberately. Across a restart the clock is simply absent, `?? 0` falls back to
-// the cover time, and the boot drain behaves byte for byte as it does today — the failure direction
-// is "too much local work", never a tree nobody audited. A restored claim still blocks and still
-// marks when it ends, which is the case that matters.
-//
-// WHAT THIS DOES NOT COVER, stated rather than left to be rediscovered: the other two of those five
-// runs (`graceRest` −14 ms and −1 ms) had a helper that was holding a LANE PREVIEW and returns in
-// helper-daemon/daemon.ts#tick at `freeSuiteSlots<=0` before it ever asks for the job list. That
-// machine is a claim candidate by every register this box owns, so no clock here can see it. It
-// stays open.
+const AUDIT_HELPER_ONLY = AUDIT_HELPER_GRACE_MS > 0;
+// THE CADENCE — exactly two numbers, and the owner's fear above is the reason it is not one. A
+// helper deployment's audit starts once the repo has been QUIET for AUDIT_QUIET_MS since its
+// newest unmeasured land, or AUDIT_MAX_WAIT_MS after its OLDEST one, whichever comes first.
+//   · the quiet window BUNDLES a burst: the suite measures a TREE, so the newest tip of a burst
+//     subsumes every land in it (the coalescing contract at schedulePostLandAudit), and the
+//     helper's wall time is spent once instead of once per land.
+//   · the ceiling is what makes a busy day safe: on a day that is never quiet for 20 minutes the
+//     quiet window alone would postpone tier 2 forever. With it every land is MEASURED-OR-RUNNING
+//     at most AUDIT_MAX_WAIT_MS after it landed, plus the claim and the run itself.
+// No third rule (no daily cap, no night run) — the owner's „[Zitat entfernt]“. Zero on either knob
+// releases at once, which is the drain's behaviour before 2026-10-08 and what the harnesses set.
+// Applies to a helper deployment ONLY (AUDIT_HELPER_ONLY): without a helper the local drain is the
+// runner and runs on the land, as before — every suite that lands into a tier-2 instance relies on
+// it. The trigger that released a run is stamped on its ledger row (`trigger`), so the ledger says
+// which of the two numbers decided.
+const AUDIT_QUIET_MS = Math.max(0, Number(process.env.FLEET_AUDIT_QUIET_MS ?? 1_200_000) | 0);
+const AUDIT_MAX_WAIT_MS = Math.max(0, Number(process.env.FLEET_AUDIT_MAX_WAIT_MS ?? 3_600_000) | 0);
+// WHEN AN ENTRY LAST BECAME CLAIMABLE AGAIN — repo toplevel -> the moment a blocker on it ended: a
+// helper claim lapsing (expireHelperClaims) or reporting (helperResult, a sharded run's row), or a
+// local run of that repo finishing. Until 2026-10-08 this was the drain's grace clock
+// (docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md); the grace is gone, and its one
+// reader now is the workplace view (workplaceCheckObservations), where a queued cover waits "since"
+// this moment — so a retry of a tree outranks the red row of the attempt before it. Written only on
+// a helper deployment, as before; NOT persisted — absent falls back to the cover's own time.
 const auditClaimableSince = new Map<string, number>();
-// …and the one writer. Self-pruning against the queue so no caller has to pair a delete with it:
-// the map may only ever hold keys the queue holds, and both places that drop an entry call this
-// immediately after. With the grace off it stays empty and nothing below it is reached.
+// …and the one writer. Self-pruning against the queue so no caller has to pair a delete with it.
 function markAuditClaimable(repo: string, now = Date.now()): void {
   if (AUDIT_HELPER_GRACE_MS <= 0) return;
   if (!auditQueue.has(repo)) { auditClaimableSince.delete(repo); return; }
   auditClaimableSince.set(repo, now);
+}
+type AuditTrigger = "quiet" | "max-wait";
+type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number };
+// ONE READING for every door that asks "may this entry start now?" — the drain, the job list, both
+// claim doors, the wake rail and the live view. Over the WHOLE entry (every group), because both
+// numbers are about the repo: "since the last land of the repo", "after its oldest unmeasured land".
+// A function of (covers, now) and nothing else, so a land that arrives after the release but before
+// a claim re-closes the window — the burst was not over — and the ceiling still bounds it.
+function auditCadenceOf(q: AuditQueueEntry, now = Date.now()): AuditCadence {
+  const ats = auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.at));
+  if (!ats.length) return { due: true, trigger: "quiet" };
+  const youngest = Math.max(...ats), oldest = Math.min(...ats);
+  if (now - youngest >= AUDIT_QUIET_MS) return { due: true, trigger: "quiet" };
+  if (now - oldest >= AUDIT_MAX_WAIT_MS) return { due: true, trigger: "max-wait" };
+  return { due: false, releaseAt: Math.min(youngest + AUDIT_QUIET_MS, oldest + AUDIT_MAX_WAIT_MS) };
+}
+// …the trigger to stamp on a run that starts NOW, `undefined` where no cadence applies (no helper on
+// this deployment). Only asked at a start, where the doors have already refused an undue entry.
+function auditTriggerNow(q: AuditQueueEntry, now = Date.now()): AuditTrigger | undefined {
+  if (!AUDIT_HELPER_ONLY) return undefined;
+  const c = auditCadenceOf(q, now);
+  return c.due ? c.trigger : undefined;
+}
+// THE VISIBLE HOLD — what an entry nobody is running is waiting FOR. `null` when nothing holds it:
+// no helper deployment, or a run (local, claimed, sharded) has it. Read by the live view and the
+// memory view; the drain logs the same two states in words.
+// …and the two readings the doors take: "held right now" and "held until when" (0 = not held).
+// A non-helper deployment is never held — its drain runs on the land.
+function auditCadenceHeldUntil(q: AuditQueueEntry, now = Date.now()): number {
+  if (!AUDIT_HELPER_ONLY) return 0;
+  const c = auditCadenceOf(q, now);
+  return c.due ? 0 : c.releaseAt;
+}
+const auditCadenceHolds = (q: AuditQueueEntry, now = Date.now()): boolean => auditCadenceHeldUntil(q, now) > 0;
+type AuditHold = { hold: "quiet"; releaseAt: number } | { hold: "waiting for helper" };
+function auditHoldOf(repo: string, q: AuditQueueEntry, now = Date.now()): AuditHold | null {
+  if (!AUDIT_HELPER_ONLY || helperClaimOf(repo) || auditShardRuns.has(repo)
+    || auditRunningRepo === repo || runningPostLandAudit?.repo === repo) return null;
+  const c = auditCadenceOf(q, now);
+  if (!c.due) return { hold: "quiet", releaseAt: c.releaseAt };
+  return helperClaimBar(repo, q.covers) ? null : { hold: "waiting for helper" };
 }
 // …and how long a heartbeat still means "that machine is there". Derived from the sweep clock
 // rather than written as its own number so the two cannot drift apart: HELPER_SWEEP_MS is this
@@ -28890,6 +28943,7 @@ interface HelperClaim {
   expiresAt: number;
   covers: AuditCover[];  // FROZEN at claim, exactly as the drain freezes its slice
   bundle: string;        // path of the bundle file this claim handed out
+  trigger?: AuditTrigger; // which cadence number released it (auditCadenceOf) — absent: no cadence applies
 }
 const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the live claim on it
 // --- THE SHARDED AUDIT: one queue entry, n helper jobs, one ledger row --------------------------
@@ -28967,6 +29021,7 @@ interface AuditShardRun {
   covers: AuditCover[];  // FROZEN at the first claim, the same freeze an unsharded claim makes
   bundle: string;        // ONE bundle for all n shards — the reason they cannot measure different trees
   shards: AuditShardSlot[];
+  trigger?: AuditTrigger; // stamped at the first claim, as an unsharded claim stamps it
 }
 const auditShardRuns = new Map<string, AuditShardRun>(); // repo toplevel -> its open sharded run
 // the first claim's bundle build, shared: a daemon with three free slots POSTs three claims in one
@@ -29126,53 +29181,24 @@ function helperFailNames(raw: unknown): string[] | undefined {
   return raw.slice(0, HELPER_FAILS_KEEP)
     .map((name) => printableShort(name as string, HELPER_FAIL_NAME_MAX)).filter(Boolean);
 }
-// IS THERE A MACHINE THAT COULD ACTUALLY TAKE A JOB RIGHT NOW? The one question the grace above
-// hangs on, and three different parties answer it — all three must say yes, because a grace granted
-// to a machine that cannot claim is pure delay on this box's own work:
+// IS THIS A MACHINE THAT COULD ACTUALLY TAKE A JOB RIGHT NOW? Three parties answer it, and all
+// three must say yes, because a wait stretched for a machine that cannot claim is pure delay:
 //   · the OWNER's wish. Unset resolves to active (DEVICE_MODE_DEFAULT) — an absent owner is not a
 //     stop order, and that is the same resolution the daemon pulls on its heartbeat.
 //   · the DEVICE's own last reading of itself. `quiet` never claims (helper-daemon/daemon.ts's
 //     `stricter`), so holding a job for it would hold it for nobody. A device that reports NO mode
 //     is a pre-register daemon, and those do claim — absent is not quiet.
 //   · the CLOCK. A row whose heartbeat stopped is a machine nobody is listening on any more.
-// Deliberately NOT asked: whether that device already holds another claim. It may finish and take
-// this one next, and the grace is short — refusing on that would make the common case (one helper,
-// two lands) fall straight back to today's behaviour.
-// …and the first two questions WITHOUT the clock, which is what lets the drain ask the same thing
-// against a second window (helperCandidateAgeMs below) instead of hand-copying the two mode reads.
+// Its reader since 2026-10-08 is helperSaturation alone: the audit drain no longer asks whether a
+// helper is there — a helper's audit waits for one either way (AUDIT_HELPER_ONLY).
 const helperModeCandidate = (d: HelperDevice): boolean =>
   (d.desiredMode ?? DEVICE_MODE_DEFAULT) === "active" && (!d.mode || d.mode === "active");
 const isHelperClaimCandidate = (d: HelperDevice, now: number): boolean =>
   helperModeCandidate(d) && now - d.lastSeen <= HELPER_FRESH_MS;
-// `feature` narrows the candidates to devices that declared it — the sharded audit's grace must not
-// hold an entry for a machine whose daemon would never be offered its shards.
-function helperClaimCandidateExists(now = Date.now(), feature?: string): boolean {
-  for (const d of helperDevices.values())
-    if (isHelperClaimCandidate(d, now) && (!feature || !!d.features?.includes(feature))) return true;
-  return false;
-}
-// HOW LONG AGO DID THE FRESHEST such machine last speak? — `null` when there is none at all, and
-// the reading the drain's grace hangs on since 2026-09-17. The boolean above answers one window
-// (HELPER_FRESH_MS = 45 s by default); the drain needs the AGE, because the two windows this system
-// already has are different numbers and the gap between them was throwing away the grace:
-// a heartbeat is fresh for 45 s and the register (and every board that draws it) calls the machine
-// online for DEVICE_ONLINE_MS = 90 s. A drain that fell into the gap between two beats read "no
-// claim-capable helper is beating", took a ~30-minute audit onto this box's ONE suite mutex, and
-// that decision is made once — `auditRunningRepo` stands for the whole run.
-// Same mode reads as the strict candidate, same `feature` narrowing, only the clock is the
-// caller's: a machine the owner wished off, or one that says `quiet`, is no candidate at any age.
-function helperCandidateAgeMs(now = Date.now(), feature?: string): number | null {
-  let best: number | null = null;
-  for (const d of helperDevices.values()) {
-    if (!helperModeCandidate(d) || (feature && !d.features?.includes(feature))) continue;
-    const age = Math.max(0, now - d.lastSeen);
-    if (best === null || age < best) best = age;
-  }
-  return best;
-}
 // …AND IS EVERY SUCH MACHINE FULL, AND UNTIL WHEN? The second question both waits in front of the
-// portal ask — a lane's unclaimed preview offer and the drain's grace — and the one they could not
-// ask until 2026-09-13. Measured the day before (7e601e57): both workhorse slots held from 13:49 to
+// portal asked — a lane's unclaimed preview offer and, until 2026-10-08, the drain's grace (a helper's
+// audit no longer falls back, so only the offer reads it now) — and the one they could not ask
+// until 2026-09-13. Measured the day before (7e601e57): both workhorse slots held from 13:49 to
 // 14:27, a lane offered at the start of that, waited its 180 s for a claim that could not come and
 // ran the suite on this box; the audit behind it went local the same way after its 60 s grace. At
 // 14:37 this box had four suite wrappers queued and the other machine none. Neither wait was wrong
@@ -29848,6 +29874,9 @@ function savePostLandAuditQueue(): void {
 // into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
+// …and on a helper deployment the burst is bundled BEFORE the first run too: the entry waits for
+// the repo's quiet window or its ceiling (auditCadenceOf), so "the run it triggered" starts when
+// the burst is over, or AUDIT_MAX_WAIT_MS after its first land, on the newest tip of all of them.
 async function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
   proportional: boolean): Promise<void> {
   if (!auditCmdFor(repo)) {
@@ -29882,124 +29911,79 @@ async function drainPostLandAudits(): Promise<void> {
       // claimed would spin this loop at full speed forever. Breaking leaves the entries exactly
       // where they are — a claim that lapses, or a result that arrives, calls kickAuditDrain and
       // this loop starts again. Nothing is dropped by not running it now.
-      // …and, when the owner has granted one, SKIPPING the ones still inside the portal's grace.
+      // …and, on a helper deployment (AUDIT_HELPER_ONLY), SKIPPING two more kinds, each with its own
+      // way back: an entry the cadence still holds (auditCadenceOf — the timer below re-kicks at its
+      // release), and an entry that is a helper's work, which is never run here at all — not after a
+      // lapse, not after any wait. The helper claims it from the job list; the wake rail wakes it.
       // Re-read every iteration rather than hoisted: the loop awaits a whole suite between passes,
-      // and both the clock and the device register move while it runs.
-      // Under FLEET_AUDIT_SHARDS the candidate must also be a machine its shards are offered to.
-      // ONE READING, TWO WINDOWS. `candidateAge` is how long ago the freshest machine that could
-      // actually claim last spoke (helperCandidateAgeMs — owner's wish, the device's own mode, and
-      // the shard feature all already asked), `null` when there is no such machine at all.
-      //   · graceOn — it is BEATING (≤ HELPER_FRESH_MS). Byte for byte the old
-      //     `helperClaimCandidateExists` reading: the minimum age is inside the window iff some
-      //     device is. This is the only arm that may stretch for saturation.
-      //   · graceLingering — it is STALE BUT ONLINE (past HELPER_FRESH_MS, inside
-      //     DEVICE_ONLINE_MS): the same 90 s the register and every board call "that machine is
-      //     there". Before 2026-09-17 this fell to `if (!graceOn) return true` and the drain took a
-      //     ~30-minute audit onto this box's ONE suite mutex because it happened to look between
-      //     two heartbeats — once, irrevocably (`auditRunningRepo` stands for the whole run). The
-      //     failure direction is unchanged and deliberate: waiting costs at most the grace, and the
-      //     entry falls back here when it runs out, but a beat that lands inside the grace hands a
-      //     half-hour suite to the machine that is idle.
-      // Nothing widens without a grace configured: with AUDIT_HELPER_GRACE_MS at 0 both are false
-      // and no line below is reached, which is today's default byte for byte.
+      // and the clock moves while it runs.
       const now = Date.now();
-      const candidateAge = AUDIT_HELPER_GRACE_MS > 0
-        ? helperCandidateAgeMs(now, AUDIT_SHARDS > 1 ? AUDIT_SHARD_FEATURE : undefined)
-        : null;
-      const graceOn = candidateAge !== null && candidateAge <= HELPER_FRESH_MS;
-      const graceLingering = candidateAge !== null && !graceOn && candidateAge < DEVICE_ONLINE_MS;
-      // …and whether every such machine is FULL right now (helperSaturation). Only asked under a
-      // grace: without one the owner has not given the portal first refusal at all, and a saturated
-      // helper is no reason to invent it.
-      const saturation = graceOn ? helperSaturation() : null;
-      // the earliest moment a grace-skipped entry becomes drainable, 0 = nothing was skipped for it
-      let graceUntil = 0;
-      // …and WHICH entries were left lying, for the one line that says so below
-      const graceSkipped: string[] = [];
+      // the earliest moment a cadence-held entry is released, 0 = nothing was held
+      let cadenceUntil = 0;
+      // …and WHICH entries were left lying and why, for the lines that say so below
+      const cadenceHeld: string[] = [];
+      const helperWork: string[] = [];
+      // the trigger of the entry the find commits to, stamped on its row — set only on a helper
+      // deployment, where a cadence decided
+      let trigger: AuditTrigger | undefined;
       const entry = [...auditQueue.entries()].find(([r, q]) => {
         if (helperClaimOf(r)) return false;
         // …and a SHARDED run is held until its row is written, not until each claim's clock: a run
         // with n−1 shards reported and one lapsed is still a row owed (settleAuditShardRuns writes it
         // on the next sweep), and the drain taking the tree in that gap would be the second audit.
         if (auditShardRuns.has(r)) return false;
-        // …and the ONE question the portal's three doors ask too (helperClaimBar), asked here for
-        // the grace's sake. Two consequences fall out of the same answer, and they are opposite:
+        // …and the ONE question the portal's three doors ask too (helperClaimBar). Two consequences
+        // fall out of the same answer, and they are opposite:
         //   · `unconfigured` — the repo has no command any more (the worker was cleared after the
         //     land queued, on a deployment without the env default). Not offerable AND not runnable
         //     here: left where it is, durably. Configuring it again — or a boot — drains it.
-        //   · any OTHER bar — this entry is local-only work, so waiting for an offer is pure latency
-        //     for a job nobody can take. The grace exists to give another machine first refusal on a
-        //     ~9-minute suite; a repo-worker's own command and an install+pins short chain are never
-        //     put in front of one at all, and until 2026-09-08 the repo-worker arm was missing from
-        //     exactly this line while the short-chain arm was present — the drift the shared
-        //     predicate exists to end.
+        //   · any OTHER bar — this entry is local-only work: a repo-worker's own command, an
+        //     install+pins short chain, a tree the command's own guard declines. No helper is ever
+        //     offered it, so it runs HERE — on a helper deployment once the cadence releases it.
         // Placed after the claim check so an already-claimed entry still answers with its own state.
         const bar = helperClaimBar(r, q.covers);
         if (bar === "unconfigured") return false;
-        if (bar) return true;
-        if (!graceOn && !graceLingering) return true;
-        // the YOUNGEST cover: a coalesced entry keeps growing while it waits, and the grace is a
-        // promise about the newest land in it, not about the oldest. An entry with no covers is
-        // not fresh in any sense — it is nothing to audit — and falls through unchanged.
-        const youngest = q.covers.reduce((m, c) => Math.max(m, c.at), 0);
-        // …and the offset runs from whichever came LATER, the newest land or the moment this entry
-        // stopped being somebody else's (auditClaimableSince, and see its comment for the three
-        // measured cases this line is). Absent — the entry was never blocked — is the cover time,
-        // which is today's behaviour unchanged.
-        const since = Math.max(youngest, auditClaimableSince.get(r) ?? 0);
-        // A SATURATED HELPER STRETCHES THE GRACE to the earliest end of its claims (plus the slack
-        // for its next poll), capped at FLEET_VERIFY_WAIT_MS from the same origin — the rule the
-        // lane's offer follows (suiteOfferWait), for the same measured reason: a 60 s grace that
-        // expires while the only other machine is 20 minutes into its second suite hands this box a
-        // 37-minute run the other machine would have taken next. The cap keeps "never starves".
-        const readyAt = saturation
-          ? Math.max(since + AUDIT_HELPER_GRACE_MS,
-            Math.min(saturation.until + HELPER_SATURATION_SLACK_MS, since + VERIFY_WAIT_MS))
-          : since + AUDIT_HELPER_GRACE_MS;
-        if (readyAt <= Date.now()) return true;
-        graceUntil = graceUntil ? Math.min(graceUntil, readyAt) : readyAt;
-        graceSkipped.push(basename(r));
-        return false;
+        // no helper on this deployment: the local drain is the runner, on the land, as always
+        if (AUDIT_HELPER_GRACE_MS <= 0) return true;
+        const cadence = auditCadenceOf(q, now);
+        if (!cadence.due) {
+          cadenceUntil = cadenceUntil ? Math.min(cadenceUntil, cadence.releaseAt) : cadence.releaseAt;
+          cadenceHeld.push(basename(r));
+          return false;
+        }
+        // THE OWNER'S RULE (2026-10-08): a helper's work never falls back onto this box. The entry
+        // stays queued and visible (auditHoldOf: `waiting for helper`); nothing here re-kicks for
+        // it, because nothing here will ever run it — a claim does.
+        if (!bar) { helperWork.push(basename(r)); return false; }
+        trigger = cadence.trigger;
+        return true;
       });
       if (!entry) {
-        // NOTHING ELSE WOULD EVER WAKE THIS. The land that queued the entry has already kicked the
-        // drain, and the only other kicks are a claim lapsing and a helper reporting — neither of
-        // which happens when the helper simply never shows up. So a grace skip arms its own return.
-        if (graceUntil) {
-          // THE WAIT LINE, and its reason in words — the counterpart of `post-land audit LOCAL:`
-          // below. Without it the stale-but-online arm is invisible from the outside: an entry that
-          // waits and one that was never examined look the same in `server.log`, and the question
-          // this line answers ("why is nothing running while a tree is queued?") would have to be
-          // joined against the device register by hand.
-          console.log(`post-land audit WAITING: ${graceSkipped.join(", ")} until ${
-            new Date(graceUntil).toISOString()} — ${
-            graceOn ? `a claim-capable helper beat ${Math.round((candidateAge ?? 0) / 1000)}s ago`
-            : `a claim-capable helper beat ${Math.round((candidateAge ?? 0) / 1000)}s ago — stale past the ${
-              Math.round(HELPER_FRESH_MS / 1000)}s freshness window, still inside the ${
-              Math.round(DEVICE_ONLINE_MS / 1000)}s online window`}`);
-          armAuditGraceKick(graceUntil);
+        // THE WAIT LINES, and their reasons in words — the counterpart of `post-land audit LOCAL:`
+        // below. Without them an entry that waits and one that was never examined look the same in
+        // `server.log`, and "why is nothing running while a tree is queued?" would have to be
+        // joined against the queue file by hand.
+        if (cadenceUntil) {
+          console.log(`post-land audit QUIET: ${cadenceHeld.join(", ")} until ${new Date(cadenceUntil).toISOString()}`
+            + ` — released ${Math.round(AUDIT_QUIET_MS / 60_000)} min after the newest land,`
+            + ` at the latest ${Math.round(AUDIT_MAX_WAIT_MS / 60_000)} min after the oldest`);
+          // NOTHING ELSE WOULD EVER WAKE THIS: the land that queued it already kicked, and a quiet
+          // repo by definition sends no further land. So a held entry arms its own return.
+          armAuditCadenceKick(cadenceUntil);
         }
+        if (helperWork.length)
+          console.log(`post-land audit WAITING: ${helperWork.join(", ")} — waiting for helper; this box runs no`
+            + " helper audit, the entry stays queued until a helper claims it");
         break;
       }
       const [repo, q] = entry;
       if (measureHostDiskSpace().state === "disk-space-held") break;
-      // WHY THIS BOX RUNS IT, one line per local run — so "it ran here although a helper was free
-      // in ten minutes" is a question the log answers rather than one the ledger has to be joined
-      // against the device register for. Derived from the same three readings the find just used.
+      // WHY THIS BOX RUNS IT, one line per local run — on a helper deployment only local-only work
+      // reaches this line, and the line says which bar made it local and which number released it.
       const localBar = helperClaimBar(repo, q.covers);
       console.log(`post-land audit LOCAL: ${basename(repo)} ${q.main} (${q.covers.length} land(s)) — ${
-        localBar ? `not offerable to a helper (${localBar})`
-        : AUDIT_HELPER_GRACE_MS <= 0 ? "no helper grace configured"
-        : candidateAge === null ? "no claim-capable helper is beating"
-        : !graceOn && !graceLingering
-          ? `the last claim-capable helper beat ${Math.round(candidateAge / 1000)}s ago, past the ${
-            Math.round(DEVICE_ONLINE_MS / 1000)}s online window`
-        : !graceOn
-          ? `the helper grace ran out and nobody claimed it — its last beat was ${
-            Math.round(candidateAge / 1000)}s ago, stale past the ${Math.round(HELPER_FRESH_MS / 1000)}s freshness window`
-        : saturation && saturation.until + HELPER_SATURATION_SLACK_MS > Date.now()
-          ? `the helper is saturated until ${new Date(saturation.until).toISOString()}, past the ${Math.round(VERIFY_WAIT_MS / 60_000)} min wait cap`
-        : "the helper grace ran out and nobody claimed it"}`);
+        localBar ? `not offerable to a helper (${localBar})` : "no helper on this deployment"}${
+        trigger ? `, released by ${trigger}` : ""}`);
       // THE SELECTION AND THIS MARK ARE ONE TURN — no `await` sits between them. That is what makes
       // "the drain committed to this repo" observable by the claim route with no window in which
       // both sides believe they won (see auditRunningRepo).
@@ -30021,7 +30005,7 @@ async function drainPostLandAudits(): Promise<void> {
         // The proportion is decided HERE, on the frozen slice, in the same turn as the selection —
         // not inside the run, which would re-read a `q.covers` a concurrent land may already have
         // grown. What this run stands for and what chain it earns are one decision over one list.
-        () => runPostLandAudit(repo, q.main, covers, entryRunsShortChain(repo, covers))); // never throws — every failure is a row
+        () => runPostLandAudit(repo, q.main, covers, entryRunsShortChain(repo, covers), trigger)); // never throws — every failure is a row
       // ...and only NOW is the entry consumed. Deleting first — today's order — means a process
       // death mid-run loses the audit even with a durable mirror, because the mirror would already
       // say "nothing pending". An entry outlives its run and dies with the ROW: queued and
@@ -30035,12 +30019,7 @@ async function drainPostLandAudits(): Promise<void> {
       // the entry can never be seen without them
       for (const r of refused) enqueueAuditCover(repo, r.main, r.cover);
       settleAuditEntry(repo);
-      // …and whatever REMAINS — a land that arrived while this suite ran — starts its grace here,
-      // not at its own `at`. No helper could have claimed it while this machine held the tree
-      // (helperJobsView reports `localRunning`, helperClaim answers 409), so those minutes were
-      // never an offer. Same rule as the two claim-release sites, third blocker. On the empty
-      // branch above this prunes the clock instead of setting it — see markAuditClaimable.
-      markAuditClaimable(repo);
+      markAuditClaimable(repo); // what remains waits from here — see auditClaimableSince
       auditRunningRepo = null; // same synchronous block that consumes the covers — see the mark above
       savePostLandAuditQueue();
     }
@@ -30283,7 +30262,7 @@ async function splitAuditCovers(repo: string, main: string, mainSha: string, cov
 // Returns the covers the run REFUSED to claim, each with the branch to requeue it on; the drain
 // puts them back in the same turn it consumes the rest.
 async function runPostLandAudit(repo: string, main: string, covers: AuditCover[],
-  proportional: boolean): Promise<{ main: string; cover: AuditCover }[]> {
+  proportional: boolean, trigger?: AuditTrigger): Promise<{ main: string; cover: AuditCover }[]> {
   // Asked even on the short-chain path, and deliberately: an entry whose repo has no audit command
   // any more is PARKED, and a parked entry must stay unmeasured rather than quietly acquire a
   // fleet-shaped chain nobody configured. The short chain REPLACES a configured command; it never
@@ -30540,7 +30519,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     // the machine and did nothing with it", which is what a wait-clock kill looks like), and the
     // absence is the different statement "no child ever ran, so no work clock exists".
     ...(workMs !== null ? { workMs } : {}),
-    covers: counted,
+    covers: counted, ...(trigger ? { trigger } : {}),
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };
   lastPostLandAudit = row;
@@ -30672,7 +30651,7 @@ function expireHelperClaims(): boolean {
   for (const [repo, c] of [...helperClaims]) {
     if (now < c.expiresAt) continue;
     helperClaims.delete(repo);
-    markAuditClaimable(repo, now); // the entry becomes offerable again HERE — see auditClaimableSince
+    markAuditClaimable(repo, now); // the entry is offered again HERE — see auditClaimableSince
     helperLapses = [{ id: c.id, repo, name: c.name, deviceId: c.deviceId,
       claimedAt: c.claimedAt, expiredAt: now, covers: c.covers.length },
       ...helperLapses].slice(0, HELPER_LAPSE_KEEP);
@@ -31158,30 +31137,22 @@ function kickAuditDrain(): void {
   auditDraining = true;
   void drainPostLandAudits();
 }
-// …and the THIRD moment, the one the grace invented: a job the drain deliberately left lying. One
-// timer, never one per skip — `auditGraceTimer` is the armed-guard, and it is cleared before the
-// kick so the pass it triggers can arm the next one. Arming the earliest ready moment is enough
-// even when a later skip is armed first, and the argument is no longer "a fixed offset from a
-// cover's time" (auditClaimableSince made that sentence false): the pass that arms takes the MIN
-// over every entry it skipped, and nothing that appears afterwards can undercut it. A new cover
-// and a new repo both stamp `at` = now, so their readyAt is now+GRACE and every armed one was
-// computed from a moment no later than now; an entry that was BLOCKED during that pass never
-// reached the grace math and stamps its claimability at release, so its readyAt is now+GRACE too.
-// Both cases are ≥ the armed moment, which is exactly what the single guard needs.
-// …with ONE exception the saturated wait created: an armed moment can now lie far out (a helper's
-// claim end, up to FLEET_VERIFY_WAIT_MS away), and a later pass can legitimately compute an EARLIER
-// one — the helper freed up and a new land arrived under the plain grace. Keeping the far timer
-// would hold that land for the old helper's whole claim, so an earlier moment re-arms. A later one
-// still never does, which is the argument above unchanged.
-let auditGraceAt = 0;
-function armAuditGraceKick(readyAt: number): void {
-  if (auditGraceTimer && readyAt >= auditGraceAt) return;
-  if (auditGraceTimer) clearTimeout(auditGraceTimer);
-  auditGraceAt = readyAt;
-  auditGraceTimer = setTimeout(() => {
-    auditGraceTimer = null;
+// …and the THIRD moment, the one the cadence creates: an entry the drain deliberately left lying
+// until its quiet window or its ceiling releases it (auditCadenceOf). One timer, never one per
+// skip — `auditCadenceTimer` is the armed-guard, cleared before the kick so the pass it triggers can
+// arm the next one. An EARLIER moment re-arms (a second repo's land under a shorter window), a later
+// one does not: when the armed moment comes first, the pass it triggers finds the later entry still
+// held and arms its moment then. A land that moves a release LATER needs no re-arm for the same
+// reason — the early kick re-reads the clock and arms again.
+let auditCadenceAt = 0;
+function armAuditCadenceKick(releaseAt: number): void {
+  if (auditCadenceTimer && releaseAt >= auditCadenceAt) return;
+  if (auditCadenceTimer) clearTimeout(auditCadenceTimer);
+  auditCadenceAt = releaseAt;
+  auditCadenceTimer = setTimeout(() => {
+    auditCadenceTimer = null;
     kickAuditDrain();
-  }, Math.max(50, readyAt - Date.now()));
+  }, Math.max(50, releaseAt - Date.now()));
 }
 // A device names ITSELF, and the name is kept here rather than in the helper's browser (owner's
 // instruction): a ledger row two weeks old must still be able to say which machine produced it,
@@ -31356,10 +31327,10 @@ function helperJobsView(forDevice?: string): {
       localRunning: false,
     });
   }
-  // THE SHARD HANDSHAKE — the capability reading helperClaimCandidateExists and claimAuditShard make
-  // too: shard jobs appear only in the list of a device whose own last heartbeat declared the feature.
-  // A browser (no deviceId) and every older daemon see NO audit job at all while shards are on — the
-  // fail-closed direction; the drain then runs the entry here, unsharded.
+  // THE SHARD HANDSHAKE — the capability reading claimAuditShard makes too: shard jobs appear only in
+  // the list of a device whose own last heartbeat declared the feature. A browser (no deviceId) and
+  // every older daemon see NO audit job at all while shards are on — the fail-closed direction; the
+  // entry waits for a shard-capable helper (a helper's audit never falls back onto this box).
   const shardCapable = !!(forDevice && helperDevices.get(forDevice)?.features?.includes(AUDIT_SHARD_FEATURE));
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
@@ -31373,6 +31344,10 @@ function helperJobsView(forDevice?: string): {
     // a live UNSHARDED claim (restored from before a flip) keeps its own job below; anything else under
     // an open run or FLEET_AUDIT_SHARDS>1 is offered as shards
     const shardRun = auditShardRuns.get(repo);
+    // NOT YET OFFERED: an entry the cadence still holds (auditCadenceOf). A run already claimed or
+    // opened was released when it started and keeps its job; only a fresh offer waits for the quiet
+    // window or the ceiling — the list is where a helper learns there is work, so this is the gate.
+    if (!c && !shardRun && auditCadenceHolds(q)) continue;
     if (!c && (shardRun || AUDIT_SHARDS > 1)) {
       if (shardCapable) jobs.push(...auditShardJobViews(repo, q, shardRun));
       continue;
@@ -31617,7 +31592,8 @@ async function sendWakeFrame(mac: Uint8Array): Promise<{ sent: true } | { sent: 
 //   · a lane PREVIEW or a COMMAND job still `open` — `claimed` is somebody else's already.
 //   · and this device's OWN queued daemon-update, which no other machine can take.
 // Deliberately NOT asked: whether the job is fresh. The wake rail's clock is the device's silence,
-// not the job's age; AUDIT_HELPER_GRACE_MS is what decides how long work waits for a helper.
+// not the job's age — but an audit the cadence still holds (auditCadenceOf) is not awaiting a claim
+// yet, so it wakes nobody until it is released.
 function helperWorkAwaitingClaim(deviceId: string): boolean {
   for (const [repo, q] of auditQueue) {
     if (!q.covers.length) continue;
@@ -31625,6 +31601,9 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     if (helperClaimOf(repo)) continue;
     if (auditShardRuns.has(repo)) continue; // a sharded run is already somebody's; its open shards wait for that machine
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
+    // a held entry is not offered yet, so it wakes nobody — a packet now would wake a machine to an
+    // empty list; the release is what makes it work, and the next tick after it sees that
+    if (auditCadenceHolds(q)) continue;
     return true;
   }
   // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
@@ -32027,6 +32006,9 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // offered must not be claimable by a client that knows the id shape
   const bar = helperClaimBar(repo, q.covers);
   if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
+  // …and the cadence's rule on the door too, for the same reason: never offered, never claimable
+  const heldUntil = auditCadenceHeldUntil(q);
+  if (heldUntil) return json({ error: `this audit is not offered yet — the repo's quiet window or its ceiling releases it at ${new Date(heldUntil).toISOString()}` }, 409);
   // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
   // different facts, and the helper deserves to know which one it hit.
   const held = helperClaimOf(repo);
@@ -32052,9 +32034,11 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
     return json({ error: "the tree was taken while the bundle was being built — try again" }, 409);
   }
   const now = Date.now();
+  const trigger = auditTriggerNow(q, now);
   const claim: HelperClaim = {
     id, repo, main: q.main, mainSha: built.sha, deviceId, name: helperDeviceName(deviceId),
     claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, covers: q.covers.slice(), bundle: file,
+    ...(trigger ? { trigger } : {}),
   };
   helperClaims.set(repo, claim);
   if (helperDevices.has(deviceId)) setHelperDevice(deviceId, claim.name); // touch lastSeen
@@ -32313,9 +32297,10 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   const shardHit = auditShardSlotOf(jobId);
   if (shardHit) return await reportAuditShard(shardHit.run, shardHit.slot, body);
   const hit = [...helperClaims.entries()].find(([r, c]) => c.id === jobId && helperClaimOf(r));
-  // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job belongs to the local drain
-  // again, so accepting a late verdict would write a row about a tree this machine may be auditing
-  // right now — the exact double-count the timeout exists to prevent.
+  // A LAPSED CLAIM IS REFUSED, deliberately: past the timeout the job is open again (to the next
+  // claim, or to the local drain on a deployment without a helper), so accepting a late verdict would
+  // write a row about a tree another run may be auditing right now — the exact double-count the
+  // timeout exists to prevent.
   if (!hit) return json({ error: "no live claim for this job — it lapsed or was already reported" }, 409);
   const [repo, claim] = hit;
   const rawExit = body?.exitCode;
@@ -32341,7 +32326,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     // non-126/127 code yields anything but `unknown`.
     exitCode, out: tail, ...(fails !== undefined ? { fails } : {}),
     checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
-    covers: claim.covers,
+    covers: claim.covers, ...(claim.trigger ? { trigger: claim.trigger } : {}),
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode), jobId: claim.id },
   };
@@ -32363,10 +32348,6 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     savePostLandAuditQueue();
   }
   helperClaims.delete(repo);
-  // THE MEASURED CASE. Three of five local runs had the drain start 7 / 5 / 14 ms after this very
-  // line, on a cover whose 60 s had run out behind the claim it was standing in — so a cover left
-  // over here gets its grace from NOW, and the kickAuditDrain at the end of this handler finds it
-  // held rather than spent. See auditClaimableSince.
   markAuditClaimable(repo, now);
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
@@ -32473,10 +32454,12 @@ function openAuditShardRun(repo: string, main: string, n: number): Promise<{ run
       return { error: "the tree was taken while the bundle was being built — try again", status: 409 };
     }
     const now = Date.now();
+    const trigger = auditTriggerNow(q, now);
     const run: AuditShardRun = {
       repo, main: q.main, mainSha: built.sha, n, firstClaimAt: now, openUntil: now + HELPER_CLAIM_TIMEOUT_MS,
       covers: q.covers.slice(), bundle: file,
       shards: Array.from({ length: n }, (_, i) => ({ k: i + 1, jobId: auditShardJobId(repo, i + 1, n), claim: null })),
+      ...(trigger ? { trigger } : {}),
     };
     auditShardRuns.set(repo, run);
     return { run };
@@ -32490,6 +32473,9 @@ async function claimAuditShard(repo: string, k: number, n: number, deviceId: str
   // the same door rule as helperClaim's: never claimable if it would never have been listed
   const bar = helperClaimBar(repo, q.covers);
   if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
+  // the cadence gates the run's FIRST shard only — an open run was released when it opened
+  const heldUntil = auditShardRuns.has(repo) ? 0 : auditCadenceHeldUntil(q);
+  if (heldUntil) return json({ error: `this audit is not offered yet — the repo's quiet window or its ceiling releases it at ${new Date(heldUntil).toISOString()}` }, 409);
   if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE))
     return json({ error: `this audit is offered as ${n} shards, and this device's last heartbeat did not declare`
       + ` "${AUDIT_SHARD_FEATURE}" — a daemon that cannot run one shard would run the whole suite under its name` }, 409);
@@ -32718,7 +32704,7 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
     repo: run.repo, main: run.main, mainSha: run.mainSha, result, ...(reason ? { reason } : {}),
     cmd: `remote helper (${nameList}): FLEET_E2E_SHARD=k/${n} ./e2e-isolated.sh`,
     exitCode: result === "green" ? 0 : result === "red" ? reds[0]?.r.exitCode ?? null : null,
-    out, ...(anyFails ? { fails } : {}), checks, covers: run.covers,
+    out, ...(anyFails ? { fails } : {}), checks, covers: run.covers, ...(run.trigger ? { trigger: run.trigger } : {}),
     shards: run.shards.map((s) => ({
       k: s.k, jobId: s.jobId, result: s.result?.result ?? "unknown",
       ms: s.result ? s.result.reportedAt - s.result.claimedAt : null,
@@ -40820,7 +40806,7 @@ if (existsSync(STATE_FILE)) {
         if (c && typeof c.id === "string" && typeof c.expiresAt === "number" && Array.isArray(c.covers))
           helperClaims.set(repo, c);
     // …and the sharded runs, shape-checked the same way: a torn run is dropped rather than repaired,
-    // and its covers are still in the queue file, so the drain audits them locally — never lost.
+    // and its covers are still in the queue file, so they are offered again — never lost.
     const persistedShardRuns = (persisted as { auditShardRuns?: unknown }).auditShardRuns;
     if (Array.isArray(persistedShardRuns))
       for (const r of persistedShardRuns as AuditShardRun[])
@@ -47474,7 +47460,17 @@ Bun.serve<WSData>({
         return { ...r, ...(remote !== undefined ? { remote } : {}),
           ...(adj ? { adjudication: adj } : {}), ...(ping ? { ping } : {}) };
       });
-      return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere() });
+      // …and what is QUEUED, with what it waits for (auditHoldOf) — the one place a helper
+      // deployment's held audit is visible as a state rather than as the absence of a row
+      const pending = [...auditQueue].map(([repo, q]) => {
+        const h = auditHoldOf(repo, q);
+        const ats = auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.at));
+        return { repo: basename(repo), main: q.main, covers: ats.length,
+          ...(ats.length ? { oldestAt: Math.min(...ats), newestAt: Math.max(...ats) } : {}),
+          hold: h?.hold ?? null, ...(h?.hold === "quiet" ? { releaseAt: h.releaseAt } : {}) };
+      });
+      return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere(), pending,
+        cadence: AUDIT_HELPER_ONLY ? { quietMs: AUDIT_QUIET_MS, maxWaitMs: AUDIT_MAX_WAIT_MS } : null });
     }
     // ...and the write that puts a judgement there. Owner-only by POSITION (below tokenGate), the
     // same access model as the trail above. It appends to a SEPARATE file and never opens

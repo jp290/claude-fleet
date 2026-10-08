@@ -723,8 +723,8 @@ async function ledgerDoors(): Promise<void> {
       planted.slots[String(CODEX_LANE)]!.programId = null;
       writeFileSync(`${i.dir}/fleet.json`, JSON.stringify(planted), { mode: 0o600 });
       const reboot = await boot(i, bin);
-      const position = reboot ? (await call("/api/self", "GET", { "x-fleet-self-token": mainTok! })).body
-        as { position?: { programIds?: string[] } } : null;
+      const position = reboot ? ((await call("/api/self", "GET", { "x-fleet-self-token": mainTok! })).body as {
+        position?: { programIds?: string[] } }) : null;
       const boundPrograms = position?.position?.programIds ?? [];
       const bound = boundPrograms.length === 2 && boundPrograms.includes(PROGRAM) && boundPrograms.includes(foreignProgram);
       check("konzepte scope fixture: the MAIN binds two Programs and the foreign lane binds the second",

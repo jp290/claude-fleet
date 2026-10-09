@@ -61,7 +61,8 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
                                    wait (bounded) for `merges` exit 0, git commit the staged index in the main
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
-                                   (exit 3 = committed here, NOT on the hub; the line names the repair)
+                                   (exit 3 = committed here, NOT on the hub; the line names the repair),
+                                   then ask POST /api/repos/audit-tip to queue the tip's full audit once
 
 <slot> is a slot number or a lane name like 4A (band + letter, the `name` GET /api/sessions serves);
 a name no lane holds exits 1 and says the name. `send --lane` accepts either form.
@@ -1562,6 +1563,11 @@ commit-main)
 # commit is here and not on the hub, and which two git commands settle it. Exit 3 is its own code
 # for exactly that state, distinct from 1 ("nothing was committed"): a reader who sees 3 knows the
 # work exists and knows where it is not.
+#
+# …AND SINCE 2026-10-09 IT ASKS FOR THE TIP'S AUDIT. A land queues its post-land audit; a direct
+# commit is invisible to every land ledger and was measured by nobody until the next land happened
+# to carry it. So a commit that is final on this main asks POST /api/repos/audit-tip once, with its
+# own sha as the guard — the same queueing, idempotence included, the deploy preflight has.
   msgfile=""; budget=${FLEET_CTL_WAIT_MAX_SEC:-600}
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1587,6 +1593,9 @@ commit-main)
     FLEET_HUB_REMOTE=$(sed -n "s/^FLEET_HUB_REMOTE=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$/\1/p" "$HOME_DIR/.env" | tail -1)
   fi
   export CTL_HUB_REMOTE="${FLEET_HUB_REMOTE:-}"
+  # the audit-tip door below is an owner route; resolved the way `merges` resolves it — lazily, and
+  # its absence is a line about the door, never a refusal of the commit
+  CTL_TOKEN=$(owner_token 2>/dev/null || true); export CTL_TOKEN
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const { spawnSync } = require("child_process");
@@ -1626,9 +1635,34 @@ const sha = (spawnSync("git", ["-C", HOME, "rev-parse", "HEAD"], { encoding: "ut
 // so every exit from here on reports `committed: true`, and the only question a reader is left
 // with is whether the fleet's history has it too.
 const hub = (process.env.CTL_HUB_REMOTE ?? "").trim();
+// --- …and the TIP'S AUDIT, which no land ledger queues for a direct commit (server.ts#auditTipVerb).
+// Asked once the commit is final on this main — pushed, or no hub configured — and never after a
+// refused push, whose sha the repair's rebase will replace. The sha just made rides as the door's
+// guard: a server whose integration tip is not this commit queues nothing. The commit stands
+// whatever the door says, so its answer is one line and never this verb's exit code.
+const auditTip = async () => {
+  if (!process.env.CTL_TOKEN) return { asked: false, why: "no owner token — the door was not asked" };
+  try {
+    const r = await api("/api/repos/audit-tip", { method: "POST", headers: ownerH(), body: JSON.stringify({ sha }),
+      signal: AbortSignal.timeout(15_000) });
+    return { asked: true, status: r.status, ...r.body };
+  } catch (e) {
+    return { asked: false, why: `the door did not answer (${e instanceof Error ? e.message : String(e)})` };
+  }
+};
+const tipLine = (t) => t.asked && t.status === 200
+  ? `commit-main: audit of the tip — queued ${t.queued} — ${t.why}`
+  : `commit-main: audit of the tip NOT queued (${t.asked ? `${t.status} ` : ""}${t.why ?? JSON.stringify(t).slice(0, 200)})`
+    + ` — the commit stands; POST /api/repos/audit-tip {"sha":"${sha}"} asks again`;
+// a door that did not say 200 is said on stderr in both modes, beside the JSON — the commit's own
+// line and object stay what they were
+const tipFailed = (t) => { if (!(t.asked && t.status === 200)) console.error(tipLine(t)); };
 if (!hub) {
-  out({ ok: true, committed: true, pushed: null, sha, home: HOME },
-    [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} — merges read exit 0 immediately before (no FLEET_HUB_REMOTE: nothing was pushed and nothing is claimed)`]);
+  const tip = await auditTip();
+  out({ ok: true, committed: true, pushed: null, sha, home: HOME, auditTip: tip },
+    [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} — merges read exit 0 immediately before (no FLEET_HUB_REMOTE: nothing was pushed and nothing is claimed)`,
+      ...(tip.asked && tip.status === 200 ? [tipLine(tip)] : [])]);
+  tipFailed(tip);
 } else {
   // the branch is READ, never assumed to be "main": this verb commits wherever the checkout
   // stands, and pushing that onto a branch name it was not on would be a different act entirely.
@@ -1644,8 +1678,11 @@ if (!hub) {
   const p = spawnSync("git", ["-C", HOME, "push", hub, `${sha}:refs/heads/${br}`],
     { encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
   if (p.status === 0) {
-    out({ ok: true, committed: true, pushed: true, sha, home: HOME, hub },
-      [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} and pushed to '${hub}' — merges read exit 0 immediately before`]);
+    const tip = await auditTip();
+    out({ ok: true, committed: true, pushed: true, sha, home: HOME, hub, auditTip: tip },
+      [`commit-main: ${sha.slice(0, 12)} committed in ${HOME} and pushed to '${hub}' — merges read exit 0 immediately before`,
+        ...(tip.asked && tip.status === 200 ? [tipLine(tip)] : [])]);
+    tipFailed(tip);
   } else {
     const said = `${p.stderr ?? ""}${p.stdout ?? ""}`.trim().split("\n").slice(0, 4).join(" | ").slice(0, 300);
     // THE REPAIR IS IN THE REFUSAL, because the caller is standing in a checkout that now holds a

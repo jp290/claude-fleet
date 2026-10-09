@@ -636,6 +636,47 @@ export async function run(): Promise<void> {
         e.status === 202 && e.b.unaudited === "forced" && queuedOnForce === 0
           && rowE?.target === tipC && rowE.unaudited === "forced" && rowE.audit === undefined,
         `${e.status} ${JSON.stringify(e.b).slice(0, 200)} queued=${queuedOnForce} row=${JSON.stringify(rowE).slice(0, 300)}`);
+      // (f) THE DIRECT COMMIT'S DOOR (2026-10-09): POST /api/repos/audit-tip queues the full audit of
+      // the integration tip with no deploy attempt — once — and its guard sha queues nothing for a
+      // commit that is not the tip. Counted off the live view's `waiting`, which lists every queued
+      // cover whatever the cadence says. MUTATION: drop the `queuedFor` arm of
+      // server.ts#deployAuditOf ⇒ the second call answers "queued now" and the tip holds two covers.
+      interface TipAnswer { queued?: unknown; why?: string; state?: string; target?: string }
+      interface Waiting { repo: string; branch: string; mainAfter: string }
+      const tipAsk = async (body: unknown = {}): Promise<{ status: number; b: TipAnswer }> => {
+        const r = await post("/api/repos/audit-tip", body);
+        return { status: r.status, b: (await r.json().catch(() => ({}))) as TipAnswer };
+      };
+      const waitingFor = async (sha: string): Promise<Waiting[]> =>
+        ((((await (await get("/api/sessions")).json()) as { postLandAuditLive?: { waiting?: Waiting[] } | null })
+          .postLandAuditLive?.waiting) ?? []).filter((w) => w.repo === fixRepo && w.mainAfter === sha);
+      commit("server.ts", "// v11 — a direct commit no land carried");
+      const tipD = headNow();
+      const guard = await tipAsk({ sha: tipC });
+      const guardQueued = (await waitingFor(tipD)).length + (await waitingFor(tipC)).length;
+      check("§7f audit-tip with a guard sha that is not the integration tip answers 409 and queues nothing",
+        guard.status === 409 && guard.b.queued === false && guard.b.target === tipD && guardQueued === 0,
+        `${guard.status} ${JSON.stringify(guard.b).slice(0, 300)} waiting=${guardQueued}`);
+      const f1 = await tipAsk({ sha: tipD });
+      const afterF1 = await waitingFor(tipD);
+      check("§7f audit-tip on an unaudited tip answers {queued:true, why} and queues its full audit once, as (audit-tip)",
+        f1.status === 200 && f1.b.queued === true && /queued now/.test(f1.b.why ?? "") && f1.b.target === tipD
+          && afterF1.length === 1 && afterF1[0]?.branch === "(audit-tip)",
+        `${f1.status} ${JSON.stringify(f1.b).slice(0, 300)} waiting=${JSON.stringify(afterF1)}`);
+      const f2 = await tipAsk();
+      const afterF2 = await waitingFor(tipD);
+      check("§7f a second audit-tip while that audit is queued answers queued:true and queues nothing twice",
+        f2.status === 200 && f2.b.queued === true && /already queued/.test(f2.b.why ?? "") && afterF2.length === 1,
+        `${f2.status} ${JSON.stringify(f2.b).slice(0, 300)} waiting=${JSON.stringify(afterF2)}`);
+      // …and once the helper measured that tip green there is nothing left to queue — which also
+      // leaves the queue empty for every module after this one
+      const jobD = (await auditJobs())[0];
+      const measuredD = jobD ? await measure(jobD.id, 0) : 0;
+      const f3 = await tipAsk();
+      check("§7f once the tip's full audit is green audit-tip answers queued:false and nothing waits for it",
+        measuredD === 200 && f3.status === 200 && f3.b.queued === false && f3.b.state === "seen"
+          && (await waitingFor(tipD)).length === 0,
+        `measure=${measuredD} job=${JSON.stringify(jobD)} ${f3.status} ${JSON.stringify(f3.b).slice(0, 300)}`);
       await restartSrv({ FLEET_REPO_DIR: FIX });
     }
 

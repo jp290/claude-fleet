@@ -29346,10 +29346,12 @@ const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL
 // projection. The note stays the durable, human-readable record of the same fact; this is the same
 // fact on the queue, and verify-proportion.ts remains the single place that classifies anything.
 interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true; deploy?: true }
-// `deploy` marks the ONE cover that is not a land: POST /api/deploy found its target tip without a
+// `deploy` marks a cover that is not a land: POST /api/deploy found its target tip without a
 // full audit and queued one for exactly that tip (deployAuditOf). Its branch is the label
 // DEPLOY_AUDIT_BRANCH, its mainAfter the tip the deploy wants live, and it releases the cadence at
 // once (auditCadenceOf) — the deploy is waiting on it, so the quiet window has nothing left to buy.
+// The one other non-land cover is AUDIT_TIP_BRANCH, the owner's audit-tip door (auditTipVerb): it
+// carries no `deploy`, because nothing waits on it, and so keeps the cadence a land's cover keeps.
 // …and its identity AS A VALUE. The drain can consume its own frozen slice positionally, because
 // it holds the machine for the whole run and never lets go of the objects. Nothing else may: a
 // remote claim outlives a `kill-session -t srv`, and both sides of it — the queue file and the
@@ -45944,12 +45946,28 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
 // when `enqueue` is set, queues exactly one full audit of the target at once: a `deploy` cover,
 // released past the cadence, skipped when one is already queued or a helper already measures the
 // target. NOT-APPLICABLE is a repo no tier-2 command applies to: there is nothing to wait for.
+// …AND THE SAME READING HAS A SECOND ASKER, the owner's door POST /api/repos/audit-tip (auditTipVerb,
+// 2026-10-09). A direct commit from the main checkout is invisible to every land ledger and got no
+// post-land audit at all; ed748b8c (09.10. 09:2x) was the first case the door was cut for. The door
+// asks this function for the INTEGRATION TIP and differs from the deploy in three places only:
+//   · its cover is `(audit-tip)` WITHOUT `deploy` — nothing waits on it, so it keeps the cadence a
+//     land's cover keeps (auditCadenceOf) instead of being released past it;
+//   · "already queued" is ANY queued cover of this exact tip (a land's, the deploy's, its own): one
+//     more cover in the same group would cost no second run, but saying "queued now" would be false.
+//     The deploy still asks for ITS cover only — that one is what releases the cadence for it;
+//   · its texts name no second POST /api/deploy.
+// RUNNING counts a local run of this tip too (runningPostLandAudit, mainSha resolved). The drain
+// consumes only the covers it froze, so a cover queued under a local run of the same tip would buy
+// a second run of the same tree. The deploy never reaches that arm — deployBlocker refuses it first.
 const DEPLOY_AUDIT_BRANCH = "(deploy)";
+const AUDIT_TIP_BRANCH = "(audit-tip)";
+type TipAuditAsker = "deploy" | "audit-tip";
 type DeployAuditOf =
   | { state: "seen"; stamp: DeployAuditStamp }
   | { state: "not-applicable" }
   | { state: "unseen"; repo: string; why: string; queued: boolean; redAt?: number; next: string };
-async function deployAuditOf(target: string, enqueue: boolean): Promise<DeployAuditOf> {
+async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAsker = "deploy"): Promise<DeployAuditOf> {
+  const deploy = asker === "deploy";
   const top = await git(REPO_DIR, "rev-parse", "--show-toplevel");
   if (top.code !== 0 || !top.out || !auditCmdFor(top.out)) return { state: "not-applicable" };
   const repo = top.out;
@@ -45965,29 +45983,72 @@ async function deployAuditOf(target: string, enqueue: boolean): Promise<DeployAu
     if (adj) return { state: "seen", stamp: { at: red.at, result: "red", adjudication: adj.verdict } };
     return { state: "unseen", repo, queued: false, redAt: red.at,
       why: `its full audit (row at ${red.at}) is RED and nobody has adjudicated it`,
-      next: `adjudicate it — POST /api/post-land-audits/adjudicate {"at":${red.at},"verdict":"real|flake|stale-test|unknowable","note":"…"} — then POST /api/deploy again` };
+      next: `adjudicate it — POST /api/post-land-audits/adjudicate {"at":${red.at},"verdict":"real|flake|stale-test|unknowable","note":"…"}${deploy ? " — then POST /api/deploy again" : ""}` };
   }
   const watch = `watch {"kind":"audit","repo":${JSON.stringify(repo)},"mainAfter":"${target}"}`
-    + " (POST /api/self/watch), then POST /api/deploy again once it is green or its red adjudicated";
+    + (deploy ? " (POST /api/self/watch), then POST /api/deploy again once it is green or its red adjudicated"
+      : " (POST /api/self/watch) — it fires when the tip's row is written");
   const claim = helperClaimOf(repo);
   const shardRun = auditShardRuns.get(repo);
-  const remote = claim?.mainSha === target ? claim.name : shardRun?.mainSha === target ? "a sharded helper run" : null;
+  const local = runningPostLandAudit !== null && repoCanon(runningPostLandAudit.repo) === canon
+    && runningPostLandAudit.mainSha === target;
+  const remote = claim?.mainSha === target ? claim.name : shardRun?.mainSha === target ? "a sharded helper run"
+    : local ? "this machine" : null;
   if (remote) return { state: "unseen", repo, queued: true, next: watch,
     why: `its full audit is running on ${remote} — nothing was queued twice` };
-  const already = [...auditQueue.entries()].some(([r, q]) => repoCanon(r) === canon
-    && auditQueueGroups(q).some((g) => g.covers.some((c) => c.deploy && c.mainAfter === target)));
-  if (already) return { state: "unseen", repo, queued: true, next: watch,
-    why: "its full audit is already queued for this deploy — nothing was queued twice" };
+  const queuedFor = [...auditQueue.entries()].filter(([r]) => repoCanon(r) === canon)
+    .flatMap(([, q]) => auditQueueGroups(q).flatMap((g) => g.covers))
+    .filter((c) => c.mainAfter === target && (!deploy || c.deploy === true));
+  if (queuedFor.length) return { state: "unseen", repo, queued: true, next: watch,
+    why: deploy ? "its full audit is already queued for this deploy — nothing was queued twice"
+      : `its full audit is already queued as ${[...new Set(queuedFor.map((c) => c.branch))].join(", ")} — nothing was queued twice` };
   if (!enqueue) return { state: "unseen", repo, queued: false, next: watch, why: "no full audit of this tip exists" };
   const main = await integrationBranch(repo);
-  if (!main) return { state: "unseen", repo, queued: false, next: "resolve the repo's integration branch, then POST /api/deploy again",
+  if (!main) return { state: "unseen", repo, queued: false,
+    next: `resolve the repo's integration branch, then POST ${deploy ? "/api/deploy" : "/api/repos/audit-tip"} again`,
     why: `no full audit of this tip exists, and ${basename(repo)}'s integration branch could not be resolved to queue one` };
-  enqueueAuditCover(repo, main, { branch: DEPLOY_AUDIT_BRANCH, mainAfter: target, at: Date.now(), deploy: true });
+  enqueueAuditCover(repo, main, deploy ? { branch: DEPLOY_AUDIT_BRANCH, mainAfter: target, at: Date.now(), deploy: true }
+    : { branch: AUDIT_TIP_BRANCH, mainAfter: target, at: Date.now() });
   savePostLandAuditQueue();
-  audit("deploy", undefined, `refused ${target.slice(0, 7)}: tip not audited — queued its full audit now`);
+  if (deploy) audit("deploy", undefined, `refused ${target.slice(0, 7)}: tip not audited — queued its full audit now`);
+  else audit("postland_audit", undefined, `audit-tip ${basename(repo)} ${main}@${target.slice(0, 8)}: no full audit of the tip — queued one now`);
   kickAuditDrain();
   return { state: "unseen", repo, queued: true, next: watch,
-    why: "no full audit of this tip exists — its audit was queued now, past the cadence's quiet window" };
+    why: deploy ? "no full audit of this tip exists — its audit was queued now, past the cadence's quiet window"
+      : "no full audit of this tip exists — its audit was queued now, under the cadence a land's audit keeps" };
+}
+// THE DOOR ITSELF — owner-only by position, an explicit call and nothing else: no tick and no
+// movement of main ever reaches it, because tier 2 hangs on the land on purpose. It names the tip it
+// audits (the integration branch's head, not the checkout's HEAD — the deploy's question is what
+// goes live, this one's is what main holds) and answers {queued, why} on every decided path.
+// `sha` is the caller's GUARD, not a choice of tree: ctl.sh commit main sends the commit it just
+// made, and a tip that is not that commit — main moved on under it, or the door belongs to another
+// checkout's server — queues nothing. The tip that moved on was a land's, and brings its own audit.
+async function auditTipVerb(body: Record<string, unknown> | null): Promise<Response> {
+  const want = body?.sha;
+  if (want !== undefined && (typeof want !== "string" || !/^[0-9a-f]{40,64}$/.test(want)))
+    return json({ queued: false, why: "sha, when given, must be a full git object id" }, 400);
+  const top = await git(REPO_DIR, "rev-parse", "--show-toplevel");
+  if (top.code !== 0 || !top.out) return json({ queued: false, why: "this server's repo is unreadable — there is no tip to audit" }, 409);
+  const main = await integrationBranch(top.out);
+  if (!main) return json({ queued: false,
+    why: `${basename(top.out)}'s integration branch could not be resolved — there is no tip to audit` }, 409);
+  const head = await git(top.out, "rev-parse", "--verify", "--quiet", `refs/heads/${main}^{commit}`);
+  if (head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(head.out))
+    return json({ queued: false, why: `${main} could not be read in ${basename(top.out)} — there is no tip to audit` }, 409);
+  const target = head.out;
+  if (typeof want === "string" && want !== target)
+    return json({ queued: false, target, why: `the tip of ${main} is ${target.slice(0, 12)}, not ${want.slice(0, 12)}`
+      + " — nothing was queued for a commit that is not the tip" }, 409);
+  const tip = await deployAuditOf(target, true, "audit-tip");
+  if (tip.state === "not-applicable")
+    return json({ queued: false, state: tip.state, target, why: "no tier-2 audit command applies to this repo — there is nothing to queue" });
+  if (tip.state === "seen")
+    return json({ queued: false, state: tip.state, target, audit: tip.stamp,
+      why: tip.stamp.result === "green" ? `its full audit is already GREEN (row at ${tip.stamp.at}) — nothing was queued`
+        : `its full audit (row at ${tip.stamp.at}) is red and adjudicated ${tip.stamp.adjudication} — nothing was queued` });
+  return json({ queued: tip.queued, state: tip.state, target, repo: tip.repo, why: tip.why, next: tip.next,
+    ...(tip.redAt ? { redAt: tip.redAt } : {}) });
 }
 
 // In-memory one-at-a-time lock, held across the BUILD. The durable marker cannot cover this window
@@ -49122,6 +49183,10 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
     if (url.pathname === "/api/deploy" && req.method === "POST")
       return await deployVerb("owner", (await readJson(req))?.force === true);
+    // …and the deploy preflight's audit half on its own (server.ts#auditTipVerb): queue the full audit
+    // of the integration tip exactly once, for a commit no land carried. Owner-only by POSITION.
+    if (url.pathname === "/api/repos/audit-tip" && req.method === "POST")
+      return await auditTipVerb(await readJson(req));
     // THE SUCCESSION DEBTS (server.ts#recordSuccessionDebt): what an in-place succession still owes
     // after its predecessor ended — read them, and resend a held brief to the exact successor it was
     // built for. Owner-only by POSITION.

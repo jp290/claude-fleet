@@ -4,7 +4,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, paneProbeDiag, plantScreen, plogRead, post, redactPaneText, restartSrv, stopSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, paneProbeDiag, plantScreen, plogRead, post, redactPaneText, restartSrv, results, stopSrv, tmuxOut } from "./harness";
 import { MERGE_IDLE_MS } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
@@ -1814,6 +1814,18 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 //              rest since the handover reaches a successor whole gets NO nudge, the one whose rest
 //              overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
 //              is nudged; make it "any handover" → the stale one is not).
+// the checks after ownerProgramSuccession's setup row, by name: each prints this string when it ran and
+// `NOT MEASURED — the setup row died: <it>` when the setup above it did not hold
+const LATER = {
+  ctx: "owner program succession setup: both handover subjects wrote a standing handover and measure 50 %",
+  staleOnce: "tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
+  grownOnce: "tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
+  gameMaker: "owner succession door: a game-maker Program-MAIN is still refused 409 `game-maker` at the owner door AND at /api/self/handover",
+  resting: "owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
+  sameSlot: "owner succession door: a resting Program-MAIN is succeeded on the SAME slot and cwd, and its Program is bound to the new occupation",
+  noTurn: "owner succession door: the Program-MAIN predecessor got NO turn — recorder empty, no prompt-log row for its occupation",
+  brief: "owner succession door: the Program-MAIN successor's brief names the record (with the armed auto), then the standing intent verbatim with its write time, then the rest after it — typed text only",
+} as const;
 async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const repos: string[] = [];
   const mkRepo = (name: string, agents: boolean): string => {
@@ -1852,22 +1864,28 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   // slack — the row then fits one physical line with columns to spare, whatever the host's PS1.
   const PANE_ROW_SLACK = 512;
   const setupDetails: Record<string, unknown>[] = [];
+  // what died, per session, in a few dozen bytes: the setup row's NAME carries it (see the check)
+  const setupDied: string[] = [];
   const openFree = async (cwd: string, label: string): Promise<{ slot: number; tok: string; openedAt: number }> => {
     const slot = setupSlots.shift() ?? 0;
     const paneCols = cwd.length + PANE_ROW_SLACK;
     const detail: Record<string, unknown> = { label, slot, freeSlot: "missing", openResponse: "not-attempted",
       paneCols, paneToken: "not-probed", openedAt: "not-observed" };
     setupDetails.push(detail);
-    if (!slot) return { slot: 0, tok: "", openedAt: 0 };
+    const fell = (why: string): { slot: number; tok: string; openedAt: number } => {
+      setupDied.push(`s${slot} ${why}`);
+      return { slot: 0, tok: "", openedAt: 0 };
+    };
+    if (!slot) return fell(`${label} no free slot`);
     const killed = await post(`/api/slots/${slot}/kill`, {});
     const free = (await sessions()).slots.find((x) => x.id === slot);
     detail.freeSlot = killed.ok && free?.cwd === null ? "ready" : `kill=${killed.status}, cwd=${free?.cwd ?? "absent"}`;
-    if (!killed.ok || free?.cwd !== null) return { slot: 0, tok: "", openedAt: 0 };
+    if (!killed.ok || free?.cwd !== null) return fell(`slot kill=${killed.status} cwd=${free === undefined ? "absent" : "held"}`);
     const openAt = Date.now();
     const r = await post(`/api/slots/${slot}/open`, { cwd, label });
     const body = await r.json().catch(() => null) as { error?: string; reason?: string } | null;
     detail.openResponse = { status: r.status, error: body?.error ?? (body === null ? "invalid-json" : undefined), reason: body?.reason };
-    if (!r.ok) return { slot: 0, tok: "", openedAt: 0 };
+    if (!r.ok) return fell(`open=${r.status} ${body?.reason ?? body?.error ?? ""}`.trim());
     // Recycled slots retain their dimensions. A previous tiny pane must not clip the marked reply,
     // and the probe row must stay narrower than the pane (PANE_ROW_SLACK above).
     await tmuxOut("resize-window", "-t", `=s${slot}:`, "-x", String(paneCols), "-y", "50");
@@ -1877,11 +1895,23 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     // a pane that never answered says what it was doing: its process, its last rows (redacted),
     // and every server delivery typed into this slot since the open — a delivery is the one writer
     // besides the probe that can leave a shell somewhere a printf never reaches
+    const died: string[] = [];
     if (token === null) {
-      detail.paneProbe = await paneProbeDiag(`s${slot}`);
-      detail.deliveriesSinceOpen = (await plogRead()).filter((e) => e.slot === slot && e.ts >= openAt)
+      const probe = await paneProbeDiag(`s${slot}`);
+      const deliveries = (await plogRead()).filter((e) => e.slot === slot && e.ts >= openAt);
+      detail.paneProbe = probe;
+      detail.deliveriesSinceOpen = deliveries
         .map((e) => ({ source: e.source, openedAt: e.openedAt, head: redactPaneText(e.text.slice(0, 120)) }));
-    }
+      // the pane diagnosis in short: what runs in the pane (a child such as `cat` eats the probe),
+      // its size against the width asked for (a9f98a89: the probe row ended on the last column), and
+      // how many server deliveries were typed into it — the one other writer
+      const shown = String(probe.pane ?? "");
+      const field = (k: string): string => new RegExp(`${k}=(\\S+)`).exec(shown)?.[1] ?? "?";
+      const kids = (probe.children as string[] | undefined ?? []).map((k) => k.split("/").pop()).join("+");
+      died.push(`token=timeout pane=${field("cmd")}${kids ? `>${kids}` : ""} ${field("size")}/${paneCols}`
+        + `${field("dead") !== "0" ? ` dead=${field("dead")}` : ""}${field("mode") !== "0" ? ` mode=${field("mode")}` : ""}`
+        + ` deliveries=${deliveries.length}`);
+    } else if (detail.paneToken !== "ready") died.push(`token=${detail.paneToken}`);
     let openedAt = 0;
     const openedAtDeadline = Date.now() + OPENED_AT_WAIT_MS;
     while (Date.now() < openedAtDeadline) {
@@ -1891,6 +1921,8 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     }
     detail.openedAt = openedAt || "missing";
     detail.openedAtWaitMs = OPENED_AT_WAIT_MS;
+    if (!openedAt) died.push(`openedAt=missing/${OPENED_AT_WAIT_MS}ms`);
+    if (died.length) setupDied.push(`s${slot} ${died.join(" ")}`);
     return { slot, tok: token ?? "", openedAt };
   };
   const repoP = mkRepo("owner-program-repo", true);
@@ -1902,11 +1934,23 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const T = await openFree(repoT, "owner-stale-handover");
   const G = await openFree(repoG, "owner-gamemaker-main");
   const all = [P, F, T, G];
+  const distinctSlots = new Set(all.map((x) => x.slot)).size;
+  const distinctTokens = new Set(all.map((x) => x.tok)).size;
   const setupReady = all.every((x) => x.slot > 0 && /^[0-9a-f]{32}$/.test(x.tok) && x.openedAt > 0)
-    && new Set(all.map((x) => x.slot)).size === 4 && new Set(all.map((x) => x.tok)).size === 4;
-  check("owner program succession setup: four plain sessions open on private checkouts, each with its own token",
-    setupReady, JSON.stringify({ sessions: setupDetails, distinctSlots: new Set(all.map((x) => x.slot)).size,
-      distinctTokens: new Set(all.map((x) => x.tok)).size }));
+    && distinctSlots === 4 && distinctTokens === 4;
+  // THE AUDIT LEDGER KEEPS A FAIL ROW'S NAME AND NOTHING ELSE: server.ts#localFailNames and
+  // helper-daemon/daemon.ts#failNamesOf cut the detail at `  (` and cap the name at 300 characters
+  // (HELPER_FAIL_NAME_MAX / FAIL_NAME_MAX). Every red of this row up to a9f98a89 reached the ledger as
+  // this bare name; the paneToken/paneProbe detail that named the cause lived only in a suite.log. So a
+  // red row's name carries the conjunct that died, behind the unchanged name and ` — died: ` (the
+  // flake register's key is everything before that separator). The full detail stays where it was.
+  if (distinctSlots !== 4) setupDied.push(`slots=${distinctSlots}/4`);
+  if (distinctTokens !== 4) setupDied.push(`tokens=${distinctTokens}/4`);
+  const SETUP_ROW = "owner program succession setup: four plain sessions open on private checkouts, each with its own token";
+  const FAIL_NAME_MAX = 300;
+  const diedName = `${SETUP_ROW} — died: ${setupDied.join("; ") || "unnamed"}`;
+  check(setupReady ? SETUP_ROW : diedName.length > FAIL_NAME_MAX ? `${diedName.slice(0, FAIL_NAME_MAX - 1)}…` : diedName,
+    setupReady, JSON.stringify({ sessions: setupDetails, distinctSlots, distinctTokens }));
   const cleanup = async (): Promise<void> => {
     for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
     for (const r of repos) {
@@ -1914,7 +1958,20 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
       rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
     }
   };
-  if (!setupReady) { await cleanup(); return; }
+  // A RED SETUP ROW LEAVES EVERY CHECK BELOW IT UNMEASURED, NOT VIOLATED — and not silent either: the
+  // section used to end here with no row at all, so a reader could not tell eight unmeasured claims
+  // from eight that were never written. Each one is named, by the same string its check prints, as
+  // a FAIL row that says it never ran. LATER is the list; the count check at the end of the section
+  // turns red when a check is added below without being added to it.
+  if (!setupReady) {
+    await cleanup();
+    for (const name of Object.values(LATER)) {
+      check(`NOT MEASURED — the setup row died: ${name}`, false,
+        `"${SETUP_ROW}" is red above; this check never ran — read that row's died: conjunct first`);
+    }
+    return;
+  }
+  const rowsAfterSetup = results.length;
 
   // THE STANDING HANDOVERS are written while the sessions are still unbound and unmeasured: after the
   // restart below the tick is armed, and a nudge racing the write would measure the race
@@ -1978,7 +2035,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     .filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
   type CtxRow = { id: number; ctx: { pct: number } | null };
   const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
-  check("owner program succession setup: both handover subjects wrote a standing handover and measure 50 %",
+  check(LATER.ctx,
     atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 50
       && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 50,
     JSON.stringify({ atF, atT, ctx: ctxRows.filter((x) => [F.slot, T.slot].includes(x.id)) }));
@@ -1990,7 +2047,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   // negative proof, so it is a window: the fresh subject sat in every due scan the stale one was nudged in, plus four
   const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
   await Bun.sleep(tickMs * 4 + 500);
-  check("tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
+  check(LATER.staleOnce,
     staleNudges.length === 1 && (await migratePrompts(F)).length === 0 && (await migratePrompts(T)).length === 1,
     `fresh=${(await migratePrompts(F)).length} stale=${(await migratePrompts(T)).length}`);
   // …and FRESH IS RE-ASKED WHEN THE CONVERSATION GROWS, not when the pane paints (MAIN review): the
@@ -2009,7 +2066,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     await Bun.sleep(100);
     grownNudges = await migratePrompts(F);
   }
-  check("tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
+  check(LATER.grownOnce,
     grownNudges.length === 1 && fLastOutput !== undefined && fLastOutput === fSilentBefore,
     `nudges=${grownNudges.length} lastOutput before=${fSilentBefore}/${fLastOutput} after=${(await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput}`);
 
@@ -2018,7 +2075,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const gDoorBody = (await gDoor.json()) as { reason?: string };
   const gWrite = await selfPost(G.tok, "/api/self/handover", { intent: "a game-maker hands over a checkpoint" });
   const gWriteBody = (await gWrite.json()) as { reason?: string };
-  check("owner succession door: a game-maker Program-MAIN is still refused 409 `game-maker` at the owner door AND at /api/self/handover",
+  check(LATER.gameMaker,
     gDoor.status === 409 && gDoorBody.reason === "game-maker" && gWrite.status === 409 && gWriteBody.reason === "game-maker",
     `${gDoor.status} ${JSON.stringify(gDoorBody)} | ${gWrite.status} ${JSON.stringify(gWriteBody)}`);
 
@@ -2063,7 +2120,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     if (resting || pv.refusal && pv.refusal.reason !== "busy") break;
     await Bun.sleep(100);
   }
-  check("owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
+  check(LATER.resting,
     autoRes.ok && wroteP.ok && atP > 0 && resting && pv.ready === true && pv.rail === "program" && pv.programs?.[0] === programP
       && pv.standingHandover?.at === atP && pv.tail?.state === "read" && pv.tail.entries === 2,
     `auto=${autoRes.status} wrote=${wroteP.status} resting=${resting} echoCounted=${echoCounted} restWaitMs=${REST_WAIT_MS} preview=${JSON.stringify(pv)}`);
@@ -2076,13 +2133,13 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   const successor = (await sessions()).slots.find((x) => x.id === P.slot);
   const boundNow = ((await (await get("/api/programs")).json()) as { programs?: { id: string; main?: { slot?: number; openedAt?: number } | null }[] })
     .programs?.find((p) => p.id === programP)?.main ?? null;
-  check("owner succession door: a resting Program-MAIN is succeeded on the SAME slot and cwd, and its Program is bound to the new occupation",
+  check(LATER.sameSlot,
     pressed.ok && pressedBody.ok === true && pressedBody.slot === P.slot && pressedBody.program?.id === programP
       && successor?.cwd === repoP && (successor.openedAt ?? 0) > P.openedAt
       && boundNow?.slot === P.slot && boundNow.openedAt === successor.openedAt && typeof pressedBody.briefBytes === "number",
     `${pressed.status} ${JSON.stringify(pressedBody)} row=${JSON.stringify(successor)} main=${JSON.stringify(boundNow)}`);
   const recorded = existsSync(rec) ? readFileSync(rec, "utf8") : null;
-  check("owner succession door: the Program-MAIN predecessor got NO turn — recorder empty, no prompt-log row for its occupation",
+  check(LATER.noTurn,
     recorded === "" && (await promptsOfOld()) === oldPromptsBefore,
     `recorder=${JSON.stringify(recorded?.slice(0, 200))} prompts ${oldPromptsBefore} → ${await promptsOfOld()}`);
 
@@ -2094,13 +2151,17 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   }
   const recordAt = brief.indexOf("YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD");
   const ownerAt = brief.indexOf("VOM OWNER AUSGELÖST");
-  check("owner succession door: the Program-MAIN successor's brief names the record (with the armed auto), then the standing intent verbatim with its write time, then the rest after it — typed text only",
+  check(LATER.brief,
     recordAt > 0 && brief.indexOf("PM-RECORD-AUTO-MARK") > recordAt && ownerAt > brief.indexOf("PM-RECORD-AUTO-MARK")
       && brief.indexOf(INTENT_P) > ownerAt && brief.includes(`geschrieben ${new Date(atP).toISOString()} — Alter `)
       && brief.includes("gilt der Record") && brief.lastIndexOf("PM-AFTER-MARK") > brief.indexOf(INTENT_P)
       && !brief.includes("PM-BEFORE-MARK") && !brief.includes("PM-TOOL-MARK")
       && Buffer.byteLength(brief) === pressedBody.briefBytes,
     brief.slice(Math.max(0, recordAt), recordAt + 2500));
+
+  check("owner program succession: LATER names every check after the setup row — a red setup reports each of them as NOT MEASURED",
+    results.length - rowsAfterSetup === Object.keys(LATER).length,
+    `${results.length - rowsAfterSetup} rows after the setup, LATER has ${Object.keys(LATER).length}`);
 
   rmSync(rec, { force: true });
   await cleanup();

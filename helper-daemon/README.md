@@ -16,6 +16,7 @@ answer it, and all it does is switch a box on so it can start pulling.
     bun helper-daemon/daemon.ts /etc/fleet-helper/config.json
 
 `config.example.json` is the full field list. Get the token from the Fleet host, as the owner:
+`GET /api/helper/token` (owner-gated — it is neither the owner token nor a slot's self token).
 
 `instanceDir` is optional. Set it to the absolute path of this machine's Fleet checkout to
 report its instance health on each heartbeat. The daemon reads that checkout only: its HEAD,
@@ -24,7 +25,6 @@ commit distance, and `.fleet-sync-status.json` written by `fleet-sync.sh`. If an
 missing or outside the heartbeat's supported `syncExit` range 0–7, it omits `instance`; an
 omitted field means no measurement, not a healthy instance. Leave `instanceDir` out on a machine
 without that checkout.
-`GET /api/helper/token` (owner-gated — it is neither the owner token nor a slot's self token).
 
 ## Explicit repo reports
 
@@ -161,7 +161,9 @@ shortening when a local branch has the same name. The configuration does not upd
   already declares `audit-shard` needs no update.
 - **The quieter of the two modes wins.** The owner's `desiredMode`, pulled in the reply to this
   machine's heartbeat, always wins downwards; it never overrides quiet hours or the load threshold
-  upwards, because the person who set those is standing next to the machine.
+  upwards, because the person who set those is standing next to the machine. A heartbeat the Fleet
+  answers with anything but 2xx carries no wish at all, so that tick ends there: no job list, no
+  claim, one log line per status (before 2026-10-09 a refused beat read as `active`).
 - **The clone always NAMES its ref.** A helper bundle carries exactly the refs it was built from
   and no HEAD, so a plain `git clone` of one checks a tree out only if git can *guess* the ref —
   and it guesses with `init.defaultBranch`. Where that is `master` (Debian's default, and the value
@@ -171,8 +173,6 @@ shortening when a local branch has the same name. The configuration does not upd
   the fix an audit clone came back empty, `bun install --frozen-lockfile` found no `package.json`,
   and the ledger row read `unknown` for a suite that was never started. A clone that leaves no
   working tree now fails as ITSELF rather than as a failed install.
-- **One suite at a time.** Enforced in-process; the machine-wide lock (`/tmp/fleet-e2e.lock`, taken
-  by `e2e-stage.sh` inside the clone) is deliberately not duplicated.
 - **The daemon reports the sha it actually checked out.** After a successful clone it runs
   `git rev-parse HEAD` in the tree and sends the result as `clonedSha`; the Fleet stores it under
   `remote.clonedSha` on the ledger row, BESIDE — never instead of — the `mainSha` the server derived
@@ -198,7 +198,10 @@ shortening when a local branch has the same name. The configuration does not upd
   (`<workDir>/current` unless configured) onto the new tree with a create-and-rename, so at no
   instant does it point at an unchecked tree · exit 75. The unit's `RestartForceExitStatus=75`
   restarts it from the link; the previous tree stays on disk, and `ln -sfn` back onto it is the
-  whole rollback. A tree that fails the check is reported (`failed`), the link is not moved, and
+  whole rollback. Once the link has moved the daemon exits 75 even when the result POST fails, and
+  a later claim of the same sha whose tree the link already names is reported as swapped and ends
+  the process the same way — that tree is never removed, and pruning never touches the link's
+  target. A tree that fails the check is reported (`failed`), the link is not moved, and
   the daemon keeps running. The proof the update TOOK is not the result POST but the next
   heartbeat: it carries `daemonSha`, the `git rev-parse HEAD` of the tree the daemon booted from,
   and the board shows it beside the sha it bundled.

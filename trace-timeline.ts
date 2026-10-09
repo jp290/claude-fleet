@@ -409,13 +409,15 @@ export class TimelineIndex {
       const e = n.snapshot?.events.find((x) => x.id === ref);
       if (e) { hit = { key, n, e }; break; }
     }
-    const base = { schema: "fleet.timeline-detail/v1" as const, host: this.deps.host, revision: String(this.revision), ref };
+    const base = () => ({ schema: "fleet.timeline-detail/v1" as const, host: this.deps.host, revision: String(this.revision), ref });
+    const tombstone = (code: string) => ({ status: 200, body: { ...base(), state: "gap" as const, sessionKey: null, session: null,
+      source: null, call: null, result: null, arguments: null, error: null, resultText: null, status: "unknown" as const,
+      outcome: "unknown" as const, separation: null, duration: null, durationBasis: DURATION_BASIS, clockUncertainty: "unknown" as const,
+      gaps: [{ code }], work } });
     if (!hit) {
       const code = this.retired.get(ref);
       if (!code) return { status: 404, body: { error: "unknown-reference: not an entry this timeline index handed out", work } };
-      return { status: 200, body: { ...base, state: "gap", sessionKey: null, session: null, source: null, call: null, result: null,
-        arguments: null, error: null, resultText: null, status: "unknown", outcome: "unknown", separation: null, duration: null,
-        durationBasis: DURATION_BASIS, clockUncertainty: "unknown", gaps: [{ code }], work } };
+      return tombstone(code);
     }
     const { key, n, e } = hit, snapshot = n.snapshot!, source = n.source!;
     const call = e.kind === "tool.call" ? e : snapshot.events.find((x) => x.id === e.pair) ?? null;
@@ -425,29 +427,39 @@ export class TimelineIndex {
     if (!result) gaps.push({ code: "missing-result" });
     const stamp = n.file ? timelineStamp(n.file) : null;
     const redactions = this.deps.redactions();
+    let rewritten = false;
     const read = (ev: NativeEvent | null): { part: Partial<Record<"arguments" | "result" | "error", DetailField | null>> } | null => {
       if (!ev) return null;
       const range = { offset: ev.record.offset, bytes: ev.record.bytes };
       if (!n.file || !stamp) { gaps.push({ code: "source-missing", ...range }); return null; }
       if (stamp.inode !== n.stamp?.inode || ev.record.offset + ev.record.bytes > Math.min(n.offset, stamp.size)) {
-        gaps.push({ code: "source-rewritten", ...range }); return null;
+        rewritten = true; return null;
       }
       const raw = readRange(n.file, ev.record.offset, ev.record.bytes);
       work.sourceReads++; work.readBytes += raw.length;
       if (raw.length !== ev.record.bytes || createHash("sha256").update(raw).digest("hex").slice(0, 16) !== ev.detailRef?.fp) {
-        gaps.push({ code: "source-rewritten", ...range }); return null;
+        rewritten = true; return null;
       }
       const d = nativeDetailOf(source.format, raw, ev.record.block, ev.kind, ev.refs.call ?? "", redactions);
       if (!d.ok) { gaps.push({ code: d.code, ...range }); return null; }
       return { part: d.part };
     };
-    const c = read(call), r = read(result);
+    const c = read(call), r = rewritten ? null : read(result);
+    // A rewrite the stamp cannot see (same size, inside one timestamp tick: a coarse kernel clock) shows here as a
+    // fingerprint that no longer matches. That proves the whole source changed, so it leaves the index exactly as
+    // the refresh would retire it, the next refresh re-reads it as a new generation, and this ref is its tombstone.
+    if (rewritten) {
+      this.retire(n, "source-rewritten");
+      n.stamp = null; n.offset = 0; n.snapshot = undefined; n.generation++; n.chunks = []; n.verifyTarget = null;
+      n.gaps = [{ code: "source-rewritten" }]; this.revision++;
+      return tombstone("source-rewritten");
+    }
     const side = (ev: NativeEvent | null) => ev && { id: ev.id, kind: ev.kind, call: ev.refs.call ?? null,
       occurredAt: ev.occurredAt, observedAt: ev.observedAt, atClock: ev.atClock, status: ev.status, outcome: ev.outcome,
       range: { offset: ev.record.offset, bytes: ev.record.bytes, block: ev.record.block, recordId: ev.record.id,
         parent: ev.record.parent, sidechain: ev.record.sidechain, locator: ev.detailRef?.locator ?? null, fp: ev.detailRef?.fp ?? null } };
     const head = call ?? result!;
-    return { status: 200, body: { ...base, state: gaps.some((g) => DETAIL_LOST.has(g.code)) ? "gap" : "read",
+    return { status: 200, body: { ...base(), state: gaps.some((g) => DETAIL_LOST.has(g.code)) ? "gap" : "read",
       sessionKey: (occupations.get(snapshot.identity?.session ?? "") ?? 0) > 1 ? null : key, session: snapshot.identity?.session ?? null,
       source: { id: snapshot.source, harness: source.harness, format: source.format, version: snapshot.version,
         name: n.file ? n.file.slice(n.file.lastIndexOf("/") + 1) : null, availableBytes: stamp?.size ?? null },
@@ -458,7 +470,7 @@ export class TimelineIndex {
   }
 }
 const DURATION_BASIS = "native formats record no two ends of a shared tool-runtime clock; separation is record-time distance only";
-const DETAIL_LOST = new Set(["source-missing", "source-rewritten", "malformed-record", "record-block-mismatch"]);
+const DETAIL_LOST = new Set(["source-missing", "malformed-record", "record-block-mismatch"]);
 export interface TimelineDetailSide {
   id: string; kind: string; call: string | null; occurredAt: number | null; observedAt: number; atClock: string;
   status: NativeEvent["status"]; outcome: NativeEvent["outcome"];

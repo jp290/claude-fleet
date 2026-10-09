@@ -403,7 +403,12 @@ in den gehaltenen Snapshots. Eine ID, die der Index nie ausgegeben hat, ist **40
 Gefunden, liest die Tür genau die Bereiche `record.offset+record.bytes` des Calls und
 seines gepaarten Resultats (höchstens zwei Reads), prüft Länge, inode und den
 Fingerprint `fp` und dekodiert erst dann den Block `record.block`
-(`trace-native.ts#nativeDetailOf`). Ein Ledger-Eintrag (`buildTrace`) ist kein nativer
+(`trace-native.ts#nativeDetailOf`). Passt einer davon nicht, hat der Stempel
+(`trace-timeline.ts#timelineStamp`: dev, inode, Größe, mtime, ctime) eine Umschreibung
+verpasst — gleich lang und im selben Zeitstempel-Tick, was ein grober Kernel-Takt (Linux)
+zulässt. Die Tür verwirft dann die ganze Quelle wie der Indexschritt (Grabsteine
+`source-rewritten`, nächste Generation beim nächsten Schritt) und antwortet als Grabstein,
+ohne den schon gelesenen Bereich. Ein Ledger-Eintrag (`buildTrace`) ist kein nativer
 Call und bleibt 404; seine Originalreferenz bleibt an `/api/trace`.
 
 | Feld | Vertrag |
@@ -415,7 +420,7 @@ Call und bleibt 404; seine Originalreferenz bleibt an `/api/trace`.
 | `arguments`, `resultText`, `error` | je ein `DetailField` `{value, bytes, truncated:false}` oder `{value:null, preview, bytes, truncated:true}`; Fehler heißt explizites `is_error`/`isError: true`, Codex-Outputs bleiben `resultText` mit `outcome:unknown` |
 | `status`, `outcome`, `separation` | wie im nativen Vertrag; `separation` ist Recordzeit-Abstand, keine Laufzeit |
 | `duration`, `durationBasis` | `null` mit benanntem Grund: keine der drei Formate belegt zwei Enden einer gemeinsamen Tool-Laufzeituhr |
-| `gaps[]` | `missing-result`, `orphan-result`, `source-missing`, `source-rewritten`, `malformed-record`, `record-block-mismatch`, jeweils mit Bytebereich, wo einer belegt ist |
+| `gaps[]` | `missing-result`, `orphan-result`, `source-missing`, `malformed-record`, `record-block-mismatch`, jeweils mit Bytebereich, wo einer belegt ist; `source-rewritten` nur als Grabstein ohne Bereich |
 | `work` | Reads und Bytes dieses Aufrufs, auch an jeder 400/404 |
 
 **Lücke statt Fehler.** Eine Quelle, die nach dem Ausgeben gelöscht, umgeschrieben,

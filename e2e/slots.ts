@@ -12073,6 +12073,23 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  #board .ranke .rk > .zr.zw[data-bar]:hover::before, #board .ranke .rk > .zr[data-bar].flash::before { background: var(--c-hover); }", with: "" },
   { name: "only the focused row carries a bar", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
     needle: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.zw, :scope > .zr.base\")) {", with: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.here\")) {" },
+  // round 6: the check after a land on the board, a label that is only its branch, the live field's line
+  { name: "the stem's check after the land has no diamond", state: "viele", width: 1200, claim: "each stem carries its diamond",
+    needle: "  if (mainAudit) mrow.appendChild(stemAuditButton(mainAuditKey, mainAudit, \"main\"));", with: "" },
+  { name: "the stem's line to its head stays solid while its check is open", state: "viele", claim: "each stem carries its diamond",
+    needle: "paths.push({ cls: `rail${par.dataset.audit ? \" back wait\" : \"\"}`, d: `M${x} ${rl.top}H${rl.x - 4}` });", with: "paths.push({ cls: \"rail\", d: `M${x} ${rl.top}H${rl.x - 4}` });" },
+  { name: "the stem's check matches no basename", state: "viele", width: 1200, claim: "each stem carries its diamond",
+    needle: "    || (repo === name && (workplaces?.repos ?? []).filter((x) => baseName(x.repo) === name).length === 1);", with: "    || false;" },
+  { name: "a landed lane's way goes solid while its check after the land runs", state: "viele", width: 1200, claim: "a landed lane's way back stays dashed",
+    needle: "  row.dataset.land = w.target.landed === \"yes\" && !auditOf(w.branch) ? \"yes\" : \"wait\";", with: "  row.dataset.land = w.target.landed === \"yes\" ? \"yes\" : \"wait\";" },
+  { name: "the running audit's covers count for nothing", state: "viele", claim: "a landed lane's way back stays dashed",
+    needle: "  if (a.running?.covers.includes(branch)) return \"run\";", with: "" },
+  { name: "a label that is only its branch stays the branch", state: "live", width: 1200, claim: "a lane whose label is only its branch",
+    needle: "  const bare = !!w.branch && (label === w.branch || label === w.branch.replace(/^fleet\\//, \"\"));", with: "  const bare = false;" },
+  { name: "a live branch's words keep their live", state: "live", width: 1200, claim: "a lane whose label is only its branch",
+    needle: ".replace(isLiveLane(w.branch) ? /^live\\s+/ : /$^/, \"\")", with: "" },
+  { name: "the live field says nothing of what it makes", state: "live", width: 1200, claim: "a project head carries Live-Session",
+    needle: "  box.appendChild(el(\"div\", \"hint live-hint\", \"Eine Lane mit eigener Testinstanz · am Ende Mergen\"));", with: "" },
   { name: "a helper that reports says angemeldet again", state: "lane", claim: "each machine's state is a dot and a word at the row's end",
     needle: "return { tone: \"live\", word: \"läuft\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };", with: "return { tone: \"live\", word: \"angemeldet\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };" },
   { name: "the test instance's row says läuft in its name again", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
@@ -12120,6 +12137,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   type State = typeof ARBEITSORTE_STATES[number];
   // --- the fixture: two repos, lanes on main and on overhaul, a helper machine and a linked instance
   const REPO = "/fixture/claude-fleet", REPO2 = "/fixture/rezepte-app", REPO3 = "/fixture/alte-skripte";
+  // a land on main whose worktree is gone, waiting for the next check after the land (fx.audit)
+  const AUDIT_WAITS = "fleet/261009-schon-gelandet-4d2e";
   const hex = (seed: string) => createHash("sha1").update(seed).digest("hex");
   const MAIN = hex("main"), OVER = hex("overhaul"), MAIN2 = hex("main2"), MAIN3 = hex("main3"), BOOT = hex("boot");
   type Check = { state: "running" | "green" | "red" | "skipped" | "waiting"; head: string | null; at: number | null; fails: string[]; stale: boolean | null } | null;
@@ -12141,7 +12160,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     // THE PAGE AS A TEST INSTANCE SERVES IT (instance.source + the way back to live): one look at Geräte
     ti: false,
     // one more lane, landing straight in main: main gets a rail and a head (the bar of a focused stem)
-    mainLane: false };
+    mainLane: false,
+    // THE CHECK AFTER A LAND, not through (server.ts#postLandAuditLiveView, sent by the repo's basename):
+    // it runs on overhaul for E's land, and a land on main waits for the next run
+    audit: false,
+    // a session whose label is only its branch (a live lane before its rename): slot 12's
+    bare: false };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -12201,7 +12225,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     }
     for (const l of lanes) if (l.slot) {
       const repo = l.repo ?? REPO;
-      put(l.slot, { cwd: pathOf(l), repo: pathOf(l), label: `⎇ task ${l.branch.slice(-4)}`, taskTitle: l.title, mission: `${l.title} bauen.`,
+      const bare = fx.bare && l.slot === 12;
+      put(l.slot, { cwd: pathOf(l), repo: pathOf(l), label: bare ? l.branch.replace(/^fleet\//, "") : `⎇ task ${l.branch.slice(-4)}`, taskTitle: bare ? undefined : l.title, mission: `${l.title} bauen.`,
         taskId: `${hex(l.branch).slice(0, 8)}`,
         lastOutput: l.working ? fx.now : fx.now - 12 * 60_000, awaiting: l.awaiting,
         git: { branch: l.branch, dirty: l.dirty ?? 0, ahead: l.ahead, behind: 0 },
@@ -12382,6 +12407,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" },
         programs: [{ id: "0b3e0f1d2c3b4a59", title: "Oberfläche", status: "active" }],
         gate: gateOf(st), helperDevices: [{ id: "wh", name: "workhorse", lastSeen: fx.now - 5000, maxParallelSuites: 2, running: 0 }], helperOnlineMs: 20_000,
+        ...(fx.audit ? { postLandAuditLive: { running: { phase: "running", repo: "claude-fleet", main: "overhaul", mainSha: OVER, startedAt: fx.now - 5 * 60_000,
+          covers: ["fleet/261005-task-view-gehalten-5e6b"] }, waiting: [{ repo: "claude-fleet", main: "main", branch: AUDIT_WAITS, mainAfter: MAIN, at: fx.now - 60_000 }], stats: null } } : {}),
         ...(st === "alarm" ? { postLandAudit: { at: fx.plaAt, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH],
           artifact: { bytes: 745_000, sha256: "5e".repeat(32), url: `/api/post-land-audits/artifact?at=${fx.plaAt}` }, ...fx.pla },
           errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
@@ -12551,7 +12578,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const claims: Record<string, boolean> = {};
         const facts: Record<string, unknown> = {};
-        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = [];
+        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -12581,14 +12608,30 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           results.push({ width, height, state: st, claims, facts });
           continue;
         }
-        if (phone) {
+        // the page anew, Info open as above — a sub-probe that changes the fixture reloads through this
+        const openInfo = async () => {
+          if (!phone) return;
           await wait("document.querySelector('#mpill')", 8000);
           await settle(400);
           await evaluate("document.querySelector('#mpill')?.click()");
           await wait("document.body.classList.contains('mopen')", 2000);
           await settle(200);
           await evaluate("document.querySelector('#minfo')?.click()");
-        }
+        };
+        // #minfo toggles the stored fleet.board, and the phone does not show Info from it on a reload — so
+        // the reload starts from the state the probe set up above ('0') and opens Info as above
+        const reopen = async (ready: string) => {
+          if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
+          await navigate("http://fleet.fixture/");
+          await openInfo();
+          await wait(ready, 8000);
+          await settle(200);
+        };
+        // …and back to the state's own fixture: the column's later claims read "Mehr zu dieser Session",
+        // whose four summaries arrive after the page (one red without this wait, live at 390)
+        const restored = `document.querySelector('#boardbody .ranke .zr.base[data-bar]') && document.querySelectorAll('#boardbody .bmoresec .btab .sum').length === 4
+          && [...document.querySelectorAll('#boardbody .bmoresec .btab .sum')].every((x) => x.textContent.trim())`;
+        await openInfo();
         if (st === "leer") {
           // NO RUNNING WORK ANYWHERE (owner 2026-10-07, „[Zitat entfernt]“): every
           // project waits behind its one row; a tap draws them closed, a tap on a head opens it
@@ -13029,12 +13072,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const go = () => evaluate(`[...document.querySelectorAll('#boardbody .zd.live-new button')].find((b) => b.textContent === 'Starten')?.click()`);
           await evaluate(`document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .live-btn')?.click()`);
           await wait(`document.querySelector('#boardbody .zd.live-new .live-in')`, 3000);
-          const field = await evaluate<{ ph: string; btn: string; off: boolean; head: string } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
-            const b = [...z.querySelectorAll('button')].find((x) => x.textContent === 'Starten'); const h = z.previousElementSibling;
-            return { ph: z.querySelector('.live-in')?.placeholder ?? '', btn: b?.textContent ?? '', off: !!b?.disabled, head: h?.classList.contains('repo') ? h.querySelector('.live-btn')?.textContent ?? '' : '' }; })()`);
+          const field = await evaluate<{ ph: string; btn: string; off: boolean; head: string; hint: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
+            const b = [...z.querySelectorAll('button')].find((x) => x.textContent === 'Starten'); const h = z.previousElementSibling, n = z.querySelector('.live-hint');
+            return { ph: z.querySelector('.live-in')?.placeholder ?? '', btn: b?.textContent ?? '', off: !!b?.disabled, head: h?.classList.contains('repo') ? h.querySelector('.live-btn')?.textContent ?? '' : '',
+              hint: n && n.getClientRects().length ? n.textContent : null }; })()`);
           facts.field = field;
-          claims[`${tag}a project head carries Live-Session; a tap opens one field "Auftrag in einem Satz" under it, with Starten held until a sentence stands there`] =
-            !!field && field.head === "Live-Session" && field.ph === "Auftrag in einem Satz" && field.btn === "Starten" && field.off;
+          // the field says what Starten makes (round 6: "Eine Lane mit eigener Testinstanz · am Ende Mergen")
+          claims[`${tag}a project head carries Live-Session; a tap opens one field "Auftrag in einem Satz" under it, with Starten held until a sentence stands there and a line saying what it makes`] =
+            !!field && field.head === "Live-Session" && field.ph === "Auftrag in einem Satz" && field.btn === "Starten" && field.off
+            && field.hint === "Eine Lane mit eigener Testinstanz · am Ende Mergen";
           // 1 — the lane is refused: said under the project, nothing sent, nothing started
           fx.liveFail = "lane"; fx.writes = [];
           await startOpen("Die Zeitleiste soll zur Stunde springen");
@@ -13090,6 +13136,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             e3 === "Die Testinstanz startete nicht (testinstanz up failed) — die Lane steht, ihre Testinstanz-Zeile startet sie neu."
             && fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length === 2
             && await evaluate<boolean>(`!!document.querySelector('#boardbody .zr[data-slot="16"]')`);
+          // A LABEL THAT IS ONLY ITS BRANCH (round 6): the live lane before its rename reads as its
+          // branch's words — no "live", no stamp, no hex; Live is its tag, the branch its name's title
+          fx.bare = true;
+          await reopen(`document.querySelector('#boardbody .zr[data-slot="12"] > .nm')`);
+          const bareName = await evaluate<{ words: string; title: string; tag: string | null } | null>(`(() => { const n = document.querySelector('#boardbody .zr[data-slot="12"] > .nm'); if (!n) return null;
+            return { words: [...n.childNodes].filter((c) => c.nodeType === 3).map((c) => c.textContent).join('').trim(), title: n.title, tag: n.querySelector('.livetag')?.textContent ?? null }; })()`);
+          fx.bare = false;
+          await reopen(restored);
+          facts.bareName = bareName;
+          claims[`${tag}a lane whose label is only its branch reads as the branch's words — "zeitleiste zur stunde", Live its tag, the branch its title`] =
+            !!bareName && bareName.words === "zeitleiste zur stunde" && bareName.tag === "Live" && bareName.title === liveLane.branch;
         }
         if (st === "land") await shot(`${st}-${width}`);
         if (st === "viele" || st === "branch" || st === "viele30") {
@@ -13146,6 +13203,33 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
             const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
             claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
+            // THE CHECK AFTER A LAND ON THE BOARD (round 6, owner 2026-10-09: „[Zitat entfernt]“
+            // ; „[Zitat entfernt]“):
+            // while the audit runs for E's land on overhaul and a land on main waits for it, each stem carries
+            // its diamond beside its head — ink where it runs, a ring where it waits — its line to the head
+            // dashed, and E's way back stays dashed although E has landed. The server names the repo by its
+            // basename (fx.audit). Without an audit no stem has a diamond and E's way is solid
+            const stemsOf = () => evaluate<{ id: string | null; audit: string | null; gate: string | null; placed: string | null; aria: string }[]>(`[...document.querySelectorAll('#boardbody .ranke .zr.base')].map((x) => {
+              const g = x.querySelector(':scope > .lgate.stem'); return { id: x.dataset.id ?? null, audit: x.dataset.audit ?? null, gate: g?.dataset.gate ?? null, placed: g?.dataset.placed ?? null, aria: g?.getAttribute('aria-label') ?? '' }; })`);
+            const dashedHeads = () => evaluate<number>(`[...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait').length`);
+            const eBack = (rr: Read) => rr.backs.find((b) => b.for === pathOf(lanesOf(st).find((l) => l.slot === 14)!))?.cls ?? null;
+            const quietStems = await stemsOf(), quietHeads = await dashedHeads(), quietE = eBack(r);
+            fx.audit = true;
+            await reopen(`document.querySelectorAll('#boardbody .ranke .zr.base > .lgate.stem[data-placed]').length === 2`);
+            const ra = await read();
+            const stems = await stemsOf(), heads = await dashedHeads();
+            await shot(`${st}-nachpruefung-${width}`);
+            fx.audit = false;
+            await reopen(restored);
+            const sm = stems.find((x) => x.id === `${REPO}#main`), so = stems.find((x) => x.id === `${REPO}#overhaul`);
+            facts.stemAudit = { quietStems, quietHeads, quietE, stems, heads, e: eBack(ra), overflow: ra.secOverflow, page: ra.pageScroll };
+            claims[`${tag}while the check after a land runs on overhaul and a land on main waits for it, each stem carries its diamond — ink on overhaul, a ring on main — its line to its head dashed; none without`] =
+              quietStems.every((x) => x.gate === null && !x.audit) && quietHeads === 0
+              && so?.audit === "run" && so.gate === "run" && so.placed === "1" && /^Nachprüfung läuft [^—]* · für 5e6b — Nachprüfung von overhaul, Klick zeigt sie$/.test(so.aria)
+              && sm?.audit === "queue" && sm.gate === "queue" && sm.placed === "1" && /^1 Land wartet auf die nächste Nachprüfung · 4d2e — Nachprüfung von main/.test(sm.aria)
+              && heads === 2 && ra.secOverflow <= 0 && ra.pageScroll <= 0;
+            claims[`${tag}a landed lane's way back stays dashed while the check after its land runs — E's, solid once nothing of its way is open`] =
+              (quietE ?? "").split(" ").includes("land") && (eBack(ra) ?? "").split(" ").includes("wait");
           }
           if (st === "branch") {
             // THE NAME COLUMN SHOWS NAMES (owner 2026-10-08, „[Zitat entfernt]“): the switch

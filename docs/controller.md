@@ -107,7 +107,10 @@ Lage; fehlende Rechte, Quellen und Records erscheinen als `unknown` mit Grund.
 Linien-Absicht, offene Pflichten, Nachrichten-/Inbox-/Attention-Zeilen und die nächsten Detailtüren
 stehen im Einstieg. Volltexte bleiben an den bestehenden Türen; Lesen quittiert und armiert
 nichts. Pflichtgruppen und Grenzen werden nicht hinter einem Zeilen-Cap versteckt: über zwölf
-Zeilen nennt jede Gruppe einen Overflow samt Detailtür und druckt ihre Zeilen weiter.
+Zeilen nennt jede Gruppe einen Overflow samt Detailtür und druckt ihre Zeilen weiter. Der eigene
+Linien-Record steht über dem Budget von 80 Zeilen / 10 000 Byte, nie darin: `intent` ganz (bis 2000
+Zeichen) und bis zu zehn `line-obligation`-Zeilen, die mit Ziel (Re-Arm-Body) vor den reinen IDs.
+Eine Lane-Zeile nennt `./ctl.sh task <id>` als Tür.
 `./register.sh --brief` bleibt für bestehende Leser erreichbar, ist aber kein zweiter Pflichtabruf.
 `./state.sh --full` und `./register.sh --full` wählen die vollständige Diagnose; ein unbekanntes
 Flag endet mit exit 2. Game-Maker, Fremdrepo- und Lane-Einstieg behalten ihren Vertrag.

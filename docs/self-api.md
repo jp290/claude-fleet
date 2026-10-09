@@ -549,7 +549,7 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
 (`server/types.ts#LineageHandover`), persistiert in `fleet.json` unter `lineageHandovers`:
 
 - `from` / `to` als `{slot, openedAt}` — die zwei Belegungen, nicht die Slotnummern;
-- `obligations[]` — **nur IDs**: `{kind: watch|auto|inbox|report, id, owedBy: "slot N@openedAt", reArm}`.
+- `obligations[]` — **IDs, und bei Watch und Auto ein typisiertes Ziel**: `{kind: watch|auto|inbox|report, id, owedBy: "slot N@openedAt", reArm}`.
   Gemessen wird, was mit der Vorgängerin stirbt: armierte Watches und Autos, unquittierte FleetEvents
   (`inbox`), unentschiedene an sie adressierte Reports. Nichts wird neu armiert; `reArm` nennt die Tür
   (`null`, wo keine Nachfolger-Tür existiert). Der Loader ist geschlossen: ein Obligation-Objekt mit einem
@@ -569,8 +569,17 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   Branch nach `git check-ref-format`, `mainAfter` als volle Objekt-ID; `target` an einer Nicht-Watch,
   ein fremdes Feld im Ziel oder ein Wert, der die Form seines Feldes verfehlt (etwa Prosa statt
   Objekt-ID), macht den Record unlesbar. Geprüft wird die Form, nicht die Bedeutung: ein Pfad darf
-  Leerzeichen tragen. Es ist ein geschlossenes Zielobjekt, kein Freitext — die Regel „nur IDs, kein
-  Body“ gilt weiter;
+  Leerzeichen tragen. Es ist ein geschlossenes Zielobjekt, kein Freitext;
+- **ein Auto nennt zusätzlich seinen Re-Arm-Body** (seit 2026-10-09, `server/types.ts#LineageAutoTarget`):
+  `target` ist genau `{text, everySec, idleSec, runsLeft}`, der Text VOLLSTÄNDIG (Deckel wie
+  `POST /api/self/autos`, 10 000 Zeichen). Anlass: die Nachfolge der Orchestratorin am 2026-10-09 trug
+  sechs Autos nur per ID; die Auto-Zeilen sterben mit der Vorgängerin, und die Tür verweigert einen
+  Body ohne Text — alle sechs waren verloren. Daraus baut die Nachfolgerin `{text, everySec, idleSec,
+  runs}` bzw. `{text, inSec, idleSec}` für einen One-Shot (`everySec: null`); `runsLeft: 0` = ein
+  verbrauchtes Auto, gesagt statt weggelassen. `target: null` = eine Altzeile, deren Felder der Loader
+  verweigern würde (`server.ts#lineageAutoTarget` prüft mit demselben Validator, statt die Nachfolge
+  zu verweigern). Der Body steht NUR im typisierten Ziel: ein Feld wie `text` direkt am
+  Obligation-Objekt macht den Record weiter unlesbar;
 - `intent` (höchstens 2000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
   Abschnitt, `YYYY-MM-DD` in Pfad oder Anker) — **genau ein Übergabekanal**. Beides = 409, einer davon
   neben `carry` = 409; `intent` über dem Deckel = 400 mit dem Deckel im Text; undatierter/fehlgeformter

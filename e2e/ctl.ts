@@ -460,12 +460,21 @@ await import(pathToFileURL(process.argv[2]).href);
         ...own.position.waitingOnMe.map((r, i) => ({...r, at: 1000+i}))];
       own.position.attention = repeat({id: "attention", status: "open"}, 8, "attention");
       for (const key of ["watches", "autos", "events"] as const) own[key] = repeat({id: key}, 8, key);
-      own.lineage.record.obligations = [...repeat({id: "watch", kind: "watch"}, 7, "watch"), {id: "watch1", kind: "watch", ...{at: 1000}}];
+      // more than state.sh's RECORD_ROWS, so the line's own record is saturated like every other category
+      own.lineage.record.obligations = [...repeat({id: "watch", kind: "watch"}, 11, "watch"), {id: "watch1", kind: "watch", ...{at: 1000}}];
       program.handover.obligations = repeat({id: "old-watch"}, 8, "old-watch");
       program.inbox.unread = repeat({id: "inbox", kind: "audit-red", ref: "audit1"}, 8, "inbox");
       program.clarifications = repeat({id: "clarification", status: "open"}, 8, "clarification");
       const stats = (s: string) => ({lines: s.trimEnd().split("\n").length, bytes: Buffer.byteLength(s)});
-      const budget = (s: string) => stats(s).lines <= 80 && stats(s).bytes <= 10_000;
+      // THE LINE'S OWN RECORD rides on top of 80/10000 and is bounded by itself (state.sh INTENT_MAX,
+      // RECORD_ROWS, RECORD_WIDTH): the intent line, and at most ten obligation rows of 600 bytes
+      const recordLine = (l: string) => l.startsWith("intent=") || l.startsWith("line-obligation door=");
+      const charged = (s: string) => s.split("\n").filter((l) => !recordLine(l)).join("\n");
+      const recordWithin = (s: string) => {
+        const rows = s.split("\n").filter((l) => l.startsWith("line-obligation door="));
+        return rows.length <= 10 && rows.every((l) => Buffer.byteLength(l) <= 600);
+      };
+      const budget = (s: string) => stats(charged(s)).lines <= 80 && stats(charged(s)).bytes <= 10_000 && recordWithin(s);
       const readRole = (role: string) => {
         own.position.role = role; own.position.programId = role === "program-main" ? "program1" : null;
         return run(["state.sh", "--brief"]);
@@ -494,6 +503,42 @@ await import(pathToFileURL(process.argv[2]).href);
         check(`start live-size ${role}: one older row per saturated category changes only counts, no output growth`,
           budget(after.stdout) && stats(before.stdout).lines === stats(after.stdout).lines
           && stats(before.stdout).bytes === stats(after.stdout).bytes && normalize(before.stdout) === normalize(after.stdout));
+      // THE LINE'S OWN RECORD at live size (measured 2026-10-09 at the Orchestratorin's succession,
+      // record 2ef6d8d1…): a 1979-byte intent was cut to 282, and newest() turned the clockless
+      // obligations around so the one with content — an audit watch — fell under omitted while four
+      // autos without a text were shown. And the lane door named `./ctl.sh lane`, a verb ctl.sh lacks.
+      {
+        const keptRecord = structuredClone(own.lineage.record);
+        own.lineage.record.intent = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — "
+          .repeat(30)}`.slice(0, 2000);
+        const owedBy = "slot 9@1";
+        const autoTexts = [1, 2, 3, 4, 5, 6].map((i) => `Check-in ${i}: Audit lesen, Ergebnis an die MAIN, ${"Welle pruefen ".repeat(20)}`);
+        const recordRows = [
+          {kind: "watch", id: "audit-watch", owedBy, reArm: "POST /api/self/watch", target: {kind: "audit", repo: "/repo", mainAfter: "a".repeat(40)}},
+          {kind: "watch", id: "legacy-watch", owedBy, reArm: "POST /api/self/watch"},
+          ...autoTexts.map((text, i) => ({kind: "auto", id: `auto${i + 1}`, owedBy, reArm: "POST /api/self/autos",
+            target: {text, everySec: 600, idleSec: 60, runsLeft: 3}})),
+          {kind: "inbox", id: "event1", owedBy, reArm: null}, {kind: "report", id: "report1", owedBy, reArm: null},
+          {kind: "report", id: "report2", owedBy, reArm: null}, {kind: "report", id: "report3", owedBy, reArm: null}];
+        own.lineage.record.obligations = recordRows;
+        const taskLane = {id: "lane-with-row", slot: 4, phase: "running", taskId: "task4", at: 5000};
+        data.snapshot.lanes.push(taskLane);
+        const line = readRole("orchestrator");
+        const out = line.stdout.split("\n");
+        const rows = out.filter((l) => l.startsWith("line-obligation door="));
+        const content = rows.map((l) => l.includes('"target":'));
+        check("start record: the intent prints whole (2000 chars), content obligations precede the ids, and the lane door is ./ctl.sh task <id>",
+          line.status === 0 && out.includes(`intent=${JSON.stringify(own.lineage.record.intent)} pointer=null detail: GET /api/self (lineage.record)`)
+            && rows.length === 10 && content.lastIndexOf(true) < content.indexOf(false)
+            && rows.slice(0, 7).every((l) => !l.includes("[shortened"))
+            && autoTexts.every((text) => line.stdout.includes(JSON.stringify(text)))
+            && rows[6]?.includes('"id":"audit-watch"') === true && out.some((l) => l.startsWith("line-obligation count=12 omitted=2;"))
+            && out.some((l) => l.startsWith("lane door=./ctl.sh task task4 ")) && line.stdout.includes("detail: ./ctl.sh task <id>")
+            && !line.stdout.includes("./ctl.sh lane") && budget(line.stdout),
+          `${JSON.stringify(stats(line.stdout))} charged=${JSON.stringify(stats(charged(line.stdout)))}\n${rows.join("\n")}`);
+        data.snapshot.lanes.pop();
+        own.lineage.record = keptRecord;
+      }
       const redAudit = {...data.audits[0]!, taskId: "red-audit", state: "terminal", result: "red"};
       data.audits.unshift(redAudit);
       data.exceptions.push({...boundary, kind: "binding", id: "program-boundary", ...{at: 2000}});
@@ -574,6 +619,77 @@ await import(pathToFileURL(process.argv[2]).href);
       console.log(`START_FIXTURE_ORCHESTRATOR ${fresh.stdout.split("\n").filter((l) => /start-output|start role|own-messages|boundary start|program program1/.test(l)).join("\n")}`);
       console.log(`START_FIXTURE_MAIN ${main.stdout.split("\n").filter((l) => /start-output|start role|own-messages|inbox |task task1/.test(l)).join("\n")}`);
     } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
+  // === THE LINE RECORD CARRIES EVERY AUTO RE-ARMABLE, and the brief shows it whole ===============
+  // Measured 2026-10-09 at the Orchestratorin's succession (record 2ef6d8d1…): six of seven
+  // obligations were autos named by id only — their rows die with the predecessor and POST
+  // /api/self/autos refuses a request without the text, so all six were lost. One real succession
+  // here: an auto and an armed lane watch on the predecessor, a boot in between (the record comes
+  // back through server/types.ts#loadLineageHandover), then ./state.sh --brief run AS the successor.
+  {
+    type LineRecord = { state?: string; record?: { intent?: string; obligations?: Record<string, unknown>[] } };
+    const slotRows = async () => ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; openedAt?: number }[] }).slots;
+    const selfPost = (tok: string, path: string, body: unknown) => fetch(`${BASE}/api/self/${path}`,
+      { method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok }, body: JSON.stringify(body) });
+    const watched = await openLane(REPO, "line-record");
+    const pred = (await slotRows()).find((x) => x.cwd === null)?.id ?? 0;
+    const predOpened = pred ? await post(`/api/slots/${pred}/open`, { cwd: REPO, label: "line-before" }) : null;
+    const predTok = predOpened?.ok ? await selfTokenOf(pred) : "";
+    const AUTO = { text: "Linien-Probe: lies den Audit der Welle und melde der MAIN das Ergebnis", everySec: 600, runs: 3, idleSec: 120 };
+    const armedAuto = predTok ? await selfPost(predTok, "autos", AUTO) : null;
+    const autoId = ((await armedAuto?.json()) as { auto?: { id?: string } } | undefined)?.auto?.id ?? "";
+    const armedWatch = predTok ? await selfPost(predTok, "watch", { kind: "lane", target: watched.slot }) : null;
+    const watchId = ((await armedWatch?.json()) as { watch?: { id?: string } } | undefined)?.watch?.id ?? "";
+    check("line record setup: the predecessor holds one auto and one armed lane watch",
+      /^[0-9a-f]{32}$/.test(predTok) && autoId !== "" && watchId !== "",
+      `slot ${pred} ${predOpened?.status} auto=${armedAuto?.status}:${autoId} watch=${armedWatch?.status}:${watchId}`);
+    // the intent at its cap (server/types.ts#LINEAGE_INTENT_MAX), multi-byte: the brief used to cut it at 320 bytes
+    const INTENT = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — Grüße. ".repeat(30)}`.slice(0, 2000);
+    const succeeded = autoId && watchId ? await selfPost(predTok, "succeed", { intent: INTENT }) : null;
+    const sj = ((await succeeded?.json()) ?? {}) as { ok?: boolean; slot?: number };
+    let succTok = "";
+    for (let i = 0; i < 100 && sj.slot && (succTok === "" || succTok === predTok); i++) {
+      succTok = await selfTokenOf(sj.slot);
+      if (succTok === predTok) await Bun.sleep(100);
+    }
+    // FLEET_CMD=true pins no session, and the brief refuses a seat it cannot prove: one is planted
+    // with the server stopped, so the record also crosses a boot through its loader
+    await stopSrv();
+    const planted = stateFile() as { slots?: Record<string, Record<string, unknown>> };
+    if (sj.slot && planted.slots?.[String(sj.slot)]) planted.slots[String(sj.slot)]!.sessionId = crypto.randomUUID();
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const line = succTok ? ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": succTok } })).json()) as
+      { lineage?: LineRecord }).lineage : undefined;
+    const obligations = line?.record?.obligations ?? [];
+    const autoOb = obligations.find((o) => o.kind === "auto" && o.id === autoId);
+    const watchOb = obligations.find((o) => o.kind === "watch" && o.id === watchId);
+    check("POST /api/self/succeed: the record carries the auto re-armable — target exactly {text, everySec, idleSec, runsLeft} as armed — through a boot",
+      succeeded?.ok === true && line?.state === "present" && line.record?.intent === INTENT && autoOb?.reArm === "POST /api/self/autos"
+        && JSON.stringify(autoOb?.target) === JSON.stringify({ text: AUTO.text, everySec: AUTO.everySec, idleSec: AUTO.idleSec, runsLeft: AUTO.runs }),
+      `${succeeded?.status} state=${line?.state} obligations=${JSON.stringify(obligations)}`);
+    check("...and the watch beside it keeps its own shape: kind, id, owedBy, reArm and its lane target",
+      JSON.stringify(Object.keys(watchOb ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "target"])
+        && JSON.stringify(watchOb?.target ?? null).includes(`"kind":"lane","target":${watched.slot}`),
+      JSON.stringify(watchOb ?? null));
+    // the brief as the successor reads it: state.sh beside a copy of ctl.sh, against THIS server
+    const briefDir = `${ROOT}/line-record-brief`;
+    rmSync(briefDir, { recursive: true, force: true });
+    mkdirSync(briefDir, { recursive: true });
+    writeFileSync(`${briefDir}/state.sh`, readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/state.sh`, "utf8"));
+    writeFileSync(`${briefDir}/ctl.sh`, readFileSync(CTL, "utf8"), { mode: 0o755 });
+    const brief = spawnSync("sh", ["state.sh", "--brief"], { cwd: briefDir, encoding: "utf8", timeout: 30_000,
+      env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE, FLEET_SELF_TOKEN: succTok, FLEET_CTL_TOKEN: "", FLEET_TOKEN: "" } });
+    rmSync(briefDir, { recursive: true, force: true });
+    const rows = (brief.stdout ?? "").split("\n").filter((l) => l.startsWith("line-obligation door="));
+    check("./state.sh --brief as the successor: the intent whole, the auto's text and the watch's target in their rows, no ./ctl.sh lane",
+      brief.status === 0 && brief.stdout.includes(`intent=${JSON.stringify(INTENT)} pointer=null detail: GET /api/self (lineage.record)`)
+        && rows.some((l) => l.includes(`"id":"${autoId}"`) && l.includes(JSON.stringify(AUTO.text)) && !l.includes("[shortened"))
+        && rows.some((l) => l.includes(`"id":"${watchId}"`) && l.includes(`"kind":"lane","target":${watched.slot}`))
+        && !brief.stdout.includes("./ctl.sh lane"),
+      `exit ${brief.status} ${brief.stderr.slice(0, 300)}\n${brief.stdout.slice(0, 3000)}`);
+    for (const slot of [sj.slot, watched.slot]) if (slot) await post(`/api/slots/${slot}/kill`, {});
   }
   // the receiver: an ordinary non-lane session, which is what a controller IS. It owns the self
   // token every self verb below runs with.

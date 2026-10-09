@@ -3340,12 +3340,20 @@ const LINEAGE_SESSION_ID_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
 type LineageWatchTarget =
   | { kind: "lane" | "merge"; target: number; targetCwd: string; targetBranch: string }
   | { kind: "audit"; repo: string; mainAfter: string };
+// AN AUTO'S RE-ARM BODY. The Auto row dies with the predecessor (teardown deletes every Auto of the
+// slot) and POST /api/self/autos refuses a request without its text, so an id alone left the successor
+// nothing to re-arm: measured 2026-10-09 at the Orchestratorin's succession (record 2ef6d8d1…), six of
+// seven obligations were such autos and all six were lost. The same four fields the door takes, the
+// text COMPLETE (createAutoForSlot's cap); `runsLeft` 0 is a spent auto, said rather than dropped.
+interface LineageAutoTarget { text: string; everySec: number | null; idleSec: number; runsLeft: number }
+const AUTO_TEXT_MAX = 10_000;
+const AUTO_IDLE_SEC_MAX = 86_400;
 interface LineageObligationRef {
   kind: LineageObligationKind;
   id: string;
   owedBy: string;        // `slot N@openedAt` of the occupant that owed it
   reArm: string | null;  // the door that re-registers it; null where no successor door exists
-  target?: LineageWatchTarget | null; // watch only; see the head of this block
+  target?: LineageWatchTarget | LineageAutoTarget | null; // a watch or an auto only; see their types above
 }
 interface LineageHandover {
   v: 1;
@@ -3390,6 +3398,22 @@ const lineageWatchTargetFrom = (raw: unknown, index: number): LineageWatchTarget
     return { kind: "audit", repo: t.repo, mainAfter: t.mainAfter };
   }
   return shape;
+};
+const lineageAutoTargetFrom = (raw: unknown, index: number): LineageAutoTarget | null | string => {
+  if (raw === null) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)
+    || Object.keys(raw).sort().join(",") !== "everySec,idleSec,runsLeft,text")
+    return `obligation ${index} target must be null or exactly {text, everySec, idleSec, runsLeft}`;
+  const t = raw as Record<string, unknown>;
+  if (typeof t.text !== "string" || !t.text.trim() || t.text.length > AUTO_TEXT_MAX)
+    return `obligation ${index} target.text must be a non-empty string of at most ${AUTO_TEXT_MAX} chars`;
+  if (!(t.everySec === null || (Number.isInteger(t.everySec) && (t.everySec as number) > 0)))
+    return `obligation ${index} target.everySec must be null or a positive integer`;
+  if (!Number.isInteger(t.idleSec) || (t.idleSec as number) < 0 || (t.idleSec as number) > AUTO_IDLE_SEC_MAX)
+    return `obligation ${index} target.idleSec must be an integer 0-${AUTO_IDLE_SEC_MAX}`;
+  if (!Number.isInteger(t.runsLeft) || (t.runsLeft as number) < 0)
+    return `obligation ${index} target.runsLeft must be a non-negative integer`;
+  return { text: t.text, everySec: t.everySec as number | null, idleSec: t.idleSec as number, runsLeft: t.runsLeft as number };
 };
 const lineageOccupantFrom = (raw: unknown): LineageOccupant | null => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -3447,11 +3471,13 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
     const hasTarget = Object.hasOwn(o, "target");
     if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k) && k !== "target")
       || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length + (hasTarget ? 1 : 0))
-      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} (a watch may add target) — ids only, never a body`);
+      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} (a watch or an auto may add target) — never a body outside its typed target`);
     if (typeof o.kind !== "string" || !LINEAGE_OBLIGATION_KINDS.includes(o.kind as LineageObligationKind))
       return fail(`obligation ${index} kind must be one of ${LINEAGE_OBLIGATION_KINDS.join(", ")}`);
-    if (hasTarget && o.kind !== "watch") return fail(`obligation ${index} carries target, but only a watch names one`);
-    const target = hasTarget ? lineageWatchTargetFrom(o.target, index) : undefined;
+    if (hasTarget && o.kind !== "watch" && o.kind !== "auto")
+      return fail(`obligation ${index} carries target, but only a watch or an auto names one`);
+    const target = !hasTarget ? undefined
+      : o.kind === "watch" ? lineageWatchTargetFrom(o.target, index) : lineageAutoTargetFrom(o.target, index);
     if (typeof target === "string") return fail(target);
     if (typeof o.id !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(o.id)) return fail(`obligation ${index} id must be 1-64 id characters`);
     if (typeof o.owedBy !== "string" || !/^slot \d+@\d+$/.test(o.owedBy)) return fail(`obligation ${index} owedBy must be "slot N@openedAt"`);
@@ -3789,7 +3815,7 @@ export type {
   StudioMachineProfile, StudioRepoPolicy, StudioBriefAudience, StudioWorkflowDoc, StudioStageSpawn,
   StudioStage, StudioWorkflow, StudioBriefBlock, StudioGates, Studio, StudioContent,
   StudioContentRead, ProgramStudioBinding, ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
-  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageObligationRef, LineageHandover,
+  TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageAutoTarget, LineageObligationRef, LineageHandover,
   LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate, HandoverSetting,
 };
 export {
@@ -3821,7 +3847,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, standingHandoverFrom, laneStandNudgedFrom,
+  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, laneStandNudgedFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

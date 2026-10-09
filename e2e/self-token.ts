@@ -1099,9 +1099,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const laneAnchorAudit = async (): Promise<{ slot?: number; detail?: string }[]> =>
       ((await (await get("/api/audit?limit=500")).json()) as { events: { event: string; slot?: number; detail?: string }[] })
         .events.filter((e) => e.event === "lane_anchor_rebound");
-    // ONE obligation that dies with the predecessor, so the record has something to name by id — and a
-    // body the record must NOT copy
-    const AUTO_BODY = "lineage-body-marker: this check-in text must never appear inside a handover record";
+    // ONE obligation that dies with the predecessor, so the record has something to name by id — and
+    // the body the successor needs to re-arm it, which the record carries only inside its typed target
+    // (server/types.ts#LineageAutoTarget; until 2026-10-09 the record named the id alone and the auto was lost)
+    const AUTO_BODY = "lineage-body-marker: this check-in text is the auto's re-arm body";
     const armed = await fetch(`${BASE}/api/self/autos`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": oldTok },
       body: JSON.stringify({ text: AUTO_BODY, inSec: 3600 }) });
@@ -1251,12 +1252,13 @@ export async function run(ctx: Ctx): Promise<void> {
         && recB.to?.slot === sj.slot && recB?.to?.openedAt === successor?.openedAt
         && recB.intent === INTENT && recB.pointer === null && recB.supersededBy === null,
       JSON.stringify(lineB));
-    check("the record's obligations are ids only — the auto by id, owedBy the predecessor occupation, its re-arm door, and NO body",
+    check("the record's obligation is the auto by id, owedBy the predecessor occupation, its re-arm door, and its body only in the typed target",
       recB?.obligations?.length === 1
-        && JSON.stringify(Object.keys(recB.obligations[0] ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm"])
+        && JSON.stringify(Object.keys(recB.obligations[0] ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "target"])
+        && JSON.stringify(recB.obligations[0]?.target) === JSON.stringify({ text: AUTO_BODY, everySec: null, idleSec: 60, runsLeft: 1 })
         && recB.obligations[0]?.kind === "auto" && recB.obligations[0]?.id === autoId
         && recB.obligations[0]?.owedBy === `slot ${free}@${oldOpenedAt}` && recB.obligations[0]?.reArm === "POST /api/self/autos"
-        && !JSON.stringify(lineB).includes("lineage-body-marker"),
+        && JSON.stringify(lineB).split("lineage-body-marker").length === 2,
       JSON.stringify(recB?.obligations));
 
     // THE BAND READS A THROUGH THE RECORD. A filed no report, so only the pair in `from` ties A to
@@ -1467,11 +1469,11 @@ export async function run(ctx: Ctx): Promise<void> {
       lineDLegacy?.state === "present" && recordD !== undefined
         && JSON.stringify(lineDLegacy.record?.obligations) === JSON.stringify([legacyWatch]),
       `state=${lineDLegacy?.state} planted=${recordD !== undefined} obligations=${JSON.stringify(lineDLegacy?.record?.obligations)}`);
-    // a body smuggled into an obligation: the closed loader refuses the whole record
+    // a body smuggled into an obligation OUTSIDE its typed target: the closed loader refuses the whole record
     const lineDLost = await plantD([{ kind: "auto", id: "deadbeef", owedBy: "slot 1@1", reArm: null, text: "a copied body" }]);
     check("a record carrying a body is refused by the loader and read as handoverLost — never as a record with nothing owed",
       lineDLost?.state === "lost" && lineDLost.record === null
-        && (lineDLost.handoverLost?.error ?? "").includes("ids only, never a body"),
+        && (lineDLost.handoverLost?.error ?? "").includes("never a body outside its typed target"),
       JSON.stringify(lineDLost));
     const lineDNote = await plantD([{ ...legacyWatch,
       target: { kind: "audit", repo: srCanon, mainAfter: auditMainAfter, note: "das Audit zu diesem Land war rot" } }]);

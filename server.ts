@@ -143,8 +143,8 @@ import {
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
-  loadLineageHandoverLoss,
-  type LineageRole, type LineageOccupant, type LineageSeat, type LineageWatchTarget, type LineageObligationRef, type LineageHandover,
+  loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX,
+  type LineageRole, type LineageOccupant, type LineageSeat, type LineageWatchTarget, type LineageAutoTarget, type LineageObligationRef, type LineageHandover,
   type LineageHandoverLoss,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
@@ -11832,7 +11832,7 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
     return json({ error: `max ${AUTO_MAX_PER_SLOT} active schedules per slot` }, 400);
-  if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 10_000)
+  if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > AUTO_TEXT_MAX)
     return json({ error: "bad text" }, 400);
   const inSec = Number(body.inSec ?? 0) | 0;
   const everySec = body.everySec == null ? null : Number(body.everySec) | 0;
@@ -12769,7 +12769,13 @@ async function lineagePointerCommitted(cwd: string, pointer: string): Promise<bo
 // (a watch, an event, a report); an Auto's slotOpenedAt is absent on legacy rows and teardown deletes
 // every Auto of the SLOT, so the slot is exactly what dies with it (captureProgramHandover's same exception).
 // A watch also names its SUBJECT (server/types.ts#LineageWatchTarget): its row dies here too, and the
-// id alone would leave the successor nothing to rebuild the re-arm body from.
+// id alone would leave the successor nothing to rebuild the re-arm body from. An Auto names its
+// body the same way (server/types.ts#LineageAutoTarget), judged by the loader's own validator: a
+// legacy row whose fields it would refuse is written as null rather than refusing the succession.
+const lineageAutoTarget = (a: Auto): LineageAutoTarget | null => {
+  const t = lineageAutoTargetFrom({ text: a.text, everySec: a.everySec, idleSec: a.idleSec, runsLeft: a.runsLeft }, 0);
+  return typeof t === "string" ? null : t;
+};
 const lineageWatchTarget = (w: Watch): LineageWatchTarget | null => {
   const kind = watchKind(w);
   if ((kind === "lane" || kind === "merge") && "target" in w)
@@ -12784,7 +12790,8 @@ function captureLineageObligations(pred: LineageOccupant): LineageObligationRef[
       .map((w): LineageObligationRef => ({ kind: "watch", id: w.id, owedBy, reArm: "POST /api/self/watch",
         target: lineageWatchTarget(w) })),
     ...autos.filter((a) => a.slot === pred.slot)
-      .map((a): LineageObligationRef => ({ kind: "auto", id: a.id, owedBy, reArm: "POST /api/self/autos" })),
+      .map((a): LineageObligationRef => ({ kind: "auto", id: a.id, owedBy, reArm: "POST /api/self/autos",
+        target: lineageAutoTarget(a) })),
     // an unacknowledged event turns receiver-gone with its receiver; no successor door acks it
     ...fleetEvents.filter((e) => e.receiverSlot === pred.slot && e.receiverOpenedAt === pred.openedAt
       && !FLEET_EVENT_TERMINAL.includes(e.status))

@@ -25,6 +25,12 @@ schema = 'fleet.operational-view/v1'
 lines, reads = [], []
 terminal = {'done', 'archived', 'complete', 'terminal', 'closed', 'settled'}
 MAX_LINES, MAX_BYTES = 80, 10000
+# THE LINE'S OWN RECORD rides on top of that budget, never inside it, and is bounded by itself: its
+# intent whole (server/types.ts#LINEAGE_INTENT_MAX) and at most RECORD_ROWS obligations of RECORD_WIDTH
+# bytes, content first (ten = five armed watches and five autos, what one occupant can hold; 600 bytes
+# carry a live check-in text, 201-422 bytes on 2026-10-09). Measured that day at a succession: a
+# 1979-byte intent cut to 282, and the one obligation with content counted under omitted.
+INTENT_MAX, RECORD_ROWS, RECORD_WIDTH = 2000, 10, 600
 http = 0
 def short(text, limit=320, door='GET /api/self'):
     raw = str(text).replace('\n', r'\n').replace('\r', r'\r').encode('utf-8')
@@ -73,7 +79,7 @@ def ended(row, name):
     if not isinstance(row, dict): return False
     if name == 'audit': return row.get('state') == 'terminal' and row.get('result') == 'green'
     return row.get('status', row.get('state')) in terminal
-def group(name, rows, door, render=None, limit=5, accept=lambda r: True):
+def group(name, rows, door, render=None, limit=5, accept=lambda r: True, rank=None, width=280, record=False):
     if not isinstance(rows, list):
         emit(f'unknown {name} reason=missing-or-unreadable; detail: {door}')
         return
@@ -82,9 +88,10 @@ def group(name, rows, door, render=None, limit=5, accept=lambda r: True):
     if render is None: render = lambda row: f'door={door} {compact(row)}'
     ordered = newest(eligible)
     if name == 'audit': ordered.sort(key=lambda r: r.get('result') != 'red')
+    if rank is not None: ordered.sort(key=rank)
     entry = {'name': name, 'count': len(rows), 'terminal': terminal_count,
              'filtered': len(rows)-terminal_count-len(eligible), 'open': len(eligible), 'door': door,
-             'rows': [short(f'{name} {render(r)}', 280, door) for r in ordered[:limit]]}
+             'rows': [short(f'{name} {render(r)}', width, door) for r in ordered[:limit]], 'record': record}
     if name == 'watches':
         # scharf = armed and never fired (firing stores armed=false AND firedAt); the rest spent.
         entry['armed'] = sum(1 for r in rows if isinstance(r, dict) and r.get('armed') and r.get('firedAt') is None)
@@ -98,15 +105,17 @@ def output():
         for key, value in [('omitted', g['open']-shown), ('terminal', g['terminal']), ('filtered', g['filtered'])]:
             if value: counts += f' {key}={value}'
         return f"{counts}; detail: {g['door']}"
-    fixed = header + [summary(g, 0) if isinstance(g, dict) else g for g in lines]
+    # A str is charged against the budget. The line's own record rides on top of it: its intent
+    # ({'record': line}) and the rows of a record group, each already bounded where it was built.
+    fixed = header + [g if isinstance(g, str) else summary(g, 0) for g in lines if isinstance(g, str) or 'rows' in g]
     remaining_lines = MAX_LINES - len(fixed)
     remaining_bytes = MAX_BYTES - len(('\n'.join(fixed)+'\n').encode('utf-8'))
-    groups = [g for g in lines if isinstance(g, dict)]
-    for g in groups: g['shown'] = []
+    groups = [g for g in lines if isinstance(g, dict) and 'rows' in g]
+    for g in groups: g['shown'] = g['rows'][:] if g['record'] else []
     # Give every category its newest relevant entry before spending the remaining budget.
     for index in range(max((len(g['rows']) for g in groups), default=0)):
         for g in groups:
-            if index >= len(g['rows']) or len(g['shown']) != index: continue
+            if g['record'] or index >= len(g['rows']) or len(g['shown']) != index: continue
             row = g['rows'][index]
             cost = len((row+'\n').encode('utf-8'))
             if remaining_lines <= 0 or cost > remaining_bytes: continue
@@ -115,11 +124,13 @@ def output():
             remaining_bytes -= cost
     result = header[:]
     for g in lines:
-        if isinstance(g, dict):
+        if isinstance(g, str):
+            result.append(g)
+        elif 'rows' in g:
             result.append(summary(g, len(g['shown'])))
             result.extend(g['shown'])
         else:
-            result.append(g)
+            result.append(g['record'])
     print('\n'.join(result))
 def title(value):
     text = str(value)
@@ -208,7 +219,10 @@ def operational(view):
     group('audit', data.get('audits'), './ctl.sh audits')
     snapshot = data.get('snapshot')
     if isinstance(snapshot, dict):
-        group('lane', snapshot.get('lanes'), './ctl.sh lane <slot>')
+        # ctl.sh knows no `lane` verb; a lane's door is its queue row (ctl.sh#task), and a lane
+        # without one has no row to open
+        group('lane', snapshot.get('lanes'), './ctl.sh task <id>', lambda r:
+              f"door={'./ctl.sh task ' + r['taskId'] if isinstance(r.get('taskId'), str) and r['taskId'] else 'GET /api/operational-view'} {compact(r)}")
     else:
         emit('unknown snapshot reason=missing-or-unreadable')
 def seat(value):
@@ -226,8 +240,13 @@ def own(self):
         emit(f"lineage state={lineage.get('state', 'unknown')} id={lineage.get('lineageId')} losses={lineage.get('losses')} lost={compact(lineage.get('handoverLost'))}")
         record = lineage.get('record')
         if lineage.get('state') == 'present' and isinstance(record, dict):
-            emit(f"intent={compact(record.get('intent'))} pointer={compact(record.get('pointer'))} detail: GET /api/self (lineage.record)")
-            group('historical-obligation', record.get('obligations'), 'GET /api/self')
+            intent = record.get('intent')
+            if isinstance(intent, str) and len(intent) > INTENT_MAX:
+                intent = intent[:INTENT_MAX] + '... [shortened; GET /api/self (lineage.record)]'
+            lines.append({'record': f"intent={compact(intent)} pointer={short(compact(record.get('pointer')))} detail: GET /api/self (lineage.record)"})
+            # newest first, then the obligations that carry their re-arm body (target) ahead of the ids
+            group('line-obligation', record.get('obligations'), 'GET /api/self (lineage.record)', limit=RECORD_ROWS,
+                  width=RECORD_WIDTH, record=True, rank=lambda r: not (isinstance(r, dict) and r.get('target')))
         else:
             emit('unknown lineage record reason=lost-or-unreadable; detail: GET /api/self')
     group('waiting', position.get('waitingOnMe'), 'GET /api/self')

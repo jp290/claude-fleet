@@ -58,8 +58,12 @@ type AuditRow = {
 };
 const NO_ROW: AuditRow = { at: 0, startedAt: 0, ms: -1, repo: "", main: "", mainSha: "",
   result: "(no row)", cmd: "", exitCode: null, out: "", covers: [] };
+// THE SERVER'S CAP, not its default: every "a new row appeared" wait in this harness compares a COUNT,
+// and a window full of older rows keeps that count flat while new rows push old ones out. Measured
+// 2026-10-09: the cadence section (T) grew to 7 rows, the trail reached 104 before (RW.10)'s green
+// control, and that check waited 60 s for a row that had been written at once.
 const auditRows = async (): Promise<AuditRow[]> => {
-  const r = await get("/api/post-land-audits?limit=100");
+  const r = await get("/api/post-land-audits?limit=1000");
   try {
     // a server without tier 2 answers 404/HTML here — degrade to "no rows" so every case below
     // reports its own FAIL, instead of one parse error hiding the whole case list

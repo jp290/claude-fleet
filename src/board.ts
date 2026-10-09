@@ -2393,7 +2393,11 @@ let workplacesErr: string | null = null;
 let workplacesAt = 0;
 let workplacesBusy = false;
 export const WORKPLACES_EVERY_MS = 10_000;
+// a forced read asked for while one runs is owed AFTER it: that read may have left before the write
+// the caller just made (a test instance's up), and dropping the ask kept its stale answer on screen
+let workplacesAgain = false;
 export function loadWorkplaces(force = false): void {
+  if (workplacesBusy && force) { workplacesAgain = true; return; }
   if (workplacesBusy || (!force && Date.now() - workplacesAt < WORKPLACES_EVERY_MS)) return;
   workplacesBusy = true;
   workplacesAt = Date.now();
@@ -2405,7 +2409,11 @@ export function loadWorkplaces(force = false): void {
     workplaces = (await r.json()) as Workplaces;
     workplacesErr = null;
   }).catch(() => { workplacesErr = "der Server war nicht erreichbar"; })
-    .finally(() => { workplacesBusy = false; void renderBoard(); });
+    .finally(() => {
+      workplacesBusy = false;
+      if (workplacesAgain) { workplacesAgain = false; loadWorkplaces(true); }
+      void renderBoard();
+    });
 }
 
 // THE COMPOSER'S FOOT (card e66909b1, then the owner's Feinschliff 2026-10-07: „[Zitat entfernt]“
@@ -2526,6 +2534,168 @@ export function flashWorkplace(path: string | null): void {
 }
 const tiBusy = new Set<string>();
 const tiErr = new Map<string, string>();
+
+// THE LIVE SESSION (owner 2026-10-09: „[Zitat entfernt]“
+// ): one sentence at a
+// project starts a lane, hands it the sentence, and starts the lane's own test instance; the lane's
+// row then carries Live, Öffnen and Mergen. Only doors that exist: POST /api/lanes, POST /send,
+// POST /api/slots/:id/testinstanz and src/board.ts#doLand (its Rückfrage, then /merge).
+// WHAT MAKES A LANE LIVE is its branch prefix and nothing else, read HERE and nowhere else: without
+// a server field of its own (the card forbids a new route) the branch is the one fact a reload, a
+// second device and a successor session all see the same — decided with the UI-MAIN 2026-10-09.
+const LIVE_BRANCH_PREFIX = "fleet/live-";
+export function isLiveLane(branch: string | null | undefined): boolean {
+  return !!branch && branch.startsWith(LIVE_BRANCH_PREFIX);
+}
+// what the session reads under the owner's sentence (UI-MAIN 2026-10-09: the sentence, a short fixed
+// paragraph, the profile's path — never the 376-line profile itself). No backticks: a test instance's
+// stand-in pane is a shell that would run them. `bun install` first: a fresh
+// worktree has no node_modules, and testinstanz.sh links the worktree's own, so its build fails
+// without them (measured in this lane 2026-10-09: „[Zitat entfernt]“).
+export const LIVE_SESSION_NOTE = [
+  "Live-Session: Der Owner arbeitet in deiner Testinstanz mit und spricht in diese Pane. Seine Worte gehen vor.",
+  "Zuerst bun install --frozen-lockfile (falls das Repo eine package.json hat): deine Testinstanz startet von selbst und baut aus diesem Worktree.",
+  "Zwischen den Runden nur ./testinstanz.sh refresh und Durchklicken, keine Suiten.",
+  "Vor einem Report ein Commit; berichtet wird an der Rundengrenze.",
+  "Gemergt wird erst, wenn der Owner an deiner Lane „Mergen“ drückt.",
+  "Nachlesen: docs/design/live-bau-profil-2026-10.md §2.",
+].join("\n");
+// the branch of a new live lane: the prefix, a minute stamp, the sentence's first words, a hex tail
+function liveBranch(text: string): string {
+  const d = new Date(), p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}`;
+  const words = text.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean).slice(0, 4).join("-").slice(0, 32).replace(/-+$/, "");
+  const hex = Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
+  return `${LIVE_BRANCH_PREFIX}${stamp}${words ? `-${words}` : ""}-${hex}`;
+}
+// the open field under a project's head (one at a time), the start running per repo, and what failed:
+// keyed by repo while no lane exists yet, by the lane's worktree path once it does — the lane stays
+let liveDraft: { repo: string; text: string } | null = null;
+const liveBusy = new Set<string>();
+const liveErr = new Map<string, string>();
+// a test instance's first `up` races the session's `bun install`: one more try after this pause
+const LIVE_TI_RETRY_MS = 60_000;
+// server.ts#MAX_LABEL is 40, "⎇ " takes two of them
+const LIVE_LABEL_MAX = 38;
+const errText = async (r: Response): Promise<string> => {
+  const j = (await r.json().catch(() => ({}))) as { error?: string; refusal?: string };
+  return j.error ?? j.refusal ?? `HTTP ${r.status}`;
+};
+async function startLiveSession(repo: string, text: string): Promise<void> {
+  const sentence = text.trim();
+  if (!sentence || liveBusy.has(repo)) return;
+  liveBusy.add(repo);
+  liveErr.delete(repo);
+  void renderBoard();
+  // 1 — the lane
+  let slot: number, cwd: string;
+  try {
+    const r = await post("/api/lanes", { repo, branch: liveBranch(sentence) });
+    const j = (await r.clone().json().catch(() => ({}))) as { slot?: number; cwd?: string };
+    if (!r.ok || !j.slot || !j.cwd) throw new Error(await errText(r));
+    slot = j.slot; cwd = j.cwd;
+  } catch (error) {
+    liveErr.set(repo, `Die Live-Session wurde nicht gestartet: ${error instanceof Error ? error.message : String(error)}.`);
+    liveBusy.delete(repo);
+    void renderBoard();
+    return;
+  }
+  liveDraft = null;
+  liveBusy.delete(repo);
+  rankeRepos.set(repo, true);
+  // the lane just started stands opened once, so its instance and Mergen are in sight without a search
+  rankeOpen = `wt:${cwd}`;
+  // the lane is called by its sentence, not by its branch's stamp (the server caps a label at 40);
+  // a refused rename leaves the server's own name, which is no failure of the three steps
+  const label = `⎇ ${sentence.length > LIVE_LABEL_MAX ? `${sentence.slice(0, LIVE_LABEL_MAX - 1).trimEnd()}…` : sentence}`;
+  await post(`/api/slots/${slot}/rename`, { label }).catch(() => undefined);
+  await refresh().catch(() => undefined);
+  loadWorkplaces(true);
+  // 2 — the sentence into the session, parked until its composer is free; pinned to THIS occupant
+  try {
+    const openedAt = fleet[slot - 1]?.openedAt;
+    const r = await post("/send", { slot, text: `${sentence}\n\n${LIVE_SESSION_NOTE}`, whenFree: true, ...(openedAt ? { openedAt } : {}) });
+    if (!r.ok) throw new Error(await errText(r));
+  } catch (error) {
+    liveErr.set(cwd, `Der Auftrag kam nicht in der Session an (${error instanceof Error ? error.message : String(error)}) — die Lane steht, schreib ihn in ihre Session.`);
+  }
+  // 3 — its own test instance, once more after the session had time for `bun install`
+  tiBusy.add(cwd);
+  void renderBoard();
+  const up = () => post(`/api/slots/${slot}/testinstanz`, { action: "up", ttlMin: 240 });
+  try {
+    let r = await up();
+    if (!r.ok) {
+      await new Promise((ok) => setTimeout(ok, LIVE_TI_RETRY_MS));
+      r = await up();
+    }
+    if (!r.ok) throw new Error(await errText(r));
+  } catch (error) {
+    liveErr.set(cwd, `${liveErr.get(cwd) ? `${liveErr.get(cwd)} ` : ""}Die Testinstanz startete nicht (${error instanceof Error ? error.message : String(error)}) — die Lane steht, ihre Testinstanz-Zeile startet sie neu.`);
+  } finally {
+    tiBusy.delete(cwd);
+    loadWorkplaces(true);
+  }
+}
+// under a project's head while its field is open: the sentence, Starten, and what failed before a lane existed
+function liveField(repo: string): HTMLElement {
+  const box = el("div", "zd live-new");
+  box.dataset.for = repo;
+  const busy = liveBusy.has(repo);
+  const f = el("input", "live-in") as HTMLInputElement;
+  f.type = "text";
+  f.placeholder = "Auftrag in einem Satz";
+  f.setAttribute("aria-label", "Auftrag in einem Satz");
+  f.value = liveDraft?.repo === repo ? liveDraft.text : "";
+  f.disabled = busy;
+  f.oninput = () => { liveDraft = { repo, text: f.value }; go.disabled = busy || !f.value.trim(); };
+  f.onkeydown = (e) => { if (e.key === "Enter" && f.value.trim()) { e.preventDefault(); void startLiveSession(repo, f.value); } };
+  f.onclick = (e) => e.stopPropagation();
+  const go = el("button", "rk-btn primary", busy ? "startet…" : "Starten") as HTMLButtonElement;
+  go.type = "button";
+  go.title = "Eine Lane anlegen, ihr den Satz geben und ihre Testinstanz starten";
+  go.disabled = busy || !f.value.trim();
+  go.onclick = (e) => { e.stopPropagation(); void startLiveSession(repo, f.value); };
+  box.append(f, go);
+  const err = liveErr.get(repo);
+  if (err) box.appendChild(el("div", "err", err));
+  return box;
+}
+// the opened live lane (owner 2026-10-09: „[Zitat entfernt]“
+// ): its test instance with Öffnen and Mergen
+function liveLines(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, standOf: Map<string, WorkplaceStand>): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const ti = tiLook(w).cls !== "tpl" ? tiLine(R.repo, w, s ? s.id : null, standOf) : null;
+  if (ti) out.push(ti);
+  if (s?.worktree && w.target.landed !== "yes") {
+    const b = el("button", "rk-btn live-merge-btn", mergePending.has(s.id) ? "wird gemergt…" : "Mergen") as HTMLButtonElement;
+    b.type = "button";
+    b.title = `${w.branch} nach ${w.target.branch} mergen — zuerst die Rückfrage mit dem Diff`;
+    b.disabled = mergePending.has(s.id);
+    b.onclick = (e) => { e.stopPropagation(); void doLand(s.id); };
+    // in the instance's row of buttons, after Öffnen and Stoppen; a repo without an instance gets a line
+    const acts = ti?.querySelector<HTMLElement>(":scope > .r");
+    if (acts) acts.appendChild(b);
+    else {
+      const line = el("div", "zd live-merge");
+      line.dataset.for = w.path;
+      line.appendChild(b);
+      out.push(line);
+    }
+  }
+  return out;
+}
+// what failed while a live session started stands under its lane, opened or not: it is the one
+// sentence that says why the lane has no instance or never got its sentence
+function liveErrLine(w: WorkplaceRow): HTMLElement | null {
+  const err = liveErr.get(w.path);
+  if (!err) return null;
+  const line = el("div", "zd live-err");
+  line.dataset.for = w.path;
+  line.appendChild(el("span", "err", err));
+  return line;
+}
 
 const sha7 = (h: string | null | undefined): string | null => (h ? h.slice(0, 7) : null);
 const refShort = (ref: string): string => ref.replace(/^refs\/(heads|remotes)\//, "");
@@ -2762,6 +2932,8 @@ async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action:
     const r = await post(tiRoute(repo, w, slot), action === "up" ? { action, ttlMin: 240 } : { action });
     const j = (await r.json().catch(() => ({}))) as { error?: string; refusal?: string; url?: string };
     if (!r.ok) throw new Error(j.error ?? j.refusal ?? `HTTP ${r.status}`);
+    // a live lane's failed start is answered once its instance comes up (src/board.ts#startLiveSession)
+    if (action === "up") liveErr.delete(w.path);
     if (action === "open") {
       if (!j.url) throw new Error("der Server hat keinen Link geliefert");
       if (tab) tab.location.href = j.url; else window.open(j.url, "_blank", "noopener");
@@ -3559,8 +3731,24 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   add.title = "Neue Lane in diesem Repo — Name, Profil und Kontext im Gründungsfenster";
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openLaneFounding(R.repo); };
+  // THE LIVE SESSION (src/board.ts#startLiveSession): a sentence under the head, a lane from it
+  const liveOpen = liveDraft?.repo === R.repo || liveBusy.has(R.repo) || liveErr.has(R.repo);
+  const live = el("button", `rk-btn quiet live-btn${liveOpen ? " on" : ""}`) as HTMLButtonElement;
+  // the phone shows "Live" only: beside the state word the whole name crowded the project's name
+  live.append(el("span", "", "Live"), el("span", "lx", "-Session"));
+  live.type = "button";
+  live.title = "Eine Live-Session in diesem Repo starten — eine Lane mit eigener Testinstanz, am Ende Mergen";
+  live.setAttribute("aria-label", "Live-Session");
+  live.setAttribute("aria-expanded", String(liveOpen));
+  live.onclick = (e) => {
+    e.stopPropagation();
+    if (liveBusy.has(R.repo)) return;
+    if (liveOpen) { liveDraft = null; liveErr.delete(R.repo); } else liveDraft = { repo: R.repo, text: "" };
+    void renderBoard();
+    if (!liveOpen) requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`#board .zd.live-new[data-for="${CSS.escape(R.repo)}"] .live-in`)?.focus());
+  };
   const addAt = el("span", "rt");
-  addAt.append(stateChip(pstate), add);
+  addAt.append(stateChip(pstate), live, add);
   head.appendChild(addAt);
   head.title = `${R.repo} · ${facts.join("\n")}\n${isOpen ? "zuklappen" : "aufklappen"}`;
   rowTarget(head, () => {
@@ -3570,6 +3758,7 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   });
   head.setAttribute("aria-expanded", String(isOpen));
   g.appendChild(head);
+  if (liveOpen) g.appendChild(liveField(R.repo));
   if (!isOpen) return g;
   if (R.worktrees === null) {
     g.appendChild(el("div", "bstate", `Die Worktrees dieses Repos konnten nicht gelesen werden — ${R.reasons.map((r) => r.reason).join(", ") || "ohne Grund"}.`));
@@ -3823,13 +4012,23 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });
   row.setAttribute("aria-expanded", String(open));
   const out: HTMLElement[] = [row];
+  // a live lane says so beside its name; what failed at its start stays in sight, the rest opens on a tap
+  const liveLane = isLiveLane(w.branch);
+  if (liveLane) {
+    const tag = el("span", "livetag", "Live");
+    tag.title = "Live-Session: der Owner arbeitet in ihrer Testinstanz mit, am Ende Mergen";
+    name.appendChild(tag);
+    const err = liveErrLine(w);
+    if (err) out.push(err);
+  }
   if (!open) return out;
   // THE OPENED LANE: its checks as the five points (or the plain word that there is none yet — never
   // a row of empty points), each run of it as its sentence with its machine, its test instance as a
   // line with Öffnen or Starten, and for a worktree no session holds: its controls
   out.push(wayLine(w));
   out.push(...runLines(mine));
-  if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
+  if (liveLane) out.push(...liveLines(R, w, s, standOf));
+  else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
   if (!s && !mirror) out.push(...wtLines(R, w, wts));
   return out;
 }

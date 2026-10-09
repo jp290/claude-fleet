@@ -11992,13 +11992,24 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: `    : { kind: "gone", slot: p.slot ?? null };`, with: `    : { kind: "session", slot: p.slot ?? 0, since: p.deliveredAt ?? null };` },
   { name: "not-applicable is an alarm again", state: "alarm", claim: "a check after the land that does not apply to its repo draws no card", file: "src/plaudit.ts",
     needle: `  if (a.result === "not-applicable") return null;`, with: "" },
+  // THE LIVE SESSION (owner 2026-10-09; UI-MAIN: „[Zitat entfernt]“)
+  { name: "no lane is live", state: "live", claim: "a live lane says Live beside its name",
+    needle: "  return !!branch && branch.startsWith(LIVE_BRANCH_PREFIX);", with: "  return false && !!branch;" },
+  { name: "Mergen merges without asking", state: "live", claim: "Mergen asks first",
+    needle: "b.onclick = (e) => { e.stopPropagation(); void doLand(s.id); };", with: "b.onclick = (e) => { e.stopPropagation(); void post(`/api/slots/${s.id}/merge`, {}); };" },
+  { name: "a refused lane goes unsaid", state: "live", claim: "a refused lane is said under the project",
+    needle: "liveErr.set(repo, `Die Live-Session", with: "void (`Die Live-Session" },
+  { name: "a sentence that did not arrive goes unsaid", state: "live", claim: "a sentence that did not arrive is said at the lane",
+    needle: "liveErr.set(cwd, `Der Auftrag", with: "void (`Der Auftrag" },
+  { name: "an instance that did not start goes unsaid", state: "live", claim: "an instance that did not start is said at the lane",
+    needle: "liveErr.set(cwd, `${liveErr.get(cwd)", with: "void (`${liveErr.get(cwd)" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
 // own annotation), `viele3`/`viele30` for its &n=3 / &n=30; `laneb` is the draft's variant B, and the
 // app shows the chosen variant A there (owner-Ja 2026-10-05: „[Zitat entfernt]“)
 export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "uebergabe", "menue", "kopf", "land", "mehr",
-  "viele", "viele3", "viele30", "branch", "alarm", "leer", "main", "doppelt"] as const;
+  "viele", "viele3", "viele30", "branch", "alarm", "leer", "main", "doppelt", "live"] as const;
 // A MUTANT (owner card 2026-10-07, „[Zitat entfernt]“): `mutate`
 // swaps one needle of src/board.ts in the bundle the page runs; a needle that is not in the source
 // throws, so a probe that could not apply its mutation fails as ITSELF and never reads as caught.
@@ -12046,11 +12057,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   // for it — so a claim can say what the line does BEFORE the next read answers; `holdOpen` the same for
   // the answer to Öffnen
   const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0,
-    tiUntil: 0, holdWorktrees: null as Promise<void> | null, holdOpen: null as Promise<void> | null };
+    tiUntil: 0, holdWorktrees: null as Promise<void> | null, holdOpen: null as Promise<void> | null,
+    // THE LIVE SESSION (state `live`): which of its three steps the fixture refuses, and the lanes it made
+    liveFail: null as null | "lane" | "send" | "ti", liveMade: [] as Lane[] };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
   const free: Lane = { slot: null, branch: "fleet/261005-insel-telefon-7c08", target: "overhaul", ahead: 2 };
+  const liveLane: Lane = { slot: 12, letter: "C", title: "Zeitleiste zur Stunde", branch: "fleet/live-2610091226-zeitleiste-zur-stunde-51b8", target: "main", ahead: 1, landed: "no", ti: "up" };
   const lanesOf = (st: State): Lane[] => {
     const h = (b: string) => hex(b);
     const base: Lane[] = [
@@ -12070,6 +12084,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       { slot: null, branch: "overhaul", path: `${REPO}.worktrees/overhaul`, target: "main", ahead: 0, landed: null },
       { slot: null, branch: "owner-2026-10-06-notizen-a1b2", target: "overhaul", ahead: 1, landed: "no" },
       { slot: null, branch: "owner-2026-10-07-notizen-c3d4", target: "overhaul", ahead: 2, landed: "no" }];
+    if (st === "live") return [...base, liveLane, ...fx.liveMade];
     if (st !== "viele" && st !== "branch" && st !== "viele30") return base;
     const more: Lane[] = [
       { slot: 11, letter: "C", title: "Insel am Telefon", branch: "fleet/261005-insel-am-telefon-1b2c", target: "overhaul", ahead: 4, working: true, landed: "no",
@@ -12248,6 +12263,25 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const answer = () => json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
           return void (fx.holdOpen ? fx.holdOpen.then(answer) : answer());
         }
+        if (fx.state === "live") {
+          // the three doors a live session takes, each refusable by name; a made lane joins the fixture
+          if (p === "/api/lanes") {
+            if (fx.liveFail === "lane") return void json(requestId, { error: "no free lane place" }, 409);
+            const slot = [14, 15, 16][fx.liveMade.length] ?? 16;
+            const made: Lane = { slot, letter: String.fromCharCode(68 + fx.liveMade.length), branch: String((body as { branch?: string })?.branch), target: "main", ahead: 0, landed: "no", ti: "not-running" };
+            fx.liveMade.push(made);
+            return void json(requestId, { ok: true, slot, cwd: pathOf(made), branch: made.branch, form: "worktree", plan: "none" });
+          }
+          if (p === "/send" && fx.liveFail === "send") return void json(requestId, { error: "slot is held by a different occupant — nothing typed" }, 409);
+          const ti = /^\/api\/slots\/(\d+)\/testinstanz$/.exec(p);
+          if (ti && (body as { action?: string })?.action === "up") {
+            if (fx.liveFail === "ti") return void json(requestId, { error: "testinstanz up failed", refusal: "script-failed", state: "unknown" }, 409);
+            const made = fx.liveMade.find((l) => l.slot === Number(ti[1]));
+            if (made) made.ti = "up";
+          }
+          // the direct land refuses an unmerged lane, so doLand goes on to /merge — as on the server
+          if (/^\/api\/slots\/\d+\/land$/.test(p)) return void json(requestId, { error: "lane is not merged yet" }, 409);
+        }
         return void json(requestId, { ok: true });
       }
       const st = fx.state;
@@ -12266,6 +12300,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         const held = fx.holdWorktrees;
         return void (held ? held.then(() => json(requestId, workplaces(st))) : json(requestId, workplaces(st)));
       }
+      if (st === "live" && p === "/api/slots/12/risk") return void json(requestId, { dirtyFiles: [], unpushedCommits: [{ hash: "6c94a84", subject: "feat: Zeitleiste springt zur Stunde" }], shortstat: null, empty: false });
+      if (st === "live" && p === "/api/slots/12/merge-diff") return void json(requestId, { main: "main", branch: liveLane.branch, files: ["src/zeitleiste.ts"],
+        diff: "diff --git a/src/zeitleiste.ts b/src/zeitleiste.ts\n--- a/src/zeitleiste.ts\n+++ b/src/zeitleiste.ts\n@@ -1 +1,2 @@\n export const zeitleiste = 1;\n+export const springtZurStunde = true;\n", truncated: false });
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
@@ -12396,7 +12433,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const claims: Record<string, boolean> = {};
         const facts: Record<string, unknown> = {};
-        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null;
+        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = [];
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -12404,6 +12441,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         await send("Page.enable"); await send("Runtime.enable");
         await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
           window.open = (u) => { (window.__opened = window.__opened || []).push(String(u)); return { location: { set href(v) { window.__opened.push(String(v)); } }, close() {} }; };` });
+        // a live session's second try at its test instance waits a minute (src/board.ts#LIVE_TI_RETRY_MS):
+        // here that minute is 50 ms, so the refused instance is said within the probe's patience
+        if (st === "live") await send("Page.addScriptToEvaluateOnNewDocument", { source: `{ const t = window.setTimeout; window.setTimeout = (f, ms, ...a) => t(f, ms === 60000 ? 50 : ms, ...a); }` });
         await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
         await navigate("http://fleet.fixture/blank");
         const focus = focusOf(st);
@@ -12704,6 +12744,114 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await wait(`false`, 400);
           claims[`${tag}Öffnen there reopens the worktree in a free slot`] = fx.writes.some((w) => w.path === "/api/lanes"
             && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
+        }
+        if (st === "live") {
+          // THE LIVE SESSION (owner 2026-10-09: „[Zitat entfernt]“
+          // ): one sentence at a project → a lane, the sentence in its session, its
+          // own test instance; the lane's row carries Live, Öffnen and Mergen; Mergen asks first. Each
+          // of the three steps that fails is said where it failed, and the lane stays (UI-MAIN 2026-10-09).
+          const liveTag = (slot: number) => evaluate<string | null>(`document.querySelector('#boardbody .zr[data-slot="${slot}"] .nm .livetag')?.textContent ?? null`);
+          const tiOf = (rr: Read, l: Lane) => rr.lines.find((x) => x.for === pathOf(l) && x.cls.split(" ").includes("ti"));
+          const errOf = (l: Lane) => evaluate<string | null>(`document.querySelector('#boardbody .zd.live-err[data-for="${pathOf(l)}"] .err')?.textContent ?? null`);
+          // CLOSED UNTIL TAPPED (owner 2026-10-09: „[Zitat entfernt]“
+          // )
+          const closedT = tiOf(r, liveLane), closedTag = await liveTag(12), ownTag = await liveTag(9);
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="12"]')?.click()`);
+          await wait(`document.querySelector('#boardbody .zr[data-slot="12"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
+          await settle(150);
+          r = await read();
+          const liveT = tiOf(r, liveLane);
+          facts.liveLane = { row: lane(r, 12), closedT, ti: liveT, tag: closedTag, ownTag };
+          claims[`${tag}a live lane says Live beside its name and stays closed — its instance and its buttons only after a tap: Öffnen, Stoppen and Mergen in one row; another lane says nothing of it`] =
+            closedTag === "Live" && ownTag === null && !closedT && lane(r, 12)?.exp === "true"
+            && !!liveT && liveT.text.startsWith("Testinstanz läuft bis") && liveT.buttons.join(",") === "Öffnen,Stoppen,Mergen";
+          await shot(`${st}-laeuft-${width}`);
+          // Mergen: the existing land review with its diff first, the merge only after its answer
+          fx.writes = [];
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(liveLane))})?.querySelector('.live-merge-btn')?.click()`);
+          const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
+          const askTitle = await evaluate<string | null>(`document.querySelector('.riskoverlay .landreviewpanel h2')?.textContent ?? null`);
+          const beforeAnswer = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => w.path);
+          await shot(`${st}-rueckfrage-${width}`);
+          await evaluate(`[...document.querySelectorAll('.riskoverlay .riskbtn')].find((b) => /land$/.test(b.textContent))?.click()`);
+          await wait(`!document.querySelector('.riskoverlay')`, 3000);
+          await wait(`false`, 300);
+          const landW = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path));
+          facts.merge = { asked, askTitle, beforeAnswer, after: landW.map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
+          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge`] =
+            asked && askTitle === `Land ${liveLane.branch} → main — review what lands` && beforeAnswer.length === 0
+            && landW.map((w) => w.path).join(",") === "/api/slots/12/land,/api/slots/12/merge" && JSON.stringify(landW[1]?.body) === "{}";
+          // the field under the project's head
+          // Live-Session toggles its field: tapped only while the field is closed
+          const startOpen = async (sentence: string) => {
+            await evaluate(`document.querySelector('#boardbody .zd.live-new') || document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .live-btn')?.click()`);
+            await wait(`document.querySelector('#boardbody .zd.live-new .live-in')`, 3000);
+            await evaluate(`(() => { const f = document.querySelector('#boardbody .zd.live-new .live-in'); f.value = ${JSON.stringify(sentence)}; f.dispatchEvent(new Event('input')); })()`);
+          };
+          const go = () => evaluate(`[...document.querySelectorAll('#boardbody .zd.live-new button')].find((b) => b.textContent === 'Starten')?.click()`);
+          await evaluate(`document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .live-btn')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.live-new .live-in')`, 3000);
+          const field = await evaluate<{ ph: string; btn: string; off: boolean; head: string } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
+            const b = [...z.querySelectorAll('button')].find((x) => x.textContent === 'Starten'); const h = z.previousElementSibling;
+            return { ph: z.querySelector('.live-in')?.placeholder ?? '', btn: b?.textContent ?? '', off: !!b?.disabled, head: h?.classList.contains('repo') ? h.querySelector('.live-btn')?.textContent ?? '' : '' }; })()`);
+          facts.field = field;
+          claims[`${tag}a project head carries Live-Session; a tap opens one field "Auftrag in einem Satz" under it, with Starten held until a sentence stands there`] =
+            !!field && field.head === "Live-Session" && field.ph === "Auftrag in einem Satz" && field.btn === "Starten" && field.off;
+          // 1 — the lane is refused: said under the project, nothing sent, nothing started
+          fx.liveFail = "lane"; fx.writes = [];
+          await startOpen("Die Zeitleiste soll zur Stunde springen");
+          await shot(`${st}-start-${width}`);
+          await go();
+          await wait(`document.querySelector('#boardbody .zd.live-new .err')`, 4000);
+          const e1 = await evaluate<string | null>(`document.querySelector('#boardbody .zd.live-new .err')?.textContent ?? null`);
+          facts.refusedLane = { e1, writes: fx.writes.map((w) => w.path) };
+          claims[`${tag}a refused lane is said under the project — "Die Live-Session wurde nicht gestartet: …" — and nothing is sent or started`] =
+            e1 === "Die Live-Session wurde nicht gestartet: no free lane place." && !fx.writes.some((w) => w.path === "/send" || /testinstanz|rename/.test(w.path));
+          // 2 — all three steps answer: the lane, the sentence with the fixed paragraph, its instance
+          fx.liveFail = null; fx.writes = [];
+          await go();
+          const made = () => fx.liveMade[0];
+          const started = await wait(`(() => { const z = [...document.querySelectorAll('#boardbody .zd.ti')].find((x) => x.dataset.for && x.dataset.for.includes('die-zeitleiste-soll')); return z && /Öffnen/.test(z.innerText) && !document.querySelector('#boardbody .zd.live-new'); })()`, 5000);
+          const order = fx.writes.map((w) => w.path);
+          const at = (path: string) => order.indexOf(path);
+          const lw = fx.writes.find((w) => w.path === "/api/lanes")?.body as { repo?: string; branch?: string } | undefined;
+          const sw = fx.writes.find((w) => w.path === "/send")?.body as { slot?: number; text?: string; whenFree?: boolean; openedAt?: number } | undefined;
+          const tw = fx.writes.find((w) => w.path === "/api/slots/14/testinstanz")?.body;
+          const nw = fx.writes.find((w) => w.path === "/api/slots/14/rename")?.body;
+          r = await read();
+          facts.started = { started, order, lw, sw: sw ? { ...sw, text: sw.text?.slice(0, 200) } : null, tw, nw, tag: await liveTag(14), ti: made() ? tiOf(r, made()!) : null };
+          claims[`${tag}Starten makes the lane, hands it the sentence, starts its instance — POST /api/lanes on a fleet/live- branch, /send with the sentence and the fixed paragraph, then up for 4 hours; the lane is named by its sentence (cut at the server's 40); the field closes`] =
+            started && lw?.repo === REPO && /^fleet\/live-\d{10}-die-zeitleiste-soll-zur-[0-9a-f]{4}$/.test(lw?.branch ?? "")
+            && sw?.slot === 14 && sw.whenFree === true && sw.openedAt === openedAt(14)
+            && (sw.text ?? "").startsWith("Die Zeitleiste soll zur Stunde springen\n\nLive-Session: Der Owner arbeitet in deiner Testinstanz mit")
+            && (sw.text ?? "").endsWith("Nachlesen: docs/design/live-bau-profil-2026-10.md §2.") && !(sw.text ?? "").includes("`")
+            && JSON.stringify(tw) === JSON.stringify({ action: "up", ttlMin: 240 }) && JSON.stringify(nw) === JSON.stringify({ label: "⎇ Die Zeitleiste soll zur Stunde spring…" })
+            && at("/api/lanes") < at("/send") && at("/send") < at("/api/slots/14/testinstanz")
+            && await liveTag(14) === "Live" && (made() ? tiOf(r, made()!)?.buttons.join(",") : "") === "Öffnen,Stoppen,Mergen";
+          // 3 — the sentence does not arrive: said at the lane, the lane stands, its instance still starts
+          fx.liveFail = "send"; fx.writes = [];
+          await startOpen("Die Leiste breiter");
+          await go();
+          await wait(`document.querySelector('#boardbody .zr[data-slot="15"]') && document.querySelector('#boardbody .zd.live-err .err')`, 5000);
+          await wait(`false`, 200);
+          const e2 = fx.liveMade[1] ? await errOf(fx.liveMade[1]) : null;
+          facts.refusedSend = { e2, writes: fx.writes.map((w) => w.path) };
+          claims[`${tag}a sentence that did not arrive is said at the lane — the lane stands and its instance is still started`] =
+            !!e2 && e2.startsWith("Der Auftrag kam nicht in der Session an (slot is held by a different occupant") && e2.includes("die Lane steht")
+            && await evaluate<boolean>(`!!document.querySelector('#boardbody .zr[data-slot="15"]')`) && fx.writes.some((w) => w.path === "/api/slots/15/testinstanz");
+          // 4 — the instance does not start, twice: said at the lane, the lane stands
+          fx.liveFail = "ti"; fx.writes = [];
+          await startOpen("Fehlerfall zeigen");
+          await go();
+          await wait(`document.querySelector('#boardbody .zr[data-slot="16"]') && [...document.querySelectorAll('#boardbody .zd.live-err .err')].some((e) => /Testinstanz startete nicht/.test(e.textContent))`, 6000);
+          const e3 = fx.liveMade[2] ? await errOf(fx.liveMade[2]) : null;
+          facts.refusedTi = { e3, ups: fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length };
+          await evaluate(`document.querySelector('#boardbody .zr[data-slot="16"]')?.scrollIntoView({ block: 'center' })`);
+          await shot(`${st}-fehler-${width}`);
+          claims[`${tag}an instance that did not start is said at the lane after its second try — the lane stands`] =
+            e3 === "Die Testinstanz startete nicht (testinstanz up failed) — die Lane steht, ihre Testinstanz-Zeile startet sie neu."
+            && fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length === 2
+            && await evaluate<boolean>(`!!document.querySelector('#boardbody .zr[data-slot="16"]')`);
         }
         if (st === "land") await shot(`${st}-${width}`);
         if (st === "viele" || st === "branch" || st === "viele30") {

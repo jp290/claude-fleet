@@ -1408,17 +1408,17 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
   const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
   const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
-  const expected = [808, 4029, 403, 321, 3959, 11403];
+  const expected = [808, 4029, 403, 321, 3959, 12645];
   const expectedHashes = [
     "57ed82f7c9fe990c4f58245f148357423d5847d0ae6cf33c0b069401c93bac46",
     "d29f493a7a8a1c82151af873fb03b546b11260b87e22c2769bbf907df773fd15",
     "21c8f4b8b45f9d496f81d6ca46a362e79740463801af03a425e3dd8ba04fa5a0",
     "7c2fa80e6536a552cb555ae86fd38c8bcecd92b576d7384b8a0814ca01cab3e1",
     "704a7016daf73017b58e8d7450976c82f32af229a53982cd92bac154f9801fc0",
-    "40208c1b60f15310a71d061797dd67eab1d4a457e50f2446b8d11f8638bd9303",
+    "aedb682eb3853e54b1884138accceba8a191262b385bf77ead1694354731b6dd",
   ];
   const measured = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.bytes);
-  check("session agents: six verify parts carry the approved tree bytes (fixture 808/4029/403/321/3959/11403)",
+  check("session agents: six verify parts carry the approved tree bytes (fixture 808/4029/403/321/3959/12645)",
     JSON.stringify(measured) === JSON.stringify(expected), JSON.stringify(measured));
   const hashes = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.sha256);
   check("session agents: six verify parts carry the exact approved source hashes",

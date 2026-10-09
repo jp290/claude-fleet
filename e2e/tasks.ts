@@ -11235,7 +11235,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const spValid = { valid: true, surfaceValid: true, done: "done sentence", verify: "bun e2e/pins.ts", size: "klein", gaps: [] };
     const spRow = (id: string, created: number, files: string[] | null, o: { status?: string; after?: string[];
       ranges?: StartPlanRow["ranges"]; card?: StartPlanCardFacts | null; text?: string; programId?: string;
-      release?: StartPlanRelease; held?: boolean; queueIds?: string[]; base?: string | null } = {}) => ({
+      release?: StartPlanRelease; held?: boolean; queueIds?: string[]; base?: string | null; baseMissing?: string } = {}) => ({
       wave: { id, created, kind: "auftrag", status: o.status ?? "queued", repo: spRepo, programId: o.programId ?? `p-${id}`,
         filesOrigin: "confirmed" as const, ...(files ? { files } : {}), ...(o.after ? { after: o.after } : {}),
         ranges: o.ranges ?? null } satisfies TaskWaveInput,
@@ -11245,7 +11245,7 @@ export async function run(ctx: Ctx): Promise<void> {
           card: o.card === undefined ? spValid : o.card,
           // which fixture ids are QUEUE ROWS is each row's own explicit decision — the caller
           // decides, exactly as server.ts#startPlanRowOf and the CLI do
-          queueKnown: (q: string) => (o.queueIds ?? []).includes(q), selfId: id }),
+          queueKnown: (q: string) => (o.queueIds ?? []).includes(q), selfId: id, baseMissing: o.baseMissing }),
         ...(o.release ? { release: o.release } : {}), ...(o.held ? { held: true } : {}) } satisfies StartPlanRow,
     });
     const at = (file: string, symbol: string, startLine: number) => [{ file, symbol, startLine, endLine: startLine + 5 }];
@@ -11297,6 +11297,20 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(sp-base) an unknown row or lane base still holds a shared file",
       unknownBase.every((next) => JSON.stringify(next) === JSON.stringify({ collides: { slot: 17, file: "server.ts" } })),
       JSON.stringify(unknownBase));
+    // (sp-base-missing) a queued row whose base branch does not exist (start-plan.ts#releaseVerdict) is
+    // a blocker with its reason, never "now" — and it claims no file, so the younger row of another
+    // program on the SAME file and base starts. Without the refusal the dead row reads "now" and the
+    // live row collides with it: the one-row-holds-the-queue stall of 2026-10-09 in pure form.
+    const goneWaves = projectStartPlan(spInput([
+      spRow("gone", 1, ["server.ts"], { base: "overhaul", baseMissing: "overhaul" }),
+      spRow("live", 2, ["server.ts"], { base: "overhaul" }),
+    ], [], baseCaps)).repos[0]?.waves ?? [];
+    check("(sp-base-missing) a queued row with a missing base branch stands refused with its reason, claims no file, and the row behind it starts",
+      JSON.stringify(goneWaves.map((w) => [w.ids.join("+"), w.next])) === JSON.stringify([["gone", { unreleased: ["gone"] }], ["live", "now"]])
+      && JSON.stringify(goneWaves[0]?.rows[0]?.release) === JSON.stringify({ released: false,
+        why: "base branch overhaul does not exist — restore the branch or archive the row" })
+      && goneWaves[0]?.rows[0]?.checks?.baseMissing === "overhaul" && !("baseMissing" in (goneWaves[1]?.rows[0]?.checks ?? {})),
+      JSON.stringify(goneWaves.map((w) => ({ ids: w.ids, next: w.next, rows: w.rows }))));
     const spMainJson = JSON.stringify(spMain);
     const spPlan = projectStartPlan(spMain);
     const spNexts = (plan: StartPlan) => plan.repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.next]));
@@ -12440,6 +12454,106 @@ export async function run(ctx: Ctx): Promise<void> {
       if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
       if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
     }
+  }
+
+  // --- (sp-tick-base) A ROW THE TICK CAN NEVER START DOES NOT HOLD THE ROWS BEHIND IT (2026-10-09,
+  // live: 5eb39834, base overhaul, the branch gone since 2026-10-06, stood an hour as the first wave
+  // with next "now"; tickDispatch took it, the spawn died, the tick ended — every 8 s, lanes 1/4 with
+  // startable rows). Two facts on this instance, each an OLDER dead row before a younger startable
+  // row in REPO2 that shares no file with it:
+  //   (1) a queued row whose filed base branch was deleted stands in GET /api/start-plan as a blocker
+  //       with its reason (release refused, its wave not "now"), and the younger row starts;
+  //   (2) a queued row whose spawn fails for a reason the plan cannot see — its repo is a plain
+  //       directory, which filing accepts and only the spawn refuses — reads "now", fails, and the
+  //       younger row starts. The dead row heads every tick's walk, so the younger row can only
+  //       start in a tick in which the dead row's spawn failed: the same tick.
+  {
+    interface BRow { id: string; status: string; note?: string | null; slot?: number | null }
+    const bRows = async (): Promise<BRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: BRow[] }).tasks;
+    const bOf = (rows: BRow[], id: string): BRow | undefined => rows.find((t) => t.id === id);
+    const bUntil = async (done: (rows: BRow[]) => boolean, tries = 160): Promise<BRow[]> => {
+      let rows = await bRows();
+      for (let i = 0; i < tries && !done(rows); i++) { await Bun.sleep(250); rows = await bRows(); }
+      return rows;
+    };
+    const bTask = async (text: string, extra: Record<string, unknown> = {}): Promise<string> => {
+      await Bun.sleep(15); // distinct `created`: the plan orders by it
+      return ((await (await post("/api/tasks", { text, queue: false, repo: REPO2, ...extra })).json()) as
+        { task?: { id: string } }).task?.id ?? "";
+    };
+    // dispatch off, nothing else queued, no lane in REPO2 — the two rows are the whole field
+    const bField = async (): Promise<void> => {
+      await post("/api/dispatch", { on: false });
+      for (const t of await bRows()) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+      const kills = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] }).slots
+        .filter((x) => x.worktree && realpathSync(x.worktree.repo) === realpathSync(REPO2)).map((x) => x.id);
+      for (const id of kills) await post(`/api/slots/${id}/kill`, {});
+      await slotsEmptied(kills);
+    };
+    const bWave = (plan: StartPlan, id: string) => plan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id));
+    const bDrop = async (ids: string[]): Promise<void> => {
+      await post("/api/dispatch", { on: false });
+      const kills: number[] = [];
+      for (const id of ids) {
+        const row = bOf(await bRows(), id);
+        if (typeof row?.slot === "number" && row.status === "sent") { kills.push(row.slot); await post(`/api/slots/${row.slot}/kill`, {}); }
+      }
+      await slotsEmptied(kills);
+      for (const id of ids) {
+        const row = bOf(await bRows(), id);
+        if (row?.status === "queued") await post(`/api/tasks/${id}/unqueue`, {});
+        if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
+      }
+    };
+
+    // (1) the deleted base
+    await bField();
+    const goneBranch = "sp-tick-base-gone";
+    const made = spawnSync("git", ["-C", REPO2, "branch", "-f", goneBranch, "HEAD"], { encoding: "utf8" });
+    const gone = await bTask("SP-TICK-BASE row on a base branch that is deleted after filing", { base: goneBranch });
+    const live = await bTask("SP-TICK-BASE younger startable row");
+    const deleted = spawnSync("git", ["-C", REPO2, "branch", "-D", goneBranch], { encoding: "utf8" });
+    for (const id of [gone, live]) await post(`/api/tasks/${id}/queue`, {});
+    const plan1 = (await (await get("/api/start-plan")).json()) as StartPlan;
+    const goneWhy = `base branch ${goneBranch} does not exist — restore the branch or archive the row`;
+    const goneRow = bWave(plan1, gone)?.rows.find((r) => r.id === gone);
+    check("(sp-tick-base)(1) fixture: the base branch existed at filing and is gone, both rows queued",
+      made.status === 0 && deleted.status === 0 && !!gone && !!live
+      && [gone, live].every((id) => bOf(plan1.repos.flatMap((r) => r.waves).flatMap((w) => w.rows), id)?.status === "queued"),
+      JSON.stringify({ made: made.stderr, deleted: deleted.stderr, gone, live }));
+    check("(sp-tick-base)(1) GET /api/start-plan: the row on the missing base is a blocker with its reason, not \"now\"; the younger row is \"now\"",
+      JSON.stringify(bWave(plan1, gone)?.next) === JSON.stringify({ unreleased: [gone] })
+      && JSON.stringify(goneRow?.release) === JSON.stringify({ released: false, why: goneWhy })
+      && goneRow?.checks?.baseMissing === goneBranch && bWave(plan1, live)?.next === "now",
+      JSON.stringify({ gone: bWave(plan1, gone), live: bWave(plan1, live)?.next }));
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    const after1 = await bUntil((rows) => bOf(rows, live)?.status === "sent");
+    check("(sp-tick-base)(1) the tick starts the younger row; the row on the missing base stays queued and says why — no spawn was tried",
+      bOf(after1, live)?.status === "sent" && bOf(after1, gone)?.status === "queued"
+      && bOf(after1, gone)?.note === `waiting: not released — ${goneWhy}`,
+      JSON.stringify({ gone: bOf(after1, gone), live: bOf(after1, live) }));
+    await bDrop([gone, live]);
+
+    // (2) a spawn failure the plan cannot see
+    await bField();
+    const plainDir = mkdtempSync(join(tmpdir(), "fleet-e2e-sp-tick-plain-"));
+    const plainIsGit = spawnSync("git", ["-C", plainDir, "rev-parse", "--git-dir"]).status === 0;
+    const dead = await bTask("SP-TICK-BASE row whose repo is a plain directory", { repo: plainDir });
+    const live2 = await bTask("SP-TICK-BASE younger startable row behind a failing spawn");
+    for (const id of [dead, live2]) await post(`/api/tasks/${id}/queue`, {});
+    const plan2 = (await (await get("/api/start-plan")).json()) as StartPlan;
+    check("(sp-tick-base)(2) fixture: the dead row's repo is a plain directory (no git above it) and the plan reads its wave \"now\" — it cannot see the failure",
+      !plainIsGit && !!dead && !!live2 && bWave(plan2, dead)?.next === "now" && bWave(plan2, live2)?.next === "now",
+      JSON.stringify({ plainIsGit, dead: bWave(plan2, dead)?.next ?? null, live2: bWave(plan2, live2)?.next ?? null }));
+    await post("/api/dispatch", { on: true });
+    const after2 = await bUntil((rows) => bOf(rows, live2)?.status === "sent");
+    check("(sp-tick-base)(2) the dead row's spawn fails and the same tick starts the younger row — a failed spawn skips its wave, it does not end the tick",
+      bOf(after2, live2)?.status === "sent" && bOf(after2, dead)?.status === "queued"
+      && (bOf(after2, dead)?.note ?? "").startsWith("dispatch failed: not a git repository"),
+      JSON.stringify({ dead: bOf(after2, dead), live2: bOf(after2, live2) }));
+    await bDrop([dead, live2]);
+    rmSync(plainDir, { recursive: true, force: true });
   }
 
   // --- (rel-tick) THE RELEASE POLICY ON THE TICK (Schnitt 3, server.ts#programReleasePolicy). One

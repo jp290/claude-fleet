@@ -5563,7 +5563,10 @@ const taskBaseGitFailures = new Map<string, number>();
 const taskBaseFileStamp = (path: string): string => {
   try { const s = statSync(path); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return "-"; }
 };
-function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapshot | null {
+// THE REF HALF alone: which branch a row's tree is (`base`) and the commit it resolves to (`commit`,
+// null = no such branch), behind the stamp above. null = UNKNOWN — the git dir cannot be read, or
+// no branch is named (a detached primary with no config) — which no reader may take for "missing".
+function taskBaseRefOf(repoRaw: string, requested?: string): { repo: string; base: string; commit: string | null } | null {
   const repo = repoCanon(repoRaw);
   const run = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args],
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
@@ -5592,12 +5595,17 @@ function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapsh
     resolved = { stamp, commit: ref?.success ? ref.stdout.toString().trim() : null };
     taskBaseRefCache.set(refKey, resolved);
   }
-  const commit = resolved.commit;
-  if (!commit) return null;
+  return { repo, base: current, commit: resolved.commit };
+}
+function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapshot | null {
+  const ref = taskBaseRefOf(repoRaw, requested);
+  if (!ref?.commit) return null;
+  const { repo, commit } = ref;
   const key = `${repo}\0${commit}`;
   const cached = taskBaseTreeCache.get(key);
   if (cached) return cached;
-  const listing = run("ls-tree", "-rz", commit);
+  const listing = Bun.spawnSync(["git", "-C", repo, "ls-tree", "-rz", commit],
+    { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
   if (!listing.success) return null;
   const paths = new Set<string>();
   for (const entry of listing.stdout.toString().split("\0")) {
@@ -18997,6 +19005,16 @@ const startPlanSurfaceOf = (t: Task): { files: string[] | null; ranges: StartPla
   const files = programReleasePolicy(t) === "manual" ? read : [...new Set([...read, ...startPlanCardPaths(card ?? null)])];
   return { files: files.length ? files : null, ranges: t.surface?.ranges ?? null };
 };
+// THE NAMED BASE THAT IS NOT THERE (start-plan.ts#StartPlanChecks.baseMissing): Task.base, else the
+// repo's configured integration branch — the two names dispatchTask resolves through
+// `refs/heads/<base>` and dies on when absent. The primary's own HEAD branch is never "missing".
+// Through taskBaseRefOf's stamped cache (stats, no git process on a hit); unreadable → null, unknown.
+const taskBaseMissing = (t: Task): string | null => {
+  const repo = t.repo ?? DISPATCH_REPO;
+  const named = repo ? t.base ?? repoBases[repoCanon(repo)] : undefined;
+  const ref = repo && named ? taskBaseRefOf(repo, named) : null;
+  return ref && !ref.commit ? ref.base : null;
+};
 const startPlanRowOf = (t: Task): StartPlanRow => {
   const policy = programReleasePolicy(t);
   const src = variantSourceOf(t);
@@ -19004,7 +19022,7 @@ const startPlanRowOf = (t: Task): StartPlanRow => {
     after: src.card?.after ?? [],
     checks: startPlanChecks({ text: src.text, source: t.source, card: src.card ?? null,
       briefText: src.brief?.text ?? null, briefEdited: src.brief?.edited, briefBy: src.brief?.by, briefAt: src.brief?.at ?? null,
-      queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id }),
+      queueKnown: (id) => tasks.some((x) => x.id === id), selfId: t.id, baseMissing: taskBaseMissing(t) }),
     // a PARKED row reads as `manual`: pending and waiting for a release, which is exactly what it does
     ...(policy !== "manual" && !dispatchParked(t) ? { release: policy } : {}), ...(t.hold ? { held: true } : {}),
     ...(t.variantOf ? { variantOf: t.variantOf } : {}) };
@@ -21858,18 +21876,23 @@ async function tickDispatch(): Promise<void> {
         : null;
       const space = measureHostDiskSpace();
       if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }
+      const noteBefore = next.note;
       const r = await dispatchTask(next, free, false, false, taskSpawnOf(next), handover);
+      // A FAILED SPAWN SKIPS ITS WAVE, it does not end the tick: dispatchTask restored the rows and
+      // wrote the reason, and a wave failing every tick held every wave behind it (live 2026-10-09,
+      // an hour). Logged when the reason is new, not every tick.
+      if (!r.ok) { if (next.note !== noteBefore) console.log(`dispatch: ${plan.ids.join("+")} skipped — ${r.error}`); continue; }
 
       // the machine's sibling of the owner's task_wave_dispatch, written once per started wave
-      if (r.ok && handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);
+      if (handover) audit("task_wave_start", r.slot, `${plan.ids.join("+")} ${land.klasse} saves=${land.savingsSec}s by=tick`);
       // the START NOTE of a policy start names the policy and the gaps it started past (the verdict's hints)
-      if (r.ok) for (const row of byPolicy) {
+      for (const row of byPolicy) {
         const v = fresh.get(row.id);
         const hints = v?.released ? v.hints : [];
         row.note = `${row.note ?? ""} · started by policy ${programReleasePolicy(row)}${hints.length ? ` — hint: ${hints.join("; ")}` : ""}`.slice(0, 500);
       }
-      if (r.ok && byPolicy.length) saveState();
-      if (r.ok) await r.tail;
+      if (byPolicy.length) saveState();
+      await r.tail;
       return; // serial by design — one lane per tick, whichever wave got past every gate
     }
   } finally {

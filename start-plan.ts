@@ -44,6 +44,13 @@ export interface StartPlanChecks {
   // caller handed no queueKnown and decided nothing; the release doors, which always know the
   // queue, hold the line there.
   afterMissing: string[];
+  // THE ROW'S INTEGRATION BASE NAMES A LOCAL BRANCH THAT DOES NOT EXIST — the branch name, read by
+  // the caller exactly as the dispatch resolves it (Task.base, else the repo's integration branch).
+  // Absent = it exists, or nobody could tell: an unreadable repo is UNKNOWN, never missing, and an
+  // unknown base is left to the spawn to refuse. Present only when set, so every other row's checks
+  // stay byte-identical. Live 2026-10-09: 5eb39834 (base overhaul, the branch gone since 2026-10-06)
+  // stood an hour as the first wave with next "now", and every tick died on its spawn.
+  baseMissing?: string;
 }
 
 export interface StartPlanCardFacts {
@@ -87,6 +94,8 @@ export function startPlanChecks(row: {
   queueKnown?: (id: string) => boolean;
   // the row's own id — a row is never its own order
   selfId?: string;
+  // the base branch the caller found missing (StartPlanChecks.baseMissing); null/absent = exists or unknown
+  baseMissing?: string | null;
 }): StartPlanChecks {
   const card = row.card ?? null;
   const text1 = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
@@ -109,6 +118,7 @@ export function startPlanChecks(row: {
     cardFiles: card ? startPlanCardPaths(card).length : null,
     cardStale: !!card && typeof card.at === "number" && typeof row.briefAt === "number" && row.briefAt > card.at,
     afterMissing,
+    ...(row.baseMissing ? { baseMissing: row.baseMissing } : {}),
   };
 }
 
@@ -127,7 +137,8 @@ export function startPlanCardPaths(card: StartPlanCardFacts | null): string[] {
 // release IS the check, so a queued row starts whatever its card says and a pending one never does.
 // `card-valid` also starts a PENDING row whose card carries what an unattended start cannot do
 // without; `all` starts every pending row. A queued row is released under every policy, a held row
-// under none, and an `[idee scout-*]` sketch is never started by a policy at all.
+// or one whose base branch does not exist under none, and an `[idee scout-*]` sketch is never
+// started by a policy at all.
 export type StartPlanRelease = "manual" | "card-valid" | "all";
 export const START_PLAN_RELEASES: readonly StartPlanRelease[] = ["manual", "card-valid", "all"];
 
@@ -147,6 +158,13 @@ const clip = (s: string, n: number): string => s.length > n ? `${s.slice(0, n - 
 /** Is this row released, and by what? Pure over the row's status, its program's policy, a hold and its checks. */
 export function releaseVerdict(row: { status: string; checks: StartPlanChecks; release?: StartPlanRelease; held?: boolean; after?: readonly string[] }): StartPlanReleaseVerdict {
   if (row.held) return { released: false, why: "held by its MAIN — a release lifts the hold" };
+  // A BASE THAT DOES NOT EXIST stops a row under every release and every policy, like the hold above:
+  // no tick can fork a lane from a branch that is not there, and a row that read as released took
+  // the head of its wave and died on its spawn every tick. Refused here it claims no files, the waves
+  // behind it pass, and the wait register names its MAIN as the one who decides (restore the branch
+  // or archive the row) — nothing archives it on its own.
+  if (row.checks.baseMissing)
+    return { released: false, why: `base branch ${row.checks.baseMissing} does not exist — restore the branch or archive the row` };
   if (row.status === "queued") return { released: true, by: "release", hints: [] };
   const policy = row.release ?? "manual";
   if (row.status !== "pending" || policy === "manual") return { released: false, why: null };
@@ -593,6 +611,23 @@ async function cli(): Promise<void> {
     integrationBaseCache.set(repo, branch);
     return branch;
   };
+  // THE NAMED BASE THAT IS NOT THERE, read as server.ts#taskBaseMissing reads it: the row's base,
+  // else the configured integration branch — never the primary's HEAD branch. A repo git cannot
+  // read is UNKNOWN (null), never missing. Cached per repo and branch.
+  const baseExistsCache = new Map<string, boolean | null>();
+  const baseMissingOf = (repo: string | null, named: string | null): string | null => {
+    if (!repo || !named) return null;
+    const key = `${repo}\0${named}`;
+    let exists = baseExistsCache.get(key);
+    if (exists === undefined) {
+      const ok = (...args: string[]): boolean => Bun.spawnSync(["git", "-C", repo, ...args],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).success;
+      exists = !ok("rev-parse", "--git-dir") ? null
+        : ok("check-ref-format", "--branch", named) && ok("rev-parse", "--verify", "--quiet", `refs/heads/${named}^{commit}`);
+      baseExistsCache.set(key, exists);
+    }
+    return exists === false ? named : null;
+  };
   const statuses: Record<string, string> = {};
   const rows: StartPlanRow[] = [];
   // WHO IS A QUEUE ROW, for the order the text names: every id the state file carries, decided BEFORE
@@ -619,7 +654,9 @@ async function cli(): Promise<void> {
         // state file reads exactly as the server reads the same stamp — the union, no authority
         briefEdited: src.brief?.edited, briefBy: src.brief?.by,
         briefAt: typeof src.brief?.at === "number" ? src.brief.at : null,
-        queueKnown: (id) => rowIds.has(id), selfId: task.id }),
+        queueKnown: (id) => rowIds.has(id), selfId: task.id,
+        baseMissing: baseMissingOf(rowRepo, typeof task.base === "string" && task.base ? task.base
+          : rowRepo ? (bases[canon(rowRepo)] ?? bases[rowRepo]) || null : null) }),
       ...(policyOf(task) !== "manual" ? { release: policyOf(task) } : {}),
       ...(task.hold ? { held: true } : {}),
       ...(typeof task.variantOf === "string" && task.variantOf ? { variantOf: task.variantOf } : {}) });

@@ -19,10 +19,10 @@
 // section seeds one instead of reusing the harness's.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { BASE, ROOT, check, get, paneEnv, post } from "./harness";
-import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
+import { driveMerge, openLane, seedRepo, settleForMerge, waitMerge, type Lane, type MergeVerdict } from "./lane-helpers";
 import { laneSuiteWatchMessage } from "../lane-signals";
 
 interface HelperJob {
@@ -1370,10 +1370,22 @@ export async function run(h: {
   // has exactly two numbers: a helper deployment's audit starts once the repo has been QUIET for
   // FLEET_AUDIT_QUIET_MS since its newest land, or FLEET_AUDIT_MAX_WAIT_MS after its OLDEST one —
   // whichever comes first, so a day that is never quiet still measures every land.
+  // …AND BOTH NUMBERS ONLY BOUND A WAIT FOR ANOTHER LAND (2026-10-09, server.ts#auditLandsInFlight).
+  // The night after, every audit waited the full 20 minutes behind a land nothing followed, and a
+  // deploy waits for that audit since 83c93145 (owner: „[Zitat entfernt]“). So: with no further
+  // land of the repo reserved or running, the entry is due AT ONCE (`trigger: "no-land"`); the window
+  // and the ceiling hold it only while one is.
+  //
+  // THE LAND IN FLIGHT IS REAL: a lane whose land gate is parked. The instance's verify stand-in
+  // (FLEET_VERIFY_CMD, the wrapper's `fakeverify`) is rewritten for this section to wait while
+  // `t-hold-gate` names a file present in the tree under verify — only the lane that committed that
+  // file is held, and the command string the server reads stays byte-identical (its short-chain
+  // narrowing parses it). Restored at the teardown. Nothing else lands on REPO while a lane is held:
+  // the held lane rebased onto main before it parked, and must still fast-forward afterwards.
   //
   // Measured in seconds rather than the production 20/60 minutes; what is under test is the rule.
-  // Two boots, one per number, so each trigger is the ONLY one that can fire: (T.q) a short quiet
-  // window under a ten-minute ceiling, (T.m) a ten-minute quiet window under a short ceiling.
+  // Two boots, one per number, so each trigger is the ONLY one that can fire: (T.q) a 30 s quiet
+  // window under a ten-minute ceiling, (T.m) a ten-minute quiet window under a 30 s ceiling.
   const tJobId = createHash("sha256").update(realpathSync(REPO)).digest("hex").slice(0, 12);
   const tMine = async (): Promise<PendingAudit | undefined> => (await pending()).find((p) => p.repo === base(REPO));
   // poll the helper's own list until REPO's audit appears; returns WHEN it was first seen (0 = never)
@@ -1391,12 +1403,62 @@ export async function run(h: {
   });
   const tBeat = (): Promise<Response> => hpost("/api/helper/device",
     { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
+  // the parked gate — see the section head
+  const T_VERIFY = process.env.FLEET_VERIFY_CMD ?? "";
+  const T_HOLD = `${ROOT}/t-hold-gate`;
+  const tVerifyOrig = T_VERIFY && existsSync(T_VERIFY) ? readFileSync(T_VERIFY, "utf8") : null;
+  if (tVerifyOrig !== null) {
+    const nl = tVerifyOrig.indexOf("\n");
+    writeFileSync(T_VERIFY, `${tVerifyOrig.slice(0, nl + 1)}while n=$(cat '${T_HOLD}' 2>/dev/null) && [ -n "$n" ]`
+      + ` && [ -f "$n" ]; do sleep 0.2; done\n${tVerifyOrig.slice(nl + 1)}`);
+  }
+  check("(T) setup: the verify stand-in can park one lane's land gate",
+    tVerifyOrig !== null, `FLEET_VERIFY_CMD=${JSON.stringify(T_VERIFY)}`);
+  // start a land and return while it is IN FLIGHT — driveMerge's start loop without its wait
+  const tStartLand = async (ln: Lane): Promise<boolean> => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await settleForMerge(ln.slot);
+      await post(`/api/slots/${ln.slot}/merge`, {});
+      const r = await get(`/api/slots/${ln.slot}/merge`);
+      if (r.ok && ((await r.json()) as { running?: boolean }).running) return true;
+      await Bun.sleep(800);
+    }
+    return false;
+  };
+  const tRunning = async (ln: Lane): Promise<boolean> => {
+    const r = await get(`/api/slots/${ln.slot}/merge`);
+    return r.ok && ((await r.json()) as { running?: boolean }).running === true;
+  };
+  // a lane parked in its gate: its land started, and the hold naming its own file. Opened (and its
+  // idle gate paid) BEFORE the land it is to follow, so starting it costs a POST, not a lane spawn.
+  const tOpenHeld = async (name: string): Promise<{ ln: Lane; name: string }> => {
+    const ln = await openLane(REPO, name);
+    await settleForMerge(ln.slot);
+    return { ln, name };
+  };
+  const tPark = async ({ ln, name }: { ln: Lane; name: string }): Promise<{ ln: Lane; inFlight: boolean }> => {
+    writeFileSync(T_HOLD, `${name}.txt`);
+    const started = await tStartLand(ln);
+    await Bun.sleep(1500);   // past the rebase, into the parked gate
+    return { ln, inFlight: started && await tRunning(ln) };
+  };
+  const tRelease = async (ln: Lane): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
+    writeFileSync(T_HOLD, "");
+    return waitMerge(ln.slot, { requireVerdict: true });
+  };
+  // claim the listed job, report it green, and return its ledger row on `tip`
+  const tTake = async (tip: string, rowsBefore: number, what: string): Promise<{ claim: number; row: Row | undefined }> => {
+    const job = await jobFor(REPO);
+    const claim = job ? await hpost("/api/helper/claim", { jobId: job.id, deviceId: DEVICE }) : null;
+    await hpost("/api/helper/result", { jobId: job?.id ?? "", exitCode: 0, tail: `PASS  ${what}\nALL PASS` });
+    const rows = await waitNewRepoRows(rowsBefore + 1);
+    return { claim: claim?.status ?? 0, row: rows.find((r) => r.mainSha === tip) };
+  };
 
   // --- (T.q) THE QUIET WINDOW --------------------------------------------------------------------
-  // 12 s: long enough that the land's own return path (the lane closing) fits inside it on a loaded box
-  const T_QUIET_MS = 12_000;
+  const T_QUIET_MS = 45_000;
   await killSrv();
-  check("(T.q) setup: a helper deployment with a 12 s quiet window under a 10 min ceiling",
+  check("(T.q) setup: a helper deployment with a 45 s quiet window under a 10 min ceiling",
     await startSrv({ audit: true, extra: tCadenceEnv(T_QUIET_MS, 600_000) }));
   await Bun.sleep(750);
   await setAuditMode("green");
@@ -1404,63 +1466,93 @@ export async function run(h: {
   check("(T.q) setup: the helper is beating and active, the queue is empty and nothing runs here",
     (await tBeat()).ok && (await jobs()).jobs.length === 0 && (await liveRepo()) === null,
     JSON.stringify((await jobs()).jobs));
+
+  // (T.n) THE DONE OF 2026-10-09: a land with no other land of the repo reserved or running is not
+  // held at all. MUTATION: drop the `no-land` arm of auditCadenceOf ⇒ the entry waits the 45 s
+  // window, the first look finds no job and the row says `quiet` ⇒ red.
+  const tnRowsBefore = (await newRepoRows()).length;
+  const tnA = await openLane(REPO, "cadencea");
+  const tnLanded = await driveMerge(tnA, tnA.branch);
+  const tnTip = headOf();
+  const tnHeld = await tMine();
+  const tnSeenAt = await tListedAt(5_000);
+  const tnCoverAt = tnHeld?.newestAt ?? 0;
+  check("(T.n) NO LAND IN FLIGHT, NO WAIT: a land nothing follows is offered at once — no hold, listed long before the quiet window",
+    tnLanded.gone && tnSeenAt > 0 && tnHeld?.hold === "waiting for helper" && tnCoverAt > 0
+      && tnSeenAt - tnCoverAt < T_QUIET_MS,
+    `landed=${tnLanded.gone} seenAt-landAt=${tnSeenAt ? tnSeenAt - tnCoverAt : "never"}ms pending=${JSON.stringify(tnHeld)}`);
+  const tn = await tTake(tnTip, tnRowsBefore, "released with no land in flight");
+  check("(T.n) …and the ledger row says no-land released it",
+    tn.claim === 200 && !!tn.row?.remote && tn.row.trigger === "no-land" && tn.row.covers.length === 1,
+    `claim=${tn.claim} ${String(JSON.stringify(tn.row)).slice(0, 300)}`);
+
+  // (T.q) A land while ANOTHER is in flight is held by the window, and the burst ends with that land.
+  // MUTATION: drop the `auditCadenceHolds` gate from helperJobsView ⇒ the job is listed at once ⇒ red;
+  // drop it from helperClaim ⇒ the claim answers 200 with a bundle ⇒ red.
   const tqRowsBefore = (await newRepoRows()).length;
-  const tqLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
-  const tqA = await openLane(REPO, "cadencea");
-  await driveMerge(tqA, tqA.branch);
-  const tqHeldA = await tMine();
+  const tqHeldLane = await tOpenHeld("cadencehold1");
+  const tqB = await openLane(REPO, "cadenceb");
+  const tqBLanded = await driveMerge(tqB, tqB.branch);
+  const tqH = await tPark(tqHeldLane);
+  await tBeat();
+  const tqHeld = await tMine();
   const tqListedEarly = await jobFor(REPO);
   const tqEarlyClaim = await hpost("/api/helper/claim", { jobId: tJobId, deviceId: DEVICE });
   const tqEarlyErr = (await tqEarlyClaim.json()) as { error?: string; job?: unknown };
-  // MUTATION: drop the `auditCadenceHolds` gate from helperJobsView ⇒ the job is listed at once ⇒ red;
-  // drop it from helperClaim ⇒ the claim answers 200 with a bundle ⇒ red.
-  check("(T.q) A FRESH LAND IS HELD BY THE QUIET WINDOW: not on the helper's list, its claim a 409, and the hold says until when",
-    !tqListedEarly && tqEarlyClaim.status === 409 && tqEarlyErr.job === undefined
+  check("(T.q) A LAND WITH ANOTHER IN FLIGHT IS HELD BY THE QUIET WINDOW: not listed, its claim a 409, the hold says until when",
+    tqBLanded.gone && tqH.inFlight && !tqListedEarly && tqEarlyClaim.status === 409 && tqEarlyErr.job === undefined
       && (tqEarlyErr.error ?? "").includes("not offered yet")
-      && tqHeldA?.hold === "quiet" && tqHeldA.covers === 1
-      && tqHeldA.releaseAt === (tqHeldA.newestAt ?? 0) + T_QUIET_MS
+      && tqHeld?.hold === "quiet" && tqHeld.covers === 1
+      && tqHeld.releaseAt === (tqHeld.newestAt ?? 0) + T_QUIET_MS
       && (await liveRepo()) === null && (await newRepoRows()).length === tqRowsBefore,
-    `listed=${!!tqListedEarly} claim=${tqEarlyClaim.status} ${JSON.stringify(tqEarlyErr)} pending=${JSON.stringify(tqHeldA)}`);
-  const tqLog = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(tqLogFrom) : "";
-  check("(T.q) …and server.log names the hold in words: QUIET, the repo, and the moment it is released",
-    tqLog.split("\n").some((l) => l.includes("post-land audit QUIET:") && l.includes(base(REPO))),
-    tqLog.split("\n").filter((l) => l.includes("post-land audit")).slice(-3).join(" | ").slice(0, 400));
-  // a SECOND land inside the window: the burst is not over, so the window restarts from it
-  const tqB = await openLane(REPO, "cadenceb");
-  await driveMerge(tqB, tqB.branch);
+    `inFlight=${tqH.inFlight} listed=${!!tqListedEarly} claim=${tqEarlyClaim.status} ${JSON.stringify(tqEarlyErr)} pending=${JSON.stringify(tqHeld)}`);
+  const tqHLanded = await tRelease(tqH.ln);
   const tqTip = headOf();
-  const tqHeldB = await tMine();
-  check("(T.q) A SECOND LAND RESTARTS THE WINDOW: two covers, held until the NEWEST land plus the quiet window",
-    tqHeldB?.hold === "quiet" && tqHeldB.covers === 2
-      && tqHeldB.releaseAt === (tqHeldB.newestAt ?? 0) + T_QUIET_MS
-      && (tqHeldB.newestAt ?? 0) > (tqHeldA?.newestAt ?? Infinity),
-    `before=${JSON.stringify(tqHeldA)} after=${JSON.stringify(tqHeldB)}`);
-  const tqSeenAt = await tListedAt(T_QUIET_MS + 15_000);
+  const tqSeenAt = await tListedAt(15_000);
   const tqJob = await jobFor(REPO);
-  check("(T.q) THE QUIET WINDOW RELEASES IT: offered no earlier than newest land + window, with BOTH lands on one job",
-    tqSeenAt > 0 && tqSeenAt >= (tqHeldB?.releaseAt ?? Infinity) && tqJob?.covers === 2
-      && tqJob.branches.includes(tqA.branch) && tqJob.branches.includes(tqB.branch) && tqJob.claim === null
-      && (await liveRepo()) === null,
-    `seenAt-releaseAt=${tqSeenAt - (tqHeldB?.releaseAt ?? 0)}ms job=${JSON.stringify(tqJob)}`);
-  const tqClaim = tqJob ? await hpost("/api/helper/claim", { jobId: tqJob.id, deviceId: DEVICE }) : null;
-  const tqClaimBody = (await tqClaim?.json()) as { job?: { mainSha?: string; covers?: number } } | undefined;
-  const tqReport = await hpost("/api/helper/result",
-    { jobId: tqJob?.id ?? "", exitCode: 0, tail: "PASS  one run for the burst\nALL PASS" });
-  const tqRows = await waitNewRepoRows(tqRowsBefore + 1);
-  const tqRow = tqRows.find((r) => r.mainSha === tqTip);
+  check("(T.q) THE BURST ENDS WITH ITS LAST LAND: offered as soon as the held land is in, before the window, with BOTH lands on one job",
+    tqHLanded.gone && tqSeenAt > 0 && tqSeenAt < (tqHeld?.releaseAt ?? 0) && tqJob?.covers === 2
+      && tqJob.branches.includes(tqB.branch) && tqJob.branches.includes(tqH.ln.branch) && tqJob.claim === null,
+    `landed=${tqHLanded.gone} seenAt-releaseAt=${tqSeenAt - (tqHeld?.releaseAt ?? 0)}ms job=${JSON.stringify(tqJob)}`);
+  const tq = await tTake(tqTip, tqRowsBefore, "one run for the burst");
   // MUTATION: drop `trigger` from the helperResult row ⇒ red; stamp it unconditionally as one value ⇒
-  // (T.m) below goes red.
-  check("(T.q) ONE RUN ON THE NEWEST TIP NAMES BOTH LANDS, and the ledger row says the QUIET window released it",
-    tqClaim?.status === 200 && tqClaimBody?.job?.mainSha === tqTip && tqReport.ok
-      && tqRows.length === tqRowsBefore + 1 && !!tqRow?.remote && tqRow.trigger === "quiet"
-      && tqRow.covers.length === 2 && tqRow.covers.some((c) => c.branch === tqA.branch)
-      && tqRow.covers.some((c) => c.branch === tqB.branch),
-    `claim=${tqClaim?.status} ${String(JSON.stringify(tqRow)).slice(0, 400)}`);
+  // (T.w) or (T.m) below goes red.
+  check("(T.q) ONE RUN ON THE NEWEST TIP NAMES BOTH LANDS, and the ledger row says no-land released it",
+    tq.claim === 200 && !!tq.row?.remote && tq.row.trigger === "no-land" && tq.row.covers.length === 2
+      && tq.row.covers.some((c) => c.branch === tqB.branch) && tq.row.covers.some((c) => c.branch === tqH.ln.branch),
+    `claim=${tq.claim} ${String(JSON.stringify(tq.row)).slice(0, 400)}`);
+
+  // (T.w) …and a land that STAYS in flight does not hold the entry past the window.
+  const twRowsBefore = (await newRepoRows()).length;
+  const twHeldLane = await tOpenHeld("cadencehold2");
+  const twC = await openLane(REPO, "cadencec");
+  const twCLanded = await driveMerge(twC, twC.branch);
+  const twTip = headOf();
+  const twH = await tPark(twHeldLane);
+  await tBeat();
+  const twHeld = await tMine();
+  const twSeenAt = await tListedAt(T_QUIET_MS + 15_000);
+  const twStillInFlight = await tRunning(twH.ln);
+  check("(T.w) THE QUIET WINDOW RELEASES IT although the other land is still in flight: offered no earlier than land + window",
+    twCLanded.gone && twH.inFlight && twHeld?.hold === "quiet" && twSeenAt > 0 && twSeenAt >= (twHeld.releaseAt ?? Infinity)
+      && twStillInFlight && (await jobFor(REPO))?.covers === 1,
+    `inFlight=${twH.inFlight}/${twStillInFlight} seenAt-releaseAt=${twSeenAt - (twHeld?.releaseAt ?? 0)}ms pending=${JSON.stringify(twHeld)}`);
+  const tw = await tTake(twTip, twRowsBefore, "released by the quiet window");
+  check("(T.w) …and the ledger row says the QUIET window released it",
+    tw.claim === 200 && !!tw.row?.remote && tw.row.trigger === "quiet" && tw.row.covers.length === 1
+      && tw.row.covers[0]?.branch === twC.branch,
+    `claim=${tw.claim} ${String(JSON.stringify(tw.row)).slice(0, 300)}`);
+  const twHLanded = await tRelease(twH.ln);
+  const twHTip = headOf();
+  const twHSeen = await tListedAt(15_000);
+  const twH2 = await tTake(twHTip, twRowsBefore + 1, "the held land after its window");
+  check("(T.w) …and the held land, once in, is its own run at once",
+    twHLanded.gone && twHSeen > 0 && twH2.claim === 200 && twH2.row?.trigger === "no-land",
+    `landed=${twHLanded.gone} seen=${twHSeen > 0} claim=${twH2.claim} trigger=${twH2.row?.trigger}`);
 
   // --- (T.m) THE CEILING -------------------------------------------------------------------------
-  // The quiet window is now ten minutes, so it CANNOT fire here; only the ceiling can. Two lands, and
-  // the second one does NOT push the release out — the ceiling runs from the OLDEST land.
-  // 45 s: three lands (two here, one docs-only) must fit before it, or the probe measured nothing
+  // The quiet window is now ten minutes, so it CANNOT fire here; only the ceiling can — and only while
+  // another land holds the window open at all.
   const T_MAX_MS = 45_000;
   await killSrv();
   check("(T.m) setup: a helper deployment with a 10 min quiet window under a 45 s ceiling",
@@ -1469,13 +1561,25 @@ export async function run(h: {
   await tBeat();
   const tmRowsBefore = (await newRepoRows()).length;
   const tmDocsBefore = (await rowsFor(shortChainRepo)).length;
-  const tmC = await openLane(REPO, "cadencec");
-  await driveMerge(tmC, tmC.branch);
+  const tmHeldLane = await tOpenHeld("cadencehold3");
   const tmD = await openLane(REPO, "cadenced");
-  await driveMerge(tmD, tmD.branch);
+  const tmDLanded = await driveMerge(tmD, tmD.branch);
   const tmTip = headOf();
-  // …and a DOCS-ONLY land into the short-chain repo in the same window: local-only work (install+pins,
-  // never offered) is under the same two numbers on a helper deployment — its row carries the trigger too
+  const tmH = await tPark(tmHeldLane);
+  await tBeat();
+  const tmSnapAt = Date.now();
+  const tmHeld = await tMine();
+  const tmListedEarly = await jobFor(REPO);
+  check("(T.m) A LAND BEHIND ANOTHER IN FLIGHT, UNDER A WINDOW THAT NEVER ENDS, IS HELD UNTIL ITSELF PLUS THE CEILING",
+    tmDLanded.gone && tmH.inFlight
+      && tmSnapAt < (tmHeld?.releaseAt ?? 0)          // the probe looked BEFORE the release, or it measured nothing
+      && !tmListedEarly && tmHeld?.hold === "quiet" && tmHeld.covers === 1
+      && tmHeld.releaseAt === (tmHeld.oldestAt ?? 0) + T_MAX_MS
+      && (await newRepoRows()).length === tmRowsBefore,
+    `inFlight=${tmH.inFlight} snap-releaseAt=${tmSnapAt - (tmHeld?.releaseAt ?? 0)}ms listed=${!!tmListedEarly} pending=${JSON.stringify(tmHeld)}`);
+  // …and a DOCS-ONLY land into the short-chain repo meanwhile: local-only work (install+pins, never
+  // offered), and the land in flight is in ANOTHER repo — so nothing holds it, and it runs HERE at once
+  const tmLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
   const tmDocs = (await (await post("/api/lanes", { repo: shortChainRepo })).json()) as Lane;
   mkdirSync(`${tmDocs.cwd}/docs`, { recursive: true });
   await Bun.write(`${tmDocs.cwd}/docs/cadence.md`, "cadence measurement note\n");
@@ -1487,39 +1591,38 @@ export async function run(h: {
     await Bun.sleep(300);
   }
   const tmDocsLanded = await driveMerge(tmDocs, tmDocs.branch);
-  const tmSnapAt = Date.now();
-  const tmHeld = await tMine();
-  const tmListedEarly = await jobFor(REPO);
-  check("(T.m) TWO LANDS UNDER A QUIET WINDOW THAT NEVER ENDS ARE HELD UNTIL THE OLDEST ONE PLUS THE CEILING",
-    tmSnapAt < (tmHeld?.releaseAt ?? 0)          // the probe looked BEFORE the release, or it measured nothing
-      && !tmListedEarly && tmHeld?.hold === "quiet" && tmHeld.covers === 2
-      && tmHeld.releaseAt === (tmHeld.oldestAt ?? 0) + T_MAX_MS
-      && (await newRepoRows()).length === tmRowsBefore,
-    `snap-releaseAt=${tmSnapAt - (tmHeld?.releaseAt ?? 0)}ms listed=${!!tmListedEarly} pending=${JSON.stringify(tmHeld)}`);
-  const tmSeenAt = await tListedAt(T_MAX_MS + 20_000);
-  const tmJob = await jobFor(REPO);
-  const tmClaim = tmJob ? await hpost("/api/helper/claim", { jobId: tmJob.id, deviceId: DEVICE }) : null;
-  const tmClaimBody = (await tmClaim?.json()) as { job?: { mainSha?: string } } | undefined;
-  const tmReport = await hpost("/api/helper/result",
-    { jobId: tmJob?.id ?? "", exitCode: 0, tail: "PASS  released by the ceiling\nALL PASS" });
-  const tmRows = await waitNewRepoRows(tmRowsBefore + 1);
-  const tmRow = tmRows.find((r) => r.mainSha === tmTip);
-  // MUTATION: drop the `max-wait` arm of auditCadenceOf ⇒ nothing is offered inside the 65 s poll ⇒ red
-  check("(T.m) THE CEILING RELEASES A BURST THAT NEVER GOES QUIET: one run on the newest tip, both lands, trigger max-wait",
-    tmSeenAt >= (tmHeld?.releaseAt ?? Infinity) && tmClaim?.status === 200 && tmClaimBody?.job?.mainSha === tmTip
-      && tmReport.ok && !!tmRow?.remote && tmRow.trigger === "max-wait" && tmRow.covers.length === 2
-      && tmRow.covers.some((c) => c.branch === tmC.branch) && tmRow.covers.some((c) => c.branch === tmD.branch),
-    `seenAt-releaseAt=${tmSeenAt - (tmHeld?.releaseAt ?? 0)}ms claim=${tmClaim?.status} ${String(JSON.stringify(tmRow)).slice(0, 300)}`);
-  const tmDocsRow = (await waitRowsFor(shortChainRepo, tmDocsBefore + 1, T_MAX_MS + 30_000))[0];
+  const tmDocsRow = (await waitRowsFor(shortChainRepo, tmDocsBefore + 1, T_MAX_MS))[0];
   const tmDocsCover = tmDocsRow?.covers[0]?.at ?? 0;
-  check("(T.m) …and the DOCS-ONLY land runs HERE (never offered) but under the same ceiling, its row saying max-wait",
+  // MUTATION: count lands of every repo in auditLandsInFlight ⇒ the docs row waits for the ceiling ⇒ red
+  check("(T.m) …and the DOCS-ONLY land of ANOTHER repo runs HERE at once (never offered), its row saying no-land",
     tmDocsLanded.gone && !!tmDocsRow && tmDocsRow.proportional === true && !tmDocsRow.remote
-      && tmDocsRow.trigger === "max-wait" && tmDocsCover > 0 && tmDocsRow.startedAt - tmDocsCover >= T_MAX_MS,
+      && tmDocsRow.trigger === "no-land" && tmDocsCover > 0 && tmDocsRow.startedAt - tmDocsCover < T_MAX_MS,
     `waited=${tmDocsRow ? tmDocsRow.startedAt - tmDocsCover : "no row"}ms ceiling=${T_MAX_MS}`
     + ` trigger=${tmDocsRow?.trigger} remote=${!!tmDocsRow?.remote}`);
-  check("(T) teardown: the machine is idle with an empty queue",
-    await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0 && !(await tMine()),
-    JSON.stringify((await jobs()).jobs));
+  // the docs land kicked the drain while REPO's entry was held: that pass says so, once, in words
+  const tmLog = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(tmLogFrom) : "";
+  check("(T.m) …and server.log names the hold in words: QUIET, the repo, the land it waits behind, and the moment it is released",
+    tmLog.split("\n").some((l) => l.includes("post-land audit QUIET:") && l.includes(base(REPO)) && l.includes(tmH.ln.branch)),
+    tmLog.split("\n").filter((l) => l.includes("post-land audit")).slice(-3).join(" | ").slice(0, 400));
+  const tmSeenAt = await tListedAt(T_MAX_MS + 20_000);
+  const tmStillInFlight = await tRunning(tmH.ln);
+  const tm = await tTake(tmTip, tmRowsBefore, "released by the ceiling");
+  // MUTATION: drop the `max-wait` arm of auditCadenceOf ⇒ nothing is offered inside the 65 s poll ⇒ red
+  check("(T.m) THE CEILING RELEASES A LAND WHOSE BURST NEVER ENDS: one run on its tip, trigger max-wait",
+    tmSeenAt >= (tmHeld?.releaseAt ?? Infinity) && tmStillInFlight && tm.claim === 200
+      && !!tm.row?.remote && tm.row.trigger === "max-wait" && tm.row.covers.length === 1
+      && tm.row.covers[0]?.branch === tmD.branch,
+    `seenAt-releaseAt=${tmSeenAt - (tmHeld?.releaseAt ?? 0)}ms inFlight=${tmStillInFlight} claim=${tm.claim} ${String(JSON.stringify(tm.row)).slice(0, 300)}`);
+  const tmHLanded = await tRelease(tmH.ln);
+  const tmHTip = headOf();
+  await tListedAt(15_000);
+  const tmH2 = await tTake(tmHTip, tmRowsBefore + 1, "the held land after the ceiling");
+  if (tVerifyOrig !== null) writeFileSync(T_VERIFY, tVerifyOrig);
+  rmSync(T_HOLD, { force: true });
+  check("(T) teardown: the held land is in and audited, the stand-in restored, the machine idle with an empty queue",
+    tmHLanded.gone && tmH2.claim === 200 && await waitNoLocalRun(60_000) && (await jobs()).jobs.length === 0 && !(await tMine())
+      && (tVerifyOrig === null || readFileSync(T_VERIFY, "utf8") === tVerifyOrig),
+    `landed=${tmHLanded.gone} claim=${tmH2.claim} ${JSON.stringify((await jobs()).jobs)}`);
 
   // ===== (W) WAKE-ON-LAN — THE ONE NAMED EXCEPTION TO "NO PUSH" ===================================
   // Everything else in this portal is a pull: the Fleet answers, the other machine asks. A magic
@@ -2248,9 +2351,11 @@ export async function run(h: {
     const shardIdsOf = (dir: string, n: number): string[] =>
       Array.from({ length: n }, (_, i) => sha12(`${realpathSync(dir)}\u0000shard:${i + 1}/${n}`));
     let beatBox = true;
+    // the box's own cap — the split follows it (server.ts#auditShardCount); 3 everywhere but (1b)
+    let boxCap = 3;
     const beat = async (): Promise<void> => {
       if (beatBox) await hpost("/api/helper/device", { deviceId: SHARDBOX, name: SHARD_NAME, mode: "active", load: 0.1,
-        running: 0, maxParallelSuites: 3, features: ["audit-shard"] });
+        running: 0, maxParallelSuites: boxCap, features: ["audit-shard"] });
       await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
     };
     const boxJobs = async (): Promise<HelperJobs> =>
@@ -2304,6 +2409,21 @@ export async function run(h: {
       const wholeErr = (await wholeClaim.json()) as { error?: string };
       check("(K11) should-reject: the WHOLE-suite job id is refused while the same audit is offered as shards",
         wholeClaim.status === 409 && (wholeErr.error ?? "").includes("3 shards"), `${wholeClaim.status} ${JSON.stringify(wholeErr)}`);
+
+      // (1b) THE SPLIT FOLLOWS THE MACHINE'S CAP (2026-10-09), not FLEET_AUDIT_SHARDS: the same unclaimed
+      // entry is listed as four shards while the box says it runs four suites at once, and as three
+      // again once it says three. Nothing is claimed here, so no run freezes either split.
+      // MUTATION: return AUDIT_SHARDS from auditShardCount ⇒ the four-shard list is three ⇒ red.
+      boxCap = 4;
+      await beat();
+      const fan4 = repoJobs(await boxJobs());
+      boxCap = 3;
+      await beat();
+      const fan3 = repoJobs(await boxJobs());
+      check("(K11) THE SPLIT FOLLOWS maxParallelSuites: a box that says 4 is offered 1/4..4/4 under FLEET_AUDIT_SHARDS=3, and 3 again when it says 3",
+        fan4.map((j) => j.shard).join(",") === "1/4,2/4,3/4,4/4" && fan4.map((j) => j.id).join(",") === shardIdsOf(REPO, 4).join(",")
+          && fan3.map((j) => j.id).join(",") === ids.join(","),
+        `cap4=${JSON.stringify(fan4.map((j) => j.shard))} cap3=${JSON.stringify(fan3.map((j) => j.shard))}`);
 
       // (2) THREE CONCURRENT CLAIMS, ONE TREE. They race the bundle build on purpose (a daemon with three
       // free slots POSTs all three in one tick). MUTATION: build a bundle per claim without the shared

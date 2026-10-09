@@ -29549,8 +29549,10 @@ interface PostLandAuditRow {
   covers: AuditCover[];
   // WHICH OF THE TWO CADENCE NUMBERS RELEASED THIS RUN (auditCadenceOf, owner 2026-10-08): `quiet` —
   // the repo had been quiet for FLEET_AUDIT_QUIET_MS since its newest land in the run; `max-wait` —
-  // its oldest land had waited FLEET_AUDIT_MAX_WAIT_MS and the burst was still going. Absent where no
-  // cadence applies: a deployment without a helper, and every row written before it existed.
+  // its oldest land had waited FLEET_AUDIT_MAX_WAIT_MS and the burst was still going; `no-land`
+  // (2026-10-09) — no further land of the repo was reserved or running, so neither number was waited
+  // for; `deploy` — a deploy asked for this tree. Absent where no cadence applies: a deployment
+  // without a helper, and every row written before it existed.
   trigger?: AuditTrigger;
   // Present ONLY on a row a SHARDED run produced (FLEET_AUDIT_SHARDS, see AuditShardRun): one entry per
   // shard, in `k` order, including the ones that produced nothing — `result:"unknown"` with `ms`,
@@ -29710,12 +29712,23 @@ const AUDIT_HELPER_ONLY = AUDIT_HELPER_GRACE_MS > 0;
 //     at most AUDIT_MAX_WAIT_MS after it landed, plus the claim and the run itself.
 // No third rule (no daily cap, no night run) — the owner's „[Zitat entfernt]“. Zero on either knob
 // releases at once, which is the drain's behaviour before 2026-10-08 and what the harnesses set.
+// …AND BOTH NUMBERS ONLY BOUND A WAIT FOR A LAND THAT IS ON ITS WAY (2026-10-09, auditLandsInFlight).
+// The quiet window guessed when a burst is over; the land reservations SAY it. With no further land
+// of the repo reserved or running, the entry is due at once (`trigger: "no-land"`); while one is, the
+// window and the ceiling apply exactly as before. Measured the night before: 1 206–1 220 s from land
+// to audit on every quiet-released row, and since 83c93145 every deploy waited for it.
 // Applies to a helper deployment ONLY (AUDIT_HELPER_ONLY): without a helper the local drain is the
 // runner and runs on the land, as before — every suite that lands into a tier-2 instance relies on
 // it. The trigger that released a run is stamped on its ledger row (`trigger`), so the ledger says
 // which of the two numbers decided.
 const AUDIT_QUIET_MS = Math.max(0, Number(process.env.FLEET_AUDIT_QUIET_MS ?? 1_200_000) | 0);
 const AUDIT_MAX_WAIT_MS = Math.max(0, Number(process.env.FLEET_AUDIT_MAX_WAIT_MS ?? 3_600_000) | 0);
+// …and how often a held entry asks again whether the land it waits for has ended. Not a third
+// number of the cadence: it decides nothing, it only bounds how late the drain notices. The helper's
+// job list re-reads the cadence on every poll (15 s) by itself; this is the local drain's half.
+const AUDIT_LAND_RECHECK_MS = 30_000;
+// the last QUIET line the drain printed — see the wait lines in drainPostLandAudits
+let auditQuietLine = "";
 // WHEN AN ENTRY LAST BECAME CLAIMABLE AGAIN — repo toplevel -> the moment a blocker on it ended: a
 // helper claim lapsing (expireHelperClaims) or reporting (helperResult, a sharded run's row), or a
 // local run of that repo finishing. Until 2026-10-08 this was the drain's grace clock
@@ -29730,29 +29743,56 @@ function markAuditClaimable(repo: string, now = Date.now()): void {
   if (!auditQueue.has(repo)) { auditClaimableSince.delete(repo); return; }
   auditClaimableSince.set(repo, now);
 }
-type AuditTrigger = "quiet" | "max-wait" | "deploy";
-type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number };
+type AuditTrigger = "quiet" | "max-wait" | "deploy" | "no-land";
+type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number; lands: string[] };
+// THE LANDS THE QUIET WINDOW WAITS FOR — every land of this repo that is reserved (mergeStart) or
+// running (mergeInflight), plus a land intent on disk (landPending), named by branch. The window
+// exists to bundle a burst, and a burst is over when no further land of the repo is on its way: the
+// 20 minutes were a guess at that moment, this list is the moment itself. Measured in the night
+// 08./09.10.: every helper audit waited 1 206–1 220 s after its land (ledger `trigger: "quiet"`), and
+// since 83c93145 a deploy waits for that audit — owner 2026-10-09: „[Zitat entfernt]“.
+// A land whose branch the entry already covers is NOT another land: its ref has moved and its cover
+// is queued; what is left of its job (note, bundle, verdict delivery) adds nothing to the tree.
+// A reserved land on a slot with no worktree cannot be placed in a repo, so it counts for every repo
+// — the direction that waits, never the one that measures a burst half-way.
+function auditLandsInFlight(repo: string, q: AuditQueueEntry): string[] {
+  const covered = new Set(auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.branch)));
+  const out: string[] = [];
+  for (const id of new Set([...mergeStart, ...mergeInflight.keys()])) {
+    const s = slotFrom(id);
+    if (!s?.worktree) { out.push(`slot ${id}`); continue; }
+    if (!inRepo(s, repo) || covered.has(s.worktree.branch)) continue;
+    out.push(s.worktree.branch);
+  }
+  const p = landPending.get(repo);
+  if (p && !covered.has(p.branch) && !out.includes(p.branch)) out.push(p.branch);
+  return out;
+}
 // ONE READING for every door that asks "may this entry start now?" — the drain, the job list, both
 // claim doors, the wake rail and the live view. Over the WHOLE entry (every group), because both
 // numbers are about the repo: "since the last land of the repo", "after its oldest unmeasured land".
-// A function of (covers, now) and nothing else, so a land that arrives after the release but before
+// A function of (covers, lands in flight, now), so a land that arrives after the release but before
 // a claim re-closes the window — the burst was not over — and the ceiling still bounds it.
-function auditCadenceOf(q: AuditQueueEntry, now = Date.now()): AuditCadence {
+// THE WINDOW APPLIES ONLY WHILE ANOTHER LAND IS ON ITS WAY (auditLandsInFlight, 2026-10-09). With
+// none, the entry is due at once — trigger `no-land` — and the two numbers bound the wait for one.
+function auditCadenceOf(repo: string, q: AuditQueueEntry, now = Date.now()): AuditCadence {
   // …save ONE exception, and the only one: a deploy waiting on this tree (AuditCover.deploy) releases
   // it now — the owner's „[Zitat entfernt]“ (2026-10-08), not a third number
   if (auditQueueGroups(q).some((g) => g.covers.some((c) => c.deploy))) return { due: true, trigger: "deploy" };
   const ats = auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.at));
   if (!ats.length) return { due: true, trigger: "quiet" };
+  const lands = auditLandsInFlight(repo, q);
+  if (!lands.length) return { due: true, trigger: "no-land" };
   const youngest = Math.max(...ats), oldest = Math.min(...ats);
   if (now - youngest >= AUDIT_QUIET_MS) return { due: true, trigger: "quiet" };
   if (now - oldest >= AUDIT_MAX_WAIT_MS) return { due: true, trigger: "max-wait" };
-  return { due: false, releaseAt: Math.min(youngest + AUDIT_QUIET_MS, oldest + AUDIT_MAX_WAIT_MS) };
+  return { due: false, releaseAt: Math.min(youngest + AUDIT_QUIET_MS, oldest + AUDIT_MAX_WAIT_MS), lands };
 }
 // …the trigger to stamp on a run that starts NOW, `undefined` where no cadence applies (no helper on
 // this deployment). Only asked at a start, where the doors have already refused an undue entry.
-function auditTriggerNow(q: AuditQueueEntry, now = Date.now()): AuditTrigger | undefined {
+function auditTriggerNow(repo: string, q: AuditQueueEntry, now = Date.now()): AuditTrigger | undefined {
   if (!AUDIT_HELPER_ONLY) return undefined;
-  const c = auditCadenceOf(q, now);
+  const c = auditCadenceOf(repo, q, now);
   return c.due ? c.trigger : undefined;
 }
 // THE VISIBLE HOLD — what an entry nobody is running is waiting FOR. `null` when nothing holds it:
@@ -29760,17 +29800,18 @@ function auditTriggerNow(q: AuditQueueEntry, now = Date.now()): AuditTrigger | u
 // memory view; the drain logs the same two states in words.
 // …and the two readings the doors take: "held right now" and "held until when" (0 = not held).
 // A non-helper deployment is never held — its drain runs on the land.
-function auditCadenceHeldUntil(q: AuditQueueEntry, now = Date.now()): number {
+function auditCadenceHeldUntil(repo: string, q: AuditQueueEntry, now = Date.now()): number {
   if (!AUDIT_HELPER_ONLY) return 0;
-  const c = auditCadenceOf(q, now);
+  const c = auditCadenceOf(repo, q, now);
   return c.due ? 0 : c.releaseAt;
 }
-const auditCadenceHolds = (q: AuditQueueEntry, now = Date.now()): boolean => auditCadenceHeldUntil(q, now) > 0;
+const auditCadenceHolds = (repo: string, q: AuditQueueEntry, now = Date.now()): boolean =>
+  auditCadenceHeldUntil(repo, q, now) > 0;
 type AuditHold = { hold: "quiet"; releaseAt: number } | { hold: "waiting for helper" };
 function auditHoldOf(repo: string, q: AuditQueueEntry, now = Date.now()): AuditHold | null {
   if (!AUDIT_HELPER_ONLY || helperClaimOf(repo) || auditShardRuns.has(repo)
     || auditRunningRepo === repo || runningPostLandAudit?.repo === repo) return null;
-  const c = auditCadenceOf(q, now);
+  const c = auditCadenceOf(repo, q, now);
   if (!c.due) return { hold: "quiet", releaseAt: c.releaseAt };
   return helperClaimBar(repo, q.covers) ? null : { hold: "waiting for helper" };
 }
@@ -29872,6 +29913,23 @@ const AUDIT_SHARDS = parseAuditShards(process.env.FLEET_AUDIT_SHARDS);
 // older tree loses the feature on its next beat. A commit-ancestry floor like the command kind's
 // (daemonKnowsCommandKind) was not an option: a lane cannot know the sha its own commit lands under.
 const AUDIT_SHARD_FEATURE = "audit-shard";
+// HOW MANY SHARDS A NEW AUDIT RUN IS OFFERED AS (2026-10-09) — the helper's own cap, not a smaller
+// constant. FLEET_AUDIT_SHARDS stays the on-switch (n < 2 is today, byte for byte) and the fallback
+// while no shard-capable device has said how many suites it runs at once; once one has, its
+// `maxParallelSuites` IS the split — the machine starts that many on one poll (helper-daemon/
+// daemon.ts#freeSuiteSlots), so a smaller n left slots idle while the audit's longest shard ran
+// alone. Measured before: live n = 3 on a 5-slot workhorse (.env note 2026-09-22). The largest cap
+// among the online shard-capable devices wins, bounded by AUDIT_SHARDS_MAX; a cap below 2 is no
+// split and leaves the fallback. Read at the job list, and FROZEN at a run's first claim like every
+// other fact of the run (AuditShardRun.n) — a cap that changes later moves the NEXT run only.
+function auditShardCount(now = Date.now()): number {
+  if (AUDIT_SHARDS < 2) return AUDIT_SHARDS;
+  let cap = 0;
+  for (const d of helperDevices.values())
+    if (now - d.lastSeen < DEVICE_ONLINE_MS && d.features?.includes(AUDIT_SHARD_FEATURE)
+      && d.maxParallelSuites !== undefined) cap = Math.max(cap, d.maxParallelSuites);
+  return cap >= 2 ? Math.min(cap, AUDIT_SHARDS_MAX) : AUDIT_SHARDS;
+}
 // …AND THE SAME GUARD FOR A NARROWED PREVIEW. A lane-suite job that carries `modules` asks for
 // `FLEET_E2E_MODULES=<modules> ./e2e-isolated.sh`; a daemon without the `modulesEnv` fork runs
 // `cfg.suiteCmd` bare, i.e. the FULL suite, and its verdict would then be filed as the answer to the
@@ -30865,10 +30923,10 @@ async function drainPostLandAudits(): Promise<void> {
         if (bar === "unconfigured") return false;
         // no helper on this deployment: the local drain is the runner, on the land, as always
         if (AUDIT_HELPER_GRACE_MS <= 0) return true;
-        const cadence = auditCadenceOf(q, now);
+        const cadence = auditCadenceOf(r, q, now);
         if (!cadence.due) {
           cadenceUntil = cadenceUntil ? Math.min(cadenceUntil, cadence.releaseAt) : cadence.releaseAt;
-          cadenceHeld.push(basename(r));
+          cadenceHeld.push(`${basename(r)} (behind ${cadence.lands.join(", ")})`);
           return false;
         }
         // THE OWNER'S RULE (2026-10-08): a helper's work never falls back onto this box. The entry
@@ -30884,12 +30942,19 @@ async function drainPostLandAudits(): Promise<void> {
         // `server.log`, and "why is nothing running while a tree is queued?" would have to be
         // joined against the queue file by hand.
         if (cadenceUntil) {
-          console.log(`post-land audit QUIET: ${cadenceHeld.join(", ")} until ${new Date(cadenceUntil).toISOString()}`
-            + ` — released ${Math.round(AUDIT_QUIET_MS / 60_000)} min after the newest land,`
-            + ` at the latest ${Math.round(AUDIT_MAX_WAIT_MS / 60_000)} min after the oldest`);
-          // NOTHING ELSE WOULD EVER WAKE THIS: the land that queued it already kicked, and a quiet
-          // repo by definition sends no further land. So a held entry arms its own return.
-          armAuditCadenceKick(cadenceUntil);
+          // once per change, not once per pass: the re-check below runs this every 30 s while a land
+          // is in flight, and the same sentence twenty times says nothing the first one did not
+          const line = `post-land audit QUIET: ${cadenceHeld.join(", ")} until ${new Date(cadenceUntil).toISOString()}`
+            + " — released as soon as no further land of the repo is reserved or running, or"
+            + ` ${Math.round(AUDIT_QUIET_MS / 60_000)} min after the newest land,`
+            + ` at the latest ${Math.round(AUDIT_MAX_WAIT_MS / 60_000)} min after the oldest`;
+          if (line !== auditQuietLine) console.log(line);
+          auditQuietLine = line;
+          // NOTHING ELSE WOULD EVER WAKE THIS: the land that queued it already kicked, and the land it
+          // waits for ends in the merge job's own frame, which knows nothing of tier 2 (and the land
+          // path is not this region's to change). So a held entry arms its own return — at the
+          // window's end, or at the next re-check of the lands in flight, whichever comes first.
+          armAuditCadenceKick(Math.min(cadenceUntil, now + AUDIT_LAND_RECHECK_MS));
         }
         if (helperWork.length)
           console.log(`post-land audit WAITING: ${helperWork.join(", ")} — waiting for helper; this box runs no`
@@ -32268,7 +32333,7 @@ function helperJobsView(forDevice?: string): {
     // NOT YET OFFERED: an entry the cadence still holds (auditCadenceOf). A run already claimed or
     // opened was released when it started and keeps its job; only a fresh offer waits for the quiet
     // window or the ceiling — the list is where a helper learns there is work, so this is the gate.
-    if (!c && !shardRun && auditCadenceHolds(q)) continue;
+    if (!c && !shardRun && auditCadenceHolds(repo, q)) continue;
     if (!c && (shardRun || AUDIT_SHARDS > 1)) {
       if (shardCapable) jobs.push(...auditShardJobViews(repo, q, shardRun));
       continue;
@@ -32527,7 +32592,7 @@ function helperWorkAwaitingClaim(deviceId: string): boolean {
     if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo) continue;
     // a held entry is not offered yet, so it wakes nobody — a packet now would wake a machine to an
     // empty list; the release is what makes it work, and the next tick after it sees that
-    if (auditCadenceHolds(q)) continue;
+    if (auditCadenceHolds(repo, q)) continue;
     return true;
   }
   // a narrowed preview wakes only a machine that would be SHOWN it (helperJobsView's same guard)
@@ -32931,7 +32996,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   const bar = helperClaimBar(repo, q.covers);
   if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
   // …and the cadence's rule on the door too, for the same reason: never offered, never claimable
-  const heldUntil = auditCadenceHeldUntil(q);
+  const heldUntil = auditCadenceHeldUntil(repo, q);
   if (heldUntil) return json({ error: `this audit is not offered yet — the repo's quiet window or its ceiling releases it at ${new Date(heldUntil).toISOString()}` }, 409);
   // …the two ways this tree could already be somebody's work. Reported apart, not merged: they are
   // different facts, and the helper deserves to know which one it hit.
@@ -32942,7 +33007,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // …and the whole-suite job is not offered while shards are: a client that kept the old id (or knows
   // its shape) must not run the tree whole beside, or instead of, its shards
   if (AUDIT_SHARDS > 1 || auditShardRuns.has(repo))
-    return json({ error: `this audit is offered as ${auditShardRuns.get(repo)?.n ?? AUDIT_SHARDS} shards — claim a shard job, not the whole suite` }, 409);
+    return json({ error: `this audit is offered as ${auditShardRuns.get(repo)?.n ?? auditShardCount()} shards — claim a shard job, not the whole suite` }, 409);
   const id = helperJobId(repo);
   const file = `${HELPER_BUNDLE_DIR}/${id}-${randomBytes(4).toString("hex")}.bundle`;
   const built = await buildHelperBundle(repo, q.main, file);
@@ -32958,7 +33023,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
     return json({ error: "the tree was taken while the bundle was being built — try again" }, 409);
   }
   const now = Date.now();
-  const trigger = auditTriggerNow(q, now);
+  const trigger = auditTriggerNow(repo, q, now);
   const claim: HelperClaim = {
     id, repo, main: q.main, mainSha: built.sha, deviceId, name: helperDeviceName(deviceId),
     claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, covers: q.covers.slice(), bundle: file,
@@ -33321,8 +33386,13 @@ function auditShardJobOf(jobId: string): { repo: string; k: number; n: number } 
       continue;
     }
     if (AUDIT_SHARDS < 2) continue;
-    for (let k = 1; k <= AUDIT_SHARDS; k++)
-      if (auditShardJobId(repo, k, AUDIT_SHARDS) === jobId) return { repo, k, n: AUDIT_SHARDS };
+    // ANY split the list could have minted, not only today's: the list reads auditShardCount at the
+    // device's poll and the claim arrives a moment later, and a heartbeat in between that moved the
+    // cap must not turn a listed job into a 404. The id carries its n, so the run opens under the
+    // split the device was actually shown.
+    for (let n = 2; n <= AUDIT_SHARDS_MAX; n++)
+      for (let k = 1; k <= n; k++)
+        if (auditShardJobId(repo, k, n) === jobId) return { repo, k, n };
   }
   return null;
 }
@@ -33339,7 +33409,7 @@ function auditShardSlotOf(jobId: string): { run: AuditShardRun; slot: AuditShard
 function auditShardJobViews(repo: string, q: { main: string; covers: AuditCover[] },
   run: AuditShardRun | undefined): HelperJobView[] {
   const now = Date.now();
-  const n = run?.n ?? AUDIT_SHARDS;
+  const n = run?.n ?? auditShardCount(now);
   const covers = run?.covers ?? q.covers;
   const localRunning = auditRunningRepo === repo || runningPostLandAudit?.repo === repo;
   const out: HelperJobView[] = [];
@@ -33379,7 +33449,7 @@ function openAuditShardRun(repo: string, main: string, n: number): Promise<{ run
       return { error: "the tree was taken while the bundle was being built — try again", status: 409 };
     }
     const now = Date.now();
-    const trigger = auditTriggerNow(q, now);
+    const trigger = auditTriggerNow(repo, q, now);
     const run: AuditShardRun = {
       repo, main: q.main, mainSha: built.sha, n, firstClaimAt: now, openUntil: now + HELPER_CLAIM_TIMEOUT_MS,
       covers: q.covers.slice(), bundle: file,
@@ -33399,7 +33469,7 @@ async function claimAuditShard(repo: string, k: number, n: number, deviceId: str
   const bar = helperClaimBar(repo, q.covers);
   if (bar) return json({ error: HELPER_CLAIM_BAR_REASON[bar] }, 409);
   // the cadence gates the run's FIRST shard only — an open run was released when it opened
-  const heldUntil = auditShardRuns.has(repo) ? 0 : auditCadenceHeldUntil(q);
+  const heldUntil = auditShardRuns.has(repo) ? 0 : auditCadenceHeldUntil(repo, q);
   if (heldUntil) return json({ error: `this audit is not offered yet — the repo's quiet window or its ceiling releases it at ${new Date(heldUntil).toISOString()}` }, 409);
   if (!helperDevices.get(deviceId)?.features?.includes(AUDIT_SHARD_FEATURE))
     return json({ error: `this audit is offered as ${n} shards, and this device's last heartbeat did not declare`

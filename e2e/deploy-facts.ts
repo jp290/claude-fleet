@@ -584,7 +584,8 @@ export async function run(): Promise<void> {
         `${a.status} ${JSON.stringify(a.b).slice(0, 400)}`);
       if (a.status === 202) await rebootAfterDeploy();
       // (b) …at once: the quiet window is an hour, and the job is on the helper's list now.
-      // MUTATION: drop the `deploy` arm of auditCadenceOf ⇒ the entry is cadence-held ⇒ not listed ⇒ red.
+      // Since 2026-10-09 the `no-land` arm releases it here too (no other land of FIX is in flight), so
+      // this check no longer isolates the `deploy` arm; it proves the deploy's tree is offered at once.
       const again = await deployAsk();
       const jobA = (await auditJobs())[0];
       check("§7b the queued audit is offered NOW, past the hour-long quiet window — one cover, the deploy's own",

@@ -247,7 +247,10 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       input.code === 1008 && input.reason === "snapshot-mirrored-read-only", JSON.stringify(input));
     check("snapshot mirror: HEAD, git status and canary bytes survive every write door; no worktree script spawned",
       before() === original && !existsSync(`${scratch}/spawned`));
-    await command("down"); running = false;
+    // --force: this probe's own fetches leave pooled keep-alive sockets ESTABLISHED on the instance,
+    // and a plain `down` refuses an open connection (testinstanz.sh, 2026-10-09) — the teardown
+    // is not what this family measures
+    await command("down", "--force"); running = false;
     const code = readFileSync(`${repo}/server.ts`, "utf8"), guard = 'if (SNAPSHOT_MIRROR && !["GET", "HEAD", "OPTIONS"].includes(req.method))';
     if (!code.includes(guard)) throw new Error("mirror mutation guard not found");
     writeFileSync(`${repo}/server.ts`, code.replace(guard, 'if (SNAPSHOT_MIRROR && url.pathname !== "/api/slots/16/open" && !["GET", "HEAD", "OPTIONS"].includes(req.method))'));
@@ -261,7 +264,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       mutation.status === 200 && !refused({ status: mutation.status, refusal: mutantBody.refusal }), `${mutation.status}`);
     check("snapshot mirror MUTATION: the counter-probe also leaves the real canary and git bytes untouched", before() === original);
   } finally {
-    if (running) await command("down");
+    if (running) await command("down", "--force");
     lockHolder.kill();
     rmSync(scratch, { recursive: true, force: true });
   }

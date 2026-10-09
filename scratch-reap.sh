@@ -93,11 +93,13 @@ _mtime() {
 # This runs BEFORE the fleet-e2e sweep below so THAT summary stays the script's last line, which
 # host-hygiene §e reads. A copy without testinstanz.sh beside it (the staged e2e instance) says so.
 _ti_script="$(dirname "$0")/testinstanz.sh"
+# Everything it says goes to STDOUT, its stderr included: a line on stderr lands AFTER the summary
+# below in any reader that joins the two streams (measured: the staged suite's §e tally row).
 if [ -x "$_ti_script" ]; then
-  if [ -n "$DRY" ]; then "$_ti_script" reap --dry-run; else "$_ti_script" reap; fi \
-    || echo "[testinstanz-reap] FAILED — $_ti_script reap exited $?" >&2
+  if [ -n "$DRY" ]; then "$_ti_script" reap --dry-run 2>&1; else "$_ti_script" reap 2>&1; fi \
+    || echo "[testinstanz-reap] FAILED — $_ti_script reap exited $?"
 else
-  echo "[testinstanz-reap] UNMEASURED — no executable testinstanz.sh beside $0, no instance looked at" >&2
+  echo "[testinstanz-reap] UNMEASURED — no executable testinstanz.sh beside $0, no instance looked at"
 fi
 
 reaped=0; kept=0; held=0

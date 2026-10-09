@@ -175,7 +175,9 @@ time.sleep(120)
   const TI_FULL = `${TIFIX}/fleet-testinstanz-e2efix-full`;
   const TI_HELD = `${TIFIX}/fleet-testinstanz-e2efix-held`;
   const fullSock = `fleettirf${process.pid}`;
-  for (const d of [TI_DECOY, TI_FULL, TI_HELD, `${TSOCK}/tmux-${process.getuid?.() ?? 0}`]) mkdirSync(d, { recursive: true });
+  // TSOCK only: tmux makes its own tmux-<uid> with 0700 and refuses one this process would create
+  // under a 022 umask (0755, "unsafe permissions" — measured on the helper, preview ee5e3f4a41e9)
+  for (const d of [TI_DECOY, TI_FULL, TI_HELD, TSOCK]) mkdirSync(d, { recursive: true });
   writeFileSync(`${TI_DECOY}/testinstanz.state`, tiState(TI_DECOY, String(DEAD), TI_PORT_FREE));
   const pyListen = (connect: boolean) => `import socket,time
 def allocate():
@@ -391,16 +393,32 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
             // instance. `status` must show age, rest TTL and that connection with its peer; `down`
             // must refuse and name it while the instance keeps serving. Baseline: no age, no
             // connection line, and `down` stopped the instance under the open tab.
+            // The tab behaves like one: it asks, and is answered, BEFORE anything is measured — a
+            // connection still in the kernel's accept queue belongs to no process and lsof cannot
+            // see it (a loaded helper accepts late) — and it keeps asking once a second, so the
+            // server's idle timeout never closes it while `status` and `down` run. Both run
+            // ASYNC for that reason: a spawnSync would freeze the tab's timer with the loop.
             const host = /http:\/\/([^/:]+):/.exec(status.stdout)?.[1] ?? "";
+            const tabToken = readFileSync(`${stateDir}/.testinstanz.token`, "utf8").trim();
             const tab = connect(tiPort, host);
+            const ask = () => { if (!tab.destroyed) tab.write(`GET /api/sessions HTTP/1.1\r\nHost: ${host}:${tiPort}\r\nAuthorization: Bearer ${tabToken}\r\n\r\n`); };
+            tab.on("error", () => undefined);
             await new Promise<void>((res) => {
-              const timer = setTimeout(res, 2000);
-              tab.once("connect", () => { clearTimeout(timer); res(); });
+              const timer = setTimeout(res, 5000);
+              tab.once("connect", ask);
+              tab.once("data", () => { clearTimeout(timer); res(); });
               tab.once("error", () => { clearTimeout(timer); res(); });
             });
-            const looked = run("status");
+            tab.on("data", () => undefined);
+            const asking = setInterval(ask, 1000);
+            const runAsync = async (...args: string[]) => {
+              const p = Bun.spawn([`${tiSource}/testinstanz.sh`, ...args], { env, stdout: "pipe", stderr: "pipe" });
+              const [stdout, stderr, status] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+              return { stdout, stderr, status };
+            };
+            const looked = await runAsync("status");
             let lookedJson: { connections?: { count: number; peers: string[] } | null; ageMs?: number | null } = {};
-            try { lookedJson = JSON.parse(run("status", "--json").stdout); } catch { /* the row below fails as itself */ }
+            try { lookedJson = JSON.parse((await runAsync("status", "--json")).stdout); } catch { /* the row below fails as itself */ }
             const hostRe = host.replace(/\./g, "\\.");
             check("host-hygiene §e14 status shows the instance's age, its rest TTL and the open connection with its peer",
               /^age: \d+ h \d+ min \(started=\d+\)$/m.test(looked.stdout) && /^ttl: \d+ min left/m.test(looked.stdout)
@@ -408,7 +426,8 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
                 && lookedJson.connections?.count === 1 && lookedJson.connections.peers[0] === host
                 && typeof lookedJson.ageMs === "number",
               `${looked.stdout.split("\n").filter((l) => /^(age|ttl|connections):/.test(l)).join(" | ")} · json=${JSON.stringify(lookedJson.connections)}`);
-            const refused = run("down");
+            const refused = await runAsync("down");
+            clearInterval(asking);
             check("host-hygiene §e14 down refuses while a connection is open — exit 3, the peer named, the instance still serving",
               refused.status === 3 && refused.stderr.includes(`1 ESTABLISHED connection(s) on port ${tiPort} from ${host} (1)`)
                 && spawnSync("lsof", ["-nP", `-iTCP:${tiPort}`, "-sTCP:LISTEN"]).status === 0

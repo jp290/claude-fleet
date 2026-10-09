@@ -660,11 +660,13 @@ export async function run(ctx: Ctx): Promise<void> {
   const capacityProgram = await activateNewProgram("No-free-slot bootstrap probe");
   const malformedBefore = JSON.stringify(await ownerPrograms());
   const occupiedBeforeMalformed = (await sessions()).slots.filter((s) => s.cwd).length;
-  const [missingCwd, unknownHarness, badModel, badEffort] = await Promise.all([
+  const [missingCwd, unknownHarness, badModel, badEffort, windowPlan] = await Promise.all([
     beginBootstrap(capacityProgram.id, {}),
     beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "not-a-harness" }),
     beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "codex", model: "bad model!" }),
     beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "codex", effort: "maximum" }),
+    // faafc637: the MAIN door builds its own brief, rail and anchors — a window plan is refused by name
+    beginBootstrap(capacityProgram.id, { cwd: REPO, plan: { hash: "0".repeat(64), role: "main" } }),
   ]);
   const malformedTexts = await Promise.all([missingCwd, unknownHarness, badModel, badEffort].map((r) => r.text()));
   check("Program-MAIN validation: cwd is explicit and harness/model/effort use attended-spawn 400s",
@@ -672,6 +674,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && malformedTexts[0].includes("cwd is required") && malformedTexts[1].includes("unknown harness")
       && malformedTexts[2].includes("bad model") && malformedTexts[3].includes("bad effort"),
     malformedTexts.join(" | "));
+  const windowPlanText = await windowPlan.text();
+  check("Program-MAIN: bootstrap-main refuses a window plan by name (400) instead of starting something else",
+    windowPlan.status === 400 && windowPlanText.includes("bootstrap-main starts no window plan"), `${windowPlan.status} ${windowPlanText.slice(0, 200)}`);
   check("Program-MAIN malformed bodies have no slot or Program side effect",
     (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeMalformed
       && JSON.stringify(await ownerPrograms()) === malformedBefore,

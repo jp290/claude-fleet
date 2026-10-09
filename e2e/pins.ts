@@ -12755,6 +12755,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // THE REGISTER IS READ through ONE answer (Owner-Ja F1, 07.10.; faafc637 09.10.): server.ts
   // resolves it in foundingPlanAnswer, which GET /api/founding-plan and the spawn doors' plan check
   // (acceptFoundingPlan) both call — so a start compares against the window's own answer, never a second.
+  // The start check calls it twice: once with the caller's switches, once without them when they no
+  // longer fit the moved plan (the 409 carries that plan) — still the one answer, never a second resolver.
   const serverSrc = read("server.ts");
   const routeAt = serverSrc.indexOf('url.pathname === "/api/founding-plan" && req.method === "GET"');
   const routeEnd = routeAt < 0 ? -1 : serverSrc.indexOf("\n    }\n", routeAt);
@@ -12771,7 +12773,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && [...serverSrc.matchAll(/\bresolveSessionPlan\(/g)].length === 1 && serverSrc.indexOf("resolveSessionPlan(") > planDef
       && planCalls.length === 2 && planCalls.includes(planDef + "async function ".length)
       && planCalls.every((at) => at === planDef + "async function ".length || (at > answerDef && at < answerEnd))
-      && answerCalls.length === 2 && answerCalls.every((at) => (at > routeAt && at < routeEnd) || (at > acceptDef && at < acceptEnd)),
+      && answerCalls.length === 3 && answerCalls.filter((at) => at > routeAt && at < routeEnd).length === 1
+      && answerCalls.every((at) => (at > routeAt && at < routeEnd) || (at > acceptDef && at < acceptEnd)),
     `readers=${readers.join(", ")}; foundingSessionPlan sites=${planCalls.length}; foundingPlanAnswer calls=${answerCalls.length}; route=${routeAt}..${routeEnd}`);
 
   // THE PLAN RESOLVER, pure: the same inputs give the same plan-hash, a switch moves it, and every

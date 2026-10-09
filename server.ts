@@ -39480,8 +39480,13 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
           : d.harness === "codex" ? codexAvailability(readCodexModelsCache(), d.id) : "unknown" };
     }),
   };
-  return { ok: true, body, fp: fp.value, plan: resolved.plan, sessionAgents, rolle, harness: ho.harness, selection,
-    packs: resolved.packs };
+  // what the door of this role would do with this plan (planDoorVerdict, the same function the start
+  // runs): a hash the door would refuse is shown as not startable, with the door's reasons. /open
+  // carries the Orchestratorin card only under her label — the window founds her under it.
+  const tuer: PlanDoor = resolved.plan.ort.art === "worktree" ? "lane" : "open";
+  const verdict = planDoorVerdict(resolved.plan, fp.value, tuer, tuer === "open" && rolle === "orchestratorin", chosen !== undefined);
+  return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals } },
+    fp: fp.value, plan: resolved.plan, sessionAgents, rolle, harness: ho.harness, selection, packs: resolved.packs };
 }
 
 // --- A PLANNED START (faafc637): the window's plan-hash is the start's contract --------------------
@@ -39530,7 +39535,9 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
   if (door === "lane") switch (row.id) {
     case "role-card": case "owner-heft": case "lane-footer": case "memory-pointer": case "context-anchors": return { folgt: "Session-Datei" };
     case "commit-expectation": return ctx.laneFooterOn ? { immer: "Session-Datei" } : { nie: "es steht im lane-footer, und der ist nicht an" };
-    case "private-rulebook": return laneRulebookFor(ctx.repoRoot, new Date(0).toISOString()) !== null ? { immer: "native Datei" }
+    // the copy lands in every lane's worktree, but only Claude loads CLAUDE.md — the same claude && as /open
+    case "private-rulebook": return !claude ? { nie: "nur Claude laedt CLAUDE.md; die Kopie im Worktree liest dieser Harness nicht" }
+      : laneRulebookFor(ctx.repoRoot, new Date(0).toISOString()) !== null ? { immer: "native Datei" }
       : { nie: "der Quell-Checkout hat kein lesbares rulebook/" };
     default: return { nie: "die Lane-Tuer liefert das nicht" };
   }
@@ -39570,30 +39577,56 @@ async function acceptFoundingPlan(body: Record<string, unknown>, door: PlanDoor,
   if (bausteine === undefined) return bad("plan.bausteine must be '<id>=<state>,…' or { id: state }");
   if (raw.ort !== undefined && typeof raw.ort !== "string") return bad("plan.ort must be worktree, repo or ordner");
   const str = (v: unknown): string | undefined => typeof v === "string" ? v : undefined;
-  const answer = await foundingPlanAnswer({ repo: place, role, ort: str(raw.ort) ?? null, mode: null,
-    harness: str(body.harness), model: str(body.model), effort: str(body.effort), bausteine, packs, parts });
-  if (!answer.ok) return { ok: false, status: answer.status, body: { error: `no plan for this founding: ${answer.error}` } };
+  const query = { repo: place, role, ort: str(raw.ort) ?? null, mode: null,
+    harness: str(body.harness), model: str(body.model), effort: str(body.effort), bausteine, packs, parts };
+  const answer = await foundingPlanAnswer(query);
+  if (!answer.ok) {
+    // the caller's switches no longer fit (a pack left the ladder, a row left the register, a condition
+    // fell): that is the plan moving under the window, so it is the 409 with the plan as it stands
+    // without those switches — never a 400 the window cannot act on. Nothing distinguishes an id that
+    // drifted away from one that never was; either way the fresh plan is the answer the window needs.
+    const switched = bausteine !== null || packs !== null || parts !== null;
+    const fresh = switched ? await foundingPlanAnswer({ ...query, bausteine: null, packs: null, parts: null }) : answer;
+    if (switched && fresh.ok)
+      return { ok: false, status: 409, body: { error: `the plan moved since the preview and the chosen switches no longer fit it (${answer.error}) — nothing was started; this is the plan a start would take now without them`,
+        staleHash: raw.hash, ...fresh.body } };
+    return { ok: false, status: answer.status, body: { error: `no plan for this founding: ${answer.error}` } };
+  }
   if (door === "lane" && answer.plan.ort.art !== "worktree") return bad("this door founds a new worktree: plan.ort must be worktree");
   if (door === "open" && answer.plan.ort.art === "worktree") return bad("this door founds no worktree: plan.ort must be repo or ordner");
   if (answer.plan.planHash !== raw.hash)
     return { ok: false, status: 409, body: { error: "the plan moved since the preview (register, pack version or HEAD) — nothing was started; this is the plan a start would take now",
       staleHash: raw.hash, ...answer.body } };
-  const zustand = new Map(answer.plan.bausteine.map((row) => [row.id, row.zustand]));
   const orchestratorCard = door === "open" && isOrchestratorLabel(label);
-  const ctx = { harness: answer.plan.harness, repoRoot: answer.fp.repoRoot, orchestratorCard,
-    packsOn: answer.plan.bausteine.some((row) => row.id.startsWith("pack:") && row.zustand === "an"),
+  const { geliefert, ausgelassen, refusals } = planDoorVerdict(answer.plan, answer.fp, door, orchestratorCard, parts !== null);
+  if (refusals.length)
+    return { ok: false, status: 400, body: { error: `this door cannot start this plan exactly — nothing was started: ${refusals.join("; ")}`, refusals } };
+  return { ok: true, accepted: { answer, door, orchestratorCard, geliefert, ausgelassen } };
+}
+
+// THE ONE VERDICT of a door over a plan: what it delivers, what it leaves out and why, and what it
+// cannot start exactly. acceptFoundingPlan refuses on `refusals`; GET /api/founding-plan serves the
+// same verdict as `start`, so the window never shows a hash its door would refuse.
+type PlanDoorVerdict = { readonly geliefert: { id: string; weg: PlanWeg }[]; readonly ausgelassen: { id: string; grund: string }[];
+  readonly refusals: string[] };
+function planDoorVerdict(plan: SessionPlan, fp: FoundingPlan, door: PlanDoor, orchestratorCard: boolean, partsChosen: boolean): PlanDoorVerdict {
+  const zustand = new Map(plan.bausteine.map((row) => [row.id, row.zustand]));
+  const ctx = { harness: plan.harness, repoRoot: fp.repoRoot, orchestratorCard,
+    packsOn: plan.bausteine.some((row) => row.id.startsWith("pack:") && row.zustand === "an"),
     laneFooterOn: zustand.get("lane-footer") === "an",
-    selected: new Set(answer.fp.plan.selected.map((pack) => pack.id)) };
+    selected: new Set(fp.plan.selected.map((pack) => pack.id)) };
   const geliefert: { id: string; weg: PlanWeg }[] = [];
   const ausgelassen: { id: string; grund: string }[] = [];
   const refusals: string[] = [];
+  // parts choose box or loan INSIDE the session file; /open writes none, so a choice there would be dropped
+  if (partsChosen && door === "open") refusals.push("parts waehlt Box oder Ausleihe in der Session-Datei, und /open schreibt keine");
   // why a row is off in the plan: the ladder's reason for a pack, the unmet condition for a row
   const planAus = (row: SessionPlanBaustein): string => {
-    const ladder = answer.fp.plan.omitted.find((entry) => `pack:${entry.id}` === row.id)?.why;
+    const ladder = fp.plan.omitted.find((entry) => `pack:${entry.id}` === row.id)?.why;
     return `Plan: ${row.zustand}${ladder ? ` (${ladder})` : row.bedingung?.erfuellt === false ? ` (Bedingung: ${row.bedingung.grund})`
       : !row.harness.gueltig && row.harness.grund ? ` (${row.harness.grund})` : ""}`;
   };
-  for (const row of answer.plan.bausteine) {
+  for (const row of plan.bausteine) {
     const how = planDoorRow(door, row, ctx);
     const an = row.zustand === "an";
     if ("folgt" in how) {
@@ -39605,9 +39638,7 @@ async function acceptFoundingPlan(body: Record<string, unknown>, door: PlanDoor,
     } else if (an && row.quelle === "schalter") refusals.push(`${row.id} ist angeschaltet, diese Tuer liefert es nicht: ${how.nie}`);
     else ausgelassen.push({ id: row.id, grund: an ? how.nie : planAus(row) });
   }
-  if (refusals.length)
-    return { ok: false, status: 400, body: { error: `this door cannot start this plan exactly — nothing was started: ${refusals.join("; ")}`, refusals } };
-  return { ok: true, accepted: { answer, door, orchestratorCard, geliefert, ausgelassen } };
+  return { geliefert, ausgelassen, refusals };
 }
 
 // What a lane spawn writes for an accepted plan: the window's file at the lane's own commit, with the
@@ -39630,7 +39661,11 @@ const sha256Of = (text: string): string => createHash("sha256").update(text).dig
 // each left-out row with its reason. `gemessen` says where a byte number comes from — the delivered
 // text (lieferung) or, for what Fleet does not write (native files, the triple), the plan's own
 // measurement. A pack's version is its source hash; a Fleet text's is the hash of its bytes.
-function planReceiptBlock(acc: AcceptedFoundingPlan, sent: { anchorBlock: string } | { failed: string } | null): Record<string, unknown> {
+// `sent.plan` is the plan the block was rendered from AFTER availability (availableContextPlan): a
+// pack the plan chose but the block could not carry (a private source gone missing) is left out with
+// that reason, never listed as delivered.
+type PlanSent = { readonly anchorBlock: string; readonly plan: ContextPlan; readonly fehlt?: string };
+function planReceiptBlock(acc: AcceptedFoundingPlan, sent: PlanSent | { failed: string } | null): Record<string, unknown> {
   const { answer } = acc;
   const geliefert: Record<string, unknown>[] = [];
   const ausgelassen = acc.ausgelassen.map((row) => ({ ...row }));
@@ -39644,7 +39679,6 @@ function planReceiptBlock(acc: AcceptedFoundingPlan, sent: { anchorBlock: string
     }
     return declaredSourceHash(sel) ?? "unknown";
   };
-  const promptPacks = answer.fp.plan.selected.filter((pack) => acc.geliefert.some((row) => row.id === `pack:${pack.id}`));
   for (const row of acc.geliefert) {
     const planned = answer.plan.bausteine.find((b) => b.id === row.id)!;
     let bytes: PlanBytes = planned.bytes, fassung = "unknown", gemessen: "lieferung" | "plan" = "plan";
@@ -39661,9 +39695,19 @@ function planReceiptBlock(acc: AcceptedFoundingPlan, sent: { anchorBlock: string
       }
       gemessen = "lieferung";
       if (row.id.startsWith("pack:")) {
-        const without = renderContextAnchorBlock({ selected: promptPacks.filter((pack) => `pack:${pack.id}` !== row.id), omitted: [] });
+        const packId = row.id.slice("pack:".length);
+        if (!sent.plan.selected.some((pack) => pack.id === packId)) {
+          const dropped = sent.plan.omitted.find((entry) => entry.id === packId);
+          const reason = dropped && "reason" in dropped && typeof dropped.reason === "string" ? `: ${dropped.reason}` : "";
+          ausgelassen.push({ id: row.id, grund: `Zustellung: nicht im gesendeten Block${dropped ? ` (${dropped.why}${reason})` : sent.fehlt ? ` (${sent.fehlt})` : ""}` });
+          continue;
+        }
+        const without = renderContextAnchorBlock({ selected: sent.plan.selected.filter((pack) => pack.id !== packId), omitted: [] });
         bytes = Buffer.byteLength(sent.anchorBlock) - Buffer.byteLength(without);
         fassung = packFassung(row.id);
+      } else if (row.id === "context-anchors" && sent.anchorBlock === "") {
+        ausgelassen.push({ id: row.id, grund: "Zustellung: kein Pack im gesendeten Block, also kein Ankerblock" });
+        continue;
       } else {
         const text = row.id === "context-anchors" ? sent.anchorBlock : row.id === "orchestrator-card" ? orchestratorRoleCard(answer.harness)
           : row.id === "owner-heft" ? ownerKorrekturenPointer() : row.id === "portfolio-memory-pointer" ? memoryPortfolioPointer() : null;
@@ -39681,14 +39725,17 @@ function planReceiptBlock(acc: AcceptedFoundingPlan, sent: { anchorBlock: string
 
 // A planned start whose delivery sent no prompt (a lane: its file is the delivery) still leaves ONE
 // receipt row, the same ledger and shape as a founding's, carrying the plan block.
-async function writePlanReceipt(s: Slot, acc: AcceptedFoundingPlan, block: Record<string, unknown>): Promise<void> {
+async function writePlanReceipt(s: Slot, acc: AcceptedFoundingPlan, block: Record<string, unknown>, deliveredBrief = ""): Promise<void> {
   const { fp } = acc.answer;
-  const packs = fp.plan.selected.filter((pack) => acc.geliefert.some((row) => row.id === `pack:${pack.id}`));
+  // the packs the BLOCK says crossed — a pack the door would have carried but the delivery could not is not one
+  const crossed = new Set(Array.isArray(block.geliefert)
+    ? block.geliefert.flatMap((row) => isPlainBody(row) && typeof row.id === "string" ? [row.id] : []) : []);
+  const packs = fp.plan.selected.filter((pack) => crossed.has(`pack:${pack.id}`));
   const agents = acc.delivered?.agents;
   const selected = contextReceiptSelections(packs, agents);
   const omitted = fp.plan.omitted.map((entry) => ({ ...entry }));
-  // no prompt crossed: the brief pair says so with the one hash function every writer uses (null)
-  const deliveredBrief = "";
+  // no prompt crossed unless the caller hands the one that did: the brief pair says so with the one
+  // hash function every writer uses (null for the empty brief)
   const hash = createHash("sha256").update(JSON.stringify({
     anchorBlock: deliveredBrief, planFacts: { harness: s.harness, mode: fp.mode, triggers: fp.triggers, selected, omitted },
   })).digest("hex");
@@ -40560,6 +40607,8 @@ type OrchestratorFoundingContext = {
   readonly facts: ReturnType<typeof programMainContextFacts>;
   readonly selected: ReturnType<typeof contextReceiptSelections>;
   readonly omitted: ContextPlan["omitted"];
+  /** the plan the anchor block was rendered from, after availability — what a plan receipt measures against */
+  readonly deliveryPlan: ContextPlan;
 };
 async function orchestratorFoundingContext(cwd: string, harness: string | null): Promise<
   { readonly ok: true; readonly value: OrchestratorFoundingContext }
@@ -40571,7 +40620,7 @@ async function orchestratorFoundingContext(cwd: string, harness: string | null):
   const plan = await programMainContextPlan(preflight.value, facts);
   const deliveryPlan = availableContextPlan(plan);
   return { ok: true, value: { anchorBlock: renderContextAnchorBlock(deliveryPlan), preflight: preflight.value,
-    facts, selected: contextReceiptSelections(deliveryPlan.selected), omitted: deliveryPlan.omitted.map((entry) => ({ ...entry })) } };
+    facts, selected: contextReceiptSelections(deliveryPlan.selected), omitted: deliveryPlan.omitted.map((entry) => ({ ...entry })), deliveryPlan } };
 }
 
 async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingContext,
@@ -40619,8 +40668,12 @@ async function deliverOrchestratorSpawnCard(s: Slot, acc?: AcceptedFoundingPlan)
   s.history = [...s.history, { text: brief, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
   saveHistory(s);
   logPrompt(s, brief, "auto", at);
-  const planBlock = acc ? planReceiptBlock(acc, ctx.ok ? { anchorBlock: ctx.value.anchorBlock } : { failed: `context plan unknown: ${ctx.error}` }) : null;
+  // the card crossed either way; without a context plan it crossed with no anchors, and the plan's
+  // receipt row still says so — the planned start is receipted even where the old row is not
+  const planBlock = acc ? planReceiptBlock(acc, ctx.ok ? { anchorBlock: ctx.value.anchorBlock, plan: ctx.value.deliveryPlan }
+    : { anchorBlock: "", plan: { selected: [], omitted: [] }, fehlt: `context plan unknown: ${ctx.error}` }) : null;
   if (ctx.ok) await appendOrchestratorReceipt(s, ctx.value, brief, at, planBlock);
+  else if (acc && planBlock) await writePlanReceipt(s, acc, planBlock, brief);
   await saveStateNow();
   return { ...(ctx.ok
     ? { delivered: true, receipt: true }
@@ -40669,7 +40722,7 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   })).digest("hex");
   // A lane's own branch is the one the session sits on; a plain session names its checkout's.
   const branch = s.worktree?.branch ?? founding.branch;
-  const planBlock = acc ? planReceiptBlock(acc, { anchorBlock }) : null;
+  const planBlock = acc ? planReceiptBlock(acc, { anchorBlock, plan: deliveryPlan }) : null;
   await appendEvent(CONTEXT_RECEIPT_FILE, {
     id: randomBytes(16).toString("hex"), hash, at, repo: founding.repoRoot, head: founding.head,
     taskId: s.taskId, originId: s.originId, programId: s.programId,
@@ -51700,14 +51753,23 @@ Bun.serve<WSData>({
         let planBlock: Record<string, unknown> | "none" = "none";
         if (acc && roleCard) {
           const { plan: block, ...card } = roleCard;
-          planBlock = isPlainBody(block) ? block : planReceiptBlock(acc, { failed: String(card.reason ?? "the card was not sent") });
+          if (isPlainBody(block)) planBlock = block;
+          else {
+            // nothing crossed (held, identity lost, uncertain): the planned start is still receipted once
+            planBlock = planReceiptBlock(acc, { failed: String(card.reason ?? "the card was not sent") });
+            await writePlanReceipt(s, acc, planBlock);
+          }
           delete roleCard.plan;
         } else if (acc) {
           const packs = acc.answer.fp.plan.selected.filter((pack) => acc.geliefert.some((row) => row.id === `pack:${pack.id}`));
           if (packs.length) {
             const { plan: block, ...result } = await deliverFoundingPacks(s, acc.answer.fp, packs, acc);
             packsResult = result;
-            planBlock = isPlainBody(block) ? block : planReceiptBlock(acc, { failed: String(result.reason ?? "the packs were not sent") });
+            if (isPlainBody(block)) planBlock = block;
+            else {
+              planBlock = planReceiptBlock(acc, { failed: String(result.reason ?? "the packs were not sent") });
+              await writePlanReceipt(s, acc, planBlock);
+            }
           } else {
             planBlock = planReceiptBlock(acc, null);
             await writePlanReceipt(s, acc, planBlock);
@@ -51751,24 +51813,27 @@ Bun.serve<WSData>({
         // the reservation and the spawn, so a wrong id refuses the founding instead of leaving a
         // working copy it cannot ground. An empty list is "deliberately no packs": nothing owed,
         // nothing delivered, and the answer still carries packsDelivered (kept, vacuously).
-        const planned = await acceptFoundingPlan(body, "lane", body.repo, null);
-        guard();
-        if (!planned.ok) return json(planned.body, planned.status);
-        let founding: FoundingPlan | null = null;
-        let chosen: ContextPlanSelection[] = [];
-        let packsResult: Record<string, unknown> | null = po.packs !== null && po.packs.length === 0
-          ? { packsDelivered: true } : null;
-        if (po.packs !== null && po.packs.length > 0) {
-          const fp = await foundingPlanOf(body.repo, ho.harness, "lane");
-          guard();
-          if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
-          const pick = chooseFoundingPacks(fp.value.plan, po.packs);
-          if (!pick.ok) return json({ error: pick.error }, pick.code);
-          founding = fp.value;
-          chosen = pick.chosen;
-        }
-        laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
+        // reserve before the first await — see laneSpawn: the plan and pack checks below are awaits,
+        // and a second open-worktree passing the free-slot check meanwhile would double-seat the slot.
+        // Every refusal from here on returns through the finally, which gives the reservation back.
+        laneSpawn.add(s.id);
         try {
+          const planned = await acceptFoundingPlan(body, "lane", body.repo, null);
+          guard();
+          if (!planned.ok) return json(planned.body, planned.status);
+          let founding: FoundingPlan | null = null;
+          let chosen: ContextPlanSelection[] = [];
+          let packsResult: Record<string, unknown> | null = po.packs !== null && po.packs.length === 0
+            ? { packsDelivered: true } : null;
+          if (po.packs !== null && po.packs.length > 0) {
+            const fp = await foundingPlanOf(body.repo, ho.harness, "lane");
+            guard();
+            if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
+            const pick = chooseFoundingPacks(fp.value.plan, po.packs);
+            if (!pick.ok) return json({ error: pick.error }, pick.code);
+            founding = fp.value;
+            chosen = pick.chosen;
+          }
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent, wo.browser === true, co.context, pe.permissions, planned.accepted ?? undefined);
           if (founding) packsResult = await deliverFoundingPacks(s, founding, chosen);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form,

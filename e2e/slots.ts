@@ -15,6 +15,7 @@ import { pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
+import { RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName } from "../rulebook";
 import { normalizeLaneAnchor, validPerfRecord, PERF_BATCH_MAX, type PerfRecord, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
@@ -5300,16 +5301,25 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
     sources: [{ id: "plan-probe.section", path: "docs/probe.md", anchor: "## Probe section", sorte: "wissen", positions: { lane: "box", main: "box", orchestratorin: "box" } }],
     requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex", "pi"], modes: ["read-only", "mutating"],
     estimatedBytes: 64, evidence: "tree-anchor", owner: "owner", status: "active" }], null, 2));
+  // a readable rulebook/ (gitignored, as in the Fleet checkout): only a Claude lane loads its render
+  mkdirSync(`${repo}/${RULEBOOK_DIR}`, { recursive: true });
+  for (const f of RULEBOOK_FRAGMENTS) writeFileSync(`${repo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, `## ${f}\n\nrule text of ${f}\n`);
+  appendFileSync(`${repo}/.gitignore`, `${RULEBOOK_DIR}/\n`);
   const commit = (msg: string): boolean => git("add", "-A").status === 0
     && git("-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", msg).status === 0;
   check("planned start — SETUP: the fixture declares a pack at a commit", commit("declare the probe pack"));
   type PlanState = { id: string; zustand: string };
+  type Start = { tuer: string; startbar: boolean; refusals: string[] };
   type Receipt = { hash: string; satz: string; geliefert: { id: string; weg: string; bytes: number | "unknown"; fassung: string; gemessen: string }[];
     ausgelassen: { id: string; grund: string }[]; datei?: { pfad: string; bytes: number; sha256: string } | "unknown" };
-  const preview = async (bausteine: string) => {
-    const res = await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=claude&role=lane${bausteine ? `&bausteine=${bausteine}` : ""}`);
-    return await res.json() as { plan?: { planHash: string; planSatz: string; bausteine: PlanState[] }; sessionAgents?: { text: string } | null; error?: string };
+  const preview = async (bausteine: string, more = "role=lane", harness = "claude") => {
+    const res = await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=${harness}&${more}${bausteine ? `&bausteine=${bausteine}` : ""}`);
+    return await res.json() as { plan?: { planHash: string; planSatz: string; bausteine: PlanState[] }; sessionAgents?: { text: string } | null;
+      start?: Start; error?: string };
   };
+  const receiptOf = async (slot: number | undefined): Promise<Receipt | undefined> =>
+    (await (await get("/api/context-receipts")).json() as { receipts: { slot?: number; plan?: Receipt }[] }).receipts
+      .filter((r) => r.slot === slot).at(-1)?.plan;
   const worktrees = (): number => String(git("worktree", "list", "--porcelain").stdout).split("\n").filter((l) => l.startsWith("worktree ")).length;
   const on = await preview("");
   const off = await preview("pack:plan-probe=aus");
@@ -5357,6 +5367,7 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
         && typeof row.datei === "object" && row.datei.sha256 === fileSha && row.datei.bytes === Buffer.byteLength(file ?? ""),
       JSON.stringify(row ?? null).slice(0, 500));
     for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
+    await plannedDoorProbes(off.plan.planHash, body.slot);
     // HEAD moves between preview and start: 409 with the plan a start would take now, nothing created
     writeFileSync(`${repo}/docs/probe.md`, `# Probe\n\n## Probe section\n${MARKER} moved.\n`);
     const moved = commit("move the probe source");
@@ -5375,8 +5386,108 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
     if (oldBody.slot) opened.push(oldBody.slot);
     check("planned start: the old body still starts, and its quittung says plan:none",
       old.status === 200 && oldBody.plan === "none", `${old.status} ${JSON.stringify(oldBody).slice(0, 200)}`);
+    // the register moves under the window: the pack the caller switched is gone, so its switch no
+    // longer fits — the plan moved, and that is the 409 with the plan as it stands, never a 400
+    const current = await preview("pack:plan-probe=aus");
+    const manifest = JSON.parse(readFileSync(`${repo}/.fleet/context-packs.json`, "utf8")) as { id: string }[];
+    writeFileSync(`${repo}/.fleet/context-packs.json`, JSON.stringify(manifest.map((pack) => ({ ...pack, id: "plan-probe-renamed" })), null, 2));
+    const renamed = commit("rename the probe pack");
+    const beforeDrift = worktrees();
+    const drifted = await post("/api/lanes", { repo, harness: "claude", plan: { hash: current.plan?.planHash ?? "", role: "lane", bausteine: "pack:plan-probe=aus" } });
+    const driftedBody = await drifted.json() as { error?: string; staleHash?: string; plan?: { planHash: string; bausteine: PlanState[] } };
+    check("planned start: a register drift that unseats the caller's switch answers 409 with the plan as it stands — nothing started",
+      renamed && !!current.plan && drifted.status === 409 && driftedBody.staleHash === current.plan.planHash
+        && !!driftedBody.plan && driftedBody.plan.bausteine.some((row) => row.id === "pack:plan-probe-renamed")
+        && !!driftedBody.error?.includes("no longer fit") && worktrees() === beforeDrift,
+      `${drifted.status} ${JSON.stringify(driftedBody).slice(0, 300)}`);
   } finally {
     for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
+  }
+
+  // EVERY DOOR THE PLAN REACHES, and what each must not do with it (MAIN review of 44e468d7): parts
+  // reach a lane's file; a non-Claude lane starts where a rulebook/ is readable; open-worktree
+  // reserves its place before the plan check awaits; /open starts a planned main; what /open cannot
+  // carry (parts, a Nur-Ordner plan) the preview and the door refuse with the same reasons; attach
+  // takes no plan.
+  async function plannedDoorProbes(offHash: string, laneSlot: number | undefined): Promise<void> {
+    const fileOf = (cwd: string | undefined): string | null =>
+      cwd && existsSync(`${cwd}/AGENTS.override.md`) ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : null;
+    const freeSlot = async (): Promise<number> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd)?.id ?? 0;
+    type Started = { ok?: boolean; slot?: number; cwd?: string; plan?: Receipt | "none"; error?: string; refusals?: string[] };
+    const loaned = await preview("", "role=lane&parts=");
+    const loanStart = await post("/api/lanes", { repo, harness: "claude", plan: { hash: loaned.plan?.planHash ?? "", role: "lane", parts: [] } });
+    const loanBody = await loanStart.json() as Started;
+    if (loanBody.slot) opened.push(loanBody.slot);
+    const loanFile = fileOf(loanBody.cwd);
+    check("planned start: plan.parts reaches the lane's file — every part on loan, the boxed marker stays out, the file is the preview's",
+      !!loaned.sessionAgents && !loaned.sessionAgents.text.includes(MARKER) && loanStart.status === 200 && loanFile === loaned.sessionAgents.text,
+      `${loanStart.status} ${loanBody.error ?? ""} file=${loanFile?.length ?? "none"} preview=${loaned.sessionAgents?.text.length ?? "none"}`);
+    const claudeLane = await preview("");
+    const pi = await preview("", "role=lane", "pi");
+    const piStart = await post("/api/lanes", { repo, harness: "pi", plan: { hash: pi.plan?.planHash ?? "", role: "lane" } });
+    const piBody = await piStart.json() as Started;
+    if (piBody.slot) opened.push(piBody.slot);
+    const piQuittung = typeof piBody.plan === "object" ? piBody.plan : null;
+    check("planned start: a planned pi lane starts beside a readable rulebook/ — the private rulebook is a Claude row, left out with its reason",
+      claudeLane.plan?.bausteine.find((row) => row.id === "private-rulebook")?.zustand === "an"
+        && pi.start?.startbar === true && pi.plan?.bausteine.find((row) => row.id === "private-rulebook")?.zustand === "aus"
+        && piStart.status === 200 && !!piQuittung && piQuittung.hash === pi.plan.planHash
+        && piQuittung.ausgelassen.some((row) => row.id === "private-rulebook" && row.grund.startsWith("Plan: aus") && row.grund.includes("Nur Claude"))
+        && fileOf(piBody.cwd) === pi.sessionAgents?.text,
+      `${piStart.status} start=${JSON.stringify(pi.start)} ${JSON.stringify(piBody).slice(0, 300)}`);
+    for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
+    if (laneSlot) {
+      // both requests pass the free-place check together; the plan check is an await, so only a
+      // reservation taken before it keeps the second one out
+      const before = worktrees();
+      const race = await Promise.all([1, 2].map(() => post(`/api/slots/${laneSlot}/open-worktree`,
+        { repo, harness: "claude", plan: { hash: offHash, role: "lane", bausteine: "pack:plan-probe=aus" } })));
+      const raced = await Promise.all(race.map(async (r) => ({ status: r.status, body: await r.json() as Started })));
+      if (raced.some((r) => r.status === 200)) opened.push(laneSlot);
+      check("planned start: two open-worktree on one place — one seats it with the plan, the other is refused before the plan check, one worktree",
+        raced.map((r) => r.status).sort().join() === "200,400" && worktrees() === before + 1
+          && raced.some((r) => r.status === 200 && typeof r.body.plan === "object" && r.body.plan.hash === offHash)
+          && raced.some((r) => r.status === 400 && !!r.body.error?.includes("slot already active")),
+        `${JSON.stringify(raced).slice(0, 400)} worktrees ${before}->${worktrees()}`);
+      for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
+    }
+    // a planned /open: a MAIN in the repo with every pack off, so nothing waits on a prompt
+    const mainBase = await preview("", "role=main&ort=repo");
+    const packsOff = (mainBase.plan?.bausteine ?? []).filter((row) => row.id.startsWith("pack:") && row.zustand === "an").map((row) => `${row.id}=aus`).join(",");
+    const mainPlan = packsOff ? await preview(packsOff, "role=main&ort=repo") : mainBase;
+    const mainSlot = await freeSlot();
+    const opn = await post(`/api/slots/${mainSlot}/open`, { cwd: repo, harness: "claude",
+      plan: { hash: mainPlan.plan?.planHash ?? "", role: "main", ort: "repo", ...(packsOff ? { bausteine: packsOff } : {}) } });
+    const opnBody = await opn.json() as Started;
+    if (opn.status === 200) opened.push(mainSlot);
+    const opnRow = await receiptOf(mainSlot);
+    const opnHistory = opn.status === 200 ? (await (await get(`/api/slots/${mainSlot}/history`)).json() as { history: { text: string }[] }).history : [];
+    check("planned start: /open starts the previewed MAIN plan, its quittung is the receipt's, and no prompt carries the probe pack",
+      mainPlan.start?.startbar === true && opn.status === 200 && typeof opnBody.plan === "object" && opnBody.plan.hash === mainPlan.plan?.planHash
+        && JSON.stringify(opnRow) === JSON.stringify(opnBody.plan) && opnHistory.every((entry) => !entry.text.includes(MARKER)),
+      `start=${JSON.stringify(mainPlan.start)} ${opn.status} ${JSON.stringify(opnBody).slice(0, 300)}`);
+    // what /open cannot carry: the preview says so and the door refuses with the same reasons
+    const spare = await freeSlot();
+    const partsPlan = await preview(packsOff, "role=main&ort=repo&parts=");
+    const partsOpen = await post(`/api/slots/${spare}/open`, { cwd: repo, harness: "claude",
+      plan: { hash: partsPlan.plan?.planHash ?? "", role: "main", ort: "repo", parts: [], ...(packsOff ? { bausteine: packsOff } : {}) } });
+    const partsBody = await partsOpen.json() as Started;
+    const folder = await preview("", "role=nur-ordner");
+    const folderOpen = await post(`/api/slots/${spare}/open`, { cwd: repo, harness: "claude", plan: { hash: folder.plan?.planHash ?? "", role: "nur-ordner" } });
+    const folderBody = await folderOpen.json() as Started;
+    check("planned start: parts at /open and a Nur-Ordner plan are not startable in the preview, and the door refuses them with the same reasons",
+      partsPlan.start?.startbar === false && partsPlan.start.refusals.some((r) => r.includes("parts"))
+        && partsOpen.status === 400 && JSON.stringify(partsBody.refusals) === JSON.stringify(partsPlan.start.refusals)
+        && folder.start?.startbar === false && folder.start.refusals.length > 0
+        && folderOpen.status === 400 && JSON.stringify(folderBody.refusals) === JSON.stringify(folder.start.refusals)
+        && (await freeSlot()) === spare,
+      `parts ${JSON.stringify(partsPlan.start)} ${partsOpen.status} | folder ${JSON.stringify(folder.start)} ${folderOpen.status} ${JSON.stringify(folderBody).slice(0, 200)}`);
+    const attach = await post("/api/lanes", { repo, attach: `${repo}-no-such-worktree`, plan: { hash: offHash, role: "lane" } });
+    const attachText = await attach.text();
+    check("planned start: attach takes no plan — a 400 naming why",
+      attach.status === 400 && attachText.includes("a plan starts only at a fresh founding"), `${attach.status} ${attachText.slice(0, 200)}`);
+    for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
   }
 }
 

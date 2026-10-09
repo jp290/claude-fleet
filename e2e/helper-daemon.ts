@@ -14,7 +14,7 @@
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
 import { chmodSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
-  statSync, utimesSync, writeFileSync } from "node:fs";
+  statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
@@ -24,9 +24,9 @@ import { run as checkResultRetry } from "./helper-result";
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { downloadBundle, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode, pruneRuns, shardEnv,
-  stricter, tailOf, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG, EXIT_UPDATED, type ClaimedJob, type HelperConfig,
-  type JobView } from "../helper-daemon/daemon";
+import { downloadBundle, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
+  pointsAt, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
+  EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
   at: number; ms: number; repo: string; main: string; mainSha: string; result: string; reason?: string;
@@ -221,6 +221,83 @@ export async function run(h: {
       && keptRed,
     `left=${JSON.stringify(pruneLeft)} keptRed=${keptRed}`);
   rmSync(pruneFix, { recursive: true, force: true });
+  // (D-4) ONCE THE LINK HAS MOVED THE SELF-UPDATE ENDS, and no tree the link names is ever removed.
+  // Before 2026-10-09 the exit sat behind the swap report, whose retries THROW after five network
+  // failures: the daemon kept running old code under a link already on the new tree, and a second
+  // claim of the same sha removed that tree. MUTATION: put the exit back behind `await reportSwap()`
+  // in daemon.ts#endAfterSwap ⇒ the throwing report never reaches cleanup or exit ⇒ red; compare readlink's string in
+  // daemon.ts#pointsAt ⇒ the relative link's tree is pruned ⇒ red.
+  // one record per call — "cleaned, then exited exactly once with 75" — and a throw that escapes is
+  // caught HERE, so a regressed guard fails as this check, not as the module
+  const endOf = async (reportSwap: () => Promise<void>, cleanup: () => void): Promise<string> => {
+    const seen: string[] = [];
+    await endAfterSwap(reportSwap, () => { seen.push("cleanup"); cleanup(); }, "e2e00000", (c) => { seen.push(`exit ${c}`); })
+      .catch((e) => { seen.push(`threw ${String(e)}`); });
+    return seen.join(",");
+  };
+  const wantEnd = `cleanup,exit ${EXIT_UPDATED}`;
+  const endThrown = await endOf(async () => { throw new Error("result attempt 5/5 failed"); }, () => {});
+  const endCleanupThrown = await endOf(async () => {}, () => { throw new Error("rm failed"); });
+  check("(HD) a self-update whose swap report THROWS still exits 75 after its cleanup — and so does one whose cleanup throws",
+    endThrown === wantEnd && endCleanupThrown === wantEnd, `reportThrew=[${endThrown}] cleanupThrew=[${endCleanupThrown}]`);
+  // THE TREE THE LINK NAMES SURVIVES PRUNING even when it is the OLDEST and the link is relative and
+  // workDir is reached through a symlink — the three ways a string compare calls it a stranger.
+  const treeFix = `${ROOT}/daemon-tree-fixture`;
+  rmSync(treeFix, { recursive: true, force: true });
+  const treesAt = ["tree-aaaaaaaaaaaa", "tree-bbbbbbbbbbbb", "tree-cccccccccccc", "tree-dddddddddddd"];
+  treesAt.forEach((d, i) => {
+    mkdirSync(`${treeFix}/real/${d}`, { recursive: true });
+    utimesSync(`${treeFix}/real/${d}`, 1_000_000 + i * 1000, 1_000_000 + i * 1000);
+  });
+  symlinkSync("tree-aaaaaaaaaaaa", `${treeFix}/real/current`);
+  symlinkSync(`${treeFix}/real`, `${treeFix}/via`);
+  const viaLink = `${treeFix}/via/current`;
+  const sees = pointsAt(viaLink, `${treeFix}/via/tree-aaaaaaaaaaaa`) && !pointsAt(viaLink, `${treeFix}/via/tree-bbbbbbbbbbbb`)
+    && !pointsAt(`${treeFix}/via/absent`, `${treeFix}/via/tree-aaaaaaaaaaaa`);
+  pruneTrees({ workDir: `${treeFix}/via`, checkoutLink: viaLink });
+  const treesLeft = readdirSync(`${treeFix}/real`).filter((d) => d.startsWith("tree-")).sort();
+  check("(HD) the tree the checkoutLink names is never pruned — oldest, relative link, workDir behind a symlink — and the two newest others stay",
+    sees && JSON.stringify(treesLeft) === JSON.stringify(["tree-aaaaaaaaaaaa", "tree-cccccccccccc", "tree-dddddddddddd"]),
+    `pointsAt=${sees} left=${JSON.stringify(treesLeft)}`);
+  rmSync(treeFix, { recursive: true, force: true });
+  // (D-10) A HEARTBEAT THE FLEET DID NOT TAKE IS NOT A WISH. A stub fleet answers the beat 400, then
+  // 200, and records every path the daemon's tick asks for. The 200 half is the precondition: it
+  // proves this tick WOULD poll the job list, so the 400 half's silence is the guard and not a tick
+  // that never got that far. MUTATION: drop the `!beat.ok` return in daemon.ts#tick ⇒ the 400 ticks
+  // read `active` and ask /api/helper/jobs ⇒ red.
+  const asked: string[] = [];
+  let beatStatus = 400;
+  const stub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    const path = new URL(req.url).pathname;
+    asked.push(path);
+    if (path === "/api/helper/device")
+      return Response.json(beatStatus === 200 ? { desiredMode: "active" } : { error: "unknown field" }, { status: beatStatus });
+    if (path === "/api/helper/jobs") return Response.json({ jobs: [] });
+    return new Response("not found", { status: 404 });
+  } });
+  const tickCfg = loadConfig("/x", { fleetUrl: `http://127.0.0.1:${stub.port}`, token: "t", deviceId: "abcdefgh", name: "n",
+    workDir: "/w" }, 0o600);
+  const tickSaid: string[] = [];
+  const realLog = console.log;
+  let refusedAsks: string[] = [];
+  console.log = (...a: unknown[]) => { tickSaid.push(a.map(String).join(" ")); };
+  try {
+    const tickSt = { offUntil: 0, lastMode: "" };
+    await tick(tickCfg, tickSt);
+    await tick(tickCfg, tickSt);
+    refusedAsks = [...asked];
+    beatStatus = 200;
+    asked.length = 0;
+    await tick(tickCfg, tickSt);
+  } finally {
+    console.log = realLog;
+    stub.stop(true);
+  }
+  const refusedLines = tickSaid.filter((l) => l.includes("heartbeat answered HTTP 400")).length;
+  check("(HD) a heartbeat answered 400 ends the tick: no job poll, no claim, logged ONCE over two ticks — and a 2xx beat does poll",
+    JSON.stringify(refusedAsks) === JSON.stringify(["/api/helper/device", "/api/helper/device"]) && refusedLines === 1
+      && asked.includes("/api/helper/jobs"),
+    `refused=${JSON.stringify(refusedAsks)} lines=${refusedLines} accepted=${JSON.stringify(asked)}`);
   // …and the config door: a value this rail has no reading for must not reach the arithmetic above.
   // A 0 would make a machine claim nothing forever and silently, which is the failure mode every
   // other floor in loadConfig exists to refuse.

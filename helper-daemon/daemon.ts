@@ -27,9 +27,13 @@
 // direction is chosen: too little remote work, never a machine that whirrs at 3 a.m.
 //
 // `off` MEANS NOT ONE REQUEST. Not a heartbeat, not a job poll. A machine that does not poll claims
-// nothing, and the portal's own design (a claim that expires falls back to the local drain) is what
-// makes that safe — so silence is a complete and correct way to be unavailable. Once the owner's
-// `off` has been read, it is honoured for `offRecheckSec` before a single heartbeat asks again.
+// nothing, and the portal's own design is what makes that safe: a job nobody claimed, or whose claim
+// expired, is simply open again. On a deployment that hands its audits to a helper (server.ts
+// AUDIT_HELPER_ONLY, live since 2026-10-08) an audit then WAITS for a helper — there is no local
+// drain to fall back onto — and a lane preview goes back to its lane; only a fleet without a helper
+// runs its audits on its own drain. So silence costs a wait, never a lost or doubled run, and is a
+// complete and correct way to be unavailable. Once the owner's `off` has been read, it is honoured
+// for `offRecheckSec` before a single heartbeat asks again.
 //
 // SELF-UPDATE (`daemon-update`, 2026-09-02). The owner queues one update per device on the board;
 // this daemon claims it like any job, clones the fleet's main out of the bundle into
@@ -38,7 +42,7 @@
 // `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
 // left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
 // parse never becomes the link's target — check first, swap second, and the daemon keeps running.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync,
   statSync, symlinkSync } from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -1045,6 +1049,16 @@ async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
     return;
   }
   const tree = `${cfg.workDir}/tree-${sha.slice(0, 12)}`;
+  // THE LINK ALREADY POINTS AT THIS SHA'S TREE: an earlier claim of it swapped, and this process
+  // never exited (it is the only way to be here with daemonSha !== sha). That tree is checked — the
+  // link only ever moves onto one — and it is what systemd will start next, so it is NEVER removed
+  // and re-cloned below. The swap is reported again and the exit that went missing is made now.
+  if (pointsAt(cfg.checkoutLink, tree)) {
+    log(`update ${short}: ${cfg.checkoutLink} already points at ${tree} — no clone, finishing the earlier swap`);
+    await endAfterSwap(() => report(cfg, j, 0, `already swapped ${cfg.checkoutLink} → ${tree}`, undefined, sha),
+      () => pruneTrees(cfg), short);
+    return;
+  }
   const logPath = `${cfg.workDir}/update-${sha.slice(0, 12)}.log`;
   const bundlePath = `${cfg.workDir}/update-${sha.slice(0, 12)}.bundle`;
   const checkOut = `${tree}.check`;
@@ -1089,15 +1103,39 @@ async function selfUpdate(cfg: HelperConfig, j: ClaimedJob): Promise<void> {
       await report(cfg, j, 1, `the symlink swap failed: ${swapped}`, logPath, clonedSha);
       return;
     }
-    await report(cfg, j, 0, `swapped ${cfg.checkoutLink} → ${tree}`, logPath, clonedSha);
-    pruneTrees(cfg);
-    // the `finally` below never runs past an exit — the bundle goes here, on the one path that ends
-    try { rmSync(bundlePath, { force: true }); } catch { /* the tree is what mattered */ }
-    log(`update ${short}: exit ${EXIT_UPDATED} — the unit restarts this daemon from ${cfg.checkoutLink}`);
-    process.exit(EXIT_UPDATED);
+    await endAfterSwap(() => report(cfg, j, 0, `swapped ${cfg.checkoutLink} → ${tree}`, logPath, clonedSha), () => {
+      pruneTrees(cfg);
+      // the `finally` below never runs past an exit — the bundle goes here, on the one path that ends
+      rmSync(bundlePath, { force: true });
+    }, short);
   } finally {
     try { rmSync(bundlePath, { force: true }); } catch { /* idem */ }
   }
+}
+// ONCE THE LINK HAS MOVED, THIS PROCESS ENDS — whatever the report and the cleanup do. Before
+// 2026-10-09 the exit sat behind `await report(…)`, and the result POST throws after five network
+// failures (result-retry.ts): the daemon then kept running the OLD code with `current` already on
+// the new tree, systemd never restarted it, and a second claim of the same sha removed the tree the
+// link pointed at (D-4, docs/messungen/2026-10-09-codebase-review.md). A lost report is the board's
+// problem, and the next daemon's heartbeat names the sha it runs; a daemon that never exits is not.
+// `exit` is a parameter for (HD)'s pure check only.
+export async function endAfterSwap(reportSwap: () => Promise<void>, cleanup: () => void, short: string,
+  exit: (code: number) => void = process.exit): Promise<void> {
+  try {
+    await reportSwap();
+  } catch (e) {
+    log(`update ${short}: the swap report failed (${e instanceof Error ? e.message : String(e)}) — exiting anyway, the link already moved`);
+  } finally {
+    try { cleanup(); } catch { /* the tree is what mattered */ }
+    log(`update ${short}: exit ${EXIT_UPDATED} — the unit restarts this daemon from the link`);
+    exit(EXIT_UPDATED);
+  }
+}
+// Whether `link` resolves to `dir`, compared as REAL paths: the link may be relative, and workDir
+// may itself sit behind a symlink, so a string comparison of readlink's answer would call the
+// running tree a stranger. Anything unreadable is "no" — absent link, absent dir.
+export function pointsAt(link: string, dir: string): boolean {
+  try { return realpathSync(link) === realpathSync(dir); } catch { return false; }
 }
 // ATOMIC on POSIX: the new link is created beside the old one and RENAMED over it, so at no
 // instant is there no link, and no instant where it points at a tree that was not checked. A path
@@ -1118,12 +1156,10 @@ function swapLink(link: string, target: string): string | null {
 // The trees are the rollback, so they are kept — but not forever: the link's target and the two
 // newest others survive. Two, because one of them is the tree THIS process is still running from
 // while the exit below is on its way.
-function pruneTrees(cfg: HelperConfig): void {
+export function pruneTrees(cfg: Pick<HelperConfig, "workDir" | "checkoutLink">): void {
   try {
-    let current = "";
-    try { current = readlinkSync(cfg.checkoutLink); } catch { /* no link yet */ }
     const trees = readdirSync(cfg.workDir).filter((d) => /^tree-[a-f0-9]{12}$/.test(d))
-      .map((d) => `${cfg.workDir}/${d}`).filter((p) => p !== current)
+      .map((d) => `${cfg.workDir}/${d}`).filter((p) => !pointsAt(cfg.checkoutLink, p))
       .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
     for (const p of trees.slice(2)) rmSync(p, { recursive: true, force: true });
   } catch { /* an unlistable workDir is reported by the next mkdir, not here */ }
@@ -1181,6 +1217,18 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
       features: DAEMON_FEATURES,
     }),
   });
+  // A HEARTBEAT THE FLEET DID NOT TAKE IS NOT A WISH. A 4xx body carries no `desiredMode`, and the
+  // fallback below used to read that absence as `active` — so a daemon whose beat the server
+  // rejected (a field a newer or older server will not take) claimed jobs under an owner's `off` it
+  // never got to read (D-10). No claim and no job list until a beat is answered 2xx; the line is
+  // logged once per status, not once per poll.
+  if (!beat.ok) {
+    const why = (await bodyOf<{ error?: string }>(beat)).error ?? "";
+    if (st.lastMode !== `beat:${beat.status}`)
+      log(`heartbeat answered HTTP ${beat.status}${why ? ` (${why})` : ""} — no job poll, no claim until the fleet takes a beat`);
+    st.lastMode = `beat:${beat.status}`;
+    return;
+  }
   const wish = (await bodyOf<{ desiredMode?: string }>(beat)).desiredMode;
   const desired: Mode = wish === "off" || wish === "quiet" || wish === "active" ? wish : "active";
   const mode = stricter(local.mode, desired);

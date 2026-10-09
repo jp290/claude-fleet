@@ -14202,6 +14202,27 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
   receiver: Slot, ending?: { slot: number; openedAt: number | null; notAlive?: true }): Promise<void> {
   if (programEventNotifying.has(key)) return;
   programEventNotifying.add(key);
+  const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+  const beforeSend = async (current: Slot): Promise<void> => {
+    const main = programs.find((p) => p.id === programId)?.main;
+    const deadPane = ending?.notAlive && main?.slot === ending.slot
+      && main.openedAt === ending.openedAt ? slotFrom(ending.slot) : null;
+    const stillGone = programWithoutMain(programId)
+      || (ending && main?.slot === ending.slot && main.openedAt === ending.openedAt
+        && (slotTeardownInflight.has(ending.slot) && programWithoutMain(programId, ending.slot)
+          || deadPane?.cwd && !(await claudeAlive(deadPane))));
+    if (deliveryRecipient({ kind: "orchestrator" }) !== current
+      || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+      || !stillGone)
+      throw new DeliveryCancelled(`program event ${key} changed before paste`);
+  };
+  const delivered = (current: Slot, acceptance: Acceptance): void => {
+    programEventNotified.add(key);
+    const at = Date.now();
+    current.history = [...current.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(current);
+    logPrompt(current, message, "auto", at, undefined, acceptance);
+  };
   try {
     if (!programEventNotifiedSeeded) {
       for (const row of (await readEventLog(AUDIT_FILE)).rows)
@@ -14210,32 +14231,20 @@ async function notifyOrchestratorOfProgramLoss(key: string, programId: string, m
           programEventNotified.add(row.programEventId);
       programEventNotifiedSeeded = true;
     }
-    if (programEventNotified.has(key)) return;
-    const occupant = { slot: receiver.id, openedAt: receiver.openedAt };
+    if (programEventNotified.has(key) || fleetSendParked(`program-event:${key}`)) return;
     const { acceptance } = await sendText(receiver, message, true, {
       path: "program-event-orphan", deliveryClass: "sofort", rollbackOwnPayload: true,
       programEventId: key,
       address: { kind: "orchestrator" },
-      beforeSend: async (current) => {
-        const main = programs.find((p) => p.id === programId)?.main;
-        const deadPane = ending?.notAlive && main?.slot === ending.slot
-          && main.openedAt === ending.openedAt ? slotFrom(ending.slot) : null;
-        const stillGone = programWithoutMain(programId)
-          || (ending && main?.slot === ending.slot && main.openedAt === ending.openedAt
-            && (slotTeardownInflight.has(ending.slot) && programWithoutMain(programId, ending.slot)
-              || deadPane?.cwd && !(await claudeAlive(deadPane))));
-        if (deliveryRecipient({ kind: "orchestrator" }) !== current
-          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
-          || !stillGone)
-          throw new DeliveryCancelled(`program event ${key} changed before paste`);
-      },
+      beforeSend,
     });
-    programEventNotified.add(key);
-    const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
-    saveHistory(receiver);
-    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+    delivered(receiver, acceptance);
   } catch (e) {
+    // an occupied composer parks the notice (THE PARKED SEND); the same check runs before its paste
+    if (e instanceof SendComposerOccupied && parkFleetSend(receiver, e, message, { key: `program-event:${key}`,
+      send: (current) => sendText(current, message, true, { path: "program-event-orphan", deliveryClass: "sofort",
+        rollbackOwnPayload: true, requireAgent: true, programEventId: key, address: { kind: "orchestrator" }, beforeSend }),
+      onDelivered: delivered }) === null) return;
     if (!(e instanceof DeliveryCancelled)) logError("notifyOrchestratorOfProgramLoss", e);
   } finally {
     programEventNotifying.delete(key);
@@ -14513,8 +14522,9 @@ async function tickOrphanReports(): Promise<void> {
           orphanReportNotified.add(row.reportId);
       orphanReportSeeded = true;
     }
+    // a notice parked behind the Orchestratorin's draft is already on its way (THE PARKED SEND)
     const report = fleetReports.find((r) => r.basis === "program" && reportAwaitsOwner(r)
-      && !orphanReportNotified.has(r.id));
+      && !orphanReportNotified.has(r.id) && !fleetSendParked(`report-orphan:${r.id}`));
     if (!report) return;
     const receiver = deliveryRecipient({ kind: "orchestrator" });
     if (!receiver) return;
@@ -14524,18 +14534,30 @@ async function tickOrphanReports(): Promise<void> {
       ? `GET /api/self/fleet-report/delegated; POST /api/self/fleet-report/${report.id}/delegate/accept|reject|escalate`
       : `ohne ReportDelegate nur Owner-Tuer POST /api/fleet-report/${report.id}/accept|reject`;
     const message = `[fleet report orphan] Program-Report ${report.id} ist unbeurteilt; Program ${report.provenance.programId} hat keine lebende MAIN. ${door}. Der Hinweis erteilt kein Urteilsrecht.`;
-    const { acceptance } = await sendText(receiver, message, true, { path: "report-orphan",
-      deliveryClass: "sofort", rollbackOwnPayload: true, reportId: report.id,
-      beforeSend: async (current) => {
-        if (deliveryRecipient({ kind: "orchestrator" }) !== current
-          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
-          || !reportAwaitsOwner(report)) throw new DeliveryCancelled(`orphan ${report.id} changed before paste`);
-      } });
-    orphanReportNotified.add(report.id);
-    const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
-    saveHistory(receiver);
-    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+    const beforeSend = async (current: Slot): Promise<void> => {
+      if (deliveryRecipient({ kind: "orchestrator" }) !== current
+        || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+        || !reportAwaitsOwner(report)) throw new DeliveryCancelled(`orphan ${report.id} changed before paste`);
+    };
+    const delivered = (current: Slot, acceptance: Acceptance): void => {
+      orphanReportNotified.add(report.id);
+      const at = Date.now();
+      current.history = [...current.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+      saveHistory(current);
+      logPrompt(current, message, "auto", at, undefined, acceptance);
+    };
+    try {
+      const { acceptance } = await sendText(receiver, message, true, { path: "report-orphan",
+        deliveryClass: "sofort", rollbackOwnPayload: true, reportId: report.id, beforeSend });
+      delivered(receiver, acceptance);
+    } catch (e) {
+      // her draft holds the field: the notice waits for it, and this tick stops re-offering it
+      if (!(e instanceof SendComposerOccupied) || parkFleetSend(receiver, e, message, { key: `report-orphan:${report.id}`,
+        send: (current) => sendText(current, message, true, { path: "report-orphan", deliveryClass: "sofort",
+          rollbackOwnPayload: true, requireAgent: true, reportId: report.id, beforeSend }),
+        onDelivered: delivered }) !== null)
+        throw e;
+    }
   } catch (e) {
     if (!(e instanceof DeliveryCancelled)) logError("tickOrphanReports", e);
   } finally {
@@ -18170,20 +18192,28 @@ async function hintAttentionOrchestrator(a: AttentionRequest, receiver: Slot): P
   const message = `[fleet attention] Rückfrage ${a.id} (${a.kind}) der MAIN Slot ${a.requester.slot}, Program ${a.programId}, `
     + `wartet zuerst auf dich: „${question}${a.text.length > 300 ? " …" : ""}". Volltext GET /api/attention; `
     + `beantworten POST /api/attention/${a.id}/answer {"text":…}; an den Owner weiterreichen POST /api/attention/${a.id}/escalate {"reason":…}.`;
+  const beforeSend = async (current: Slot): Promise<void> => {
+    if (deliveryRecipient({ kind: "orchestrator" }) !== current
+      || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
+      || a.stage !== "orchestrator" || (a.status !== "open" && a.status !== "send-uncertain"))
+      throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
+  };
+  const delivered = (current: Slot, acceptance: Acceptance): void => {
+    const at = Date.now();
+    current.history = [...current.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(current);
+    logPrompt(current, message, "auto", at, undefined, acceptance);
+  };
   try {
     const { acceptance } = await sendText(receiver, message, true, { path: "attention-orchestrator",
-      deliveryClass: "sofort", rollbackOwnPayload: true,
-      beforeSend: async (current) => {
-        if (deliveryRecipient({ kind: "orchestrator" }) !== current
-          || current.id !== occupant.slot || current.openedAt !== occupant.openedAt
-          || a.stage !== "orchestrator" || (a.status !== "open" && a.status !== "send-uncertain"))
-          throw new DeliveryCancelled(`attention ${a.id} changed before paste`);
-      } });
-    const at = Date.now();
-    receiver.history = [...receiver.history, { text: message, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
-    saveHistory(receiver);
-    logPrompt(receiver, message, "auto", at, undefined, acceptance);
+      deliveryClass: "sofort", rollbackOwnPayload: true, beforeSend });
+    delivered(receiver, acceptance);
   } catch (e) {
+    // her draft holds the field: the hint waits for it instead of being lost (THE PARKED SEND)
+    if (e instanceof SendComposerOccupied && parkFleetSend(receiver, e, message, { key: `attention:${a.id}`,
+      send: (current) => sendText(current, message, true, { path: "attention-orchestrator",
+        deliveryClass: "sofort", rollbackOwnPayload: true, requireAgent: true, beforeSend }),
+      onDelivered: delivered }) === null) return;
     if (!(e instanceof DeliveryCancelled)) logError("hintAttentionOrchestrator", e);
   }
 }
@@ -18725,7 +18755,32 @@ async function tickAutos(): Promise<void> {
           audit("auto_fire", recipient.id, a.id);
           advanceAuto(a, sentAt);
         } catch (e) {
-          if (!(e instanceof DeliveryCancelled)) {
+          // A ONE-SHOT behind an occupied composer waits for it (THE PARKED SEND, parkFleetSend):
+          // the run is spent here, so the tick never offers it twice, and the parked paste books
+          // `sent` itself. A recurring auto keeps its next run and is not parked.
+          const occupied = e instanceof SendComposerOccupied && a.everySec === null && a.slot === recipient.id
+            ? e : null;
+          const parked = occupied
+            ? parkFleetSend(recipient, occupied, a.text, { key: `auto:${a.id}`,
+              send: (current) => sendText(current, a.text, true, { path: "auto", deliveryClass: "sofort",
+                requireAgent: true, address: { kind: "slot", id: current.id }, beforeSend: async () => {
+                  if (!autos.includes(a)) throw new DeliveryCancelled(`auto ${a.id} was deleted before paste`);
+                } }),
+              onDelivered: (current) => {
+                const sentAt = Date.now();
+                current.history = [...current.history, { text: a.text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+                saveHistory(current);
+                logPrompt(current, a.text, "auto", sentAt);
+                a.lastRun = sentAt;
+                a.lastResult = "sent";
+                audit("auto_fire", current.id, `${a.id} parked`);
+                saveState();
+              } }) : "not a one-shot behind an occupied composer";
+          if (occupied && parked === null) {
+            a.lastResult = `parked — composer occupied (${occupied.chars} chars); typed once it is empty`;
+            audit("auto_skip", a.slot, a.lastResult);
+            advanceAuto(a, Date.now());
+          } else if (!(e instanceof DeliveryCancelled)) {
             a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
             audit("auto_skip", a.slot, a.lastResult);
             advanceAuto(a, Date.now());
@@ -25827,16 +25882,42 @@ async function tickLaneStand(): Promise<void> {
 //
 // PROCESS-LOCAL, like the hold state: a restart drops every parked text unsent (the audit row
 // `send_parked` names each one), so a caller that must not lose one reads its receipt.
+//
+// FLEET'S OWN TEXTS PARK HERE TOO (2026-10-09, Orchestratorin slot 9: from 20:10 to 20:49 on
+// 08.10. an unsent `/goal` held her composer, and every Fleet delivery to her was refused
+// "composer occupied (5 chars) — nothing typed": the attention hint and a one-shot auto were gone
+// with it, the report-orphan notice was refused again on every tick; the owner found it in the
+// log). parkFleetSend puts such a text into
+// THIS list instead of dropping it, under its own path and with its caller's own pre-paste check,
+// so it is typed once the composer reads empty and never past a draft. The cap counts per kind:
+// three owner sends and three Fleet texts per slot, so a busy Fleet can never take an owner
+// /send's place. A Watch event needs no entry here — its row stays `pending` under the composer
+// hold (noteComposerHold) — but it is SHOWN as parked through the same slot view.
 const PARKED_SEND_MAX_PER_SLOT = 3;
 const PARKED_SEND_TTL_DEFAULT_MS = 30 * 60_000;
 const PARKED_SEND_TTL_MAX_MS = 30 * 60_000;
+// a Fleet text outlives the owner hint (PARKED_HINT_MS) by a wide margin: the hint asks the owner
+// to clear the composer, and the text must still be there once that is done
+const PARKED_FLEET_TTL_MS = 2 * 60 * 60_000;
 const PARKED_SETTLED_KEEP = 50;
 type SendReceiver = { slot: number; openedAt: number; sessionId: string | null };
+type ParkedFleetSend = {
+  // the caller's own delivery, built where it parks: its path, text and pre-paste check (a
+  // DeliveryCancelled from that check drops the entry with its reason, nothing typed), plus
+  // requireAgent — a pane that died while the text waited gets nothing typed into its shell
+  send: (receiver: Slot) => Promise<{ acceptance: Acceptance }>;
+  // what the caller does after an accepted paste (history, prompt log, its own "sent" mark)
+  onDelivered: (receiver: Slot, acceptance: Acceptance) => void;
+  // one entry per subject: a tick that would re-offer the same notice reads this instead
+  key: string;
+};
 type ParkedSend = {
   sendId: string; occupant: SlotStreamOccupant; receiver: SendReceiver; text: string; submit: boolean;
   parkedAt: number; deadlineAt: number; holds: number; nextProbeAt: number;
   // the size of the draft that blocks it, as the last probe read it — the owner's pane shows it
   draftChars: number;
+  // absent = the owner's own /send (whenFree) or task comment, byte for byte as before
+  fleet?: ParkedFleetSend;
 };
 type ParkedSettled = {
   sendId: string; receiver: SendReceiver; parkedAt: number; at: number;
@@ -25850,14 +25931,27 @@ let parkedTickBusy = false;
 function parkSend(s: Slot, p: Omit<ParkedSend, "occupant" | "holds" | "nextProbeAt">): string | null {
   const occupant = slotStreamOccupant(s);
   if (!occupant) return "slot unavailable";
-  const held = parkedSends.filter((x) => x.occupant.slot === s.id).length;
+  const held = parkedSends.filter((x) => x.occupant.slot === s.id && !x.fleet === !p.fleet).length;
   if (held >= PARKED_SEND_MAX_PER_SLOT)
     return `slot ${s.id} already holds ${held} parked sends (cap ${PARKED_SEND_MAX_PER_SLOT})`;
   parkedSends.push({ ...p, occupant, holds: 1, nextProbeAt: p.parkedAt + holdBackoffMs(1) });
   audit("send_parked", s.id, `${p.sendId} draft=${p.draftChars} bytes=${Buffer.byteLength(p.text, "utf8")}`,
-    { phase: "entry", deadlineAt: p.deadlineAt });
+    { phase: "entry", deadlineAt: p.deadlineAt, ...(p.fleet ? { fleet: p.fleet.key } : {}) });
   return null;
 }
+
+// THE FLEET HALF of the parked send: a Fleet-own delivery whose sendText refused on an occupied
+// composer waits here instead of being dropped. null = parked; a string = why not (the per-slot
+// cap, or this subject already waits), and then the caller's old refusal stands.
+function parkFleetSend(s: Slot, refusal: SendComposerOccupied, text: string,
+  fleet: ParkedFleetSend): string | null {
+  if (fleetSendParked(fleet.key)) return `${fleet.key} already parked`;
+  const at = Date.now();
+  return parkSend(s, { sendId: randomBytes(12).toString("hex"),
+    receiver: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId }, text, submit: true,
+    parkedAt: at, deadlineAt: at + PARKED_FLEET_TTL_MS, draftChars: refusal.chars, fleet });
+}
+const fleetSendParked = (key: string): boolean => parkedSends.some((p) => p.fleet?.key === key);
 
 function settleParked(p: ParkedSend, delivery: ParkedSettled["delivery"], reason: string, acceptance?: Acceptance): void {
   const i = parkedSends.indexOf(p);
@@ -25879,11 +25973,27 @@ function parkedReceipt(sendId: string): Record<string, unknown> | null {
   return done ? { ...done } : null;
 }
 
-// what the board paints on a slot: omitted (undefined) when nothing waits for this occupant
+// what the board paints on a slot: omitted (undefined) when nothing waits for this occupant.
+// Everything that waits behind THIS occupant's draft counts — parked texts (owner and Fleet) and
+// Watch events held by the composer hold — because to the owner they are one fact: deliveries
+// wait until the input is empty. `since` is the oldest of them.
 function parkedSendView(s: Slot): { count: number; draftChars: number; since: number } | undefined {
   const mine = parkedSends.filter((p) => sameSlotStreamOccupant(s, p.occupant));
-  if (!mine.length) return undefined;
-  return { count: mine.length, draftChars: mine[0].draftChars, since: mine[0].parkedAt };
+  const occupant = holdOccupant(s);
+  const held = [...composerHolds.values()].filter((row) => row.occupant === occupant && row.draftChars !== null);
+  if (!mine.length && !held.length) return undefined;
+  const since = Math.min(...mine.map((p) => p.parkedAt), ...held.map((row) => row.firstAt));
+  const draftChars = mine[0]?.draftChars ?? held[0]?.draftChars ?? 0;
+  return { count: mine.length + held.length, draftChars, since };
+}
+
+// A Watch event's half of the same fact, for the event's own reader: the composer hold that keeps
+// its row `pending`, when the refusal it carries is an occupied composer. null = not parked.
+function fleetEventParked(event: FleetEvent):
+  { draftChars: number; since: number; holds: number; nextProbeAt: number } | null {
+  const row = composerHolds.get(event.id);
+  return row && row.draftChars !== null
+    ? { draftChars: row.draftChars, since: row.firstAt, holds: row.holds, nextProbeAt: row.nextProbeAt } : null;
 }
 
 async function tickParkedSends(): Promise<void> {
@@ -25906,7 +26016,14 @@ async function tickParkedSends(): Promise<void> {
       if (!p || !s || Date.now() < p.nextProbeAt) continue;
       // no await between this pin check and sendText's own occupant capture
       if (!sameSlotStreamOccupant(s, p.occupant)) continue;
+      const fleet = p.fleet;
       try {
+        if (fleet) {
+          const { acceptance } = await fleet.send(s);
+          settleParked(p, "delivered", "the composer was free and Fleet typed into it", acceptance);
+          try { fleet.onDelivered(s, acceptance); } catch (err) { logError("parkedFleetDelivered", err); }
+          continue;
+        }
         const { acceptance } = await sendText(s, p.text, p.submit, { path: "owner", requireAgent: true });
         const ts = Date.now();
         s.history = [...s.history, { text: p.text, ts, source: p.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
@@ -25914,6 +26031,12 @@ async function tickParkedSends(): Promise<void> {
         logPrompt(s, p.text, "owner", ts, p.sendId, acceptance === "unobservable" ? "unobserved" : "sent");
         settleParked(p, "delivered", "the composer was free and Fleet typed into it", acceptance);
       } catch (e) {
+        // the caller's own check said its subject is gone (row answered, auto deleted, role moved):
+        // nothing was typed, and nothing ever will be for this entry
+        if (fleet && e instanceof DeliveryCancelled) {
+          settleParked(p, "dropped", e.message);
+          continue;
+        }
         if (e instanceof SendRefused) {
           // still a draft (or no live agent yet): nothing was typed, so wait on the same schedule
           if (e instanceof SendComposerOccupied) p.draftChars = e.chars;
@@ -25923,13 +26046,68 @@ async function tickParkedSends(): Promise<void> {
         }
         // typed in part or not accepted: the /send route's uncertain case, and it is never retried —
         // a second paste of a text that may already sit in the pane is the duplicate this avoids
-        logPrompt(s, p.text, "owner", Date.now(), p.sendId, "uncertain");
+        logPrompt(s, p.text, fleet ? "auto" : "owner", Date.now(), p.sendId, "uncertain");
         settleParked(p, "uncertain", `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
           e instanceof SendNotAccepted ? e.acceptance : undefined);
       }
     }
   } finally {
     parkedTickBusy = false;
+  }
+}
+
+// --- THE OWNER HINT FOR A HELD COMPOSER (2026-10-09). Parking makes a refused delivery wait; it
+// does not make anybody clear the field, and Fleet never does (no clear, no Enter past a draft).
+// On 08.10. it took the owner 40 minutes and a log to see that slot 9 was deaf. So once the
+// deliveries waiting behind one occupant's draft (parkedSendView, oldest first) have waited
+// PARKED_HINT_MS, the owner inbox gets ONE row — a `harness-block` „[Zitat entfernt]“, the
+// row the board already paints for a pane that needs a hand — and no second one while that stretch
+// lasts. A new stretch (everything delivered or dropped, then a new refusal) may hint again.
+// Expressed in TICKS like the hold backoff: 120 ticks are 10 min at the production cadence.
+const PARKED_HINT_MS = AUTOS_TICK_MS * 120;
+const COMPOSER_HELD_TOOL = "composer-held";
+const parkedStretches = new Map<number, { occupant: string; since: number; hinted: boolean }>();
+async function tickParkedHints(): Promise<void> {
+  const now = Date.now();
+  for (const s of slots) {
+    const view = s.cwd ? parkedSendView(s) : undefined;
+    if (!view) { parkedStretches.delete(s.id); continue; }
+    const occupant = holdOccupant(s);
+    let stretch = parkedStretches.get(s.id);
+    if (!stretch || stretch.occupant !== occupant) {
+      stretch = { occupant, since: view.since, hinted: false };
+      parkedStretches.set(s.id, stretch);
+    }
+    if (stretch.hinted || now - stretch.since < PARKED_HINT_MS) continue;
+    stretch.hinted = true;
+    // a row still open for this occupant (minted before a restart) IS the hint: no second one
+    const open = fleetEvents.filter((e) => e.kind === "harness-block" && e.receiverSlot === null
+      && !FLEET_EVENT_TERMINAL.includes(e.status));
+    if (open.some((e) => e.kind === "harness-block" && e.subjectSlot === s.id && e.subjectOpenedAt === s.openedAt
+      && e.payload.tool === COMPOSER_HELD_TOOL)) continue;
+    if (open.length >= HARNESS_BLOCK_INBOX_MAX) {
+      audit("harness_block", s.id, `${COMPOSER_HELD_TOOL} skipped, ${open.length} open harness-block rows in the owner inbox (cap ${HARNESS_BLOCK_INBOX_MAX})`);
+      continue;
+    }
+    const heldMs = now - stretch.since;
+    const held = heldMs < 120_000 ? `${Math.round(heldMs / 1000)} s` : `${Math.round(heldMs / 60_000)} min`;
+    const branch = s.worktree?.branch ?? "unknown";
+    const event: HarnessBlockFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: null,
+      receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+      subjectSlot: s.id, subjectOpenedAt: s.openedAt, subjectBranch: branch,
+      kind: "harness-block",
+      payload: { signal: "waiting", tool: COMPOSER_HELD_TOOL, count: 1, escalated: true,
+        key: createHash("sha256").update(`${COMPOSER_HELD_TOOL}:${occupant}:${stretch.since}`).digest("hex").slice(0, 16),
+        detail: (`slot ${s.id}: the composer has held a ${view.draftChars}-char draft for ${held} while `
+          + `${view.count} deliver${view.count === 1 ? "y waits" : "ies wait"} behind it — Fleet types nothing `
+          + `past a draft; send or clear it and they arrive`).slice(0, HARNESS_BLOCK_DETAIL_MAX) },
+      createdAt: now, status: "inbox", delivery: "inbox", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      ...subjectNameStamp(s, branch),
+    };
+    fleetEvents = [...fleetEvents, event];
+    audit("harness_block", s.id, `${COMPOSER_HELD_TOOL} event=${event.id} waiting=${view.count} draft=${view.draftChars} heldMs=${heldMs}`);
+    await saveStateNow();
   }
 }
 
@@ -25956,7 +26134,11 @@ const HOLD_BACKOFF_BASE_MS = AUTOS_TICK_MS * 2;
 const HOLD_BACKOFF_MAX_MS = AUTOS_TICK_MS * 12;
 const holdBackoffMs = (holds: number): number =>
   Math.min(HOLD_BACKOFF_BASE_MS * 2 ** Math.max(0, holds - 1), HOLD_BACKOFF_MAX_MS);
-type ComposerHold = { occupant: string; holds: number; firstAt: number; nextProbeAt: number };
+// `draftChars`: the draft the LAST refusal read, when that refusal was an occupied composer (the
+// pre-class sentence carries the number); null for any other refusal. It is what makes this hold
+// read as a parked delivery (fleetEventParked, parkedSendView).
+type ComposerHold = { occupant: string; holds: number; firstAt: number; nextProbeAt: number;
+  draftChars: number | null };
 const composerHolds = new Map<string, ComposerHold>();
 
 // THE ONLY READER. `true` means: this exact row was refused by this exact pane recently enough
@@ -25984,8 +26166,10 @@ function noteComposerHold(event: FleetEvent, s: Slot, why: string): { holds: num
   const occupant = holdOccupant(s);
   const prev = composerHolds.get(event.id);
   const row: ComposerHold = prev && prev.occupant === occupant
-    ? prev : { occupant, holds: 0, firstAt: now, nextProbeAt: 0 };
+    ? prev : { occupant, holds: 0, firstAt: now, nextProbeAt: 0, draftChars: null };
   row.holds++;
+  const draft = /composer occupied \((\d+) chars\)/.exec(why);
+  row.draftChars = draft ? Number(draft[1]) : null;
   const waitMs = holdBackoffMs(row.holds);
   row.nextProbeAt = now + waitMs;
   composerHolds.set(event.id, row);
@@ -43050,6 +43234,8 @@ setInterval(() => void tickOrphanReports().catch((e: unknown) => logError("tickO
 setInterval(() => void tickFastProgramInbox().catch((e: unknown) => logError("tickFastProgramInbox", e)), AUTOS_TICK_MS);
 // the owner's own parked /send (THE PARKED SEND): owner-initiated, so no automation switch holds it
 setInterval(() => void tickParkedSends().catch((e: unknown) => logError("tickParkedSends", e)), AUTOS_TICK_MS);
+// …and the one owner-inbox row for a composer that keeps every delivery waiting (PARKED_HINT_MS)
+setInterval(() => void tickParkedHints().catch((e: unknown) => logError("tickParkedHints", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), GIT_TICK_MS);
 // the owner inbox must not keep a debt nobody can pay — the read and the resend door settle too
 setInterval(() => { if (settleSuccessionDebts()) saveState(); }, GIT_TICK_MS);
@@ -46849,7 +47035,10 @@ Bun.serve<WSData>({
       const event = fleetEvents.find((e) => e.id === selfEventRead[1]);
       if (!event) return json({ error: "unknown event" }, 404);
       if (!fleetEventReceiverIs(event, s)) return json({ error: "event belongs to another slot or a replaced session" }, 409);
-      return json({ event, text: fleetEventMessage(event) });
+      // `delivery: "parked"` while a draft in this session's composer holds the row back — the
+      // /send receipt's word for the same wait; absent once it is typed or for any other wait
+      const parked = event.status === "pending" ? fleetEventParked(event) : null;
+      return json({ event, text: fleetEventMessage(event), ...(parked ? { delivery: "parked", parked } : {}) });
     }
 
     // Main-session succession is the other non-lane-only self capability. The token identifies
@@ -49982,7 +50171,11 @@ Bun.serve<WSData>({
     // THE FULL TRAIL, owner side — every row the owner poll no longer carries (terminal,
     // receiver-gone, subject-gone, inbox reports) with its whole payload. Explicit and never polled
     // by the board; /api/sessions carries only the projected cut (src/opsevents.ts#opsPollRow).
-    if (url.pathname === "/api/events" && req.method === "GET") return json({ events: fleetEvents });
+    if (url.pathname === "/api/events" && req.method === "GET") return json({ events: fleetEvents.map((e) => {
+      // the same parked wait as GET /api/self/events/:id, on the owner's full list
+      const parked = e.status === "pending" ? fleetEventParked(e) : null;
+      return parked ? { ...e, parked } : e;
+    }) });
     const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (eventOwnerAck && req.method === "POST")
       return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);

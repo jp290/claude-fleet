@@ -20,11 +20,12 @@ import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
 import { run as checkResultRetry } from "./helper-result";
+import { HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk } from "../src/protocol";
 // The import is not only for the four pure checks below: it is the edge that makes e2e-stage.sh
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { downloadBundle, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
+import { artifactsOf, downloadBundle, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
   pointsAt, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
   EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
@@ -260,6 +261,23 @@ export async function run(h: {
     sees && JSON.stringify(treesLeft) === JSON.stringify(["tree-aaaaaaaaaaaa", "tree-cccccccccccc", "tree-dddddddddddd"]),
     `pointsAt=${sees} left=${JSON.stringify(treesLeft)}`);
   rmSync(treeFix, { recursive: true, force: true });
+  // (D-8) THE RECEIPT KEEPS ONLY WHAT THE SERVER WILL STORE. artifactsOf applies the server's own
+  // path rule (src/protocol.ts#helperArtifactPathOk), so a scanned path over the 300-character cap is
+  // left out instead of turning the whole report into a 400. MUTATION: drop the helperArtifactPathOk
+  // test in daemon.ts#artifactsOf ⇒ the long row is in the receipt ⇒ red here, and (HD.9)'s receipt
+  // goes 400 and never reports.
+  const artFix = `${ROOT}/daemon-artifact-fixture`;
+  rmSync(artFix, { recursive: true, force: true });
+  const longRel = `dist/${Array.from({ length: 5 }, (_, i) => `${i}`.repeat(60)).join("/")}/long.txt`;
+  mkdirSync(dirname(`${artFix}/${longRel}`), { recursive: true });
+  writeFileSync(`${artFix}/${longRel}`, "long\n");
+  writeFileSync(`${artFix}/dist/out.txt`, "short\n");
+  const artRows = await artifactsOf(artFix, ["dist/**/*.txt"]);
+  check("(HD) artifactsOf leaves a path over the server's cap out of the receipt and keeps the one that passes",
+    longRel.length > HELPER_ARTIFACT_PATH_MAX && !helperArtifactPathOk(longRel)
+      && JSON.stringify(artRows.map((r) => r.path)) === '["dist/out.txt"]',
+    `long=${longRel.length} rows=${JSON.stringify(artRows.map((r) => `${r.path.slice(0, 40)}(${r.path.length})`))}`);
+  rmSync(artFix, { recursive: true, force: true });
   // (D-10) A HEARTBEAT THE FLEET DID NOT TAKE IS NOT A WISH. A stub fleet answers the beat 400, then
   // 200, and records every path the daemon's tick asks for. The 200 half is the precondition: it
   // proves this tick WOULD poll the job list, so the 400 half's silence is the guard and not a tick
@@ -1104,9 +1122,14 @@ export async function run(h: {
     // package.json + probe are COMMITTED, then the probe is CHANGED and left uncommitted. That is
     // the whole point of `git stash create`: the artefact's digest below can only match the dirty
     // bytes if the tree that ran on the other machine was the tree this lane actually HAS.
+    // …and the build ALSO writes one file whose path is over the server's 300-character cap, matched
+    // by the second glob (D-8): the daemon must leave it out of the receipt, or the server refuses the
+    // whole report and the verdict below never arrives.
+    const LONG_DIR = `dist/${Array.from({ length: 5 }, (_, i) => `${i}`.repeat(60)).join("/")}`;
     await Bun.write(`${lane.cwd}/package.json`,
       JSON.stringify({ name: "cmdprobe", private: true,
-        scripts: { build: "mkdir -p dist && cp probe.txt dist/out.txt" } }, null, 2) + "\n");
+        scripts: { build: `mkdir -p dist ${LONG_DIR} && cp probe.txt dist/out.txt && cp probe.txt ${LONG_DIR}/long.txt` } },
+        null, 2) + "\n");
     await Bun.write(`${lane.cwd}/probe.txt`, "committed payload\n");
     spawnSync("git", ["-C", lane.cwd, "add", "package.json", "probe.txt"]);
     spawnSync("git", ["-C", lane.cwd, "commit", "-qm", "cmdjob build fixture"]);
@@ -1137,7 +1160,7 @@ export async function run(h: {
       `${offList.status}`);
 
     const madeRes = await fetch(BASE + "/api/self/jobs", { method: "POST", headers: selfH,
-      body: JSON.stringify({ cmd: "bun run build", timeoutMs: 120_000, artifacts: ["dist/*.txt"] }) });
+      body: JSON.stringify({ cmd: "bun run build", timeoutMs: 120_000, artifacts: ["dist/*.txt", "dist/**/long.txt"] }) });
     const made = (await madeRes.json()) as { jobId?: string; job?: { cmd?: string; argv?: string[] } };
     const jobId = made.jobId ?? "";
     check("(HD) THE SESSION POSTS A COMMAND JOB and gets an id back, with the argv the allowlist split",
@@ -1177,6 +1200,11 @@ export async function run(h: {
     check("(HD) …and it carries the artefact the globs asked for, hashed IN THE CLONE — the digest is the lane's UNCOMMITTED bytes, so `git stash create` provably carried them",
       arts.length >= 1 && out?.sha256 === wantSha && out.bytes === Buffer.byteLength(DIRTY),
       `${arts.length} artefact(s) ${JSON.stringify(arts.slice(0, 3))} want=${wantSha} wantBytes=${Buffer.byteLength(DIRTY)}`);
+    check("(HD) A MATCHED PATH OVER 300 CHARACTERS COSTS ONLY ITS ROW: the verdict is reported, the receipt holds exactly the rows the server's rule passes",
+      settled.state === "reported" && `${LONG_DIR}/long.txt`.length > HELPER_ARTIFACT_PATH_MAX
+        && JSON.stringify(arts.map((a) => a.path)) === '["dist/out.txt"]'
+        && logText(up2.log).includes("fails the fleet's path rule"),
+      `state=${settled.state} long=${`${LONG_DIR}/long.txt`.length} paths=${JSON.stringify(arts.map((a) => a.path.slice(0, 40)))}`);
 
     // THE WATCH, through the OWNER route. This slice added a job KIND, not a principal: the
     // self-watch door still answers a lane 409 ("lane-waits-on-lane"), and widening that is an

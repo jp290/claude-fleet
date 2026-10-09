@@ -14,8 +14,8 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
   type HarnessBlockEventPayload, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX,
   LANE_REVIEW_NOTES_MAX, type LaneReviewEventPayload } from "../lane-signals";
 import type { TitleCarry } from "../titlebytes";
-import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, type FleetReportEventPayload, type FleetReportStatus,
-  type LaneAnchor } from "../src/protocol";
+import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk, type FleetReportEventPayload,
+  type FleetReportStatus, type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
@@ -264,16 +264,11 @@ function remoteControlName(label: string | null, cwd: string | null, slot: numbe
 }
 // The artefact GLOBS a job asks for, and the artefact ROWS a helper reports back. Both sides live
 // here so the request shape and the receipt shape cannot drift apart: the second is what the first
-// is allowed to produce. A path is relative and may not climb — `..` anywhere, an absolute path or
-// a backslash is refused rather than normalised, because a receipt naming a path outside the clone
-// is a receipt about a file this rail never handed over.
+// is allowed to produce. The path rule itself is src/protocol.ts#helperArtifactPathOk, shared with
+// the daemon that writes the receipt: a receipt naming a path outside the clone is a receipt about
+// a file this rail never handed over.
 const HELPER_ARTIFACT_GLOB_MAX = 20;
 const HELPER_ARTIFACT_MAX = 50;
-const HELPER_ARTIFACT_PATH_MAX = 300;
-const helperArtifactPathOk = (p: string): boolean =>
-  p.length > 0 && p.length <= HELPER_ARTIFACT_PATH_MAX && !p.startsWith("/") && !p.includes("\\")
-  && !p.split("/").some((seg) => seg === ".." || seg === "")
-  && ![...p].some((ch) => ch < " " || ch === "\u007f");
 function helperArtifactGlobsFrom(raw: unknown): { ok: true; globs: string[] } | { ok: false; error: string } {
   if (raw === undefined || raw === null) return { ok: true, globs: [] };
   if (!Array.isArray(raw)) return { ok: false, error: "artifacts must be an array of globs relative to the clone" };

@@ -48,7 +48,7 @@ import { homedir, loadavg } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { retryResult } from "./result-retry";
 import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX,
-  HELPER_REPOS_CACHE_MS, HELPER_REPOS_BUDGET_MS, HELPER_REPO_NAME_RE, helperGitLabel,
+  HELPER_REPOS_CACHE_MS, HELPER_REPOS_BUDGET_MS, HELPER_REPO_NAME_RE, helperArtifactPathOk, helperGitLabel,
   type HelperRepoReading, type HelperReposReading } from "../src/protocol";
 
 
@@ -649,11 +649,16 @@ export async function artifactsOf(clone: string, globs: string[]): Promise<Artif
     } catch { continue; } // a malformed glob names no file; it is not a reason to lose the run
     for (const rel of matches.sort()) {
       if (out.length >= ARTIFACT_KEEP) break;
-      // `..` cannot come out of a scan rooted at the clone, but the row is a claim about a path and
-      // is checked as one here too — the server refuses the same shape, and the two agreeing is the
-      // point (a receipt this daemon would not have written is a receipt the fleet will not store).
-      if (seen.has(rel) || rel.startsWith("/") || rel.split("/").includes("..")) continue;
+      // THE SERVER'S OWN RULE, imported (src/protocol.ts#helperArtifactPathOk): the server refuses
+      // the WHOLE report when one row fails it, so a scanned path it would refuse — over 300
+      // characters, a control byte, a backslash — is dropped HERE and logged, and the verdict
+      // still arrives with the rows that pass.
+      if (seen.has(rel)) continue;
       seen.add(rel);
+      if (!helperArtifactPathOk(rel)) {
+        log(`artifact ${JSON.stringify(rel.slice(0, 80))}${rel.length > 80 ? "…" : ""} (${rel.length} chars) fails the fleet's path rule — left out of the receipt`);
+        continue;
+      }
       try {
         const file = Bun.file(`${clone}/${rel}`);
         const bytes = file.size;

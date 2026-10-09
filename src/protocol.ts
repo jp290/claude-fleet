@@ -73,6 +73,19 @@ export const HELPER_REPO_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 export const helperGitLabel = (v: unknown): v is string => typeof v === "string"
   && /^[a-zA-Z0-9][a-zA-Z0-9_./-]{0,95}$/.test(v) && !v.includes("..")
   && !/\d+\.\d+\.\d+\.\d+|\.[a-zA-Z]{2,}(?:$|\/)/.test(v);
+// THE ARTEFACT PATH RULE of a command job — one function on both sides of the wire. The server
+// (server/types.ts) applies it to a job's globs and to every artefact row a helper reports, and
+// refuses the WHOLE report when one row fails it; the daemon (helper-daemon/daemon.ts#artifactsOf)
+// applies it to each scanned path BEFORE the report, so a path the server would refuse is dropped
+// from the receipt instead of costing the verdict. Until 2026-10-09 the daemon checked only `/` and
+// `..`, and a scanned path over 300 characters or with a control byte lost the run (D-8,
+// docs/messungen/2026-10-09-codebase-review.md). A path is relative and may not climb — `..`
+// anywhere, an absolute path or a backslash is refused rather than normalised.
+export const HELPER_ARTIFACT_PATH_MAX = 300;
+export const helperArtifactPathOk = (p: string): boolean =>
+  p.length > 0 && p.length <= HELPER_ARTIFACT_PATH_MAX && !p.startsWith("/") && !p.includes("\\")
+  && !p.split("/").some((seg) => seg === ".." || seg === "")
+  && ![...p].some((ch) => ch < " " || ch === "\u007f");
 export type HelperRepoReason = "unreadable" | "not-repo-root" | "budget" | "unsafe-label" | "ref-cap" | "remote-cap"
   | "commit-cap" | "no-merge-base" | "invalid-report";
 export interface HelperRepoRef {

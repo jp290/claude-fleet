@@ -12051,14 +12051,28 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
   { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
-  { name: "the stem's bar stops at its words", state: "main", width: 1200, claim: "the focused row's bar runs from its point to its next one",
-    needle: "      const right = rl ? rl.x : Math.round(end(row)) + 4;", with: "      const right = Math.round(end(row)) + 4;" },
-  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point to its next one",
+  { name: "the bar runs on over the square", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+    needle: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);", with: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(end(row)) + 4 - p[0])}px`);" },
+  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point to the end of its words",
+    needle: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);", with: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, (rails.get(row.dataset.id ?? \"\")?.x ?? Math.round(words(row)) + 4) - p[0])}px`);" },
+  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
     needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
-  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point to its next one",
-    needle: "  #board .ranke .rk > .zr.here { transition: none; }", with: "" },
-  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point to its next one",
-    needle: "  #board .ranke .rk > .zr.here[data-bar] { background: none; }", with: "" },
+  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+    needle: "  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }", with: "" },
+  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+    needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "" },
+  { name: "the hovered row paints its whole ground again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
+    needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "  #board .ranke .rk > .zr[data-bar]:not(:hover) { background: none; }" },
+  { name: "the hovered row shows no bar", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
+    needle: "  #board .ranke .rk > .zr.zw[data-bar]:hover::before, #board .ranke .rk > .zr[data-bar].flash::before { background: var(--c-hover); }", with: "" },
+  { name: "only the focused row carries a bar", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
+    needle: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.zw, :scope > .zr.base\")) {", with: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.here\")) {" },
+  { name: "a helper that reports says angemeldet again", state: "lane", claim: "each machine's state is a dot and a word at the row's end",
+    needle: "return { tone: \"live\", word: \"läuft\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };", with: "return { tone: \"live\", word: \"angemeldet\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };" },
+  { name: "the test instance's row says läuft in its name again", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
+    needle: "    { tone: \"live\", word: \"läuft\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null,", with: "    { tone: \"live\", word: \"\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null," },
+  { name: "the test instance's row opens nothing", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
+    needle: "    [{ label: \"Stand\", text: band.text, st: null }, { label: \"Hinweis\", text: band.title, st: null }],", with: "    [],"},
   { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live-Server stands under Mac",
     needle: "    if (live) {\n      const [key, list] = live;", with: "    if (live && false) {\n      const [key, list] = live;" },
 ];
@@ -12450,7 +12464,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           msess: r.querySelector('.msess')?.textContent ?? null,
           bar: r.dataset.bar ?? null, ground: getComputedStyle(r).backgroundColor, fade: getComputedStyle(r).transitionDuration,
           barBox: r.dataset.bar ? (() => { const s = getComputedStyle(r, '::before'), b = r.getBoundingClientRect(); return { l: b.left + parseFloat(s.left), r: b.left + parseFloat(s.left) + parseFloat(s.width), bg: s.backgroundColor }; })() : null,
-          ndC: (() => { const n = r.querySelector(':scope > .nd'); if (!n) return null; const b = n.getBoundingClientRect(); return b.left + b.width / 2; })() }; });
+          ndC: (() => { const n = r.querySelector(':scope > .nd'); if (!n) return null; const b = n.getBoundingClientRect(); return b.left + b.width / 2; })(),
+          wordsR: Math.max(...[...r.querySelectorAll(':scope > .nm, :scope > .rt, :scope > .lr > .gs')].map((e) => e.getBoundingClientRect().right), 0),
+          marksL: Math.min(...[...r.querySelectorAll(':scope > .ti, :scope > .lr > .ti, :scope > .lr > .lflag, :scope > .lgate')].filter((e) => e.getClientRects().length)
+            .map((e) => e.getBoundingClientRect().left), Infinity) }; });
       const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent),
         points: [...z.querySelectorAll('.way i')].map((i) => ({ key: i.dataset.key ?? null, cls: i.className })), way: z.querySelector('.way')?.title ?? '', wayAria: z.querySelector('.way')?.getAttribute('aria-label') ?? '' }));
       const body = document.querySelector('#boardbody');
@@ -12489,7 +12506,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       ref: string | null; name: string | null; nd: string | null; flag: Flag | null; points: number; lr: { x: number; r: number } | null; git: string | null; gitTitle: string | null;
       ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
       machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null;
-      bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null };
+      bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null;
+      // the right edge of the row's words and git stand; the left edge of its marks (square, flag, diamond), null without one
+      wordsR: number; marksL: number | null };
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
@@ -12620,19 +12639,37 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           zw.length > 0 && zw.every((x) => { const b = r.backs.filter((p) => p.for === x.id);
             return b.length === 1 && (b[0].cls ?? "").split(" ").includes(landedIds.has(x.id ?? "") ? "land" : "wait"); })
           && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
-        // THE BAR OF THE ROW YOU STAND IN (owner 2026-10-09: „[Zitat entfernt]“
-        // ): the focused
-        // row's ground runs from its own point to its next one — main from its point to its head on the
-        // rail, a lane from its point to where its way back begins — and the row itself paints no ground
-        const barClaim = (rr: Read, fr: Row | undefined, kind: "rail" | "end", to: number | undefined) => {
-          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, ground: fr.ground, fade: fr.fade }, to };
-          return !!fr?.barBox && fr.bar === kind && fr.ndC !== null && to !== undefined
-            && Math.abs(fr.barBox.l - fr.ndC) <= 1 && Math.abs(fr.barBox.r - to) <= 1 && fr.barBox.bg !== "rgba(0, 0, 0, 0)"
+        // THE BAR OF A ROW (owner 2026-10-09: „[Zitat entfernt]“
+        // ; the same day, shorter: "dass das Testinstanz-öffnen-Quadrat noch angezeigt wird …
+        // vielleicht sollte der Balken dahingegen kürzer werden"): the row's ground runs from its own point
+        // to the end of its words and its git stand — its square, flag and diamond stand beside it — and the
+        // row itself paints no ground
+        const barClaim = (rr: Read, fr: Row | undefined, kind: string) => {
+          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, wordsR: fr.wordsR, marksL: fr.marksL, ground: fr.ground, fade: fr.fade } };
+          return !!fr?.barBox && fr.bar === "words" && fr.ndC !== null
+            && Math.abs(fr.barBox.l - fr.ndC) <= 1 && fr.barBox.r >= fr.wordsR && fr.barBox.r <= fr.wordsR + 6
+            && (fr.marksL === null || fr.marksL >= fr.barBox.r - 0.5) && fr.barBox.bg !== "rgba(0, 0, 0, 0)"
             && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
         };
-        if (st === "lane")
-          claims[`${tag}the focused row's bar runs from its point to its next one — 3A from its point to where its way back begins — and the row paints no ground of its own`] =
-            barClaim(r, lane(r, 9), "end", r.backs.find((p) => p.for === pathOf(own))?.x0);
+        if (st === "lane") {
+          claims[`${tag}the focused row's bar runs from its point to the end of its words and git stand — 3A's square, flag and diamond beside it — and the row paints no ground of its own`] =
+            barClaim(r, lane(r, 9), "focus");
+          // UNDER THE POINTER THE SAME BAR (owner 2026-10-09: „[Zitat entfernt]“
+          // ): 3B hovered carries the bar
+          // in the hover tone, not a ground across the whole row
+          if (!phone) {
+            const c = await evaluate<number[] | null>(`(() => { const n = document.querySelector('#boardbody .zr[data-slot="10"] > .nm'); if (!n) return null;
+              const b = n.getBoundingClientRect(); return [b.left + 8, b.top + b.height / 2]; })()`);
+            if (c) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1] });
+            await settle(150);
+            const rh = await read();
+            await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+            await settle(100);
+            const before = lane(r, 10)?.barBox?.bg ?? null;
+            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point to the end of its words, and no ground across the row`] =
+              !!c && barClaim(rh, lane(rh, 10), "hover") && before === "rgba(0, 0, 0, 0)" && lane(rh, 10)?.barBox?.bg !== lane(rh, 9)?.barBox?.bg;
+          }
+        }
         // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“): the server this page comes
         // from carries the mark — here the Live row of this machine, and nothing else
         facts.hier = r.hier;
@@ -12662,9 +12699,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}a machine row names its kind and roles once: Mac "dieser Rechner", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "Fleet-Instanz"`] =
           mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer · verlinkt"
           && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "Fleet-Instanz";
-        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"}", workhorse "angemeldet", Zweite Fleet "verlinkt", mainMacbook "still"`] =
+        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"}", workhorse "läuft" like every machine that runs, Zweite Fleet "verlinkt", mainMacbook "still"`] =
           mach("Mac")?.chip === (st === "alarm" ? "Neustart fällig" : "läuft") && mach("Mac")?.tone === (st === "alarm" ? "wait" : "live")
-          && mach("workhorse")?.chip === "angemeldet" && mach("workhorse")?.tone === "live"
+          && mach("workhorse")?.chip === "läuft" && mach("workhorse")?.tone === "live"
           && mach("Zweite Fleet")?.chip === "verlinkt" && mach("mainMacbook")?.chip === "still";
         // SENTENCES FOR PEOPLE (owner 2026-10-08: „[Zitat entfernt]“
         // ): the commit, the distance and which code stay behind the tap
@@ -13565,16 +13602,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           }
         }
         if (st === "main" && !phone) {
-          // …and a stem's bar runs from its point to its head on the rail: with one lane landing straight in
-          // main, the focused main's bar ends on the head its lanes come back to
+          // …and a stem's bar is as short: with one lane landing straight in main, the focused main's bar
+          // ends with its words, short of the head its lanes come back to on the rail
           fx.mainLane = true;
           await navigate("http://fleet.fixture/");
-          const railed = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => x.dataset.bar === 'rail')`, 8000);
+          const barred = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => x.dataset.bar === 'words' && x.classList.contains('base'))`, 8000);
           await settle(200);
           const rm = await read();
           fx.mainLane = false;
-          claims[`${tag}the focused row's bar runs from its point to its next one — main from its point to its head on the rail — and the row paints no ground of its own`] =
-            railed && barClaim(rm, byId(rm, `${REPO}#main`), "rail", rm.heads.find((h) => h.row === `${REPO}#main`)?.x);
+          const head = rm.heads.find((h) => h.row === `${REPO}#main`)?.x;
+          const mrow = byId(rm, `${REPO}#main`);
+          claims[`${tag}the focused main's bar runs from its point to the end of its words, short of its head on the rail, and the row paints no ground of its own`] =
+            barred && barClaim(rm, mrow, "main") && head !== undefined && !!mrow?.barBox && mrow.barBox.r < head - 4;
         }
         if (st === "lane" && !phone) {
           // THE LIVE-SERVER BESIDE THE TEST INSTANCE (owner 2026-10-09: „[Zitat entfernt]“
@@ -13586,10 +13625,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const tiShown = await wait(`[...document.querySelectorAll('#boardbody .zr.mach')].some((x) => x.dataset.machine === 'Live-Server')`, 8000);
           const groups = await evaluate<string[][]>(`(() => { const dev = [...document.querySelectorAll('#boardbody .ranke .rkblock')].find((b) => b.querySelector('.rkbt')?.textContent === 'Geräte');
             return dev ? [...dev.querySelectorAll('.grp')].map((g) => [...g.querySelectorAll(':scope > .zr')].map((x) => (x.dataset.machine ?? x.innerText.replace(/\\s+/g, ' ').trim()) + (x.dataset.hier ? ' [hier]' : ''))) : []; })()`);
+          // EVERY MACHINE ROW BUILT ALIKE (owner 2026-10-09: „[Zitat entfernt]“
+          // ): the instance's row is a machine row — its
+          // square as its sign, and at its end the mark, the state as dot and word, and the chevron
+          const tiRow = await evaluate<{ chip: string | null; tone: string | null; sign: boolean; fc: boolean; chipR: number; fcL: number } | null>(`(() => {
+            const r = document.querySelector('#boardbody .zr.mach[data-machine="Testinstanz"]'); if (!r) return null;
+            const z = r.querySelector(':scope > .zs'), f = r.querySelector(':scope > .fc');
+            return { chip: z ? z.textContent : null, tone: r.dataset.tone ?? null, sign: !!r.querySelector(':scope > .fx > .sq.up'), fc: !!f,
+              chipR: z ? z.getBoundingClientRect().right : 0, fcL: f ? f.getBoundingClientRect().left : 0 }; })()`);
           fx.ti = false;
-          facts.tiDevices = { shown: tiShown, groups };
-          claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz läuft [hier]", in this machine's group, and nowhere as a machine of its own`] =
-            tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz läuft [hier]"])
+          facts.tiDevices = { shown: tiShown, groups, tiRow };
+          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "hier", "läuft" as dot and word and the chevron at the row's end`] =
+            !!tiRow && tiRow.chip === "läuft" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
+          claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz [hier]", in this machine's group, and nowhere as a machine of its own`] =
+            tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz [hier]"])
             && groups.slice(1).every((g) => !g.some((x) => /^(live|Live-Server)$/.test(x)));
         }
         results.push({ width, height, state: st, claims, facts });

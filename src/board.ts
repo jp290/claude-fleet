@@ -2785,14 +2785,16 @@ const RANKE_CSS = `
   #board .ranke .rk > svg path.back { stroke: var(--chat-mute); }
   #board .ranke .rk > svg path.back.wait { stroke-dasharray: 3 2.5; }
   #board .ranke .rk > svg path.ink { stroke: var(--chat-ink); }
-  /* THE BAR OF THE ROW YOU STAND IN (#drawRankeLines): from its point to its next one, under the lines
-     and the points; the row's words stand over it. No fade: every repaint builds the row anew with the
-     whole-row ground until the bar is measured, and a transition showed that ground fading each time */
-  #board .ranke .rk > .zr.here { transition: none; }
-  #board .ranke .rk > .zr.here[data-bar] { background: none; }
-  #board .ranke .rk > .zr.here[data-bar]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--zb-l); width: var(--zb-w);
-    background: var(--chat-surface); border-radius: 4px; pointer-events: none; }
-  #board .ranke .rk > .zr.here[data-bar] > :not(.nd):not(.lgate):not(.zhead) { position: relative; }
+  /* THE BAR OF A ROW (#drawRankeLines): from its point to the end of its words, under the lines and the
+     points; the row's words stand over it — the surface where you stand or opened, the hover tone under
+     the pointer. No fade: every repaint builds the row anew until the bar is measured */
+  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }
+  #board .ranke .rk > .zr[data-bar] { background: none; }
+  #board .ranke .rk > .zr[data-bar]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--zb-l); width: var(--zb-w);
+    border-radius: 4px; pointer-events: none; }
+  #board .ranke .rk > .zr.zw[data-bar]:hover::before, #board .ranke .rk > .zr[data-bar].flash::before { background: var(--c-hover); }
+  #board .ranke .rk > .zr[data-bar].here::before, #board .ranke .rk > .zr[data-bar].open::before { background: var(--chat-surface); }
+  #board .ranke .rk > .zr[data-bar] > :not(.nd):not(.lgate):not(.zhead) { position: relative; }
   /* the head of a target: the dot its rail hangs from — a ring while lanes wait to land there */
   #board .zr > .zhead { position: absolute; z-index: 2; width: 7px; height: 7px; border-radius: 50%; transform: translate(-50%, -50%);
     background: var(--chat-mute); pointer-events: none; }
@@ -2875,10 +2877,8 @@ const RANKE_CSS = `
   #board .zd.run.free .dv { display: inline-flex; align-items: center; gap: 3px; margin: 0; color: var(--chat-prose); }
   #board .zd.run.free .dv .q { color: var(--chat-faint); }
   #board .zd.run.free .who { display: inline-flex; align-items: baseline; gap: 4px; margin: 0; font-weight: 400; color: var(--chat-mute); }
-  /* WHERE YOU ARE: the mark of the server this page comes from (#testInstanceStandRow) */
-  #board .zr.stand[data-hier] { grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto; }
-  #board .zr > .nd.tiq { width: 10px; height: 10px; border-radius: 2px; margin-left: -1.5px; }
-  #board .zr.stand[data-hier]::after, #board .zr.mach[data-hier] > .zs::before { content: attr(data-hier); display: inline-block;
+  /* WHERE YOU ARE: the mark of the server this page comes from (#testInstanceStandRows) */
+  #board .zr.mach[data-hier] > .zs::before { content: attr(data-hier); display: inline-block;
     padding: 0 6px; border: 1px solid var(--chat-ink); border-radius: var(--r1); color: var(--chat-ink); font-size: 10.5px; line-height: 15px; }
   #board .zr.mach[data-hier] > .zs::before { content: "hier"; margin-right: 8px; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
@@ -3554,7 +3554,7 @@ function machineStill(list: WorkplaceStand[]): boolean {
 }
 let machinesLegendOpen = false;
 const MACHINE_LEGEND: [MachineState["tone"], string, string][] = [
-  ["live", "läuft · angemeldet", "Der Rechner arbeitet; ein Helfer hat sich innerhalb des Online-Fensters des Servers gemeldet und kann Läufe übernehmen."],
+  ["live", "läuft", "Der Rechner arbeitet, die Testinstanz antwortet dieser Seite, oder ein Helfer hat sich innerhalb des Online-Fensters des Servers gemeldet und kann Läufe übernehmen."],
   ["wait", "Neustart fällig", "Der Server läuft auf älterem Code als der Checkout — neu starten, dann läuft der aktuelle Stand."],
   ["link", "verlinkt", "Ein Link auf eine andere Fleet (FLEET_INSTANCES). Dieser Server misst sie nicht; der Name oben links wechselt hin."],
   ["off", "nicht angemeldet", "Ein Helfer, der sich gerade nicht meldet — er übernimmt keine Läufe. In einer Testinstanz gibt es keine Helfer."],
@@ -3579,21 +3579,24 @@ function machinesLegend(): HTMLElement {
 // instance the green square its lane line draws, the Live-Server its glyph. The mark is drawn by CSS
 // from data-hier, so the row's words stay what they say.
 const HERE_MARK = "hier";
-function testInstanceStandRow(source: InstanceSource): HTMLElement {
-  const row = el("div", "zr stand");
-  row.dataset.kind = "live-server";
-  row.dataset.hier = HERE_MARK;
-  // it runs — it is answering this page — so its node is the test instance's square, filled (owner
-  // 2026-10-08: the hollow ring and „[Zitat entfernt]“ read as „[Zitat entfernt]“)
-  row.appendChild(el("span", "nd live tiq"));
+function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
+  // EVERY MACHINE ROW BUILT ALIKE (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
+  // 
+  // ): its sign, its name with the port, and at the right end the mark "hier", the state as dot
+  // and word and the chevron — the machine rows' grammar (#machineRow); a tap opens the stand it shows.
+  // It runs: it is answering this page. Its sign is the test instance's square, filled (owner
+  // 2026-10-08: a hollow ring read as "off").
+  const port = location.port;
   const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
-  const nm = el("span", "nm");
-  nm.appendChild(el("b", "", "Testinstanz läuft"));
-  // which lane runs here stands in the page's top band; this row says only that it runs and that
-  // this page is it (the title keeps the branch and the stand)
-  row.appendChild(nm);
-  row.title = `Hier: diese Seite kommt von dieser Testinstanz, nicht vom Live-Server — ${band.title}`;
-  return row;
+  const rows = machineRow("testinstanz", "Testinstanz", { glyph: "laptop", word: port ? `Port\u00a0${port}` : "" }, [],
+    { tone: "live", word: "läuft", title: "Diese Seite kommt von dieser Testinstanz" }, null,
+    [{ label: "Stand", text: band.text, st: null }, { label: "Hinweis", text: band.title, st: null }],
+    "Hier: diese Seite kommt von dieser Testinstanz, nicht vom Live-Server");
+  const [row] = rows;
+  row.dataset.glyph = "testinstanz";
+  row.dataset.hier = HERE_MARK;
+  row.querySelector(":scope > .fx")?.replaceChildren(el("span", "sq up"));
+  return rows;
 }
 // THE INSTANCE'S OWN LANE AS A PROJECT (owner 2026-10-08: „[Zitat entfernt]“
 // ): a snapshot rewrites the machine's worktrees
@@ -3636,7 +3639,7 @@ function machineHead(kind: MachineKind, name: string, sub: string, state: Machin
 // ). The kind is a glyph and a word beside the name: this computer, a helper (it reports as
 // one), the live server (the wire marks the way back to it, server.ts#instanceChipLinks), or a fleet
 // that is only linked. The state stands at the row's right end as a dot AND a word — never the
-// colour alone: läuft / angemeldet (--q-live, it moves on its own), Neustart fällig (--q-wait, it
+// colour alone: läuft (--q-live: it answers, or a helper reports — it moves on its own), Neustart fällig (--q-wait, it
 // waits for you), verlinkt (ink: a link, nothing measured), nicht angemeldet (an amber ring: not
 // measured now), still (faint, days without a word). Nothing here is a new reading: every state is
 // the stands' observedAt against the server's own online window (deviceOnlineMs), or a link.
@@ -3656,7 +3659,8 @@ function machineState(list: WorkplaceStand[]): MachineState {
   const heard = Math.max(...helper.map((st) => st.observedAt ?? 0));
   const ago = heard ? `zuletzt gehört ${agoDe(Date.now() - heard)}` : "hat sich nie gemeldet";
   if (machineStill(list)) return { tone: "still", word: "still", title: `Seit mehr als drei Tagen kein Bericht — ${ago}` };
-  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "angemeldet", title: `Meldet sich regelmäßig — ${ago}` };
+  // "läuft" like every machine that runs (owner 2026-10-09: „[Zitat entfernt]“)
+  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "läuft", title: `Meldet sich regelmäßig als Helfer — ${ago}` };
   return { tone: "off", word: "nicht angemeldet", title: `Meldet sich gerade nicht — ${ago}` };
 }
 function stateChip(state: MachineState): HTMLElement {
@@ -3875,11 +3879,11 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       const link = switchLinks.find((l) => l.kind === "live" && list.some((st) => st.name === l.name));
       let port = "";
       try { port = link ? new URL(link.url).port : ""; } catch { /* no port said, none shown */ }
-      here.append(...machineRow(key, "Live-Server", { glyph: "live", word: port ? `Port ${port}` : "" }, rolesOf(list), machineState(list),
+      here.append(...machineRow(key, "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, rolesOf(list), machineState(list),
         { label: null, st: list[0] }, list.slice(1).map((st) => ({ label: carrierWord(st), text: null, st })),
         "Die echte Fleet auf diesem Rechner — diese Testinstanz misst sie nicht; der Name oben links wechselt hin"));
     }
-    here.appendChild(testInstanceStandRow(instanceSource));
+    here.append(...testInstanceStandRows(instanceSource));
   } else {
     // "deploy due" lives HERE now (§3, I3): it is the same statement as the Live row — does the running
     // server carry the newest code — so a due restart renames the row in the wait colour (G0.2: amber
@@ -3902,7 +3906,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       due ? { tone: "wait", word: "Neustart fällig", title: "Der Server läuft auf älterem Code — neu starten, dann läuft dieser Stand" } : hereRuns, lead,
       [...moreLives.map((st) => ({ label: "Live", text: null, st })), ...hereFacts],
       "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest");
-    // the page comes from the Live-Server: its row carries the mark (#testInstanceStandRow)
+    // the page comes from the Live-Server: its row carries the mark (#testInstanceStandRows)
     if (lead) {
       rows[0].dataset.hier = HERE_MARK;
       rows[0].title = `Hier: diese Seite kommt vom Live-Server — ${rows[0].title}`;
@@ -4457,18 +4461,22 @@ export function drawRankeLines(root: HTMLElement): void {
     // THE BAR OF THE ROW YOU STAND IN (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
     // 
     // 
-    // funktioniert"): the focused row's ground runs from its own point to its next one — a stem from its
-    // point to its head on the rail, where its lanes come back; a lane from its point to where its way
-    // back begins — and the lines of the Ranke run on beside it
-    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.here")) {
+    // funktioniert"): the focused row's ground runs from its own point on — and the lines of the Ranke
+    // run on beside it. SHORTER, AND THE SAME UNDER THE POINTER (owner, the same day: „[Zitat entfernt]“
+    // 
+    // 
+    // kürzer werden"): every row of the Ranke carries the bar, the focused and the opened one in the
+    // surface, the hovered one in the hover tone; it ends with the row's words and its git stand, so the
+    // test instance's square, the flag and the diamond stand beside it on the column's ground
+    const words = (row: Element): number => Math.max(...[...row.querySelectorAll(":scope > .nm, :scope > .rt, :scope > .lr > .gs")]
+      .map((e) => e.getBoundingClientRect().right - tb.left), 0);
+    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.zw, :scope > .zr.base")) {
       const p = mid(row);
       if (!p) continue;
-      const rl = row.dataset.id ? rails.get(row.dataset.id) : undefined;
-      const right = rl ? rl.x : Math.round(end(row)) + 4;
       const off = row.getBoundingClientRect().left - tb.left;
       row.style.setProperty("--zb-l", `${p[0] - off}px`);
-      row.style.setProperty("--zb-w", `${Math.max(0, right - p[0])}px`);
-      row.dataset.bar = rl ? "rail" : "end";
+      row.style.setProperty("--zb-w", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);
+      row.dataset.bar = "words";
     }
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("aria-hidden", "true");

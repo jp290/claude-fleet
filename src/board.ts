@@ -987,6 +987,13 @@ function runSentence(b: MeterBall): string {
   const usual = e && b.at > 0 ? (ms > e.p90 ? `, länger als üblich (~${mmss(e.p50)})` : ` von ~${mmss(e.p50)}`) : "";
   return `${kind} läuft${clock}${usual}${what ? ` · ${what}` : ""}`;
 }
+// "e2e-isolated" broke at its hyphen on the phone: a short hyphenated word stays one word (a long
+// one — a branch — may still break, or it would run the column off the side). A pass over the
+// sentence the row already holds, so the row stays built from runSentence (e2e/lane-suite.ts LS.meter).
+function keepShortHyphenWords(w: HTMLElement): void {
+  const parts = (w.textContent ?? "").split(/(\S+-\S+)/);
+  w.replaceChildren(...parts.flatMap((part, i) => !part ? [] : [i % 2 && part.length <= 16 ? el("span", "nw", part) : part]));
+}
 // `place` marks the run as standing at a lane: the Prüfungen block then leaves it out. The block's
 // own lines never mark — it is repainted in place every poll, and a mark there hid its rows on the
 // next repaint and drew them again on the one after (the block jumped open and shut every 2 s)
@@ -1001,10 +1008,8 @@ function runLines(balls: MeterBall[], place = true): HTMLElement[] {
     // a waiting run shows the clock, a running one the shield — never the tick, which reads as "passed"
     const g = el("span", "g");
     g.appendChild(icon(b.station === "wait" ? "clock" : "shield"));
-    // "e2e-isolated" broke at its hyphen on the phone: a short hyphenated word stays one word (a long
-    // one — a branch — may still break, or it would run the column off the side)
-    const w = el("span", "w");
-    for (const [i, part] of runSentence(b).split(/(\S+-\S+)/).entries()) if (part) w.append(i % 2 && part.length <= 16 ? el("span", "nw", part) : part);
+    const w = el("span", "w", runSentence(b));
+    keepShortHyphenWords(w);
     tx.append(g, w);
     // WHERE IT RUNS, as the machine's glyph behind the sentence (owner 2026-10-08: „[Zitat entfernt]“
     // ): the glyph Geräte draws for that machine, its name

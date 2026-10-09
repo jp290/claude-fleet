@@ -2391,7 +2391,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // is the PROBE line — red, never a skip.
   try {
     for (const result of await runArbeitsorteDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts.focus ? { focus: result.facts.focus, ...result.facts } : result.facts).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok,
           claim.includes("the old cards") ? JSON.stringify(result.facts.oldCard) : facts);
@@ -2403,9 +2403,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // and each statement against its mutant: the claim that pins it must go red (ARBEITSORTE_MUTANTS)
   for (const m of ARBEITSORTE_MUTANTS) {
     try {
+      const names = typeof m.claim === "string" ? [m.claim] : m.claim;
       const hit = (await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [390], mutate: m }))
-        .flatMap((r) => Object.entries(r.claims)).filter(([c]) => c.includes(m.claim));
-      check(`arbeitsorte DOM MUTATION — ${m.name}: "${m.claim}…" turns red`, hit.length > 0 && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+        .flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
+      check(`arbeitsorte DOM MUTATION — ${m.name}: "${names.join('…" · "')}…" turns red`,
+        names.every((n) => hit.some(([c]) => c.includes(n))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
     } catch (error) {
       check(`arbeitsorte DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
     }
@@ -11681,7 +11683,7 @@ async function runCodexPermissions(): Promise<void> {
 // THE MUTATION PROBES of the one-row-per-machine card (owner 2026-10-07): each statement's claim,
 // and the one swap in src/board.ts that must turn it red — run in the narrowed state at 390 px. A
 // needle that left the source throws in runArbeitsorteDom: the probe fails as itself, never "caught".
-export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; needle: string; with: string; file?: ArbeitsorteMutant["file"] }[] = [
+export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string | readonly string[]; needle: string; with: string; file?: ArbeitsorteMutant["file"] }[] = [
   { name: "machines keyed by carrier, not by name", state: "doppelt", claim: "every machine stands once as one row",
     needle: "const key = st.name ? machineKey(st.name) : ", with: "const key = st.name ? `${st.kind}:${machineKey(st.name)}` : " },
   { name: "nameless helpers folded into one machine", state: "doppelt", claim: "every machine stands once as one row",
@@ -11710,6 +11712,10 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string; 
   { name: "a tap on a lane jumps to its session", state: "tippen", claim: "a tap on 3B opens it in place",
     needle: "rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });",
     with: "rowTarget(row, () => { if (s) jumpTo(s.id); else { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); } });" },
+  // THE TEST INSTANCE AT THE PHONE (K19): the opened lane without its instance line
+  { name: "the opened lane draws no instance line", state: "modell",
+    claim: ["a running test instance is a green square IN its branch's row", "its line says the deadline", "Öffnen asks the slot's route"],
+    needle: `  if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));`, with: "" },
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
   { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's row says in one sentence how its server runs",
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
@@ -11778,7 +11784,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     detached?: boolean; path?: string };
   // `pla`: the holder rails of the alarm row (server.ts#postLandAuditSummary `ping`/`adjudication`), or a
   // result that replaces red — set by the alarm state's holder walk
-  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0 };
+  // `tiUntil`: a running instance's deadline, fixed per state as the server's is — never `fx.now`, which
+  // moves with every request: a minute turning between the read that drew the row and the claim read
+  // two different clocks (K19, C110+C111). `holdWorktrees`: while set, a read of /api/worktrees waits
+  // for it — so a claim can say what the line does BEFORE the next read answers; `holdOpen` the same for
+  // the answer to Öffnen
+  const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0,
+    tiUntil: 0, holdWorktrees: null as Promise<void> | null, holdOpen: null as Promise<void> | null };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -11848,7 +11860,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     const checks = { local: l.checks?.local ?? null, preview: l.checks?.preview ?? null, gate: l.checks?.gate ?? null, audit: l.checks?.audit ?? null };
     const reasons = Object.entries(checks).filter(([, v]) => v === null).map(([k]) => ({ field: `checks.${k}`, reason: k === "audit" && l.auditUnreadable ? "audit-history-unreadable" : `${k}-not-retained` }));
     if (l.landed === null) reasons.push({ field: "target.landed", reason: "nothing-to-land" });
-    const ti = l.ti === "up" ? { state: "up", instance: { state: "up", expiresAt: fx.now + 2 * 3600_000, port: 8913, recordedSource: { before: { head } } } }
+    const ti = l.ti === "up" ? { state: "up", instance: { state: "up", expiresAt: fx.tiUntil, port: 8913, recordedSource: { before: { head } } } }
       : l.ti === "expired" ? { state: "expired", instance: { state: "expired", expiresAt: fx.now - 12 * 60_000 } }
       : { state: "not-running", instance: { state: "not-running" } };
     return { path: pathOf(l), primary: false, branch: l.detached ? null : l.branch, head, base: { branch: l.target, head: target }, distance: { ahead: l.ahead, behind: 0 },
@@ -11976,7 +11988,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           handover.slot9 = { thresholdPct: "thresholdPct" in b ? b.thresholdPct ?? null : cur.thresholdPct, nudge: "nudge" in b ? b.nudge ?? true : cur.nudge };
           return void json(requestId, { slot: 9, openedAt: openedAt(9), setting: handover.slot9, step: 5, min: 5, max: 95, succession: succession(9) });
         }
-        if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") return void json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
+        if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") {
+          const answer = () => json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
+          return void (fx.holdOpen ? fx.holdOpen.then(answer) : answer());
+        }
         return void json(requestId, { ok: true });
       }
       const st = fx.state;
@@ -11991,7 +12006,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
       if (p === "/api/tree") return void json(requestId, { root: REPO, files: Array.from({ length: 412 }, (_, i) => `src/datei-${i}.ts`), total: 412, capped: false });
       if (/^\/api\/slots\/\d+\/memory-grant$/.test(p)) return void json(requestId, { slot: Number(p.split("/")[3]), openedAt: openedAt(Number(p.split("/")[3])), grant: null, inForce: false, knownProjects: [] });
-      if (p === "/api/worktrees") return void json(requestId, workplaces(st));
+      if (p === "/api/worktrees") {
+        const held = fx.holdWorktrees;
+        return void (held ? held.then(() => json(requestId, workplaces(st))) : json(requestId, workplaces(st)));
+      }
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
@@ -12108,6 +12126,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     const branchRows = (r: Read) => r.rows.filter((x) => x.cls.split(" ").includes("zw"));
     const sha7 = (h: string) => h.slice(0, 7);
     const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString("de-DE", { hour: '2-digit', minute: '2-digit' })`);
+    // a click judged by its request: wait until the fixture has RECEIVED it, not a fixed pause
+    const wrote = async (match: (w: { path: string; body: unknown }) => boolean, ms = 3000) => {
+      for (const until = Date.now() + ms; !fx.writes.some(match) && Date.now() < until;) await Bun.sleep(20);
+      return fx.writes.some(match);
+    };
     const PROCESS = /\b(baton|gate|audit|suite|deploy|mutex|srv)\b/i;
     const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
     const results: ArbeitsorteDomResult[] = [];
@@ -12117,7 +12140,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const claims: Record<string, boolean> = {};
         const facts: Record<string, unknown> = {};
-        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000;
+        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -12353,38 +12376,50 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           r = await read();
         }
         if (st === "modell") {
-          const zeitRow = lane(r, 10)!, freeRow = byId(r, pathOf(free))!;
-          const until = await clock(fx.now + 2 * 3600_000);
-          facts.ti = { zeit: zeitRow.ti, free: freeRow.ti };
-          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session — a sign, the row opens its line`] =
-            zeitRow.ti?.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && zeitRow.ti.tag === "SPAN" && freeRow.ti?.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
+          const zeitRow = lane(r, 10), freeRow = byId(r, pathOf(free));
+          const until = await clock(fx.tiUntil);
+          const action = (path: string, act: string) => (w: { path: string; body: unknown }) => w.path === path && (w.body as { action?: string } | null)?.action === act;
+          const square = !!zeitRow?.ti && zeitRow.ti.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && zeitRow.ti.tag === "SPAN"
+            && !!freeRow?.ti && freeRow.ti.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
             && zeitRow.ti.title === `Testinstanz läuft bis ${until}`;
           await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
-          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
+          const lineOpened = await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
+          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session — a sign, the row opens its line`] = square && lineOpened;
           r = await read();
           const line = r.lines.find((l) => l.cls.split(" ").includes("ti"));
-          facts.tiLine = line;
           claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.startsWith(`Testinstanz läuft bis ${until}`)
             && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
           await shot(`${st}-${width}`);
+          // Öffnen, then Stoppen at once, in the order that failed under load (K19, C112): the line
+          // stands "wird ausgeführt…" BEFORE the answer comes, and the next read of the worktrees is HELD —
+          // so Stoppen has to come back when the action ends, not when that read answers; a Stoppen
+          // clicked in between hit the button the busy line had disabled, and sent nothing
+          let release = () => {}, answer = () => {};
+          fx.holdWorktrees = new Promise<void>((ok) => { release = ok; });
+          fx.holdOpen = new Promise<void>((ok) => { answer = ok; });
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Öffnen')?.click()`);
+          const busyShown = await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('wird ausgeführt'))`, 3000);
+          fx.holdOpen = null; answer();
           await wait(`(window.__opened || []).length >= 2`, 3000);
           const opened = await evaluate<string[]>("window.__opened || []");
+          const stopAt = Date.now();
+          const stopReady = await wait(`[...document.querySelectorAll('#boardbody .zd.ti button')].some((b) => b.textContent === 'Stoppen' && !b.disabled)`, 3000);
+          const stopMs = Date.now() - stopAt;
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Stoppen')?.click()`);
-          await wait(`false`, 400);
+          const down = await wrote(action("/api/slots/10/testinstanz", "down"));
+          fx.holdWorktrees = null; release();
           // the slotless worktree's instance goes through the worktree route, named by repo and path
+          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
           await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
           await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})`, 3000);
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))}).querySelector('button')?.click()`);
-          await wait(`false`, 400);
-          facts.writes = fx.writes; facts.opened = opened;
-          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
+          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})?.querySelector('button')?.click()`);
+          const wtOpen = await wrote(action(wtRoute, "open"));
+          // what the four claims read, first in the detail line (the runner cuts it at 1500 characters)
+          facts.focus = { until, ti: { zeit: zeitRow?.ti ?? null, free: freeRow?.ti ?? null }, lineOpened, tiLine: line ?? null, busyShown, opened, stopReady, stopMs, down,
+            writes: fx.writes.filter((w) => w.path !== "/resize") };
           claims[`${tag}Öffnen asks the slot's route for the opening link and opens it in a new tab; Stoppen sends down`] =
-            fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "open")
-            && opened.includes("http://fleet.fixture/blank?instanz")
-            && fx.writes.some((w) => w.path === "/api/slots/10/testinstanz" && (w.body as { action?: string })?.action === "down");
-          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] =
-            fx.writes.some((w) => w.path === wtRoute && (w.body as { action?: string })?.action === "open");
+            fx.writes.some(action("/api/slots/10/testinstanz", "open")) && opened.includes("http://fleet.fixture/blank?instanz") && down;
+          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] = wtOpen;
         }
         if (st === "tippen") {
           await shot(`${st}-vorher-${width}`);

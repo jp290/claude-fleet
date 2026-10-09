@@ -2770,7 +2770,11 @@ async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action:
     tab?.close();
     tiErr.set(w.path, error instanceof Error ? error.message : String(error));
   } finally {
+    // the line stops saying "wird ausgeführt…" the moment the action has ended — not only once the
+    // next read of the worktrees answers: until then its buttons stood disabled, and Stoppen right
+    // after Öffnen was a dead click (K19, docs/messungen/2026-10-08-flake-register-audits.md)
     tiBusy.delete(w.path);
+    void renderBoard();
     loadWorkplaces(true);
   }
 }

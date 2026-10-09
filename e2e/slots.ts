@@ -2638,11 +2638,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // session number), so the check is over the CALL SITES, not over a sample.
   // Since card R1 the reach is the head's HOVER, not a visible word (G0.5; the draft's heads carry
   // none): sectionHead writes it as data-scope and the SCOPE_TITLE sentence on every head.
+  // (the Arbeitsorte lost their own head on 2026-10-09 — „[Zitat entfernt]“:
+  // their blocks Projekte, Prüfungen and Geräte carry theirs)
   check("client: every board section head names its reach — session · repo · machine · fleet — on hover",
     !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
     && /h\.dataset\.scope = scope;\n  h\.title = SCOPE_TITLE\[scope\];/.test(cliSrc)
     && /sectionHead\("Changes", "session"\)/.test(boardSrc) && /sectionHead\("Notizblock", "repo"\)/.test(boardSrc)
-    && /sectionHead\("History", "repo"\)/.test(boardSrc) && /sectionHead\("Arbeitsorte", "fleet"\)/.test(cliSrc)
+    && /sectionHead\("History", "repo"\)/.test(boardSrc) && !/sectionHead\("Arbeitsorte"/.test(cliSrc)
     && /sectionHead\("Mehr zu dieser Session", "session"\)/.test(boardSrc)
     && /boardHead\("helper devices", "fleet"\)/.test(cliSrc),
     "the section heads in src/board.ts");
@@ -11986,7 +11988,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     claim: ["a running test instance is a green square IN its branch's row", "its line says the deadline", "Öffnen asks the slot's route"],
     needle: `  if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));`, with: "" },
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
-  { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's row says in one sentence how its server runs",
+  { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live-Server says in one sentence how it runs",
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
   { name: "a machine silent for days stands among the others", state: "lane", claim: "a machine silent for days is taken back",
     needle: "const MACHINE_STILL_MS = 3 * 24 * 3600_000;", with: "const MACHINE_STILL_MS = 365 * 24 * 3600_000;" },
@@ -12101,7 +12103,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "a land form is not kept", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
     needle: "  prefSet(\"fleet.board.landform\", JSON.stringify(next));", with: "" },
   { name: "the field promises the switch to Mergen", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "const LAND_FORM_NOTE = \"Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.\";",
+    needle: "const LAND_FORM_NOTE = \"Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.\";",
     with: "const LAND_FORM_NOTE = \"Gilt für jedes Land, auch für „Mergen“.\";" },
   { name: "an opened lane carries no gear", state: "lane", claim: "an opened lane carries a gear at the end of its way",
     needle: "    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? \"\" : \" (wie das Projekt)\"}`));", with: "" },
@@ -12109,14 +12111,34 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"commits\", own: false };", with: "  return own ? { form: own, own: true } : { form: \"commits\", own: false };" },
   { name: "Mergen sends the land form the board's route refuses", state: "live", width: 1200, claim: "Mergen asks first",
     needle: "    const r = await post(`/api/slots/${slot}/merge`, {});", with: "    const r = await post(`/api/slots/${slot}/merge`, { squash: landFormOf(s.worktree.repo, s.cwd ?? null).form === \"squash\" });" },
-  { name: "a helper that reports says angemeldet again", state: "lane", claim: "each machine's state is a dot and a word at the row's end",
-    needle: "return { tone: \"live\", word: \"läuft\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };", with: "return { tone: \"live\", word: \"angemeldet\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };" },
-  { name: "the test instance's row says läuft in its name again", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
-    needle: "    { tone: \"live\", word: \"läuft\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null,", with: "    { tone: \"live\", word: \"\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null," },
+  { name: "a device that reports says läuft again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
+    needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\" };" },
+  { name: "the test instance's row says nothing in its chip", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
+    needle: "    { ...HERE_STATE, title: \"Diese Seite kommt von dieser Testinstanz\" }, null,", with: "    { ...HERE_STATE, word: \"\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null," },
   { name: "the test instance's row opens nothing", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
     needle: "    [{ label: \"Stand\", text: band.text, st: null }, { label: \"Hinweis\", text: band.title, st: null }],", with: "    [],"},
   { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live-Server stands under Mac",
     needle: "    if (live) {\n      const [key, list] = live;", with: "    if (live && false) {\n      const [key, list] = live;" },
+  // THE OWNER'S ROUND 9 2026-10-09 (in the test instance): every device with its instances, a device online
+  // or offline, no head over the Arbeitsorte, the files under Changes, the gear's sentence behind its ⓘ, and a
+  // repaint that keeps the reader where they are
+  { name: "an instance stands flush with its device", state: "lane", claim: "each device carries its instances one rail in",
+    needle: "  for (const r of rows) r.classList.add(\"inst\");", with: "" },
+  { name: "a linked instance says verlinkt again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
+    needle: "        [], null, { label: null, st }, [], \"Eine verlinkte Fleet-Instanz", with: "        [], machineState([st]), { label: null, st }, [], \"Eine verlinkte Fleet-Instanz" },
+  { name: "the Arbeitsorte carry their own head again", state: "lane", claim: "the Arbeitsorte are the first section of Info after the alarms",
+    needle: "  const sec = el(\"div\", \"bsec ranke\");\n  const wp = workplaces;", with: "  const sec = el(\"div\", \"bsec ranke\");\n  sec.appendChild(sectionHead(\"Arbeitsorte\", \"fleet\"));\n  const wp = workplaces;" },
+  { name: "the files stand under History only", state: "mehr", claim: "Changes carries what the lane changes",
+    needle: "  if (brief.files.length) work.appendChild(footprintBlock(slot, brief));", with: "" },
+  { name: "the gear's sentence stands open without its ⓘ", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "    if (landFormInfo) box.appendChild(el(\"div\", \"hint lf-hint\", LAND_FORM_NOTE));", with: "    box.appendChild(el(\"div\", \"hint lf-hint\", LAND_FORM_NOTE));" },
+  { name: "an icon button's focus key has no label", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
+    needle: "\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}", with: "" },
+  { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Starten does",
+    needle: "  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce(", with: "  if (false) box.appendChild(LIVE_HOW.reduce(" },
+  { name: "the focus restore scrolls to its button again", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
+    needle: "  return `${a.tagName}\\u0000${cls}\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;",
+    with: "  return `${a.tagName}\\u0000${a.className}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
@@ -12685,8 +12707,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         // --- the common claims, every state
         let r = await read();
         facts.base = { index: r.index, before: r.before, head: r.head, blocks: r.blocks, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll, cut: r.cut };
-        claims[`${tag}"Arbeitsorte" is the first section of Info after the alarms, above the session`] = r.head?.startsWith("Arbeitsorte") === true
-          && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
+        // NO HEAD OF THEIR OWN (owner 2026-10-09: „[Zitat entfernt]“)
+        claims[`${tag}the Arbeitsorte are the first section of Info after the alarms, above the session — no head of their own, Projekte on top`] = r.head === null
+          && r.blocks[0]?.title === "Projekte" && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
         // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
         // the machines — each under its own small head, so the eye finds a kind of thing, not a row; the
         // block Prüfungen stands only while a run runs or waits (here: `land`)
@@ -12754,19 +12777,24 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // gear over the projects sets each shown project's default, a gear at the end of an opened lane's way
           // the lane's own — kept in this browser (fleet.board.landform), each field closing with where it holds
           type LfRead = { head: { title: string; exp: string | null } | null; lane: { title: string } | null; stored: string | null;
-            sets: { cls: string; label: string; choices: string[]; on: string[]; note: string | null; follow: string | null }[] };
+            sets: { cls: string; label: string; choices: string[]; on: string[]; note: string | null; info: string | null; follow: string | null }[] };
           const lfRead = () => evaluate<LfRead>(`(() => { const g = document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn'), lg = document.querySelector('#boardbody .zd.wl.lf .lf-btn');
             return { head: g ? { title: g.title, exp: g.getAttribute('aria-expanded') } : null, lane: lg ? { title: lg.title } : null, stored: localStorage.getItem('fleet.board.landform'),
               sets: [...document.querySelectorAll('#boardbody .zd.lf-set')].map((z) => ({ cls: z.className, label: z.querySelector('.lf-k')?.textContent ?? '',
                 choices: [...z.querySelectorAll('.lf-c')].map((b) => b.textContent), on: [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent),
-                note: z.querySelector('.lf-hint')?.textContent ?? null, follow: [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'wie das Projekt')?.title ?? null })) }; })()`);
+                note: z.querySelector('.lf-hint')?.textContent ?? null, info: z.querySelector('.lf-i')?.getAttribute('aria-expanded') ?? null, follow: [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'wie das Projekt')?.title ?? null })) }; })()`);
           const pick = (cls: string, word: string) => evaluate(`[...document.querySelectorAll('#boardbody .zd.lf-set.${cls} .lf-c')].find((b) => b.textContent === ${JSON.stringify(word)})?.click()`);
           const pressed = (cls: string, word: string) => wait(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-c[aria-pressed="true"]')?.textContent === ${JSON.stringify(word)}`, 3000);
-          const LF_NOTE = "Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.";
+          // the sentence on where it holds stands behind the field's ⓘ (owner 2026-10-09: „[Zitat entfernt]“
+          // ), and says that nothing reads the choice yet
+          const LF_NOTE = "Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.";
+          const lfInfo = async (cls: string) => { await evaluate(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-i')?.click()`);
+            await wait(`!!document.querySelector('#boardbody .zd.lf-set.${cls} .lf-hint')`, 3000); return lfRead(); };
           const lfQuiet = await lfRead();
           await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
           await wait(`document.querySelector('#boardbody .zd.lf-set.repo')`, 3000);
           const lf0 = await lfRead();
+          const lf0i = await lfInfo("repo");
           await pick("repo", "ein Commit");
           await pressed("repo", "ein Commit");
           const lf1 = await lfRead();
@@ -12779,22 +12807,25 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await evaluate(`document.querySelector('#boardbody .zd.wl.lf .lf-btn')?.click()`);
           await wait(`document.querySelector('#boardbody .zd.lf-set.lane')`, 3000);
           const lf2 = await lfRead();
+          const lf2i = await lfInfo("lane");
           await pick("lane", "alle Commits");
           await pressed("lane", "alle Commits");
           const lf3 = await lfRead();
           await shot(`${st}-landform-lane-${width}`);
-          facts.landForm = { lfQuiet, lf0, lf1, lfOpen, lf2, lf3 };
+          facts.landForm = { lfQuiet, lf0, lf0i, lf1, lfOpen, lf2, lf2i, lf3 };
           const set0 = lf0.sets[0], set1 = lf1.sets[0], set2 = lf2.sets[0], set3 = lf3.sets[0];
-          claims[`${tag}the gear over the projects opens one line for the shown project — alle Commits pressed — and the sentence where it holds; ein Commit is kept for the project in this browser`] =
+          claims[`${tag}the gear over the projects opens one line for the shown project — alle Commits pressed — and an ⓘ for the sentence where it holds; ein Commit is kept for the project in this browser`] =
             lfQuiet.head?.exp === "false" && lfQuiet.stored === null && lfQuiet.sets.length === 0
             && lf0.head?.exp === "true" && lf0.sets.length === 1 && !!set0 && set0.cls.split(" ").includes("repo") && set0.label === "Beim Land jeder Lane"
-            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["alle Commits"]) && set0.note === LF_NOTE
+            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["alle Commits"])
+            && set0.note === null && set0.info === "false" && lf0i.sets[0]?.note === LF_NOTE && lf0i.sets[0]?.info === "true"
             && !!set1 && JSON.stringify(set1.on) === JSON.stringify(["ein Commit"]) && lf1.head?.title === "Beim Land der Lanes — claude-fleet: ein Commit"
             && lf1.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: {} });
           claims[`${tag}an opened lane carries a gear at the end of its way: its line follows the project (ein Commit) until alle Commits is kept as the lane's own`] =
             lfOpen.lane?.title === "Beim Land dieser Lane: ein Commit (wie das Projekt)" && lf2.sets.length === 1 && !!set2 && set2.cls.split(" ").includes("lane")
             && set2.label === "Beim Land dieser Lane" && JSON.stringify(set2.choices) === JSON.stringify(["wie das Projekt", "alle Commits", "ein Commit"])
-            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: ein Commit" && set2.note === LF_NOTE
+            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: ein Commit"
+            && set2.note === null && set2.info === "false" && lf2i.sets[0]?.note === LF_NOTE
             && !!set3 && JSON.stringify(set3.on) === JSON.stringify(["alle Commits"]) && lf3.lane?.title === "Beim Land dieser Lane: alle Commits"
             && lf3.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: { [pathOf(own)]: "commits" } });
           // back to the state as it was: nothing kept, the page anew
@@ -12802,12 +12833,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await reopen(restored);
         }
         // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“; the same day: „[Zitat entfernt]“
-        // ): the server this page comes from says so in its state chip — here the Live row
-        // of this machine, and nothing else
+        // ; the evening: „[Zitat entfernt]“): the instance this page comes from says "hier" in its chip — here the
+        // Live-Server under this machine, a due restart before it — and nothing else does
         facts.hier = r.hier;
-        claims[`${tag}the server this page comes from says so in its state — "${st === "alarm" ? "Neustart fällig" : "läuft"} · hier" at the Live row of this machine, and only there`] =
-          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("mach") && r.hier[0].text.startsWith("Mac")
-          && r.hier[0].chip === `${st === "alarm" ? "Neustart fällig" : "läuft"} · hier`;
+        const HIER = st === "alarm" ? "Neustart fällig · hier" : "hier";
+        claims[`${tag}the server this page comes from says so in its state — "${HIER}" at the Live-Server under this machine, and only there`] =
+          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("inst") && r.hier[0].text.startsWith("Live-Server")
+          && r.hier[0].chip === HIER;
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
         claims[`${tag}nothing in the top of Info is cut — no text of the alarm, the Arbeitsorte or the session head runs out under an ellipsis`] = r.cut.length === 0;
@@ -12821,32 +12853,49 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         // ): the fixture reports Mac as this server AND as a link, workhorse as a
         // helper (daemon + instance) AND as a link — the rule groups by the reported name. ALL MACHINES
         // STAND TOGETHER (owner 2026-10-08, round 2), the silent ones last and faint.
-        const machRows = r.rows.filter((x) => x.cls.split(" ").includes("mach") && x.machine !== null);
+        // EVERY DEVICE GETS ITS INSTANCES (owner 2026-10-09: „[Zitat entfernt]“
+        // ): a device row, then its instances one rail in (.inst) — the Live-Server under this
+        // machine, each linked Fleet under the machine it reports for
+        const machAll = r.rows.filter((x) => x.cls.split(" ").includes("mach") && x.machine !== null);
+        const machRows = machAll.filter((x) => !x.cls.split(" ").includes("inst"));
         const stray = r.rows.filter((x) => x.kind && !x.cls.split(" ").includes("mach") && x.kind !== "bundle");
-        facts.stands = { machines: machRows.map((x) => `${x.machine} [${x.roles}] {${x.chip} ${x.tone}} ${x.say}`), stray: stray.map((x) => `${x.kind}: ${x.text}`) };
+        facts.stands = { machines: machAll.map((x) => `${x.cls.split(" ").includes("inst") ? "  " : ""}${x.machine} [${x.roles}] {${x.chip} ${x.tone}} ${x.say}`), stray: stray.map((x) => `${x.kind}: ${x.text}`) };
         const mach = (name: string) => machRows.find((x) => x.machine === name);
-        claims[`${tag}every machine stands once as one row — this server, the helpers and links that answer, the silent one last — whatever carriers report under its name`] =
+        // the instance rows that follow a device, up to the next device
+        const instOf = (name: string) => { const i = machAll.findIndex((x) => x.machine === name && !x.cls.split(" ").includes("inst")); if (i < 0) return [];
+          const out = []; for (const x of machAll.slice(i + 1)) { if (!x.cls.split(" ").includes("inst")) break; out.push(x); } return out; };
+        claims[`${tag}every machine stands once as one row — this server, the helpers and links that answer, the silent one last — whatever carriers report under its name, its instances under it`] =
           JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "Zweite Fleet",
             ...(st === "doppelt" ? ["Helfer ohne Namen 1", "Helfer ohne Namen 2"] : []), "mainMacbook"])
-          && machRows.every((x) => !!x.chip) && stray.length === 0;
-        claims[`${tag}a machine row names its kind and roles once: Mac "dieser Rechner", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "Fleet-Instanz"`] =
-          mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer · verlinkt"
-          && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "Fleet-Instanz";
-        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"} · hier", workhorse "läuft" like every machine that runs, Zweite Fleet "verlinkt", mainMacbook "still"`] =
-          mach("Mac")?.chip === `${st === "alarm" ? "Neustart fällig" : "läuft"} · hier` && mach("Mac")?.tone === (st === "alarm" ? "wait" : "live")
-          && mach("workhorse")?.chip === "läuft" && mach("workhorse")?.tone === "live"
-          && mach("Zweite Fleet")?.chip === "verlinkt" && mach("mainMacbook")?.chip === "still";
+          && stray.length === 0;
+        claims[`${tag}each device carries its instances one rail in: the Live-Server under Mac, a Fleet-Instanz under workhorse and under Zweite Fleet, none under mainMacbook`] =
+          JSON.stringify(instOf("Mac").map((x) => x.machine)) === JSON.stringify(["Live-Server"])
+          && JSON.stringify(instOf("workhorse").map((x) => x.machine)) === JSON.stringify(["Fleet-Instanz"])
+          && JSON.stringify(instOf("Zweite Fleet").map((x) => x.machine)) === JSON.stringify(["Fleet-Instanz"])
+          && instOf("mainMacbook").length === 0
+          && machAll.filter((x) => x.cls.split(" ").includes("inst")).every((x) => !!x.box && !!mach("Mac")?.box && x.box.x > mach("Mac")!.box!.x + 8);
+        claims[`${tag}a device row names its kind once: Mac "dieser Rechner", workhorse and mainMacbook "Helfer", Zweite Fleet nothing (a link is its instance)`] =
+          mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer"
+          && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "";
+        // A DEVICE IS ONLINE OR OFFLINE (owner 2026-10-09: „[Zitat entfernt]“
+        // ): an instance says only "hier", a link says nothing
+        claims[`${tag}each device's state is a dot and a word at the row's end: Mac and workhorse "online", mainMacbook "still", Zweite Fleet none; its instances: the Live-Server "${HIER}", a linked Fleet none`] =
+          mach("Mac")?.chip === "online" && mach("Mac")?.tone === "live"
+          && mach("workhorse")?.chip === "online" && mach("workhorse")?.tone === "live"
+          && mach("Zweite Fleet")?.chip === null && mach("mainMacbook")?.chip === "still"
+          && instOf("Mac")[0]?.chip === HIER && instOf("Mac")[0]?.tone === (st === "alarm" ? "wait" : "live")
+          && instOf("workhorse")[0]?.chip === null && instOf("Zweite Fleet")[0]?.chip === null;
         // SENTENCES FOR PEOPLE (owner 2026-10-08: „[Zitat entfernt]“
         // ): the commit, the distance and which code stay behind the tap
-        const liveRow = mach("Mac");
-        claims[`${tag}this machine's row says in one sentence how its server runs${st === "alarm" ? ", a due restart in the wait colour" : ""} — no commit, no distance in the row`] =
+        const liveRow = instOf("Mac")[0];
+        claims[`${tag}this machine's Live-Server says in one sentence how it runs${st === "alarm" ? ", a due restart in the wait colour" : ""} — no commit, no distance in the row`] =
           !!liveRow && liveRow.kind === "live-server" && !/[0-9a-f]{7}|hinter main/.test(liveRow.text) && (st === "alarm"
             ? liveRow.say === "Läuft auf älterem Server-Code." && liveRow.cls.split(" ").includes("due") && liveRow.nd === null
             : liveRow.say === "Läuft auf dem neuesten Stand.");
         claims[`${tag}each machine row says what it means: the helper that it is ready, the silent one when it was last heard, a link nothing beside its word (its sentence is the title)`] =
           mach("workhorse")?.say === "Bereit, auf dem neuesten Stand." && /zuletzt gemeldet/.test(mach("workhorse")?.title ?? "")
           && mach("mainMacbook")?.say === "Meldet keinen Stand, zuletzt gehört vor 41 Tagen."
-          && mach("Zweite Fleet")?.say === null && /Ihre Repos liest dieser Server nicht\./.test(mach("Zweite Fleet")?.title ?? "");
+          && mach("Zweite Fleet")?.say === null && instOf("Zweite Fleet")[0]?.say === null && /Ihre Repos liest dieser Server nicht\./.test(instOf("Zweite Fleet")[0]?.title ?? "");
         const lastMach = machRows.at(-1);
         claims[`${tag}a machine silent for days is taken back: mainMacbook stands after every other machine, its name in the faint ink`] =
           lastMach?.machine === "mainMacbook" && lastMach.tone === "still" && lastMach.nmColor === r.faint
@@ -13164,6 +13213,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           claims[`${tag}a project head carries Live-Session; a tap opens one field "Auftrag in einem Satz" under it, with Starten held until a sentence stands there and a line saying what it makes`] =
             !!field && field.head === "Live-Session" && field.ph === "Auftrag in einem Satz" && field.btn === "Starten" && field.off
             && field.hint === "Eine Lane mit eigener Testinstanz · am Ende Mergen";
+          // WHAT STARTEN DOES behind the field's ⓘ (owner 2026-10-09: „[Zitat entfernt]“
+          // ): four steps, the sentence word for word
+          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
+          const how = await evaluate<{ steps: string[]; exp: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
+            return { steps: [...z.querySelectorAll('.live-how li')].map((l) => l.textContent ?? ''), exp: z.querySelector('.live-i')?.getAttribute('aria-expanded') ?? null }; })()`);
+          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
+          await wait(`!document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
+          facts.liveHow = how;
+          claims[`${tag}the field's ⓘ says in four steps what Starten does, from the sentence taken word for word to Mergen`] =
+            !!how && how.exp === "true" && how.steps.length === 4 && how.steps[0].startsWith("Starten legt eine Lane an")
+            && /wörtlich/.test(how.steps[1]) && /kein anderes Modell/.test(how.steps[1]) && how.steps[3].startsWith("Am Ende drückst du an der Lane „Mergen“");
           // 1 — the lane is refused: said under the project, nothing sent, nothing started
           fx.liveFail = "lane"; fx.writes = [];
           await startOpen("Die Zeitleiste soll zur Stunde springen");
@@ -13340,10 +13401,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           };
           const wh = await opened("workhorse", "workhorse");
           facts.workhorse = wh;
-          claims[`${tag}a tap on workhorse opens its instance, its link and when it last reported — under the one row, nothing lost`] =
+          // …and its link is the instance row under it (round 9), opened by its own tap
+          const wl = await opened("Fleet-Instanz", "workhorse:0");
+          facts.workhorseLink = wl;
+          claims[`${tag}a tap on workhorse opens its instance and when it last reported, a tap on the Fleet-Instanz under it its link — nothing lost`] =
             wh.row?.exp === "true" && wh.lines.some((t) => t === `Instanz · läuft auf unbekannt · Checkout ${sha7(hex("helper-checkout"))} — die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses`)
-            && wh.lines.includes("Fleet-Instanz · läuft auf unbekannt · ihre Repos liest dieser Server nicht")
-            && wh.lines.some((t) => /zuletzt gemeldet /.test(t));
+            && !wh.lines.some((t) => t.startsWith("Fleet-Instanz")) && wh.lines.some((t) => /zuletzt gemeldet /.test(t))
+            && wl.row?.exp === "true" && wl.lines.includes("Fleet-Instanz · läuft auf unbekannt · ihre Repos liest dieser Server nicht");
           if (width === 390) await shot(`${st}-maschine-${width}`);
           const me = await opened("Mac", "here");
           facts.mac = me;
@@ -13412,6 +13476,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               note: (() => { const n = body.querySelector('.bnotesec'); if (!n) return null; const ta = n.querySelector('textarea'), save = n.querySelector('.bnotesave'), foot = n.querySelector('.bnotefoot');
                 return { rows: ta?.rows ?? 0, h: Math.round(ta?.getBoundingClientRect().height ?? 0), value: ta?.value ?? '', save: !!save && !save.hidden, foot: foot && !foot.hidden ? txt(foot.querySelector('.m')) : '' }; })(),
               hist: (() => { const h = body.querySelector('.bhist'); return h ? { rows: h.querySelectorAll('.brow').length, files: h.querySelectorAll('.bfile').length, folds: h.querySelectorAll('.bfold').length, more: txt(h.querySelector('.bmorebtn')) } : null; })(),
+              foot: (() => { const f = body.querySelector('.bchanges > .bfoot'); return f ? { head: f.querySelector('.bsubhead')?.firstChild?.textContent ?? null, files: f.querySelectorAll('.bfile').length, more: txt(f.querySelector('.bmorebtn')) } : null; })(),
               tabs: [...body.querySelectorAll('.bmoresec .btab')].map((t) => ({ key: t.dataset.tab, open: t.classList.contains('open'), title: txt(t.querySelector('.tt')), sum: txt(t.querySelector('.sum')),
                 x: t.querySelector('.btabx')?.getAttribute('aria-label') ?? null, body: (txt(t.querySelector('.btabbody')) ?? '').slice(0, 400), h: Math.round(t.querySelector('.btabbtn').getBoundingClientRect().height) })),
               meter: (() => { const b = ranke?.querySelector('.meterbtn'), p = ranke?.querySelector('.rkmeter');
@@ -13428,7 +13493,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               bodyText: [...body.querySelectorAll('.btabbody')].reduce((t, b) => t.replace(b.innerText, ''), body.innerText),
               small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
               vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
-              headH: Math.round(ranke?.querySelector('h3')?.getBoundingClientRect().height ?? 0),
+              headH: Math.round(ranke?.querySelector(':scope > .rkblock > .rkbh')?.getBoundingClientRect().height ?? 0), ownHead: !!ranke?.querySelector(':scope > h3'),
               landBottom: (() => { const b = [...body.querySelectorAll('.bchangeacts > button')].find((x) => /Land lane|Landing/.test(x.textContent)); return b ? Math.round(b.getBoundingClientRect().bottom) : null; })(),
             }; })()`;
           type Info = { title: string | null; shellInfo: boolean; kids: string[];
@@ -13438,13 +13503,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
             note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
             hist: { rows: number; files: number; folds: number; more: string | null } | null;
+            foot: { head: string | null; files: number; more: string | null } | null;
             tabs: { key: string; open: boolean; title: string | null; sum: string | null; x: string | null; body: string; h: number }[];
             meter: { btn: string | null; open: string | null; inHead: boolean; rows: string[] | null; cnt: string | null; lock: string | null }; oldMeter: boolean;
             alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null; place: string | null; holder: string | null; state: string | null;
               stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
             cards: number; raised: string;
             bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null;
-            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number };
+            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean };
           const info = async (): Promise<Info> => {
             const x = await evaluate<Info | null>(INFO);
             if (!x) throw new Error("info DOM probe: no #boardbody");
@@ -13459,20 +13525,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           let n = await info();
           facts.info = { kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
-          if (!phone && hasSession) claims[`${it}the Arbeitsorte's head — the title alone, no switch, no strip — stays one line`] = n.headH > 0 && n.headH <= 26;
+          if (!phone && hasSession) claims[`${it}the Arbeitsorte carry no head of their own; their first block's head, Projekte, stays one line`] = !n.ownHead && n.headH > 0 && n.headH <= 26;
           // …WHATEVER THE FONT: the Linux helper's sans is wider than this Mac's, and a head broke into two
           // lines there once. Letter-spacing stands in for that font on every machine: the head stays one
           // line, and nothing in the top of Info runs out under an ellipsis (owner 2026-10-08: „[Zitat entfernt]“
           //  — names and repo heads wrap instead)
           if (!phone && (st === "land" || st === "viele")) {
-            const wide = await evaluate<{ h: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke h3'); if (!h3) return null;
+            const wide = await evaluate<{ h: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke > .rkblock > .rkbh'); if (!h3) return null;
               const css = document.createElement('style'); css.textContent = '#board .plasec *, #board .ranke *, #board .bhead * { letter-spacing: 1px !important; }'; document.head.append(css);
               const cut = [...document.querySelectorAll('#boardbody .plasec *, #boardbody .ranke *, #boardbody .bhead *')].filter((e) => getComputedStyle(e).textOverflow === 'ellipsis'
                 && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
               const out = { h: Math.round(h3.getBoundingClientRect().height), cut };
               css.remove(); return out; })()`);
             facts.wideHead = wide;
-            claims[`${it}with a wider font the Arbeitsorte's head stays one line and nothing in the top of Info is cut`] =
+            claims[`${it}with a wider font the Projekte head stays one line and nothing in the top of Info is cut`] =
               !!wide && wide.h > 0 && wide.h <= 26 && wide.cut.length === 0;
           }
           // THE RUNS BESIDE THEIR LANES (owner 2026-10-08): the checks are the block „[Zitat entfernt]“ in the
@@ -13528,7 +13594,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && n.note.h <= (noteOf(st) ? 120 : 60);
           if (hasSession && detail) {
             claims[`${it}History shows the three newest commits and one button for the rest`] = !!n.hist && n.hist.rows <= 3 && n.hist.files === 0
-              && n.hist.more === (isLane ? "Alle 3 Commits · 12 Dateien" : "Alle 4 Commits");
+              && n.hist.more === (isLane ? "Alle 3 Commits · Already in overhaul" : "Alle 4 Commits");
+            // THE FILES STAND UNDER CHANGES (owner 2026-10-09: „[Zitat entfernt]“
+            // ): the lane's footprint vs its base, the
+            // first five and one button for the rest
+            claims[`${it}${isLane ? `Changes carries what the lane changes vs overhaul: five of its 12 files and "Alle 12 Dateien"` : "a session without a footprint shows none under Changes"}`] = isLane
+              ? n.foot?.head === "Changed vs overhaul" && n.foot.files === 5 && n.foot.more === "Alle 12 Dateien"
+              : n.foot === null;
             const tabs = n.tabs;
             claims[`${it}"Mehr zu dieser Session": Setup · Rechte · Files · Your prompts as tabs with their summary, ${phone ? 40 : 28} px high`] =
               JSON.stringify(tabs.map((t) => t.key)) === JSON.stringify(["setup", "rechte", "files", "prompts"])
@@ -13551,17 +13623,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               && n.alarm.card.state === "Braucht dich" && n.alarm.card.holder === "none"
               && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Gesehen", "Ansehen"]);
             claims[`${it}the server errors are one line under it: "3 Serverfehler · 2 verschiedene seit …"`] = /^3 Serverfehler · 2 verschiedene seit /.test(n.alarm.errs ?? "");
-            claims[`${it}the due restart is this machine's row itself: "Läuft auf älterem Server-Code." beside "Neustart fällig"`] =
+            claims[`${it}the due restart is this machine's Live-Server row itself: "Läuft auf älterem Server-Code." beside "Neustart fällig"`] =
               n.live === "Läuft auf älterem Server-Code." && !/deploy due/i.test(n.bodyText);
             // …and its chain is a tap away: the commit, the distance and which code it touches
-            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Mac"]')?.click()`);
-            await wait(`document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:here"]')`, 3000);
-            const chain = (await read()).lines.filter((l) => l.for === "mach:here").map((l) => l.text);
+            // (since round 9 of 2026-10-09 the chain is the Live-Server's, the instance under this machine)
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live-Server"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:live"]')`, 3000);
+            const chain = (await read()).lines.filter((l) => l.for === "mach:live").map((l) => l.text);
             facts.chain = chain;
-            claims[`${it}a tap on this machine opens the chain: "Live · läuft auf <commit> · 5 hinter main · betrifft den Server-Code"`] =
+            claims[`${it}a tap on this machine's Live-Server opens the chain: "Live · läuft auf <commit> · 5 hinter main · betrifft den Server-Code"`] =
               chain.some((t) => t.startsWith(`Live · läuft auf ${sha7(BOOT)} · 5 hinter main · betrifft den Server-Code`));
-            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Mac"]')?.click()`);
-            await wait(`!document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:here"]')`, 3000);
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live-Server"]')?.click()`);
+            await wait(`!document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:live"]')`, 3000);
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
             await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
             n = await info();
@@ -13727,10 +13800,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               /Program type standard/.test(setupTab?.body ?? "") && /grammatik/.test(setupTab?.body ?? "") && /Ein Recht geben sie nicht/.test(setupTab?.body ?? "")
               && /Eigene Arbeit/.test(rightsTab?.body ?? "") && /Projektsichten/.test(rightsTab?.body ?? "") && /Deine Sicht/.test(rightsTab?.body ?? "");
             await evaluate(`document.querySelector('#boardbody .bhist .bmorebtn')?.click()`);
-            await wait(`document.querySelector('#boardbody .bhist .bfile')`, 3000);
+            await wait(`document.querySelector('#boardbody .bhist .bfold')`, 3000);
+            await evaluate(`document.querySelector('#boardbody .bchanges > .bfoot .bmorebtn')?.click()`);
+            await wait(`document.querySelectorAll('#boardbody .bchanges > .bfoot .bfile').length === 12`, 3000);
             n = await info();
-            claims[`${it}"Alle 3 Commits · 12 Dateien" opens the whole history: the commits, the 12 files, "Already in overhaul" folded`] =
-              !!n.hist && n.hist.rows === 3 && n.hist.files === 12 && n.hist.folds === 1 && n.hist.more === "Weniger zeigen";
+            claims[`${it}"Alle 3 Commits · Already in overhaul" opens the whole history: the commits and "Already in overhaul" folded, no file`] =
+              !!n.hist && n.hist.rows === 3 && n.hist.files === 0 && n.hist.folds === 1 && n.hist.more === "Weniger zeigen";
+            claims[`${it}"Alle 12 Dateien" under Changes opens every file of the lane`] = n.foot?.files === 12 && n.foot.more === "Weniger zeigen";
             // the draft's `mehr` stands at the opened tabs, as after a click there
             await evaluate(`document.querySelector('#boardbody .bmoresec')?.scrollIntoView({ block: 'start' })`);
             await settle(120);
@@ -13742,8 +13818,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); await wait(`document.querySelector('#boardbody .bmoresec .btab')`, 8000); }
             await settle(500);
             n = await info();
-            claims[`${it}which tabs are open and the open History survive a reload (src/prefs.ts)`] = n.tabs.filter((t) => t.open).map((t) => t.key).join() === "setup,rechte"
-              && n.hist?.more === "Weniger zeigen";
+            claims[`${it}which tabs are open, the open History and the open file list survive a reload (src/prefs.ts)`] = n.tabs.filter((t) => t.open).map((t) => t.key).join() === "setup,rechte"
+              && n.hist?.more === "Weniger zeigen" && n.foot?.more === "Weniger zeigen";
           }
           if (st === "lane") {
             // writing in the notepad: "Notiz sichern" appears with the change, and only then
@@ -13796,6 +13872,34 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           claims[`${tag}the focused main's bar runs from its point over its test instance's square, short of its head on the rail, and the row paints no ground of its own`] =
             barred && barClaim(rm, mrow, "main") && head !== undefined && !!mrow?.barBox && mrow.barBox.r < head - 4;
         }
+        if (st === "lane") {
+          // A REPAINT KEEPS THE READER WHERE THEY ARE (owner 2026-10-09: „[Zitat entfernt]“
+          // 
+          // ): an icon button's focus was handed to the first button of the same class — a project's +
+          // at the top — and the restore scrolled there on every tick. A real click (a JS click moves no
+          // focus), then two repaints, one after a scroll of 40 px
+          const WHY = `[...document.querySelectorAll('#boardbody button')].find((b) => b.getAttribute('aria-label') === 'Was die Zustände der Geräte heißen')`;
+          const repaint = async () => { await evaluate(`(() => { const l = document.querySelector('#boardbody .rklegend'); if (l) l.dataset.old = '1'; })()`);
+            return wait(`!!document.querySelector('#boardbody .rklegend:not([data-old])')`, 8000); };
+          const at = await evaluate<number[] | null>(`(() => { const b = ${WHY}; if (!b) return null; b.scrollIntoView({ block: 'center' });
+            const q = b.getBoundingClientRect(); return [q.left + q.width / 2, q.top + q.height / 2]; })()`);
+          await settle(150);
+          const y0 = await evaluate<number>(`document.querySelector('#boardbody').scrollTop`);
+          if (at) for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: at[0], y: at[1], button: "left", clickCount: 1 });
+          const opened = await wait(`!!document.querySelector('#boardbody .rklegend')`, 5000);
+          const tick1 = opened && await repaint();
+          const y1 = await evaluate<number>(`document.querySelector('#boardbody').scrollTop`);
+          await evaluate(`document.querySelector('#boardbody').scrollTop += 40`);
+          await settle(100);
+          const y2 = await evaluate<number>(`document.querySelector('#boardbody').scrollTop`);
+          const tick2 = opened && await repaint();
+          const after = await evaluate<{ y: number; focus: string | null }>(`({ y: document.querySelector('#boardbody').scrollTop, focus: document.activeElement?.getAttribute('aria-label') ?? null })`);
+          facts.legendFocus = { at, y0, y1, y2, after, opened, tick1, tick2 };
+          claims[`${tag}a real click on the Geräte ⓘ opens its legend in place: across two repaints, one after a scroll, the column stays where the reader put it and the focus on the ⓘ`] =
+            !!at && opened && tick1 && tick2 && Math.abs(y1 - y0) <= 1 && y2 > y1 && Math.abs(after.y - y2) <= 1 && after.focus === "Was die Zustände der Geräte heißen";
+          await evaluate(`(${WHY})?.click()`);
+          await wait(`!document.querySelector('#boardbody .rklegend')`, 3000);
+        }
         if (st === "lane" && !phone) {
           // THE LIVE-SERVER BESIDE THE TEST INSTANCE (owner 2026-10-09: „[Zitat entfernt]“
           // ): the same
@@ -13814,10 +13918,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const z = r.querySelector(':scope > .zs'), f = r.querySelector(':scope > .fc');
             return { chip: z ? z.textContent : null, tone: r.dataset.tone ?? null, sign: !!r.querySelector(':scope > .fx > .sq.up'), fc: !!f,
               chipR: z ? z.getBoundingClientRect().right : 0, fcL: f ? f.getBoundingClientRect().left : 0 }; })()`);
+          // …ONE RAIL IN UNDER THE MAC (owner 2026-10-09: „[Zitat entfernt]“
+          // ), the Mac "online", the link without a state
+          const tiInst = await evaluate<string[]>(`(() => { const mac = document.querySelector('#boardbody .zr.mach[data-machine="Mac"]'); if (!mac) return [];
+            const x0 = mac.getBoundingClientRect().left;
+            return [mac, ...document.querySelectorAll('#boardbody .zr.mach.inst')].map((r) => r.dataset.machine + ':' + (r.querySelector(':scope > .zs')?.textContent ?? '-')
+              + (r.classList.contains('inst') ? (r.getBoundingClientRect().left > x0 + 8 ? ':in' : ':flush') : '')); })()`);
           fx.ti = false;
-          facts.tiDevices = { shown: tiShown, groups, tiRow };
-          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "läuft · hier" as dot and words and the chevron at the row's end`] =
-            !!tiRow && tiRow.chip === "läuft · hier" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
+          facts.tiDevices = { shown: tiShown, groups, tiRow, tiInst };
+          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "hier" as dot and word and the chevron at the row's end`] =
+            !!tiRow && tiRow.chip === "hier" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
+          claims[`${tag}as a test instance: Mac says "online"; the Live-Server (no state — this instance does not measure it) and the Testinstanz ("hier") stand one rail in under it`] =
+            JSON.stringify(tiInst.slice(0, 3)) === JSON.stringify(["Mac:online", "Live-Server:-:in", "Testinstanz:hier:in"]);
           claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz [hier]", in this machine's group, and nowhere as a machine of its own`] =
             tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz [hier]"])
             && groups.slice(1).every((g) => !g.some((x) => /^(live|Live-Server)$/.test(x)));

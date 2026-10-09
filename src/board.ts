@@ -1363,6 +1363,15 @@ export function notepadBlock(repo: string, w: WtRow): HTMLElement {
   return box;
 }
 
+// WHAT FINDS A FOCUSED CONTROL'S SUCCESSOR after a repaint: its tag, its class, its label and its
+// text. An icon button has no text, so its aria-label joins the key — without it the Geräte ⓘ and a
+// project's + were one key ("rk-btn quiet ib"), the restore focused the + at the top, and the column
+// jumped there on every tick (owner 2026-10-09: „[Zitat entfernt]“
+// ). A toggle's own "on" stays out, or the button just switched has no successor.
+function boardFocusKey(a: HTMLElement): string {
+  const cls = (a.getAttribute("class") ?? "").split(" ").filter((c) => c && c !== "on").join(" ");
+  return `${a.tagName}\u0000${cls}\u0000${a.getAttribute("aria-label") ?? ""}\u0000${(a.textContent ?? "").slice(0, 40)}`;
+}
 export async function renderBoard() {
   // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
@@ -1429,7 +1438,7 @@ export async function renderBoard() {
     if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
     // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
     // is new on every tick, so a focused control was dropped to <body> three times a minute; a
-    // stable key (the element's own text plus its class) finds its successor after the swap.
+    // stable key (boardFocusKey) finds its successor after the swap.
     // Both are read HERE, before the first section is built: a section that keeps its element
     // across ticks (the rights' grant host, src/rights.ts#paintGrant) takes it out of the live
     // column while the new nodes are assembled, the column is that much shorter for a moment, and
@@ -1439,7 +1448,7 @@ export async function renderBoard() {
     const focusKey = ((): string | null => {
       const a = document.activeElement;
       if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
-      return `${a.tagName}\u0000${a.className}\u0000${(a.textContent ?? "").slice(0, 40)}`;
+      return boardFocusKey(a);
     })();
     const nodes: HTMLElement[] = [];
     // THE COLUMN TELLS ONE STORY, top to bottom (docs/design/rechter-tab-notiz.md §3–§3d, Variante 3A,
@@ -1538,8 +1547,9 @@ export async function renderBoard() {
     if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
     if (focusKey) {
       for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
-        if (`${cand.tagName}\u0000${cand.className}\u0000${(cand.textContent ?? "").slice(0, 40)}` !== focusKey) continue;
-        cand.focus();
+        if (boardFocusKey(cand) !== focusKey) continue;
+        // the reading position was put back above — a focus that scrolled to its button would undo it
+        cand.focus({ preventScroll: true });
         break;
       }
     }
@@ -2049,6 +2059,10 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
       crow.appendChild(db);
     }
   }
+  // WHAT THIS LANE CHANGES stands here, under its state (owner 2026-10-09: „[Zitat entfernt]“
+  // ) — the committed
+  // footprint vs the base, the uncommitted files above it; History keeps the commits
+  if (brief.files.length) work.appendChild(footprintBlock(slot, brief));
   // BEHIND — and, on a lane, the one action that fixes it. The button carries the number, so there is
   // never a count without a way to act on it and never an action without its reason (owner 2026-09-20)
   const baseName_ = brief.laneBase ?? "main";
@@ -2192,8 +2206,40 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   return work;
 }
 
+// THE COMMITTED FOOTPRINT under Changes: what this lane/session changes vs its base — the first few
+// files, every one behind one button (the brief carries 200 and says so past that)
+const FILES_SHOWN = 5;
+function footprintBlock(slot: number, brief: BriefInfo): HTMLElement {
+  const box = el("div", "bfoot");
+  const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${brief.laneBase ?? "main"}` : "Changed files");
+  if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
+  box.appendChild(fh);
+  const all = boardFolds.has("changed");
+  for (const f of all ? brief.files : brief.files.slice(0, FILES_SHOWN)) {
+    const row = el("button", "bfile");
+    row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
+    row.appendChild(document.createTextNode(f.slice(3)));
+    const path = porcelainPath(f);
+    row.title = `${f} — click to see what changed in this file`;
+    row.onclick = () => void openReview(slot, "working", { k: "file", path });
+    box.appendChild(row);
+  }
+  if (all && brief.filesTotal > brief.files.length)
+    box.appendChild(el("div", "bempty", `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
+  const total = brief.filesTotal || brief.files.length;
+  if (total > FILES_SHOWN) {
+    const b = el("button", "bbtn quiet bmorebtn", all ? "Weniger zeigen" : `Alle ${total} Dateien`) as HTMLButtonElement;
+    b.type = "button";
+    b.setAttribute("aria-expanded", String(all));
+    b.title = all ? `Zurück auf die ersten ${FILES_SHOWN} Dateien` : "Jede Datei, die diese Lane gegenüber ihrer Basis ändert";
+    b.onclick = () => { toggleFold("changed"); void renderBoard(); };
+    box.appendChild(b);
+  }
+  return box;
+}
+
 // --- 5 HISTORY: the three newest commits; one button opens the full list as before — every commit
-// the brief carries, the files they touched, and the base's own history folded (R2)
+// the brief carries and the base's own history folded (R2); the files they touched stand under Changes
 export const HISTORY_SHOWN = 3;
 function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   const { s, slot, ahead } = c;
@@ -2222,7 +2268,7 @@ function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
   for (const cm of all ? brief.commits : brief.commits.slice(0, HISTORY_SHOWN)) csec.appendChild(commitRow(cm, "session"));
   const total = brief.laneScoped ? Math.max(ahead, brief.commits.length) : brief.commits.length;
-  const more = total > HISTORY_SHOWN || brief.files.length > 0 || brief.repoCommits.length > 0;
+  const more = total > HISTORY_SHOWN || brief.repoCommits.length > 0;
   if (all) {
     // a list that stops at its cap must say so — for a lane the true total is `ahead`, and a
     // time-scoped session has no total, so there the cap itself is the honest sentence
@@ -2231,36 +2277,18 @@ function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
         `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest ${brief.commitsCap}`));
     else if (!brief.laneScoped && brief.commits.length >= brief.commitsCap)
       csec.appendChild(el("div", "bempty", `the newest ${brief.commitsCap} — this session may have made more`));
-    // FILES: the committed footprint — what this lane/session changes vs its base, uncut
-    if (brief.files.length) {
-      const fh = el("div", "bsubhead", brief.laneScoped ? `Changed vs ${base}` : "Changed files");
-      if (brief.shortstat) fh.appendChild(el("span", "bsubstat", brief.shortstat.replace(/ changed|\(|\)/g, "")));
-      csec.appendChild(fh);
-      for (const f of brief.files) {
-        const row = el("button", "bfile");
-        row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
-        row.appendChild(document.createTextNode(f.slice(3)));
-        const path = porcelainPath(f);
-        row.title = `${f} — click to see what changed in this file`;
-        row.onclick = () => void openReview(slot, "working", { k: "file", path });
-        csec.appendChild(row);
-      }
-      if (brief.filesTotal > brief.files.length)
-        csec.appendChild(el("div", "bempty", `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
-    }
     if (brief.repoCommits.length)
       csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
         String(brief.repoCommits.length), (box) => { for (const cm of brief.repoCommits) box.appendChild(commitRow(cm, "repo")); }));
   }
   if (more || all) {
-    const files = brief.filesTotal || brief.files.length;
     const label = all ? "Weniger zeigen"
-      : [`Alle ${total} ${total === 1 ? "Commit" : "Commits"}`, files ? `${files} ${files === 1 ? "Datei" : "Dateien"}`
-        : brief.repoCommits.length ? (brief.laneScoped ? `Already in ${base}` : "Earlier in this repo") : ""].filter(Boolean).join(" · ");
+      : [`Alle ${total} ${total === 1 ? "Commit" : "Commits"}`,
+        brief.repoCommits.length ? (brief.laneScoped ? `Already in ${base}` : "Earlier in this repo") : ""].filter(Boolean).join(" · ");
     const b = el("button", "bbtn quiet bmorebtn", label) as HTMLButtonElement;
     b.type = "button";
     b.setAttribute("aria-expanded", String(all));
-    b.title = all ? "Zurück auf die drei neuesten Commits" : "Die ganze History: jeder Commit, die geänderten Dateien und was schon in der Basis liegt";
+    b.title = all ? "Zurück auf die drei neuesten Commits" : "Die ganze History: jeder Commit und was schon in der Basis liegt";
     b.onclick = () => { toggleFold("history"); void renderBoard(); };
     csec.appendChild(b);
   }
@@ -2625,6 +2653,17 @@ export const LIVE_SESSION_NOTE = [
   "Gemergt wird erst, wenn der Owner an deiner Lane „Mergen“ drückt.",
   "Nachlesen: docs/design/live-bau-profil-2026-10.md §2.",
 ].join("\n");
+// WHAT STARTEN DOES, from the sentence to Mergen (owner 2026-10-09: „[Zitat entfernt]“
+// 
+// ): the four steps of #startLiveSession and
+// #doLand, behind the field's ⓘ
+const LIVE_HOW = [
+  "Starten legt eine Lane an: ein eigener Worktree auf einem Branch fleet/live-…, darin eine neue Session wie in jeder Lane.",
+  "Dein Satz geht wörtlich als erste Nachricht an diese Session, darunter ein fester Absatz, wie live gebaut wird — die Session liest ihn als ihren Auftrag, kein anderes Modell schreibt ihn vorher um.",
+  "Ihre Testinstanz startet von selbst und läuft vier Stunden; Öffnen steht an der Lane. Du sprichst in der Pane der Session, sie baut, committet und frischt ihre Testinstanz auf.",
+  "Am Ende drückst du an der Lane „Mergen“: erst die Rückfrage mit dem Diff, dann prüft der Server die Lane und landet sie auf ihrem Ziel.",
+];
+let liveHowOpen = false;
 // the branch of a new live lane: the prefix, a minute stamp, the sentence's first words, a hex tail
 function liveBranch(text: string): string {
   const d = new Date(), p = (n: number) => String(n).padStart(2, "0");
@@ -2709,18 +2748,23 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
 // (server.ts#landSwitchesFrom, {squash}) — the commits as they were made, or one commit at the land. A
 // project's default over the whole view (the Projekte block's head: a gear in a project's own head left
 // its name 53 px on the phone), a lane's own in the opened lane; kept in this browser
-// (fleet.board.landform). A NUMBER of commits is no form the server has. The switch is read only by
-// the MAIN's land call today: the board's own Mergen and Land lane answer 409 to it, so they send none
-// and land the commits as made — and the field says so, rather than promising a switch that is dropped.
+// (fleet.board.landform). A NUMBER of commits is no form the server has. NOTHING READS THE CHOICE YET:
+// the switch exists only on the MAIN's land call, the board's own Mergen and Land lane answer 409 to it
+// (server.ts, the /merge door since bc9d0a79), so they send none and land the commits as made — and a
+// MAIN never sees a choice kept in this browser. The field says so behind its ⓘ (owner 2026-10-09: „[Zitat entfernt]“
+// ), rather than promising a
+// switch that is dropped.
 type LandForm = "commits" | "squash";
 const LAND_FORM_WORD: Record<LandForm, string> = { commits: "alle Commits", squash: "ein Commit" };
 // what "ein Commit" means, in the Kern's words (25225eeb): the series stays under the lane's history ref,
 // and a lane of one commit lands as it is
 const LAND_FORM_SAY: Record<LandForm, string> = { commits: "Die Commits landen so, wie sie gemacht wurden",
   squash: "Die Commits der Lane landen als ein Commit — ihre Reihe bleibt im Verlauf der Lane erhalten, eine Lane mit nur einem Commit landet unverändert" };
-const LAND_FORM_NOTE = "Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.";
+const LAND_FORM_NOTE = "Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.";
 type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
 let landFormOpen: string | null = null;
+// the sentence on where the choice holds, open behind the field's ⓘ; closing the gear closes it too
+let landFormInfo = false;
 function landForms(): LandForms {
   const v = prefJSON<unknown>("fleet.board.landform");
   const pick = (o: unknown): Record<string, LandForm> => Object.fromEntries(Object.entries(o && typeof o === "object" ? o : {})
@@ -2748,11 +2792,11 @@ function landFormButton(openKey: string, title: string): HTMLButtonElement {
   b.title = title;
   b.setAttribute("aria-label", b.title);
   b.setAttribute("aria-expanded", String(landFormOpen === openKey));
-  b.onclick = (e) => { e.stopPropagation(); landFormOpen = landFormOpen === openKey ? null : openKey; void renderBoard(); };
+  b.onclick = (e) => { e.stopPropagation(); landFormOpen = landFormOpen === openKey ? null : openKey; landFormInfo = false; void renderBoard(); };
   return b;
 }
 // the choice under the Projekte head (one line per project shown) or the opened lane: a lane may also
-// follow its project; the one sentence on where it holds closes the field
+// follow its project; an ⓘ after the last choice opens the one sentence on where it holds
 function landFormField(kind: keyof LandForms, key: string, repo: string, label: string, note: boolean): HTMLElement {
   const box = el("div", `zd lf-set ${kind}`);
   box.dataset.for = key;
@@ -2768,7 +2812,17 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
   };
   if (kind === "lane") box.appendChild(choice("wie das Projekt", `Wie das Projekt: ${LAND_FORM_WORD[landFormOf(repo, null).form]}`, !now.own, null));
   for (const form of ["commits", "squash"] as const) box.appendChild(choice(LAND_FORM_WORD[form], LAND_FORM_SAY[form], now.own && now.form === form, form));
-  if (note) box.appendChild(el("div", "hint lf-hint", LAND_FORM_NOTE));
+  if (note) {
+    const i = el("button", `rk-btn quiet ib lf-i${landFormInfo ? " on" : ""}`) as HTMLButtonElement;
+    i.type = "button";
+    i.appendChild(icon("info"));
+    i.title = landFormInfo ? "Erklärung schließen" : "Wo diese Wahl gilt";
+    i.setAttribute("aria-label", "Wo diese Wahl gilt");
+    i.setAttribute("aria-expanded", String(landFormInfo));
+    i.onclick = (e) => { e.stopPropagation(); landFormInfo = !landFormInfo; void renderBoard(); };
+    box.appendChild(i);
+    if (landFormInfo) box.appendChild(el("div", "hint lf-hint", LAND_FORM_NOTE));
+  }
   return box;
 }
 // under a project's head while its field is open: the sentence, Starten, and what failed before a lane existed
@@ -2790,9 +2844,17 @@ function liveField(repo: string): HTMLElement {
   go.title = "Eine Lane anlegen, ihr den Satz geben und ihre Testinstanz starten";
   go.disabled = busy || !f.value.trim();
   go.onclick = (e) => { e.stopPropagation(); void startLiveSession(repo, f.value); };
-  box.append(f, go);
+  const how = el("button", `rk-btn quiet ib live-i${liveHowOpen ? " on" : ""}`) as HTMLButtonElement;
+  how.type = "button";
+  how.appendChild(icon("info"));
+  how.title = liveHowOpen ? "Erklärung schließen" : "Was Starten tut, vom Satz bis zum Mergen";
+  how.setAttribute("aria-label", "Was Starten tut");
+  how.setAttribute("aria-expanded", String(liveHowOpen));
+  how.onclick = (e) => { e.stopPropagation(); liveHowOpen = !liveHowOpen; void renderBoard(); };
+  box.append(f, go, how);
   // what this start is, beside the + that opens the founding window: one line, not a manual
   box.appendChild(el("div", "hint live-hint", "Eine Lane mit eigener Testinstanz · am Ende Mergen"));
+  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce((ol, t) => { ol.appendChild(el("li", "", t)); return ol; }, el("ol", "hint live-how")));
   const err = liveErr.get(repo);
   if (err) box.appendChild(el("div", "err", err));
   return box;
@@ -2846,6 +2908,9 @@ const RANKE_CSS = `
   #board .zd.live-new .live-in:focus { outline: none; border-color: var(--c-edge-hi); }
   #board .zd.live-new > .err, #board .zd.live-new > .live-hint { flex-basis: 100%; }
   #board .zd.live-new > .live-hint { margin: 0; padding: 0 2px; color: var(--chat-faint); }
+  #board .zd.live-new > .rk-btn.live-i.on { color: var(--chat-ink); }
+  #board .zd.live-new > .live-how { flex-basis: 100%; margin: 2px 0 0; padding: 0 2px 0 1.4em; color: var(--chat-mute); white-space: normal; }
+  #board .zd.live-new > .live-how li + li { margin-top: 3px; }
   #board .zr.zw .nm .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     color: var(--chat-ink); font-size: 0.85em; line-height: 1.2; vertical-align: 1px; white-space: nowrap; }
   /* THE LAND FORM (#landFormField): the gear in a project's head and at the end of an opened lane's way;
@@ -2859,12 +2924,20 @@ const RANKE_CSS = `
   #board .zd.lf-set > .rk-btn.lf-c { padding: 0 4px; }
   #board .zd.lf-set > .rk-btn.lf-c.on { border-color: var(--c-edge-hi); background: var(--chat-surface); color: var(--chat-ink); }
   #board .zd.lf-set > .lf-hint { flex-basis: 100%; margin: 0; padding: 0 2px; color: var(--chat-faint); white-space: normal; }
+  #board .zd.lf-set > .rk-btn.lf-i.on { color: var(--chat-ink); }
   #board .zd.live-merge { display: flex; justify-content: flex-end; padding: 0 0 4px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err { display: block; padding: 0 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err > .err { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
   /* GERÄTE, ONE SPACING (owner 2026-10-09: „[Zitat entfernt]“): the machines' groups follow each
      other like their rows do — the gap after this machine's group read as a second list */
   #board .ranke .rk-dev .grp + .grp { margin-top: 0; }
+  /* AN INSTANCE UNDER ITS DEVICE (#asInstance): one rail in and a step smaller, so its glyph stands under
+     the device's name — Live-Server and Testinstanz under the Mac, a linked Fleet under its machine */
+  #board .zr.mach.inst { margin-left: var(--rk-rail); font-size: 0.93em; }
+  #board .zr.mach.inst .fx .ico { width: 12px; height: 12px; }
+  #board .zr.mach.inst > .zs { font-size: inherit; }
+  #board .zd.mx.inst { padding-left: calc(2 * var(--rk-rail) + 4px); font-size: 0.93em; }
+  #board .rklegend .lgl .zs .q { color: var(--chat-faint); font-weight: 400; }
   #board .zd.run .w .nw { white-space: nowrap; }
   /* THE WAY BACK (#drawRankeLines): a margin right of the rows for the rails; the lines lie over a
      row's ground (an opened or focused row has one) and under its node */
@@ -3720,20 +3793,23 @@ function machineStill(list: WorkplaceStand[]): boolean {
   return !heard || Date.now() - heard > MACHINE_STILL_MS;
 }
 let machinesLegendOpen = false;
-const MACHINE_LEGEND: [MachineState["tone"], string, string][] = [
-  ["live", "läuft", "Der Rechner arbeitet, die Testinstanz antwortet dieser Seite, oder ein Helfer hat sich innerhalb des Online-Fensters des Servers gemeldet und kann Läufe übernehmen."],
+// an instance without a word is a link to another Fleet: this server does not measure it, so it says
+// nothing about it — the legend's last line says so, without a chip
+const MACHINE_LEGEND: [MachineState["tone"] | null, string, string][] = [
+  ["live", "online", "Das Gerät ist da: dieser Rechner, oder ein Helfer, der sich innerhalb des Online-Fensters des Servers gemeldet hat und Läufe übernehmen kann."],
+  ["live", "hier", "Die Instanz, von der diese Seite kommt."],
   ["wait", "Neustart fällig", "Der Server läuft auf älterem Code als der Checkout — neu starten, dann läuft der aktuelle Stand."],
-  ["link", "verlinkt", "Ein Link auf eine andere Fleet (FLEET_INSTANCES). Dieser Server misst sie nicht; der Name oben links wechselt hin."],
-  ["off", "nicht angemeldet", "Ein Helfer, der sich gerade nicht meldet — er übernimmt keine Läufe. In einer Testinstanz gibt es keine Helfer."],
+  ["off", "offline", "Ein Helfer, der sich gerade nicht meldet — er übernimmt keine Läufe. In einer Testinstanz gibt es keine Helfer."],
   ["still", "still", "Seit mehr als drei Tagen kein Bericht."],
+  [null, "ohne Angabe", "Eine verlinkte Instanz (FLEET_INSTANCES). Dieser Server misst sie nicht; der Name oben links wechselt hin."],
 ];
 function machinesLegend(): HTMLElement {
   const box = el("div", "rklegend");
   for (const [tone, word, text] of MACHINE_LEGEND) {
     const line = el("div", "lgl");
-    line.dataset.tone = tone;
     const chip = el("span", "zs");
-    chip.append(el("span", "zsd"), word);
+    if (tone) { line.dataset.tone = tone; chip.append(el("span", "zsd"), word); }
+    else chip.append(el("span", "q", word));
     line.append(chip, el("span", "lgt", text));
     box.appendChild(line);
   }
@@ -3747,10 +3823,18 @@ function machinesLegend(): HTMLElement {
 // from data-hier, so the row's words stay what they say.
 const HERE_MARK = "hier";
 // ONE WORD WITH ITS STATE (owner 2026-10-09: „[Zitat entfernt]“
-// ): the mark is said in the state's own chip — „[Zitat entfernt]“
+// ; the same evening: „[Zitat entfernt]“): an instance's chip says "hier" and nothing more —
+// it answers this page, so it runs — and a due restart says so before it ("Neustart fällig · hier")
 function markHere(row: HTMLElement): void {
   row.dataset.hier = HERE_MARK;
-  row.querySelector(":scope > .zs")?.append(` · ${HERE_MARK}`);
+}
+const HERE_STATE: MachineState = { tone: "live", word: HERE_MARK, title: "Diese Seite kommt von dieser Instanz" };
+// EVERY DEVICE GETS ITS INSTANCES (owner 2026-10-09: „[Zitat entfernt]“
+// ; „[Zitat entfernt]“): an instance row
+// and its tap lines stand one rail in under their device, a step smaller
+function asInstance(rows: HTMLElement[]): HTMLElement[] {
+  for (const r of rows) r.classList.add("inst");
+  return rows;
 }
 function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   // EVERY MACHINE ROW BUILT ALIKE (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
@@ -3762,14 +3846,14 @@ function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   const port = location.port;
   const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
   const rows = machineRow("testinstanz", "Testinstanz", { glyph: "laptop", word: port ? `Port\u00a0${port}` : "" }, [],
-    { tone: "live", word: "läuft", title: "Diese Seite kommt von dieser Testinstanz" }, null,
+    { ...HERE_STATE, title: "Diese Seite kommt von dieser Testinstanz" }, null,
     [{ label: "Stand", text: band.text, st: null }, { label: "Hinweis", text: band.title, st: null }],
     "Hier: diese Seite kommt von dieser Testinstanz, nicht vom Live-Server");
   const [row] = rows;
   row.dataset.glyph = "testinstanz";
   markHere(row);
   row.querySelector(":scope > .fx")?.replaceChildren(el("span", "sq up"));
-  return rows;
+  return asInstance(rows);
 }
 // THE INSTANCE'S OWN LANE AS A PROJECT (owner 2026-10-08: „[Zitat entfernt]“
 // ): a snapshot rewrites the machine's worktrees
@@ -3836,6 +3920,14 @@ function machineState(list: WorkplaceStand[]): MachineState {
   if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "läuft", title: `Meldet sich regelmäßig als Helfer — ${ago}` };
   return { tone: "off", word: "nicht angemeldet", title: `Meldet sich gerade nicht — ${ago}` };
 }
+// A DEVICE'S OWN WORD (owner 2026-10-09: „[Zitat entfernt]“
+// ): a device is online or offline — "läuft" is said of a server; a machine
+// known only by a link has nothing measured and no chip. The sidebar's signs keep machineState's words.
+const DEVICE_WORD: Partial<Record<MachineState["tone"], string>> = { live: "online", off: "offline" };
+function deviceState(list: WorkplaceStand[]): MachineState | null {
+  const st = machineState(list);
+  return st.tone === "link" ? null : { ...st, word: DEVICE_WORD[st.tone] ?? st.word };
+}
 function stateChip(state: MachineState): HTMLElement {
   const chip = el("span", "zs");
   chip.appendChild(el("span", "zsd"));
@@ -3862,9 +3954,9 @@ function machinesOf(stands: WorkplaceStand[]): Map<string, WorkplaceStand[]> {
   for (const list of out.values()) list.sort((a, b) => CARRIER_ORDER.indexOf(a.kind) - CARRIER_ORDER.indexOf(b.kind));
   return out;
 }
+// a link is an instance row of its own under the device now (#asInstance), no role beside its name
 function rolesOf(list: WorkplaceStand[]): string[] {
-  return [list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance") ? "Helfer" : "",
-    list.some((st) => st.kind === "linked-instance") ? "verlinkt" : ""].filter(Boolean);
+  return list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance") ? ["Helfer"] : [];
 }
 function carrierWord(st: WorkplaceStand): string {
   return st.kind === "helper-daemon" ? "Helfer-Dienst" : st.kind === "helper-instance" ? "Instanz"
@@ -3873,20 +3965,21 @@ function carrierWord(st: WorkplaceStand): string {
 type MachineLead = { label: string | null; st: WorkplaceStand; due?: boolean; dueTitle?: string }
   | { label: string; text: string; node: string; kind: string };
 type MachineFact = { label: string; text: string | null; st: WorkplaceStand | null };
-function machineRow(key: string, name: string, kind: MachineKind, roles: string[], state: MachineState, lead: MachineLead | null, facts: MachineFact[], about: string): HTMLElement[] {
+// state null: nothing this server measures — no chip (a linked instance, a device known only by its link)
+function machineRow(key: string, name: string, kind: MachineKind, roles: string[], state: MachineState | null, lead: MachineLead | null, facts: MachineFact[], about: string): HTMLElement[] {
   const row = el("div", "zr mach");
-  row.dataset.tone = state.tone;
+  if (state) row.dataset.tone = state.tone;
   row.dataset.glyph = kind.glyph;
   const fx = el("span", "fx");
   fx.appendChild(icon(kind.glyph));
   row.appendChild(fx);
   // the kind's word first, then any other role a carrier gives — never the state's word twice
-  const words = [kind.word, ...roles.filter((r) => r !== kind.word && r !== state.word)].filter(Boolean);
+  const words = [kind.word, ...roles.filter((r) => r !== kind.word && r !== state?.word)].filter(Boolean);
   const nm = el("span", "nm", name);
   nm.appendChild(el("span", "cnt", words.join(" · ")));
   row.appendChild(nm);
-  row.appendChild(stateChip(state));
-  const titles = [`${name} · ${words.join(" · ")} · ${state.word}`];
+  if (state) row.appendChild(stateChip(state));
+  const titles = [[name, ...words, state?.word ?? ""].filter(Boolean).join(" · ")];
   // what a tap opens: the lead's own reasons, then every other carrier in its own words
   const lines: (Node | string)[][] = [];
   // a link measures nothing, so its sentence ("Ihre Repos liest dieser Server nicht") is no line
@@ -3980,9 +4073,9 @@ function rowCells(row: HTMLElement, node: string, ref: string, hue: number, name
 
 export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null): HTMLElement {
   loadWorkplaces();
+  // NO HEAD OF ITS OWN (owner 2026-10-09: „[Zitat entfernt]“
+  // ): its blocks Projekte, Prüfungen and Geräte each carry their own head
   const sec = el("div", "bsec ranke");
-  const hd = sectionHead("Arbeitsorte", "fleet");
-  sec.appendChild(hd);
   const wp = workplaces;
   if (!wp) {
     sec.appendChild(el("div", "bempty", workplacesErr ? `Die Arbeitsorte konnten nicht gelesen werden — ${workplacesErr}.` : "lese die Arbeitsorte…"));
@@ -4029,9 +4122,8 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     const list = machines.get(machineKey(b.where));
     return list ? { glyph: machineKind(list).glyph, name: list[0]?.name ?? b.where } : null;
   };
-  // its own link is this server again (the fact behind the tap says so), so "verlinkt" is no role here
-  const hereRoles = rolesOf(hereOwn).filter((r) => r !== "verlinkt");
-  const hereRuns: MachineState = { tone: "live", word: "läuft", title: "Dieser Server beantwortet gerade diese Seite" };
+  const hereRoles = rolesOf(hereOwn);
+  const hereRuns: MachineState = { tone: "live", word: "online", title: "Der Rechner, auf dem der Server dieser Seite läuft" };
   const hereFacts = hereOwn.map((st) => st.kind === "linked-instance"
     ? { label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null } : { label: carrierWord(st), text: null, st });
   const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
@@ -4052,9 +4144,9 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       const link = switchLinks.find((l) => l.kind === "live" && list.some((st) => st.name === l.name));
       let port = "";
       try { port = link ? new URL(link.url).port : ""; } catch { /* no port said, none shown */ }
-      here.append(...machineRow(key, "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, rolesOf(list), machineState(list),
+      here.append(...asInstance(machineRow(key, "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [], null,
         { label: null, st: list[0] }, list.slice(1).map((st) => ({ label: carrierWord(st), text: null, st })),
-        "Die echte Fleet auf diesem Rechner — diese Testinstanz misst sie nicht; der Name oben links wechselt hin"));
+        "Die echte Fleet auf diesem Rechner — diese Testinstanz misst sie nicht; der Name oben links wechselt hin")));
     }
     here.append(...testInstanceStandRows(instanceSource));
   } else {
@@ -4075,16 +4167,20 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
         node: deployGapInfo.codeBehind ? "wait" : "live", kind: "live-server" };
     }
     const due = restartDue || (lead !== null && "st" in lead && lead.due === true);
-    const rows = machineRow("here", hereName, KIND_HERE, hereRoles,
-      due ? { tone: "wait", word: "Neustart fällig", title: "Der Server läuft auf älterem Code — neu starten, dann läuft dieser Stand" } : hereRuns, lead,
-      [...moreLives.map((st) => ({ label: "Live", text: null, st })), ...hereFacts],
-      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest");
-    // the page comes from the Live-Server: its row carries the mark (#testInstanceStandRows)
+    here.append(...machineRow("here", hereName, KIND_HERE, hereRoles, hereRuns, null, hereFacts,
+      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+    // THE LIVE-SERVER UNDER ITS MACHINE, as in a test instance: the page comes from it, so its chip
+    // says "hier" — and a due restart before it, in the wait colour (it waits on you)
     if (lead) {
+      const port = location.port;
+      const rows = asInstance(machineRow("live", "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [],
+        due ? { tone: "wait", word: `Neustart fällig · ${HERE_MARK}`, title: "Der Server läuft auf älterem Code — neu starten, dann läuft dieser Stand" } : HERE_STATE, lead,
+        moreLives.map((st) => ({ label: "Live", text: null, st })),
+        "Die Fleet auf diesem Rechner, von der diese Seite kommt"));
       markHere(rows[0]);
       rows[0].title = `Hier: diese Seite kommt vom Live-Server — ${rows[0].title}`;
+      here.append(...rows);
     }
-    here.append(...rows);
     if (bundleStaleInfo?.stale === true) {
       const row = el("div", "zr stand due");
       row.dataset.kind = "bundle";
@@ -4148,7 +4244,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   for (const [, [first]] of machines) if (!first.name) namelessCount.set(nameless(first), (namelessCount.get(nameless(first)) ?? 0) + 1);
   const still = [...machines].filter(([, list]) => machineStill(list));
   const drawMachine = (key: string, list: WorkplaceStand[], into: HTMLElement) => {
-    const [first, ...rest] = list;
+    const [first] = list;
     const g = el("div", "grp");
     let name = first.name;
     if (!name) {
@@ -4156,10 +4252,21 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       namelessSeen.set(nameless(first), n);
       name = (namelessCount.get(nameless(first)) ?? 0) > 1 ? `${nameless(first)} ${n}` : nameless(first);
     }
-    g.append(...machineRow(key, name, machineKind(list), rolesOf(list), machineState(list),
-      { label: first.kind === "linked-instance" ? null : carrierWord(first), st: first },
-      rest.map((st) => ({ label: carrierWord(st), text: null, st })),
-      helpers.has(key) ? "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht" : "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung"));
+    // THE DEVICE, THEN ITS INSTANCES (#asInstance): what reports as a helper is the device's own row and
+    // its state; each link to a Fleet on it stands one rail in under it, with no state of its own
+    const own = list.filter((st) => st.kind !== "linked-instance"), links = list.filter((st) => st.kind === "linked-instance");
+    const [lead, ...rest] = own;
+    g.append(...machineRow(key, name, own.length ? KIND_HELPER : { glyph: KIND_HELPER.glyph, word: "" }, rolesOf(own), deviceState(list),
+      lead ? { label: carrierWord(lead), st: lead } : null, rest.map((st) => ({ label: carrierWord(st), text: null, st })),
+      own.length ? "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht" : "Ein Gerät, das diese Fleet nur über einen Link kennt"));
+    links.forEach((st, i) => {
+      const link = switchLinks.find((l) => l.name === st.name);
+      let port = "";
+      try { port = link ? new URL(link.url).port : ""; } catch { /* no port said, none shown */ }
+      const live = link?.kind === "live";
+      g.append(...asInstance(machineRow(`${key}:${i}`, live ? "Live-Server" : "Fleet-Instanz", { glyph: live ? "live" : "link", word: port ? `Port\u00a0${port}` : "" },
+        [], null, { label: null, st }, [], "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung; der Name oben links wechselt hin")));
+    });
     into.appendChild(g);
   };
   // ALL MACHINES STAND TOGETHER (owner 2026-10-08, round 2: „[Zitat entfernt]“) — the silent
@@ -4172,7 +4279,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     // its old picture: helpers stand when they report, and a fleet truly without any says nothing.
     const g = el("div", "grp");
     g.appendChild(machineHead(KIND_HELPER, "Helfer", "",
-      { tone: "off", word: "nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" },
+      { tone: "off", word: "offline", title: "Eine Testinstanz trägt keine Helfer-Geräte über" },
       "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
     devices.appendChild(g);
   }

@@ -535,12 +535,15 @@ export async function run(): Promise<void> {
         await landClean(ad.slot);
         const adAfter = headOf(sg.repo, "main");
         const adVerify = readNote(sg.repo, adAfter).json?.verify as (ClassedVerify & {
-          adopted?: { step: string; jobId: string; treeSha: string; device: string }[] }) | undefined;
-        check("helper adoption: the land adopts ONLY the green receipt on its exact candidate tree — security does not run here and the note names jobId, treeSha and device; the other-tree green, the red and the open job adopt nothing",
+          adopted?: { step: string; jobId: string; treeSha: string; device: string; waitMs?: number }[];
+          macFallback?: string }) | undefined;
+        const adWait = adVerify?.adopted?.[0]?.waitMs;
+        check("helper adoption: the land adopts ONLY the green receipt on its exact candidate tree — security does not run here and the note names jobId, treeSha, device, ms and waitMs; the other-tree green, the red and the open job adopt nothing",
           adBefore !== adAfter && adVerify?.ok === true && adVerify.class === "source-or-public"
+          && typeof adWait === "number" && adWait >= 0
           && JSON.stringify(adVerify.adopted) === JSON.stringify([{ step: "security", jobId: proven.id, treeSha: candTree,
             device: DEVICE_NAME, reportedAt: (adVerify.adopted?.[0] as { reportedAt?: number } | undefined)?.reportedAt,
-            ms: (adVerify.adopted?.[0] as { ms?: number } | undefined)?.ms }])
+            ms: (adVerify.adopted?.[0] as { ms?: number } | undefined)?.ms, waitMs: adWait }])
           && JSON.stringify(adVerify.steps) === JSON.stringify(["install", "pins", "tsc", "build", "claude-gate"])
           && adVerify.cmd === cutCmd.replace(" && ./e2e-security.sh", "")
           && !adVerify.out.includes("srcgate-suite security ran")
@@ -548,6 +551,140 @@ export async function run(): Promise<void> {
           && adVerify.out.includes(`security NOT RUN HERE — adopted from helper command job ${proven.id}`)
           && adVerify.out.includes("left out clean-review") && !adVerify.out.includes("left out clean-review, security"),
           JSON.stringify({ landed: adBefore !== adAfter, verify: adVerify }));
+        // …and the suite it ran HERE says why it did not go to a helper: none was online (the
+        // device left the window above). The fallback is never silent.
+        check("land helper route, no helper: the claude-gate that ran on this machine names its reason in the note — no helper online",
+          (adVerify?.macFallback ?? "").startsWith("no helper online")
+          && (adVerify?.out ?? "").includes("[gate suites ran on THIS machine (claude-gate), not on a helper: no helper online"),
+          JSON.stringify({ macFallback: adVerify?.macFallback }));
+
+        // --- THE LAND PROVES ITS OWN CANDIDATE ON THE HELPER (2026-10-09, server.ts#runLandGate) ---
+        // docs/entwurf-land-dynamik.md §6: with a helper online the land itself offers each gate
+        // suite its class owes as a command job, after its rebase, so the job's tree IS the
+        // candidate; it runs install/pins/tsc/build here meanwhile and adopts the receipts through
+        // adoptedGateSteps. This module plays the helper: it beats, reads the portal list as the
+        // device, claims the land's jobs and reports what each scenario needs. Four lands, each a
+        // src/client-only.ts change (owes security + claude-gate, clean-review cut):
+        //   H1 both green           → landed, both suites adopted from LAND jobs, none ran here
+        //   H2 security red         → NOT landed, ok:false, the red named; nothing re-rolled here
+        //   H3 security green, claude-gate unknown → landed, security adopted, claude-gate ran
+        //                             here and the note says why
+        //   H4 nobody claims        → both withdrawn after FLEET_LAND_JOB_UNCLAIMED_MS, both ran
+        //                             here, the reason in the note
+        // Mutation guards: drop the red branch in runLandGate and H2 lands (red on `landed`);
+        // make landHelperWhyNot always answer a reason and H1 goes red on `landJobs`/`adopted`.
+        await restartSrv({ FLEET_VERIFY_CMD_REPOS: JSON.stringify({ ...sgRepos, [sg.repo]: sgCmd }),
+          FLEET_LAND_JOB_UNCLAIMED_MS: "3000", FLEET_LAND_JOB_POLL_MS: "200" });
+        const hToken = (await (await get("/api/helper/token")).json() as { token?: string }).token ?? "";
+        const hp = (path: string, body: unknown): Promise<Response> =>
+          post(path, body, { "x-fleet-helper-token": hToken, "content-type": "application/json" });
+        const hbeat = (): Promise<Response> => hp("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME,
+          features: [...DAEMON_FEATURES], daemonSha: spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"]).stdout.toString().trim() });
+        // a lane that stays open, so the presence read at the end has a self principal to ask with
+        // (the adoption block's lane landed and is gone)
+        const hProbe = (await (await post("/api/lanes", { repo: sg.repo })).json()) as { slot: number };
+        const hProbeTok = await selfTokenOf(hProbe.slot);
+        type LandJobRow = { step: string; jobId: string; outcome: string; device: string | null; treeSha: string | null;
+          ms: number | null; waitMs: number; reason?: string };
+        type HelperVerify = ClassedVerify & { adopted?: { step: string; jobId: string; treeSha: string; device: string;
+          ms: number; waitMs: number; land?: boolean }[]; landJobs?: LandJobRow[]; macFallback?: string;
+          waitMs?: number; ms?: number };
+        // `policy` maps a wrapper to the helper's answer: an exit code, "unknown" (a report without
+        // one), or null (never claimed)
+        const landViaHelper = async (name: string, policy: Record<string, number | "unknown" | null>) => {
+          const l = (await (await post("/api/lanes", { repo: sg.repo })).json()) as { slot: number; cwd: string };
+          await Bun.write(`${l.cwd}/src/client-only.ts`, `export const clientOnly = "${name}";\n`);
+          spawnSync("git", ["-C", l.cwd, "add", "-A"]);
+          let committed = false;
+          for (let i = 0; i < 20 && !committed; i++) {
+            committed = spawnSync("git", ["-C", l.cwd, "commit", "-qm", `${name} land helper fixture`]).status === 0;
+            if (!committed) await Bun.sleep(150);
+          }
+          const before = headOf(sg.repo, "main");
+          await setMergeMode("blocked");
+          await settleForMerge(l.slot);
+          await hbeat();
+          await post(`/api/slots/${l.slot}/merge`, {});
+          const handled = new Map<string, { cmd: string; tree: string; claimed: boolean; reported: boolean }>();
+          for (let i = 0; i < 500; i++) {
+            await hbeat();
+            const list = (await (await get(`/api/helper/jobs?deviceId=${DEVICE}`)).json()) as
+              { jobs?: { id: string; kind: string; cmd?: string; land?: boolean; claim: unknown }[] };
+            for (const j of list.jobs ?? []) {
+              if (j.kind !== "command" || !j.land || j.claim || handled.has(j.id)) continue;
+              const answer = policy[j.cmd ?? ""];
+              if (answer === null || answer === undefined) { handled.set(j.id, { cmd: j.cmd ?? "", tree: "", claimed: false, reported: false }); continue; }
+              const claim = await hp("/api/helper/claim", { jobId: j.id, deviceId: DEVICE });
+              const tree = ((await claim.clone().json().catch(() => ({}))) as { job?: { treeSha?: string } }).job?.treeSha ?? "";
+              const rep = await hp("/api/helper/result", { jobId: j.id, artifacts: [],
+                ...(answer === "unknown" ? {} : { exitCode: answer }),
+                tail: answer === 0 ? "ALL PASS" : answer === "unknown" ? "(runner died)" : "FAIL  land helper fixture\n1 FAILURES" });
+              handled.set(j.id, { cmd: j.cmd ?? "", tree, claimed: claim.ok, reported: rep.ok });
+            }
+            const m = (await (await get(`/api/slots/${l.slot}/merge`)).json().catch(() => ({}))) as { running?: boolean };
+            if (m.running === false) break;
+            await Bun.sleep(100);
+          }
+          const { last } = await waitMerge(l.slot);
+          const after = headOf(sg.repo, "main");
+          const landed = before !== after;
+          const verify = (landed ? readNote(sg.repo, after).json?.verify : (last as { verify?: unknown } | null)?.verify) as HelperVerify | undefined;
+          return { committed, landed, before, after, tree: landed ? headOf(sg.repo, "main^{tree}") : headOf(l.cwd, "HEAD^{tree}"),
+            jobs: [...handled.entries()].map(([id, h]) => ({ id, ...h })), status: (last as { status?: string } | null)?.status, verify };
+        };
+        const h1 = await landViaHelper("h1", { "./e2e-security.sh": 0, "./e2e-claude-gate.sh": 0 });
+        const h1Ids = h1.jobs.map((j) => j.id).sort();
+        check("land helper route H1: with a helper online the land offers security and claude-gate as its OWN command jobs on the rebased candidate tree, adopts both green receipts and runs neither here — the note names job id, tree, device, ms and waitMs",
+          h1.committed && h1.landed && h1.verify?.ok === true && h1.verify.class === "source-or-public"
+          && h1.jobs.length === 2 && h1.jobs.every((j) => j.claimed && j.reported && j.tree === h1.tree)
+          && JSON.stringify(h1.jobs.map((j) => j.cmd).sort()) === JSON.stringify(["./e2e-claude-gate.sh", "./e2e-security.sh"])
+          && JSON.stringify(h1.verify.steps) === JSON.stringify(["install", "pins", "tsc", "build"])
+          && h1.verify.cmd === cutCmd.replace(" && ./e2e-security.sh", "").replace(" && ./e2e-claude-gate.sh", "")
+          && JSON.stringify((h1.verify.adopted ?? []).map((a) => a.jobId).sort()) === JSON.stringify(h1Ids)
+          && (h1.verify.adopted ?? []).every((a) => a.land === true && a.treeSha === h1.tree && a.device === DEVICE_NAME
+            && typeof a.ms === "number" && typeof a.waitMs === "number")
+          && (h1.verify.landJobs ?? []).length === 2 && (h1.verify.landJobs ?? []).every((r) => r.outcome === "green")
+          && h1.verify.macFallback === undefined && typeof h1.verify.waitMs === "number" && typeof h1.verify.ms === "number"
+          && !h1.verify.out.includes("srcgate-suite security ran") && !h1.verify.out.includes("srcgate-suite claude-gate ran")
+          && h1.verify.out.includes("NOT RUN HERE — adopted from land command job")
+          && h1.verify.out.includes("left out clean-review") && !h1.verify.out.includes("left out clean-review, security"),
+          JSON.stringify(h1));
+        const h2 = await landViaHelper("h2", { "./e2e-security.sh": 1, "./e2e-claude-gate.sh": 0 });
+        const h2Red = (h2.verify?.landJobs ?? []).find((r) => r.step === "security");
+        check("land helper route H2: a RED land job on the candidate tree refuses the land — main does not move, verify ok:false names the red job, and the suite is not rolled again here",
+          h2.committed && !h2.landed && h2.status === "resolved" && h2.verify?.ok === false
+          && h2Red?.outcome === "red" && h2Red.treeSha === h2.tree
+          && h2.verify.out.includes(`security RED on ${DEVICE_NAME} — land command job ${h2Red.jobId}`)
+          && !h2.verify.out.includes("srcgate-suite security ran") && h2.verify.macFallback === undefined,
+          JSON.stringify(h2));
+        const h3 = await landViaHelper("h3", { "./e2e-security.sh": 0, "./e2e-claude-gate.sh": "unknown" });
+        check("land helper route H3: an `unknown` receipt is no proof — security is adopted from its green land job, claude-gate runs on this machine and the note says why",
+          h3.committed && h3.landed && h3.verify?.ok === true
+          && JSON.stringify((h3.verify.adopted ?? []).map((a) => a.step)) === JSON.stringify(["security"])
+          && (h3.verify.landJobs ?? []).some((r) => r.step === "claude-gate" && r.outcome === "unknown")
+          && JSON.stringify(h3.verify.steps) === JSON.stringify(["install", "pins", "tsc", "build", "claude-gate"])
+          && h3.verify.out.includes("srcgate-suite claude-gate ran") && !h3.verify.out.includes("srcgate-suite security ran")
+          && (h3.verify.macFallback ?? "").includes("the helper did not measure claude-gate")
+          && h3.verify.out.includes("claude-gate NOT MEASURED by a helper"),
+          JSON.stringify(h3));
+        const h4 = await landViaHelper("h4", { "./e2e-security.sh": null, "./e2e-claude-gate.sh": null });
+        check("land helper route H4: land jobs nobody claims are withdrawn after FLEET_LAND_JOB_UNCLAIMED_MS and both suites run on this machine — the fallback names the unclaimed jobs",
+          h4.committed && h4.landed && h4.verify?.ok === true && h4.jobs.length === 2 && h4.jobs.every((j) => !j.claimed)
+          && (h4.verify.landJobs ?? []).length === 2 && (h4.verify.landJobs ?? []).every((r) => r.outcome === "withdrawn"
+            && (r.reason ?? "").includes("no helper claimed it within 3000ms"))
+          && (h4.verify.adopted ?? []).length === 0
+          && h4.verify.out.includes("srcgate-suite security ran") && h4.verify.out.includes("srcgate-suite claude-gate ran")
+          && (h4.verify.macFallback ?? "").includes("withdrawn"),
+          JSON.stringify(h4));
+        // the device leaves the online window again before this block ends, for the same reason the
+        // adoption block's does (e2e/lane-suite.ts LS.0 measures "no helper online")
+        let hOnline: boolean | undefined = true;
+        for (let i = 0; i < 160 && hOnline !== false; i++) {
+          hOnline = ((await (await fetch(`${BASE}/api/self/gate`, { headers: { "x-fleet-self-token": hProbeTok } }))
+            .json().catch(() => ({}))) as { helper?: { online?: boolean } }).helper?.online;
+          if (hOnline !== false) await Bun.sleep(250);
+        }
+        check("land helper route teardown: the fixture device is out of the online window again", hOnline === false, String(hOnline));
       } finally {
         await restartSrv(); // back to the suite's own verify map for everything after this block
       }

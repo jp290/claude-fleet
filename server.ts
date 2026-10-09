@@ -27288,15 +27288,27 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
 interface VerifyPlan { cmd: string; proportional: boolean; steps: LocalProofStep[]; class: GateClass;
-  adopted?: AdoptedGateStep[] }
+  adopted?: AdoptedGateStep[];
+  // the CONFIGURED fleet-shaped chain this plan was cut from, present only where narrowVerifyCmd
+  // can read its links — the source runLandGate cuts the local half and the helper half from
+  chain?: string;
+  // gate suites this run handed to a helper as land command jobs instead of running them
+  // (runLandGate): owed, not left out, so the source-class sentence must not call them cut
+  remote?: GateSuiteStep[];
+  // why the gate suites of this chain run on THIS machine and not on a helper (landHelperWhyNot,
+  // or the land job outcome that sent them back) — said in the note, never a silent fallback
+  macWhy?: string }
 // A GATE SUITE THIS LAND DID NOT RUN, because a helper already ran it green on the very tree the
 // land verifies (owner 2026-10-08: Lane 2A had all three suites green as command jobs on the
 // workhorse, and its land ran the same three again on this machine — 692 s, 359 s of it queueing
 // for the mutex). The receipt the step is replaced by, carried into the verify record and with it
 // into the fleet/land note: `jobId` is readable on GET /api/self/jobs/<jobId> while the job row is
 // kept, `treeSha` is the candidate tree it was matched on, `device` is who ran it.
+// `waitMs` is how long the job stood in the portal before a helper claimed it — the queue in front
+// of the helper, the twin of the suite mutex's queue on this machine. `land` marks a job the land
+// itself offered (runLandGate) rather than one a session posted on the same tree.
 interface AdoptedGateStep { step: GateSuiteStep; jobId: string; treeSha: string; device: string;
-  reportedAt: number; ms: number }
+  reportedAt: number; ms: number; waitMs: number; land?: true }
 // THE ONE PLACE A HELPER RECEIPT BECOMES A GATE STEP, and every clause is a refusal the card names:
 //   · the TREE — the job's own `treeSha` AND its result's must both be the candidate's
 //     `HEAD^{tree}`, read in the worktree the gate is about to execute in. A tree, never a commit:
@@ -27308,8 +27320,11 @@ interface AdoptedGateStep { step: GateSuiteStep; jobId: string; treeSha: string;
 //   · PROVENANCE — a named device, and a helper that ran the commit it was handed (the audit line
 //     already shouts when `clonedSha` differs; here that difference disqualifies the receipt).
 //   · THE SAME REPO — a tree sha is content-addressed, but the wrapper it ran is this repo's.
-// The newest green wins when several match; an unreadable tree adopts nothing.
-async function adoptedGateSteps(cwd: string, repo: string, steps: readonly LocalProofStep[]): Promise<AdoptedGateStep[]> {
+// The newest green wins when several match; an unreadable tree adopts nothing. `jobs` defaults to
+// the register; the land passes its own job rows in front of it, so a settled land job the
+// register's KEEP bound has already evicted is still read by the one rule that adopts.
+async function adoptedGateSteps(cwd: string, repo: string, steps: readonly LocalProofStep[],
+  jobs: Iterable<CommandJob> = commandJobs.values()): Promise<AdoptedGateStep[]> {
   const head = await gitRead(cwd, "rev-parse", "HEAD^{tree}");
   const tree = head.code === 0 ? head.out.trim() : "";
   if (!/^[0-9a-f]{40,64}$/.test(tree)) return [];
@@ -27318,7 +27333,7 @@ async function adoptedGateSteps(cwd: string, repo: string, steps: readonly Local
   for (const suite of GATE_SUITES) {
     if (!steps.includes(suite.step)) continue;
     let best: CommandJob | null = null;
-    for (const j of commandJobs.values()) {
+    for (const j of jobs) {
       const r = j.result;
       if (j.cmd !== `./${suite.wrapper}` || j.state !== "reported" || !r || r.result !== "green") continue;
       if (j.treeSha !== tree || r.treeSha !== tree || repoCanon(j.repo) !== repoKey || !r.remote.name) continue;
@@ -27326,7 +27341,8 @@ async function adoptedGateSteps(cwd: string, repo: string, steps: readonly Local
       if (!best || r.remote.reportedAt > best.result!.remote.reportedAt) best = j;
     }
     if (best) adopted.push({ step: suite.step, jobId: best.id, treeSha: tree, device: best.result!.remote.name,
-      reportedAt: best.result!.remote.reportedAt, ms: best.result!.ms });
+      reportedAt: best.result!.remote.reportedAt, ms: best.result!.ms,
+      waitMs: Math.max(0, best.result!.remote.claimedAt - best.offeredAt), ...(best.land ? { land: true as const } : {}) });
   }
   return adopted;
 }
@@ -27415,8 +27431,11 @@ async function verifyPlanFor(cwd: string, repo: string, mainSha: string): Promis
   const adopted = shortChainRepo && !proportional ? await adoptedGateSteps(cwd, repo, owed) : [];
   const local = adopted.length ? owed.filter((step) => !adopted.some((a) => a.step === step)) : owed;
   const cut = adopted.length ? narrowVerifyCmd(configuredCmd, local) : null;
-  if (cut === null) return { cmd: baseCmd, proportional, steps: owed, class: verifyClass };
-  return { cmd: cut, proportional, steps: local, class: verifyClass, adopted };
+  // the configured chain rides on the plan wherever its links can be read: runLandGate cuts the
+  // half it keeps here and the half it hands to a helper from THIS string, never from `cmd`
+  const source = shortChainRepo && !proportional && narrowVerifyCmd(configuredCmd, owed) !== null ? configuredCmd : undefined;
+  if (cut === null) return { cmd: baseCmd, proportional, steps: owed, class: verifyClass, ...(source ? { chain: source } : {}) };
+  return { cmd: cut, proportional, steps: local, class: verifyClass, adopted, ...(source ? { chain: source } : {}) };
 }
 
 // The gate chain's environment is this server's, MINUS every `FLEET_*` — the same RULE
@@ -27481,11 +27500,15 @@ function verifyChildEnv(heldSuiteLock: number | null): Record<string, string> {
 // `ms - waitMs` the WORK every reader (state.sh, the tiering doc) already computes from a note.
 // Floored to whole seconds because both are reported in seconds — a sub-second take must not put
 // a "0s of that" clause into a sentence that is otherwise byte for byte the one written before.
+// `heldBy` names WHAT that wait stood in front of: the suite mutex (the default, every caller before
+// 2026-10-09), or this repo's land order (takeLandOrder), which a land whose suites go to a helper
+// takes INSTEAD of the mutex. Both are queueing and both count into `waitMs`; only the mutex is
+// worded as one, because only the mutex is something the staged steps inherited.
 async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
-  heldSuiteLock: number | null = null, heldWaitMs = 0): Promise<MergeLast["verify"]> {
+  heldSuiteLock: number | null = null, heldWaitMs = 0, heldBy: "mutex" | "order" = "mutex"): Promise<MergeLast["verify"]> {
   if (!plan) return undefined;
   const heldWait = Math.max(0, Math.floor(heldWaitMs / 1000) * 1000);
-  const { cmd, proportional, steps, class: verifyClass, adopted } = plan;
+  const { cmd, proportional, steps, class: verifyClass, adopted, remote, macWhy } = plan;
   // the serverRuns row this run is reported under (the board's "land check" line), when it runs
   // inside reportServerRun. The chain is decided now, and which suite it is in arrives below with
   // each acquire line — sight only, the verdict never reads either.
@@ -27576,11 +27599,14 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     // The two queues are ONE number here, and the parenthesis says which of them it was: with the
     // hold in place the staged steps report `0 of 3 blocked` and the whole wait sits in the take.
     const waitTotalMs = (wait?.waitMs ?? 0) + heldWait;
+    const mutexHeldWait = heldBy === "mutex" ? heldWait : 0;
+    const mutexWaitMs = (wait?.waitMs ?? 0) + mutexHeldWait;
+    if (heldBy === "order" && heldWait) notes.push(`[land order: ${Math.round(heldWait / 1000)}s of this ${Math.round(ms / 1000)}s run was this land waiting its turn behind another land of the same repo, which held main between its rebase and its fast-forward — not ${SUITE_LOCK}, which this land did not take]`);
     const staged = wait
       ? `${wait.blocked} of ${wait.stages} staged step${wait.stages === 1 ? "" : "s"} blocked${wait.partialMs ? `, and one more was still queued after ${Math.round(wait.partialMs / 1000)}s when the run ended` : ""}`
       : "the chain reported no staged wait of its own";
-    const heldNote = heldWait ? `; ${Math.round(heldWait / 1000)}s of that was this server taking ${SUITE_LOCK} before the chain started, which is why the steps inherited the hold instead of queueing for it` : "";
-    if (wait || heldWait) notes.push(`[suite mutex: ${wait?.partialMs ? "at least " : ""}${Math.round(waitTotalMs / 1000)}s of this ${Math.round(ms / 1000)}s run was spent waiting for ${SUITE_LOCK}, not verifying (${staged}${heldNote})]`);
+    const heldNote = mutexHeldWait ? `; ${Math.round(mutexHeldWait / 1000)}s of that was this server taking ${SUITE_LOCK} before the chain started, which is why the steps inherited the hold instead of queueing for it` : "";
+    if (wait || mutexHeldWait) notes.push(`[suite mutex: ${wait?.partialMs ? "at least " : ""}${Math.round(mutexWaitMs / 1000)}s of this ${Math.round(ms / 1000)}s run was spent waiting for ${SUITE_LOCK}, not verifying (${staged}${heldNote})]`);
     // …and the OTHER honest answer (M5, 2026-09-07), said POSITIVELY rather than left as an
     // absence: a short chain neither queues for the machine nor holds it, and a reader must be
     // able to tell that from a full chain that happened to get the lock instantly. `else if`, so
@@ -27591,9 +27617,15 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     // the adoption, said where a reader looks for why a suite owed by the class is missing from the log
     for (const a of adopted ?? [])
       notes.push(`[gate chain: ${a.step} NOT RUN HERE — adopted from helper command job ${a.jobId}, green on ${a.device} on this exact candidate tree ${a.treeSha.slice(0, 12)} (${Math.round(a.ms / 1000)}s there)]`);
+    // …and the opposite fact, said just as positively: the suites of this chain ran HERE, and why
+    // they did not go to a helper. Only where a suite actually ran — a chain without one has no
+    // fallback to explain.
+    const macFallback = macWhy && planRunsSuite(plan) ? macWhy : undefined;
+    if (macFallback) notes.push(`[gate suites ran on THIS machine (${GATE_SUITES.filter((suite) => steps.includes(suite.step)).map((suite) => suite.step).join(", ") || "the whole configured chain"}), not on a helper: ${macFallback}]`);
     // the cut, said where a reader of a source land looks for why a suite is missing from the log
     if (verifyClass === "source-or-public") {
-      const cut = GATE_SUITES.filter((suite) => !steps.includes(suite.step) && !adopted?.some((a) => a.step === suite.step))
+      const cut = GATE_SUITES.filter((suite) => !steps.includes(suite.step) && !adopted?.some((a) => a.step === suite.step)
+        && !remote?.includes(suite.step))
         .map((suite) => suite.step);
       notes.push(`[gate chain: source-or-public — ran ${steps.join(", ")}; ${cut.length ? `left out ${cut.join(", ")}: no changed path is in ${cut.length === 1 ? "its" : "their"} staged footprint (suite-modules.ts#gateSuitesForPaths)` : "every gate suite's footprint holds a changed path, so none was left out"}; the post-land audit still runs the whole suite]`);
     }
@@ -27610,6 +27642,7 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
     return { cmd, ok: timedOut || waitedOut || skipped || serverDown ? null : code === 0, proportional, steps,
       class: verifyClass, ...(adopted?.length ? { adopted } : {}),
+      ...(macFallback ? { macFallback } : {}),
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
       ...(serverDown ? { serverDown: true as const } : {}),
@@ -27622,6 +27655,281 @@ async function runVerify(cwd: string, mainSha: string, plan: VerifyPlan | null,
     if (timer) clearTimeout(timer);
     if (killTimer) clearTimeout(killTimer);
   }
+}
+// --- THE LAND PROVES ITS OWN CANDIDATE ON A HELPER (docs/entwurf-land-dynamik.md §6, 2026-10-09) ---
+// Until now a land adopted a helper receipt only when one HAPPENED to exist for its tree, and on
+// 2026-10-08 that was 0 of 33 lands: a lane proves the tree it has, a land lands the tree the rebase
+// made. So the land asks for the proof itself. After the rebase it hands each gate suite its class
+// owes to the helper as a command job — the existing rail (POST /api/self/jobs's row, claimed and
+// bundled by claimCommandJob from the lane worktree, which IS the candidate) — runs install, pins,
+// tsc and build here meanwhile, waits for the receipts and takes them through the ONE rule that
+// adopts (adoptedGateSteps): green, reported, on exactly `HEAD^{tree}`. Three other outcomes:
+//   · a RED receipt refuses the land. It is a measurement of the candidate, and a second roll on
+//     this machine would be the "roll it again until green" no gate here allows.
+//   · no helper that takes command jobs, a job nobody claims within LAND_JOB_UNCLAIMED_MS, a claim
+//     that reports nothing in time, an `unknown`: the suites run HERE, under the suite mutex as
+//     before — and the note says why, in `macFallback` and in the out. Never a silent fallback.
+//   · the local half fails: the jobs are withdrawn, the land does not happen.
+// MAIN STANDS STILL BY THE LAND ORDER, NOT BY THE MUTEX. Since 2026-09-12 a land took the suite
+// mutex before its rebase, and that hold did two jobs: it serialized this machine's suites, and it
+// kept another land of this server from moving main between rebase and fast-forward. A land whose
+// suites run elsewhere needs only the second, so it takes this repo's land order and leaves the
+// mutex to whoever runs a suite here. A land whose suites run here takes both, order first — one
+// acquisition order everywhere, so no two lands can each hold what the other waits for.
+const LAND_HELPER = process.env.FLEET_LAND_HELPER !== "0";
+// how long an unclaimed land job may wait for a helper before its suite runs here instead: the
+// suite-offer's free-mutex budget (SUITE_OFFER_WAIT_FREE_MS), the same answer to the same question
+const LAND_JOB_UNCLAIMED_MS = Math.max(1_000, Number(process.env.FLEET_LAND_JOB_UNCLAIMED_MS ?? 180_000) | 0);
+// a claimed job past its own timeoutMs plus this has a dead runner: the daemon kills at timeoutMs
+// and reports, so silence past the grace is no longer a run worth holding main still for
+const LAND_JOB_GRACE_MS = 120_000;
+const LAND_JOB_POLL_MS = Math.max(100, Number(process.env.FLEET_LAND_JOB_POLL_MS ?? 1_000) | 0);
+// What became of one job a land offered, as the note keeps it. `outcome` is the receipt's verdict
+// when one was reported, otherwise the state the job ended in — withdrawn (never claimed, or the
+// land stopped), abandoned (claimed and given up), lapsed, reaped.
+interface LandJobRecord { step: GateSuiteStep; jobId: string;
+  outcome: CommandJobResult["result"] | "withdrawn" | "abandoned" | "lapsed" | "reaped";
+  device: string | null; treeSha: string | null; ms: number | null; waitMs: number; reason?: string }
+
+// Whether a helper would take a land job NOW, or why not — the reason is the note's sentence when
+// the suites run here instead. The same capability reading claimCommandJob makes at the door: online
+// inside DEVICE_ONLINE_MS, active (its own reading and the owner's wish), a daemonSha, and a daemon
+// new enough to branch on `kind`. Capacity is not read: a busy helper leaves the job unclaimed, and
+// LAND_JOB_UNCLAIMED_MS is what answers that.
+async function landHelperWhyNot(plan: VerifyPlan): Promise<string | null> {
+  if (!LAND_HELPER) return "FLEET_LAND_HELPER=0 on this server — it hands no land suite to a helper";
+  if (!plan.chain) return plan.steps.length
+    ? "the configured chain's suite links could not be read (narrowVerifyCmd), so no suite can be cut out of it"
+    : "this repo's gate is its own configured command — it names no fleet suite a helper could run alone";
+  const now = Date.now();
+  const why: string[] = [];
+  for (const d of helperDevices.values()) {
+    if (now - d.lastSeen >= DEVICE_ONLINE_MS) continue;
+    const mode = d.desiredMode && d.desiredMode !== "active" ? d.desiredMode : d.mode ?? DEVICE_MODE_DEFAULT;
+    if (mode !== "active") { why.push(`${d.name} is ${mode}`); continue; }
+    if (!d.daemonSha) { why.push(`${d.name} names no daemonSha, so it is offered no command job`); continue; }
+    if (!(await daemonKnowsCommandKind(d.daemonSha))) { why.push(`${d.name}'s daemon ${d.daemonSha.slice(0, 8)} predates command jobs`); continue; }
+    return null;
+  }
+  return why.length ? `no helper takes a land job now — ${why.join("; ")}`
+    : `no helper online — no device has beaten within ${DEVICE_ONLINE_MS}ms`;
+}
+
+// THE LAND ORDER — in-process, per repo, FIFO, with the mutex's own budget semantics: `false` after
+// `budgetMs` is a denial, which the caller turns into the same never-started verdict a denied mutex
+// gets. In-process is the whole scope on purpose: only this server's lands move this server's main
+// between rebase and fast-forward (a hub or direct commit is E5's residue, still caught by the ff
+// retry), and a restart ends every land, so there is nothing for a file to outlive.
+interface LandOrderEntry { owner: symbol; queue: { owner: symbol; grant: (ok: boolean) => void }[] }
+const landOrders = new Map<string, LandOrderEntry>();
+function takeLandOrder(repo: string, owner: symbol, budgetMs: number): Promise<boolean> {
+  const key = repoCanon(repo);
+  const e = landOrders.get(key);
+  if (!e) { landOrders.set(key, { owner, queue: [] }); return Promise.resolve(true); }
+  if (e.owner === owner) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let done = false;
+    const waiter = { owner, grant: (ok: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    } };
+    // an entry is deleted only once its queue is empty, so a queued waiter is always in the live
+    // entry's queue, and removing it here means a release can never hand the order to a timed-out one
+    const timer = setTimeout(() => { e.queue = e.queue.filter((w) => w !== waiter); waiter.grant(false); }, Math.max(0, budgetMs));
+    e.queue.push(waiter);
+  });
+}
+function releaseLandOrder(repo: string, owner: symbol): void {
+  const key = repoCanon(repo);
+  const e = landOrders.get(key);
+  if (!e || e.owner !== owner) return;
+  const next = e.queue.shift();
+  if (!next) { landOrders.delete(key); return; }
+  e.owner = next.owner;
+  next.grant(true);
+}
+
+// One gate suite, offered by the land as a command job on the lane it is landing. The row is the
+// self door's row with two differences: the land, not a session, is asking (`land: true`), and the
+// per-session cap does not apply — a land owes at most three suites and is not a session filling
+// the portal. The allowlist still does: a wrapper that is no longer on it cannot be handed over.
+function offerLandJob(lane: Slot, cwd: string, root: string, branch: string,
+  suite: (typeof GATE_SUITES)[number]): CommandJob | string {
+  const check = helperCmdCheck(`./${suite.wrapper}`);
+  if (!check.ok) return `${suite.step}: ${check.error}`;
+  const job: CommandJob = {
+    id: randomBytes(6).toString("hex"), slot: lane.id, slotOpenedAt: lane.openedAt,
+    repo: repoCanon(root), cwd, branch, cmd: check.cmd, argv: check.argv,
+    timeoutMs: COMMAND_JOB_TIMEOUT_DEFAULT_MS, artifactGlobs: [], offeredAt: Date.now(), state: "open",
+    commitSha: null, treeSha: null, untracked: null, claim: null, result: null, land: true,
+  };
+  commandJobs.set(job.id, job);
+  audit("helper_claim", lane.id, `the land of ${basename(root)} ${branch} offered its gate suite ${job.cmd} to the portal as command job ${job.id}`);
+  return job;
+}
+// The land gives a job up: never claimed → withdrawn, claimed → abandoned (the daemon aborts a run
+// whose job leaves its list). The result is the lapse verdict with the reason, so the job row and
+// the note say the same thing about why nothing was measured.
+function withdrawLandJob(j: CommandJob, reason: string): void {
+  if (j.state !== "open" && j.state !== "claimed") return;
+  const held = j.claim;
+  if (held) {
+    try { rmSync(held.bundle, { force: true }); } catch { /* the helper has its copy */ }
+    j.previousClaim = { deviceId: held.deviceId, name: held.name, claimedAt: held.claimedAt, expiresAt: held.expiresAt };
+  }
+  const now = Date.now();
+  j.result = commandJobLapseResult(j, held, now, reason);
+  j.state = held ? "abandoned" : "withdrawn";
+  j.claim = null;
+  j.settledAt = now;
+  audit("helper_result", j.slot, `the land ${held ? "abandoned" : "withdrew"} its command job ${j.cmd} on ${basename(j.repo)} ${j.branch}`
+    + `${held ? ` while ${held.name} held it` : ""} — ${reason}`.slice(0, 240));
+}
+// Wait until every job has settled. In-process polling of the register, which is where every
+// settlement lands (reportCommandJob, expireHelperClaims, the two budgets below), so no event can be
+// missed; `stopped` lets the local half end the wait the moment it fails.
+async function awaitLandJobs(jobs: readonly CommandJob[], stopped: () => string | null): Promise<void> {
+  for (;;) {
+    expireHelperClaims();
+    const now = Date.now();
+    const stop = stopped();
+    for (const j of jobs) {
+      if (stop) withdrawLandJob(j, stop);
+      else if (j.state === "open" && now - j.offeredAt >= LAND_JOB_UNCLAIMED_MS)
+        withdrawLandJob(j, `no helper claimed it within ${LAND_JOB_UNCLAIMED_MS}ms`);
+      else if (j.state === "claimed" && j.claim && now - j.claim.claimedAt >= j.timeoutMs + LAND_JOB_GRACE_MS)
+        withdrawLandJob(j, `${j.claim.name} reported nothing within the job's own ${j.timeoutMs}ms and ${LAND_JOB_GRACE_MS}ms of grace`);
+    }
+    if (jobs.every((j) => j.state !== "open" && j.state !== "claimed")) { await saveStateNow(); return; }
+    await Bun.sleep(LAND_JOB_POLL_MS);
+  }
+}
+function landJobRecord(step: GateSuiteStep, j: CommandJob): LandJobRecord {
+  const r = j.result;
+  const reported = j.state === "reported" && r !== null;
+  const claimedAt = reported ? r.remote.claimedAt : j.previousClaim?.claimedAt ?? null;
+  const settledAt = reported ? r.remote.reportedAt : j.settledAt ?? r?.remote.reportedAt ?? Date.now();
+  const outcome: LandJobRecord["outcome"] = reported ? r.result
+    : j.state === "withdrawn" || j.state === "abandoned" || j.state === "lapsed" || j.state === "reaped" ? j.state : "unknown";
+  return { step, jobId: j.id, outcome,
+    device: reported ? r.remote.name : j.previousClaim?.name ?? null, treeSha: j.treeSha,
+    ms: reported ? r.ms : null, waitMs: Math.max(0, (claimedAt ?? settledAt) - j.offeredAt),
+    ...(r?.reason ? { reason: r.reason.slice(0, 200) } : {}) };
+}
+// facts appended to a finished run's out, reserved out of the same byte budget runVerify keeps
+function verifyOutWith(out: string, notes: readonly string[]): string {
+  if (!notes.length) return out;
+  const extra = notes.join("\n");
+  return `${retainRunOutput(out, "", Math.max(0, VERIFY_OUT_CAP - byteLen(extra) - 1))}\n${extra}`.trim();
+}
+
+interface LandGateCtx { s: Slot; cwd: string; root: string; branch: string; holdOwner: symbol;
+  // the pid of a wrapper's hold this server runs inside (inheritedSuiteHolder), or null
+  inherited: number | null }
+// The land gate of a land that holds its repo's land order instead of the suite mutex. `orderWaitMs`
+// is how long it waited for that order; it is queueing and counts into `waitMs` like a mutex wait.
+async function runLandGate(ctx: LandGateCtx, mainSha: string, plan: VerifyPlan, orderWaitMs: number): Promise<MergeLast["verify"]> {
+  const startedAt = Date.now();
+  const orderWait = Math.max(0, Math.floor(orderWaitMs / 1000) * 1000);
+  const remote = GATE_SUITES.filter((suite) => plan.steps.includes(suite.step));
+  // THE TIMING OF THE WHOLE LAND GATE, which no sub-run's own numbers cover alone. `waitMs` is every
+  // queue this land stood in: the land order, the longest a land job stood unclaimed in the portal
+  // (it ran beside the local half, so it is queueing seen, not wall time added), and whatever the
+  // sub-run reported — which already holds the order wait when it is the local half (`withOrder`).
+  const total = (v: NonNullable<MergeLast["verify"]>, helperWaitMs: number, records: LandJobRecord[],
+    withOrder: boolean): NonNullable<MergeLast["verify"]> => ({
+    ...v, startedAt: startedAt - orderWait, ms: Date.now() - startedAt + orderWait,
+    waitMs: (withOrder ? 0 : orderWait) + helperWaitMs + (v.waitMs ?? 0),
+    ...(records.length ? { landJobs: records } : {}) });
+  // THE MAC FALLBACK: the suites no receipt covers run here, under the suite mutex like any land's,
+  // and `macWhy` puts the reason into the note. A denied mutex is the never-started verdict.
+  const fallback = async (why: string, adopted: AdoptedGateStep[], records: LandJobRecord[], helperWaitMs: number,
+    notes: string[]): Promise<MergeLast["verify"]> => {
+    const steps = plan.steps.filter((step) => !adopted.some((a) => a.step === step));
+    const cut = plan.chain && adopted.length ? narrowVerifyCmd(plan.chain, steps) : null;
+    const fbPlan: VerifyPlan = cut !== null ? { ...plan, cmd: cut, steps, adopted, macWhy: why } : { ...plan, macWhy: why };
+    const askedAt = Date.now();
+    const held = ctx.inherited === null ? await holdSuiteLock(VERIFY_WAIT_MS, ctx.holdOwner) : false;
+    const mutexWait = Date.now() - askedAt;
+    if (ctx.inherited === null && !held) {
+      const never = gateNeverRan(fbPlan, mainSha, mutexWait);
+      return total({ ...never, macFallback: why, out: verifyOutWith(never.out, notes) }, helperWaitMs, records, false);
+    }
+    try {
+      const v = await runVerify(ctx.cwd, mainSha, fbPlan, ctx.inherited ?? process.pid, held ? mutexWait : 0);
+      return v ? total({ ...v, out: verifyOutWith(v.out, notes) }, helperWaitMs, records, false) : v;
+    } finally {
+      if (held) releaseSuiteLock(ctx.holdOwner);
+    }
+  };
+  if (!remote.length) return runVerify(ctx.cwd, mainSha, plan, null, orderWaitMs, "order");
+  const why = await landHelperWhyNot(plan);
+  if (why) return fallback(why, plan.adopted ?? [], [], 0, []);
+  const offered: { suite: (typeof GATE_SUITES)[number]; job: CommandJob }[] = [];
+  const refused: string[] = [];
+  for (const suite of remote) {
+    const j = offerLandJob(ctx.s, ctx.cwd, ctx.root, ctx.branch, suite);
+    if (typeof j === "string") refused.push(j); else offered.push({ suite, job: j });
+  }
+  const localSteps = plan.steps.filter((step) => !remote.some((suite) => suite.step === step));
+  const localCmd = plan.chain ? narrowVerifyCmd(plan.chain, localSteps) : null;
+  if (refused.length || localCmd === null) {
+    const stop = refused.length ? `not every owed suite may go to a helper (${refused.join("; ")})` : "the configured chain could not be cut into its local half";
+    for (const o of offered) withdrawLandJob(o.job, stop);
+    await saveStateNow();
+    return fallback(stop, plan.adopted ?? [], offered.map((o) => landJobRecord(o.suite.step, o.job)), 0, []);
+  }
+  await saveStateNow();
+  const jobs = offered.map((o) => o.job);
+  let stop: string | null = null;
+  const waiting = awaitLandJobs(jobs, () => stop);
+  let local: MergeLast["verify"];
+  try {
+    local = await runVerify(ctx.cwd, mainSha, { ...plan, cmd: localCmd, steps: localSteps, remote: remote.map((suite) => suite.step) },
+      null, orderWaitMs, "order");
+  } catch (e) {
+    stop = "the local half of the land gate threw, so this land is not happening";
+    await waiting;
+    throw e;
+  }
+  if (!local || local.ok !== true)
+    stop = `the local half of the land gate (${localSteps.join(", ")}) ${local?.ok === false ? "failed" : "measured nothing"}, so this land is not happening and no helper minute is spent on it`;
+  await waiting;
+  const records = offered.map((o) => landJobRecord(o.suite.step, o.job));
+  const helperWaitMs = Math.max(0, ...records.map((r) => r.waitMs));
+  if (!local) return local;
+  if (stop) return total({ ...local, out: verifyOutWith(local.out, [`[gate chain: land command jobs ${jobs.map((j) => j.id).join(", ")} withdrawn — ${stop}]`]) }, helperWaitMs, records, true);
+  const tree12 = (t: string | null): string => (t ?? "").slice(0, 12) || "(no tree)";
+  // A RED RECEIPT REFUSES THE LAND. Read before adoption on purpose: a red is a measurement, and
+  // whatever else came back, this tree failed a suite its class owes.
+  const reds = offered.filter((o) => o.job.state === "reported" && o.job.result?.result === "red");
+  if (reds.length) {
+    const notes = reds.map(({ suite, job }) => {
+      const r = job.result!;
+      const tail = r.tail.split("\n").filter((l) => l.trim()).slice(-6).join(" ⏎ ").slice(0, 400);
+      return `[gate chain: ${suite.step} RED on ${r.remote.name} — land command job ${job.id} on candidate tree ${tree12(job.treeSha)} exited ${r.exitCode ?? "without a code"} after ${Math.round(r.ms / 1000)}s; the land is refused. Helper tail: ${tail}]`;
+    });
+    return total({ ...local, ok: false, out: verifyOutWith(local.out, notes) }, helperWaitMs, records, true);
+  }
+  const fresh = await adoptedGateSteps(ctx.cwd, ctx.root, remote.map((suite) => suite.step), [...jobs, ...commandJobs.values()]);
+  const adopted = [...(plan.adopted ?? []), ...fresh];
+  const notes = fresh.map((a) => `[gate chain: ${a.step} NOT RUN HERE — adopted from ${a.land ? "land" : "helper"} command job ${a.jobId}, green on ${a.device} on this exact candidate tree ${a.treeSha.slice(0, 12)} (${Math.round(a.ms / 1000)}s there, ${Math.round(a.waitMs / 1000)}s waiting for a claim)]`);
+  const missing = offered.filter((o) => !fresh.some((a) => a.step === o.suite.step));
+  if (!missing.length) return total({ ...local, adopted, out: verifyOutWith(local.out, notes) }, helperWaitMs, records, true);
+  // NOT MEASURED there: say so per job, then run exactly those suites here
+  for (const { suite, job } of missing) {
+    const rec = records.find((r) => r.jobId === job.id);
+    const r = job.result;
+    const what = job.state === "reported" && r && r.result === "green"
+      ? `green, but not on this candidate tree (${tree12(r.treeSha)}${r.remote.clonedSha && job.commitSha && r.remote.clonedSha !== job.commitSha ? `, and the helper ran ${r.remote.clonedSha.slice(0, 8)}, not ${job.commitSha.slice(0, 8)}` : ""})`
+      : `${rec?.outcome ?? job.state}${rec?.reason ? `: ${rec.reason}` : ""}`;
+    notes.push(`[gate chain: ${suite.step} NOT MEASURED by a helper — land command job ${job.id} ${what}]`);
+  }
+  const reason = `the helper did not measure ${missing.map((o) => o.suite.step).join(", ")} on this candidate (${missing
+    .map((o) => `${o.job.id} ${records.find((r) => r.jobId === o.job.id)?.outcome ?? o.job.state}`).join(", ")})`;
+  return fallback(reason, adopted, records, helperWaitMs, notes);
 }
 // --setting-sources "" is load-bearing, not tidiness: --allowedTools is ADDITIVE to the owner's
 // ~/.claude/settings.json allow list, where a bare `Read`/`Grep`/`Glob` (no parentheses) means
@@ -27748,7 +28056,13 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
     exitCode?: number | null; proportional?: boolean; steps?: LocalProofStep[]; class?: GateClass;
     // the gate suites this run did NOT execute because a green helper command job had already
     // proven this exact candidate tree (adoptedGateSteps); absent = every owed step ran here
-    adopted?: AdoptedGateStep[] };
+    adopted?: AdoptedGateStep[];
+    // why the gate suites that DID run here were not sent to a helper — absent where no suite ran
+    // here, or where the land never asked (a gate outside mergeJob, an older note)
+    macFallback?: string;
+    // every command job THIS land offered for its own candidate (runLandGate), with what became of
+    // it — the green ones are also in `adopted`; a red one is why `ok` is false
+    landJobs?: LandJobRecord[] };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
@@ -29676,6 +29990,10 @@ interface CommandJob {
   previousClaim?: { deviceId: string; name: string; claimedAt: number; expiresAt: number };
   settledAt?: number;
   result: CommandJobResult | null;
+  // OFFERED BY A LAND for its own rebased candidate (runLandGate), not by the session on `slot`:
+  // no pane event to the lane (the land's verdict is the answer), and never restored open — a land
+  // does not survive a restart, so nobody would read it.
+  land?: true;
 }
 const commandJobs = new Map<string, CommandJob>();
 const COMMAND_JOB_KEEP = 20;             // same bound and same reason as LANE_SUITE_KEEP
@@ -29721,7 +30039,7 @@ function commandJobView(j: CommandJob): Record<string, unknown> {
     branch: j.branch, offeredAt: j.offeredAt,
     commitSha: j.commitSha, treeSha: j.treeSha, untracked: j.untracked,
     claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
-    result: j.result,
+    result: j.result, ...(j.land ? { land: true } : {}),
   };
 }
 // THE PAYLOAD A `job` WATCH FIRES WITH, derived from the verdict and from nothing else — so a watch
@@ -31511,6 +31829,7 @@ interface HelperJobView {
   cmd?: string;
   timeoutMs?: number;
   artifacts?: string[];   // the GLOBS asked for; the receipt's rows are the answer to them
+  land?: true;            // a command job a LAND offered for its own candidate (runLandGate)
   // `k/n` on a SHARDED audit job and on nothing else — the exact string the daemon hands the suite as
   // FLEET_E2E_SHARD. Listed only to a device that declared AUDIT_SHARD_FEATURE.
   shard?: string;
@@ -31614,12 +31933,15 @@ function helperJobsView(forDevice?: string): {
       claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
       localRunning: false,
       ...(j.untracked !== null ? { untracked: j.untracked } : {}),
-      cmd: j.cmd, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs,
+      cmd: j.cmd, timeoutMs: j.timeoutMs, artifacts: j.artifactGlobs, ...(j.land ? { land: true as const } : {}),
     });
   }
   const kindOrder: Record<HelperJobView["kind"], number> = {
     "daemon-update": 0, command: 1, audit: 2, "lane-suite": 3,
   };
+  // A land's own suites are command jobs, so they already stand ahead of every audit shard here and
+  // in the daemon (helper-daemon/daemon.ts#jobsToStart) — the precedence §6.4 of
+  // docs/entwurf-land-dynamik.md asks for, with no second rank to keep.
   jobs.sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.oldestAt - b.oldestAt);
   // `configured` still answers for the AUDIT queue alone, and the portal's own subline says both
   // halves: a fleet with no audit command can still be offered a lane's preview.
@@ -32455,7 +32777,8 @@ async function reportCommandJob(j: CommandJob, body: Record<string, unknown> | n
     + `${clonedSha && j.commitSha && clonedSha !== j.commitSha
         ? ` — THE HELPER RAN ${clonedSha.slice(0, 8)}, NOT THE ${j.commitSha.slice(0, 8)} HANDED OVER` : ""}`
     + `${trail ? ` [${trail}]` : ""}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
-  await mintCommandJobEvents(j, true);
+  // a land's own job tells no pane: the land is waiting on it, and its verdict is the answer
+  await mintCommandJobEvents(j, !j.land);
   await saveStateNow();
   return json({ ok: true, kind: "command", result, ...(reason ? { reason } : {}), artifacts: artifacts.length });
 }
@@ -37018,7 +37341,8 @@ function verdictRetryDue(): Slot[] {
 // field: `waitedMs` is already the whole queue across all of them, so the sentence would otherwise
 // read as one budget having produced a number that is a multiple of it. Additive and empty at
 // FLEET_LAND_WAIT_ROUNDS=0, where this string is byte for byte the one M1 wrote.
-function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number, rounds = 0): NonNullable<MergeLast["verify"]> {
+function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number, rounds = 0,
+  by: "mutex" | "order" = "mutex"): NonNullable<MergeLast["verify"]> {
   const at = Date.now();
   const asked = rounds
     ? ` It went back for the machine ${rounds} more time${rounds === 1 ? "" : "s"} — ${rounds + 1} holds of ${VERIFY_WAIT_MS}ms each (FLEET_LAND_WAIT_ROUNDS=${LAND_WAIT_ROUNDS}) — and was refused every one.`
@@ -37026,7 +37350,9 @@ function gateNeverRan(plan: VerifyPlan, mainSha: string, waitedMs: number, round
   return { cmd: plan.cmd, ok: null, waitedOut: true, proportional: plan.proportional, steps: plan.steps,
     class: plan.class,
     startedAt: at - waitedMs, ms: waitedMs, waitMs: waitedMs, exitCode: null, at, mainSha,
-    out: `[verify NEVER STARTED — ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms, so the chain was never spawned: install, tsc, build and the suites did not run.${asked} That is a fact about the machine, not about this tree.]` };
+    out: by === "order"
+      ? `[verify NEVER STARTED — this repo's land order could not be had within ${VERIFY_WAIT_MS}ms (another land of it held main between its rebase and its fast-forward), so the chain was never spawned: install, tsc, build and the suites did not run.${asked} That is a fact about the queue, not about this tree.]`
+      : `[verify NEVER STARTED — ${SUITE_LOCK} could not be taken within ${VERIFY_WAIT_MS}ms, so the chain was never spawned: install, tsc, build and the suites did not run.${asked} That is a fact about the machine, not about this tree.]` };
 }
 function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: string, waitRounds = 0): MergeLast {
   if (verify.ok === null) {
@@ -37112,6 +37438,14 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   let gateWaitMs = 0;
   let gateInherited: number | null = null;
   let preHoldDenied = false;
+  // THE HELPER ROUTE (runLandGate, 2026-10-09): decided once at entry. `landHelperWhy` is the
+  // sentence a Mac-run gate puts into its note; `orderHeld` is this repo's land order, which every
+  // gated land takes (order first, then the mutex where the suites run here) and the finally gives
+  // back; `orderDenied` words a denial by the queue it actually was.
+  let landByHelper = false;
+  let landHelperWhy: string | null = null;
+  let orderHeld = false;
+  let orderDenied = false;
   // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on this
   // path goes through here, the repair loop's re-runs included, so the board says "slot N ·
   // running land gate · <branch>" for as long as the gate is actually holding the machine-wide
@@ -37259,12 +37593,35 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     const entryPlan = await verifyPlanFor(cwd, root, mainAtEntry);
     const entryDirty = entryPlan ? await dirtyMainStop(root, main, mainAtEntry, branch, {}) : null;
     gateInherited = inheritedSuiteHolder();
-    if (gateInherited === null && entryPlan && planRunsSuite(entryPlan) && entryDirty === null) {
+    // --- A LAND WHOSE SUITES GO TO A HELPER TAKES THE LAND ORDER, NOT THE MACHINE (2026-10-09) ---
+    // Same place, same budget, same rounds as the mutex take below, and for the same reason: main
+    // must stand still from this rebase to this fast-forward. What it does not need is this
+    // machine's suite mutex, because no suite of it runs here (runLandGate) — unless its helper
+    // fails it, and then runLandGate takes the mutex for exactly the fallback run. Independent of
+    // `gateInherited`: a wrapper's hold is a fact about THIS machine, and the suites go elsewhere.
+    const entryGated = !!entryPlan && planRunsSuite(entryPlan) && entryDirty === null;
+    landHelperWhy = entryGated && entryPlan ? await landHelperWhyNot(entryPlan) : null;
+    landByHelper = entryGated && landHelperWhy === null;
+    if (landByHelper) {
       const askedAt = Date.now();
       for (;;) {
+        orderHeld = await gateRun(() => takeLandOrder(root, holdOwner, VERIFY_WAIT_MS));
+        if (orderHeld || waitRounds >= LAND_WAIT_ROUNDS) break;
+        waitRounds++;
+        mergeWaiting.set(s.id, { round: waitRounds, retryAt: Date.now() });
+      }
+      mergeWaiting.delete(s.id);
+      gateWaitMs = Date.now() - askedAt;
+      if (!orderHeld) { preHoldDenied = true; orderDenied = true; }
+    } else if (gateInherited === null && entryPlan && planRunsSuite(entryPlan) && entryDirty === null) {
+      const askedAt = Date.now();
+      for (;;) {
+        // the land order FIRST, then the machine: one acquisition order on every route, so a land
+        // holding one can never wait on a land holding the other
+        if (!orderHeld) orderHeld = await gateRun(() => takeLandOrder(root, holdOwner, VERIFY_WAIT_MS));
         // inside gateRun, so the board keeps saying "running land gate" while this job is
         // standing in the queue — the queue is the part that takes the minutes.
-        gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));
+        if (orderHeld) gateHeld = await gateRun(() => holdSuiteLock(VERIFY_WAIT_MS, holdOwner));
         if (gateHeld || waitRounds >= LAND_WAIT_ROUNDS) break;
         waitRounds++;
         // the only place this state is visible: running, nothing measured, round N of the
@@ -37277,8 +37634,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       if (gateHeld) gateHoldPid = process.pid;
       // NOT turned into a verdict here: this job does not yet know whether it is on the clean path,
       // and a denial is only a verdict for a land that was going to take the machine. Carried down.
-      else preHoldDenied = true;
+      else { preHoldDenied = true; orderDenied = !orderHeld; }
     }
+    const landCtx: LandGateCtx = { s, cwd, root, branch, holdOwner, inherited: gateInherited };
+    // the sentence a gate whose suites run HERE carries: why not a helper (runVerify#macFallback).
+    // Only for a fleet-shaped chain (`chain`), the one a helper could have taken: a foreign repo's
+    // own command has no helper route to fall back FROM, and saying so on every land is noise.
+    const macWhyOf = (plan: VerifyPlan | null): void => {
+      if (plan?.chain && !landByHelper && planRunsSuite(plan))
+        plan.macWhy = landHelperWhy ?? "the entry plan owed no gate suite, so this land chose no helper route before its rebase";
+    };
     // script first, agent only for what needs judgment: a conflict-free rebase is done
     // right here and the model never spawns
     const pre = await tryScriptRebase(cwd, main);
@@ -37328,6 +37693,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       releaseSuiteLock(holdOwner);
       gateHoldPid = null;
       gateHeld = false;
+    }
+    // …and the land order with it: this path never fast-forwards, so it has no main to hold still,
+    // and an agent's minutes must not stand in front of the next land of this repo
+    if (orderHeld && !(pre.clean && unreviewed.length === 0)) {
+      releaseLandOrder(root, holdOwner);
+      orderHeld = false;
     }
     const laneTask = foundingRowOf(s)?.text ?? null;
     // ② FORK IN THE ROAD, and the only one this job has: who resolves. The author gets first
@@ -37517,12 +37888,17 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // THE SAME BUDGET AND NO SECOND CLOCK: nothing is asked for again here, so the wait this
         // verdict reports is the one the loop above actually spent — `gateWaitMs` over
         // `waitRounds + 1` holds of VERIFY_WAIT_MS, exactly as M2 worded it.
-        if (gateInherited === null && cleanPath && firstVerifyPlan && !gateProportional && preHoldDenied)
-          gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs, waitRounds);
+        if ((gateInherited === null || landByHelper) && cleanPath && firstVerifyPlan && !gateProportional && preHoldDenied)
+          gateDenied = gateNeverRan(firstVerifyPlan, mainSha, gateWaitMs, waitRounds, orderDenied ? "order" : "mutex");
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
+        macWhyOf(firstVerifyPlan);
+        // the helper route's gate is runLandGate, which runs the local half here and hands the
+        // suites to the helper; every other land runs its chain here, exactly as before
         let verify = dirtyStop ? undefined : gateDenied
-          ?? await gateRun(() => runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0));
+          ?? await gateRun(() => landByHelper && firstVerifyPlan
+            ? runLandGate(landCtx, mainSha, firstVerifyPlan, gateWaitMs)
+            : runVerify(cwd, mainSha, firstVerifyPlan, gateChildHold, gateHeld ? gateWaitMs : 0));
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
         // than dead-end at a red verdict, feed the exact failure back to the resolver for up to
@@ -37660,6 +38036,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // that ran no suite only because helper receipts matched THIS tree does: a retry rebases
             // onto a moved main, the tree changes, no receipt matches it, and its suites run here.
             if (gateProportional && !firstVerifyPlan?.adopted?.length) ffHeld = true;
+            // A land on the helper route holds main by its land order, not by the machine: a retry
+            // hands its suites to the helper again, and runLandGate takes the mutex only for a
+            // fallback run of its own.
+            if (landByHelper) ffHeld = true;
             let ffLockDenied = false; // we wanted it, the machine never gave it to us
             let landMain = mainSha;   // the main THIS round is rebased onto and verified against
             // W5d · which of the two races the CURRENT round lost, and it is per round rather than
@@ -37839,7 +38219,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   landMain = (await git(root, "rev-parse", main)).out;
                   candidateMainSha = landMain; // a reviewable verdict from here on describes THIS main
                   const retryPlan = await verifyPlanFor(cwd, root, landMain);
-                  verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));
+                  macWhyOf(retryPlan);
+                  if (landByHelper && retryPlan) verify = await gateRun(() => runLandGate(landCtx, landMain, retryPlan, 0));
+                  else verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));
                   // a retry may NEVER turn a non-green gate into a land by rolling it again: the
                   // round's own verdict is what stands, worded exactly as a first round's would be.
                   if (verify && verify.ok !== true) { res = { ...cleanVerifyStop(verify, branch), ffRounds }; break; }
@@ -37934,6 +38316,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // TOOK (`gateHoldPid`), never a hold a wrapper is keeping for us. `releaseSuiteLock` also never
     // removes a lock this process no longer owns, so this cannot take one away from anyone else.
     if (gateHoldPid !== null) releaseSuiteLock(holdOwner);
+    // …and the land order, on every exit for the same reason: a leaked order would stand every
+    // later land of this repo in front of a budget it can only lose
+    if (orderHeld) releaseLandOrder(root, holdOwner);
     // M2 · and the "still queueing" row goes with it on every exit, thrown ones included: the loop
     // that set it clears it on its own way out, and this is the second owner for the paths that
     // never get there — a slot left claiming it is waiting for a machine no job is asking for is
@@ -41077,6 +41462,20 @@ if (existsSync(STATE_FILE)) {
         if (j && typeof j.id === "string" && typeof j.repo === "string" && typeof j.branch === "string"
           && typeof j.cwd === "string" && typeof j.state === "string"
           && Array.isArray(j.argv) && helperCmdCheck(j.cmd).ok) commandJobs.set(j.id, j);
+    // A LAND'S JOB DOES NOT OUTLIVE ITS LAND. The land that offered it was a promise in the process
+    // that just died, so nobody will ever read its verdict: offered again, it would only spend a
+    // helper's minutes on a candidate no land is waiting for. Withdrawn, with the reason on record.
+    for (const j of commandJobs.values()) {
+      if (!j.land || (j.state !== "open" && j.state !== "claimed")) continue;
+      if (j.claim) {
+        try { rmSync(j.claim.bundle, { force: true }); } catch { /* already gone */ }
+        j.previousClaim = { deviceId: j.claim.deviceId, name: j.claim.name, claimedAt: j.claim.claimedAt, expiresAt: j.claim.expiresAt };
+      }
+      j.result = commandJobLapseResult(j, j.claim, Date.now(), "the land that offered this job ended with the server restart — no land is waiting for it");
+      j.state = j.claim ? "abandoned" : "withdrawn";
+      j.claim = null;
+      j.settledAt = Date.now();
+    }
     if (Array.isArray((persisted as { helperLapses?: unknown }).helperLapses))
       helperLapses = ((persisted as { helperLapses: HelperLapse[] }).helperLapses)
         .filter((l) => l && typeof l.id === "string" && typeof l.expiredAt === "number").slice(0, HELPER_LAPSE_KEEP);

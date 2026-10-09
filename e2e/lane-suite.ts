@@ -465,6 +465,102 @@ export async function run(): Promise<void> {
     check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
       suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
         .balls.filter((b) => b.kind === "queued check run").length === 0, "a phantom waiter");
+
+    // === (LS.names) THE PRÜFUNGEN ROWS NAME A LANE BY BAND AND KURZTITEL (owner 26.09., note cdf43028:
+    // „[Zitat entfernt]“). Two halves, each run from its source
+    // and each run again on a mutant that brings the old naming back — a claim the mutant leaves green
+    // would not be about the naming. The model: a waiter behind a TITLED lane says "wartet hinter 0A",
+    // the reference alone, while its own name carries the title. The board: the row's lane is
+    // "0B <Kurztitel>", the branch's four hex only in the tooltip — visible for a lane without a band.
+    let meterSrc = "", namesError = "";
+    try { meterSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/suitemeter.ts`, "utf8"); }
+    catch (e) { namesError = e instanceof Error ? e.message : String(e); }
+    const titledQueue = (src: string): string[] => {
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(src.replace(/^export /gm, ""));
+      const meter = new Function(`${js}\nreturn suiteMeter;`)() as typeof suiteMeter;
+      const lane = (id: number, letter: string, tail: string) =>
+        ({ id, label: null, branch: `fleet/261009-x-${tail}`, letter, title: `Titel von ${letter} mit genug Worten zum Kuerzen` });
+      return meter({ ...base, slots: [lane(5, "0A", "aaaa"), lane(6, "0B", "bbbb"), lane(7, "0C", "cccc")], gate: {
+        lock: { pid: 900, alive: true, owner: { slot: 5, branch: "fleet/261009-x-aaaa" } }, reports: [],
+        queue: [{ ...q(1, 901, true, 1), owner: { slot: 6, branch: "fleet/261009-x-bbbb" } },
+          { ...q(2, 902, true, 2), owner: { slot: 7, branch: "fleet/261009-x-cccc" } }] } })
+        .balls.filter((b) => b.station === "wait").map((b) => `${b.name} | ${b.what}`);
+    };
+    const queueSays = (got: string[]) => JSON.stringify(got) === JSON.stringify([
+      `0B · ${shortTitle("Titel von 0B mit genug Worten zum Kuerzen")} | wartet hinter 0A · Platz 1/2`,
+      `0C · ${shortTitle("Titel von 0C mit genug Worten zum Kuerzen")} | wartet hinter 0B · Platz 2/2`]);
+    const queueMutants = [
+      ["let ahead = holderSlot !== null ? refOf(holderSlot) : holderName;", "let ahead = holderName;"],
+      ["if (t.alive) ahead = t.owner?.slot !== null && t.owner?.slot !== undefined ? refOf(t.owner.slot) : name;", "if (t.alive) ahead = name;"],
+    ].map(([from, to]) => meterSrc.replace(from, to));
+    let queueGot: string[] = [], queueMutantsRed = false;
+    try {
+      queueGot = titledQueue(meterSrc);
+      queueMutantsRed = queueMutants.every((m) => m !== meterSrc) && queueMutants.every((m) => { try { return !queueSays(titledQueue(m)); } catch { return false; } });
+    } catch (e) { namesError ||= e instanceof Error ? e.message : String(e); }
+    check("(LS.names) a waiter behind a titled lane says 'wartet hinter 0A' — the reference alone, its own name keeps the title (mutants red)",
+      !namesError && queueSays(queueGot) && queueMutantsRed, namesError || `${JSON.stringify(queueGot)} mutantsRed=${queueMutantsRed}`);
+
+    // the board half: runWho and waitWord are cut from src/board.ts with laneWords, and run against a
+    // stand-in el(); nameWithoutModel is the sidebar's rule (src/client.ts#laneLabel) restated
+    type StandIn = { cls: string; kids: (string | StandIn)[]; append: (...k: (string | StandIn)[]) => void; textContent: string };
+    const fakeEl = (_tag: string, cls: string, text?: string): StandIn => {
+      const n: StandIn = { cls, kids: text === undefined ? [] : [text], append: (...k) => { n.kids.push(...k); },
+        get textContent() { return n.kids.map((k) => typeof k === "string" ? k : k.textContent).join(""); } };
+      return n;
+    };
+    const nameWithoutModel = (s: { label: string | null; worktree?: unknown; taskTitle?: string | null }) =>
+      s.worktree && s.taskTitle && (!s.label || s.label.startsWith("⎇ ")) ? shortTitle(s.taskTitle) : s.label ?? "";
+    const sliceOf = (src: string, from: string, to: string) => {
+      const a = src.indexOf(from), b = src.indexOf(to, a);
+      if (a < 0 || b < 0) throw new Error(`${from} missing from src/board.ts`);
+      return src.slice(a, b);
+    };
+    const boardNames = (src: string) => {
+      const code = sliceOf(src, "function waitBehind(", "// \"e2e-isolated\" broke at its hyphen")
+        + sliceOf(src, "export function laneWords(", "\n}\n") + "\n}\n" + sliceOf(src, "export function branchDay(", "\n}\n") + "\n}\n";
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code.replace(/^export /gm, ""));
+      return new Function("el", "nameWithoutModel", "shortTitle", `${js}\nreturn { runWho, waitWord };`)(fakeEl, nameWithoutModel, shortTitle) as {
+        runWho: (s: Record<string, unknown>, band: string | undefined) => StandIn; waitWord: (b: Record<string, unknown>) => string };
+    };
+    const TITLE = "Lupe Referenzen erklaeren und an der Stelle zeigen";
+    const rowsOf = (src: string) => {
+      const { runWho, waitWord } = boardNames(src);
+      const wt = (tail: string) => ({ branch: `fleet/261009-lupe-referenzen-${tail}` });
+      const who = (s: Record<string, unknown>, band?: string) => { const n = runWho(s, band); return { ref: (n.kids[0] as StandIn).textContent, text: n.textContent }; };
+      return {
+        titled: who({ id: 21, cwd: "/w", label: "⎇ 261009-lupe-referenzen-3a52", worktree: wt("3a52"), taskTitle: TITLE }, "0B"),
+        untitled: who({ id: 22, cwd: "/w", label: "⎇ 261009-lupe-referenzen-4b63", worktree: wt("4b63"), taskTitle: null }, "0C"),
+        hand: who({ id: 23, cwd: "/w", label: "Mein Name", worktree: wt("5c74"), taskTitle: null }, "0D"),
+        bandless: who({ id: 24, cwd: "/w", label: "⎇ 261009-lupe-referenzen-6d85", worktree: wt("6d85"), taskTitle: null }),
+        wait: waitWord({ station: "wait", what: "wartet hinter 0A · Platz 1/2" }),
+        waitUnnamed: waitWord({ station: "wait", what: "wartet hinter Lauf 902 · Platz 2/2" }),
+      };
+    };
+    const rowsSay = (r: ReturnType<typeof rowsOf>) =>
+      r.titled.ref === "0B" && r.titled.text === `0B ${shortTitle(TITLE)}`
+      && r.untitled.ref === "0C" && r.untitled.text === "0C lupe referenzen" && r.hand.text === "0D Mein Name"
+      && ![r.titled, r.untitled, r.hand].some((x) => /3a52|4b63|5c74/.test(x.text))
+      && r.bandless.ref === "24" && r.bandless.text.includes("6d85")
+      && r.wait === "wartet hinter 0A" && r.waitUnnamed === "wartet";
+    const boardMutants = [
+      [/const name = !band \? nameWithoutModel\(s\)[\s\S]*?: nameWithoutModel\(s\);/, "const name = nameWithoutModel(s);"],
+      ["return q ? q[1] : null;", "return null;"],
+    ].map(([from, to]) => meterClient.replace(from as string | RegExp, to as string));
+    let rows: ReturnType<typeof rowsOf> | null = null, boardMutantsRed = false;
+    try {
+      rows = rowsOf(meterClient);
+      boardMutantsRed = boardMutants.every((m) => m !== meterClient) && boardMutants.every((m) => { try { return !rowsSay(rowsOf(m)); } catch { return false; } });
+    } catch (e) { namesError ||= e instanceof Error ? e.message : String(e); }
+    // the row is built from these two and its hover carries the branch: the anchors, comments stripped
+    const rowWiring = {
+      who: /const who = s\?\.cwd \? runWho\(s, bands\.get\(s\.id\)\)/.test(meterCode),
+      wait: /el\("span", "w", `\$\{kind\} \$\{b\.station === "wait" \? waitWord\(b\) : "läuft"\}`\)/.test(meterCode),
+      hoverBranch: /line\.title = `\$\{b\.title \? [^\n]*\$\{runSentence\(b\)\} · \$\{b\.branch \?\? "Branch nicht gemeldet"\}/.test(meterCode),
+    };
+    check("(LS.names) a Prüfungen row names its lane '0B <Kurztitel>' and says 'wartet hinter 0A'; the four hex stand in the hover, visible only without a band (mutants red)",
+      !namesError && rows !== null && rowsSay(rows) && boardMutantsRed && Object.values(rowWiring).every(Boolean),
+      namesError || `${JSON.stringify(rows)} mutantsRed=${boardMutantsRed} dead=${Object.entries(rowWiring).filter(([, ok]) => !ok).map(([k]) => k).join(",") || "-"}`);
   }
 
   if (!REPO) return; // the runner only calls this inside its REPO block, but say so rather than throw

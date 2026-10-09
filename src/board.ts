@@ -8,7 +8,7 @@ import { Shell, openShell } from "./shell";
 import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import { MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, mmss, suiteMeter } from "./suitemeter";
+import { MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, mmss, shortTitle, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm, plaHolder, plaNeedsOwner, type PlaHolder } from "./plaudit";
 import { porcelainPath } from "./gitpath";
 import { icon, type IconName } from "./icons";
@@ -975,7 +975,7 @@ function runSentence(b: MeterBall): string {
   if (b.station === "wait") {
     // "wartet hinter 2A" names a lane; behind a run nobody named, only the place in the line is a fact
     const q = /^wartet hinter (.+?)(?:\s*·\s*Platz (\d+)\/\d+)?$/.exec(what);
-    if (q) return `${kind} wartet ${/^\d+[A-Z]$/.test(q[1]) ? `hinter ${q[1]}` : q[2] ? `· Platz ${q[2]}` : ""}`.trimEnd();
+    if (q) return `${kind} ${waitWord(b)}${!waitBehind(b) && q[2] ? ` · Platz ${q[2]}` : ""}`;
     return `${kind} ${/^wartet\b/.test(what) ? what : ["wartet", what].filter(Boolean).join(" · ")}`;
   }
   // running: the word, the clock and, where past runs were measured, the usual length — "läuft 3:21
@@ -986,6 +986,25 @@ function runSentence(b: MeterBall): string {
   const clock = b.at > 0 ? ` ${mmss(ms)}` : "";
   const usual = e && b.at > 0 ? (ms > e.p90 ? `, länger als üblich (~${mmss(e.p50)})` : ` von ~${mmss(e.p50)}`) : "";
   return `${kind} läuft${clock}${usual}${what ? ` · ${what}` : ""}`;
+}
+// WHOM A QUEUED RUN WAITS BEHIND, by the lane's band name ("0A") — the queue names it so
+// (src/suitemeter.ts#suiteMeter); null behind a run nobody named
+function waitBehind(b: MeterBall): string | null {
+  const q = b.station === "wait" ? /^wartet hinter (\d+[A-Z])(?:\s*·|$)/.exec(b.what) : null;
+  return q ? q[1] : null;
+}
+const waitWord = (b: MeterBall): string => { const a = waitBehind(b); return a ? `wartet hinter ${a}` : "wartet"; };
+// THE LANE A RUN BELONGS TO, said as the board says a lane (note cdf43028, owner 26.09.: „[Zitat entfernt]“
+// ): its band name, then its Kurztitel — a hand label
+// where no title was derived, the branch's words where the label is only the dispatcher's "⎇ <branch>".
+// The branch's four hex stand in the row's tooltip; a session without a band keeps its label as before.
+function runWho(s: SlotInfo, band: string | undefined): HTMLElement {
+  const who = el("span", "who");
+  const title = s.worktree ? s.taskTitle ?? null : null;
+  const name = !band ? nameWithoutModel(s) : title ? shortTitle(title)
+    : !s.label || s.label.startsWith("⎇ ") ? laneWords(s.worktree?.branch ?? null) : nameWithoutModel(s);
+  who.append(el("span", "ref", band ?? String(s.id)), ` ${name}`);
+  return who;
 }
 // "e2e-isolated" broke at its hyphen on the phone: a short hyphenated word stays one word (a long
 // one — a branch — may still break, or it would run the column off the side). A pass over the
@@ -1073,12 +1092,10 @@ export function runRows(noPane: boolean): HTMLElement {
     if (at) dv.append(icon(at.glyph), `auf ${at.name}`);
     else dv.appendChild(el("span", "q", b.station === "wait" ? "noch auf keinem Gerät" : `Ort: ${b.where || "nicht gemeldet"}`));
     const s = b.slot !== null ? fleet[b.slot - 1] : undefined;
-    const who = el("span", "who");
-    if (s?.cwd) who.append(el("span", "ref", bands.get(s.id) ?? String(s.id)), nameWithoutModel(s));
-    else who.append(b.branch ? laneWords(b.branch) : b.kind === "post-land check" ? "main" : "ohne Session");
-    tx.append(el("span", "gd"), el("span", "w", `${kind} ${b.station === "wait" ? "wartet" : "läuft"}`), dv, who);
+    const who = s?.cwd ? runWho(s, bands.get(s.id)) : el("span", "who", b.branch ? laneWords(b.branch) : b.kind === "post-land check" ? "main" : "ohne Session");
+    tx.append(el("span", "gd"), el("span", "w", `${kind} ${b.station === "wait" ? waitWord(b) : "läuft"}`), dv, who);
     line.appendChild(tx);
-    line.title = `${runSentence(b)} · ${b.branch ?? "Branch nicht gemeldet"} · ${b.where} · ${meterKind(b.kind).title}`;
+    line.title = `${b.title ? `${b.title} — ` : ""}${runSentence(b)} · ${b.branch ?? "Branch nicht gemeldet"} · ${b.where} · ${meterKind(b.kind).title}`;
     const slot = b.slot;
     if (slot !== null && s?.cwd) rowTarget(line, () => showSlot(slot));
     box.appendChild(line);

@@ -214,6 +214,9 @@ export function suiteMeter(inp: MeterInput): Meter {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
     return slot === null ? "Fleet" : s?.letter ? laneDisplayName(s.letter, s.title) : `Slot ${slot}`;
   };
+  // whom a waiter stands behind, by its REFERENCE alone ("wartet hinter 0A", note cdf43028): the
+  // waiter's own row already carries its name and title, and a second title inside the state cut both
+  const refOf = (slot: number): string => inp.slots.find((x) => x.id === slot)?.letter ?? `Slot ${slot}`;
   const titleOf = (slot: number | null): string | null =>
     slot === null ? null : inp.slots.find((x) => x.id === slot)?.title ?? null;
   const branchOf = (slot: number | null, branch: string | null): string | null =>
@@ -332,7 +335,8 @@ export function suiteMeter(inp: MeterInput): Meter {
   const holderName = lk?.owner ? lk.owner.slot !== null ? nameOf(lk.owner.slot, null, lk.owner.branch)
     : lk.owner.branch === "main" ? "Fleet" : `Lauf ${lk.pid ?? "?"}`
     : balls.find((b) => b.station === "run")?.name ?? "unbekanntem Lauf";
-  let ahead = holderName;
+  const holderSlot = lk?.owner ? lk.owner.slot : balls.find((b) => b.station === "run")?.slot ?? null;
+  let ahead = holderSlot !== null ? refOf(holderSlot) : holderName;
   for (const t of queue) {
     const name = t.owner?.slot !== null && t.owner?.slot !== undefined ? nameOf(t.owner.slot, null, t.owner.branch)
       : t.owner?.branch === "main" ? "Fleet" : `Lauf ${t.pid}`;
@@ -343,7 +347,7 @@ export function suiteMeter(inp: MeterInput): Meter {
         : `Ticket ${t.n} · Prozess weg`,
       where: here, tone: t.alive ? "plain" : "warn",
       at: t.sinceMs === null ? 0 : Date.now() - t.sinceMs });
-    if (t.alive) ahead = name;
+    if (t.alive) ahead = t.owner?.slot !== null && t.owner?.slot !== undefined ? refOf(t.owner.slot) : name;
   }
 
   const lock: MeterLock = !inp.gate ? null : !lk ? "free"

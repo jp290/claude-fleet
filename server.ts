@@ -203,7 +203,7 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, type Binding, type CodexFirstTurnEvidence,
+import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -7239,7 +7239,7 @@ async function tickGit(): Promise<void> {
   const occupants = slots.map((s) => ({ slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId ?? null }));
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); codexFirstTurnCursors.delete(s.id); s.codexFirstTurn = null; continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); paneModelInfo.delete(s.id); gitOpInfo.delete(s.id); laneHunkInfo.delete(s.id); codexFirstTurnCursors.delete(s.id); rolloverCursors.delete(s.id); s.codexFirstTurn = null; continue; }
       const turnOccupant = { openedAt: s.openedAt, selfToken: s.selfToken, cwd: s.cwd };
       await tickCodexRecovery(s);
       if (s.openedAt !== turnOccupant.openedAt || s.selfToken !== turnOccupant.selfToken || s.cwd !== turnOccupant.cwd
@@ -7252,6 +7252,7 @@ async function tickGit(): Promise<void> {
       if (s.openedAt !== turnOccupant.openedAt || s.selfToken !== turnOccupant.selfToken || s.cwd !== turnOccupant.cwd
         || slotTeardownInflight.has(s.id)) continue;
       tickCodexFirstTurn(s);
+      tickSessionRollover(s);
       // THE FACT, per slot and unconditional: what is actually running in that pane, asked about the
       // binary the slot's own harness runs. Before commsFor this asked every slot about claude, so a
       // healthy Pi pane was reported `no-agent` — the board stating something untrue about reality.
@@ -22324,9 +22325,14 @@ function transcriptFile(s: Slot): string | null {
   // adopted or pre-session-pinning slot: newest transcript in this cwd's project dir.
   // Excluded: transcripts pinned to OTHER slots (several slots can share a cwd), the
   // summarizer's throwaway transcripts (see above), and — since the slug is lossy — any file
-  // that does not name THIS cwd as its own (transcriptCwd, above).
+  // that does not name THIS cwd as its own (transcriptCwd, above). A file another live occupation
+  // rolled away from (tickSessionRollover) is still that conversation's past, not this slot's —
+  // and it keeps growing by a few bookkeeping lines, so mtime alone could pick it. Process-local
+  // like rolledSessions itself: after a restart only the pin of the continuation excludes.
   const pinnedElsewhere = new Set<string>();
   for (const o of slots) if (o !== s && o.sessionId) pinnedElsewhere.add(`${o.sessionId}.jsonl`);
+  for (const [id, r] of rolledSessions)
+    if (id !== s.id && slots[id - 1]?.cwd && slots[id - 1]?.openedAt === r.openedAt) for (const f of r.from) pinnedElsewhere.add(`${f}.jsonl`);
   try {
     const files = readdirSync(dir)
       .filter((f) => f.endsWith(".jsonl") && !pinnedElsewhere.has(f) && !summarizerSids.has(f.slice(0, -6)))
@@ -22344,6 +22350,164 @@ function transcriptFile(s: Slot): string | null {
   } catch {
     return null;
   }
+}
+
+// THE SESSION ROLLOVER (row 5be3). Claude Code can carry a pane's conversation on in a NEW transcript
+// file under a new session id and says so in the OLD file (server/conversation-read.ts#continuedInTarget).
+// Measured 2026-10-08 on slot 9: 9cf65120.jsonl took its `continued-in` line at 20:06 and ended,
+// 726f0471.jsonl went on, and the record kept the old id — so every reader that names the file by
+// it read a file the pane no longer writes: the chat view and its queue (the owner's three sends
+// stood on "wartet" though answered), ctx (frozen at 34.3 %), the pulse, the successor's
+// transcript rest, a heal's --resume. The link is the conversation's own statement about its
+// continuation, so following it is identity, never a newest-by-mtime guess: a younger file without
+// the link moves nothing. Exactly one target, written in the same project dir, moves the record
+// (audit session_rollover); two or more, or one another live slot pins, is unknown — the record
+// stays, and session_rollover_unknown names the candidates once per occupation and session.
+// Incremental per slot, like tickCodexFirstTurn's cursor: only appended bytes are read, and only the
+// lines that carry the mark are parsed, so a multi-MB transcript costs one full read per server life.
+// Codex never reaches here (supports.transcript), and its binding is untouched.
+const ROLLOVER_CHUNK = 8_388_608;
+const ROLLOVER_TICK_BYTES = 67_108_864; // a cold scan of a huge file spreads over ticks past this
+const ROLLOVER_HOPS = 4; // a chain followed within one tick, each hop its own audit line
+const ROLLOVER_MARK = Buffer.from(CONTINUED_IN_MARK);
+interface RolloverCursor { openedAt: number; sessionId: string; ino: number | null; offset: number;
+  skipping: boolean; targets: string[]; reported: string | null }
+const rolloverCursors = new Map<number, RolloverCursor>();
+// read what was appended since the cursor; false = no readable file (yet). A line torn mid-append is
+// left for the next tick; a single line longer than a chunk is skipped (the link line is ~200 bytes)
+function scanContinuedIn(c: RolloverCursor, file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const { size, ino } = fstatSync(fd);
+    if (size < c.offset || (c.ino !== null && c.ino !== ino)) {
+      c.offset = 0; c.skipping = false; c.targets = [];
+    }
+    c.ino = ino;
+    for (let budget = ROLLOVER_TICK_BYTES; c.offset < size && budget > 0;) {
+      const buf = Buffer.allocUnsafe(Math.min(ROLLOVER_CHUNK, size - c.offset));
+      const n = readSync(fd, buf, 0, buf.length, c.offset);
+      if (n <= 0) break;
+      budget -= n;
+      const end = buf.subarray(0, n).lastIndexOf(10);
+      if (end < 0) {
+        if (n === ROLLOVER_CHUNK) { c.offset += n; c.skipping = true; continue; }
+        break; // a short tail without a newline: mid-append, next tick
+      }
+      let from = c.skipping ? buf.indexOf(10) + 1 : 0;
+      c.skipping = false;
+      for (let hit = buf.indexOf(ROLLOVER_MARK, from); hit >= 0 && hit < end; hit = buf.indexOf(ROLLOVER_MARK, from)) {
+        const start = buf.lastIndexOf(10, hit) + 1;
+        const stop = buf.indexOf(10, hit);
+        const to = continuedInTarget(buf.toString("utf8", Math.max(start, from), stop), c.sessionId);
+        if (to && !c.targets.includes(to)) c.targets = [...c.targets, to];
+        from = stop + 1;
+      }
+      c.offset += end + 1;
+    }
+    return true;
+  } catch { return false; }
+  finally { if (fd !== null) closeSync(fd); }
+}
+function tickSessionRollover(s: Slot): void {
+  for (let hop = 0; hop < ROLLOVER_HOPS; hop++) {
+    if (!s.cwd || !s.sessionId || !harnessOf(s.harness).supports.transcript) { rolloverCursors.delete(s.id); return; }
+    // a pane being (re)spawned, torn down or put to sleep is mid-identity: its own checks would read
+    // a move as a foreign change and abort. The next tick asks again.
+    if (s.sleeping || restarting.has(s.id) || slotSpawnInflight.has(s.id) || slotTeardownInflight.has(s.id)) return;
+    const dir = projDir(s.cwd);
+    let c = rolloverCursors.get(s.id);
+    if (!c || c.openedAt !== s.openedAt || c.sessionId !== s.sessionId) {
+      c = { openedAt: s.openedAt, sessionId: s.sessionId, ino: null, offset: 0, skipping: false, targets: [], reported: null };
+      rolloverCursors.set(s.id, c);
+    }
+    if (!scanContinuedIn(c, `${dir}/${s.sessionId}.jsonl`) || !c.targets.length) return;
+    const from = s.sessionId;
+    const unknown = (reason: string): void => {
+      const key = `${reason} ${c.targets.join(",")}`;
+      if (c.reported === key) return;
+      c.reported = key;
+      audit("session_rollover_unknown", s.id, `from=${from} candidates=${c.targets.join(",")} reason=${reason}`);
+    };
+    if (c.targets.length > 1) return unknown("ambiguous");
+    const to = c.targets[0];
+    // continued, but the new file is not on disk yet (Claude Code writes it on its first line): next tick
+    if (!existsSync(`${dir}/${to}.jsonl`)) return;
+    const other = slots.find((o) => o !== s && !!o.cwd && o.sessionId === to);
+    if (other) return unknown(`pinned-by-slot-${other.id}`);
+    // the events this occupant reads are found BEFORE the id moves: fleetEventReceiverIs also admits
+    // rows minted while the id was still unknown, and that admission ends with the move
+    const own = fleetEvents.filter((e) => fleetEventReceiverIs(e, s));
+    s.sessionId = to;
+    rekeyOccupantSession(s, from, to, own, `${dir}/${to}.jsonl`);
+    rolloverCursors.delete(s.id);
+    saveState();
+    audit("session_rollover", s.id, `from=${from} to=${to}`);
+  }
+}
+// A ROLLOVER IS NOT A NEW OCCUPANT. Every live binding that names this occupation by its old id —
+// slot, openedAt and `from` all equal — follows it to `to`, the way backfillProgramMainSessionId
+// teaches a null binding its learned id; without this the move would read as "replaced session"
+// everywhere: the MAIN's self-land door shut (identityRefusal), open clarifications and attention
+// rows swept as refused, the occupant's own FleetEvents gone receiver-gone, its own reports no
+// longer its own. HISTORY stays as written: who read, decided or answered, closed lineage entries,
+// the append-only ledgers. Two holders a rewrite cannot reach — a running land's pinned verdict
+// receiver and the main-direct outcome ledger — ask rolledFrom below. Caller saves.
+const rolledSessions = new Map<number, { openedAt: number; from: string[] }>();
+function rolledFrom(s: Slot, id: string | null): boolean {
+  const r = rolledSessions.get(s.id);
+  return id !== null && r?.openedAt === s.openedAt && r.from.includes(id);
+}
+function rekeyOccupantSession(s: Slot, from: string, to: string, own: FleetEvent[], file: string): void {
+  const prior = rolledSessions.get(s.id);
+  rolledSessions.set(s.id, { openedAt: s.openedAt, from: [...(prior?.openedAt === s.openedAt ? prior.from : []), from] });
+  const mine = (b: { slot: number; openedAt: number; sessionId: string | null } | null | undefined): boolean =>
+    !!b && b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === from;
+  for (const e of own) e.receiverSessionId = to;
+  for (const p of programs) {
+    const main = p.main;
+    if (main && mine(main)) p.main = { ...main, sessionId: to };
+    const last = p.lineage?.entries.at(-1);
+    if (p.lineage && last && last.endedAt === null && last.slot === s.id && last.openedAt === s.openedAt && last.sessionId === from)
+      p.lineage = { ...p.lineage, entries: [...p.lineage.entries.slice(0, -1), { ...last, sessionId: to }] };
+    if (p.status === "proposed" && p.proposedBy.kind === "session" && mine(p.proposedBy))
+      p.proposedBy = { ...p.proposedBy, sessionId: to };
+  }
+  for (const c of clarifications) {
+    if (c.status === "answered" || c.status === "refused") continue;
+    if (mine(c.worker)) c.worker = { ...c.worker, sessionId: to };
+    if (mine(c.receiver)) c.receiver = { ...c.receiver, sessionId: to };
+  }
+  for (const a of attentionRequests)
+    if ((a.status === "open" || a.status === "send-uncertain") && mine(a.requester)) a.requester = { ...a.requester, sessionId: to };
+  // a report's worker is joined live (laneOwnReports: auto-close, review, the wave split guard)
+  for (const r of fleetReports) {
+    if (mine(r.worker)) r.worker = { ...r.worker, sessionId: to };
+    const receiver = r.receiver;
+    if (receiver && mine(receiver)) r.receiver = { ...receiver, sessionId: to };
+  }
+  for (const [slot, m] of mergeLast) {
+    const v = m.verdictTo;
+    if (v?.occupant && mine({ slot: v.slot, ...v.occupant }))
+      mergeLast.set(slot, { ...m, verdictTo: { ...v, occupant: { ...v.occupant, sessionId: to } } });
+  }
+  for (const pre of Object.values(mainDirectPreflights)) if (mine(pre)) pre.sessionId = to;
+  // process-local budgets of this same conversation keep counting instead of starting over
+  const moved = <T extends { sessionId: string | null }>(m: Map<number, T>): void => {
+    const hit = m.get(s.id);
+    if (hit?.sessionId === from) m.set(s.id, { ...hit, sessionId: to });
+  };
+  moved(migrateTried); moved(keepCacheRuns); moved(apiStallTried); moved(rateLimitTried);
+  const oldHold = `${s.id}:${s.openedAt}:${from}`;
+  for (const [id, h] of composerHolds) if (h.occupant === oldHold) composerHolds.set(id, { ...h, occupant: holdOccupant(s) });
+  // the continuation REPLAYS the conversation (measured: 726f0471 opens with 9cf65120's turns), and
+  // tickHarvest reads a new file of a tracked slot from 0 — every old prompt would be logged again.
+  // So it starts at the end, as at boot; a prompt typed into the pane between the rollover and this
+  // tick (≤ GIT_TICK_MS) is not harvested, which is the boot rule's own trade. Not over openSlot's
+  // sentinel (file ""): that occupation has had nothing harvested yet, so all of it is new.
+  if (harvest.get(s.id)?.file === "") return;
+  try { harvest.set(s.id, { file, offset: statSync(file).size, rest: Buffer.alloc(0), skipping: 0 }); }
+  catch { harvest.delete(s.id); } // gone again since the existence check: the harvester's first sight seeds it
 }
 
 // TBlock/TEntry live in server/conversation-read.ts, shared with the codex and pi readers.
@@ -35018,7 +35182,8 @@ async function mainDirectFinalize(s: Slot, body: unknown): Promise<Response> {
     return json({ error: "id and result (landed|abandoned|expired) required" }, 400);
   const done = (await readMainDirectOutcomes()).find((r) => r.id === id);
   if (done) {
-    if (done.slot !== s.id || done.openedAt !== s.openedAt || done.sessionId !== s.sessionId)
+    // the outcome ledger is append-only, so a rollover since the finalize is asked, not rewritten
+    if (done.slot !== s.id || done.openedAt !== s.openedAt || (done.sessionId !== s.sessionId && !rolledFrom(s, done.sessionId)))
       return json({ error: "operation belongs to another session" }, 409);
     const claimedAfter = typeof b.mainAfter === "string" ? b.mainAfter : done.mainAfter;
     const verify = b.verify === undefined ? "unknown" : b.verify;
@@ -37298,7 +37463,8 @@ function mainVerdictReceiver(to: MergeVerdictReceiver): { ok: true; slot: Slot }
   const live = slotFrom(to.slot);
   if (!live?.cwd || live.openedAt !== to.occupant.openedAt)
     return { ok: false, why: `slot ${to.slot} was recycled since the land` };
-  if (live.sessionId !== to.occupant.sessionId)
+  // a rollover since the land started is the same conversation (tickSessionRollover): the pinned id is its old name
+  if (live.sessionId !== to.occupant.sessionId && !rolledFrom(live, to.occupant.sessionId))
     return { ok: false, why: `slot ${to.slot} holds a different session id than the one that asked` };
   return { ok: true, slot: live };
 }

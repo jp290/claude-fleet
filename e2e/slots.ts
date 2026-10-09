@@ -12837,3 +12837,149 @@ ${refresh.replace("export async", "async")}
   check("perf marks: J2 terminal timing remains explicitly unmeasured", clean.includes('this.perfSwitch.attrs.serverMs = "ws-seed-unmeasured"'));
   check("perf marks: send measures the event timestamp", clean.includes('perfSendClickAt = e.timeStamp') && clean.includes('void doSend(e.timeStamp)'));
 }
+
+// THE SESSION ROLLOVER (row 5be3, server.ts#tickSessionRollover). Measured 2026-10-08 on slot 9: Claude
+// Code went on in 726f0471.jsonl and left a `continued-in` line in 9cf65120.jsonl, the record kept the
+// old id, and the chat view, its queue and ctx kept reading the file nobody wrote any more. Three claude
+// panes, each on its own cwd: A rolls over (old file carries the link, a younger file continues — a
+// prompt enqueued in the old file is consumed in the new one, with a different usage); B has only a
+// younger STRANGER file, no link — the pin holds; C's file names two continuations — unknown, never a
+// pick. It needs a REAL session pin, so it runs in ./e2e-claude-gate.sh phase 1 (FLEET_CMD=claude): the
+// main suite's FLEET_CMD=true pins nothing. Slot ids ascending: tickGit walks slots in id order, which is
+// what lets the fixture order below prove that B was read after its own fixture.
+export async function runSessionRollover(ids: readonly [number, number, number], gitTickMs = 10_000): Promise<void> {
+  const [A, B, C] = ids;
+  const base = `${tmpdir()}/fleet-e2e-rollover-${process.pid}`;
+  const projects = `${process.env.HOME}/.claude/projects`;
+  const cwds = { A: `${base}-a`, B: `${base}-b`, C: `${base}-c` };
+  const dirOf = (cwd: string) => `${projects}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const opened: number[] = [];
+  const recordOf = (slot: number): string | null => {
+    try {
+      return (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { sessionId?: string | null }> }).slots?.[String(slot)]?.sessionId ?? null;
+    } catch { return null; }
+  };
+  const auditOf = (event: string, slot: number): string[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
+    .flatMap((l) => {
+      try {
+        const r = JSON.parse(l) as { event?: unknown; slot?: unknown; detail?: unknown };
+        return r.event === event && r.slot === slot && typeof r.detail === "string" ? [r.detail] : [];
+      } catch { return []; }
+    });
+  const turnBefore = async (): Promise<number> => ((await (await get(`/api/slots/${A}/history`)).json()) as
+    { history: { text: string }[] }).history.filter((h) => h.text === "rollover fixture: the turn before").length;
+  const until = async (ok: () => boolean, ms: number): Promise<number | null> => {
+    const t0 = Date.now();
+    for (;;) {
+      if (ok()) return Date.now() - t0;
+      if (Date.now() - t0 > ms) return null;
+      await Bun.sleep(200);
+    }
+  };
+  const jl = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 8, 18, 6, s)).toISOString();
+  const user = (sessionId: string, cwd: string, text: string, t: string) =>
+    jl({ type: "user", isSidechain: false, uuid: crypto.randomUUID(), timestamp: t, sessionId, cwd, message: { role: "user", content: text } });
+  const said = (sessionId: string, cwd: string, text: string, t: string, used: number) =>
+    jl({ type: "assistant", isSidechain: false, uuid: crypto.randomUUID(), timestamp: t, sessionId, cwd,
+      message: { model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text }],
+        usage: { input_tokens: used, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } });
+  const link = (sessionId: string, to: string, t: string) =>
+    jl({ type: "continued-in", timestamp: t, sessionId, continuedInSessionId: to });
+  try {
+    const pins: Record<"A" | "B" | "C", string | null> = { A: null, B: null, C: null };
+    for (const [key, slot] of [["A", A], ["B", B], ["C", C]] as const) {
+      mkdirSync(cwds[key], { recursive: true });
+      mkdirSync(dirOf(cwds[key]), { recursive: true });
+      const res = await post(`/api/slots/${slot}/open`, { cwd: cwds[key] });
+      if (res.ok) opened.push(slot);
+      await until(() => recordOf(slot) !== null, 4000);
+      pins[key] = recordOf(slot);
+    }
+    const ready = opened.length === 3 && !!pins.A && !!pins.B && !!pins.C;
+    check("session rollover — SETUP: three claude panes open, each with its own pinned session id",
+      ready, `opened=${opened.join(",")} pins=${JSON.stringify(pins)}`);
+    if (!ready || !pins.A || !pins.B || !pins.C) return;
+
+    // A: the old file links to Q; Q replays the conversation, consumes the waiting prompt, answers
+    const P = pins.A, Q = crypto.randomUUID();
+    const PROBE = `rollover probe ${process.pid}: consumed in the continued file`;
+    const OLD_USED = 111_111, NEW_USED = 222_222;
+    const history = (sid: string) => user(sid, cwds.A, "rollover fixture: the turn before", at(0))
+      + said(sid, cwds.A, "answered in the old file", at(1), OLD_USED)
+      + jl({ type: "queue-operation", operation: "enqueue", timestamp: at(2), sessionId: sid, content: PROBE });
+    writeFileSync(`${dirOf(cwds.A)}/${P}.jsonl`, history(P) + link(P, Q, at(3)));
+    // B: its own pinned file, then a YOUNGER stranger in the same project dir, no link anywhere
+    const stranger = crypto.randomUUID();
+    writeFileSync(`${dirOf(cwds.B)}/${pins.B}.jsonl`, user(pins.B, cwds.B, "pin fixture: my own turn", at(0)));
+    // C: its own pinned file and two candidates on disk; the two links follow once A has moved
+    const X = crypto.randomUUID(), Y = crypto.randomUUID();
+    writeFileSync(`${dirOf(cwds.C)}/${pins.C}.jsonl`, user(pins.C, cwds.C, "ambiguity fixture", at(0)));
+    // openSlot's sentinel harvests A's own file from byte 0 (5 s tick): its turn is logged ONCE, here,
+    // before the continuation exists — what the move must not do is log the replay a second time
+    let harvested = await turnBefore();
+    for (const t0 = Date.now(); harvested === 0 && Date.now() - t0 < 8000;) {
+      await Bun.sleep(250);
+      harvested = await turnBefore();
+    }
+    await Bun.sleep(20); // the continuations are YOUNGER — an mtime pick would take them
+    writeFileSync(`${dirOf(cwds.B)}/${stranger}.jsonl`, user(stranger, cwds.B, "a younger stranger", at(1)));
+    for (const id of [X, Y]) writeFileSync(`${dirOf(cwds.C)}/${id}.jsonl`, user(id, cwds.C, "a candidate", at(3)));
+    // Q LAST: the pass that moves A read A after every fixture above, so it reads B (> A) after too
+    writeFileSync(`${dirOf(cwds.A)}/${Q}.jsonl`, history(Q)
+      + jl({ type: "queue-operation", operation: "dequeue", timestamp: at(4), sessionId: Q })
+      + user(Q, cwds.A, PROBE, at(4)) + said(Q, cwds.A, "answered in the continued file", at(5), NEW_USED));
+    const writtenAt = Date.now();
+
+    const budget = 2 * gitTickMs + 3000; // the pass running at write time may have passed A already
+    const moved = await until(() => recordOf(A) === Q, budget);
+    const movedAt = Date.now();
+    check("session rollover: the slot record carries the continued session id by the next git tick",
+      moved !== null, `slot=${A} from=${P} to=${Q} record=${recordOf(A)} after=${moved ?? `>${budget}`}ms`);
+    const rolled = auditOf("session_rollover", A);
+    check("session rollover: an audit line names the rollover, old id and new",
+      rolled.includes(`from=${P} to=${Q}`), JSON.stringify(rolled));
+    const tr = (await (await get(`/api/slots/${A}/transcript`)).json()) as
+      { source: string | null; entries: { role: string; blocks: { text: string }[] }[]; queued?: { text: string }[] };
+    const through = tr.entries.some((e) => e.role === "user" && e.blocks.some((b) => b.text === PROBE));
+    const waiting = (tr.queued ?? []).some((q) => q.text === PROBE);
+    check("session rollover: the chat view reads the continued file, and its queue shows the prompt consumed there as through",
+      tr.source === `${Q}.jsonl` && through && !waiting && Array.isArray(tr.queued),
+      `source=${tr.source} through=${through} waiting=${waiting} queued=${JSON.stringify(tr.queued ?? null)}`);
+    const row = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; ctx?: { usedTokens: number } | null }[] }).slots.find((s) => s.id === A);
+    check("session rollover: ctx comes from the continued file",
+      row?.ctx?.usedTokens === NEW_USED, `ctx=${JSON.stringify(row?.ctx ?? null)} old=${OLD_USED} new=${NEW_USED}`);
+
+    // appended to a file the cursor has already read: the incremental scan must still see them
+    appendFileSync(`${dirOf(cwds.C)}/${pins.C}.jsonl`, link(pins.C, X, at(4)) + link(pins.C, Y, at(5)));
+    const unknownAfter = await until(() => auditOf("session_rollover_unknown", C).length > 0, budget);
+    const unknown = auditOf("session_rollover_unknown", C);
+    check("session rollover: two continuations are unknown — the record stays and an audit line names both",
+      unknownAfter !== null && recordOf(C) === pins.C && unknown.length === 1
+        && unknown[0].includes(X) && unknown[0].includes(Y) && unknown[0].includes("reason=ambiguous"),
+      `record=${recordOf(C)} pin=${pins.C} audit=${JSON.stringify(unknown)}`);
+    // the pin must hold on the old tree too. A pass that read B after its fixture is proven either by C's
+    // line — its links were written after A moved, so the pass that saw them is the moving pass (B read
+    // after A) or a later one — or, where nothing moved, by a whole budget gone by
+    const passed = unknownAfter !== null || Date.now() - writtenAt >= budget;
+    const trB = (await (await get(`/api/slots/${B}/transcript`)).json()) as { source: string | null };
+    check("session rollover (pin): a pane without a continued-in link stays pinned, however young a stranger file is",
+      passed && recordOf(B) === pins.B && trB.source === `${pins.B}.jsonl`
+        && auditOf("session_rollover", B).length === 0 && auditOf("session_rollover_unknown", B).length === 0,
+      `record=${recordOf(B)} pin=${pins.B} source=${trB.source} stranger=${stranger}`);
+    // the continuation REPLAYS the conversation, and the prompt harvester (5 s tick) reads a new file of
+    // a tracked slot from 0 — the move must start it at the end, or every old turn is logged again
+    if (moved !== null) await Bun.sleep(Math.max(0, movedAt + 6000 - Date.now()));
+    const logged = await turnBefore();
+    check("session rollover: the continuation's replayed turns are not harvested into the prompt history a second time",
+      harvested === 1 && logged === 1, `before the continuation=${harvested} after the move=${logged}`);
+  } finally {
+    for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
+    for (const cwd of Object.values(cwds)) {
+      rmSync(dirOf(cwd), { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+}

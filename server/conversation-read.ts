@@ -192,6 +192,24 @@ export function askTerminal(response: Binding, ask: NativeAsk, answered: boolean
   return { state: "current" };
 }
 
+// --- Claude Code's own continuation link (row 5be3) ---------------------------------------------
+// When Claude Code carries a pane's conversation on under a NEW session id, it says so in the OLD
+// file with one line — measured 2026-10-08 on slot 9 (Claude Code 2.1.294), and on all three such
+// lines over 2209 transcripts on this host: {"type":"continued-in", timestamp, "sessionId": <old
+// id>, "continuedInSessionId": <new id>}, the new file in the same project dir, the conversation
+// replayed into it under the new id. `line` is one raw JSONL line; the answer is the new id only
+// when the line IS that record and speaks for `sessionId` — a replayed line naming another session
+// is not this file's continuation. A value outside the UUID form Fleet pins is no target.
+export const CONTINUED_IN_MARK = '"continued-in"';
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function continuedInTarget(line: string, sessionId: string): string | null {
+  let d: unknown;
+  try { d = JSON.parse(line); } catch { return null; } // a torn line — the cursor re-reads it whole
+  if (!isObj(d) || d.type !== "continued-in" || d.sessionId !== sessionId) return null;
+  const to = d.continuedInSessionId;
+  return typeof to === "string" && SESSION_UUID_RE.test(to) && to !== sessionId ? to : null;
+}
+
 const trim = (t: string, max: number) => (t.length > max ? t.slice(0, max) + ` … [+${t.length - max} chars]` : t);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 

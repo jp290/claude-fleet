@@ -121,6 +121,10 @@ type AuditEvent =
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
   | "codex_bind" | "codex_bind_ambiguous" | "codex_owner_bind" | "codex_resume_lost"
+  // a claude pane's conversation went on in a new transcript file and the record followed Claude
+  // Code's own continued-in link (`from=<id> to=<id>`), or could not follow it without a guess
+  // (`from=<id> candidates=<ids> reason=<why>`, once per occupation and session) — server.ts#tickSessionRollover
+  | "session_rollover" | "session_rollover_unknown"
   // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
   // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
   | "merge_wake_author"

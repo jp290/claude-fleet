@@ -85,6 +85,8 @@ export const PREFS: PrefDef[] = [
     hint: "Nur eine Kennung, kein Geheimnis: bindet diesen Browser an den Namen, den er im Helfer-Portal wählte." },
   { key: "fleetHelperClaim", kind: "json", label: "Helfer-Portal: gezogener Auftrag", def: "null", row: false,
     hint: "Welches Bündel dieses Browser im Helfer-Portal zieht." },
+  { key: "fleet.drafts", kind: "json", label: "Ungesendete Entwürfe", def: "{}", row: false,
+    hint: "Der Composer-Entwurf je Slot, damit er einen Reload übersteht (src/drafts.ts#keepDrafts); nach dem Senden weg." },
 ];
 
 const byKey = new Map(PREFS.map((p) => [p.key, p]));

@@ -2340,6 +2340,28 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
+  // THREE SMALL PAINS AT THE COMPOSER AND THE TERMINAL (card 2026-10-09), same rig: the draft through a
+  // reload and a send, ➤ for an ended session's draft, the terminal's box across ℹ — then each part's
+  // claim against its mutant (KEEP_MUTANTS). A browser that cannot run is the PROBE line — red, never a skip.
+  try {
+    for (const result of await runComposerKeepDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`composer keep DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("composer keep DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+  for (const m of KEEP_MUTANTS) {
+    try {
+      const hit = (await runComposerKeepDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => c.includes(m.claim));
+      check(`composer keep DOM MUTATION — ${m.name}: "${m.claim}…" turns red`, hit.length > 0 && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      check(`composer keep DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
   // sends, the transcript brings back the bundle the server writes, and the "wartet" bubble must go
   // "durch" while every Fleet part stands as a quiet line; then the session's queue ("wartet" from the
@@ -8179,6 +8201,272 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       if (artifacts) { await send("Page.stopScreencast"); recording = null; }
       results.push({ width, height, claims, facts });
       missing.length = 0;
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// THREE SMALL PAINS AT THE COMPOSER AND THE TERMINAL (card "Drei kleine Schmerzen an der Eingabe und
+// am Terminal", 2026-10-09), measured in a real browser on the real client bundle, same rig as the
+// send target probe: a fixture origin, a fake socket per pane, /send and /resize intercepted. (1) A
+// typed draft survives a reload and is gone after a send — and one whose session ended while the
+// page was gone does not come back (src/drafts.ts#keepDrafts). (2) A draft for an ended session
+// leaves ➤ locked: aria-disabled and the empty field's quiet surface (src/composer.ts#renderTarget).
+// (3) ℹ on and off leave the terminal's box and its column count alone at the desk, and the phone's
+// terminal reserves nothing (index.html, THE TERMINAL KEEPS ITS WIDTH ACROSS ℹ). Every claim reads
+// the DOM or the requests the page sent; KEEP_MUTANTS turns each part's claim red against a mutated
+// bundle — a mutant boots once, at its one width, and runs only its own step.
+export type KeepStep = "reload" | "orphan" | "info";
+export type KeepMutant = { name: string; width: 390 | 1440; step: KeepStep; claim: string;
+  file: "src/client.ts" | "src/composer.ts" | "public/index.html"; needle: string; with: string };
+export const KEEP_MUTANTS: readonly KeepMutant[] = [
+  { name: "the kept drafts are never read back", width: 1440, step: "reload", claim: "a typed draft comes back after a reload",
+    file: "src/client.ts", needle: "    restoreDrafts(); // the first read of the slot rows", with: "    // the first read of the slot rows" },
+  { name: "➤ never says it is locked", width: 390, step: "orphan", claim: "➤ reads locked",
+    file: "src/composer.ts", needle: `send.setAttribute("aria-disabled", String(orphan));`, with: `send.setAttribute("aria-disabled", "false");` },
+  { name: "a closed Info column gives its width back to the terminal", width: 1440, step: "info", claim: "ℹ on and off keep the terminal's width",
+    file: "public/index.html", needle: "body:not(.board) #panes.l1 .pane:not(.tcolim) .paneterm { right: var(--board-w); }", with: "" },
+];
+export interface ComposerKeepDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: KeepMutant; artifacts?: string } = {}): Promise<ComposerKeepDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-keep-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const m = only.mutate, artifacts = only.artifacts;
+  let applied = !m || m.file === "public/index.html";
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
+    plugins: m && m.file !== "public/index.html" ? [{ name: "keep-mutant", setup(build) {
+      const target = resolve(sourceRoot, m.file);
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
+        if (path !== target) return;
+        const source = readFileSync(path, "utf8");
+        applied = source.includes(m.needle);
+        return { contents: source.replace(m.needle, m.with), loader: "ts" };
+      });
+    } }] : [] });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (m?.file === "public/index.html") { applied = indexHtml.includes(m.needle); indexHtml = indexHtml.replace(m.needle, m.with); }
+  if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`keep mutant: needle not in ${m!.file}: ${m!.needle.slice(0, 80)}`); }
+  const appJs = await built.outputs[0].text();
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
+  const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], resizes: [] as { cols: number; rows: number }[], sessions: 0 };
+  const fresh = (): Row[] => [
+    { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
+    { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
+    ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null })),
+  ];
+  const FAKE_WS = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture ' + 'w'.repeat(150) + '\\r\\n$ ').buffer }); }, 0); }
+      send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("keep DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const mm = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (mm) return mm[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") {
+        let body: { slot?: number; text?: string; cols?: number; rows?: number } | null = null;
+        try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
+        if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        if (p === "/resize") fx.resizes.push({ cols: Number(body?.cols), rows: Number(body?.rows) });
+        return void json(requestId, { ok: true });
+      }
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: Date.now(), chips: [], slots: fx.slots, tasks: [] }); }
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [] });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const freshTarget = async () => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      const target = await send("Target.createTarget", { url: "about:blank" });
+      targetId = String(target.targetId);
+      sessionId = undefined;
+      const attached = await send("Target.attachToTarget", { targetId, flatten: true });
+      sessionId = String(attached.sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE_WS });
+    };
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (url: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 6000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const polls = async (n: number) => { const at = fx.sessions; for (let i = 0; i < 200 && fx.sessions < at + n; i++) await settle(100); return fx.sessions >= at + n; };
+    const click = async (expression: string): Promise<boolean> => {
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+        const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!at) { missing.push(expression.slice(0, 120)); return false; }
+      for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
+      await settle();
+      return true;
+    };
+    const typeText = async (text: string) => { await send("Input.insertText", { text }); await settle(); };
+    const field = () => evaluate<string>("document.querySelector('#input').value");
+    const boot = async () => {
+      await navigate("http://fleet.fixture/");
+      const ok = await wait("document.querySelectorAll('#panes .pane .xterm').length >= 1 && window.__ws.some((w) => w.readyState === 1)", 12000);
+      if (!ok) throw new Error("client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await polls(1); await settle(300);
+    };
+    let shotIndex = 0;
+    const shot = async (width: number, stage: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `keep-${width}-${String(++shotIndex).padStart(2, "0")}-${stage}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    const sendBtn = () => evaluate<{ aria: string | null; bg: string; color: string }>(`(() => { const b = document.querySelector('#send'), cs = getComputedStyle(b);
+      return { aria: b.getAttribute('aria-disabled'), bg: cs.backgroundColor, color: cs.color }; })()`);
+    const termBox = () => evaluate<{ screen: number; term: number; pane: number; termRight: number; paneRight: number; board: boolean }>(`(() => {
+      const p = document.querySelector('#panes .pane'), t = p.querySelector('.paneterm'), s = p.querySelector('.xterm-screen');
+      const pr = p.getBoundingClientRect(), tr = t.getBoundingClientRect();
+      return { screen: Math.round(s.getBoundingClientRect().width), term: Math.round(tr.width), pane: Math.round(pr.width),
+        termRight: Math.round(tr.right), paneRight: Math.round(pr.right), board: document.body.classList.contains('board') }; })()`);
+    const results: ComposerKeepDomResult[] = [];
+    for (const [width, height] of [[1440, 900], [390, 844]] as const) {
+      if (m && m.width !== width) continue;
+      const runs = (step: KeepStep) => !m || m.step === step;
+      shotIndex = 0;
+      const phone = width < 700;
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      fx.slots = fresh(); fx.sends = []; fx.resizes = [];
+      await freshTarget();
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); localStorage.setItem('fleet.board', '0'); })()`);
+      await boot();
+      const pressSend = async () => { await click("document.querySelector('#send')"); await settle(250); };
+      const empty = await sendBtn(); // ➤ over an empty field: the quiet surface the locked one must equal
+
+      if (runs("reload")) {
+        // --- 1. the draft survives a reload, a sent one does not, and an ended session's does not come back
+        await click("document.querySelector('#input')");
+        await typeText("ein langer Entwurf vor dem Abbruch");
+        await boot();
+        facts.reload = { draft: await field(), stored: await evaluate<string | null>("localStorage.getItem('fleet.drafts')") };
+        claims["a typed draft comes back after a reload, in the slot it was typed for"] = (facts.reload as { draft: string }).draft === "ein langer Entwurf vor dem Abbruch";
+        await shot(width, "draft-after-reload");
+        const s0 = fx.sends.length;
+        await click("document.querySelector('#input')");
+        await pressSend();
+        await wait("document.querySelector('#input').value === ''", 3000);
+        await boot();
+        facts.sent = { sends: fx.sends.slice(s0), draft: await field(), stored: await evaluate<string | null>("localStorage.getItem('fleet.drafts')") };
+        claims["after a successful send the draft is gone, through a reload too"] = fx.sends.length === s0 + 1 && fx.sends[s0]?.slot === 1
+          && (facts.sent as { draft: string }).draft === "" && (facts.sent as { stored: string | null }).stored === null;
+        await click("document.querySelector('#input')");
+        await typeText("für eine Session, die endet");
+        await settle(100);
+        fx.slots = fx.slots.map((r) => (r.id === 1 ? { ...r, openedAt: 1500, label: "Alpha neu" } : r));
+        await boot();
+        facts.ended = { draft: await field(), stored: await evaluate<string | null>("localStorage.getItem('fleet.drafts')") };
+        claims["a draft whose session ended while the page was gone does not come back, and leaves the storage"] =
+          (facts.ended as { draft: string }).draft === "" && (facts.ended as { stored: string | null }).stored === null;
+      }
+
+      if (runs("orphan")) {
+        // --- 2. a new session in the focused slot while the box holds a draft: ➤ is locked, übernehmen frees it
+        const opened = fx.slots[0]!.openedAt ?? 1000;
+        await click("document.querySelector('#input')");
+        await typeText("für die alte Session");
+        const live = await sendBtn();
+        fx.slots = fx.slots.map((r) => (r.id === 1 ? { ...r, openedAt: opened + 2000, label: "Nachfolger" } : r));
+        await polls(1); await settle(150);
+        const locked = await sendBtn();
+        const s0 = fx.sends.length;
+        await pressSend();
+        await shot(width, "orphan-locked");
+        await click("document.querySelector('#comptarget .ctadopt')");
+        // the refused press flashed the surface red (flashSendError) — read ➤ once the flash is over
+        const flashOver = await wait("!document.querySelector('#comp').classList.contains('err')", 3000);
+        const adopted = flashOver ? await sendBtn() : { aria: null, bg: "flash never ended", color: "" };
+        facts.orphan = { empty, live, locked, adopted, sends: fx.sends.slice(s0) };
+        claims["➤ reads locked for an ended session's draft: aria-disabled and the empty field's quiet surface, and it sends nothing"] =
+          locked.aria === "true" && locked.bg === empty.bg && locked.color === empty.color && locked.bg !== live.bg && fx.sends.length === s0;
+        claims["übernehmen unlocks ➤: aria-disabled false and the live surface again"] = adopted.aria === "false" && adopted.bg === live.bg;
+        await evaluate("(() => { const t = document.querySelector('#input'); t.value = ''; t.dispatchEvent(new Event('input')); })()");
+      }
+
+      if (runs("info")) {
+        // --- 3. ℹ on and off: the terminal keeps its box and its columns (desk); the phone reserves nothing
+        const before = await termBox();
+        const r0 = fx.resizes.length;
+        if (!phone) {
+          await click("document.querySelector('#panes .pane .boardtoggle')");
+          await wait("document.body.classList.contains('board')", 3000); await settle(800);
+          const on = await termBox();
+          await shot(width, "info-open");
+          await click("document.querySelector('#boardclose')");
+          await wait("!document.body.classList.contains('board')", 3000); await settle(800);
+          const off = await termBox();
+          facts.info = { before, on, off, resizes: fx.resizes.slice(r0) };
+          claims["ℹ on and off keep the terminal's width and columns: the same box, no /resize"] = on.board && !off.board
+            && before.screen === on.screen && on.screen === off.screen && before.term === on.term && on.term === off.term
+            && on.pane < before.pane && fx.resizes.length === r0;
+        } else {
+          facts.info = { before };
+          claims["the phone's terminal reserves no Info width: it reaches the pane's right edge"] = !before.board
+            && Math.abs(before.termRight - before.paneRight) <= 1;
+        }
+      }
+      facts.missing = [...missing]; missing.length = 0;
+      results.push({ width, height, claims, facts });
     }
     return results;
   } finally {

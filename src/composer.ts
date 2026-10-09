@@ -137,6 +137,11 @@ export function renderTarget(): void {
   t.dataset.orphan = String(orphan);
   t.classList.toggle("none", !s?.cwd || pane?.pastN != null);
   t.classList.toggle("orphan", orphan);
+  // …and ➤ says it too (note 2b49d20c, part 1: it looked ready and sent nothing): aria-disabled, not
+  // disabled — it keeps its focus and its click, which says why (doSend's toast); the quiet surface
+  // of an empty field is index.html's
+  send.setAttribute("aria-disabled", String(orphan));
+  send.title = orphan ? "Nicht senden: der Entwurf war für die beendete Session" : "send to this session";
   if (!orphan) {
     t.title = title;
     // a running session's name is the foot line's (src/board.ts#renderWorkplaceField): the target

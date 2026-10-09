@@ -573,6 +573,19 @@
   /* the width toggle's "on": the terminal takes the chat column's width, centred — the pane's own
      fit path reads the new box and tmux gets the new column count; no second resize path */
   .pane.tcolim .paneterm { left: 0; right: 0; width: min(var(--chat-col), 100%); margin-inline: auto; }
+  /* THE TERMINAL KEEPS ITS WIDTH ACROSS ℹ (owner 2026-10-09, note 9df4f17a: „[Zitat entfernt]“
+     ):
+     with the Info column closed the terminal leaves the column's width free on its right, so opening
+     or closing it changes neither the column count nor a wrapped line — the fit path reads the same
+     box both times and tmux gets no resize. A pane of a two-column layout gives up half. Desktop
+     only (the phone opens Info as a window, src/board.ts#setBoard). The width toggle's centred
+     terminal (.tcolim, one pane only) caps at the same box, so "begrenzt" is never the wider one. */
+  :root { --board-w: 360px; }
+  @media not ((max-width: 700px) or ((pointer: coarse) and (max-height: 500px))) {
+    body:not(.board) #panes.l1 .pane:not(.tcolim) .paneterm { right: var(--board-w); }
+    body:not(.board) #panes:not(.l1) .pane:not(.tcolim) .paneterm { right: calc(var(--board-w) / 2); }
+    body:not(.board) #panes.l1 .pane.tcolim .paneterm { width: min(var(--chat-col), calc(100% - var(--board-w))); }
+  }
   .msg { margin: 0 0 20px; }
   .msg pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: var(--chat-mono); }
   /* YOUR messages are the anchors this view exists for (↑/↓, the outline): a right-hand bubble */
@@ -893,6 +906,9 @@
   #input:placeholder-shown ~ #comprow #send { background: var(--chat-edge); color: var(--chat-faint); }
   #compsurface:has(.att) #comprow #send { background: var(--chat-ink); color: #000; }
   #send:disabled { opacity: 0.45; cursor: progress; }
+  /* a draft for an ended session (src/composer.ts#renderTarget): the empty field's quiet surface,
+     whatever the box holds — Enter and ➤ send nothing until "übernehmen" or an empty field */
+  #comp:not(.err) #compsurface #comprow #send[aria-disabled="true"] { background: var(--chat-edge); color: var(--chat-faint); cursor: not-allowed; }
   #comp.err #compsurface #comprow #send { background: var(--danger); color: #000; }
   #comp button:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 2px; }
   /* attachments: the code block's material (surface, soft edge), one per file, with its ✕ */
@@ -2950,8 +2966,9 @@
     --b-mono: var(--chat-mono);
     /* the column's ground is PURE BLACK (owner, 2026-09-20: „[Zitat entfernt]“
        ) — the token, never a literal, so it stays one definition. */
-    /* 360 px (owner 2026-10-08): a lane's whole state fits its row */
-    width: 360px; background: var(--chat-void); border-left: 1px solid var(--b-rule);
+    /* 360 px (owner 2026-10-08): a lane's whole state fits its row — one value, because a closed
+       column's terminal keeps exactly this much free (THE TERMINAL KEEPS ITS WIDTH ACROSS ℹ) */
+    width: var(--board-w); background: var(--chat-void); border-left: 1px solid var(--b-rule);
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }

@@ -7,7 +7,7 @@
 // sequence that misdelivered is replayed in e2e/pins.ts without a browser.
 
 export interface Draft<A> { text: string; attached: A[] }
-interface Parked<A> extends Draft<A> { openedAt: number | undefined }
+export interface Parked<A> extends Draft<A> { openedAt: number | undefined }
 
 export class DraftBook<A> {
   private readonly book = new Map<number, Parked<A>>();
@@ -33,6 +33,54 @@ export class DraftBook<A> {
     d.attached.push(entry);
     this.book.set(slot, d);
   }
+
+  // what the book holds, for the page's storage (KEPT, below)
+  entries(): [number, Parked<A>][] { return [...this.book]; }
+  // a draft read back from that storage; a draft parked on this page load wins over it
+  restore(slot: number, openedAt: number | undefined, draft: Draft<A>): void {
+    if (!this.book.has(slot)) this.book.set(slot, { openedAt, text: draft.text, attached: [...draft.attached] });
+  }
+}
+
+// THE DRAFTS SURVIVE A RELOAD (owner 2026-10-03, note 0ca871d5: „[Zitat entfernt]“
+// ). The book and the box lived in the
+// page only, so a reload — the owner's, or the page's own after a dropped connection — lost every
+// draft. The client writes them under one device-local key (src/prefs.ts, fleet.drafts) and reads
+// them back once the slot rows are read: a draft returns only to the occupation it was written for
+// (same openedAt), the book's own rule, so a session that ended while the page was gone gets
+// nothing. Attachments keep name, mention and size; a thumbnail is an object URL of this page and
+// does not. These two functions are the wire shape, pure; a malformed entry is skipped, never thrown.
+export interface KeptAttachment { name: string; mention: string; size: number }
+export interface KeptDraft { openedAt?: number; text: string; attached: KeptAttachment[] }
+
+export function keepDrafts(rows: [number, Parked<KeptAttachment>][]): Record<string, KeptDraft> {
+  const out: Record<string, KeptDraft> = {};
+  for (const [slot, d] of rows) {
+    if (!d.text && !d.attached.length) continue;
+    out[String(slot)] = { ...(d.openedAt === undefined ? {} : { openedAt: d.openedAt }), text: d.text,
+      attached: d.attached.map((a) => ({ name: a.name, mention: a.mention, size: a.size })) };
+  }
+  return out;
+}
+
+export function readKeptDrafts(raw: unknown): Map<number, KeptDraft> {
+  const out = new Map<number, KeptDraft>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const slot = Number(k);
+    if (!Number.isInteger(slot) || slot <= 0 || !v || typeof v !== "object") continue;
+    const d = v as Record<string, unknown>;
+    if (typeof d.text !== "string" || (d.openedAt !== undefined && typeof d.openedAt !== "number")) continue;
+    const attached = Array.isArray(d.attached) ? d.attached.filter(isKeptAttachment) : [];
+    if (!d.text && !attached.length) continue;
+    out.set(slot, { ...(typeof d.openedAt === "number" ? { openedAt: d.openedAt } : {}), text: d.text, attached });
+  }
+  return out;
+}
+function isKeptAttachment(a: unknown): a is KeptAttachment {
+  if (!a || typeof a !== "object") return false;
+  const r = a as Record<string, unknown>;
+  return typeof r.name === "string" && typeof r.mention === "string" && typeof r.size === "number";
 }
 
 // THE DRAFT IN THE BOX (card "Ein Entwurf geht nie still an eine Session, fuer die er nicht

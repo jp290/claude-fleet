@@ -20,7 +20,7 @@ import { MarkStage, markFacts, placeMarks, projectHue, type MarkItem } from "./m
 import { harnessMark, icon, type IconName } from "./icons";
 import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
-import { BoxDraft, DraftBook, historySource, type HistoryEntry } from "./drafts";
+import { BoxDraft, DraftBook, historySource, keepDrafts, readKeptDrafts, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
 import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
@@ -7555,6 +7555,7 @@ export async function refresh() {
       else if (data.v !== bundleV) armReload();
     }
     fleet = data.slots;
+    restoreDrafts(); // the first read of the slot rows: a kept draft returns to its own occupation
     // a merge job that landed its lane leaves the slot inactive — release its panes
     // exactly like a manual ⏏ land click does
     for (const sl of [...mergeWatch]) {
@@ -11106,6 +11107,7 @@ async function doSend(at = perfSendClickAt ?? performance.now()) {
     growComposer();
     cyc = null;
     updateChips();
+    keepDraftsNow(); // a sent draft is gone from the storage too, not one poll later
     pane.snapToBottom();
   } finally {
     send.disabled = false;
@@ -11204,7 +11206,11 @@ function occupation(slot: number): number | undefined {
 }
 const boxHolds = (): boolean => !!ta.value.trim() || attached.length > 0;
 // re-read on every poll (updateTitle), input and send; the target paints the answer
-function syncBox(): boolean { return box.observe(occupation(draftSlot), boxHolds()); }
+function syncBox(): boolean {
+  const orphan = box.observe(occupation(draftSlot), boxHolds());
+  keepDraftsNow();
+  return orphan;
+}
 export function boxOrphan(): boolean { return syncBox(); }
 export function adoptBox(): void {
   box.adopt(occupation(draftSlot));
@@ -11214,6 +11220,40 @@ export function adoptBox(): void {
 // where the box's draft parks when the focus leaves it: an orphan under the occupation it was
 // written for, so the book drops it like any draft of an ended session — never under the new one
 const parkedAt = (): number | undefined => box.orphan ? box.boundTo : fleet[draftSlot - 1]?.openedAt;
+
+// THE DRAFTS SURVIVE A RELOAD — why and the wire shape: src/drafts.ts#keepDrafts. Nothing is written
+// before the first read of the slot rows has put the kept drafts back: a focus at boot (the box
+// still empty) would otherwise overwrite them with nothing. Written on every change of the box or
+// the book, and skipped when the document is the one already stored.
+let draftsRestored = false;
+let draftsKept = "";
+function keepDraftsNow(): void {
+  if (!draftsRestored) return;
+  const rows = drafts.entries();
+  if (draftSlot) rows.push([draftSlot, { openedAt: parkedAt(), text: ta.value, attached }]);
+  const doc = JSON.stringify(keepDrafts(rows));
+  if (doc === draftsKept) return;
+  draftsKept = doc;
+  prefSet("fleet.drafts", doc === "{}" ? null : doc);
+}
+function restoreDrafts(): void {
+  if (draftsRestored) return;
+  draftsRestored = true;
+  for (const [slot, d] of readKeptDrafts(prefJSON<unknown>("fleet.drafts"))) {
+    // the book's rule: a draft belongs to one occupation, and one that ended meanwhile gets nothing
+    if (fleet[slot - 1]?.openedAt !== d.openedAt) continue;
+    if (slot !== draftSlot) { drafts.restore(slot, d.openedAt, d); continue; }
+    if (boxHolds()) continue; // typed on this load already: that text wins
+    ta.value = d.text;
+    attached.push(...d.attached);
+    box.reset(occupation(slot));
+    renderAttachments();
+    growComposer();
+    updateChips();
+  }
+  keepDraftsNow();
+}
+addEventListener("pagehide", keepDraftsNow);
 function switchDraft(slot: number): void {
   if (slot === draftSlot) return;
   const next = drafts.swap(draftSlot, parkedAt(), { text: ta.value, attached },
@@ -11228,6 +11268,7 @@ function switchDraft(slot: number): void {
   renderAttachments();
   growComposer();
   updateChips();
+  keepDraftsNow();
 }
 
 function mentionExplorerPath(slot: number, path: string): void {
@@ -11239,6 +11280,7 @@ function mentionExplorerPath(slot: number, path: string): void {
     cyc = null;
     growComposer();
     updateChips();
+    keepDraftsNow();
     return;
   }
   const currentSlot = draftSlot;
@@ -11254,6 +11296,7 @@ function mentionExplorerPath(slot: number, path: string): void {
   renderAttachments();
   growComposer();
   updateChips();
+  keepDraftsNow();
 }
 
 // the owner's „[Zitat entfernt]“ — bytes in the short form a file list uses: 512B, 820K, 1.4M, 12M
@@ -11379,6 +11422,7 @@ async function uploadDrops(files: File[]): Promise<void> {
     }
     renderAttachments();
     updateChips();
+    keepDraftsNow();
     ta.focus();
   } finally {
     dropBtn.disabled = false;

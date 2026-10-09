@@ -2574,7 +2574,7 @@ class Pane {
     // size the terminal to its container before connecting — the WS URL carries
     // this size, and connecting at a stale default (e.g. 80x24) would seed scrollback
     // at the wrong width and force an immediate second reseed once refit() catches up
-    if (slot) { this.fit.fit(); this.pinPending = true; this.connect(); }
+    if (slot) { syncTermReserve(); this.fit.fit(); this.pinPending = true; this.connect(); }
     this.focus();
     // the terminal always lands on its end (it was re-seeded); the chat only on a first open
     this.scrollToEnd(!restored);
@@ -2771,6 +2771,7 @@ class Pane {
     this.retryAt = 0; // a strip already up now reads "verbinde…" until this socket opens or drops
     this.paintDown();
     this.term.reset();
+    syncTermReserve();
     this.fit.fit();
     this.pinPending = true;
     this.loadRenderer();
@@ -2894,6 +2895,7 @@ class Pane {
     // "following" here means exactly what "no pill" means everywhere else.
     const b = this.term.buffer.active;
     const wasFollowing = b.viewportY >= b.baseY - 1;
+    syncTermReserve();
     this.fit.fit();
     if (wasFollowing) this.pinToBottom();
     clearTimeout(this.resizeTimer);
@@ -2941,6 +2943,18 @@ class Pane {
 export let panes: Pane[] = [];
 export let focused = 0;
 let layout = 1;
+// THE TERMINAL KEEPS ITS WIDTH ACROSS ℹ (owner 2026-10-09, note 9df4f17a: „[Zitat entfernt]“
+// ): with
+// the Info column closed the terminal leaves the column's width free on its right (--tr, read by
+// .paneterm and the width toggle's centred .tcolim in index.html), so opening or closing it changes
+// neither the column count nor a wrapped line — the fit reads the same box both times and tmux gets
+// no resize. A pane of a two-column layout gives up half; the phone (Info is a window there,
+// src/board.ts#setBoard) reserves nothing. Set before every fit, so it can never lag the box it sizes.
+const BOARD_W = 360; // = #board's width in index.html (owner 2026-10-08)
+function syncTermReserve(): void {
+  const px = isMobile() || document.body.classList.contains("board") ? 0 : layout === 1 ? BOARD_W : BOARD_W / 2;
+  document.documentElement.style.setProperty("--tr", `${px}px`);
+}
 
 // THE SETTINGS WINDOW (Grammatik G5, cards K2+K8+D-5+3e6342e2+038d2694): one gear top right, one
 // window, five sections. "Dieses Gerät" renders the registry (src/prefs.ts): every key with a row shows its

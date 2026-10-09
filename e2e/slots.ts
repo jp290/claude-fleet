@@ -8215,7 +8215,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
 // page was gone does not come back (src/drafts.ts#keepDrafts). (2) A draft for an ended session
 // leaves ➤ locked: aria-disabled and the empty field's quiet surface (src/composer.ts#renderTarget).
 // (3) ℹ on and off leave the terminal's box and its column count alone at the desk, and the phone's
-// terminal reserves nothing (index.html, THE TERMINAL KEEPS ITS WIDTH ACROSS ℹ). Every claim reads
+// terminal reserves nothing (src/client.ts#syncTermReserve). Every claim reads
 // the DOM or the requests the page sent; KEEP_MUTANTS turns each part's claim red against a mutated
 // bundle — a mutant boots once, at its one width, and runs only its own step.
 export type KeepStep = "reload" | "orphan" | "info";
@@ -8227,7 +8227,7 @@ export const KEEP_MUTANTS: readonly KeepMutant[] = [
   { name: "➤ never says it is locked", width: 390, step: "orphan", claim: "➤ reads locked",
     file: "src/composer.ts", needle: `send.setAttribute("aria-disabled", String(orphan));`, with: `send.setAttribute("aria-disabled", "false");` },
   { name: "a closed Info column gives its width back to the terminal", width: 1440, step: "info", claim: "ℹ on and off keep the terminal's width",
-    file: "public/index.html", needle: "body:not(.board) #panes.l1 .pane:not(.tcolim) .paneterm { right: var(--board-w); }", with: "" },
+    file: "src/client.ts", needle: "document.documentElement.style.setProperty(\"--tr\", `${px}px`);", with: "" },
 ];
 export interface ComposerKeepDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: KeepMutant; artifacts?: string } = {}): Promise<ComposerKeepDomResult[]> {

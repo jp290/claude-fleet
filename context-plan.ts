@@ -1,6 +1,13 @@
 import {
+  type ContextPack,
   CONTEXT_PACKS,
   CONTEXT_PACK_HARNESSES,
+  contextPartId,
+  type ContextPackBedingung,
+  type ContextPackFassung,
+  type ContextPackVarianten,
+  type ContextPackZusatz,
+  type ContextPosition,
   type ContextPackCapability,
   type ContextPackHardness,
   type ContextPackGroup,
@@ -37,6 +44,27 @@ export interface ContextPlanInput {
   readonly mode: ContextPackMode;
   readonly triggers: readonly ContextPackTrigger[];
   readonly capabilities: readonly ContextPackCapability[];
+  /** whose founding this is: picks a pack's Variante and judges a Zusatz's position condition.
+   *  Absent = no position known: the standard Kern, and a positional Zusatz stays off. */
+  readonly position?: ContextPosition;
+}
+
+/** What the plan chose of a pack's anatomy (context-packs.ts): the Kern's part ids, the Variante it
+ *  came from, each Zusatz with its condition and verdict, the Fassung. Carried on the selection only
+ *  when the pack declares any of it, so a pack without anatomy plans and receipts byte for byte as before;
+ *  the founding-plan route and the receipt copy THIS object, so both name the same bytes. */
+export interface ContextPackAnatomie {
+  readonly kern: readonly string[];
+  readonly variante: ContextPosition | "standard";
+  readonly zusaetze: readonly {
+    readonly id: string;
+    readonly bedingung: ContextPackBedingung;
+    readonly an: boolean;
+    /** the condition keys that did not hold; absent when the Zusatz is on */
+    readonly verfehlt?: readonly ("triggers" | "positions" | "harnesses")[];
+    readonly teile: readonly string[];
+  }[];
+  readonly fassung?: ContextPackFassung;
 }
 
 // `useWhen` is OPTIONAL on a selection although it is mandatory on a Fleet seed: a repo-declared
@@ -54,6 +82,7 @@ export type ContextPlanSelection = {
   readonly sourceHash?: string;
   // Present ONLY on a Program-scoped pack, so every receipt without one keeps its exact bytes.
   readonly origin?: "program";
+  readonly anatomie?: ContextPackAnatomie;
 } | {
   readonly id: string;
   readonly hardness: ContextPackHardness;
@@ -62,6 +91,7 @@ export type ContextPlanSelection = {
   readonly sources: { readonly privateSourceId: string };
   readonly estimatedBytes: number;
   readonly sourceHash?: string;
+  readonly anatomie?: ContextPackAnatomie;
 };
 
 /** The rule facts a pack must state to be planned at all — Fleet seed and repo manifest alike. */
@@ -100,6 +130,50 @@ export function contextOmissionFor(pack: ContextPlanRule, ctx: ContextPlanContex
   return null;
 }
 
+/** The anatomy fields a pack may declare beside its Kern — Fleet seed and repo manifest alike. */
+export interface ContextPackAnatomy {
+  readonly id: string;
+  readonly sources: readonly ContextPackSource[];
+  readonly useWhen?: string;
+  readonly zusaetze?: readonly ContextPackZusatz[];
+  readonly varianten?: ContextPackVarianten;
+  readonly fassung?: ContextPackFassung;
+}
+
+/**
+ * Resolve one SELECTED pack's anatomy for a founding: the position's Variante replaces the Kern (and
+ * its purpose line, when it names one), each Zusatz is on exactly when every condition it names holds,
+ * and the delivered sources are Kern then the Zusaetze that are on. A Zusatz source without an id gets
+ * `<zusatz>-<n>`, so its part id never depends on which other Zusaetze are on. Pure.
+ */
+export function resolvePackAnatomy(pack: ContextPackAnatomy, ctx: { readonly position?: ContextPosition;
+  readonly harness: string; readonly triggers: ReadonlySet<ContextPackTrigger> }):
+  { sources: ContextPackSource[]; useWhen?: string; anatomie?: ContextPackAnatomie } {
+  const declares = pack.zusaetze !== undefined || pack.varianten !== undefined || pack.fassung !== undefined;
+  const variante = ctx.position !== undefined ? pack.varianten?.[ctx.position] : undefined;
+  const kern = (variante?.sources ?? pack.sources).map((source) => ({ ...source }));
+  const useWhen = variante?.useWhen ?? pack.useWhen;
+  if (!declares) return { sources: kern, ...(useWhen !== undefined ? { useWhen } : {}) };
+  const sources = [...kern];
+  const zusaetze: ContextPackAnatomie["zusaetze"][number][] = [];
+  for (const zusatz of pack.zusaetze ?? []) {
+    const own = zusatz.sources.map((source, index) => ({ ...source, id: source.id ?? `${zusatz.id}-${index + 1}` }));
+    const verfehlt: ("triggers" | "positions" | "harnesses")[] = [];
+    const b = zusatz.bedingung;
+    if (b.triggers && !b.triggers.some((trigger) => ctx.triggers.has(trigger))) verfehlt.push("triggers");
+    if (b.positions && (ctx.position === undefined || !b.positions.includes(ctx.position))) verfehlt.push("positions");
+    if (b.harnesses && !(b.harnesses as readonly string[]).includes(ctx.harness)) verfehlt.push("harnesses");
+    const bedingung: ContextPackBedingung = { ...(b.triggers ? { triggers: [...b.triggers] } : {}),
+      ...(b.positions ? { positions: [...b.positions] } : {}), ...(b.harnesses ? { harnesses: [...b.harnesses] } : {}) };
+    zusaetze.push({ id: zusatz.id, bedingung, an: verfehlt.length === 0, ...(verfehlt.length ? { verfehlt } : {}),
+      teile: own.map((source) => contextPartId(pack.id, source, 0)) });
+    if (verfehlt.length === 0) sources.push(...own);
+  }
+  return { sources, ...(useWhen !== undefined ? { useWhen } : {}),
+    anatomie: { kern: kern.map((source, index) => contextPartId(pack.id, source, index)),
+      variante: variante ? ctx.position! : "standard", zusaetze, ...(pack.fassung ? { fassung: pack.fassung } : {}) } };
+}
+
 export interface ContextPlan {
   readonly selected: readonly ContextPlanSelection[];
   readonly omitted: readonly { readonly id: string; readonly why: ContextPlanOmissionReason }[];
@@ -122,9 +196,15 @@ export function planContext(input: ContextPlanInput): ContextPlan {
       omitted.push({ id: pack.id, why });
       continue;
     }
-    selected.push("sources" in pack
-      ? { id: pack.id, hardness: pack.hardness, group: pack.group, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
-      : { id: pack.id, hardness: pack.hardness, group: pack.group, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
+    // a seed carries no anatomy today; it resolves through the same function a manifest pack does
+    const seed: ContextPack = pack;
+    if ("sources" in seed && seed.sources) {
+      const resolved = resolvePackAnatomy(seed, { position: input.position, harness, triggers });
+      selected.push({ id: seed.id, hardness: seed.hardness, group: seed.group, ...(resolved.useWhen !== undefined ? { useWhen: resolved.useWhen } : {}),
+        sources: resolved.sources, estimatedBytes: seed.estimatedBytes, ...(resolved.anatomie ? { anatomie: resolved.anatomie } : {}) });
+    } else if ("privateSourceId" in seed) selected.push({ id: seed.id, hardness: seed.hardness, group: seed.group, useWhen: seed.useWhen,
+      sources: { privateSourceId: seed.privateSourceId }, estimatedBytes: seed.estimatedBytes,
+      ...(seed.fassung ? { anatomie: { kern: [`${seed.id}.private`], variante: "standard" as const, zusaetze: [], fassung: seed.fassung } } : {}) });
   }
 
   return { selected, omitted };

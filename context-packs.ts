@@ -62,6 +62,32 @@ export interface ContextPackSource {
   readonly positions?: ContextPartPositions;
 }
 
+// THE ANATOMY OF A PACK (dd549bce; owner 02.10. c99d1de0): `sources` is its KERN — always delivered
+// when the ladder selects the pack. Beside it a pack MAY carry optional ZUSAETZE, each with its own
+// condition; a FASSUNG, the state of the pack's text; and VARIANTEN, a Kern of its own per position.
+// The plan resolves them per position (context-plan.ts#resolvePackAnatomy) and says what it chose; a
+// pack that declares none of the three plans and receipts byte for byte as before. The fassung is
+// carried and receipted, it does not move the ladder — `status` decides whether a pack is planned.
+export const CONTEXT_PACK_FASSUNGEN = ["vorgeschlagen", "gilt", "veraltet"] as const;
+export type ContextPackFassung = (typeof CONTEXT_PACK_FASSUNGEN)[number];
+export const CONTEXT_PACK_ZUSAETZE_MAX = 8;
+/** every named condition must hold: a trigger of the founding, the position, the harness */
+export interface ContextPackBedingung {
+  readonly triggers?: readonly ContextPackTrigger[];
+  readonly positions?: readonly ContextPosition[];
+  readonly harnesses?: readonly ContextPackHarness[];
+}
+export interface ContextPackZusatz {
+  readonly id: string;
+  readonly bedingung: ContextPackBedingung;
+  readonly sources: readonly ContextPackSource[];
+}
+export interface ContextPackVariante {
+  readonly sources: readonly ContextPackSource[];
+  readonly useWhen?: string;
+}
+export type ContextPackVarianten = Readonly<Partial<Record<ContextPosition, ContextPackVariante>>>;
+
 export function contextPartId(packId: string, source: Pick<ContextPackSource, "id">, index: number): string {
   const id = source.id ?? `source-${index + 1}`;
   return id.startsWith(`${packId}.`) ? id : `${packId}.${id}`;
@@ -86,11 +112,14 @@ interface ContextPackBase {
   readonly owner: "owner";
   readonly status: ContextPackStatus;
   readonly supersedes?: string;
+  readonly fassung?: ContextPackFassung;
 }
 
 export interface PublicContextPack extends ContextPackBase {
   readonly audience: Exclude<ContextPackAudience, "private-ops">;
   readonly sources: readonly ContextPackSource[];
+  readonly zusaetze?: readonly ContextPackZusatz[];
+  readonly varianten?: ContextPackVarianten;
   readonly sourceHash?: string;
   readonly observedAt?: string;
 }

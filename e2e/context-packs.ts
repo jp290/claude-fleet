@@ -438,7 +438,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
 interface FoundingReceiptRow {
   id: string; hash: string; at: number; repo: string; head: string; branch: string;
   slot: number; harness: string | null; mode: string; triggers: string[];
-  selected: { id: string; anchors: unknown; sourceHash?: string }[];
+  selected: { id: string; anchors: unknown; sourceHash?: string; anatomie?: unknown }[];
   omitted: { id: string; why: string }[];
   deliveredBytes: number; renderer: string;
   briefHash?: string | null; briefSource?: string;
@@ -491,6 +491,11 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
     packEntry({ id: "promise-codex-v1", useWhen: "The repo's own contract, as a Codex session reads it.", harnesses: ["codex"],
       sources: [{ path: "AGENTS.md", anchor: "## Repo contract" }] }),
+    // THE ANATOMY (dd549bce): a Kern, a Zusatz only a MAIN gets, a Fassung, a Variante for lanes
+    packEntry({ id: "promise-anatomie", useWhen: "The repo's contract with an anatomy.", fassung: "gilt",
+      sources: [{ path: "AGENTS.md", anchor: "## Repo contract" }],
+      zusaetze: [{ id: "main-extra", bedingung: { positions: ["main"] }, sources: [{ path: "docs/promise.md", anchor: "## Product promise" }] }],
+      varianten: { lane: { sources: [{ path: "docs/promise.md", anchor: "## Product promise" }], useWhen: "The promise, as a lane reads it." } } }),
   ], null, 2));
   gitIn("init", "-q", "-b", "b2a-founding-packs");
   gitIn("config", "user.email", "t@t");
@@ -610,6 +615,17 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
 
     const lanePlan = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=lane`);
     const laneSelected = Array.isArray(lanePlan.body.selected) ? lanePlan.body.selected as { id: string }[] : [];
+    // THE ANATOMY ON THE PLAN ROW (dd549bce): resolved per position; a pack without one has no key
+    type AnatomieRow = FoundingPlanPack & { anatomie?: { kern: string[]; variante: string; zusaetze: { id: string; an: boolean }[]; fassung?: string } };
+    const mainAnatomie = (selected as AnatomieRow[]).find((pack) => pack.id === "promise-anatomie");
+    const laneAnatomie = (laneSelected as AnatomieRow[]).find((pack) => pack.id === "promise-anatomie");
+    check("pack anatomy: the plan row names Kern, Zusatz verdict, Fassung and Variante per position, and a plain pack carries no anatomie",
+      JSON.stringify(mainAnatomie?.anatomie) === JSON.stringify({ kern: ["promise-anatomie.source-1"], variante: "standard",
+        zusaetze: [{ id: "main-extra", bedingung: { positions: ["main"] }, an: true, teile: ["promise-anatomie.main-extra-1"] }], fassung: "gilt" })
+        && laneAnatomie?.anatomie?.variante === "lane" && laneAnatomie.anatomie.zusaetze[0]?.an === false
+        && laneAnatomie.useWhen === "The promise, as a lane reads it."
+        && !!promiseRow && !("anatomie" in promiseRow),
+      JSON.stringify({ main: mainAnatomie?.anatomie, lane: laneAnatomie?.anatomie }));
     check("founding plan: the lane mode plans the same repo pack through the dispatch facts",
       lanePlan.status === 200 && laneSelected.some((pack) => pack.id === "promise-anchor"),
       JSON.stringify(lanePlan.body).slice(0, 300));
@@ -699,8 +715,26 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
         delivered.includes("ContextPlan v2 anchors") && delivered.includes("promise-anchor")
           && delivered.includes("AGENTS.md | ## Repo contract"),
         delivered.slice(-200));
+      check("pack anatomy: a plain pack's receipt row carries no anatomie — old rows and new plain rows read alike",
+        !!row && !("anatomie" in row.selected[0]!), JSON.stringify(row?.selected[0] ?? null));
       await kill(openSlot);
       opened.splice(opened.indexOf(openSlot), 1);
+      // THE SAME VALUES, BYTE FOR BYTE: what the plan route named for the anatomy pack is what the receipt names
+      const anatomySlot = await freeSlot();
+      if (anatomySlot === null) check("pack anatomy — PROBE: a free slot exists for the anatomy founding", false);
+      else {
+        opened.push(anatomySlot);
+        const before = (await receipts()).receipts.filter((r) => r.slot === anatomySlot).length;
+        const founding = await post(`/api/slots/${anatomySlot}/open`, { cwd: fixture, packs: ["promise-anatomie"] });
+        const rows = (await receipts()).receipts.filter((r) => r.slot === anatomySlot);
+        const anatomyRow = rows.length === before + 1 ? rows.at(-1)!.selected.find((pack) => pack.id === "promise-anatomie") : undefined;
+        check("pack anatomy: GET /api/founding-plan and the receipt name the pack's anatomy byte for byte",
+          founding.ok && !!anatomyRow && !!mainAnatomie?.anatomie && JSON.stringify(anatomyRow.anatomie) === JSON.stringify(mainAnatomie.anatomie)
+            && JSON.stringify(anatomyRow.anchors) === JSON.stringify([{ path: "AGENTS.md", anchor: "## Repo contract" }, { path: "docs/promise.md", anchor: "## Product promise" }]),
+          JSON.stringify({ receipt: anatomyRow ?? null, plan: mainAnatomie?.anatomie ?? null }));
+        await kill(anatomySlot);
+        opened.splice(opened.indexOf(anatomySlot), 1);
+      }
 
       // --- (c) without packs, today's founding: no receipt line, promised nothing ---
       const beforeBare = await receipts();

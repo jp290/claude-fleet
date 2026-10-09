@@ -7,9 +7,10 @@
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
 import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
-import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackHardness, type ContextPackGroup, type ContextPackMode, type ContextPackSource,
+import { CONTEXT_PACKS, CONTEXT_PACK_FASSUNGEN, CONTEXT_PACK_HARNESSES, CONTEXT_PACK_TRIGGERS, CONTEXT_PACK_ZUSAETZE_MAX, CONTEXT_POSITIONS,
+  contextPartId, type ContextPackCapability, type ContextPackHardness, type ContextPackGroup, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
-import { contextOmissionFor, resolveContextHarness, type ContextPlan, type ContextPlanInput,
+import { contextOmissionFor, resolveContextHarness, resolvePackAnatomy, type ContextPackAnatomy, type ContextPlan, type ContextPlanInput,
   type ContextPlanOmissionReason, type ContextPlanRule, type ContextPlanSelection } from "./context-plan";
 
 export const CONTEXT_MANIFEST_PATH = ".fleet/context-packs.json";
@@ -76,10 +77,15 @@ export function readContextManifest(source: string | null): ContextManifestRead 
 
   const referenced = new Set<string>();
   for (const pack of parsed) {
-    if (!isRecord(pack) || !Array.isArray(pack.sources)) continue;
-    for (const source of pack.sources) {
-      if (!isRecord(source)) continue;
-      if (typeof source.path === "string" && source.path) referenced.add(source.path);
+    if (!isRecord(pack)) continue;
+    // the Kern and every anatomy source list (a Zusatz's, a Variante's) point into the same tree
+    for (const list of [pack.sources, ...(Array.isArray(pack.zusaetze) ? pack.zusaetze.map((z) => isRecord(z) ? z.sources : null) : []),
+      ...(isRecord(pack.varianten) ? Object.values(pack.varianten).map((v) => isRecord(v) ? v.sources : null) : [])]) {
+      if (!Array.isArray(list)) continue;
+      for (const source of list) {
+        if (!isRecord(source)) continue;
+        if (typeof source.path === "string" && source.path) referenced.add(source.path);
+      }
     }
   }
   if (referenced.size > CONTEXT_MANIFEST_MAX_SOURCE_PATHS)
@@ -94,6 +100,92 @@ export interface RepoContextPlanInput {
 }
 
 const FLEET_SEED_IDS: ReadonlySet<string> = new Set(CONTEXT_PACKS.map((pack) => pack.id));
+
+// --- THE ANATOMY KEYS (dd549bce): a pack's Zusaetze, Varianten and Fassung are judged HERE, beside
+// the shared validator, which keeps judging the pack itself. Every source list they name is run
+// through that same validator as a synthesized copy of the pack with only those sources — the
+// precedent of context-plan.ts#validateProgramContextPacks — so an anatomy anchor is checked against
+// the tree exactly like a Kern anchor. Any finding makes the whole pack manifest-invalid.
+export const CONTEXT_PACK_ANATOMY_KEYS = ["zusaetze", "varianten", "fassung"] as const;
+const ZUSATZ_ID = /^[a-z][a-z0-9-]{0,39}$/;
+const ZUSATZ_KEYS: ReadonlySet<string> = new Set(["id", "bedingung", "sources"]);
+const BEDINGUNG_VOCABULARY: Readonly<Record<string, readonly string[]>> = {
+  triggers: CONTEXT_PACK_TRIGGERS, positions: CONTEXT_POSITIONS, harnesses: CONTEXT_PACK_HARNESSES };
+const VARIANTE_KEYS: ReadonlySet<string> = new Set(["sources", "useWhen"]);
+
+/** Split a manifest record into the pack the shared validator judges and its anatomy fields. */
+export function splitPackAnatomy(record: Record<string, unknown>): { core: Record<string, unknown>; anatomy: Record<string, unknown> } {
+  const core: Record<string, unknown> = {};
+  const anatomy: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record))
+    ((CONTEXT_PACK_ANATOMY_KEYS as readonly string[]).includes(key) ? anatomy : core)[key] = value;
+  return { core, anatomy };
+}
+
+/** The anatomy findings of one manifest pack, as `detail` strings; empty = the anatomy is sound. */
+export function packAnatomyIssues(core: Record<string, unknown>, anatomy: Record<string, unknown>, repo: ContextPackRepoFacts): string[] {
+  const issues: string[] = [];
+  const packId = typeof core.id === "string" ? core.id : "";
+  const sourcesIssues = (sources: unknown, where: string): void => {
+    if (!Array.isArray(sources) || sources.length === 0) { issues.push(`${where}: sources must be a non-empty array`); return; }
+    for (const issue of validateContextPacks({ packs: [{ ...core, sources }], repo, capabilities: new Map() }).issues)
+      if (issue.code !== "CAPABILITY_AVAILABILITY_UNKNOWN") issues.push(`${where}: ${issue.code} ${issue.detail}`);
+  };
+  if ("fassung" in anatomy && !(CONTEXT_PACK_FASSUNGEN as readonly unknown[]).includes(anatomy.fassung))
+    issues.push(`fassung must be one of ${CONTEXT_PACK_FASSUNGEN.join(", ")}`);
+  if (anatomy.audience === "private-ops" || core.audience === "private-ops" || "privateSourceId" in core)
+    if ("zusaetze" in anatomy || "varianten" in anatomy) issues.push("a private pack carries no Zusaetze or Varianten");
+  // the part ids a Kern or Variante delivers next to the Zusaetze: none may name the same part twice
+  const kernIds = (sources: unknown): string[] => Array.isArray(sources)
+    ? sources.map((source, index) => contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : undefined }, index)) : [];
+  const zusatzIds: string[] = [];
+  if ("zusaetze" in anatomy) {
+    const zusaetze = anatomy.zusaetze;
+    if (!Array.isArray(zusaetze) || zusaetze.length === 0 || zusaetze.length > CONTEXT_PACK_ZUSAETZE_MAX)
+      issues.push(`zusaetze must be an array of 1..${CONTEXT_PACK_ZUSAETZE_MAX}`);
+    else {
+      const seen = new Set<string>();
+      for (const [index, zusatz] of zusaetze.entries()) {
+        const where = `zusaetze[${index}]`;
+        if (!isRecord(zusatz)) { issues.push(`${where} must be an object`); continue; }
+        for (const key of Object.keys(zusatz)) if (!ZUSATZ_KEYS.has(key)) issues.push(`${where}: unknown key ${key}`);
+        if (typeof zusatz.id !== "string" || !ZUSATZ_ID.test(zusatz.id) || seen.has(zusatz.id)) issues.push(`${where}: id must be a unique ^[a-z][a-z0-9-]{0,39}$`);
+        else seen.add(zusatz.id);
+        const b = zusatz.bedingung;
+        if (!isRecord(b) || Object.keys(b).length === 0) issues.push(`${where}: bedingung must name triggers, positions or harnesses`);
+        else for (const [key, value] of Object.entries(b)) {
+          const vocabulary = BEDINGUNG_VOCABULARY[key];
+          if (!vocabulary) issues.push(`${where}: unknown bedingung key ${key}`);
+          else if (!Array.isArray(value) || value.length === 0 || value.some((v) => !vocabulary.includes(v as string)))
+            issues.push(`${where}: bedingung.${key} must be a non-empty list of ${vocabulary.join(", ")}`);
+        }
+        sourcesIssues(zusatz.sources, where);
+        if (typeof zusatz.id === "string" && Array.isArray(zusatz.sources))
+          zusatzIds.push(...zusatz.sources.map((source, i) =>
+            contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : `${zusatz.id}-${i + 1}` }, 0)));
+      }
+    }
+  }
+  const kerne = [kernIds(core.sources)];
+  if ("varianten" in anatomy) {
+    const varianten = anatomy.varianten;
+    if (!isRecord(varianten) || Object.keys(varianten).length === 0) issues.push("varianten must name at least one position");
+    else for (const [position, variante] of Object.entries(varianten)) {
+      const where = `varianten.${position}`;
+      if (!(CONTEXT_POSITIONS as readonly string[]).includes(position)) { issues.push(`${where}: position must be ${CONTEXT_POSITIONS.join(", ")}`); continue; }
+      if (!isRecord(variante)) { issues.push(`${where} must be an object`); continue; }
+      for (const key of Object.keys(variante)) if (!VARIANTE_KEYS.has(key)) issues.push(`${where}: unknown key ${key}`);
+      if ("useWhen" in variante && !validUseWhen(variante.useWhen)) issues.push(`${where}: useWhen must be one line of purpose`);
+      sourcesIssues(variante.sources, where);
+      kerne.push(kernIds(variante.sources));
+    }
+  }
+  for (const kern of kerne) {
+    const all = [...kern, ...zusatzIds];
+    if (new Set(all).size !== all.length) issues.push("a Kern and its Zusaetze name the same part id twice");
+  }
+  return issues;
+}
 
 /**
  * Plan the repo-declared packs. The result is ADDITIONAL rows in the same plan shape: the Fleet
@@ -111,10 +203,18 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
   // not a defect in the manifest — capability fit for THIS delivery is the ladder's job below.
   // Every other issue, of either severity, is a manifest defect: an anchor Fleet could not check
   // is exactly as undeliverable as one it checked and did not find.
-  const validation = validateContextPacks({ packs: input.manifest.packs, repo: input.repo, capabilities: new Map() });
+  // The shared validator judges each pack WITHOUT its anatomy keys; the anatomy is judged beside it.
+  const split = input.manifest.packs.map((raw) => isRecord(raw) ? splitPackAnatomy(raw) : null);
+  const validation = validateContextPacks({ packs: input.manifest.packs.map((raw, index) => split[index]?.core ?? raw),
+    repo: input.repo, capabilities: new Map() });
   const defective = new Set(validation.issues
     .filter((issue) => issue.code !== "CAPABILITY_AVAILABILITY_UNKNOWN")
     .map((issue) => issue.packId));
+  for (const [index, part] of split.entries()) {
+    if (!part || Object.keys(part.anatomy).length === 0) continue;
+    if (packAnatomyIssues(part.core, part.anatomy, input.repo).length)
+      defective.add(typeof part.core.id === "string" ? part.core.id : `#${index}`);
+  }
 
   const harness = resolveContextHarness(input.facts.harness);
   const triggers = new Set<ContextPackTrigger>(input.facts.triggers);
@@ -161,17 +261,21 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       omitted.push({ id, why });
       continue;
     }
+    // the anatomy was proven above; the plan picks this founding's Kern, Zusaetze and Variante
+    const resolved = resolvePackAnatomy({ ...(pack as unknown as ContextPackAnatomy), id,
+      useWhen: validUseWhen(pack.useWhen) ? pack.useWhen : undefined }, { position: input.facts.position, harness, triggers });
     selected.push({
       id,
       hardness: pack.hardness,
-      sources: pack.sources.map((source) => ({ ...source })),
+      sources: resolved.sources,
       ...(pack.group !== undefined ? { group: pack.group } : {}),
       estimatedBytes: pack.estimatedBytes,
       // The validator already condemned any pack whose useWhen is unusable, so this re-check can
       // only ever see a valid line or none. It is still stated here rather than assumed: the field
       // is carried into a delivered brief, and a carrier must never widen what it was handed.
-      ...(validUseWhen(pack.useWhen) ? { useWhen: pack.useWhen } : {}),
+      ...(validUseWhen(resolved.useWhen) ? { useWhen: resolved.useWhen } : {}),
       ...(typeof pack.sourceHash === "string" ? { sourceHash: pack.sourceHash } : {}),
+      ...(resolved.anatomie ? { anatomie: resolved.anatomie } : {}),
     });
   }
   return { selected, omitted };

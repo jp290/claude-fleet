@@ -49,7 +49,7 @@ import {
 } from "./rulebook";
 import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
-  PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
+  PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPackAnatomie, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
 import { buildSnippetPackage, planSnippets, snippetReceipt, renderSnippetBlock, type SnippetFile, type SnippetReceipt } from "./context-snippets";
 import {
@@ -61,6 +61,7 @@ import {
   type ContextPackCapability,
   type ContextPackMode,
   type ContextPackTrigger,
+  type ContextPosition,
 } from "./context-packs";
 import { composerArrival, composerBuffer, composerCollapsedPaste, composerDeliveryResidue, composerHoldsExactly, composerRows,
   type ComposerArrival, type ComposerForm } from "./composer";
@@ -3711,7 +3712,7 @@ async function contextCatalogFor(s: Slot, scope: Extract<MemoryScope, { ok: true
       });
     facts = { sourceTree: await dispatchSourceTree(repoPath), harness: s.harness ?? null, mode: DISPATCH_CONTEXT_MODE,
       triggers: taskContextTriggers(taskTexts, DISPATCH_CONTEXT_TRIGGERS),
-      capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+      capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" };
   } else {
     const pre = await preflightProgramMain(repoPath);
     if (!pre.ok) throw new Error(pre.error);
@@ -19754,7 +19755,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const head = await integrationHead(wt.repo) ?? (clarify ? null : laneHead.out);
   if (!head) throw new Error("could not read integration HEAD for context receipt");
   const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
-    triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+    triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const };
   // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the same
   // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
   // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
@@ -19933,6 +19934,7 @@ async function laneSnippetBlock(lanePath: string, head: string,
 
 type ContextReceiptSelection = {
   id: string;
+  anatomie?: ContextPackAnatomie;
   hardness: ContextPlanSelection["hardness"];
   useWhen?: string;
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
@@ -20014,8 +20016,10 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[], age
     const useWhen = selection.useWhen !== undefined ? { useWhen: selection.useWhen } : {};
     // A Program pack says so on its row; every other row stays byte-identical to before the field.
     const origin = "origin" in selection && selection.origin === "program" ? { origin: selection.origin } : {};
+    // the plan's anatomy object itself (dd549bce): the founding-plan route serves the same one
+    const anatomie = selection.anatomie ? { anatomie: selection.anatomie } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, hardness: selection.hardness, ...parts, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin };
+      return { id: selection.id, hardness: selection.hardness, ...parts, ...useWhen, anchors: selection.sources.map((source) => ({ path: source.path, anchor: source.anchor })), ...sourceHash, ...origin, ...anatomie };
     const resolved = privatePackResolutionOf(selection, selection.sources.privateSourceId);
     return {
       id: selection.id,
@@ -20025,6 +20029,7 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[], age
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,
       private: { verdict: resolved.verdict, version: resolved.version },
+      ...anatomie,
     };
   });
 }
@@ -38916,7 +38921,9 @@ const gameMakerMachineError = (program: Program, v: ProgramMainPreflight): strin
   return null;
 };
 
-const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null) => ({
+// `position` picks a pack's Variante (context-plan.ts#resolvePackAnatomy): a founding session in a
+// checkout is a MAIN unless the caller founds the Orchestratorin.
+const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null, position: ContextPosition = "main") => ({
   sourceTree: frame === "fleet-control" ? "fleet" as const : "foreign" as const,
   harness,
   mode: BOOTSTRAP_CONTEXT_MODE,
@@ -38924,6 +38931,7 @@ const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null
   capabilities: frame === "fleet-control"
     ? FLEET_CONTROL_CONTEXT_CAPABILITIES
     : TARGET_REPO_CONTEXT_CAPABILITIES,
+  position,
 });
 
 // A source file Fleet will not read whole cannot have its anchor checked, so the pack that names
@@ -39070,7 +39078,7 @@ type FoundingPlan = {
   readonly manifest: ContextManifestRead;
 };
 async function foundingPlanOf(repo: string, harness: string | null,
-  foundingMode: FoundingPlanMode): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
+  foundingMode: FoundingPlanMode, position?: ContextPosition): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
   let repoRoot: string;
   try {
     repoRoot = await repoRootOf(repo);
@@ -39089,8 +39097,8 @@ async function foundingPlanOf(repo: string, harness: string | null,
   const facts = foundingMode === "lane"
     ? { sourceTree, harness,
         mode: DISPATCH_CONTEXT_MODE, triggers: taskContextTriggers([], DISPATCH_CONTEXT_TRIGGERS),
-        capabilities: DISPATCH_CONTEXT_CAPABILITIES }
-    : programMainContextFacts(frame, harness);
+        capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const }
+    : programMainContextFacts(frame, harness, position);
   const base = planContext(facts);
   const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
   return { ok: true, value: { repoRoot, head,
@@ -39371,7 +39379,8 @@ function measurePlannedFile(input: SessionAgentsInput, rows: PlannedFileRows, pl
 // sentence, default or limit makes an older preview another plan.
 const SESSION_REGISTER_HASH = createHash("sha256").update(JSON.stringify(SESSION_BLOCKS)).digest("hex");
 function sealedPlanHash(decision: string, plan: ContextPlan, selection?: Readonly<Record<string, "box" | "ausleihe">>): string {
-  const fassungen = plan.selected.map((pack) => [pack.id, declaredSourceHash(pack) ?? null]);
+  // a pack's anatomy is part of its version: another Kern, Zusatz verdict, Variante or Fassung is another plan
+  const fassungen = plan.selected.map((pack) => [pack.id, declaredSourceHash(pack) ?? null, ...(pack.anatomie ? [pack.anatomie] : [])]);
   const parts = selection ? Object.entries(selection).sort(([a], [b]) => a.localeCompare(b)) : null;
   return createHash("sha256").update(JSON.stringify([decision, SESSION_REGISTER_HASH, fassungen, parts])).digest("hex");
 }
@@ -39412,7 +39421,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
     if (at <= 0) return refuse(`bausteine entry '${entry}' must be <id>=<an|aus|ersetzt:id>`);
     schalter[entry.slice(0, at)] = entry.slice(at + 1);
   }
-  const fp = await foundingPlanOf(repo, ho.harness, mode);
+  const fp = await foundingPlanOf(repo, ho.harness, mode, rolle === "orchestratorin" ? "orchestratorin" : mode === "lane" ? "lane" : "main");
   if (!fp.ok) return refuse(fp.error);
   const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
   const { plan, manifest } = fp.value;
@@ -39435,7 +39444,8 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // them (contextReceiptSelections reads the same declaredSourceHash), harnesses and triggers off
   // the declaration the ladder judged. A private pack's hash verdict is NOT here — it is taken at
   // delivery, and the window says so instead of reading the private root for a preview.
-  const selected: FoundingPlanPack[] = plan.selected.map((pack) => {
+  // a pack's anatomy (dd549bce) rides on its row as the plan's own object — the receipt copies the same
+  const selected: (FoundingPlanPack & { anatomie?: ContextPackAnatomie })[] = plan.selected.map((pack) => {
     const rule = declaredPackRule(pack.id, manifest);
     const sourceHash = declaredSourceHash(pack);
     return {
@@ -39448,6 +39458,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       anchors: "privateSourceId" in pack.sources ? { privateSourceId: pack.sources.privateSourceId }
         : pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
       ...(sourceHash !== undefined ? { sourceHash } : {}),
+      ...(pack.anatomie ? { anatomie: pack.anatomie } : {}),
     };
   });
   // harness-unsupported says WHICH agents the pack is for — the window explains a switched-off
@@ -40556,7 +40567,7 @@ async function orchestratorFoundingContext(cwd: string, harness: string | null):
 > {
   const preflight = await preflightProgramMain(cwd);
   if (!preflight.ok) return { ok: false, error: preflight.error };
-  const facts = programMainContextFacts(preflight.value.frame, harness);
+  const facts = programMainContextFacts(preflight.value.frame, harness, "orchestratorin");
   const plan = await programMainContextPlan(preflight.value, facts);
   const deliveryPlan = availableContextPlan(plan);
   return { ok: true, value: { anchorBlock: renderContextAnchorBlock(deliveryPlan), preflight: preflight.value,

@@ -5089,6 +5089,28 @@ alte und antwortet `plan: "none"`; `packs` und `plan` zusammen sind 400. `attach
 `bootstrap-main` lehnen einen Plan mit Grund ab (die MAIN-Tuer baut Brief, Schiene und Anker selbst).
 Nachfolge, Attach und Harness-Wechsel planen die Session-Datei weiterhin nicht neu.
 
+**Die Anatomie eines Packs (seit 2026-10-09, Karte dd549bce).** `sources` ist der **Kern** eines
+Packs — er kommt immer mit, wenn die Leiter das Pack waehlt. Daneben darf ein Pack im Manifest
+`.fleet/context-packs.json` (und ein Fleet-Seed in `context-packs.ts`) tragen:
+- `zusaetze`: 1..8 `{id, bedingung, sources}`; `bedingung` nennt mindestens einen der Schluessel
+  `triggers` (ein Trigger der Gruendung trifft), `positions` (`lane` · `main` · `orchestratorin`),
+  `harnesses`; der Zusatz ist an, wenn **jede** genannte Bedingung haelt. Eine Zusatz-Quelle ohne
+  `id` heisst `<zusatz>-<n>`;
+- `fassung`: `vorgeschlagen` · `gilt` · `veraltet` — getragen und quittiert, sie bewegt die Leiter
+  nicht (das tut `status`);
+- `varianten`: je Position `{sources, useWhen?}` — ein eigener Kern (und Zweckzeile) fuer diese Position.
+Ein privates Pack traegt nur `fassung`. Jede Quelle einer Anatomie wird wie eine Kern-Quelle gegen
+den Baum geprueft (`context-manifest.ts#packAnatomyIssues`, ueber den geteilten Validator); jeder
+Fehler macht das ganze Pack `manifest-invalid`. Der Plan loest je Position auf
+(`context-plan.ts#resolvePackAnatomy`; Position: Lane-Gruendung `lane`, MAIN `main`, Orchestratorin
+`orchestratorin`): die gelieferten `sources` sind Kern (oder Variante), dann die Zusaetze, die an
+sind; die Auswahl traegt `anatomie: {kern, variante, zusaetze[{id, bedingung, an, verfehlt?, teile}],
+fassung?}`. `GET /api/founding-plan` (Feld `anatomie` am gewaehlten Pack) und die Receipt-Zeile
+(`selected[].anatomie`) tragen **dasselbe Objekt**, also byte-gleich; der versiegelte `planHash`
+deckt es mit. Ein Pack ohne Anatomie hat kein `anatomie`-Feld: Plan, Receipt und Hash bleiben wie
+vorher, alte Receipts lesen unveraendert. Ohne bekannte Position gilt der Standard-Kern und ein
+positionsgebundener Zusatz bleibt aus.
+
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 
 `server.ts#capTasks` verdrängt ab `MAX_TASKS` terminale Zeilen (`done`/`archived`) aus

@@ -645,11 +645,92 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
 
   orchestrationTriggerChecks(check);
   foundingStandChecks(check);
+  packAnatomyChecks(check);
 
   if (!externalCheck) {
     console.log(rows.join("\n"));
     console.log(failures ? `\n${failures} FAILURES` : "\nALL PASS");
     if (failures) process.exitCode = 1;
+  }
+}
+
+// THE ANATOMY OF A PACK (dd549bce): Kern, Zusaetze with their condition, Fassung, Varianten per
+// position — declared in the manifest, resolved by the plan per position, and invisible for a pack
+// that declares none of it. Pure: bytes in, plan out.
+function packAnatomyChecks(check: ContextPlanCheck): void {
+  const files: Record<string, string> = {
+    "docs/kern.md": "## Kern\nimmer.\n", "docs/main.md": "## Main\nfuer die MAIN.\n",
+    "docs/verify.md": "## Verify\nnur beim Pruefen.\n", "docs/lane.md": "## Lane extra\nnur fuer Lanes.\n",
+  };
+  const base = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: "anatomie", useWhen: "Ein Pack mit Anatomie.", scope: "repo-contract", audience: "agent", triggers: ["always"],
+    hardness: "guidance", sources: [{ path: "docs/kern.md", anchor: "## Kern" }],
+    requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex"], modes: ["read-only", "mutating"],
+    estimatedBytes: 100, evidence: "tree-anchor", owner: "owner", status: "active", ...over,
+  });
+  const anatomy = {
+    fassung: "vorgeschlagen",
+    zusaetze: [
+      { id: "beim-pruefen", bedingung: { triggers: ["verification"] }, sources: [{ path: "docs/verify.md", anchor: "## Verify" }] },
+      { id: "nur-lane", bedingung: { positions: ["lane"] }, sources: [{ path: "docs/lane.md", anchor: "## Lane extra" }] },
+    ],
+    varianten: { main: { sources: [{ id: "anatomie.main", path: "docs/main.md", anchor: "## Main" }], useWhen: "Die MAIN-Fassung des Packs." } },
+  };
+  const world = (packs: readonly unknown[], position?: "lane" | "main" | "orchestratorin", triggers: ContextPackTrigger[] = ["always"]) =>
+    planRepoContext({ manifest: readContextManifest(JSON.stringify(packs)),
+      repo: { trackedPaths: new Set(Object.keys(files)), sourceBytes: new Map(Object.entries(files)) },
+      facts: { harness: "claude", mode: "mutating", triggers, capabilities: ["tracked-source-read"], ...(position ? { position } : {}) } });
+  const read = readContextManifest(JSON.stringify([base(anatomy)]));
+  check("pack anatomy: the manifest reader collects the Zusaetze' and Varianten' source paths for the anchor check",
+    read.kind === "packs" && ["docs/kern.md", "docs/lane.md", "docs/main.md", "docs/verify.md"].every((path) => read.referencedPaths.includes(path)),
+    JSON.stringify(read.kind === "packs" ? read.referencedPaths : read));
+  const lane = world([base(anatomy)], "lane", ["always", "verification"]).selected[0];
+  check("pack anatomy: a lane founding takes the standard Kern and every Zusatz whose condition holds, in order",
+    !!lane && JSON.stringify(lane.sources) === JSON.stringify([{ path: "docs/kern.md", anchor: "## Kern" },
+      { path: "docs/verify.md", anchor: "## Verify", id: "beim-pruefen-1" }, { path: "docs/lane.md", anchor: "## Lane extra", id: "nur-lane-1" }])
+      && JSON.stringify(lane.anatomie) === JSON.stringify({ kern: ["anatomie.source-1"], variante: "standard", zusaetze: [
+        { id: "beim-pruefen", bedingung: { triggers: ["verification"] }, an: true, teile: ["anatomie.beim-pruefen-1"] },
+        { id: "nur-lane", bedingung: { positions: ["lane"] }, an: true, teile: ["anatomie.nur-lane-1"] }], fassung: "vorgeschlagen" })
+      && lane.useWhen === "Ein Pack mit Anatomie.",
+    JSON.stringify(lane));
+  const main = world([base(anatomy)], "main").selected[0];
+  check("pack anatomy: a MAIN founding takes its Variante as Kern with its purpose line, and names the conditions that failed",
+    !!main && JSON.stringify(main.sources) === JSON.stringify([{ id: "anatomie.main", path: "docs/main.md", anchor: "## Main" }])
+      && main.useWhen === "Die MAIN-Fassung des Packs." && main.anatomie?.variante === "main"
+      && JSON.stringify(main.anatomie?.kern) === JSON.stringify(["anatomie.main"])
+      && main.anatomie?.zusaetze.every((z) => !z.an) && JSON.stringify(main.anatomie?.zusaetze.map((z) => z.verfehlt)) === JSON.stringify([["triggers"], ["positions"]]),
+    JSON.stringify(main));
+  const unknown = world([base(anatomy)]).selected[0];
+  check("pack anatomy: without a known position the standard Kern holds and a positional Zusatz stays off",
+    !!unknown && unknown.anatomie?.variante === "standard" && unknown.anatomie.zusaetze.find((z) => z.id === "nur-lane")?.an === false,
+    JSON.stringify(unknown?.anatomie));
+  // the same manifest twice, once with anatomy beside a plain pack: the plain one is byte for byte
+  const plain = base({ id: "schlicht" });
+  const alone = world([plain], "lane");
+  const beside = world([plain, base(anatomy)], "lane");
+  check("pack anatomy: a pack without anatomy plans byte for byte as before — no anatomie key, the same sources",
+    JSON.stringify(alone.selected[0]) === JSON.stringify(beside.selected.find((p) => p.id === "schlicht"))
+      && !("anatomie" in (alone.selected[0] ?? {})) && JSON.stringify(alone.selected[0]?.sources) === JSON.stringify(plain.sources),
+    JSON.stringify(alone.selected[0]));
+  const seeds = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["always", "verification"],
+    capabilities: fullCapabilities(), position: "lane" });
+  const seedsNoPosition = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["always", "verification"],
+    capabilities: fullCapabilities() });
+  check("pack anatomy: the Fleet seeds declare none, so a position changes nothing in their plan",
+    JSON.stringify(seeds) === JSON.stringify(seedsNoPosition) && seeds.selected.every((pack) => !("anatomie" in pack)));
+  const broken: [string, Record<string, unknown>][] = [
+    ["an unknown fassung", { fassung: "gueltig" }],
+    ["a Zusatz without a condition", { zusaetze: [{ id: "leer", bedingung: {}, sources: [{ path: "docs/kern.md", anchor: "## Kern" }] }] }],
+    ["an unknown condition key", { zusaetze: [{ id: "x", bedingung: { modell: ["opus"] }, sources: [{ path: "docs/kern.md", anchor: "## Kern" }] }] }],
+    ["a Zusatz anchor the tree does not have", { zusaetze: [{ id: "x", bedingung: { triggers: ["always"] }, sources: [{ path: "docs/kern.md", anchor: "## Nirgends" }] }] }],
+    ["a Variante for no position", { varianten: { worker: { sources: [{ path: "docs/kern.md", anchor: "## Kern" }] } } }],
+    ["a Variante path that is not tracked", { varianten: { lane: { sources: [{ path: "docs/fehlt.md", anchor: "## Kern" }] } } }],
+    ["a Zusatz that names a Kern part again", { zusaetze: [{ id: "x", bedingung: { triggers: ["always"] }, sources: [{ id: "source-1", path: "docs/kern.md", anchor: "## Kern" }] }] }],
+  ];
+  for (const [what, over] of broken) {
+    const plan = world([base(over)], "lane");
+    check(`pack anatomy: ${what} makes the pack manifest-invalid, never a silent half delivery`,
+      plan.selected.length === 0 && plan.omitted.length === 1 && plan.omitted[0]?.why === "manifest-invalid", JSON.stringify(plan));
   }
 }
 

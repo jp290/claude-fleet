@@ -1047,7 +1047,14 @@ export function runRows(noPane: boolean): HTMLElement {
   const rank: Record<MeterStation, number> = { run: 0, helper: 1, wait: 2, done: 3 };
   const open = [...m.balls].filter((b) => b.station !== "done").sort((x, y) => rank[x.station] - rank[y.station] || x.at - y.at);
   const bands = laneBandNames(stacksOf());
-  for (const b of open.slice(0, METER_ROWS_MAX)) {
+  // THE BLOCK FOLDS (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
+  // ): closed by default — at its lane a run is the diamond already — it keeps ONE line, a
+  // diamond per run and how many run and wait, each run's sentence on hover; a tap on that line or on
+  // the block's head opens one line per run. Which is open is remembered per browser
+  // (fleet.board.folds). The lock's row stays out of the fold: it stands only when it needs someone.
+  const unfolded = boardFolds.has(RUNS_FOLD);
+  if (!unfolded && open.length) box.appendChild(runsSummary(open));
+  if (unfolded) for (const b of open.slice(0, METER_ROWS_MAX)) {
     const line = el("div", "zd run free");
     line.dataset.station = b.station;
     line.dataset.gate = b.station === "wait" ? "queue" : "run";
@@ -1081,6 +1088,33 @@ export function runRows(noPane: boolean): HTMLElement {
   return box;
 }
 export const METER_ROWS_MAX = 6;
+const RUNS_FOLD = "pruefungen";
+function toggleRuns(): void {
+  if (boardFolds.has(RUNS_FOLD)) boardFolds.delete(RUNS_FOLD); else boardFolds.add(RUNS_FOLD);
+  prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
+  void renderBoard();
+}
+// the closed block's one line: a diamond per run in its state, then "2 laufen · 1 wartet"
+function runsSummary(open: MeterBall[]): HTMLElement {
+  const line = el("div", "zd run sum");
+  const tx = el("span", "tx");
+  const ds = el("span", "gds");
+  for (const b of open.slice(0, METER_ROWS_MAX)) {
+    const q = el("span", "gq");
+    q.dataset.gate = b.station === "wait" ? "queue" : "run";
+    q.appendChild(el("span", "gd"));
+    ds.appendChild(q);
+  }
+  const run = open.filter((b) => b.station !== "wait").length, wait = open.length - run;
+  tx.append(ds, el("span", "w", [run ? `${run} ${run === 1 ? "läuft" : "laufen"}` : "", wait ? `${wait} ${wait === 1 ? "wartet" : "warten"}` : ""]
+    .filter(Boolean).join(" · ")));
+  line.appendChild(tx);
+  line.title = [...open.map((b) => { const at = runMachine(b); return `${runSentence(b)}${at ? ` · auf ${at.name}` : ""}`; }),
+    "Klick klappt jede Prüfung als eigene Zeile auf"].join("\n");
+  rowTarget(line, toggleRuns);
+  line.setAttribute("aria-expanded", "false");
+  return line;
+}
 // the polls call this: the strip and its panel are repainted in place, the rest of the column stays
 export function renderSuiteMeter() {
   if (!boardOpen) return;
@@ -2751,6 +2785,14 @@ const RANKE_CSS = `
   #board .ranke .rk > svg path.back { stroke: var(--chat-mute); }
   #board .ranke .rk > svg path.back.wait { stroke-dasharray: 3 2.5; }
   #board .ranke .rk > svg path.ink { stroke: var(--chat-ink); }
+  /* THE BAR OF THE ROW YOU STAND IN (#drawRankeLines): from its point to its next one, under the lines
+     and the points; the row's words stand over it. No fade: every repaint builds the row anew with the
+     whole-row ground until the bar is measured, and a transition showed that ground fading each time */
+  #board .ranke .rk > .zr.here { transition: none; }
+  #board .ranke .rk > .zr.here[data-bar] { background: none; }
+  #board .ranke .rk > .zr.here[data-bar]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--zb-l); width: var(--zb-w);
+    background: var(--chat-surface); border-radius: 4px; pointer-events: none; }
+  #board .ranke .rk > .zr.here[data-bar] > :not(.nd):not(.lgate):not(.zhead) { position: relative; }
   /* the head of a target: the dot its rail hangs from — a ring while lanes wait to land there */
   #board .zr > .zhead { position: absolute; z-index: 2; width: 7px; height: 7px; border-radius: 50%; transform: translate(-50%, -50%);
     background: var(--chat-mute); pointer-events: none; }
@@ -2815,6 +2857,17 @@ const RANKE_CSS = `
   #board .gw i.ok.old { box-shadow: inset 0 0 0 1.25px var(--q-live); }
   #board .gw i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
   #board .gw i[data-key="landed"].ok { border-radius: 1.5px; transform: rotate(45deg) scale(.85); }
+  /* THE CHECKS FOLD (#runsSummary): the block's head opens and closes it; closed, one line */
+  #board .rk-runs > .rkbh.fold { cursor: pointer; border-radius: var(--r1); }
+  #board .rk-runs > .rkbh.fold > .ico { margin-left: auto; width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }
+  #board .rk-runs > .rkbh.fold[aria-expanded="true"] > .ico { transform: none; }
+  #board .rk-runs > .rkbh.fold:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 1px; }
+  #board .zd.run.sum { cursor: pointer; }
+  #board .zd.run.sum > .tx { display: flex; align-items: center; gap: 9px; }
+  #board .zd.run.sum .gds { display: inline-flex; align-items: center; gap: 6px; padding-left: 2px; }
+  #board .zd.run.sum .gq { display: inline-flex; }
+  #board .zd.run.sum .w { color: var(--chat-ink); }
+  #board [data-gate="queue"] > .gd { background: var(--chat-void); }
   /* the checks block: one line per run — what, where, whose */
   #board .zd.run.free > .tx { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; row-gap: 0; }
   #board .zd.run.free .gd { margin: 0 2px; }
@@ -3772,6 +3825,13 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     return b;
   };
   const projects = block("proj", "Projekte"), checks = block("runs", "Prüfungen"), devices = block("dev", "Geräte");
+  // the checks block's head opens and closes it (#runsSummary)
+  const runsHead = checks.firstElementChild as HTMLElement;
+  runsHead.classList.add("fold");
+  runsHead.appendChild(icon("chevron"));
+  runsHead.title = boardFolds.has(RUNS_FOLD) ? "Klick klappt die Prüfungen auf eine Zeile zu" : "Klick klappt jede Prüfung als eigene Zeile auf";
+  rowTarget(runsHead, toggleRuns);
+  runsHead.setAttribute("aria-expanded", String(boardFolds.has(RUNS_FOLD)));
   readRunsHere();
   const standOf = new Map<string, WorkplaceStand>();
   for (const st of wp.stands ?? []) if (st.path) standOf.set(`${st.kind}:${st.path}`, st);
@@ -4393,6 +4453,22 @@ export function drawRankeLines(root: HTMLElement): void {
         ? `Hierher, nach ${target}, wollen ${rl.waiting} ${rl.waiting === 1 ? "Lane" : "Lanes"} landen — gestrichelt bis zum Land`
         : `Alles, was an ${target} hängt, ist gelandet`;
       par.appendChild(hd);
+    }
+    // THE BAR OF THE ROW YOU STAND IN (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
+    // 
+    // 
+    // funktioniert"): the focused row's ground runs from its own point to its next one — a stem from its
+    // point to its head on the rail, where its lanes come back; a lane from its point to where its way
+    // back begins — and the lines of the Ranke run on beside it
+    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.here")) {
+      const p = mid(row);
+      if (!p) continue;
+      const rl = row.dataset.id ? rails.get(row.dataset.id) : undefined;
+      const right = rl ? rl.x : Math.round(end(row)) + 4;
+      const off = row.getBoundingClientRect().left - tb.left;
+      row.style.setProperty("--zb-l", `${p[0] - off}px`);
+      row.style.setProperty("--zb-w", `${Math.max(0, right - p[0])}px`);
+      row.dataset.bar = rl ? "rail" : "end";
     }
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("aria-hidden", "true");

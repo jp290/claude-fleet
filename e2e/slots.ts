@@ -7473,6 +7473,10 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       if (width === 1200) {
         if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
         fx.meterLane = true;
+        // the block "Prüfungen" opens on its head (closed by default since 2026-10-09, src/board.ts#runsSummary)
+        await wait(`document.querySelector('#boardbody .rk-runs .rkruns > *')`, 15000);
+        if (await evaluate<boolean>(`document.querySelector('#boardbody .rk-runs > .rkbh')?.getAttribute('aria-expanded') === 'false'`))
+          await click(`document.querySelector('#boardbody .rk-runs > .rkbh')`);
         const rowUp = await wait(`[...document.querySelectorAll('#boardbody .ranke .rkruns .zd.run .who')].some((n) => n.textContent.includes(' · '))`, 15000);
         // since 2026-10-09 (owner, the block „[Zitat entfernt]“ in one line: „[Zitat entfernt]“
         // ): the session is its band chip and its name beside it, the machine its
@@ -12043,6 +12047,18 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  out.push(way);\n  return out;", with: "  return out;" },
   { name: "a run the lane reported stands at no point", state: "land", width: 1200, claim: "the preview its lane reported waits at its point",
     needle: "    : mine.find((b) => b.station !== \"done\" && RUN_POINT[b.kind] === key);", with: "    : undefined;" },
+  { name: "the checks block opens by default", state: "land", claim: "closed by default, the Prüfungen block is one line",
+    needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
+  { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
+    needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
+  { name: "the stem's bar stops at its words", state: "main", width: 1200, claim: "the focused row's bar runs from its point to its next one",
+    needle: "      const right = rl ? rl.x : Math.round(end(row)) + 4;", with: "      const right = Math.round(end(row)) + 4;" },
+  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point to its next one",
+    needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
+  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point to its next one",
+    needle: "  #board .ranke .rk > .zr.here { transition: none; }", with: "" },
+  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point to its next one",
+    needle: "  #board .ranke .rk > .zr.here[data-bar] { background: none; }", with: "" },
   { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live-Server stands under Mac",
     needle: "    if (live) {\n      const [key, list] = live;", with: "    if (live && false) {\n      const [key, list] = live;" },
 ];
@@ -12103,7 +12119,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     // THE LIVE SESSION (state `live`): which of its three steps the fixture refuses, and the lanes it made
     liveFail: null as null | "lane" | "send" | "ti", liveMade: [] as Lane[],
     // THE PAGE AS A TEST INSTANCE SERVES IT (instance.source + the way back to live): one look at Geräte
-    ti: false };
+    ti: false,
+    // one more lane, landing straight in main: main gets a rail and a head (the bar of a focused stem)
+    mainLane: false };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -12120,6 +12138,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     ];
     // a quiet third project: one old worktree whose branch is a stamp and a hex alone
     base.push({ slot: null, branch: "fleet/260920214010-83af", target: "main", ahead: 1, repo: REPO3, landed: "no" });
+    if (fx.mainLane) base.push({ slot: null, branch: "fleet/261009-direkt-auf-main-7a1e", target: "main", ahead: 1, landed: "no" });
     if (st === "leer") return base.map((l) => ({ ...l, slot: null, working: false }));
     // THE OWNER'S VIDEO (2026-10-07): a detached worktree, a worktree on the stem overhaul itself, and
     // two branches whose words differ only by their date and hex
@@ -12428,7 +12447,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           machine: r.dataset.machine ?? null, roles: r.querySelector(':scope > .nm .cnt')?.textContent ?? null,
           say: r.querySelector(':scope > .st')?.textContent ?? null, exp: r.getAttribute('aria-expanded'),
           chip: zs ? zs.textContent : null, chipTitle: zs ? zs.title : null, tone: r.dataset.tone ?? null, nmColor: col(r.querySelector(':scope > .nm'), 'color'),
-          msess: r.querySelector('.msess')?.textContent ?? null }; });
+          msess: r.querySelector('.msess')?.textContent ?? null,
+          bar: r.dataset.bar ?? null, ground: getComputedStyle(r).backgroundColor, fade: getComputedStyle(r).transitionDuration,
+          barBox: r.dataset.bar ? (() => { const s = getComputedStyle(r, '::before'), b = r.getBoundingClientRect(); return { l: b.left + parseFloat(s.left), r: b.left + parseFloat(s.left) + parseFloat(s.width), bg: s.backgroundColor }; })() : null,
+          ndC: (() => { const n = r.querySelector(':scope > .nd'); if (!n) return null; const b = n.getBoundingClientRect(); return b.left + b.width / 2; })() }; });
       const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent),
         points: [...z.querySelectorAll('.way i')].map((i) => ({ key: i.dataset.key ?? null, cls: i.className })), way: z.querySelector('.way')?.title ?? '', wayAria: z.querySelector('.way')?.getAttribute('aria-label') ?? '' }));
       const body = document.querySelector('#boardbody');
@@ -12443,7 +12465,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         head: sec.querySelector('h3')?.textContent ?? null,
         blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0 })),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
-        backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1) })),
+        backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1),
+          x0: p.closest('.rk').getBoundingClientRect().left + Number(/H([\\d.]+)$/.exec(p.getAttribute('d') ?? '')?.[1] ?? NaN) })),
         gates: [...sec.querySelectorAll('.zr > .lgate')].map((g) => { const b = g.getBoundingClientRect(), t = g.closest('.rk').getBoundingClientRect();
           const lr = g.parentElement.querySelector(':scope > .lr')?.getBoundingClientRect(), n = g.querySelector(':scope > .gnote'), shown = !!n && getComputedStyle(n).display !== 'none';
           return { row: g.parentElement.dataset.slot ?? g.parentElement.dataset.id ?? null, gate: g.dataset.gate ?? null, placed: g.dataset.placed ?? null,
@@ -12451,7 +12474,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             gap: lr ? Math.round(b.left + b.width / 2 - lr.right) : null, fill: col(g.querySelector(':scope > i'), 'backgroundColor'),
             note: shown ? n.innerText.replace(/\\s+/g, ' ').trim() : null, noteBox: shown ? box(n) : null,
             notePoints: n ? [...n.querySelectorAll('.gw i')].map((i) => i.dataset.key + ':' + i.className) : [] }; }),
-        heads: [...sec.querySelectorAll('.zr > .zhead')].map((h) => ({ row: h.parentElement.dataset.id ?? null, next: h.classList.contains('next') })),
+        heads: [...sec.querySelectorAll('.zr > .zhead')].map((h) => ({ row: h.parentElement.dataset.id ?? null, next: h.classList.contains('next'),
+          x: (() => { const b = h.getBoundingClientRect(); return b.left + b.width / 2; })() })),
         hier: [...sec.querySelectorAll('[data-hier]')].map((e) => ({ cls: String(e.className), text: e.innerText.replace(/\\s+/g, ' ').trim(),
           mark: e.classList.contains('mach') ? getComputedStyle(e.querySelector(':scope > .zs'), '::before').content : getComputedStyle(e, '::after').content })),
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
@@ -12464,13 +12488,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     type Row = { cls: string; id: string | null; slot: string | null; node: string | null; kind: string | null; text: string; title: string; box: { x: number; r: number; y: number; w: number; h: number };
       ref: string | null; name: string | null; nd: string | null; flag: Flag | null; points: number; lr: { x: number; r: number } | null; git: string | null; gitTitle: string | null;
       ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
-      machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null };
+      machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null;
+      bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null };
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
-      backs: { cls: string | null; for: string | null; y: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
+      backs: { cls: string | null; for: string | null; y: number; x0: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
         gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
-      heads: { row: string | null; next: boolean }[]; hier: { cls: string; text: string; mark: string }[];
+      heads: { row: string | null; next: boolean; x: number }[]; hier: { cls: string; text: string; mark: string }[];
       secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
@@ -12595,6 +12620,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           zw.length > 0 && zw.every((x) => { const b = r.backs.filter((p) => p.for === x.id);
             return b.length === 1 && (b[0].cls ?? "").split(" ").includes(landedIds.has(x.id ?? "") ? "land" : "wait"); })
           && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
+        // THE BAR OF THE ROW YOU STAND IN (owner 2026-10-09: „[Zitat entfernt]“
+        // ): the focused
+        // row's ground runs from its own point to its next one — main from its point to its head on the
+        // rail, a lane from its point to where its way back begins — and the row itself paints no ground
+        const barClaim = (rr: Read, fr: Row | undefined, kind: "rail" | "end", to: number | undefined) => {
+          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, ground: fr.ground, fade: fr.fade }, to };
+          return !!fr?.barBox && fr.bar === kind && fr.ndC !== null && to !== undefined
+            && Math.abs(fr.barBox.l - fr.ndC) <= 1 && Math.abs(fr.barBox.r - to) <= 1 && fr.barBox.bg !== "rgba(0, 0, 0, 0)"
+            && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
+        };
+        if (st === "lane")
+          claims[`${tag}the focused row's bar runs from its point to its next one — 3A from its point to where its way back begins — and the row paints no ground of its own`] =
+            barClaim(r, lane(r, 9), "end", r.backs.find((p) => p.for === pathOf(own))?.x0);
         // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“): the server this page comes
         // from carries the mark — here the Live row of this machine, and nothing else
         facts.hier = r.hier;
@@ -12727,11 +12765,26 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // ): a tap on 3A opens "Prüfungen" and the five points in the order a lane goes
           // them, its run with its machine, its test instance as one sentence with Starten
           if (st === "land") {
+            // THE BLOCK FOLDS (owner 2026-10-09: „[Zitat entfernt]“): closed by
+            // default one line — a diamond per run and the count — and a tap on its head opens a line per run,
+            // remembered per browser
+            const shut = r.lines.filter((l) => l.cls.split(" ").includes("run"));
+            const fold0 = await evaluate<{ exp: string | null; gates: string[] }>(`({ exp: document.querySelector('#boardbody .rk-runs > .rkbh')?.getAttribute('aria-expanded') ?? null,
+              gates: [...document.querySelectorAll('#boardbody .zd.run.sum .gq')].map((q) => q.dataset.gate) })`);
+            facts.runsFolded = { lines: shut.map((l) => `${l.cls}: ${l.text}`), ...fold0 };
+            claims[`${tag}closed by default, the Prüfungen block is one line — a diamond per run and "1 läuft · 1 wartet"; its head says it opens`] =
+              shut.length === 1 && shut[0].cls.split(" ").includes("sum") && shut[0].text === "1 läuft · 1 wartet"
+              && JSON.stringify(fold0.gates) === JSON.stringify(["run", "queue"]) && fold0.exp === "false";
+            await evaluate(`document.querySelector('#boardbody .rk-runs > .rkbh')?.click()`);
+            await wait(`document.querySelector('#boardbody .zd.run.free')`, 3000);
+            r = await read();
+            const kept = await evaluate<string>(`localStorage.getItem('fleet.board.folds') ?? ''`);
             const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
-            facts.runsClosed = free0.map((l) => `${l.cls}: ${l.text}`);
+            facts.runsClosed = { lines: free0.map((l) => `${l.cls}: ${l.text}`), kept };
             claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
               free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
-              && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste";
+              && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste"
+              && kept.includes('"pruefungen"');
             // A NOTE ON HOVER (owner 2026-10-09: „[Zitat entfernt]“
             // ): at once, the run with its machine, then the lane's
             // way with its five points in their colours; inside the column; no title standing over it. 3B's
@@ -13510,6 +13563,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await settle(120);
             await shot(`info-${st}-${width}-unten`);
           }
+        }
+        if (st === "main" && !phone) {
+          // …and a stem's bar runs from its point to its head on the rail: with one lane landing straight in
+          // main, the focused main's bar ends on the head its lanes come back to
+          fx.mainLane = true;
+          await navigate("http://fleet.fixture/");
+          const railed = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => x.dataset.bar === 'rail')`, 8000);
+          await settle(200);
+          const rm = await read();
+          fx.mainLane = false;
+          claims[`${tag}the focused row's bar runs from its point to its next one — main from its point to its head on the rail — and the row paints no ground of its own`] =
+            railed && barClaim(rm, byId(rm, `${REPO}#main`), "rail", rm.heads.find((h) => h.row === `${REPO}#main`)?.x);
         }
         if (st === "lane" && !phone) {
           // THE LIVE-SERVER BESIDE THE TEST INSTANCE (owner 2026-10-09: „[Zitat entfernt]“

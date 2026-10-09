@@ -45,13 +45,9 @@
 # concurrently cannot have its instance removed by this sweep. THE TWO FAMILIES SHARE A
 # PHILOSOPHY, NOT A RULE: the fleet-e2e sweep kills NOTHING — a suite instance is its wrapper's
 # child, and the wrapper reaps its own. The testinstanz sweep DOES kill, because a standing
-# instance has no wrapper: it is reaped through its own state file — its socket killed by NAME
-# (`tmux -L <sock>` from that file), its directory removed, and its noted pid signalled ONLY when
-# that pid still HOLDS the port the same file records (`lsof -iTCP:<port> -sTCP:LISTEN -t`):
-# expiry is authority over the instance, never over a PID number, which a recycle has since given
-# to a stranger. Never pkill, never a name pattern, never a state file without an explicit
-# expiresAt (that one is listed and left alone; missing proof of expiry is absence of authority,
-# not zero). Nothing else kills a process.
+# instance has no wrapper — and it is not done HERE: this file only calls `testinstanz.sh reap`
+# (see the testinstanz block below), which reaps through each instance's own state file and
+# refuses one with an open connection. Nothing in this file kills a process.
 set -u
 
 ROOT="${1:?usage: scratch-reap.sh <root> [--dry-run]}"
@@ -85,74 +81,24 @@ _mtime() {
   printf '%s\n' "$_mt"
 }
 
-# ===== THE TESTINSTANZ FAMILY: expired standing instances, reaped by their state files ==========
+# ===== THE TESTINSTANZ FAMILY: expired standing instances — handed to testinstanz.sh reap ========
 #
-# Each standing instance (testinstanz.sh, one per worktree) writes /tmp/fleet-testinstanz-<hash>/
-# testinstanz.state with its src, port, socket, noted pid and expiresAt. An instance whose
-# expiresAt has passed loses pid, socket and directory; every removal is NAMED in one line. A
-# state file without a usable expiresAt is an old instance: listed, never touched. The production
-# socket is refused even if a state file ever named it (testinstanz.sh already refuses to write
-# one — belt and braces). This sweep runs BEFORE the fleet-e2e sweep below so THAT summary stays
-# the script's last line, which host-hygiene §e reads.
-TI_ROOT="${FLEET_TI_ROOT:-$ROOT}"  # the family is looked up where the caller pointed the sweep —
-                                   # e2e-isolated.sh passes the real tmpdir, host-hygiene §e its
-                                   # fixture root; /tmp is only the family's own default
-TI_REALTMP="${TMPDIR:-/tmp}"          # the socket lives under the REAL tmpdir, never a fixture's
-TI_REAPED=0; TI_OPEN=0; TI_OLD=0
-for _ts in "$TI_ROOT"/fleet-testinstanz-*/testinstanz.state; do
-  [ -f "$_ts" ] || continue                            # no glob match → the pattern itself
-  _td="$(dirname "$_ts")"
-  _tg() { sed -n "s/^$1=//p" "$_ts" | head -1; }
-  _tp="$(_tg pid)"; _tk="$(_tg sock)"; _te="$(_tg expiresAt)"; _to="$(_tg port)"
-  case "$_te" in
-    '') echo "[testinstanz-reap] kept $_td — state has no expiresAt (old instance), listed only"
-        TI_OLD=$((TI_OLD + 1)); continue ;;
-    *[!0-9]*) echo "[testinstanz-reap] kept $_td — unreadable expiresAt, listed only" >&2
-        TI_OLD=$((TI_OLD + 1)); continue ;;
-  esac
-  if [ "$NOW" -lt "$_te" ]; then TI_OPEN=$((TI_OPEN + 1)); continue; fi
-  if [ -z "$_tk" ] || [ "$_tk" = "claudefleet" ]; then
-    echo "[testinstanz-reap] REFUSED $_td — state names the production socket or none" >&2
-    continue
-  fi
-  # THE IDENTITY GATE. The noted pid dies ONLY when it is the process LISTENING on the port its
-  # own state file records. A recycled pid is somebody else's process by then; killing it by
-  # number would be the pattern-kill this file forswears, spelled in digits. Identity is proven
-  # by the port (`lsof -iTCP:<port> -sTCP:LISTEN -t`, the noted pid among the listeners); without
-  # lsof nothing is provable and the pid is spared — the safe direction. Socket and directory
-  # are OURS by name in either case and are retired regardless.
-  _holds=0; _nolsof=""
-  case "$_tp" in ''|*[!0-9]*) _tp="" ;; esac
-  case "$_to" in ''|*[!0-9]*) _to="" ;; esac
-  if command -v lsof >/dev/null 2>&1; then
-    if [ -n "$_tp" ] && [ -n "$_to" ]; then
-      for _lp in $(lsof -nP -iTCP:"$_to" -sTCP:LISTEN -t 2>/dev/null); do
-        if [ "$_lp" = "$_tp" ]; then _holds=1; fi
-      done
-    fi
-  else
-    _nolsof=" (no lsof on this host — identity unprovable)"
-  fi
-  if [ -n "$DRY" ]; then
-    if [ "$_holds" = 1 ]; then
-      echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp holds port $_to, would be killed; tmux -L $_tk)"
-    else
-      echo "[testinstanz-reap] would remove $_td — expired $(( (NOW - _te) / 60 )) min ago (pid $_tp holds no port ${_to:-from state}, spared$_nolsof; tmux -L $_tk)"
-    fi
-    TI_REAPED=$((TI_REAPED + 1)); continue
-  fi
-  if [ "$_holds" = 1 ]; then
-    kill "$_tp" 2>/dev/null || true
-    _why="pid $_tp killed (held port $_to)"
-  else
-    _why="pid $_tp SPARED (holds no port ${_to:-in state}$_nolsof)"
-  fi
-  TMUX_TMPDIR="$TI_REALTMP" tmux -L "$_tk" kill-server 2>/dev/null || true
-  rm -rf "$_td" 2>/dev/null || { sleep 1; rm -rf "$_td" 2>/dev/null; }
-  echo "[testinstanz-reap] removed $_td — expired $(( (NOW - _te) / 60 )) min ago ($_why, tmux -L $_tk killed, dir removed)"
-  TI_REAPED=$((TI_REAPED + 1))
-done
-echo "[testinstanz-reap] ${TI_REAPED} expired reaped · ${TI_OPEN} not yet expired · ${TI_OLD} without usable expiresAt (listed, never touched)"
+# This file is the TICK, testinstanz.sh is the HAND. The sweep used to live here and looked for
+# the family under THIS script's argument, while `up` writes it under its own root (/tmp): on the
+# Mac e2e-isolated.sh passes $TMPDIR = /var/folders/…/T, so the tick ran and never saw a single
+# instance (2965429957 stood 40 h past its expiresAt on 2026-10-09). `reap` now resolves the root
+# in the one file that also writes it, and this file passes NO root — FLEET_TI_ROOT reaches it only
+# through the environment, which is how host-hygiene §e points it at a fixture. What `reap` decides
+# (identity by port, processes by cwd, a refusal while a connection is open) is in its own header.
+# This runs BEFORE the fleet-e2e sweep below so THAT summary stays the script's last line, which
+# host-hygiene §e reads. A copy without testinstanz.sh beside it (the staged e2e instance) says so.
+_ti_script="$(dirname "$0")/testinstanz.sh"
+if [ -x "$_ti_script" ]; then
+  if [ -n "$DRY" ]; then "$_ti_script" reap --dry-run; else "$_ti_script" reap; fi \
+    || echo "[testinstanz-reap] FAILED — $_ti_script reap exited $?" >&2
+else
+  echo "[testinstanz-reap] UNMEASURED — no executable testinstanz.sh beside $0, no instance looked at" >&2
+fi
 
 reaped=0; kept=0; held=0
 for _d in "$ROOT"/fleet-e2e-instance-*; do

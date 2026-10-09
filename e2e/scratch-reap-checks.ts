@@ -8,9 +8,12 @@
 // against a FIXTURE root passed as the script's argument, never $TMPDIR. That is the hard rule
 // this family already lives by: a probe that swept the operator's real scratch would delete the
 // post-mortem of whatever red run somebody is adjudicating, which is the exact loss the script's
-// evidence window exists to prevent. Since 2026-09-24 the sweep follows its argument for BOTH
-// families it owns, so this fixture root is also where the testinstanz fixtures go.
+// evidence window exists to prevent. The testinstanz family is NOT under that argument any more
+// (2026-10-09): the tick hands it to `testinstanz.sh reap`, which reads its root from FLEET_TI_ROOT
+// or the `/tmp` that `up` writes to — so every spawn here sets FLEET_TI_ROOT to a fixture, and
+// §e10–§e14 drive the tick as e2e-isolated.sh does, from the checkout with testinstanz.sh beside it.
 import { spawn, spawnSync } from "node:child_process";
+import { connect } from "node:net";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CheckFn } from "./host-hygiene-table";
@@ -63,8 +66,14 @@ export async function scratchReapChecks(check: CheckFn): Promise<void> {
   // signals the noted pid only when it still HOLDS the port its own state file records. A live
   // foreign `sleep` stands in for the stranger (alive, bound to nothing); a real listener stands
   // in for the instance. Both are expired by their state files; one reap run decides both.
-  const TI_FOREIGN = `${FIXROOT}/fleet-testinstanz-e2efix-foreign`;
-  const TI_OURS = `${FIXROOT}/fleet-testinstanz-e2efix-ours`;
+  // Since 2026-10-09 the TICK (scratch-reap.sh) hands the family to its HAND (testinstanz.sh reap),
+  // which resolves the root in the file that also writes it. The fixtures therefore live in a root
+  // of their own, reached only through FLEET_TI_ROOT, and EVERY reap spawned here carries one: a
+  // spawn without it would sweep the machine's real /tmp instances — the owner's open tab included.
+  const TIFIX = `${FIXROOT}/ti`;
+  const TI_NONE = `${FIXROOT}/ti-none`;
+  const TI_FOREIGN = `${TIFIX}/fleet-testinstanz-e2efix-foreign`;
+  const TI_OURS = `${TIFIX}/fleet-testinstanz-e2efix-ours`;
   const tiState = (dir: string, pid: string, port: number): string =>
     `src=${dir}\nport=${port}\nsock=fleettie2efix\ndir=${dir}\npid=${pid}\nstarted=1\n` +
     `ttlMin=1\nexpiresAt=${Math.floor(Date.now() / 1000) - 3600}\n`;
@@ -129,7 +138,7 @@ time.sleep(120)
 
   const r = spawnSync(reaper, [FIXROOT], {
     encoding: "utf8",
-    env: { ...process.env, TMUX_TMPDIR: FIXROOT, FLEET_E2E_SCRATCH_RETENTION_H: "48" },
+    env: { ...process.env, TMUX_TMPDIR: FIXROOT, FLEET_E2E_SCRATCH_RETENTION_H: "48", FLEET_TI_ROOT: TI_NONE },
   });
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-1)[0] ?? "";
 
@@ -147,7 +156,107 @@ time.sleep(120)
     r.status === 0 && /2 reaped · 1 within the 48h window · 2 held by a live run/.test(out),
     `status=${r.status} tail=${out}`);
 
-  // the testinstanz verdicts, read off the SAME single reap run. FIRST turn the event loop:
+  // ===== §e10–§e13 THE TTL, END TO END: tick → hand → socket, processes, directory =====
+  // The tick is spawned as e2e-isolated.sh spawns it — `<checkout>/scratch-reap.sh <tmpdir>`, with
+  // testinstanz.sh beside it — against a scratch root that holds an expired testinstanz DECOY (the
+  // old sweep looked there and nowhere else). Two more expired instances sit in TIFIX beside the
+  // §e6/§e7 pair: FULL owns a real tmux server, a listener and a stray process, all with their cwd
+  // inside it; HELD's listener has a browser-like client connected. Baseline (before 2026-10-09):
+  // FULL's tmux survived (killed under TMUX_TMPDIR=$TMPDIR) and HELD was removed with its tab.
+  const modulesReady = existsSync(`${ROOT}/node_modules`);
+  const source = modulesReady ? resolve(realpathSync(`${ROOT}/node_modules`), "..") : ROOT;
+  const tiScript = `${source}/testinstanz.sh`;
+  const tick = `${source}/scratch-reap.sh`;
+  const SCR = `${FIXROOT}/scr`;
+  // the tmux socket dir sits OUTSIDE the fixture root: macOS caps a unix socket path at 104 bytes and
+  // $TMPDIR alone is ~50 there (measured: "File name too long"); pid-named, removed at the end
+  const TSOCK = `/tmp/fleet-rf${process.pid}`;
+  const TI_DECOY = `${SCR}/fleet-testinstanz-e2efix-decoy`;
+  const TI_FULL = `${TIFIX}/fleet-testinstanz-e2efix-full`;
+  const TI_HELD = `${TIFIX}/fleet-testinstanz-e2efix-held`;
+  const fullSock = `fleettirf${process.pid}`;
+  for (const d of [TI_DECOY, TI_FULL, TI_HELD, `${TSOCK}/tmux-${process.getuid?.() ?? 0}`]) mkdirSync(d, { recursive: true });
+  writeFileSync(`${TI_DECOY}/testinstanz.state`, tiState(TI_DECOY, String(DEAD), TI_PORT_FREE));
+  const pyListen = (connect: boolean) => `import socket,time
+def allocate():
+    for _ in range(100):
+        s = socket.socket()
+        s.bind(('127.0.0.1', 0))
+        if not 8900 <= s.getsockname()[1] <= 8999:
+            return s
+        s.close()
+    raise RuntimeError('no ephemeral port outside testinstanz range')
+srv = allocate()
+srv.listen(4)
+${connect ? "cli = socket.create_connection(srv.getsockname())\nconn, _ = srv.accept()" : ""}
+print(srv.getsockname()[1], flush=True)
+time.sleep(120)
+`;
+  const firstLine = (child: ReturnType<typeof spawn>) => new Promise<string>((res) => {
+    let output = "";
+    const timer = setTimeout(() => res(""), 3000);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes("\n")) { clearTimeout(timer); res(output.split("\n")[0] ?? ""); }
+    });
+    child.once("exit", () => { clearTimeout(timer); res(""); });
+  });
+  const fullListener = spawn("python3", ["-u", "-c", pyListen(false)], { cwd: TI_FULL });
+  const heldListener = spawn("python3", ["-u", "-c", pyListen(true)], { cwd: TI_HELD });
+  const stray = spawn("sleep", ["120"], { cwd: TI_FULL });
+  const [fullPortLine, heldPortLine] = await Promise.all([firstLine(fullListener), firstLine(heldListener)]);
+  const fullPort = Number(fullPortLine), heldPort = Number(heldPortLine);
+  const tmuxEnv = { ...process.env, TMUX_TMPDIR: TSOCK };
+  delete (tmuxEnv as Record<string, string | undefined>).TMUX;
+  const tmuxUp = spawnSync("tmux", ["-L", fullSock, "new-session", "-d", "-s", "s1", "-c", TI_FULL, "sleep 120"],
+    { env: tmuxEnv, encoding: "utf8" });
+  const tmuxAlive = () => spawnSync("tmux", ["-L", fullSock, "has-session"], { env: tmuxEnv }).status === 0;
+  const fullSockFile = `${TSOCK}/tmux-${process.getuid?.() ?? 0}/${fullSock}`;
+  writeFileSync(`${TI_FULL}/testinstanz.state`, tiState(TI_FULL, String(fullListener.pid ?? -1), fullPort)
+    .replace("sock=fleettie2efix", `sock=${fullSock}`));
+  writeFileSync(`${TI_HELD}/testinstanz.state`, tiState(TI_HELD, String(heldListener.pid ?? -1), heldPort));
+  const heldSeen = hasLsof && heldPort > 0 && spawnSync("sh", ["-c",
+    `lsof -nP -iTCP:${heldPort} -sTCP:ESTABLISHED -F n | grep -c '^n127.0.0.1:${heldPort}->'`], { encoding: "utf8" }).stdout.trim() === "1";
+  check("host-hygiene §e10 probe could come up: a tmux server, a listener and a stray inside FULL, a connected client on HELD",
+    existsSync(tiScript) && existsSync(tick) && tmuxUp.status === 0 && tmuxAlive() && fullPort > 0 && heldPort > 0
+      && stray.pid !== undefined && (!hasLsof || heldSeen),
+    `script=${existsSync(tiScript)} tick=${existsSync(tick)} tmux=${tmuxUp.status}${tmuxUp.stderr ? ` ${tmuxUp.stderr.trim()}` : ""} fullPort=${fullPort} heldPort=${heldPort} heldSeen=${heldSeen}`);
+
+  const t = spawnSync(tick, [SCR], { encoding: "utf8",
+    env: { ...process.env, FLEET_TI_ROOT: TIFIX, TMUX_TMPDIR: TSOCK, FLEET_E2E_SCRATCH_RETENTION_H: "48" } });
+  const tickOut = `${t.stdout ?? ""}${t.stderr ?? ""}`;
+  const tiLines = tickOut.split("\n").filter((l) => l.startsWith("[testinstanz-reap]")).join(" | ");
+  const exited = (c: ReturnType<typeof spawn>) => Promise.race([
+    new Promise<void>((res) => { if (c.exitCode !== null || c.signalCode) res(); else c.once("exit", () => res()); }),
+    new Promise<void>((res) => setTimeout(res, 2000)),
+  ]);
+  await Promise.all([exited(fullListener), exited(stray)]);
+  const gone = (c: ReturnType<typeof spawn>) => c.pid !== undefined
+    && (c.signalCode !== null || c.exitCode !== null || spawnSync("kill", ["-0", String(c.pid)]).status !== 0);
+  check("host-hygiene §e10 an expired instance is gone after ONE tick, no lane needed — tmux server, socket file, listener, a stray in its dir, the dir",
+    !tmuxAlive() && !existsSync(fullSockFile) && (!hasLsof || gone(fullListener)) && gone(stray) && !existsSync(TI_FULL),
+    `tmux=${tmuxAlive()} sockFile=${existsSync(fullSockFile)} listenerGone=${gone(fullListener)} strayGone=${gone(stray)} dir=${existsSync(TI_FULL)} · ${tiLines}`);
+  check("host-hygiene §e11 an expired instance with an ESTABLISHED connection is REFUSED by the tick — listener, dir and the peer named",
+    (!hasLsof || heldSeen) && existsSync(TI_HELD) && !gone(heldListener)
+      && /\[testinstanz-reap\] REFUSED \S*fleet-testinstanz-e2efix-held — expired \d+ min ago, but 1 ESTABLISHED connection\(s\) on port \d+ from 127\.0\.0\.1 \(1\)/.test(tickOut),
+    `dir=${existsSync(TI_HELD)} listenerAlive=${!gone(heldListener)} · ${tiLines}`);
+  check("host-hygiene §e12 the tick never looks for test instances under its own argument — the decoy in the scratch root is untouched",
+    existsSync(`${TI_DECOY}/testinstanz.state`) && !tickOut.includes("e2efix-decoy"),
+    `decoy=${existsSync(TI_DECOY)} · ${tiLines}`);
+  check("host-hygiene §e12 scratch-reap.sh resolves no testinstanz root of its own — the root lives in testinstanz.sh beside `up`",
+    !readFileSync(tick, "utf8").split("\n").some((l) => !/^\s*#/.test(l) && l.includes("fleet-testinstanz-")),
+    "a `fleet-testinstanz-*` glob in scratch-reap.sh is a second answer to where instances live");
+  const forced = spawnSync(tiScript, ["reap", "--force"], { encoding: "utf8",
+    env: { ...process.env, FLEET_TI_ROOT: TIFIX, TMUX_TMPDIR: TSOCK } });
+  await exited(heldListener);
+  check("host-hygiene §e13 reap --force retires the held instance anyway — the refusal is a question, not a wall",
+    forced.status === 0 && !existsSync(TI_HELD) && (!hasLsof || gone(heldListener)),
+    `exit=${forced.status} dir=${existsSync(TI_HELD)} listenerGone=${gone(heldListener)} · ${forced.stdout.trim().split("\n").slice(-1)[0] ?? ""}`);
+  stray.kill(); fullListener.kill(); heldListener.kill();
+  spawnSync("tmux", ["-L", fullSock, "kill-server"], { env: tmuxEnv });
+  rmSync(TSOCK, { recursive: true, force: true });
+
+  // the testinstanz verdicts §e6/§e7, read off the SAME tick run. FIRST turn the event loop:
   // the reaper's SIGTERM landed while this process was sync-blocked in the spawnSync above, so
   // a killed holder is a ZOMBIE until the parent waits — and `kill -0` answers "alive" for a
   // zombie (measured: the gate killed it, the check still read it as alive). The exit event is
@@ -160,7 +269,7 @@ time.sleep(120)
     }),
     new Promise<void>((res) => setTimeout(res, 2000)),
   ]);
-  const fullOut = `${r.stdout ?? ""}`;
+  const fullOut = `${t.stdout ?? ""}`;
   check("host-hygiene §e6 an expired instance whose noted pid is alive but holds NO port is spared — a recycled pid is a stranger",
     sleepChild.pid !== undefined && spawnSync("kill", ["-0", String(sleepChild.pid)]).status === 0
       && !existsSync(TI_FOREIGN),
@@ -177,15 +286,12 @@ time.sleep(120)
       !holdKilled && !existsSync(TI_OURS),
       `holder pid=${holdChild.pid} killed=${holdKilled} dirRemoved=${!existsSync(TI_OURS)}`);
   }
-  check("host-hygiene §e the testinstanz sweep counts both fixtures reaped",
-    fullOut.includes("[testinstanz-reap] 2 expired reaped"),
+  check("host-hygiene §e the testinstanz sweep counts three reaped and one refused",
+    fullOut.includes("[testinstanz-reap] 3 expired reaped · 1 refused (open connection)"),
     fullOut.split("\n").filter((l) => l.startsWith("[testinstanz-reap]")).join(" | "));
   sleepChild.kill();
   holdChild.kill();
 
-  const modulesReady = existsSync(`${ROOT}/node_modules`);
-  const source = modulesReady ? resolve(realpathSync(`${ROOT}/node_modules`), "..") : ROOT;
-  const tiScript = `${source}/testinstanz.sh`;
   const tiHome = `${FIXROOT}/ti-port`;
   const canonicalRoot = realpathSync(FIXROOT);
   const hashPort = (path: string): number => {
@@ -281,6 +387,41 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
             check("host-hygiene §e8 status names the saved port, not the next free port",
               new RegExp(`http://[^/]+:${tiPort}/`).test(status.stdout),
               `exit=${status.status} line=${status.stdout?.split("\n")[0]?.replace(/\?token=.*/, "?token=[redacted]") ?? ""}`);
+            // §e14 THE OWNER'S TAB (2026-10-08, :8902): a client holds a connection to the running
+            // instance. `status` must show age, rest TTL and that connection with its peer; `down`
+            // must refuse and name it while the instance keeps serving. Baseline: no age, no
+            // connection line, and `down` stopped the instance under the open tab.
+            const host = /http:\/\/([^/:]+):/.exec(status.stdout)?.[1] ?? "";
+            const tab = connect(tiPort, host);
+            await new Promise<void>((res) => {
+              const timer = setTimeout(res, 2000);
+              tab.once("connect", () => { clearTimeout(timer); res(); });
+              tab.once("error", () => { clearTimeout(timer); res(); });
+            });
+            const looked = run("status");
+            let lookedJson: { connections?: { count: number; peers: string[] } | null; ageMs?: number | null } = {};
+            try { lookedJson = JSON.parse(run("status", "--json").stdout); } catch { /* the row below fails as itself */ }
+            const hostRe = host.replace(/\./g, "\\.");
+            check("host-hygiene §e14 status shows the instance's age, its rest TTL and the open connection with its peer",
+              /^age: \d+ h \d+ min \(started=\d+\)$/m.test(looked.stdout) && /^ttl: \d+ min left/m.test(looked.stdout)
+                && new RegExp(`^connections: 1 ESTABLISHED on port ${tiPort} from ${hostRe} \\(1\\)`, "m").test(looked.stdout)
+                && lookedJson.connections?.count === 1 && lookedJson.connections.peers[0] === host
+                && typeof lookedJson.ageMs === "number",
+              `${looked.stdout.split("\n").filter((l) => /^(age|ttl|connections):/.test(l)).join(" | ")} · json=${JSON.stringify(lookedJson.connections)}`);
+            const refused = run("down");
+            check("host-hygiene §e14 down refuses while a connection is open — exit 3, the peer named, the instance still serving",
+              refused.status === 3 && refused.stderr.includes(`1 ESTABLISHED connection(s) on port ${tiPort} from ${host} (1)`)
+                && spawnSync("lsof", ["-nP", `-iTCP:${tiPort}`, "-sTCP:LISTEN"]).status === 0
+                && existsSync(`${stateDir}/testinstanz.state`),
+              `exit=${refused.status} stderr=${refused.stderr.trim()}`);
+            tab.destroy();
+            // the server side lets go a beat after the client's FIN; the finally's plain `down`
+            // must find the port quiet, so wait for it instead of reaching for --force
+            for (let i = 0; i < 30; i++) {
+              const open = spawnSync("sh", ["-c", `lsof -nP -iTCP:${tiPort} -sTCP:ESTABLISHED -t | wc -l`], { encoding: "utf8" });
+              if (open.stdout.trim() === "0") break;
+              await new Promise((res) => setTimeout(res, 100));
+            }
             const again = run("up");
             check("host-hygiene §e8 up on the running instance keeps its saved port",
               again.status === 0 && again.stdout.includes("already up")
@@ -441,11 +582,14 @@ while True:
         for (const [route, body] of routes) {
           let status = 0;
           try {
+            // `connection: close`, and the body drained: a pooled keep-alive socket is an
+            // ESTABLISHED connection into the instance, and the finally's `down` rightly refuses one
             const response = await fetch(`${address}${route}`, {
-              method: "POST", headers: { authorization: `Bearer ${snapToken}`, "content-type": "application/json" },
-              body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+              method: "POST", headers: { authorization: `Bearer ${snapToken}`, "content-type": "application/json", connection: "close" },
+              body: JSON.stringify(body), signal: AbortSignal.timeout(10_000), keepalive: false,
             });
             status = response.status;
+            await response.arrayBuffer().catch(() => undefined);
           } catch { /* failed request is a failed probe */ }
           check(`host-hygiene §e9 POST ${route} is refused by planted state`, status >= 400,
             `HTTP ${status}`);

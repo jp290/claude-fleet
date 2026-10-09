@@ -26,13 +26,24 @@
 #   ./testinstanz.sh status                 is it up, where, rest of its ttl, and who holds the mutex
 #   ./testinstanz.sh source                 what `up` would record as the shown stand, measured now
 #   ./testinstanz.sh list                   every test instance of this machine, from state files
-#   ./testinstanz.sh down                   stop the server, kill ITS tmux by socket, remove the dir
+#   ./testinstanz.sh down [--force]         stop the server, kill ITS tmux by socket, remove the dir —
+#                                           refused while a browser holds a connection to its port
+#   ./testinstanz.sh reap [--dry-run] [--force]  retire EVERY expired instance of this machine; the
+#                                           TTL tick (scratch-reap.sh, at each e2e-isolated.sh start)
+#                                           calls it; an instance with an open connection is refused
 #
 # ONE INSTANCE PER WORKTREE. Port, tmux socket and directory derive from the ABSOLUTE worktree
 # path (short hash), so two worktrees run two instances SIDE BY SIDE — the old fixed triple
 # 8862/fleetti733b made every copy answer `up` with "already up" from a foreign lane (measured
 # 2026-09-24, ~10 stale instances on this machine). The chosen values live in the instance's
-# state file; scratch-reap.sh reaps an expired one by the PID that file noted.
+# state file; `reap` retires an expired one by what that file names.
+#
+# THE TTL IS ENFORCED HERE, AND ONLY HERE. `reap` lives in the same file as `up` so the two can
+# never disagree about WHERE an instance lives: until 2026-10-09 the sweep sat in scratch-reap.sh
+# and looked under its argument — e2e-isolated.sh passes $TMPDIR, which on the Mac is
+# /var/folders/…/T, while `up` writes /tmp — and killed the socket under TMUX_TMPDIR=$TMPDIR while
+# tmux had made it under /tmp. The tick ran and never saw a single instance: on 2026-10-09
+# 2965429957 stood 40 h past its expiresAt. scratch-reap.sh now only calls `reap`.
 set -e
 
 # THE DERIVATION — one instance per worktree. Port, tmux socket and directory come from the
@@ -202,6 +213,92 @@ ti_workhorse_url() {
 # FLEET_TI_LIVE_URL points it elsewhere (a scratch "live" server when the switch itself is measured).
 # The name is a contract with server.ts#TESTINSTANZ_LIVE_NAME, which marks this entry as the way back.
 ti_live_url() { echo "${FLEET_TI_LIVE_URL:-http://$(ti_addr):8790}"; }
+
+# THE OWNER'S TAB, MEASURED. Every ESTABLISHED connection INTO port $1 — the server's side, the
+# local address ending in :$1 — one `local->peer` per line. An open board tab is one (it holds its
+# stream open). On 2026-10-08 the reap of :8902 shot exactly such a tab, and `lsof -nP -iTCP:8902`
+# would have shown it beforehand. lsof on the Mac, ss on a Linux host without it; neither tool
+# means the answer is UNKNOWN (exit 3), never zero.
+ti_conns() {
+  case "$1" in ''|*[!0-9]*) return 3 ;; esac
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:ESTABLISHED -F n 2>/dev/null | sed -n 's/^n//p' \
+      | awk -v p=":$1" '{ split($0, a, "->"); if (substr(a[1], length(a[1]) - length(p) + 1) == p) print }' | sort -u
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -Htn state established "( sport = :$1 )" 2>/dev/null | awk '{ print $(NF-1) "->" $NF }' | sort -u
+    return 0
+  fi
+  return 3
+}
+# `local->peer` lines on stdin → "100.64.0.1 (3), 127.0.0.1 (1)": who is looking, not which socket
+ti_peers() { sed 's/.*->//; s/:[0-9]*$//' | sort | uniq -c | awk '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $2, $1 }'; }
+
+# THE PROCESSES AN INSTANCE LEFT BEHIND, by CWD — the identity e2e-stage.sh uses for suite
+# instances, for its reason: a cwd at or under the instance directory is a place nothing else on
+# this machine runs (the server is started with `cd "$DIR"`, its panes and painters inherit or
+# point into it), while a pid NUMBER may have been recycled to a stranger. $1 must be the
+# directory's REAL path (/tmp is a symlink on the Mac, and lsof reports /private/tmp).
+ti_cwd_pids() {
+  if [ -r /proc/self/cwd ]; then
+    for TI_PD in /proc/[0-9]*; do
+      TI_CW=$(readlink "$TI_PD/cwd" 2>/dev/null) || continue
+      case "$TI_CW" in "$1"|"$1"/*) echo "${TI_PD#/proc/}" ;; esac
+    done
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -n -w -d cwd -F pn 2>/dev/null | awk -v pre="$1" '
+      /^p/ { pid = substr($0, 2); next }
+      /^n/ { p = substr($0, 2); if (p == pre || index(p, pre "/") == 1) print pid }'
+  fi
+}
+
+# RETIRE ONE INSTANCE by what it owns: the noted pid ($2) only when it LISTENS on the state file's
+# port ($3) — expiry is authority over the instance, never over a pid number —, its tmux socket by
+# NAME ($4), every process whose cwd lies inside its directory ($1), the socket file if its server is
+# gone, then the directory. Never pkill, never a name pattern. Prints what it did; sets TI_WHY.
+ti_retire() {
+  TI_RD="$1"; TI_RPID="$2"; TI_RPORT="$3"; TI_RSOCK="$4"
+  TI_REAL=$(cd "$TI_RD" 2>/dev/null && pwd -P) || TI_REAL="$TI_RD"
+  TI_HOLDS=0; TI_NOLSOF=""
+  case "$TI_RPID" in ''|*[!0-9]*|0|1) TI_RPID="" ;; esac
+  if command -v lsof >/dev/null 2>&1; then
+    if [ -n "$TI_RPID" ] && [ -n "$TI_RPORT" ]; then
+      for TI_LP in $(lsof -nP -iTCP:"$TI_RPORT" -sTCP:LISTEN -t 2>/dev/null); do
+        if [ "$TI_LP" = "$TI_RPID" ]; then TI_HOLDS=1; fi
+      done
+    fi
+  else
+    TI_NOLSOF=" (no lsof on this host — identity unprovable)"
+  fi
+  if [ "$TI_HOLDS" = 1 ]; then
+    kill "$TI_RPID" 2>/dev/null || true
+    TI_WHY="pid $TI_RPID killed (held port $TI_RPORT)"
+  else
+    TI_WHY="pid ${TI_RPID:-none} SPARED (holds no port ${TI_RPORT:-in state}$TI_NOLSOF)"
+  fi
+  tmux -L "$TI_RSOCK" kill-server 2>/dev/null || true
+  TI_ORPH=""
+  # only ever below a directory of this family's NAME: a cwd sweep over anything wider is a pattern kill
+  case "$TI_REAL" in */fleet-testinstanz-?*) : ;; *) TI_REAL="" ;; esac
+  if [ -n "$TI_REAL" ]; then
+    for TI_OP in $(ti_cwd_pids "$TI_REAL"); do
+      case "$TI_OP" in "$$"|1) continue ;; esac
+      TI_ORPH="$TI_ORPH $TI_OP"
+    done
+  fi
+  if [ -n "$TI_ORPH" ]; then
+    kill -TERM $TI_ORPH 2>/dev/null || true
+    sleep 1
+    kill -KILL $TI_ORPH 2>/dev/null || true
+    TI_WHY="$TI_WHY, $(echo $TI_ORPH | wc -w | tr -d ' ') process(es) inside the dir ended"
+  fi
+  # tmux leaves its -L socket file behind when the server dies (e2e-stage.sh's dead-socket reap)
+  TI_SOCKF="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$TI_RSOCK"
+  if [ -S "$TI_SOCKF" ] && ! tmux -L "$TI_RSOCK" list-sessions >/dev/null 2>&1; then rm -f "$TI_SOCKF"; fi
+  # the dying panes' zsh still writes home/.zsh_history after kill-server returns: one retry
+  rm -rf "$TI_RD" 2>/dev/null || { sleep 1; rm -rf "$TI_RD" 2>/dev/null; } || true
+}
 
 # The fixtures are replanted against the RUNNING instance, so switching between the two stands
 # (free places in the axis / all sixteen taken) costs no restart.
@@ -587,8 +684,11 @@ source)
   ti_measure
   ;;
 status)
+  # the connections INTO this instance's port, measured once for both forms; UNKNOWN stays unknown
+  if TI_CONNS=$(ti_conns "$PORT"); then TI_CONNS_KNOWN=1; else TI_CONNS=""; TI_CONNS_KNOWN=0; fi
   if [ "${2:-}" = --json ]; then
-    TI_STATUS_SRC="$SRC" TI_STATUS_DIR="$DIR" TI_STATUS_HOST="$(ti_addr)" bun - <<'JS'
+    TI_STATUS_SRC="$SRC" TI_STATUS_DIR="$DIR" TI_STATUS_HOST="$(ti_addr)" \
+      TI_STATUS_CONNS="$TI_CONNS" TI_STATUS_CONNS_KNOWN="$TI_CONNS_KNOWN" bun - <<'JS'
 const src=process.env.TI_STATUS_SRC,dir=process.env.TI_STATUS_DIR,host=process.env.TI_STATUS_HOST;
 const observedAt=Date.now();
 const read=async(name)=>await Bun.file(`${dir}/${name}`).text().catch(()=>null);
@@ -612,10 +712,13 @@ if(identity==='matched'&&fields.host===host&&/^(127\.0\.0\.1|100\.(?:\d{1,3}\.){
 const fact=(key)=>{try{const value=JSON.parse(fields[key]);return value&&typeof value==='object'?{head:/^[0-9a-f]{40}$/.test(value.head??'')?value.head:null,branch:typeof value.branch==='string'?value.branch:null,dirty:Number.isInteger(value.dirty)&&value.dirty>=0?value.dirty:null,measuredAt:Number.isSafeInteger(value.measuredAt)?value.measuredAt:null}:null;}catch{return null;}};
 const before=fact('sourceBefore'),after=fact('sourceAfter');
 const copyHead=null;
+const connLines=(process.env.TI_STATUS_CONNS??'').split('\n').filter(Boolean);
+const connections=process.env.TI_STATUS_CONNS_KNOWN==='1'?{count:connLines.length,peers:[...new Set(connLines.map(l=>l.replace(/.*->/,'').replace(/:\d+$/,'')))]}:null;
 console.log(JSON.stringify({state:!raw?'not-running':expiresAt!==null&&expiresAt<=observedAt?'expired':procStatus==='dead'?'not-running':identity!=='matched'?'unknown':httpStatus==='healthy'?'up':httpStatus==='timeout'?'http-timeout':httpStatus==='failed'?'http-failed':'unknown',
  recordedSource:raw?{path:fields.src===src?src:null,before,after}:null,copyHead,mode:['mixed','snapshot'].includes(fields.mode)?fields.mode:null,
  copyStartedAt:number('copyStartedAt')===null?null:number('copyStartedAt')*1000,copyFinishedAt:number('copyFinishedAt')===null?null:number('copyFinishedAt')*1000,builtAt:number('builtAt')===null?null:number('builtAt')*1000,
- startedAt:number('started')===null?null:number('started')*1000,expiresAt,remainingTTL:expiresAt===null?null:Math.max(0,expiresAt-observedAt),port,procStatus,httpStatus,identity,observedAt}));
+ startedAt:number('started')===null?null:number('started')*1000,expiresAt,remainingTTL:expiresAt===null?null:Math.max(0,expiresAt-observedAt),
+ ageMs:number('started')===null?null:Math.max(0,observedAt-number('started')*1000),connections,port,procStatus,httpStatus,identity,observedAt}));
 JS
     exit 0
   fi
@@ -623,6 +726,12 @@ JS
   else echo "down (no live pid in $PIDF)"; fi
   echo "tmux sessions on socket $SOCK: $(tmux -L "$SOCK" list-sessions 2>/dev/null | wc -l | tr -d ' ')"
   if [ -f "$STATE" ]; then
+    TI_STARTED=$(sed -n 's/^started=//p' "$STATE" | head -1)
+    case "$TI_STARTED" in
+      ''|*[!0-9]*) echo "age: unknown (state has no started)" ;;
+      *) TI_AGE=$(( $(date +%s) - TI_STARTED ))
+         echo "age: $((TI_AGE / 3600)) h $((TI_AGE % 3600 / 60)) min (started=$TI_STARTED)" ;;
+    esac
     TI_EXP=$(sed -n 's/^expiresAt=//p' "$STATE" | head -1)
     case "$TI_EXP" in
       ''|*[!0-9]*) : ;;
@@ -630,9 +739,16 @@ JS
          if [ "$TI_NOW" -lt "$TI_EXP" ]; then
            echo "ttl: $(( (TI_EXP - TI_NOW + 59) / 60 )) min left (expiresAt=$TI_EXP)"
          else
-           echo "ttl: EXPIRED $(( (TI_NOW - TI_EXP) / 60 )) min ago — scratch-reap.sh removes it on its next run"
+           echo "ttl: EXPIRED $(( (TI_NOW - TI_EXP) / 60 )) min ago — the next reap tick removes it unless a connection is open"
          fi ;;
     esac
+  fi
+  if [ "$TI_CONNS_KNOWN" = 0 ]; then
+    echo "connections: UNKNOWN on port $PORT (neither lsof nor ss on this host) — down and reap refuse without --force"
+  elif [ -z "$TI_CONNS" ]; then
+    echo "connections: 0 ESTABLISHED on port $PORT"
+  else
+    echo "connections: $(printf '%s\n' "$TI_CONNS" | grep -c .) ESTABLISHED on port $PORT from $(printf '%s\n' "$TI_CONNS" | ti_peers) — down and reap refuse without --force"
   fi
   echo "--- ./ctl.sh lock (this instance must NEVER appear as the holder)"
   ( cd "$SRC" && ./ctl.sh lock )
@@ -669,10 +785,26 @@ down)
   else
     echo 'down: no known instance'; exit 0
   fi
+  # AN OPEN CONNECTION IS SOMEBODY LOOKING. Without --force `down` names who and stops (exit 3);
+  # a host that cannot see connections cannot rule one out, and refuses the same way.
+  if [ "${2:-}" != --force ]; then
+    if TI_CONNS=$(ti_conns "$PORT"); then
+      if [ -n "$TI_CONNS" ]; then
+        echo "refused: $(printf '%s\n' "$TI_CONNS" | grep -c .) ESTABLISHED connection(s) on port $PORT from $(printf '%s\n' "$TI_CONNS" | ti_peers) — an open tab; nothing stopped (down --force stops it anyway)" >&2
+        exit 3
+      fi
+    else
+      echo "refused: cannot see connections on port $PORT (neither lsof nor ss); nothing stopped (down --force stops it anyway)" >&2
+      exit 3
+    fi
+  fi
   ti_alive && kill "$(cat "$PIDF")" 2>/dev/null || true
   # By SOCKET NAME, never a name pattern: `pkill -f` on this machine reaches the live server and
   # the post-land audit (AGENTS.md §Verify).
   tmux -L "$SOCK" kill-server 2>/dev/null || true
+  # …and the socket FILE, which tmux leaves behind (e2e-stage.sh's dead-socket reap)
+  TI_SOCKF="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK"
+  if [ -S "$TI_SOCKF" ] && ! tmux -L "$SOCK" list-sessions >/dev/null 2>&1; then rm -f "$TI_SOCKF"; fi
   # The dying panes' zsh still writes $DIR/home/.zsh_history after kill-server returns; a single
   # rm raced it ("Directory not empty", 2026-09-21). One retry after the shells are gone.
   rm -rf "$DIR" 2>/dev/null || { sleep 1; rm -rf "$DIR"; }
@@ -686,6 +818,66 @@ down)
   fi
   echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
   ;;
+reap)
+  # THE TTL TICK'S HAND. Every instance of this machine, read from its state file under the SAME
+  # root `up` wrote it to; scratch-reap.sh calls this at each e2e-isolated.sh start, so an expired
+  # instance dies whether or not the lane that started it still exists. Four outcomes per state
+  # file, each one line: not yet expired (counted), no usable expiresAt (listed, never touched —
+  # missing proof of expiry is absence of authority), an OPEN CONNECTION on its port (refused
+  # without --force, peers named: the 2026-10-08 :8902 lesson), or retired by ti_retire.
+  shift
+  TI_DRY=""; TI_FORCE=""
+  for TI_A in "$@"; do
+    case "$TI_A" in
+      --dry-run) TI_DRY=1 ;;
+      --force) TI_FORCE=1 ;;
+      *) echo "usage: ./testinstanz.sh reap [--dry-run] [--force]" >&2; exit 2 ;;
+    esac
+  done
+  TI_NOW=$(date +%s); TI_REAPED=0; TI_HELD=0; TI_OPEN=0; TI_OLD=0
+  for TI_S in "$TI_ROOT"/fleet-testinstanz-*/testinstanz.state; do
+    [ -f "$TI_S" ] || continue                            # no glob match → the pattern itself
+    TI_D=$(dirname "$TI_S")
+    TI_GV() { sed -n "s/^$1=//p" "$TI_S" | head -1; }
+    TI_PP=$(TI_GV pid); TI_K=$(TI_GV sock); TI_E=$(TI_GV expiresAt); TI_P=$(TI_GV port)
+    case "$TI_E" in
+      '') echo "[testinstanz-reap] kept $TI_D — state has no expiresAt (old instance), listed only"
+          TI_OLD=$((TI_OLD + 1)); continue ;;
+      *[!0-9]*) echo "[testinstanz-reap] kept $TI_D — unreadable expiresAt, listed only" >&2
+          TI_OLD=$((TI_OLD + 1)); continue ;;
+    esac
+    if [ "$TI_NOW" -lt "$TI_E" ]; then TI_OPEN=$((TI_OPEN + 1)); continue; fi
+    if [ -z "$TI_K" ] || [ "$TI_K" = claudefleet ]; then
+      echo "[testinstanz-reap] REFUSED $TI_D — state names the production socket or none" >&2
+      continue
+    fi
+    case "$TI_P" in ''|*[!0-9]*) TI_P="" ;; esac
+    TI_AGO=$(( (TI_NOW - TI_E) / 60 ))
+    if [ -z "$TI_FORCE" ]; then
+      if TI_CONNS=$(ti_conns "$TI_P"); then
+        if [ -n "$TI_CONNS" ]; then
+          echo "[testinstanz-reap] REFUSED $TI_D — expired $TI_AGO min ago, but $(printf '%s\n' "$TI_CONNS" | grep -c .) ESTABLISHED connection(s) on port $TI_P from $(printf '%s\n' "$TI_CONNS" | ti_peers); reap --force retires it"
+          TI_HELD=$((TI_HELD + 1)); continue
+        fi
+      else
+        echo "[testinstanz-reap] REFUSED $TI_D — expired $TI_AGO min ago, and port ${TI_P:-?} cannot be checked for open connections (no port in state, or neither lsof nor ss); reap --force retires it"
+        TI_HELD=$((TI_HELD + 1)); continue
+      fi
+    fi
+    if [ -n "$TI_DRY" ]; then
+      echo "[testinstanz-reap] would remove $TI_D — expired $TI_AGO min ago (pid ${TI_PP:-none}, port ${TI_P:-?}, tmux -L $TI_K)"
+      TI_REAPED=$((TI_REAPED + 1)); continue
+    fi
+    ti_retire "$TI_D" "$TI_PP" "$TI_P" "$TI_K"
+    if [ -e "$TI_D" ]; then
+      echo "[testinstanz-reap] FAILED $TI_D — expired $TI_AGO min ago, directory still there ($TI_WHY, tmux -L $TI_K killed)" >&2
+    else
+      echo "[testinstanz-reap] removed $TI_D — expired $TI_AGO min ago ($TI_WHY, tmux -L $TI_K killed, dir removed)"
+      TI_REAPED=$((TI_REAPED + 1))
+    fi
+  done
+  echo "[testinstanz-reap] ${TI_REAPED} expired reaped · ${TI_HELD} refused (open connection) · ${TI_OPEN} not yet expired · ${TI_OLD} without usable expiresAt (listed, never touched) · root $TI_ROOT"
+  ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | refresh | fixtures [mixed|full] | succession | states | status | source | list | down" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | refresh | fixtures [mixed|full] | succession | states | status | source | list | down [--force] | reap [--dry-run] [--force]" >&2; exit 2;;
 esac

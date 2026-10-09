@@ -9,9 +9,10 @@ eine bereinigte Kopie echter Daten: „[Zitat entfernt]“.
     ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   aufstellen, bauen, starten, Daten pflanzen
     ./testinstanz.sh fixtures [mixed|full]           neu pflanzen, ohne Neustart
     ./testinstanz.sh states                          was die Leiste JETZT malt, je Zustand
-    ./testinstanz.sh status                          läuft sie, wo, Restzeit — und wer den Mutex hält
+    ./testinstanz.sh status                          läuft sie, wo, Alter, Restzeit, offene Verbindungen — und wer den Mutex hält
     ./testinstanz.sh list                            jede Testinstanz der Maschine, aus State-Dateien
-    ./testinstanz.sh down                            Server aus, ihr tmux per Socket, Verzeichnis weg
+    ./testinstanz.sh down [--force]                  Server aus, ihr tmux per Socket, Verzeichnis weg — verweigert bei offener Verbindung
+    ./testinstanz.sh reap [--dry-run] [--force]      jede abgelaufene Instanz der Maschine abräumen (der TTL-Takt ruft das)
 
 ## Die Ableitung — eine Instanz je Worktree
 
@@ -103,7 +104,8 @@ isolierte Kopie bleibt hinter dem eigenen Port, Socket, Verzeichnis und `env -i`
 3. **Beim Ableiten:** Port 8790, Socket `claudefleet` und ein Verzeichnis INNERHALB des Checkouts
    werden mit Namen abgewiesen (exit 2) — ein Env-Override ist genau der Weg, auf dem jemand dem
    Skript versehentlich den Live-Fleet reicht. Abräumt wird per notierter PID — aber nur bei
-   Port-Identität — und `tmux -L <socket> kill-server`, nie über ein Namensmuster.
+   Port-Identität —, `tmux -L <socket> kill-server` und Prozess-cwd im Instanzverzeichnis, nie
+   über ein Namensmuster.
 
 Dazu: `FLEET_CMD=true`, also wird nie ein Agent gespawnt; die Harness-CLI in den Panes ist ein
 stand-in (siehe den Kopf von `testinstanz.sh`). Im Modus `snapshot` heißt der Stellvertreter
@@ -148,15 +150,27 @@ erscheinen.
 nichts und das Skript endet mit exit 1 — eine Instanz, die das Client-Bundle von gestern zeigt,
 ist schlimmer als keine.
 
-`up --ttl <min>` (Default 240) schreibt `expiresAt` in die State-Datei; `status` zeigt die
-Restzeit und die URL. Der Lauf `scratch-reap.sh` (derselbe, der die e2e-Scratch-Halde besitzt,
-und der die Familie DORT sucht, wohin sein Argument zeigt) beendet eine abgelaufene Instanz
-per `tmux -L <socket> kill-server`, löscht ihr Verzeichnis — und signalisiert die notierte PID
-NUR, wenn sie noch den Port hält, den dieselbe Datei verzeichnet (`lsof -iTCP:<port>
--sTCP:LISTEN -t`). Ein recycelter PID-Kreis ist inzwischen ein fremder Prozess; Alter und
-Ablauf geben über ihn keine Autorität, der Port ist der Identitätsbeweis. Ohne Beweis wird
-verschont (safe direction), und jede Entscheidung steht in einer Zeile. State-Dateien ohne
-`expiresAt` (alte Instanzen) werden nur gelistet, nie beendet.
+`up --ttl <min>` (Default 240) schreibt `expiresAt` in die State-Datei; `status` zeigt Alter,
+Restzeit, URL und die ESTABLISHED-Verbindungen auf den Port samt Gegenstelle (`status --json`:
+`ageMs`, `connections {count, peers}`, `null` wenn der Host sie nicht sehen kann).
+
+**Der TTL-Takt** ist `scratch-reap.sh`, gerufen beim Start jedes `e2e-isolated.sh` dieser Maschine;
+er ruft `testinstanz.sh reap`. Die Hand liegt bewusst in DERSELBEN Datei wie `up`: bis 2026-10-09
+suchte `scratch-reap.sh` die Familie unter seinem Argument (`$TMPDIR`, auf dem Mac
+`/var/folders/…/T`), `up` schreibt nach `/tmp` — der Takt lief und sah keine einzige Instanz
+(2965429957 stand 40 h über `expiresAt`). `reap` beendet eine abgelaufene Instanz unabhängig davon,
+ob ihre Lane noch lebt: die notierte PID NUR, wenn sie noch den Port hält, den dieselbe Datei
+verzeichnet (`lsof -iTCP:<port> -sTCP:LISTEN -t` — ein recycelter PID ist ein fremder Prozess),
+`tmux -L <socket> kill-server` samt zurückgelassener Socket-Datei, jeden Prozess, dessen cwd im
+Instanzverzeichnis liegt, dann das Verzeichnis. Jede Entscheidung steht in einer Zeile.
+State-Dateien ohne `expiresAt` (alte Instanzen) werden nur gelistet, nie beendet.
+
+**Offene Verbindung = jemand schaut.** `reap` und `down` verweigern eine Instanz mit
+ESTABLISHED-Verbindung auf ihren Port (`lsof`, auf Linux ohne lsof `ss`) und nennen die
+Gegenstelle; kann der Host Verbindungen nicht sehen, verweigern sie ebenso. `--force` übersteuert.
+Anlass: 2026-10-08 traf das Abräumen von :8902 den offenen Tab des Owners. Die Kehrseite: ein Tab,
+der offen bleibt, hält eine abgelaufene Instanz am Leben — `reap` zählt sie als „refused“.
+Belege: `e2e/scratch-reap-checks.ts` §e10–§e14.
 
 `testinstanz.sh list` liest ausschließlich State-Dateien — nie `ps` (Kommandozeilen tragen
 Tokens), nie Sockets — und zeigt Worktree, Port, URL ohne Token und Restzeit.

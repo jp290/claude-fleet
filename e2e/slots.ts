@@ -1947,7 +1947,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("B5: the checks are the block Prüfungen of the Arbeitsorte — one line per run that runs or waits; at its lane the run is the diamond on its way back",
     /checks = block\("runs", "Prüfungen"\)/.test(cliSrc)
       && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done"\)\.sort\(/.test(cliSrc)
-      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(gate\) row\.appendChild\(gateButton\(gateKey, gate, mine\)\);/.test(cliSrc)
+      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(gate\) row\.appendChild\(gateButton\(gateKey, gate, w, mine, ended\)\);/.test(cliSrc)
       && cliSrc.indexOf("checks.appendChild(runRows(focusSlot === null));") > cliSrc.indexOf("projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));")
       && !/"Alle Prüfläufe"/.test(cliSrc) && !/meterOpen/.test(cliSrc)
       && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "runRows + arbeitsorteSection in src/board.ts");
@@ -12013,12 +12013,12 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "a landed lane's way back stays dashed", state: "viele", claim: "every lane runs back to its target's rail",
     needle: `  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";`, with: `  row.dataset.land = "wait";` },
   { name: "a running check draws no diamond", state: "land", claim: "3A's flag says only results",
-    needle: "  if (gate) row.appendChild(gateButton(gateKey, gate, mine));", with: "  void gateKey;" },
+    needle: "  if (gate) row.appendChild(gateButton(gateKey, gate, w, mine, ended));", with: "  void gateKey;" },
   { name: "the flag says the running check again", state: "lane", claim: "3A's flag says only results",
     needle: "  const reds = redStages(w);\n  if (reds.length) return { cls: \"bad\", old: old(reds) };",
     with: "  const reds = redStages(w);\n  if (WAY_CHECKS.some(({ key }) => w.checks?.[key]?.state === \"running\")) return { cls: \"bad\", old: false };\n  if (reds.length) return { cls: \"bad\", old: old(reds) };" },
   { name: "a tap on the diamond says nothing", state: "land", claim: "a tap on 3A's diamond says what runs",
-    needle: "  if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine));", with: "" },
+    needle: "  if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine, ended));", with: "" },
   { name: "every project beside the focused one", state: "lane", claim: "only the focused session's project stands",
     needle: "const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;", with: "const focusR: WorkplaceRepo | undefined = undefined;" },
   { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
@@ -12027,6 +12027,19 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "    if (s?.cwd) who.append(", with: "    if (false) who.append(" },
   { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from carries the mark",
     needle: "      rows[0].dataset.hier = HERE_MARK;", with: "" },
+  // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note
+  { name: "the diamond sits midway to the rail", state: "land", claim: "every diamond stands on its way back right beside the row's last mark",
+    needle: "        const gx = Math.min(x0 + 5, rx - 7);", with: "        const gx = (x0 + rx) / 2;" },
+  { name: "a run that ended leaves no colour", state: "viele", claim: "a run that just ended colours its lane's diamond",
+    needle: `  return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;`, with: "  return looks.length ? null : null;" },
+  { name: "the note never shows", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
+    needle: "    #board .zr > .lgate:hover > .gnote, #board .zr > .lgate:focus-visible > .gnote { display: block; }", with: "" },
+  { name: "the note says no way", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
+    needle: "  out.push(way);\n  return out;", with: "  return out;" },
+  { name: "a run the lane reported stands at no point", state: "land", width: 1200, claim: "the preview its lane reported waits at its point",
+    needle: "    : mine.find((b) => b.station !== \"done\" && RUN_POINT[b.kind] === key);", with: "    : undefined;" },
+  { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live-Server stands under Mac",
+    needle: "    if (live) {\n      const [key, list] = live;", with: "    if (live && false) {\n      const [key, list] = live;" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
@@ -12083,7 +12096,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0,
     tiUntil: 0, holdWorktrees: null as Promise<void> | null, holdOpen: null as Promise<void> | null,
     // THE LIVE SESSION (state `live`): which of its three steps the fixture refuses, and the lanes it made
-    liveFail: null as null | "lane" | "send" | "ti", liveMade: [] as Lane[] };
+    liveFail: null as null | "lane" | "send" | "ti", liveMade: [] as Lane[],
+    // THE PAGE AS A TEST INSTANCE SERVES IT (instance.source + the way back to live): one look at Geräte
+    ti: false };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -12200,7 +12215,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         { kind: "helper-daemon", repo: REPO, name: "mainMacbook", path: null, head: null, basis: "heartbeat", codeScope: "helper-daemon", observedAt: fx.now - 41 * 86_400_000,
           target: null, remote: null, update: null, reasons: [{ field: "head", reason: "daemon-sha-unreported" }] },
         // the links name machines that report otherwise too: this server itself and the helper
-        ...["Mac", "workhorse", "Zweite Fleet"].map((name) => ({ kind: "linked-instance", repo: null, name, path: null, head: null, basis: "link-only", codeScope: "server",
+        ...["Mac", "workhorse", "Zweite Fleet", ...(fx.ti ? ["live"] : [])].map((name) => ({ kind: "linked-instance", repo: null, name, path: null, head: null, basis: "link-only", codeScope: "server",
           observedAt: null, target: null, remote: null, update: null, reasons: [{ field: "head", reason: "linked-instance-sha-unreported" }] })),
         // two helpers whose names the server could not show: two machines, never one
         ...(st === "doppelt" ? [hex("nameless-1"), hex("nameless-2")].map((head) => ({ kind: "helper-daemon", repo: REPO, name: null, path: null, head, basis: "heartbeat",
@@ -12233,6 +12248,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       reports: [{ slot: 9, label: null, phase: "running", suite: "land gate", exitCode: null, at: fx.now - 161_000, origin: "server", branch: own.branch,
         stage: "Sicherheit (2/3)", stats: { n: 12, p50: 250_000, p90: 300_000 } },
       { slot: 10, label: null, phase: "waiting", suite: "Vorschau", exitCode: null, at: fx.now - 52_000, origin: "lane", branch: zeit.branch }] }
+    // two lanes whose own runs ended a minute ago: C's passed, G's failed (the diamond's colours) —
+    // in every state that draws those lanes
+    : st === "viele" || st === "viele30" || st === "branch" ? { lock: null, reports: [
+      { slot: 11, label: null, phase: "done", suite: "Vorschau", exitCode: 0, at: fx.now - 40_000, origin: "lane", branch: "fleet/261005-insel-am-telefon-1b2c" },
+      { slot: 16, label: null, phase: "failed", suite: "Vorschau", exitCode: 1, at: fx.now - 70_000, origin: "lane", branch: "fleet/261005-modell-register-0f41" }] }
     : { lock: null, reports: [] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
@@ -12311,7 +12331,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       const st = fx.state;
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
-      if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st), instance: { name: "Mac" },
+      if (p === "/api/sessions") return void json(requestId, { now: fx.now, chips: [], tasks: [], slots: sessions(st),
+        instance: fx.ti ? { name: "Mac", source: { branch: own.branch, head: hex(own.branch), dirty: 0, measuredAt: fx.now - 60_000,
+          target: { branch: "overhaul", head: OVER, ahead: 3 } } } : { name: "Mac" },
+        ...(fx.ti ? { instances: [{ name: "live", url: "http://fleet.fixture:8790", kind: "live" }] } : {}),
         deployGap: { bootHead: st === "alarm" ? BOOT : MAIN, head: MAIN, behindCount: st === "alarm" ? 5 : 0, codeBehind: st === "alarm" },
         programs: [{ id: "0b3e0f1d2c3b4a59", title: "Oberfläche", status: "active" }],
         gate: gateOf(st), helperDevices: [{ id: "wh", name: "workhorse", lastSeen: fx.now - 5000, maxParallelSuites: 2, running: 0 }], helperOnlineMs: 20_000,
@@ -12417,8 +12440,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1) })),
         gates: [...sec.querySelectorAll('.zr > .lgate')].map((g) => { const b = g.getBoundingClientRect(), t = g.closest('.rk').getBoundingClientRect();
+          const lr = g.parentElement.querySelector(':scope > .lr')?.getBoundingClientRect(), n = g.querySelector(':scope > .gnote'), shown = !!n && getComputedStyle(n).display !== 'none';
           return { row: g.parentElement.dataset.slot ?? g.parentElement.dataset.id ?? null, gate: g.dataset.gate ?? null, placed: g.dataset.placed ?? null,
-            cy: Math.round(b.top + b.height / 2 - t.top), title: g.title, vis: vis(g) }; }),
+            cy: Math.round(b.top + b.height / 2 - t.top), title: g.title, aria: g.getAttribute('aria-label') ?? '', vis: vis(g),
+            gap: lr ? Math.round(b.left + b.width / 2 - lr.right) : null, fill: col(g.querySelector(':scope > i'), 'backgroundColor'),
+            note: shown ? n.innerText.replace(/\\s+/g, ' ').trim() : null, noteBox: shown ? box(n) : null,
+            notePoints: n ? [...n.querySelectorAll('.gw i')].map((i) => i.dataset.key + ':' + i.className) : [] }; }),
         heads: [...sec.querySelectorAll('.zr > .zhead')].map((h) => ({ row: h.parentElement.dataset.id ?? null, next: h.classList.contains('next') })),
         hier: [...sec.querySelectorAll('[data-hier]')].map((e) => ({ cls: String(e.className), text: e.innerText.replace(/\\s+/g, ' ').trim(),
           mark: e.classList.contains('mach') ? getComputedStyle(e.querySelector(':scope > .zs'), '::before').content : getComputedStyle(e, '::after').content })),
@@ -12436,7 +12463,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
-      backs: { cls: string | null; for: string | null; y: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; vis: boolean }[];
+      backs: { cls: string | null; for: string | null; y: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
+        gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
       heads: { row: string | null; next: boolean }[]; hier: { cls: string; text: string; mark: string }[];
       secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
@@ -12671,9 +12699,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           claims[`${tag}3A's flag says only results — Beweis grün; that its ${st === "land" ? "land check" : "preview"} runs is the filled diamond on its way back; 3B ${st === "land" ? "carries an ink-ring diamond while its preview waits" : "has no diamond"}`] =
             mine.flag?.look === "ok" && mine.flag.color === r.live && /Beweis: grün/.test(mine.flag.title) && !/läuft|wartet/.test(mine.flag.title)
             && gateOf(9)?.gate === "run" && gateOf(9)?.placed === "1" && gateOf(9)?.vis === true && onLine(9, own)
-            && (st === "land" ? /^Landprüfung \d+:\d\d von ~4:10 · .+ · auf Mac — /.test(gateOf(9)?.title ?? "") : /^Eine Prüfung läuft/.test(gateOf(9)?.title ?? ""))
+            && (st === "land" ? /^Landprüfung läuft \d+:\d\d von ~4:10 · .+ · auf Mac — /.test(gateOf(9)?.aria ?? "") : /^Eine Prüfung läuft/.test(gateOf(9)?.aria ?? ""))
             && zeitRow.flag?.look === "ok" && zeitRow.flag.color === r.live
-            && (st === "land" ? gateOf(10)?.gate === "queue" && onLine(10, zeit) && /^Vorschau wartet/.test(gateOf(10)?.title ?? "") : !gateOf(10));
+            && (st === "land" ? gateOf(10)?.gate === "queue" && onLine(10, zeit) && /^Vorschau wartet/.test(gateOf(10)?.aria ?? "") : !gateOf(10));
+          // BESIDE THE ROW'S LAST MARK (owner 2026-10-09: „[Zitat entfernt]“
+          // ): its centre 9 px right of the row's end (#drawRankeLines:
+          // the line starts 4 px past it, the centre 5 px on), never midway to the rail — measured 2026-10-09:
+          // 9 px at 1200 and 390, the midway mutant 14 and 11
+          claims[`${tag}every diamond stands on its way back right beside the row's last mark — its centre 9 px (±1) past the row's end`] =
+            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && g.gap >= 8 && g.gap <= 10);
           claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
             && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
         }
@@ -12693,13 +12727,40 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
               free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
               && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste";
+            // A NOTE ON HOVER (owner 2026-10-09: „[Zitat entfernt]“
+            // ): at once, the run with its machine, then the lane's
+            // way with its five points in their colours; inside the column; no title standing over it. 3B's
+            // preview, which the lane reported itself, waits at its point though its checks say an older green
+            if (!phone) {
+              const hoverOn = async (slot: number) => {
+                const c = await evaluate<number[] | null>(`(() => { const g = document.querySelector('#boardbody .zr[data-slot="${slot}"] > .lgate'); if (!g) return null;
+                  const b = g.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+                if (c) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1] });
+                await settle(150);
+                return (await read());
+              };
+              const h9 = await hoverOn(9), n9 = h9.gates.find((g) => g.row === "9");
+              const h10 = await hoverOn(10), n10 = h10.gates.find((g) => g.row === "10");
+              await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+              await settle(100);
+              const shownAfter = (await read()).gates.filter((g) => g.note !== null).length;
+              facts.note = { n9: n9 && { note: n9.note, box: n9.noteBox, points: n9.notePoints, title: n9.title }, n10: n10 && { note: n10.note, points: n10.notePoints }, sec: h9.secBox, shownAfter };
+              claims[`${tag}hovering 3A's diamond shows its note at once — the land check with its machine, then "Weg nach overhaul" and the five points, the land check running; inside the column, no title over it, gone when the pointer leaves`] =
+                !!n9 && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung gelandet Nachprüfung$/.test(n9.note ?? "")
+                && JSON.stringify(n9.notePoints) === JSON.stringify(["local:ok", "preview:ok", "gate:run", "landed:none", "audit:none"])
+                && !!n9.noteBox && n9.noteBox.x >= h9.secBox.x && n9.noteBox.r <= h9.secBox.r && n9.title === "" && shownAfter === 0;
+              claims[`${tag}hovering 3B's diamond: the preview its lane reported waits at its point, though its checks say an older green`] =
+                !!n10 && /^Vorschau wartet · Vorschau auf Mac Weg nach overhaul /.test(n10.note ?? "")
+                && JSON.stringify(n10.notePoints) === JSON.stringify(["local:ok", "preview:queue", "gate:none", "landed:none", "audit:none"]);
+            }
             // A TAP ON THE DIAMOND says what runs and where: 3A's land check, on Mac
             await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
             await wait(`document.querySelector('#boardbody .zd.gate')`, 3000);
             const gl = (await read()).lines.find((l) => l.cls.split(" ").includes("gate"));
             facts.gateTap = gl ?? null;
             claims[`${tag}a tap on 3A's diamond says what runs and on which machine — under the lane, the lane stays closed`] =
-              !!gl && gl.for === `gate:${pathOf(own)}` && /^Landprüfung \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac$/.test(gl.text)
+              !!gl && gl.for === `gate:${pathOf(own)}`
+              && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung gelandet Nachprüfung$/.test(gl.text)
               && await evaluate<boolean>(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`);
             await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
             await wait(`!document.querySelector('#boardbody .zd.gate')`, 3000);
@@ -12941,7 +13002,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.manyGates = r.gates.map((x) => `${x.row}: ${x.gate}`);
           claims[`${tag}the flags read apart: a red result on an older stand is a red ring, a finished green one green, nothing to tell no flag; a waiting check is a ring diamond, the running check after a land a filled one`] =
             c.flag?.cls === "lflag bad old" && c.flag.color === r.danger && d.flag?.cls === "lflag ok" && gate2(12) === "queue"
-            && e.flag?.cls === "lflag ok" && gate2(14) === "run" && !g.flag && !f.flag && gate2(16) === null && gate2(15) === null;
+            && e.flag?.cls === "lflag ok" && gate2(14) === "run" && !g.flag && !f.flag && gate2(15) === null;
+          // THE DIAMOND'S COLOURS AFTER A RUN (owner 2026-10-09: „[Zitat entfernt]“; 2026-10-08: „[Zitat entfernt]“
+          // ): for the server's minutes after its runs ended, filled green
+          // where they passed, filled red where one failed — the flag keeps what the checks came to
+          const fillOf = (slot: number) => r.gates.find((x) => x.row === String(slot))?.fill ?? null;
+          facts.endedGates = r.gates.filter((x) => x.row === "11" || x.row === "16").map((x) => `${x.row}: ${x.gate} ${x.fill} ${x.aria}`);
+          claims[`${tag}a run that just ended colours its lane's diamond: C's passed preview filled green, G's failed one filled red — the flags unchanged`] =
+            gate2(11) === "ok" && fillOf(11) === r.live && /^Vorschau bestanden vor \d+:\d\d · Vorschau · auf Mac — /.test(r.gates.find((x) => x.row === "11")?.aria ?? "")
+            && gate2(16) === "bad" && fillOf(16) === r.danger && /^Vorschau fehlgeschlagen vor \d+:\d\d · Vorschau · exit 1 · auf Mac — /.test(r.gates.find((x) => x.row === "16")?.aria ?? "")
+            && c.flag?.cls === "lflag bad old" && !g.flag;
           claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
           await shot(`${st}-${width}`);
           if (st === "viele") {
@@ -13435,6 +13505,22 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await settle(120);
             await shot(`info-${st}-${width}-unten`);
           }
+        }
+        if (st === "lane" && !phone) {
+          // THE LIVE-SERVER BESIDE THE TEST INSTANCE (owner 2026-10-09: „[Zitat entfernt]“
+          // ): the same
+          // page as a test instance serves it — its way back to live stands under this machine, above the
+          // instance's own row "hier", and is no machine of its own
+          fx.ti = true;
+          await navigate("http://fleet.fixture/");
+          const tiShown = await wait(`[...document.querySelectorAll('#boardbody .zr.mach')].some((x) => x.dataset.machine === 'Live-Server')`, 8000);
+          const groups = await evaluate<string[][]>(`(() => { const dev = [...document.querySelectorAll('#boardbody .ranke .rkblock')].find((b) => b.querySelector('.rkbt')?.textContent === 'Geräte');
+            return dev ? [...dev.querySelectorAll('.grp')].map((g) => [...g.querySelectorAll(':scope > .zr')].map((x) => (x.dataset.machine ?? x.innerText.replace(/\\s+/g, ' ').trim()) + (x.dataset.hier ? ' [hier]' : ''))) : []; })()`);
+          fx.ti = false;
+          facts.tiDevices = { shown: tiShown, groups };
+          claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz läuft [hier]", in this machine's group, and nowhere as a machine of its own`] =
+            tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz läuft [hier]"])
+            && groups.slice(1).every((g) => !g.some((x) => /^(live|Live-Server)$/.test(x)));
         }
         results.push({ width, height, state: st, claims, facts });
       }

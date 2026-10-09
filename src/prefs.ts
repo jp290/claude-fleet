@@ -60,6 +60,8 @@ export const PREFS: PrefDef[] = [
     hint: "Baum: ein Programmbaum neben der Liste. Zeile: eine Auswahl in der Werkzeugzeile. Ein Telefon bekommt immer die Zeile." },
   { key: "fleet.board.folds", kind: "json", label: "Aufgeklappte Reiter der Info-Spalte", def: "[]", row: "value",
     hint: "Setup, Rechte, Files, Your prompts und die ganze History. Zurücksetzen klappt alle wieder zu." },
+  { key: "fleet.board.landform", kind: "json", label: "Land-Form je Projekt und Lane", def: "{}", row: "value",
+    hint: "Commits wie gearbeitet oder ein Commit beim Land. Zurücksetzen stellt alles auf Commits wie gearbeitet." },
   { key: "fleet.stacks.closed", kind: "json", label: "Zugeklappte Stapel der Sitzungsliste", def: "[]", row: "value",
     hint: "Zurücksetzen klappt alle Stapel wieder auf." },
   { key: "fleet.view", kind: "json", label: "Fenster-Layout", def: "{}", row: "value",

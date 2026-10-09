@@ -12095,6 +12095,20 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "    boardBody.replaceChildren(...nodes);", with: "    nodes.push(...nodes.splice(nodes.indexOf(msec), 1)); boardBody.replaceChildren(...nodes);" },
   { name: "a rule stands between Projekte and Prüfungen again", state: "land", claim: "no rule between Projekte and Prüfungen",
     needle: "  #board .rkblock.rk-proj + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }", with: "" },
+  // round 8: the land form
+  { name: "the projects carry no gear", state: "lane", claim: "the gear over the projects opens one line",
+    needle: "    projects.firstElementChild!.appendChild(landFormButton(\"projects\", `Beim Land der Lanes — ${says}`));", with: "" },
+  { name: "a land form is not kept", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "  prefSet(\"fleet.board.landform\", JSON.stringify(next));", with: "" },
+  { name: "the field promises the switch to Mergen", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "const LAND_FORM_NOTE = \"Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.\";",
+    with: "const LAND_FORM_NOTE = \"Gilt für jedes Land, auch für „Mergen“.\";" },
+  { name: "an opened lane carries no gear", state: "lane", claim: "an opened lane carries a gear at the end of its way",
+    needle: "    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? \"\" : \" (wie das Projekt)\"}`));", with: "" },
+  { name: "a lane that follows ignores its project", state: "lane", width: 1200, claim: "an opened lane carries a gear at the end of its way",
+    needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"commits\", own: false };", with: "  return own ? { form: own, own: true } : { form: \"commits\", own: false };" },
+  { name: "Mergen sends the land form the board's route refuses", state: "live", width: 1200, claim: "Mergen asks first",
+    needle: "    const r = await post(`/api/slots/${slot}/merge`, {});", with: "    const r = await post(`/api/slots/${slot}/merge`, { squash: landFormOf(s.worktree.repo, s.cwd ?? null).form === \"squash\" });" },
   { name: "a helper that reports says angemeldet again", state: "lane", claim: "each machine's state is a dot and a word at the row's end",
     needle: "return { tone: \"live\", word: \"läuft\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };", with: "return { tone: \"live\", word: \"angemeldet\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };" },
   { name: "the test instance's row says läuft in its name again", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
@@ -12634,9 +12648,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await settle(200);
         };
         // …and back to the state's own fixture: the column's later claims read "Mehr zu dieser Session",
-        // whose four summaries arrive after the page (one red without this wait, live at 390)
+        // whose summaries arrive after the page — the files' count and the prompts' "6" last (a prompt
+        // count of "0" stands first: two reds at live 390 while this waited only for four words)
         const restored = `document.querySelector('#boardbody .ranke .zr.base[data-bar]') && document.querySelectorAll('#boardbody .bmoresec .btab .sum').length === 4
-          && [...document.querySelectorAll('#boardbody .bmoresec .btab .sum')].every((x) => x.textContent.trim())`;
+          && [...document.querySelectorAll('#boardbody .bmoresec .btab .sum')].every((x) => x.textContent.trim())
+          && document.querySelector('#boardbody .bmoresec .btab[data-tab="files"] .sum')?.textContent === '412 Dateien'
+          && document.querySelector('#boardbody .bmoresec .btab[data-tab="prompts"] .sum')?.textContent === '6'`;
         await openInfo();
         if (st === "leer") {
           // NO RUNNING WORK ANYWHERE (owner 2026-10-07, „[Zitat entfernt]“): every
@@ -12732,6 +12749,57 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point over its marks, and no ground across the row`] =
               !!c && barClaim(rh, lane(rh, 10), "hover") && before === "rgba(0, 0, 0, 0)" && lane(rh, 10)?.barBox?.bg !== lane(rh, 9)?.barBox?.bg;
           }
+          // THE LAND FORM (owner 2026-10-09: „[Zitat entfernt]“
+          // ; UI-MAIN 7f0b3158): a
+          // gear over the projects sets each shown project's default, a gear at the end of an opened lane's way
+          // the lane's own — kept in this browser (fleet.board.landform), each field closing with where it holds
+          type LfRead = { head: { title: string; exp: string | null } | null; lane: { title: string } | null; stored: string | null;
+            sets: { cls: string; label: string; choices: string[]; on: string[]; note: string | null; follow: string | null }[] };
+          const lfRead = () => evaluate<LfRead>(`(() => { const g = document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn'), lg = document.querySelector('#boardbody .zd.wl.lf .lf-btn');
+            return { head: g ? { title: g.title, exp: g.getAttribute('aria-expanded') } : null, lane: lg ? { title: lg.title } : null, stored: localStorage.getItem('fleet.board.landform'),
+              sets: [...document.querySelectorAll('#boardbody .zd.lf-set')].map((z) => ({ cls: z.className, label: z.querySelector('.lf-k')?.textContent ?? '',
+                choices: [...z.querySelectorAll('.lf-c')].map((b) => b.textContent), on: [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent),
+                note: z.querySelector('.lf-hint')?.textContent ?? null, follow: [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'wie das Projekt')?.title ?? null })) }; })()`);
+          const pick = (cls: string, word: string) => evaluate(`[...document.querySelectorAll('#boardbody .zd.lf-set.${cls} .lf-c')].find((b) => b.textContent === ${JSON.stringify(word)})?.click()`);
+          const pressed = (cls: string, word: string) => wait(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-c[aria-pressed="true"]')?.textContent === ${JSON.stringify(word)}`, 3000);
+          const LF_NOTE = "Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.";
+          const lfQuiet = await lfRead();
+          await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.lf-set.repo')`, 3000);
+          const lf0 = await lfRead();
+          await pick("repo", "ein Commit");
+          await pressed("repo", "ein Commit");
+          const lf1 = await lfRead();
+          await shot(`${st}-landform-${width}`);
+          await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
+          await wait(`!document.querySelector('#boardbody .zd.lf-set')`, 3000);
+          await evaluate(`(() => { const x = document.querySelector('#boardbody .zr[data-slot="9"]'); if (x && x.getAttribute('aria-expanded') !== 'true') x.click(); })()`);
+          await wait(`document.querySelector('#boardbody .zd.wl.lf .lf-btn')`, 3000);
+          const lfOpen = await lfRead();
+          await evaluate(`document.querySelector('#boardbody .zd.wl.lf .lf-btn')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.lf-set.lane')`, 3000);
+          const lf2 = await lfRead();
+          await pick("lane", "alle Commits");
+          await pressed("lane", "alle Commits");
+          const lf3 = await lfRead();
+          await shot(`${st}-landform-lane-${width}`);
+          facts.landForm = { lfQuiet, lf0, lf1, lfOpen, lf2, lf3 };
+          const set0 = lf0.sets[0], set1 = lf1.sets[0], set2 = lf2.sets[0], set3 = lf3.sets[0];
+          claims[`${tag}the gear over the projects opens one line for the shown project — alle Commits pressed — and the sentence where it holds; ein Commit is kept for the project in this browser`] =
+            lfQuiet.head?.exp === "false" && lfQuiet.stored === null && lfQuiet.sets.length === 0
+            && lf0.head?.exp === "true" && lf0.sets.length === 1 && !!set0 && set0.cls.split(" ").includes("repo") && set0.label === "Beim Land jeder Lane"
+            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["alle Commits"]) && set0.note === LF_NOTE
+            && !!set1 && JSON.stringify(set1.on) === JSON.stringify(["ein Commit"]) && lf1.head?.title === "Beim Land der Lanes — claude-fleet: ein Commit"
+            && lf1.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: {} });
+          claims[`${tag}an opened lane carries a gear at the end of its way: its line follows the project (ein Commit) until alle Commits is kept as the lane's own`] =
+            lfOpen.lane?.title === "Beim Land dieser Lane: ein Commit (wie das Projekt)" && lf2.sets.length === 1 && !!set2 && set2.cls.split(" ").includes("lane")
+            && set2.label === "Beim Land dieser Lane" && JSON.stringify(set2.choices) === JSON.stringify(["wie das Projekt", "alle Commits", "ein Commit"])
+            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: ein Commit" && set2.note === LF_NOTE
+            && !!set3 && JSON.stringify(set3.on) === JSON.stringify(["alle Commits"]) && lf3.lane?.title === "Beim Land dieser Lane: alle Commits"
+            && lf3.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: { [pathOf(own)]: "commits" } });
+          // back to the state as it was: nothing kept, the page anew
+          await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+          await reopen(restored);
         }
         // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“; the same day: „[Zitat entfernt]“
         // ): the server this page comes from says so in its state chip — here the Live row
@@ -13058,7 +13126,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             closedTag === "Live" && ownTag === null && !closedT && lane(r, 12)?.exp === "true"
             && !!liveT && liveT.text.startsWith("Testinstanz läuft bis") && liveT.buttons.join(",") === "Öffnen,Stoppen,Mergen";
           await shot(`${st}-laeuft-${width}`);
-          // Mergen: the existing land review with its diff first, the merge only after its answer
+          // Mergen: the existing land review with its diff first, the merge only after its answer — and with
+          // ein Commit set for the project it still sends no switch: /merge and /land answer 409 to one
+          // until the server reads it there (src/board.ts#LAND_FORM_NOTE)
+          await evaluate(`localStorage.setItem('fleet.board.landform', ${JSON.stringify(JSON.stringify({ repo: { [REPO]: "squash" }, lane: {} }))})`);
           fx.writes = [];
           await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(liveLane))})?.querySelector('.live-merge-btn')?.click()`);
           const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
@@ -13070,7 +13141,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await wait(`false`, 300);
           const landW = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path));
           facts.merge = { asked, askTitle, beforeAnswer, after: landW.map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
-          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge`] =
+          await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge — with ein Commit set, no switch in the body`] =
             asked && askTitle === `Land ${liveLane.branch} → main — review what lands` && beforeAnswer.length === 0
             && landW.map((w) => w.path).join(",") === "/api/slots/12/land,/api/slots/12/merge" && JSON.stringify(landW[1]?.body) === "{}";
           // the field under the project's head

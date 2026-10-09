@@ -2703,6 +2703,72 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
     loadWorkplaces(true);
   }
 }
+// THE LAND FORM (owner 2026-10-09: „[Zitat entfernt]“
+// 
+// ): the two forms the server knows
+// (server.ts#landSwitchesFrom, {squash}) — the commits as they were made, or one commit at the land. A
+// project's default over the whole view (the Projekte block's head: a gear in a project's own head left
+// its name 53 px on the phone), a lane's own in the opened lane; kept in this browser
+// (fleet.board.landform). A NUMBER of commits is no form the server has. The switch is read only by
+// the MAIN's land call today: the board's own Mergen and Land lane answer 409 to it, so they send none
+// and land the commits as made — and the field says so, rather than promising a switch that is dropped.
+type LandForm = "commits" | "squash";
+const LAND_FORM_WORD: Record<LandForm, string> = { commits: "alle Commits", squash: "ein Commit" };
+const LAND_FORM_SAY: Record<LandForm, string> = { commits: "Die Commits landen so, wie sie gemacht wurden",
+  squash: "Die Commits der Lane werden beim Land zu einem zusammengefasst" };
+const LAND_FORM_NOTE = "Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.";
+type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
+let landFormOpen: string | null = null;
+function landForms(): LandForms {
+  const v = prefJSON<unknown>("fleet.board.landform");
+  const pick = (o: unknown): Record<string, LandForm> => Object.fromEntries(Object.entries(o && typeof o === "object" ? o : {})
+    .filter((e): e is [string, LandForm] => e[1] === "commits" || e[1] === "squash"));
+  const o = v && typeof v === "object" ? v as Partial<Record<keyof LandForms, unknown>> : {};
+  return { repo: pick(o.repo), lane: pick(o.lane) };
+}
+// a lane's own form, or its project's, or the commits as made
+function landFormOf(repo: string, path: string | null): { form: LandForm; own: boolean } {
+  const f = landForms();
+  const own = path ? f.lane[path] : undefined;
+  return own ? { form: own, own: true } : { form: f.repo[repo] ?? "commits", own: false };
+}
+function setLandForm(kind: keyof LandForms, key: string, form: LandForm | null): void {
+  const f = landForms();
+  const next = { ...f, [kind]: { ...f[kind] } };
+  if (form) next[kind][key] = form; else delete next[kind][key];
+  prefSet("fleet.board.landform", JSON.stringify(next));
+  void renderBoard();
+}
+function landFormButton(openKey: string, title: string): HTMLButtonElement {
+  const b = el("button", `rk-btn quiet ib lf-btn${landFormOpen === openKey ? " on" : ""}`) as HTMLButtonElement;
+  b.type = "button";
+  b.appendChild(icon("gear"));
+  b.title = title;
+  b.setAttribute("aria-label", b.title);
+  b.setAttribute("aria-expanded", String(landFormOpen === openKey));
+  b.onclick = (e) => { e.stopPropagation(); landFormOpen = landFormOpen === openKey ? null : openKey; void renderBoard(); };
+  return b;
+}
+// the choice under the Projekte head (one line per project shown) or the opened lane: a lane may also
+// follow its project; the one sentence on where it holds closes the field
+function landFormField(kind: keyof LandForms, key: string, repo: string, label: string, note: boolean): HTMLElement {
+  const box = el("div", `zd lf-set ${kind}`);
+  box.dataset.for = key;
+  const now = kind === "repo" ? { form: landFormOf(repo, null).form, own: true } : landFormOf(repo, key);
+  box.appendChild(el("span", "lf-k", label));
+  const choice = (word: string, title: string, on: boolean, form: LandForm | null) => {
+    const c = el("button", `rk-btn quiet lf-c${on ? " on" : ""}`, word) as HTMLButtonElement;
+    c.type = "button";
+    c.title = title;
+    c.setAttribute("aria-pressed", String(on));
+    c.onclick = (e) => { e.stopPropagation(); setLandForm(kind, key, form); };
+    return c;
+  };
+  if (kind === "lane") box.appendChild(choice("wie das Projekt", `Wie das Projekt: ${LAND_FORM_WORD[landFormOf(repo, null).form]}`, !now.own, null));
+  for (const form of ["commits", "squash"] as const) box.appendChild(choice(LAND_FORM_WORD[form], LAND_FORM_SAY[form], now.own && now.form === form, form));
+  if (note) box.appendChild(el("div", "hint lf-hint", LAND_FORM_NOTE));
+  return box;
+}
 // under a project's head while its field is open: the sentence, Starten, and what failed before a lane existed
 function liveField(repo: string): HTMLElement {
   const box = el("div", "zd live-new");
@@ -2780,6 +2846,17 @@ const RANKE_CSS = `
   #board .zd.live-new > .live-hint { margin: 0; padding: 0 2px; color: var(--chat-faint); }
   #board .zr.zw .nm .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     color: var(--chat-ink); font-size: 0.85em; line-height: 1.2; vertical-align: 1px; white-space: nowrap; }
+  /* THE LAND FORM (#landFormField): the gear in a project's head and at the end of an opened lane's way;
+     its choice under it, the form in force pressed, one line saying where it holds */
+  #board .rk-btn.lf-btn.on { color: var(--chat-ink); }
+  #board .zd.wl.lf > .tx { grid-column: 3 / 4; }
+  #board .zd.wl.lf > .lf-btn { grid-column: 4 / 6; justify-self: end; }
+  #board .zd.lf-set { display: flex; align-items: center; gap: 4px 2px; flex-wrap: wrap; padding: 2px 0 6px var(--rk-rail); }
+  #board .zd.lf-set.lane { padding-left: calc(var(--rk-rail) + var(--rk-ref) + 8px); }
+  #board .zd.lf-set > .lf-k { flex-basis: 100%; color: var(--chat-prose); }
+  #board .zd.lf-set > .rk-btn.lf-c { padding: 0 4px; }
+  #board .zd.lf-set > .rk-btn.lf-c.on { border-color: var(--c-edge-hi); background: var(--chat-surface); color: var(--chat-ink); }
+  #board .zd.lf-set > .lf-hint { flex-basis: 100%; margin: 0; padding: 0 2px; color: var(--chat-faint); white-space: normal; }
   #board .zd.live-merge { display: flex; justify-content: flex-end; padding: 0 0 4px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err { display: block; padding: 0 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err > .err { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
@@ -4029,7 +4106,15 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   // every project keeps the overview — the working projects open, the quiet ones behind one row
   const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;
   const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));
-  for (const R of focusR ? [focusR] : wp.repos) if (!quiet.includes(R)) projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+  const shown = (focusR ? [focusR] : wp.repos).filter((R) => !quiet.includes(R));
+  // HOW ITS LANES LAND, over the whole view (#landFormField): the projects' default, one line each
+  if (shown.length) {
+    const says = shown.map((R) => `${baseName(R.repo)}: ${LAND_FORM_WORD[landFormOf(R.repo, null).form]}`).join(" · ");
+    projects.firstElementChild!.appendChild(landFormButton("projects", `Beim Land der Lanes — ${says}`));
+    if (landFormOpen === "projects") shown.forEach((R, i) => projects.appendChild(landFormField("repo", R.repo, R.repo,
+      shown.length === 1 ? "Beim Land jeder Lane" : `Beim Land jeder Lane in ${baseName(R.repo)}`, i === shown.length - 1)));
+  }
+  for (const R of shown) projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
   if (quiet.length) {
     const g = el("div", "grp");
     const f = el("div", `zr zq ${rankeQuietOpen ? "auf" : "zu"}`);
@@ -4492,7 +4577,15 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   // THE OPENED LANE: its checks as the four points (or the plain word that there is none yet — never
   // a row of empty points), each run of it as its sentence with its machine, its test instance as a
   // line with Öffnen or Starten, and for a worktree no session holds: its controls
-  out.push(wayLine(w, mine));
+  const wl = wayLine(w, mine);
+  // a lane that has not landed chooses how it lands: the gear at the end of its way
+  if (w.target.landed !== "yes" && !mirror) {
+    wl.classList.add("lf");
+    const lf = landFormOf(R.repo, w.path);
+    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? "" : " (wie das Projekt)"}`));
+  }
+  out.push(wl);
+  if (landFormOpen === `lane:${w.path}`) out.push(landFormField("lane", w.path, R.repo, "Beim Land dieser Lane", true));
   out.push(...runLines(mine));
   if (liveLane) out.push(...liveLines(R, w, s, standOf));
   else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));

@@ -12018,9 +12018,9 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "liveErr.set(cwd, `${liveErr.get(cwd)", with: "void (`${liveErr.get(cwd)" },
   // THE LANE VIEW, OWNER ROUND 2026-10-09 (UI-MAIN: „[Zitat entfernt]“)
   { name: "a lane has no way back", state: "lane", claim: "every lane runs back to its target's rail",
-    needle: `  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";`, with: "" },
+    needle: `  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";`, with: "" },
   { name: "a landed lane's way back stays dashed", state: "viele", claim: "every lane runs back to its target's rail",
-    needle: `  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";`, with: `  row.dataset.land = "wait";` },
+    needle: `  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";`, with: `  row.dataset.land = "wait";` },
   { name: "a running check draws no diamond", state: "land", claim: "3A's flag says only results",
     needle: "  if (gate) row.appendChild(gateButton(gateKey, gate, w, mine, ended));", with: "  void gateKey;" },
   { name: "the flag says the running check again", state: "lane", claim: "3A's flag says only results",
@@ -12038,9 +12038,9 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "      markHere(rows[0]);", with: "" },
   // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note
   { name: "the diamond sits midway to the rail", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
-    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - 7);", with: "        const gx = (x0 + rx) / 2;" },
+    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);", with: "        const gx = (x0 + rx) / 2;" },
   { name: "the diamond sits on the square again", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
-    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - 7);", with: "        const gx = Math.min(x0 + 5, rx - 7);" },
+    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);", with: "        const gx = Math.min(x0 + 5, rx - GATE_RAIL);" },
   { name: "a run that ended leaves no colour", state: "viele", claim: "a run that just ended colours its lane's diamond",
     needle: `  return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;`, with: "  return looks.length ? null : null;" },
   { name: "the note never shows", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
@@ -12629,7 +12629,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and every flag stands at the row's end, one under the other across every repo`] =
           zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && flagR.size <= 1 && lrR.size === 1;
         // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
-        // ): its git stand and ONE flag; the five points stand in the opened lane only
+        // ): its git stand and ONE flag; the four points stand in the opened lane only
         facts.flags = zw.map((x) => `${x.slot ?? x.id}: ${x.flag ? `${x.flag.cls} :: ${x.flag.title.replace(/\n/g, " | ")}` : "-"} · git ${x.git ?? "-"} · points ${x.points}`);
         claims[`${tag}a closed lane carries no row of points and at most one flag — its words, every stage, are the flag's title, aria-label and held word`] =
           zw.every((x) => x.points === 0 && (!x.flag || (!!x.flag.look && x.flag.title.length > 4
@@ -12790,10 +12790,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // A FEW DASHES AFTER THE ROW'S LAST MARK (owner 2026-10-09: „[Zitat entfernt]“
           // ; the same day: "dass der grüne
           // Testinstanz-Button … mit der Raute … verbunden wird über ein paar gestrichelte Linien"): its centre
-          // 18 px right of the row's end at 1200 (#drawRankeLines, GATE_DASHES), and where the rail comes
-          // first 7 px before it — measured 2026-10-09: 18 px at 1200, 11 px at 390; the midway mutant 14 at 1200
-          claims[`${tag}every diamond stands on its way back a few dashes after the row's last mark — its centre ${phone ? "11" : "18"} px (±1) past the row's end`] =
-            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && Math.abs(g.gap - (phone ? 11 : 18)) <= 1);
+          // up to 18 px right of the row's end (#drawRankeLines, GATE_DASHES), and where the rail comes
+          // first 9 px before it (GATE_RAIL) — measured 2026-10-09: 16 px at 1200, 9 px at 390 (both at the rail
+          // cap); the midway mutant 14 at 1200
+          claims[`${tag}every diamond stands on its way back a few dashes after the row's last mark — its centre ${phone ? "9" : "16"} px (±1) past the row's end`] =
+            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && Math.abs(g.gap - (phone ? 9 : 16)) <= 1);
           claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
             && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
         }
@@ -12805,7 +12806,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         }
         if (st === "lane" || st === "land") {
           // EVERY LANE OPENS IN PLACE (owner 2026-10-08: „[Zitat entfernt]“
-          // ): a tap on 3A opens "Prüfungen" and the five points in the order a lane goes
+          // ): a tap on 3A opens „[Zitat entfernt]“ and the four points in the order a lane goes
           // them, its run with its machine, its test instance as one sentence with Starten
           if (st === "land") {
             // THE BLOCK FOLDS (owner 2026-10-09: „[Zitat entfernt]“): closed by
@@ -12846,13 +12847,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               await settle(100);
               const shownAfter = (await read()).gates.filter((g) => g.note !== null).length;
               facts.note = { n9: n9 && { note: n9.note, box: n9.noteBox, points: n9.notePoints, title: n9.title }, n10: n10 && { note: n10.note, points: n10.notePoints }, sec: h9.secBox, shownAfter };
-              claims[`${tag}hovering 3A's diamond shows its note at once — the land check with its machine, then "Weg nach overhaul" and the five points, the land check running; inside the column, no title over it, gone when the pointer leaves`] =
-                !!n9 && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung gelandet Nachprüfung$/.test(n9.note ?? "")
-                && JSON.stringify(n9.notePoints) === JSON.stringify(["local:ok", "preview:ok", "gate:run", "landed:none", "audit:none"])
+              claims[`${tag}hovering 3A's diamond shows its note at once — the land check with its machine, then "Weg nach overhaul" and the four points, the land check running; inside the column, no title over it, gone when the pointer leaves`] =
+                !!n9 && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung Nachprüfung$/.test(n9.note ?? "")
+                && JSON.stringify(n9.notePoints) === JSON.stringify(["local:ok", "preview:ok", "gate:run", "audit:none"])
                 && !!n9.noteBox && n9.noteBox.x >= h9.secBox.x && n9.noteBox.r <= h9.secBox.r && n9.title === "" && shownAfter === 0;
               claims[`${tag}hovering 3B's diamond: the preview its lane reported waits at its point, though its checks say an older green`] =
                 !!n10 && /^Vorschau wartet · Vorschau auf Mac Weg nach overhaul /.test(n10.note ?? "")
-                && JSON.stringify(n10.notePoints) === JSON.stringify(["local:ok", "preview:queue", "gate:none", "landed:none", "audit:none"]);
+                && JSON.stringify(n10.notePoints) === JSON.stringify(["local:ok", "preview:queue", "gate:none", "audit:none"]);
             }
             // A TAP ON THE DIAMOND says what runs and where: 3A's land check, on Mac
             await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
@@ -12861,7 +12862,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             facts.gateTap = gl ?? null;
             claims[`${tag}a tap on 3A's diamond says what runs and on which machine — under the lane, the lane stays closed`] =
               !!gl && gl.for === `gate:${pathOf(own)}`
-              && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung gelandet Nachprüfung$/.test(gl.text)
+              && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung Nachprüfung$/.test(gl.text)
               && await evaluate<boolean>(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`);
             await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
             await wait(`!document.querySelector('#boardbody .zd.gate')`, 3000);
@@ -12873,12 +12874,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const wl = r.lines.find((l) => l.cls.split(" ").includes("wl") && l.for === pathOf(own));
           const tiL = r.lines.find((l) => l.cls.split(" ").includes("ti") && l.for === pathOf(own));
           facts.opened = r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text} {${l.points.map((p) => `${p.key}:${p.cls}`).join(",")}}`);
-          const want = st === "land" ? ["ok", "ok", "run", "none", "none"] : ["ok", "run", "none", "none", "none"];
-          claims[`${tag}a tap opens 3A in place: "Prüfungen" and five points — Beweis · Vorschau · Landprüfung · gelandet · Nachprüfung as ${want.join(" · ")}, each stage's words on hover`] =
-            lane(r, 9)?.exp === "true" && lane(r, 9)?.cls.includes("here") === true && !!wl && wl.text.startsWith("Prüfungen")
-            && JSON.stringify(wl.points.map((p) => p.key)) === JSON.stringify(["local", "preview", "gate", "landed", "audit"])
+          const want = st === "land" ? ["ok", "ok", "run", "none"] : ["ok", "run", "none", "none"];
+          claims[`${tag}a tap opens 3A in place: "Weg nach overhaul" and four points — Beweis · Vorschau · Landprüfung · Nachprüfung as ${want.join(" · ")}, each stage's words on hover, the land's own words last`] =
+            lane(r, 9)?.exp === "true" && lane(r, 9)?.cls.includes("here") === true && !!wl && wl.text.startsWith("Weg nach overhaul")
+            && JSON.stringify(wl.points.map((p) => p.key)) === JSON.stringify(["local", "preview", "gate", "audit"])
             && JSON.stringify(wl.points.map((p) => p.cls)) === JSON.stringify(want)
-            && wl.way.split("\n").length === 5 && /^1 Beweis: grün/.test(wl.way) && wl.way.includes("\n4 gelandet: noch nicht auf overhaul\n")
+            && wl.way.split("\n").length === 5 && /^1 Beweis: grün/.test(wl.way) && wl.way.endsWith("\nLand: noch nicht auf overhaul")
             && wl.wayAria.startsWith("Weg nach overhaul: 1 Beweis: grün");
           if (st === "land") {
             const runs = r.lines.filter((l) => l.cls.split(" ").includes("run"));
@@ -12960,7 +12961,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.tapped = { opened, infoStays, here: r.rows.filter((x) => x.cls.includes("here")).map((x) => x.slot ?? x.id), lines: r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text}`) };
           claims[`${tag}a tap on 3B opens it in place — no jump: Info stays open, 3A stays the marked lane, 3B shows its checks`] =
             opened && infoStays && lane(r, 9)?.cls.includes("here") === true && !lane(r, 10)?.cls.includes("here") && branchRows(r).length === zw.length
-            && r.lines.some((l) => l.for === pathOf(zeit) && l.cls.split(" ").includes("wl") && l.text.startsWith("Prüfungen"));
+            && r.lines.some((l) => l.for === pathOf(zeit) && l.cls.split(" ").includes("wl") && l.text.startsWith("Weg nach overhaul"));
           await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
           await wait(`document.querySelector('#boardbody .zd.zx')`, 3000);
           r = await read();
@@ -13127,12 +13128,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             };
             const we = await openLane(14), wf = await openLane(15), wg = await openLane(16);
             facts.points = { e: we?.points.map((p) => p.cls), f: wf?.points.map((p) => p.cls), g: wg?.points.map((p) => p.cls) };
-            claims[`${tag}opened, a landed lane fills its land point "gelandet als <sha> in overhaul" and shows its check after the land running`] =
-              JSON.stringify(we?.points.map((p) => p.cls)) === JSON.stringify(["ok", "ok", "ok", "ok", "run"])
-              && (we?.way ?? "").includes(`4 gelandet: gelandet als ${sha7(hex("landed-e"))} in overhaul`);
+            claims[`${tag}opened, a landed lane says "Land: gelandet als <sha> in overhaul" after its points and shows its check after the land running`] =
+              JSON.stringify(we?.points.map((p) => p.cls)) === JSON.stringify(["ok", "ok", "ok", "run"])
+              && (we?.way ?? "").endsWith(`\nLand: gelandet als ${sha7(hex("landed-e"))} in overhaul`);
             claims[`${tag}opened, the points read apart: a skipped proof "skip", an unreadable record amber "unk" with "unbekannt" in its words`] =
               wg?.points[0]?.cls === "skip" && /1 Beweis: ausgelassen/.test(wg.way)
-              && wf?.points[4]?.cls === "unk" && /5 Nachprüfung: unbekannt/.test(wf.way);
+              && wf?.points[3]?.cls === "unk" && /4 Nachprüfung: unbekannt/.test(wf.way);
             await evaluate(`document.querySelector('#boardbody .zr[data-slot="16"]')?.click()`);
             await wait(`document.querySelector('#boardbody .zr[data-slot="16"]')?.getAttribute('aria-expanded') === 'false'`, 3000);
             r = await read();

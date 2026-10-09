@@ -1002,7 +1002,11 @@ function runLines(balls: MeterBall[], place = true): HTMLElement[] {
     // a waiting run shows the clock, a running one the shield — never the tick, which reads as "passed"
     const g = el("span", "g");
     g.appendChild(icon(b.station === "wait" ? "clock" : "shield"));
-    tx.append(g, el("span", "w", runSentence(b)));
+    // "e2e-isolated" broke at its hyphen on the phone: a short hyphenated word stays one word (a long
+    // one — a branch — may still break, or it would run the column off the side)
+    const w = el("span", "w");
+    for (const [i, part] of runSentence(b).split(/(\S+-\S+)/).entries()) if (part) w.append(i % 2 && part.length <= 16 ? el("span", "nw", part) : part);
+    tx.append(g, w);
     // WHERE IT RUNS, as the machine's glyph behind the sentence (owner 2026-10-08: „[Zitat entfernt]“
     // ): the glyph Geräte draws for that machine, its name
     // on hover and to VoiceOver; nothing where no machine has the run yet
@@ -2718,6 +2722,8 @@ function liveField(repo: string): HTMLElement {
   go.disabled = busy || !f.value.trim();
   go.onclick = (e) => { e.stopPropagation(); void startLiveSession(repo, f.value); };
   box.append(f, go);
+  // what this start is, beside the + that opens the founding window: one line, not a manual
+  box.appendChild(el("div", "hint live-hint", "Eine Lane mit eigener Testinstanz · am Ende Mergen"));
   const err = liveErr.get(repo);
   if (err) box.appendChild(el("div", "err", err));
   return box;
@@ -2769,12 +2775,17 @@ const RANKE_CSS = `
   #board .zd.live-new .live-in { flex: 1 1 180px; min-width: 0; min-height: 22px; padding: 0 7px; border: 1px solid var(--chat-edge);
     border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink); font: inherit; }
   #board .zd.live-new .live-in:focus { outline: none; border-color: var(--c-edge-hi); }
-  #board .zd.live-new > .err { flex-basis: 100%; }
+  #board .zd.live-new > .err, #board .zd.live-new > .live-hint { flex-basis: 100%; }
+  #board .zd.live-new > .live-hint { margin: 0; padding: 0 2px; color: var(--chat-faint); }
   #board .zr.zw .nm .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     color: var(--chat-ink); font-size: 0.85em; line-height: 1.2; vertical-align: 1px; white-space: nowrap; }
   #board .zd.live-merge { display: flex; justify-content: flex-end; padding: 0 0 4px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err { display: block; padding: 0 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
   #board .zd.live-err > .err { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
+  /* GERÄTE, ONE SPACING (owner 2026-10-09: „[Zitat entfernt]“): the machines' groups follow each
+     other like their rows do — the gap after this machine's group read as a second list */
+  #board .ranke .rk-dev .grp + .grp { margin-top: 0; }
+  #board .zd.run .w .nw { white-space: nowrap; }
   /* THE WAY BACK (#drawRankeLines): a margin right of the rows for the rails; the lines lie over a
      row's ground (an opened or focused row has one) and under its node */
   #board .ranke { --rk-ret: 18px; }
@@ -2841,9 +2852,10 @@ const RANKE_CSS = `
   #board .gl .dv { display: inline-flex; align-items: center; gap: 4px; color: var(--chat-ink); }
   #board .gl .dv .ico { width: 12px; height: 12px; }
   #board .gl .q { color: var(--chat-faint); }
-  /* the lane's five points under the runs, each with its word: where it stands on its way to main */
-  #board .gw { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--chat-edge); }
-  #board .gw > .gwt { flex-basis: 100%; color: var(--chat-faint); }
+  /* the lane's four points under the runs, each with its word: where it stands on its way to main */
+  /* the four points two by two, in reading order — four words did not fit a note's width and broke 3 + 1 */
+  #board .gw { display: grid; grid-template-columns: repeat(2, max-content); gap: 2px 14px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--chat-edge); }
+  #board .gw > .gwt { grid-column: 1 / -1; color: var(--chat-faint); }
   #board .gw > .gp { display: inline-flex; align-items: center; gap: 4px; color: var(--chat-faint); white-space: nowrap; }
   #board .gw > .gp.run, #board .gw > .gp.queue { color: var(--chat-ink); font-weight: 500; }
   #board .gw > .gp.ok, #board .gw > .gp.skip { color: var(--chat-mute); }
@@ -2858,7 +2870,6 @@ const RANKE_CSS = `
   #board .gw i.old { background: transparent; }
   #board .gw i.ok.old { box-shadow: inset 0 0 0 1.25px var(--q-live); }
   #board .gw i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
-  #board .gw i[data-key="landed"].ok { border-radius: 1.5px; transform: rotate(45deg) scale(.85); }
   /* THE CHECKS FOLD (#runsSummary): the block's head opens and closes it; closed, one line */
   #board .rk-runs > .rkbh.fold { cursor: pointer; border-radius: var(--r1); }
   #board .rk-runs > .rkbh.fold > .ico { margin-left: auto; width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }
@@ -2955,32 +2966,42 @@ function landedSay(w: WorkplaceRow): string {
   if (w.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land")) return `nichts zu landen — keine eigenen Commits über ${t.branch}`;
   return `unbekannt, ob auf ${t.branch} gelandet`;
 }
-// THE LANE'S WAY TO MAIN AS FIVE POINTS (owner 2026-10-08: „[Zitat entfernt]“
+// THE LANE'S WAY AS FOUR POINTS (owner 2026-10-08: „[Zitat entfernt]“
 // 
-// ): local proof, preview, land check, landed, the check after the land — in the
-// order a lane goes them, one point each. Since the lane's flag (owner 2026-10-08, src/board.ts#laneFlag)
-// in its colours: filled green passed, red failed, ink runs, an ink ring waits, a faint dot has
-// nothing yet, an amber ring is unreadable, a ring in a state's colour is that state on an OLDER
-// stand than the worktree. The words, in order, are the title (hover), the
-// held word (a finger, src/board.ts#holdTip) and the aria-label.
-const WAY: { key: keyof WorkplaceChecks | "landed"; word: string }[] = [
+// ; 2026-10-09: „[Zitat entfernt]“):
+// local proof, preview, land check, the check after the land — in the order a lane goes them. That it
+// LANDED is no point of its own any more: the way back says it, dashed until the land and its check
+// after the land are through (#laneRow, #auditOf). The check after the land runs for every land that
+// moves its target (server.ts#schedulePostLandAudit, overhaul too), so every row that lands carries
+// all four; a card inside a card group lands with its group and carries none of its own (#groupLines).
+// In their colours: filled green passed, red failed, ink runs, an ink ring waits, a faint dot has
+// nothing yet, an amber ring is unreadable, a ring in a state's colour is that state on an OLDER stand
+// than the worktree. The words, in order, are the title (hover), the held word (a finger,
+// src/board.ts#holdTip) and the aria-label; the title ends with where the land stands.
+const WAY: { key: keyof WorkplaceChecks; word: string }[] = [
   { key: "local", word: "Beweis" }, { key: "preview", word: "Vorschau" }, { key: "gate", word: "Landprüfung" },
-  { key: "landed", word: "gelandet" }, { key: "audit", word: "Nachprüfung" },
+  { key: "audit", word: "Nachprüfung" },
 ];
+// THE CHECK AFTER A LAND, while it is not through (server.ts#postLandAuditLiveView): "run" while the
+// running audit covers this branch's land, "queue" while the land waits for the next run — read by
+// branch, the name the server's covers carry
+function auditOf(branch: string | null): "run" | "queue" | null {
+  const a = postLandLive;
+  if (!branch || !a) return null;
+  if (a.running?.covers.includes(branch)) return "run";
+  return a.waiting.some((x) => x.branch === branch) ? "queue" : null;
+}
 const WAY_CLASS: Record<WorkplaceCheck["state"], string> = { green: "ok", red: "bad", running: "run", waiting: "queue", skipped: "skip" };
 // WHICH POINT A RUN IS (src/suitemeter.ts#meterKind): a gate script a session handed to a helper is
 // its proof, a preview its preview, a land check its land check. A run the lane's checks do not say
 // yet (a preview the lane reported itself) runs or waits at its point all the same — the diamond and
 // the opened lane then show one way. A queued run without a kind is at no point.
 const RUN_POINT: Record<string, keyof WorkplaceChecks> = { "gate script": "local", preview: "preview", "land check": "gate" };
-function wayPoint(w: WorkplaceRow, key: keyof WorkplaceChecks | "landed", word: string, mine: MeterBall[] = []): { cls: string; say: string } {
-  if (key === "landed") {
-    const t = w.target;
-    const cls = t.landed === "yes" ? "ok" : t.landed === "no" ? "none"
-      : w.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land") ? "skip" : "unk";
-    return { cls, say: `${word}: ${landedSay(w)}` };
-  }
+function wayPoint(w: WorkplaceRow, key: keyof WorkplaceChecks, word: string, mine: MeterBall[] = []): { cls: string; say: string } {
   const c = w.checks?.[key] ?? null;
+  // the land's own check after the land, while the server's audit covers it or still waits for it
+  const after = key === "audit" && w.target.landed === "yes" && c?.state !== "running" && c?.state !== "waiting" ? auditOf(w.branch) : null;
+  if (after) return { cls: after, say: `${word}: ${after === "run" ? "läuft" : "wartet auf den nächsten Lauf"} · für das Land nach ${w.target.branch}` };
   const run = c?.state === "running" || c?.state === "waiting" ? undefined
     : mine.find((b) => b.station !== "done" && RUN_POINT[b.kind] === key);
   if (run) return { cls: run.station === "wait" ? "queue" : "run", say: `${word}: ${run.station === "wait" ? "wartet" : "läuft"}${run.what ? ` · ${run.what}` : ""}` };
@@ -2998,13 +3019,14 @@ function laneWay(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
     box.appendChild(d);
     says.push(`${i + 1} ${p.say}`);
   });
+  says.push(`Land: ${landedSay(w)}`);
   box.setAttribute("role", "img");
   box.setAttribute("aria-label", `Weg nach ${w.target.branch}: ${says.join(". ")}`);
   box.title = says.join("\n");
   box.dataset.hold = box.title;
   return box;
 }
-const WAY_CHECKS = WAY.filter((x): x is { key: keyof WorkplaceChecks; word: string } => x.key !== "landed");
+const WAY_CHECKS = WAY;
 const redStages = (w: WorkplaceRow) => WAY_CHECKS.filter(({ key }) => w.checks?.[key]?.state === "red");
 // THE LANE'S FLAG (owner 2026-10-08: „[Zitat entfernt]“
 // ): ONE flag
@@ -3050,15 +3072,17 @@ type GateLook = "run" | "queue" | "ok" | "bad" | "unk";
 const endedLook = (b: MeterBall): GateLook => (b.tone === "ok" ? "ok" : b.tone === "red" ? "bad" : "unk");
 function gateLook(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[] = []): GateLook | null {
   const states = WAY_CHECKS.map(({ key }) => w.checks?.[key] ?? null);
-  if (states.some((c) => c?.state === "running") || mine.some((b) => b.station === "run" || b.station === "helper")) return "run";
-  if (states.some((c) => c?.state === "waiting") || mine.some((b) => b.station === "wait")) return "queue";
+  // the check after its land, while the server's audit covers it or waits for it
+  const after = w.target.landed === "yes" ? auditOf(w.branch) : null;
+  if (states.some((c) => c?.state === "running") || after === "run" || mine.some((b) => b.station === "run" || b.station === "helper")) return "run";
+  if (states.some((c) => c?.state === "waiting") || after === "queue" || mine.some((b) => b.station === "wait")) return "queue";
   // green only where every run that just ended passed; a red one says red
   const looks = ended.map(endedLook);
   return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;
 }
 // WHAT THE DIAMOND SAYS (owner 2026-10-09: „[Zitat entfernt]“
 // ): each run as its sentence with its machine, then
-// the lane's five points in their colours with their words — where it stands on its way to main. The
+// the lane's four points in their colours with their words — where it stands on its way to main. The
 // same lines on hover (a note beside the diamond) and on a tap (under the lane: a phone has no hover).
 // A check that runs by its stage but names no run says so: its place is not guessed.
 function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLElement[] {
@@ -3080,6 +3104,16 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
     line.title = `${meterKind(b.kind).label} · ${b.branch ?? "Branch nicht gemeldet"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
     out.push(line);
   }
+  const after = w.target.landed === "yes" ? auditOf(w.branch) : null;
+  if (!out.length && after) {
+    const line = el("span", "gl");
+    line.dataset.gate = after;
+    const gx = el("span", "gx");
+    gx.appendChild(el("b", "", `Nachprüfung ${after === "run" ? "läuft" : "wartet"}`));
+    gx.appendChild(el("span", "q", `für das Land nach ${w.target.branch}`));
+    line.append(el("span", "gd"), gx);
+    out.push(line);
+  }
   if (!out.length) for (const { key, word } of WAY_CHECKS) {
     const c = w.checks?.[key];
     if (c?.state !== "running" && c?.state !== "waiting") continue;
@@ -3091,7 +3125,7 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
     line.append(el("span", "gd"), gx);
     out.push(line);
   }
-  // the way: the five points as the opened lane draws them, each with its word, its state on hover
+  // the way: the four points as the opened lane draws them, each with its word, its state on hover
   const way = el("span", "gw");
   way.appendChild(el("span", "gwt", `Weg nach ${w.target.branch}`));
   for (const { key, word } of WAY) {
@@ -3105,6 +3139,61 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
   }
   out.push(way);
   return out;
+}
+// THE STEM'S CHECK AFTER THE LAND (owner 2026-10-09: „[Zitat entfernt]“
+// ): the audit measures a stem's newest tip after a land,
+// folded over every land since the run before (server.ts#schedulePostLandAudit) — so it is the STEM's
+// own diamond, on the line from its row to its head where its lanes come back: ink while it runs, an
+// ink ring while lands wait for it. The server names the repo by its basename
+// (server.ts#postLandAuditLiveView), so a repo matches by its full path, or by a basename no other
+// project on this board shares — a run placed by a guess is worse than one left in Prüfungen.
+type StemAudit = { look: "run" | "queue"; lines: { look: "run" | "queue"; head: string; more: string }[]; balls: MeterBall[] };
+function stemAudit(R: WorkplaceRepo, stem: string): StemAudit | null {
+  const a = postLandLive;
+  if (!a) return null;
+  const name = baseName(R.repo);
+  const mine = (repo: string | null) => repo === R.repo
+    || (repo === name && (workplaces?.repos ?? []).filter((x) => baseName(x.repo) === name).length === 1);
+  const lines: StemAudit["lines"] = [];
+  const run = a.running && mine(a.running.repo) && a.running.main === stem ? a.running : null;
+  // the balls of the audit's run (src/suitemeter.ts): its clock and its machine, as every run says them
+  const balls = run ? runsHere.audit : [];
+  if (run) {
+    const ball = balls.find((b) => b.station !== "done");
+    const at = ball ? runMachine(ball) : null;
+    lines.push({ look: "run", head: ball ? runSentence(ball) : "Nachprüfung läuft",
+      more: [at ? `auf ${at.name}` : "", run.covers.length ? `für ${run.covers.map(laneTail).join(", ")}` : ""].filter(Boolean).join(" · ") });
+  }
+  const waits = a.waiting.filter((x) => mine(x.repo) && x.main === stem);
+  if (waits.length) lines.push({ look: "queue", head: `${waits.length} ${waits.length === 1 ? "Land wartet" : "Lands warten"} auf die nächste Nachprüfung`,
+    more: waits.map((x) => laneTail(x.branch)).join(", ") });
+  return lines.length ? { look: run ? "run" : "queue", lines, balls } : null;
+}
+function stemAuditSay(au: StemAudit): HTMLElement[] {
+  return au.lines.map((l) => {
+    const line = el("span", "gl");
+    line.dataset.gate = l.look;
+    const gx = el("span", "gx");
+    gx.appendChild(el("b", "", l.head));
+    if (l.more) gx.appendChild(el("span", "q", l.more));
+    line.append(el("span", "gd"), gx);
+    return line;
+  });
+}
+function stemAuditButton(key: string, au: StemAudit, stem: string): HTMLButtonElement {
+  const gb = el("button", "lgate stem") as HTMLButtonElement;
+  gb.type = "button";
+  gb.dataset.gate = au.look;
+  gb.appendChild(el("i", ""));
+  gb.setAttribute("aria-label", `${au.lines.map((l) => `${l.head}${l.more ? ` · ${l.more}` : ""}`).join(". ")} — Nachprüfung von ${stem}, Klick zeigt sie`);
+  gb.setAttribute("aria-expanded", String(rankeOpen === key));
+  const note = el("span", "gnote");
+  note.setAttribute("aria-hidden", "true");
+  note.append(...stemAuditSay(au));
+  gb.appendChild(note);
+  gb.onclick = (e) => { e.stopPropagation(); rankeOpen = rankeOpen === key ? null : key; void renderBoard(); };
+  for (const b of au.balls) placedRuns.add(b.key);
+  return gb;
 }
 function gateLines(forKey: string, w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLElement {
   const box = el("div", "zd gate");
@@ -3132,21 +3221,18 @@ function gateButton(gateKey: string, gate: GateLook, w: WorkplaceRow, mine: Mete
   for (const b of mine) placedRuns.add(b.key);
   return gb;
 }
-// THE OPENED LANE'S CHECKS: "Prüfungen" and the five points, and what is red in words — or "Noch
-// keine Prüfung" where no check has a result and nothing landed (owner 2026-10-08: never a row of
-// empty points; the land's point counts only once it really landed)
+// THE OPENED LANE'S CHECKS: "Weg nach <Ziel>" and the four points, and what is red in words — or "Noch
+// keine Prüfung" where no check has a result (owner 2026-10-08: never a row of empty points)
 function wayLine(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
   const line = el("div", "zd wl");
   line.dataset.for = w.path;
   const tx = el("span", "tx");
-  const any = WAY.some(({ key, word }) => {
-    const cls = wayPoint(w, key, word, mine).cls;
-    return key === "landed" ? cls === "ok" : cls !== "none";
-  });
+  const any = WAY.some(({ key, word }) => wayPoint(w, key, word, mine).cls !== "none");
   if (!any) {
     tx.appendChild(el("span", "w none", "Noch keine Prüfung"));
   } else {
-    tx.append(el("span", "w", "Prüfungen"), laneWay(w, mine));
+    // "Weg nach main", as the diamond's note says it: "Prüfungen" is the block below, one word, one thing
+    tx.append(el("span", "w", `Weg nach ${w.target.branch}`), laneWay(w, mine));
     const [first] = redStages(w);
     const c = first ? w.checks?.[first.key] : null;
     if (first && c) tx.appendChild(el("span", "wr", [`${first.word} rot`, ...c.fails.slice(0, 1)].join(" · ")));
@@ -4148,12 +4234,19 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
     b.onclick = (e) => { e.stopPropagation(); rankeOpen = stemOpen ? null : `main:${R.repo}`; void renderBoard(); };
     mrt.appendChild(b);
   }
-  // the check after the land of THIS repo measures main: its machine's glyph at the stem's end
-  const audit = runSign(runsHere.auditRepo === R.repo ? runsHere.audit : []);
-  if (audit) mrt.appendChild(audit);
   mrow.appendChild(mrt);
   if (primary) mrow.appendChild(tiSquare(primary, false));
+  // the check after the land of THIS repo measures main: its diamond on main's line to its head
+  const mainAudit = stemAudit(R, "main"), mainAuditKey = `audit:${R.repo}#main`;
+  if (mainAudit) mrow.appendChild(stemAuditButton(mainAuditKey, mainAudit, "main"));
+  mrow.dataset.audit = mainAudit?.look ?? "";
   rk.appendChild(mrow);
+  if (mainAudit && rankeOpen === mainAuditKey) {
+    const box = el("div", "zd gate");
+    box.dataset.for = mainAuditKey;
+    box.append(...stemAuditSay(mainAudit));
+    rk.appendChild(box);
+  }
   if (stemOpen) for (const x of onStem) {
     const ln = el("div", `zd msl${x.id === focusSlot ? " on" : ""}`);
     ln.appendChild(el("span", "tx", nameWithoutModel(x)));
@@ -4217,7 +4310,16 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
       ort.appendChild(r);
     }
     orow.appendChild(ort);
+    const stAudit = stemAudit(R, t), stAuditKey = `audit:${R.repo}#${t}`;
+    if (stAudit) orow.appendChild(stemAuditButton(stAuditKey, stAudit, t));
+    orow.dataset.audit = stAudit?.look ?? "";
     rk.appendChild(orow);
+    if (stAudit && rankeOpen === stAuditKey) {
+      const box = el("div", "zd gate");
+      box.dataset.for = stAuditKey;
+      box.append(...stemAuditSay(stAudit));
+      rk.appendChild(box);
+    }
     if (ow) {
       orow.appendChild(tiSquare(ow, os?.id === focusSlot));
       orow.title = `${t} · ausgecheckt in ${ow.path}${os ? "" : " — Klick zeigt Öffnen und Schließen"}`;
@@ -4332,14 +4434,20 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   const headSha = sha7(w.head) ?? sha7(stand?.head);
   // without a session the ring of the node says so; the words of the branch tell such worktrees
   // apart. A label's "⎇ " is cut: under a stem every row is a branch, the sign says nothing there
-  const name = el("span", `nm${s ? "" : " leer"}`, s ? laneLabel(s).replace(/^⎇\s*/, "") : words ?? laneWords(w.branch));
+  // a label that is only its branch ("live-2610091226-die-zeitleiste-…-51b8") reads as the branch's
+  // words, as a worktree without a session does — a live lane's "live" is its tag beside the name
+  const label = s ? laneLabel(s).replace(/^⎇\s*/, "") : "";
+  const bare = !!w.branch && (label === w.branch || label === w.branch.replace(/^fleet\//, ""));
+  const said = bare ? laneWords(w.branch).replace(isLiveLane(w.branch) ? /^live\s+/ : /$^/, "") : label;
+  const name = el("span", `nm${s ? "" : " leer"}`, s ? said : words ?? laneWords(w.branch));
+  if (bare) name.title = w.branch ?? "";
   rowCells(row, node, ref, hue, name);
   // a run that names its slot must name THIS lane's session too — a branch alone is not enough then
   const mine = (w.branch ? runsHere.byBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id);
   // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
   // ): its git stand, ONE flag for
   // its checks (src/board.ts#laneFlag), and the test instance's square only while that runs — the
-  // square before the flag, so every flag stands at the row's end, one under the other. The five
+  // square before the flag, so every flag stands at the row's end, one under the other. The four
   // points stand in the opened lane. A check that runs or waits is the DIAMOND on the lane's way
   // back to its target (#gateLook, placed by #drawRankeLines), open or closed.
   const rt = el("span", "lr");
@@ -4348,8 +4456,10 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   const flag = laneFlag(w);
   if (flag) rt.appendChild(flag);
   row.appendChild(rt);
-  // every lane lands somewhere: its way back is dashed until it has landed
-  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";
+  // every lane lands somewhere: its way back is dashed until it has landed AND the check after that
+  // land is through (owner 2026-10-09: „[Zitat entfernt]“
+  // ) — solid only once nothing of its way is open
+  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";
   const ended = (w.branch ? runsHere.doneByBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id);
   const gate = gateLook(w, mine, ended);
   const gateKey = `gate:${w.path}`;
@@ -4373,7 +4483,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
     if (err) out.push(err);
   }
   if (!open) return out;
-  // THE OPENED LANE: its checks as the five points (or the plain word that there is none yet — never
+  // THE OPENED LANE: its checks as the four points (or the plain word that there is none yet — never
   // a row of empty points), each run of it as its sentence with its machine, its test instance as a
   // line with Öffnen or Starten, and for a worktree no session holds: its controls
   out.push(wayLine(w, mine));
@@ -4392,8 +4502,10 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
 // landed; the diamond of a running check sits ON it (.lgate). The focused lane's way back is ink.
 // Drawn after the column is in the document, since it needs the rows' positions.
 // how far right of the row's last mark the diamond's centre stands: two dashes of the way back
-// (3 + 2.5 each, path.back.wait) and the diamond's own half
-const GATE_DASHES = 16;
+// (3 + 2.5 each, path.back.wait) and the diamond's own half — and how close to its rail at most: the
+// diamond's box is 28 px wide on the phone, and at 7 px from a rail on the column's edge it stood 1 px
+// past the column (viele at 390 scrolled sideways)
+const GATE_DASHES = 16, GATE_RAIL = 9;
 export function drawRankeLines(root: HTMLElement): void {
   for (const rk of root.querySelectorAll<HTMLElement>(".rk")) {
     rk.querySelector(":scope > svg")?.remove();
@@ -4433,11 +4545,11 @@ export function drawRankeLines(root: HTMLElement): void {
       // the diamond sits ON that line a few dashes after the row's last mark (the test instance's
       // square, the flag — owner 2026-10-09: „[Zitat entfernt]“
       // ), its centre on the line's own coordinates —
-      // placed from the same numbers, never guessed by CSS, and never on the rail
+      // placed from the same numbers, never guessed by CSS, never on the rail (GATE_RAIL)
       const gb = row.querySelector<HTMLElement>(":scope > .lgate");
       if (gb) {
         const rb = row.getBoundingClientRect();
-        const gx = Math.min(x0 + GATE_DASHES, rx - 7);
+        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);
         gb.style.left = `${gx - (rb.left - tb.left)}px`;
         // the note opens leftwards from the diamond and never past the column's left edge
         gb.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
@@ -4451,7 +4563,17 @@ export function drawRankeLines(root: HTMLElement): void {
       const par = [...rk.querySelectorAll<HTMLElement>(":scope > .zr[data-id]")].find((x) => x.dataset.id === pk);
       if (!par) continue;
       const x = Math.round(end(par)) + 5;
-      if (rl.x - 4 > x) paths.push({ cls: "rail", d: `M${x} ${rl.top}H${rl.x - 4}` });
+      // the stem's own way to its head is dashed while the check after its land is open
+      if (rl.x - 4 > x) paths.push({ cls: `rail${par.dataset.audit ? " back wait" : ""}`, d: `M${x} ${rl.top}H${rl.x - 4}` });
+      const sg = par.querySelector<HTMLElement>(":scope > .lgate");
+      if (sg) {
+        const pb0 = par.getBoundingClientRect();
+        const gx = Math.min(x - 1 + GATE_DASHES, rl.x - GATE_RAIL);
+        sg.style.left = `${gx - (pb0.left - tb.left)}px`;
+        sg.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
+        sg.style.top = `${rl.top - (pb0.top - tb.top)}px`;
+        sg.dataset.placed = "1";
+      }
       paths.push({ cls: "rail", d: `M${rl.x} ${rl.top + 4}V${rl.low}` });
       if (rl.inkLow !== null) paths.push({ cls: "rail ink", d: `M${rl.x} ${rl.top + 4}V${rl.inkLow}` });
       const pb = par.getBoundingClientRect();
@@ -4460,7 +4582,7 @@ export function drawRankeLines(root: HTMLElement): void {
       hd.style.left = `${rl.x - (pb.left - tb.left)}px`;
       hd.style.top = `${rl.top - (pb.top - tb.top)}px`;
       hd.title = rl.waiting
-        ? `Hierher, nach ${target}, wollen ${rl.waiting} ${rl.waiting === 1 ? "Lane" : "Lanes"} landen — gestrichelt bis zum Land`
+        ? `Nach ${target} ${rl.waiting === 1 ? "ist eine Lane" : `sind ${rl.waiting} Lanes`} noch unterwegs — gestrichelt, bis Land und Nachprüfung durch sind`
         : `Alles, was an ${target} hängt, ist gelandet`;
       par.appendChild(hd);
     }

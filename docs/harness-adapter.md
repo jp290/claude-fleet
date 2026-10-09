@@ -931,6 +931,16 @@ Composer-Zeile oder bei leerem Composer ohne zuvor vollständig gelesene Nutzlas
 beobachteten lebenden Agenten). Ob genau das die historische Zustellung vom 05.10. betraf,
 bleibt ohne deren Frames unbekannt.
 
+Der Placeholder hat zwei Formen: mit `+M lines` und ohne (`[Pasted text #27]`, gemessen
+2026-10-09 an einem 2437-Zeichen-`fleet-event` in Slot 4). `composer.ts#composerCollapsedPaste`
+erkennt beide. Auf dem `fleet-event`-Pfad las ein früher Frame mit nur der Kopfzeile `partial`,
+und weil der Placeholder selbst `differs` bleibt, endete die Zustellung in `SendNotAccepted`, ohne
+Enter. Seither zählt dort (und nur dort, in Fenster und Gnade von `server.ts#awaitArrival`) ein
+Frame als `complete`, der exakt Kopfzeile plus genau einen Placeholder zeigt und sich
+`COLLAPSED_PASTE_SETTLE_MS` (1 s) lang nicht ändert (`composer.ts#composerSettledPaste`). Ein
+zweiter Placeholder oder jede Änderung setzt die Uhr zurück. Die anderen Pfade, der Rollback-Leser
+und das einzelne Enter bleiben unverändert.
+
 Für die Nachlese zählt Claude **apply**: vollständiger Payload oder dieselbe Fleet-Kopfzeile
 mit demselben vor Enter gemessenen Paste-Placeholder. Letzterer heißt `collapsed-paste`,
 niemals byte-exakte Nutzlast; seine verborgenen Bytes bleiben unbekannt und erlauben keinen

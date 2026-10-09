@@ -189,6 +189,56 @@ export async function run(): Promise<void> {
       overwrite !== captureSource && !retainsLabel(overwrite));
   }
 
+  // THE ENTER HALF on the fleet-event path: the real server.ts#awaitArrival over scripted frames.
+  // ms from start | frame                                | answer the caller turns into
+  // 0–300         | header only (a provable prefix)      | —
+  // 300–          | header + "[Pasted text #27]", held    | complete → Enter → observed
+  // 300–900 / 900– | "#27", then "#27" beside "#28"       | partial → SendNotAccepted, no Enter
+  const arrivalSource = sendSource.match(/async function awaitArrival\([\s\S]*?\n}\n/)?.[0];
+  check("stuck-delivery SETUP: awaitArrival is readable", arrivalSource !== undefined);
+  check("stuck-delivery the fleet-event read (window and grace) alone passes the delivery header",
+    /const collapsedHeader = watchEvent \? header \?\? null : null;/.test(sendSource)
+      && sendSource.split("onRows, collapsedHeader)").length - 1 === 2);
+  const settledSource = readFileSync(`${ROOT}/composer.ts`, "utf8")
+    .match(/export function composerSettledPaste[\s\S]*?\n}\n/)?.[0];
+  check("stuck-delivery SETUP: composerSettledPaste is readable", settledSource !== undefined);
+  if (arrivalSource && settledSource) {
+    const headerOnly = [header.trimEnd()];
+    const settle = (source: string) => {
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace(/^export /, ""));
+      return new Function("composerCollapsedPaste", "COLLAPSED_PASTE_SETTLE_MS",
+        `${compiled}; return composerSettledPaste;`)(composerCollapsedPaste, 1000) as (h: string) =>
+        (rows: readonly string[] | null, at: number) => boolean;
+    };
+    const arrive = async (script: (ms: number) => string[], collapsedHeader: string | null,
+      settledSourceUsed = settledSource): Promise<{ arrival: string; ms: number }> => {
+      const started = Date.now();
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(arrivalSource);
+      const fn = new Function("sameBoundPane", "readExactComposer", "composerArrival", "composerSettledPaste",
+        "ACCEPT_WAIT_MS", `${compiled}; return awaitArrival;`)(() => true,
+        async () => ({ kind: "rows", rows: script(Date.now() - started) }), composerArrival,
+        settle(settledSourceUsed), 800) as (...args: unknown[]) => Promise<string>;
+      const arrival = await fn({}, {}, payload, 3000, true, undefined, collapsedHeader);
+      return { arrival, ms: Date.now() - started };
+    };
+    const heldShort = (ms: number): string[] => ms < 300 ? headerOnly : [header + short];
+    const split = (ms: number): string[] => ms < 300 ? headerOnly
+      : ms < 900 ? [header + short] : [`${header}${short} [Pasted text #28]`];
+    const before = await arrive(heldShort, null);
+    check("stuck-delivery fleet-event baseline: without the header a held placeholder stays partial (SendNotAccepted)",
+      before.arrival === "partial", JSON.stringify(before));
+    const held = await arrive(heldShort, header);
+    check("stuck-delivery fleet-event: header frame then a held \"[Pasted text #27]\" reads complete after >= 1 s",
+      held.arrival === "complete" && held.ms >= 1300 && held.ms < 3000, JSON.stringify(held));
+    const pieces = await arrive(split, header);
+    check("stuck-delivery fleet-event: \"#27\" then \"#28\" inside the second sends no early Enter",
+      pieces.arrival === "partial", JSON.stringify(pieces));
+    const unstable = settledSource.replace("at - held.since >= settleMs", "at - held.since >= 0");
+    const early = unstable === settledSource ? null : await arrive(split, header, unstable);
+    check("stuck-delivery mutation: without the hold \"#27\" alone would already be complete",
+      early?.arrival === "complete", JSON.stringify(early));
+  }
+
   const dir = mkdtempSync(`${ROOT}/stuck-delivery-`);
   const modeFile = `${dir}/mode`, stateFile = `${dir}/state`;
   writeFileSync(`${dir}/fixture.c`, fixture);

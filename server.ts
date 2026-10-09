@@ -66,7 +66,7 @@ import {
   type ContextPositionVariante,
 } from "./context-packs";
 import { composerArrival, composerBuffer, composerCollapsedPaste, composerDeliveryResidue, composerHoldsExactly, composerRows,
-  type ComposerArrival, type ComposerForm } from "./composer";
+  composerSettledPaste, type ComposerArrival, type ComposerForm } from "./composer";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
@@ -10930,17 +10930,23 @@ async function rollbackOwnComposerPayload(
 // Poll until the whole payload is on screen. A Watch event tolerates an inconsistent Mac redraw
 // until its deadline; other sends keep their original first-difference answer. A prefix seen in
 // that Watch window still forbids submission unless a later frame proves completion.
+// collapsedHeader (the Watch path only): Claude Code folds a long paste into "<header>[Pasted text
+// #N…]", which composerArrival can only call "differs" — after one header-only frame the event read
+// "partial" and was never submitted (2026-10-09, Slot 4, 2437 chars). That folded frame counts as
+// "complete" once it has held exactly for COLLAPSED_PASTE_SETTLE_MS (composer.ts#composerSettledPaste).
 async function awaitArrival(s: Slot, bound: BoundSlotPane, payload: string,
   waitMs = ACCEPT_WAIT_MS, retryDiffers = false,
-  onRows?: (rows: readonly string[]) => void): Promise<ComposerArrival> {
+  onRows?: (rows: readonly string[]) => void, collapsedHeader: string | null = null): Promise<ComposerArrival> {
   const started = Date.now();
   let last: ComposerArrival = "differs";
   let sawPartial = false;
+  const settled = collapsedHeader ? composerSettledPaste(collapsedHeader) : null;
   for (;;) {
     if (!sameBoundPane(s, bound)) return last;
     const read = await readExactComposer(s, bound);
     if (read.kind === "rows") onRows?.(read.rows);
     last = read.kind === "rows" ? composerArrival(read.rows, payload) : "differs";
+    if (last !== "complete" && settled?.(read.kind === "rows" ? read.rows : null, Date.now())) last = "complete";
     if (last === "complete" || (last === "differs" && !retryDiffers)) return last;
     if (retryDiffers && last === "partial") sawPartial = true;
     if (Date.now() - started >= waitMs) return retryDiffers && sawPartial ? "partial" : last;
@@ -11693,12 +11699,13 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
         const onRows: (rows: readonly string[]) => void =
           (rows) => { deliveryRead.collapsedDisplay ??= composerCollapsedPaste(rows, header ?? ""); };
-        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent, onRows);
+        const collapsedHeader = watchEvent ? header ?? null : null;
+        arrival = await awaitArrival(s, bound, composed, arrivalWaitMs, watchEvent, onRows, collapsedHeader);
         let arrivalBoundMs = arrivalWaitMs;
         // ARRIVAL_GRACE_MS: a prefix at the window's end gets the bounded grace, read with the Watch
         // rule (retryDiffers) — only "complete" may become the Enter, anything else stays "partial".
         if (arrival === "partial" && sameBoundPane(s, bound)) {
-          arrival = await awaitArrival(s, bound, composed, ARRIVAL_GRACE_MS, true, onRows) === "complete"
+          arrival = await awaitArrival(s, bound, composed, ARRIVAL_GRACE_MS, true, onRows, collapsedHeader) === "complete"
             ? "complete" : "partial";
           arrivalBoundMs += ARRIVAL_GRACE_MS;
         }

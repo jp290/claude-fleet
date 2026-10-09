@@ -165,6 +165,22 @@ export function composerCollapsedPaste(rows: readonly string[], header: string):
   return display && composerHoldsExactly(rows, display) ? display : null;
 }
 
+// A placeholder hides the payload, so its frame proves arrival only when it HOLDS: exactly
+// "<header>[Pasted text #N…]" (one placeholder, composerCollapsedPaste), unchanged across reads
+// for COLLAPSED_PASTE_SETTLE_MS. A paste that arrives in pieces ("#27", then "#28" beside it) changes
+// the frame inside that second and restarts the clock; any other frame stops it.
+export const COLLAPSED_PASTE_SETTLE_MS = 1000;
+export function composerSettledPaste(header: string, settleMs = COLLAPSED_PASTE_SETTLE_MS):
+  (rows: readonly string[] | null, at: number) => boolean {
+  let held: { display: string; since: number } | null = null;
+  return (rows, at) => {
+    const display = rows ? composerCollapsedPaste(rows, header) : null;
+    if (!display) { held = null; return false; }
+    if (held?.display !== display) held = { display, since: at };
+    return at - held.since >= settleMs;
+  };
+}
+
 export function composerDeliveryResidue(rows: readonly string[], payload: string,
   collapsedDisplay: string | null): DeliveryComposerResidue | null {
   const visibleChars = rows.reduce((n, row) => n + row.length, 0);

@@ -931,7 +931,7 @@ function runSay(b: MeterBall): { state: MachineState; more: string[] } {
 // the Prüfungen block (and its in-place repaint between renders) lists only the rest.
 // `doneByBranch`: a lane's runs that ended in the server's last minutes — only the diamond reads
 // them (#gateLook), green or red for that while; no block lists them
-let runsHere: { byBranch: Map<string, MeterBall[]>; doneByBranch: Map<string, MeterBall[]>; audit: MeterBall[]; auditRepo: string | null } = { byBranch: new Map(), doneByBranch: new Map(), audit: [], auditRepo: null };
+let runsHere: { byBranch: Map<string, MeterBall[]>; doneByBranch: Map<string, MeterBall[]>; audit: MeterBall[] } = { byBranch: new Map(), doneByBranch: new Map(), audit: [] };
 let placedRuns = new Set<string>();
 // the machine a run's `where` names, set per full render from the machines Geräte draws (this one,
 // the helpers by name); an offer no helper took yet ("unclaimed") has none
@@ -953,9 +953,8 @@ function readRunsHere(): void {
     if (b.kind === "post-land check") audit.push(b);
     else if (b.branch && (seen.get(b.branch) ?? 0) <= 1) byBranch.set(b.branch, [...(byBranch.get(b.branch) ?? []), b]);
   }
-  // the audit's repo by its full path, never by its name: two checkouts may share a basename, and a
-  // run placed by a guess is worse than one left in the Prüfungen block
-  runsHere = { byBranch, doneByBranch, audit, auditRepo: postLandLive?.running?.repo ?? null };
+  // which stem the audit belongs to is #stemAudit's: the server names its repo by basename
+  runsHere = { byBranch, doneByBranch, audit };
   placedRuns = new Set();
 }
 // ONE LINE PER RUN (owner 2026-10-08: the three-line stacks „[Zitat entfernt]“

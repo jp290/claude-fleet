@@ -7,10 +7,11 @@
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
 import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
-import { CONTEXT_PACKS, CONTEXT_PACK_FASSUNGEN, CONTEXT_PACK_HARNESSES, CONTEXT_PACK_TRIGGERS, CONTEXT_PACK_ZUSAETZE_MAX, CONTEXT_POSITIONS,
+import { CONTEXT_PACKS, CONTEXT_PACK_FASSUNGEN, CONTEXT_PACK_HARNESSES, CONTEXT_PACK_TRIGGERS, CONTEXT_PACK_ZEITPUNKTE, CONTEXT_PACK_ZUSAETZE_MAX,
+  CONTEXT_POSITIONS, CONTEXT_POSITION_VARIANTEN,
   contextPartId, type ContextPackCapability, type ContextPackHardness, type ContextPackGroup, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
-import { contextOmissionFor, resolveContextHarness, resolvePackAnatomy, type ContextPackAnatomy, type ContextPlan, type ContextPlanInput,
+import { contextOmissionFor, resolveContextHarness, resolvePackAnatomy, resolveVariante, type ContextPackAnatomy, type ContextPlan, type ContextPlanInput,
   type ContextPlanOmissionReason, type ContextPlanRule, type ContextPlanSelection } from "./context-plan";
 
 export const CONTEXT_MANIFEST_PATH = ".fleet/context-packs.json";
@@ -110,7 +111,10 @@ export const CONTEXT_PACK_ANATOMY_KEYS = ["zusaetze", "varianten", "fassung"] as
 const ZUSATZ_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const ZUSATZ_KEYS: ReadonlySet<string> = new Set(["id", "bedingung", "sources"]);
 const BEDINGUNG_VOCABULARY: Readonly<Record<string, readonly string[]>> = {
-  triggers: CONTEXT_PACK_TRIGGERS, positions: CONTEXT_POSITIONS, harnesses: CONTEXT_PACK_HARNESSES };
+  triggers: CONTEXT_PACK_TRIGGERS, positions: CONTEXT_POSITIONS, harnesses: CONTEXT_PACK_HARNESSES,
+  varianten: CONTEXT_POSITION_VARIANTEN, zeitpunkt: CONTEXT_PACK_ZEITPUNKTE };
+// a Kern of its own per position, or per variant of a position (context-packs.ts#CONTEXT_POSITION_VARIANTEN)
+const VARIANTE_KEYS_OF: readonly string[] = [...CONTEXT_POSITIONS, ...CONTEXT_POSITION_VARIANTEN];
 const VARIANTE_KEYS: ReadonlySet<string> = new Set(["sources", "useWhen"]);
 
 /** Split a manifest record into the pack the shared validator judges and its anatomy fields. */
@@ -138,7 +142,8 @@ export function packAnatomyIssues(core: Record<string, unknown>, anatomy: Record
   // the part ids a Kern or Variante delivers next to the Zusaetze: none may name the same part twice
   const kernIds = (sources: unknown): string[] => Array.isArray(sources)
     ? sources.map((source, index) => contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : undefined }, index)) : [];
-  const zusatzIds: string[] = [];
+  // each Zusatz's part ids with the variants it is limited to (null = every founding)
+  const zusatzIds: { ids: string[]; varianten: readonly string[] | null }[] = [];
   if ("zusaetze" in anatomy) {
     const zusaetze = anatomy.zusaetze;
     if (!Array.isArray(zusaetze) || zusaetze.length === 0 || zusaetze.length > CONTEXT_PACK_ZUSAETZE_MAX)
@@ -161,27 +166,33 @@ export function packAnatomyIssues(core: Record<string, unknown>, anatomy: Record
         }
         sourcesIssues(zusatz.sources, where);
         if (typeof zusatz.id === "string" && Array.isArray(zusatz.sources))
-          zusatzIds.push(...zusatz.sources.map((source, i) =>
-            contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : `${zusatz.id}-${i + 1}` }, 0)));
+          zusatzIds.push({ ids: zusatz.sources.map((source, i) =>
+            contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : `${zusatz.id}-${i + 1}` }, 0)),
+            varianten: isRecord(b) && Array.isArray(b.varianten) ? b.varianten as string[] : null });
       }
     }
   }
-  const kerne = [kernIds(core.sources)];
+  const kerne: { key: string | null; ids: string[] }[] = [{ key: null, ids: kernIds(core.sources) }];
   if ("varianten" in anatomy) {
     const varianten = anatomy.varianten;
     if (!isRecord(varianten) || Object.keys(varianten).length === 0) issues.push("varianten must name at least one position");
     else for (const [position, variante] of Object.entries(varianten)) {
       const where = `varianten.${position}`;
-      if (!(CONTEXT_POSITIONS as readonly string[]).includes(position)) { issues.push(`${where}: position must be ${CONTEXT_POSITIONS.join(", ")}`); continue; }
+      if (!VARIANTE_KEYS_OF.includes(position)) { issues.push(`${where}: key must be a position or a position variant (${VARIANTE_KEYS_OF.join(", ")})`); continue; }
       if (!isRecord(variante)) { issues.push(`${where} must be an object`); continue; }
       for (const key of Object.keys(variante)) if (!VARIANTE_KEYS.has(key)) issues.push(`${where}: unknown key ${key}`);
       if ("useWhen" in variante && !validUseWhen(variante.useWhen)) issues.push(`${where}: useWhen must be one line of purpose`);
       sourcesIssues(variante.sources, where);
-      kerne.push(kernIds(variante.sources));
+      kerne.push({ key: position, ids: kernIds(variante.sources) });
     }
   }
+  // which Zusaetze can stand beside which Kern: a variant-limited Zusatz only beside that variant's
+  // Kern, or beside a plain Kern when the pack names no Kern for any of its variants
+  const ownKern = new Set(kerne.map((kern) => kern.key));
   for (const kern of kerne) {
-    const all = [...kern, ...zusatzIds];
+    const beside = zusatzIds.filter((z) => z.varianten === null || (kern.key !== null && z.varianten.includes(kern.key))
+      || (!(CONTEXT_POSITION_VARIANTEN as readonly string[]).includes(kern.key ?? "") && !z.varianten.some((v) => ownKern.has(v))));
+    const all = [...kern.ids, ...beside.flatMap((z) => z.ids)];
     if (new Set(all).size !== all.length) issues.push("a Kern and its Zusaetze name the same part id twice");
   }
   return issues;
@@ -217,6 +228,8 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
   }
 
   const harness = resolveContextHarness(input.facts.harness);
+  // the variant is judged once, by the same rule the seeds' plan uses; its refusal is stated there
+  const { variante } = resolveVariante(input.facts.variante, input.facts.position);
   const triggers = new Set<ContextPackTrigger>(input.facts.triggers);
   const capabilities = new Set<ContextPackCapability>(input.facts.capabilities);
   const selected: ContextPlanSelection[] = [];
@@ -256,6 +269,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
     // every anchor present in those exact bytes.
     const why = contextOmissionFor(pack, {
       sourceAvailable: true, harness, mode: input.facts.mode as ContextPackMode, triggers, capabilities,
+      ...(variante ? { variante } : {}),
     });
     if (why) {
       omitted.push({ id, why });
@@ -263,7 +277,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
     }
     // the anatomy was proven above; the plan picks this founding's Kern, Zusaetze and Variante
     const resolved = resolvePackAnatomy({ ...(pack as unknown as ContextPackAnatomy), id,
-      useWhen: validUseWhen(pack.useWhen) ? pack.useWhen : undefined }, { position: input.facts.position, harness, triggers });
+      useWhen: validUseWhen(pack.useWhen) ? pack.useWhen : undefined }, { position: input.facts.position, ...(variante ? { variante } : {}), harness, triggers });
     selected.push({
       id,
       hardness: pack.hardness,

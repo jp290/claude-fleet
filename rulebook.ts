@@ -15,6 +15,8 @@
 // reproduces CLAUDE.md, so a split that lost or reordered a rule cannot pass. That equality is the
 // whole reason the fragments may be believed at all, and e2e/pins.ts fastens it.
 
+import type { ContextPositionVariante } from "./context-packs";
+
 /** Who a rendered rulebook is FOR. A lane is briefed for one slice of work; a MAIN session steers. */
 export const RULEBOOK_AUDIENCES = ["lane", "main", "orchestrator", "voll"] as const;
 export type RulebookAudience = (typeof RULEBOOK_AUDIENCES)[number];
@@ -177,6 +179,9 @@ export function fragmentSections(fragment: RulebookFragment, text: string): { he
 /** What a role carries of one fragment: all of it, none of it, or all but the named section slugs. */
 export type FragmentCut = "ganz" | "aus" | { readonly ohne: readonly string[] };
 export type RoleAudience = "main" | "orchestrator";
+/** A section cut is a role's, or a position VARIANT's: the variant name is the pack model's own
+ *  (context-packs.ts#CONTEXT_POSITION_VARIANTEN), never a further rulebook audience. */
+export type SectionCutKey = RoleAudience | ContextPositionVariante;
 
 /**
  * The role cut, by OMISSION LIST and never by keep-list, on purpose: a section whose lead words
@@ -192,7 +197,7 @@ export type RoleAudience = "main" | "orchestrator";
  *   three audit/verify sections of `deploy` that note 4a33d84a requires before the cut goes live
  *   (docs/messungen/2026-09-27-regelbuch-je-rolle.md §2: 1 395 tokens a MAIN reads in deploy).
  */
-export const ROLE_SECTION_CUT: Record<RoleAudience, Record<RulebookFragment, FragmentCut>> = {
+export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, FragmentCut>> = {
   orchestrator: {
     loader: "ganz",
     einstieg: { ohne: [
@@ -245,6 +250,26 @@ export const ROLE_SECTION_CUT: Record<RoleAudience, Record<RulebookFragment, Fra
     ] },
     graphify: "aus",
   },
+  // live-bau (card 1f9834a9, docs/design/live-bau-profil-2026-10.md §2.1): the LANE render — its
+  // three fragments — minus the 15 verify, suite and land sections, 8 172 B on 2026-10-09. They are
+  // anchors of the render's closing block and come back before the land, when the lane borrows
+  // verify-e2e; what holds while building beside a test instance (live server, name-pattern kills,
+  // token hygiene, the worktree boundary, keep the lane landable, the done sentence) stays in.
+  "live-bau": {
+    loader: "ganz",
+    einstieg: "aus",
+    "lane-discipline": { ohne: [
+      "proportionale-lokale-verifikation", "suite-offer", "review-sweep-ts-ist-die", "verify-kette",
+      "e2e-isolated-sh-ist-tier", "vor-dem-done-report-drift", "was-dich-wirklich-gated-ist",
+      "bist-du-eine-clarify-lane", "report-only-the-slice-summary", "ein-roter-check-ist-deiner",
+      "eine-lane-kann-ihre-eigenen", "bekannte-flake-familien-stehen-in", "suite-mutex",
+      "die-suiten-leiten-sock-port", "e2e-claude-gate-sh-hat",
+    ] },
+    supervisor: "aus",
+    "self-scheduling": "ganz",
+    deploy: "aus",
+    graphify: "aus",
+  },
 };
 
 export interface RoleRulebook {
@@ -264,7 +289,7 @@ export interface RoleRulebook {
  * Throws on a missing or empty fragment, exactly as `renderRulebook` does.
  */
 export function renderRoleRulebook(
-  audience: RoleAudience,
+  audience: SectionCutKey,
   contents: ReadonlyMap<RulebookFragment, string>,
   o: { repoRoot: string; anchorDir: string; sourceHash: string },
 ): RoleRulebook {

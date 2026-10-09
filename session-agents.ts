@@ -1,7 +1,7 @@
 // session-agents.ts — pure session AGENTS rendering with measured part receipts.
 import { createHash } from "node:crypto";
-import { CONTEXT_PACKS, contextPartId, type ContextPackGroup, type ContextPartOrt,
-  type ContextPartSorte, type ContextPosition } from "./context-packs";
+import { CONTEXT_PACKS, contextPartId, type ContextPackGroup, type ContextPackZeitpunkt, type ContextPartOrt,
+  type ContextPartSorte, type ContextPosition, type ContextPositionVariante } from "./context-packs";
 import { resolveContextHarness, type ContextPlan } from "./context-plan";
 import { sourceSection } from "./context-sections";
 
@@ -19,7 +19,12 @@ export interface SessionAgentsPart {
   readonly bytes: number | null;
   readonly content: string | null;
   readonly refusal: "source-unavailable" | "source-anchor-missing" | "source-anchor-ambiguous" | null;
+  /** a part the plan names for a later moment (context-plan.ts#resolvePackAnatomy): borrowed then */
+  readonly zeitpunkt?: ContextPackZeitpunkt;
 }
+
+// How a pointer says WHEN its part is to be borrowed — the words a lane reads next to the anchor.
+const ZEITPUNKT_WORT: Readonly<Record<ContextPackZeitpunkt, string>> = { "vor-dem-land": "vor dem Land ausleihen" };
 
 export interface SessionAgentsInput {
   readonly role: { readonly text: string; readonly path: string; readonly anchor: string };
@@ -66,6 +71,33 @@ export function sessionExitFooter(footer: string, carried: string): string {
   }).join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// ACT 3 OF THE LANE END (server.ts#laneExitFooter), here because it is pure text and the variant
+// decides it. Every lane reads how to wait — for a reply, a handed-off preview, its own verify run. A
+// LIVE-BAU lane (card 1f9834a9) runs no verify while the owner clicks: its act 3 names the verify and
+// land rules as the borrow they become on the owner's word to land (verify-e2e's Zusatz
+// "vor-dem-land", context-packs.ts). Acts 1 and 2 stay whole in both — no invariant of the role
+// card moves. `base` is the server's own origin, e.g. http://<host>:<port>.
+export function laneExitIdleAct(variante: ContextPositionVariante | null, base: string): string {
+  if (variante === "live-bau") return `3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
+   delivers the report to your coordinator, and any answer arrives in this pane on its own.
+
+--- VOR DEM LAND (Live-Bau): bis dahin baust du in der Testinstanz — nach jedem Schritt
+./testinstanz.sh refresh, keine Suite, keine Vorschau (docs/testinstanz.md, Abschnitt Live-Bau).
+Erst auf das Owner-Wort zum Land, das dir deine MAIN schickt, leihst du die Pruef- und Land-Regeln aus:
+
+   curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" ${base}/api/self/context/verify-e2e
+
+dann die Beweismenge aus GET /api/self/gate, drift pruefen, dann die drei Akte oben.`;
+  return `3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
+   delivers the report to your coordinator, and any answer arrives in this pane on its own. The same
+   holds for a preview you hand to another machine: after POST /api/self/suite-offer you go idle and
+   the terminal result — green or red — is delivered into this pane by itself. Do not poll.
+   The same holds while your OWN verify runs: run it in the foreground with a timeout sized to the
+   gate's \`timeoutMs\`, or in the background and wait for its completion event — never a
+   \`sleep\`/\`tail\` loop over a log (a \`nohup\` log is block-buffered; "0 PASS lines" is an
+   observer error, not a hang). A \`waitedOut\` verdict never looked at your tree; it is not red.`;
+}
+
 export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
   const parts: SessionAgentsPart[] = [textPart("role", input.role.text, input.role.path, input.role.anchor)];
   const pointers: string[] = [];
@@ -98,7 +130,7 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
       return { id, packId: pack.id, path: source.path, anchor: source.anchor,
         sorte: source.sorte ?? "wissen", ort: section ? ort : "ausleihe",
         sha256: section?.sha256 ?? null, bytes: section?.bytes ?? null, content: section && ort === "box" ? section.content : null,
-        refusal };
+        refusal, ...(source.zeitpunkt ? { zeitpunkt: source.zeitpunkt } : {}) };
     });
     if ("privateSourceId" in pack.sources) {
       const id = `${pack.id}.private`;
@@ -118,7 +150,7 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
     const supplied = input.pointerLines?.get(pack.id);
     const refs = supplied ?? ("privateSourceId" in pack.sources
       ? [`  private source ${pack.sources.privateSourceId} (metadata only)`]
-      : remaining.map((part) => `  ${part.path} | ${part.anchor}${part.refusal ? ` (${part.refusal})` : ""}`));
+      : remaining.map((part) => `  ${part.path} | ${part.anchor}${part.refusal ? ` (${part.refusal})` : ""}${part.zeitpunkt ? ` — ${ZEITPUNKT_WORT[part.zeitpunkt]}` : ""}`));
     const label = `- ${pack.id} [${pack.hardness}]`;
     pointers.push([pack.useWhen ? `${label} — ${pack.useWhen}` : label, ...refs].join("\n"));
   }

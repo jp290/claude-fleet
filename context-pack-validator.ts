@@ -94,6 +94,10 @@ const PACK_KEYS = new Set([
   "id", "useWhen", "scope", "audience", "triggers", "hardness", "sources", "requiredCapabilities",
   "harnesses", "modes", "estimatedBytes", "evidence", "owner", "status", "supersedes",
   "privateSourceId", "sourceHash", "observedAt", "group",
+  // a Fleet seed's anatomy (context-packs.ts, e.g. verify-e2e's live-bau Kern): judged by
+  // context-manifest.ts#packAnatomyIssues, which a manifest pack meets after splitPackAnatomy took
+  // these keys off before this validator ever saw it
+  "zusaetze", "varianten", "fassung",
 ]);
 const BASE_REQUIRED = [
   "id", "scope", "audience", "triggers", "hardness", "requiredCapabilities", "harnesses",

@@ -1,6 +1,6 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, laneExitIdleAct, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
@@ -47,7 +47,7 @@ import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
-import { planContext, planProgramContext, programContextPacksFrom, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
+import { cardVariante, planContext, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPackAnatomie, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
@@ -62,6 +62,7 @@ import {
   type ContextPackMode,
   type ContextPackTrigger,
   type ContextPosition,
+  type ContextPositionVariante,
 } from "./context-packs";
 import { composerArrival, composerBuffer, composerCollapsedPaste, composerDeliveryResidue, composerHoldsExactly, composerRows,
   type ComposerArrival, type ComposerForm } from "./composer";
@@ -7545,11 +7546,30 @@ function rulebookRenderForSession(sessionId: string, role: "main" | "orchestrato
 // and they MUST fall back the same way or the probe judges bytes the spawn never wrote.
 // The source hash is taken over the MAIN render, i.e. over all seven fragments: a lane should be
 // able to tell that the rulebook moved even when the part that moved is one it does not hold.
-function laneRulebookFor(repo: string, at: string): string | null {
+//
+// A lane of a VARIANT (card 1f9834a9) gets the variant's section cut (rulebook.ts#ROLE_SECTION_CUT,
+// keyed by the pack model's variant name): the same three fragments minus the sections the variant
+// borrows later, each named in the closing block with the file that holds it. The anchor files are
+// the role renders' own — same directory, same bytes — and only the spawn seam writes them (`write`);
+// the drift probe and the plan compare bytes and touch nothing.
+function laneRulebookFor(repo: string, at: string, variante: ContextPositionVariante | null = null, write = false): string | null {
   const frag = readRulebookFragments(repo);
   if (!frag) return null;
   let body: string, whole: string;
   try { body = renderRulebook("lane", frag); whole = renderRulebook("voll", frag); } catch { return null; }
+  if (variante) {
+    const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 16);
+    const anchorDir = `${repo}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`;
+    let cut: ReturnType<typeof renderRoleRulebook>;
+    try { cut = renderRoleRulebook(variante, frag, { repoRoot: repo, anchorDir, sourceHash }); } catch { return null; }
+    if (write) {
+      try {
+        mkdirSync(anchorDir, { recursive: true });
+        for (const [name, text] of cut.files) writeRenderFile(`${anchorDir}/${name}`, text);
+      } catch { return null; } // a render naming anchors nobody wrote would be a rulebook with holes
+    }
+    return cut.text;
+  }
   const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 8);
   return body + renderBackref("lane", { repoRoot: repo, at, sourceHash });
 }
@@ -7646,7 +7666,7 @@ function taskBranchSlug(title: string): string {
 }
 
 async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string,
-  harness: Harness = CLAUDE_HARNESS): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+  harness: Harness = CLAUDE_HARNESS, variante: ContextPositionVariante | null = null): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
@@ -7687,7 +7707,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   }
   await excludeLaneScratch(path);
-  await laneScaffoldFor(root, path, harness);
+  await laneScaffoldFor(root, path, harness, variante);
   return { repo: root, path, branch, form };
 }
 
@@ -7701,7 +7721,8 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
 // GITIGNORED names are touched either way — a tracked file of that name is the repo's work, not a
 // copy. The fence additionally refuses their content inside any pi-zai cwd (server/pi-zai-fence.ts).
 const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
-async function laneScaffoldFor(root: string, path: string, harness: Harness): Promise<void> {
+async function laneScaffoldFor(root: string, path: string, harness: Harness,
+  variante: ContextPositionVariante | null = null): Promise<void> {
   if (scaffoldFree(harness)) {
     for (const f of PRIVATE_SCAFFOLD) {
       if (!existsSync(`${path}/${f}`) || (await git(path, "check-ignore", "-q", f)).code !== 0) continue;
@@ -7732,7 +7753,7 @@ async function laneScaffoldFor(root: string, path: string, harness: Harness): Pr
   // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
   // copying the monolith below rather than leaving the lane with no rulebook at all. Failing the
   // spawn over it would be worse still — the rulebook is scaffolding, not the lane's work.
-  const laneRulebook = laneRulebookFor(root, new Date().toISOString());
+  const laneRulebook = laneRulebookFor(root, new Date().toISOString(), variante, true);
   if (laneRulebook !== null && !existsSync(`${path}/CLAUDE.md`)
       && (await git(root, "check-ignore", "-q", "CLAUDE.md")).code === 0) {
     writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
@@ -9551,14 +9572,16 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
               if (!current()) return;
             }
             if (!agents) {
-              const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane");
+              // a live-bau lane re-renders as one: the same variant its founding plan accepted
+              const variante = laneVarianteOf(waveRowsOf(s.id));
+              const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane", undefined, variante);
               if (!current()) return;
               if (!planned.ok) throw new Error(planned.error);
               const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
               if (!current()) return;
               if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
               agents = await foundingSessionAgents({ ...planned.value, repoRoot: occupant.cwd, head: head.out },
-                occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver)}\n\n${memoryPointer("lane")}`);
+                occupant.harness, "lane", undefined, `${laneExitFooter(occupant.harness, selfPosition(s).receiver, variante)}\n\n${memoryPointer("lane")}`);
               if (!current()) return;
             }
             await writeLaneSessionAgents(occupant.cwd, agents, current);
@@ -9966,6 +9989,19 @@ async function laneClosedNote(wt: LaneRef, base: string | null): Promise<string>
 //
 // ORDER is the sensor's own (created, id), the comparator task-land-waves.ts folds by, so the
 // brief, the board and the split door name the n rows in ONE sequence.
+// THE LANE'S VARIANT (card 1f9834a9): the rows' card texts through the ONE reader of the line
+// (context-plan.ts#cardVariante), judged by the plan's own rule (resolveVariante). Every seam that
+// writes or compares a lane's context — the plan, the CLAUDE.md render and its drift probe, the exit
+// footer, the baton — asks these two, so they cannot tell different stories. A variant row is read
+// off its group, like every other byte of its brief.
+function laneVarianteRaw(rows: readonly Task[]): string | null {
+  const source = rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows;
+  return cardVariante(source.map((row) => row.text));
+}
+function laneVarianteOf(rows: readonly Task[]): ContextPositionVariante | null {
+  return resolveVariante(laneVarianteRaw(rows), "lane").variante ?? null;
+}
+
 function waveRowsOf(slotId: number): Task[] {
   return tasks.filter((t) => t.slot === slotId && t.status === "sent")
     .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -12982,6 +13018,14 @@ function laneSuccessionRowLines(rows: readonly Task[]): string {
   }).join("\n\n");
 }
 
+// THE BATON'S CLOSING LINES. A plain lane's baton repeats HOW THIS LANE ENDS below the handoff, as it
+// always has. A LIVE-BAU baton (card 1f9834a9) names it ONCE: the successor's AGENTS.override.md is
+// rewritten by the same delivery (laneContextDelivery) and carries the lane end whole, so the brief
+// points there instead of carrying a second copy (2 538 B per succession, measured on lane 4A).
+function laneBatonFooter(variante: ContextPositionVariante | null, footer: string): string {
+  return variante ? "\n\nSession-Regeln: ./AGENTS.override.md" : footer;
+}
+
 function buildLaneSuccessionBrief(facts: { branch: string; base: string; session: number;
   rows: readonly Task[]; log: string; handoff: FleetReport | null; reason: string;
   decision: string | null; footer: string; contextBlock: string }): string {
@@ -13117,7 +13161,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
     rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s),
     reason: successionReasonFor(s), decision: latestRowDecisionLine(hold.map((h) => h.task)),
-    footer: laneExitFooter(s.harness, selfPosition(s).receiver), contextBlock: context.block });
+    footer: laneBatonFooter(context.variante, laneExitFooter(s.harness, selfPosition(s).receiver)), contextBlock: context.block });
   // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
@@ -13335,7 +13379,7 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   const hold: LaneRowHold[] = waveRowsOf(s.id).map((task) => ({ task, note: task.note }));
   const brief = buildLaneHarnessBrief({ branch: ref.branch, base, from, to, taskId: s.taskId,
     rows: hold.map((h) => h.task), head: headRead.code === 0 ? headRead.out : "(unbekannt)", log,
-    status: statusShown, footer: laneExitFooter(ho.harness, selfPosition(s).receiver) });
+    status: statusShown, footer: laneExitFooter(ho.harness, selfPosition(s).receiver, laneVarianteOf(hold.map((h) => h.task))) });
   // the private scaffold follows the harness that will run in this tree (laneScaffoldFor): a switch
   // TO pi-zai removes the copies before its pane starts, a switch away from it writes them again
   await laneScaffoldFor(ref.repo, expected.cwd, hh);
@@ -19316,7 +19360,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       : undefined);
     guard();
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH,
+      laneVarianteOf([next, ...(wave?.followers ?? [])]));
     guard();
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
@@ -19565,7 +19610,8 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     ...(binding.ok ? { programIds: binding.programs.map((p) => p.id) } : {}),
     receiver, harness: s.harness, model: s.model, waitingOnMe };
 }
-function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null): string {
+function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null,
+  variante: ContextPositionVariante | null = null): string {
   const handoffMeaning = nativeCompaction(harness) ? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF;
   return `
 
@@ -19592,14 +19638,7 @@ Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self
    body takes ONLY those two fields. A report is a MESSAGE, never a state change — it does not move
    your task's status, does not land anything, and does not deploy.
 
-3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
-   delivers the report to your coordinator, and any answer arrives in this pane on its own. The same
-   holds for a preview you hand to another machine: after POST /api/self/suite-offer you go idle and
-   the terminal result — green or red — is delivered into this pane by itself. Do not poll.
-   The same holds while your OWN verify runs: run it in the foreground with a timeout sized to the
-   gate's \`timeoutMs\`, or in the background and wait for its completion event — never a
-   \`sleep\`/\`tail\` loop over a log (a \`nohup\` log is block-buffered; "0 PASS lines" is an
-   observer error, not a hang). A \`waitedOut\` verdict never looked at your tree; it is not red.
+${laneExitIdleAct(variante, `http://${HOST}:${PORT}`)}
 
 `;
 }
@@ -19787,6 +19826,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 interface LaneContextDelivery {
   block: string;
   sessionAgents: SessionAgents;
+  /** the variant the plan ACCEPTED (laneVarianteRaw → resolveVariante); null = the plain lane */
+  variante: ContextPositionVariante | null;
   notesBlock: string; snippetBlock: string; studioLaneBlock: string; anchorBlock: string;
   record: (deliveredBrief: string, at: number) => Promise<void>;
 }
@@ -19802,8 +19843,12 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   // still names the manifest and receipt source; Clarify retains its integration-only path.
   const head = await integrationHead(wt.repo) ?? (clarify ? null : laneHead.out);
   if (!head) throw new Error("could not read integration HEAD for context receipt");
+  // the card's variant, RAW: the plan judges it and states a refusal; a clarify lane settles what
+  // done means and builds nothing, so it is founded plain
+  const varianteRaw = clarify ? null : laneVarianteRaw(sourceRows);
   const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
-    triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const };
+    triggers: taskContextTriggers([brief], DISPATCH_CONTEXT_TRIGGERS), capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const,
+    ...(varianteRaw !== null ? { variante: varianteRaw } : {}) };
   // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the same
   // merge Program-MAIN founding does, deliberately with no frame branch: a Fleet-only or
   // foreign-only rule would be a second, quieter policy. `repoRootOf` throws → the catch requeues.
@@ -19818,6 +19863,10 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const plan = availableContextPlan({
     selected: stampObservedSourceHashes([...base.selected, ...repoPlan.selected, ...programPlan.selected], blobShas),
     omitted: [...base.omitted, ...repoPlan.omitted, ...programPlan.omitted] });
+  // the variant is the Fleet plan's verdict (the repo plan judges by the same resolveVariante)
+  const variante = base.variante ?? null;
+  const varianteFacts = { ...(base.variante ? { variante: base.variante } : {}),
+    ...(base.varianteVerworfen ? { varianteVerworfen: base.varianteVerworfen } : {}) };
   const anchorBlock = renderContextAnchorBlock(plan);
   // THE LANE'S HALF OF THE STUDIO RECORD. The founding brief's half is folded into railBlockFor;
   // a worker lane never passes through that selector, so its half is read here — through the
@@ -19891,10 +19940,10 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
   const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
-    free.harness, "lane", undefined, clarify ? "" : `${ownerKorrekturenPointer()}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver)}\n\n${memoryPointer("lane")}`);
+    free.harness, "lane", undefined, clarify ? "" : `${ownerKorrekturenPointer()}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver, variante)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { sessionAgents, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
+  return { sessionAgents, variante, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
     block: `${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}`,
     record: async (deliveredBrief, at) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
@@ -19902,7 +19951,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
       // (`renderer`; a row without it is a v1 row by date).
       const hash = createHash("sha256").update(JSON.stringify({
         anchorBlock,
-        planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
+        planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted, ...varianteFacts },
       })).digest("hex");
       const card = sourceRows[0]?.card;
       const className = card?.valid ? card.klasse : undefined;
@@ -19918,7 +19967,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
         harness: free.harness, ...receiptModel(free), effort: free.effort,
         ...(className ? { executionClass: executionClass ? `${className}@${executionClass.version}` : null,
           executionRole: executionClass ? override ?? executionClass.executor : null } : {}),
-        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+        mode: planFacts.mode, triggers: planFacts.triggers, ...varianteFacts, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
         truncated: false,
         // WHICH notes this brief carried, so the block is auditable from the ledger instead of from
@@ -39391,7 +39440,7 @@ type FoundingPlan = {
   readonly manifest: ContextManifestRead;
 };
 async function foundingPlanOf(repo: string, harness: string | null,
-  foundingMode: FoundingPlanMode, position?: ContextPosition): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
+  foundingMode: FoundingPlanMode, position?: ContextPosition, variante: ContextPositionVariante | null = null): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
   let repoRoot: string;
   try {
     repoRoot = await repoRootOf(repo);
@@ -39410,7 +39459,7 @@ async function foundingPlanOf(repo: string, harness: string | null,
   const facts = foundingMode === "lane"
     ? { sourceTree, harness,
         mode: DISPATCH_CONTEXT_MODE, triggers: taskContextTriggers([], DISPATCH_CONTEXT_TRIGGERS),
-        capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const }
+        capabilities: DISPATCH_CONTEXT_CAPABILITIES, position: "lane" as const, ...(variante ? { variante } : {}) }
     : programMainContextFacts(frame, harness, position);
   const base = planContext(facts);
   const { repoPlan, blobShas, manifest } = await repoManifestContextPlan(repoRoot, head, facts);
@@ -48125,7 +48174,7 @@ Bun.serve<WSData>({
       let rulebookDrifted: boolean | null = null;
       try {
         const copy = await Bun.file(`${s.cwd!}/CLAUDE.md`).text();
-        const rendered = laneRulebookFor(s.worktree.repo, "");
+        const rendered = laneRulebookFor(s.worktree.repo, "", laneVarianteOf(waveRowsOf(s.id)));
         const expected = rendered === null
           ? await Bun.file(`${s.worktree.repo}/CLAUDE.md`).text()
           : rendered;

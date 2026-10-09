@@ -1,4 +1,4 @@
-import { renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
+import { laneExitIdleAct, renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
 import { sectionAt, sourceSection } from "../context-sections";
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
@@ -9,7 +9,7 @@ import {
   type ContextPackTrigger,
   type ContextPackCapability,
 } from "../context-packs";
-import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, planContext, planProgramContext,
+import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, cardVariante, planContext, planProgramContext, resolveVariante, type ContextPlan,
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
 import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
@@ -20,8 +20,11 @@ import { codexPermissionsFrom } from "../server/types";
 import { piZaiFenceProfile } from "../server/pi-zai-fence";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, planRepoContext,
-  readContextManifest, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
+import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, packAnatomyIssues, planRepoContext,
+  readContextManifest, splitPackAnatomy, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
+import { parseFormattedCard, validateCard } from "../card-extract";
+import { RULEBOOK_BACKREF_HEADING, RULEBOOK_FRAGMENTS, ROLE_SECTION_CUT, fragmentSections, renderRoleRulebook, renderRulebook,
+  type RulebookFragment } from "../rulebook";
 import { packIdFassung, standSincePreview, type PackStandPreview, type PackStandReceipt } from "../src/protocol";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
@@ -1283,7 +1286,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     'return { roles: [LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_ROLE_CARD + "\\n" + ORCHESTRATOR_CONTEXT_LINE_CODEX], laneExitFooter, mainFooter: RAIL_HEAD + RAIL_TAIL };',
   ].join("\n"));
   const deps = { HOST: "127.0.0.1", PORT: 8790, MAX_FLEET_REPORT_TEXT: 4000,
-    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex" };
+    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex", laneExitIdleAct };
   const templates = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {
     roles: string[]; laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null) => string; mainFooter: string;
   };
@@ -1464,6 +1467,155 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     harnessParts.length === 2 && harnessParts.every((part, index) =>
       part.bytes === harnessSections[index]?.bytes && part.sha256 === harnessSections[index]?.sha256),
     JSON.stringify(harnessParts.map((part) => ({ path: part.path, bytes: part.bytes, refusal: part.refusal }))));
+  liveBauChecks(check, { tree, server, fn, roles: templates.roles, laneExitFooter: templates.laneExitFooter, sourceBytes });
+}
+
+// THE LIVE-BAU VARIANT (card 1f9834a9, docs/design/live-bau-profil-2026-10.md §2). One card, read
+// once without and once with the line `VARIANTE: live-bau`: the plan, the receipt's parts, the
+// session file, its lane end, the baton and the rulebook cut each say the same thing — and without
+// the line every one of them is the plain lane's, byte for byte.
+function liveBauChecks(check: ContextPlanCheck, probe: {
+  tree: { root: string; manifest: ReturnType<typeof readContextManifest>; sourceBytes: Map<string, string> };
+  server: string; fn: (name: string) => string; roles: string[]; sourceBytes: Map<string, string>;
+  laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null, variante?: "live-bau" | null) => string;
+}): void {
+  const { tree, server, sourceBytes } = probe;
+  // --- the card: an INTERIM line after the goal paragraph (Program-MAIN, clarification 17398332)
+  const head = ["ROLLE: claude/claude-opus-5-5[1m]/high", "GROESSE: klein", "FLAECHE: docs/testinstanz.md",
+    "VERIFY: install, pins, tsc, build laut GET /api/self/gate localProof.steps", "DONE: die Testinstanz zeigt den neuen Knopf"].join("\n");
+  const goal = "Der Knopf wird live mit dem Owner gebaut.";
+  const plainText = `${head}\n${goal}\n`;
+  const liveText = `${head}\n${goal}\n\nVARIANTE: live-bau\n`;
+  const ctx = (sourceText: string) => ({ sourceText, trackedPaths: new Set(["docs/testinstanz.md"]), symbolIndex: null,
+    harnessKnown: (v: string) => v === "claude", modelKnown: () => true, effortKnown: () => true,
+    declares: () => false, rowKnown: () => false });
+  const plainRaw = parseFormattedCard(plainText);
+  const liveRaw = parseFormattedCard(liveText);
+  const plainCard = plainRaw && validateCard(plainRaw, ctx(plainText));
+  const liveCard = liveRaw && validateCard(liveRaw, ctx(liveText));
+  check("live-bau card: the VARIANTE line after the goal paragraph leaves the card valid, unchanged and without a stray header gap",
+    !!plainCard && !!liveCard && liveCard.valid && plainCard.valid && JSON.stringify(liveRaw) === JSON.stringify(plainRaw)
+      && JSON.stringify(liveCard) === JSON.stringify(plainCard) && !("strayHeaderLines" in (liveRaw ?? {})),
+    JSON.stringify({ gaps: liveCard?.gaps, ziel: liveRaw?.ziel }));
+  check("live-bau card: the one reader takes live-bau from the line, nothing from a card without it",
+    cardVariante([liveText]) === "live-bau" && cardVariante([plainText]) === null
+      && resolveVariante(cardVariante([liveText]), "lane").variante === "live-bau",
+    JSON.stringify([cardVariante([liveText]), cardVariante([plainText])]));
+  const refusals = [resolveVariante("live-bau-2", "lane"), resolveVariante("live-bau", "main"),
+    resolveVariante(cardVariante([liveText, "VARIANTE: andere\n"]), "lane")];
+  check("live-bau card: an unknown value, another position and two different lines are variant none WITH a reason",
+    refusals.every((r) => r.variante === undefined && typeof r.verworfen === "string" && r.verworfen.endsWith("Variante keine")),
+    JSON.stringify(refusals));
+
+  // --- the plan: seeds and the real manifest, lane facts, once plain and once live-bau
+  const facts = { sourceTree: "fleet" as const, harness: "claude", mode: "mutating" as const, triggers: ["always", "verification"] as ContextPackTrigger[],
+    capabilities: fullCapabilities(), position: "lane" as const };
+  const plain = planContext(facts);
+  const live = planContext({ ...facts, variante: cardVariante([liveText]) });
+  const unknown = planContext({ ...facts, variante: "live-bau-2" });
+  check("live-bau plan: without the variant the plan is byte for byte the plain lane's — no variante, no anatomie on verify-e2e",
+    JSON.stringify(plain) === JSON.stringify(planContext({ ...facts, variante: null }))
+      && !("variante" in plain) && !("anatomie" in (plain.selected.find((p) => p.id === "verify-e2e") ?? {})),
+    JSON.stringify(plain.selected.map((p) => p.id)));
+  check("live-bau plan: an unknown variant plans the plain lane and names why",
+    JSON.stringify(unknown.selected) === JSON.stringify(plain.selected) && JSON.stringify(unknown.omitted) === JSON.stringify(plain.omitted)
+      && !("variante" in unknown) && /unbekannte Variante "live-bau-2"/.test(unknown.varianteVerworfen ?? ""),
+    unknown.varianteVerworfen);
+  const verify = live.selected.find((p) => p.id === "verify-e2e");
+  const wantAnatomie = { kern: ["verify-e2e.main", "verify-e2e.more", "verify-e2e.gate-vs-audit", "verify-e2e.proportion"], variante: "live-bau",
+    zusaetze: [{ id: "vor-dem-land", bedingung: { varianten: ["live-bau"], zeitpunkt: ["vor-dem-land"] }, an: true, ort: "ausleihe",
+      teile: ["verify-e2e.kern", "verify-e2e.lane"] }] };
+  const borrowed = verify && !("privateSourceId" in verify.sources) ? verify.sources.filter((source) => source.zeitpunkt) : [];
+  check("live-bau plan: verify-e2e Kern and Lane are the Zusatz vor-dem-land — named, ausleihe, never boxed",
+    live.variante === "live-bau" && JSON.stringify(verify?.anatomie) === JSON.stringify(wantAnatomie)
+      && borrowed.map((source) => source.id).join(",") === "verify-e2e.kern,verify-e2e.lane"
+      && borrowed.every((source) => source.zeitpunkt === "vor-dem-land" && source.positions?.lane === "ausleihe"),
+    JSON.stringify(verify?.anatomie));
+  const mainLive = planContext({ ...facts, position: "main", variante: "live-bau" });
+  check("live-bau plan: under a MAIN founding the lane's variant is refused by name and changes nothing",
+    !("variante" in mainLive) && /gehoert zur Position lane/.test(mainLive.varianteVerworfen ?? "")
+      && JSON.stringify(mainLive.selected) === JSON.stringify(planContext({ ...facts, position: "main" }).selected),
+    mainLive.varianteVerworfen);
+  const repo = { trackedPaths: new Set([...tree.sourceBytes.keys(), ...sourceBytes.keys()]), sourceBytes: new Map([...tree.sourceBytes, ...sourceBytes]) };
+  const repoPlain = planRepoContext({ manifest: tree.manifest, repo, facts });
+  const repoLive = planRepoContext({ manifest: tree.manifest, repo, facts: { ...facts, variante: "live-bau" } });
+  const ti = repoLive.selected.find((p) => p.id === "testinstanz-abnahme");
+  check("live-bau plan: the real manifest's testinstanz-abnahme rides the variant with its live-bau Kern; the plain lane omits it as before",
+    repoPlain.omitted.some((p) => p.id === "testinstanz-abnahme" && p.why === "trigger-not-matched")
+      && JSON.stringify(repoPlain) === JSON.stringify(planRepoContext({ manifest: tree.manifest, repo, facts: { ...facts, variante: null } }))
+      && ti?.anatomie?.variante === "live-bau"
+      && JSON.stringify(ti.anatomie.kern) === JSON.stringify(["testinstanz-abnahme.live-bau", "testinstanz-abnahme.ablauf"]),
+    JSON.stringify({ plain: repoPlain.omitted.find((p) => p.id === "testinstanz-abnahme"), live: ti?.anatomie }));
+  // the seed's anatomy is judged by the manifest's own judge, and that judge still reds the real mistake
+  const seed = CONTEXT_PACKS.find((pack) => pack.id === "verify-e2e")!;
+  const split = splitPackAnatomy(JSON.parse(JSON.stringify(seed)) as Record<string, unknown>);
+  const seedIssues = packAnatomyIssues(split.core, split.anatomy, repo);
+  const unlimited = JSON.parse(JSON.stringify(split.anatomy)) as { zusaetze: { bedingung: Record<string, unknown> }[] };
+  delete unlimited.zusaetze[0]!.bedingung.varianten;
+  const mutantIssues = packAnatomyIssues(split.core, unlimited as Record<string, unknown>, repo);
+  check("live-bau plan: the seed's anatomy passes the manifest judge; the same Zusatz NOT limited to live-bau names a part twice",
+    seedIssues.length === 0 && mutantIssues.includes("a Kern and its Zusaetze name the same part id twice"),
+    JSON.stringify({ seedIssues, mutantIssues }));
+
+  // --- the session file (AGENTS.override.md) and the receipt's part rows
+  const receiver = { role: "program-main", slot: 3 };
+  const render = (plan: ContextPlan, variante: "live-bau" | null) => renderSessionAgents({
+    role: { text: probe.roles[0]!, path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane", harness: "claude",
+    plan, sourceBytes: repo.sourceBytes, footer: probe.laneExitFooter("claude", receiver, variante) });
+  const merged = (a: ContextPlan, b: ContextPlan): ContextPlan => ({ selected: [...a.selected, ...b.selected], omitted: [...a.omitted, ...b.omitted] });
+  const filePlain = render(merged(plain, repoPlain), null);
+  const fileLive = render(merged(live, repoLive), "live-bau");
+  const part = (file: typeof filePlain, id: string) => file.parts.find((p) => p.id === id);
+  const kernText = sourceSection(repo.sourceBytes.get("AGENTS.md")!, "AGENTS.md", "### Kern")!.content;
+  const liveBauText = sourceSection(repo.sourceBytes.get("docs/testinstanz.md")!, "docs/testinstanz.md",
+    "## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt")!.content;
+  check("live-bau file: verify-e2e Kern and Lane are receipt rows ausleihe with zeitpunkt vor-dem-land, the pointer says so, the text is out",
+    ["verify-e2e.kern", "verify-e2e.lane"].every((id) => part(fileLive, id)?.ort === "ausleihe" && part(fileLive, id)?.zeitpunkt === "vor-dem-land"
+      && part(fileLive, id)?.content === null && part(fileLive, id)?.sha256 !== null)
+      && fileLive.text.includes("  AGENTS.md | ### Kern — vor dem Land ausleihen\n  AGENTS.md | ### Lane — vor dem Land ausleihen")
+      && !fileLive.text.includes(kernText) && filePlain.text.includes(kernText),
+    JSON.stringify(["verify-e2e.kern", "verify-e2e.lane"].map((id) => part(fileLive, id))));
+  check("live-bau file: the Testinstanz instruction is boxed — its exact bytes in the file and on the receipt row",
+    part(fileLive, "testinstanz-abnahme.live-bau")?.ort === "box" && fileLive.text.includes(liveBauText)
+      && part(fileLive, "testinstanz-abnahme.live-bau")?.bytes === Buffer.byteLength(liveBauText)
+      && liveBauText.includes("./testinstanz.sh refresh"),
+    JSON.stringify(part(fileLive, "testinstanz-abnahme.live-bau") && { ...part(fileLive, "testinstanz-abnahme.live-bau"), content: undefined }));
+  const laneEnd = (file: typeof filePlain) => file.text.slice(file.text.indexOf("## Lane-Ende"));
+  check("live-bau file: the lane end keeps its three acts and the role card, runs no verify, and names the borrow before the land",
+    ["HOW THIS LANE ENDS", "1. COMMIT.", "2. FILE ONE TYPED FLEET-REPORT", "3. THEN GO IDLE.", "/api/self/context/verify-e2e", "GET /api/self/gate"]
+      .every((needle) => laneEnd(fileLive).includes(needle))
+      && !laneEnd(fileLive).includes("suite-offer") && !laneEnd(fileLive).includes("OWN verify runs")
+      && laneEnd(filePlain).includes("OWN verify runs") && part(fileLive, "role")?.sha256 === part(filePlain, "role")?.sha256,
+    `plain ${filePlain.bytes} B, live-bau ${fileLive.bytes} B`);
+  check("live-bau file: without the variant no part carries a zeitpunkt and the lane end is the plain footer, byte for byte",
+    filePlain.parts.every((p) => !("zeitpunkt" in p))
+      && probe.laneExitFooter("claude", receiver, null) === probe.laneExitFooter("claude", receiver),
+    `${filePlain.bytes} B`);
+
+  // --- the baton: a live-bau successor reads HOW THIS LANE ENDS once, in its rewritten session file
+  const baton = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(`${probe.fn("laneBatonFooter")}\nreturn laneBatonFooter;`))() as
+    (variante: "live-bau" | null, footer: string) => string;
+  const footer = probe.laneExitFooter("claude", receiver);
+  check("live-bau baton: the brief points to AGENTS.override.md instead of a second HOW THIS LANE ENDS; a plain baton keeps its footer",
+    !baton("live-bau", footer).includes("HOW THIS LANE ENDS") && baton("live-bau", footer).includes("./AGENTS.override.md")
+      && baton(null, footer) === footer && server.includes("footer: laneBatonFooter(context.variante, laneExitFooter(s.harness, selfPosition(s).receiver))"),
+    JSON.stringify(baton("live-bau", footer)));
+
+  // --- the rulebook: the lane render minus the 15 sections, each an anchor (fixture fragments: the
+  // real ones are gitignored and live in the source checkout only)
+  const ohne = (ROLE_SECTION_CUT["live-bau"]["lane-discipline"] as { ohne: readonly string[] }).ohne;
+  const fixture = new Map<RulebookFragment, string>(RULEBOOK_FRAGMENTS.map((f) => [f, [`## ${f}\n\nprose before the first bullet of ${f}\n`,
+    ...(f === "lane-discipline" ? ohne : []).map((slug) => `- **${slug.split("-").join(" ")}** rule text of ${f}/${slug}\n  wrapped line\n`),
+    `- **kept rule of ${f}**\n`].join("")]));
+  const lane = renderRulebook("lane", fixture);
+  const cut = renderRoleRulebook("live-bau", fixture, { repoRoot: "/fixture/repo", anchorDir: "/fixture/abschnitte", sourceHash: "0123456789abcdef" });
+  const omittedSections = fragmentSections("lane-discipline", fixture.get("lane-discipline")!).sections.filter((sec) => ohne.includes(sec.slug));
+  const body = cut.text.slice(0, cut.text.indexOf(`\n${RULEBOOK_BACKREF_HEADING}\n`));
+  check("live-bau rulebook: the variant's CLAUDE.md is the lane render minus exactly the 15 sections, each named with its file",
+    ohne.length === 15 && omittedSections.length === 15 && cut.staleOmissions.length === 0
+      && body === omittedSections.reduce((text, sec) => text.replace(sec.text, ""), lane)
+      && omittedSections.every((sec) => cut.text.includes(`\`${sec.anchor}\``) && cut.files.get(`${sec.anchor}.md`) === sec.text),
+    `lane ${Buffer.byteLength(lane)} B, live-bau body ${Buffer.byteLength(body)} B`);
 }
 
 async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promise<void> {

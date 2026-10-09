@@ -39,6 +39,28 @@ Bild, oder siehst du die Wirkung nicht, geht der Report mit Grund zurück. Vom B
 „Öffnen" an der Zeile des Worktrees in Info → Arbeitsorte die Instanz, danach schaltet der
 Instanz-Chip um (beides unten).
 
+## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt
+
+Für eine Lane, deren Karte die Live-Bau-Variante wählt (eine Zeile `VARIANTE: live-bau` im
+Auftrag). Der Owner schaut in der Testinstanz zu und sagt, was als Nächstes kommt; deine
+Arbeitsschleife ist bauen, `refresh`, er klickt. Das Land kommt erst auf sein Wort, das dir deine
+MAIN schickt. Entwurf und Messung: `docs/design/live-bau-profil-2026-10.md`.
+
+1. Einmal zu Beginn `./testinstanz.sh up` im eigenen Worktree. Den token-freien Link aus
+   `./testinstanz.sh list` gibst du deiner MAIN, nie die Ausgabe von `status` (sie druckt den
+   Token).
+2. Nach jedem Bauschritt `./testinstanz.sh refresh`. Es spiegelt den Working Tree, ein Commit ist
+   dafür nicht nötig. Port, Token und Fixtures bleiben, der Link des Owners hält. Ein roter Build
+   lässt die alte Instanz stehen; die Zeile `refreshed …` nennt den übernommenen Kopf.
+3. Zwischen den Bauschritten nur `refresh`, keine Gate-Suite, keine Vorschau, kein
+   `suite-offer`. Was du dabei siehst, steht in der Instanz, nicht in einem Suite-Tail.
+4. Committen bleibt Pflicht wie in jeder Lane: der Baum muss landbar sein, bevor du meldest oder
+   übergibst.
+5. Vor dem Land, also erst auf das Owner-Wort: `GET /api/self/context/verify-e2e` leiht dir die
+   Prüf- und Land-Regeln aus, danach fährst du die Beweismenge aus `GET /api/self/gate`, prüfst
+   drift und meldest wie jede Lane. Die Regelbuch-Abschnitte zu Verify, Suiten und Land, die dein
+   `CLAUDE.md` in dieser Variante nicht trägt, nennt sein Schlussblock mit Lesepfad.
+
 ## Die Ableitung — eine Instanz je Worktree
 
 `cksum` über den absoluten Worktree-Pfad (POSIX, auf Mac und Workhorse dasselbe) ergibt den

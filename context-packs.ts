@@ -53,6 +53,22 @@ export type ContextPosition = (typeof CONTEXT_POSITIONS)[number];
 export type ContextPartOrt = "box" | "ausleihe";
 export type ContextPartPositions = Readonly<Record<ContextPosition, ContextPartOrt>>;
 
+// THE VARIANTS OF A POSITION (card 1f9834a9, docs/design/live-bau-profil-2026-10.md §2): a founding
+// of a position may run in ONE named variant, chosen by its card (context-plan.ts#cardVariante). A
+// variant is no fourth position and no profile list: it is a key of a pack's own `varianten` beside
+// the position keys, so each pack says for itself what its Kern is under that variant, and a pack
+// that names no variant plans exactly as under the plain position. Each variant belongs to exactly
+// one position; under another it is refused by name in the plan, never applied.
+export const CONTEXT_POSITION_VARIANTEN = ["live-bau"] as const;
+export type ContextPositionVariante = (typeof CONTEXT_POSITION_VARIANTEN)[number];
+export const CONTEXT_VARIANTE_POSITION: Readonly<Record<ContextPositionVariante, ContextPosition>> = { "live-bau": "lane" };
+// A Zusatz whose condition names a ZEITPUNKT is not delivered at the founding but named in it: its
+// parts arrive as `ausleihe` carrying the moment, and the session borrows them through
+// `GET /api/self/context/<pack>` when that moment comes. The plan sets the marker on the source; an
+// author never writes it (context-pack-validator.ts#SOURCE_KEYS does not take it).
+export const CONTEXT_PACK_ZEITPUNKTE = ["vor-dem-land"] as const;
+export type ContextPackZeitpunkt = (typeof CONTEXT_PACK_ZEITPUNKTE)[number];
+
 export interface ContextPackSource {
   readonly path: string;
   // An identifier, heading, or symbol only. Source prose remains in the source file.
@@ -60,6 +76,8 @@ export interface ContextPackSource {
   readonly id?: string;
   readonly sorte?: ContextPartSorte;
   readonly positions?: ContextPartPositions;
+  /** set by the plan on a Zusatz source whose condition names a moment, never authored */
+  readonly zeitpunkt?: ContextPackZeitpunkt;
 }
 
 // THE ANATOMY OF A PACK (dd549bce; owner 02.10. c99d1de0): `sources` is its KERN — always delivered
@@ -71,11 +89,14 @@ export interface ContextPackSource {
 export const CONTEXT_PACK_FASSUNGEN = ["vorgeschlagen", "gilt", "veraltet"] as const;
 export type ContextPackFassung = (typeof CONTEXT_PACK_FASSUNGEN)[number];
 export const CONTEXT_PACK_ZUSAETZE_MAX = 8;
-/** every named condition must hold: a trigger of the founding, the position, the harness */
+/** every named condition must hold: a trigger of the founding, the position, the harness, the
+ *  founding's variant. A `zeitpunkt` is no test: it makes the Zusatz a borrow at that moment. */
 export interface ContextPackBedingung {
   readonly triggers?: readonly ContextPackTrigger[];
   readonly positions?: readonly ContextPosition[];
   readonly harnesses?: readonly ContextPackHarness[];
+  readonly varianten?: readonly ContextPositionVariante[];
+  readonly zeitpunkt?: readonly ContextPackZeitpunkt[];
 }
 export interface ContextPackZusatz {
   readonly id: string;
@@ -86,7 +107,7 @@ export interface ContextPackVariante {
   readonly sources: readonly ContextPackSource[];
   readonly useWhen?: string;
 }
-export type ContextPackVarianten = Readonly<Partial<Record<ContextPosition, ContextPackVariante>>>;
+export type ContextPackVarianten = Readonly<Partial<Record<ContextPosition | ContextPositionVariante, ContextPackVariante>>>;
 
 export function contextPartId(packId: string, source: Pick<ContextPackSource, "id">, index: number): string {
   const id = source.id ?? `source-${index + 1}`;
@@ -138,6 +159,12 @@ const ALL_HARNESSES = CONTEXT_PACK_HARNESSES;
 const ALL_MODES = CONTEXT_PACK_MODES;
 const AUSLEIHE = { lane: "ausleihe", main: "ausleihe", orchestratorin: "ausleihe" } as const;
 const VERIFY_BOX = { lane: "box", main: "box", orchestratorin: "ausleihe" } as const;
+const VERIFY_KERN = { id: "verify-e2e.kern", path: "AGENTS.md", anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX } as const;
+const VERIFY_LANE = { id: "verify-e2e.lane", path: "AGENTS.md", anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } } as const;
+const VERIFY_MAIN = { id: "verify-e2e.main", path: "AGENTS.md", anchor: "### MAIN", sorte: "anleitung", positions: { ...AUSLEIHE, main: "box" } } as const;
+const VERIFY_MORE = { id: "verify-e2e.more", path: "AGENTS.md", anchor: "### More", sorte: "anleitung", positions: AUSLEIHE } as const;
+const VERIFY_GATE_VS_AUDIT = { id: "verify-e2e.gate-vs-audit", path: "docs/verify-tiering.md", anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen", positions: { ...AUSLEIHE, main: "box" } } as const;
+const VERIFY_PROPORTION = { id: "verify-e2e.proportion", path: "docs/verify-tiering.md", anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen", positions: AUSLEIHE } as const;
 
 // Fleet seeds stay small. Public sources carry only tracked path + exact anchor metadata;
 // the private overlay carries only an opaque reference, content hash, and observation time.
@@ -171,14 +198,14 @@ export const CONTEXT_PACKS = [
     audience: "agent",
     triggers: ["verification"],
     hardness: "hard",
-    sources: [
-      { id: "verify-e2e.kern", path: "AGENTS.md", anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX },
-      { id: "verify-e2e.lane", path: "AGENTS.md", anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } },
-      { id: "verify-e2e.main", path: "AGENTS.md", anchor: "### MAIN", sorte: "anleitung", positions: { ...AUSLEIHE, main: "box" } },
-      { id: "verify-e2e.more", path: "AGENTS.md", anchor: "### More", sorte: "anleitung", positions: AUSLEIHE },
-      { id: "verify-e2e.gate-vs-audit", path: "docs/verify-tiering.md", anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen", positions: { ...AUSLEIHE, main: "box" } },
-      { id: "verify-e2e.proportion", path: "docs/verify-tiering.md", anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen", positions: AUSLEIHE },
-    ],
+    sources: [VERIFY_KERN, VERIFY_LANE, VERIFY_MAIN, VERIFY_MORE, VERIFY_GATE_VS_AUDIT, VERIFY_PROPORTION],
+    // LIVE-BAU (card 1f9834a9): a lane building while the owner clicks through its test instance
+    // carries no verify ceremony in its text. Its Kern is the four parts a lane borrows anyway; Kern
+    // and Lane come as the Zusatz "vor dem Land" — named in the founding, borrowed on the owner's
+    // word to land. Without the variant none of this is in the plan (context-plan.ts#resolvePackAnatomy).
+    varianten: { "live-bau": { sources: [VERIFY_MAIN, VERIFY_MORE, VERIFY_GATE_VS_AUDIT, VERIFY_PROPORTION],
+      useWhen: "Vor dem Land, auf das Owner-Wort: welcher Beweis genuegt und was das Gate wirklich faehrt." } },
+    zusaetze: [{ id: "vor-dem-land", bedingung: { varianten: ["live-bau"], zeitpunkt: ["vor-dem-land"] }, sources: [VERIFY_KERN, VERIFY_LANE] }],
     requiredCapabilities: ["tracked-source-read", "pure-validator-run"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],

@@ -534,35 +534,7 @@ a configured command whose suite links are not in the expected shape all run the
 **Tier 2 is untouched:** a source land keeps `proportional:false`, so `entryRunsShortChain` never
 shortens its post-land audit — the whole suite runs there and catches what a derived footprint
 cannot see (a check reaching the source tree by an absolute path or an env var). The suite-mutex
-hold still follows `proportional`, so a source land queues for the machine like a full one —
-unless its suites go to a helper (next paragraph).
-
-**The land proves its own candidate on a helper (2026-10-09, `server.ts#runLandGate`).** When the
-class owes gate suites, the configured chain is fleet-shaped and a helper that takes command jobs is
-online (`server.ts#landHelperWhyNot`), the land does not take the suite mutex. It takes its repo's
-land order instead (`server.ts#takeLandOrder`: in-process, FIFO, the mutex's budget and rounds),
-which is what keeps main still between rebase and fast-forward; a land whose suites run here takes
-the order first and then the mutex. After the rebase the land offers each owed suite as a command
-job (`land: true`) on the lane worktree, so the bundle's tree is the candidate tree, and runs
-install, pins, tsc and build here meanwhile, without the mutex. Then:
-
-- a green receipt on exactly the candidate's `HEAD^{tree}` is adopted through
-  `server.ts#adoptedGateSteps` — `adopted[]` carries jobId, treeSha, device, `ms` and `waitMs`
-  (offer to claim) and `land: true`;
-- a red receipt refuses the land (`ok:false`, the red job named in the out); the suite is not
-  rolled again here;
-- an `unknown` receipt, a job nobody claims within `FLEET_LAND_JOB_UNCLAIMED_MS` (180 000 ms), or
-  a claim silent past its own timeout plus 120 s sends exactly those suites back to this machine,
-  under the mutex.
-
-Every suite that runs here on a fleet-shaped chain names its reason in `macFallback` and in the
-out, "no helper online" included; `landJobs[]` lists every job the land offered and what became of
-it. The record's `waitMs` counts the land order, the longest unclaimed wait of a land job and any
-mutex wait. Land jobs are command jobs, so the portal list and the daemon
-(`helper-daemon/daemon.ts#jobsToStart`) already take them before every audit shard.
-`FLEET_LAND_HELPER=0` switches the route off. Not on this route: the conflict path's repair
-re-runs, the guarded confirm gate and the re-verify gate still run here. Proof:
-`e2e/land-provenance.ts`, the `land helper route` rows (green, red, `unknown`, unclaimed, no helper).
+hold still follows `proportional`, so a source land queues for the machine like a full one.
 
 The gate response's `classifiedAs` explains which rule each changed file selected. Local proof and the land gate use the same classification source.
 
@@ -591,6 +563,36 @@ wrapper and respawns its tmux server; `<SOCK>` in the stop command is the wrappe
 e.g. `fleettest`. Local suite logs are block-buffered. Suites take a shared mutex, and the server
 runs the same scripts for its post-land audit: a pattern kill can record a red audit that measured
 nothing.
+
+### 6.0c The land gate's suites on a helper (2026-10-09)
+
+A source or full land whose suites go to a helper does not queue for the machine at all.
+`server.ts#runLandGate`: when the
+class owes gate suites, the configured chain is fleet-shaped and a helper that takes command jobs is
+online (`server.ts#landHelperWhyNot`), the land does not take the suite mutex. It takes its repo's
+land order instead (`server.ts#takeLandOrder`: in-process, FIFO, the mutex's budget and rounds),
+which is what keeps main still between rebase and fast-forward; a land whose suites run here takes
+the order first and then the mutex. After the rebase the land offers each owed suite as a command
+job (`land: true`) on the lane worktree, so the bundle's tree is the candidate tree, and runs
+install, pins, tsc and build here meanwhile, without the mutex. Then:
+
+- a green receipt on exactly the candidate's `HEAD^{tree}` is adopted through
+  `server.ts#adoptedGateSteps` — `adopted[]` carries jobId, treeSha, device, `ms` and `waitMs`
+  (offer to claim) and `land: true`;
+- a red receipt refuses the land (`ok:false`, the red job named in the out); the suite is not
+  rolled again here;
+- an `unknown` receipt, a job nobody claims within `FLEET_LAND_JOB_UNCLAIMED_MS` (180 000 ms), or
+  a claim silent past its own timeout plus 120 s sends exactly those suites back to this machine,
+  under the mutex.
+
+Every suite that runs here on a fleet-shaped chain names its reason in `macFallback` and in the
+out, "no helper online" included; `landJobs[]` lists every job the land offered and what became of
+it. The record's `waitMs` counts the land order, the longest unclaimed wait of a land job and any
+mutex wait. Land jobs are command jobs, so the portal list and the daemon
+(`helper-daemon/daemon.ts#jobsToStart`) already take them before every audit shard.
+`FLEET_LAND_HELPER=0` switches the route off. Not on this route: the conflict path's repair
+re-runs, the guarded confirm gate and the re-verify gate still run here. Proof:
+`e2e/land-provenance.ts`, the `land helper route` rows (green, red, `unknown`, unclaimed, no helper).
 
 ### 6.1 Die Suite, die Tier 2 beweist, wird von keinem Gate gefahren — und war darum zwei Tage DETERMINISTISCH ROT (`4c562e7` → `a1f8b65`)
 

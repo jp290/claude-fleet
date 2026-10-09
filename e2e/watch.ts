@@ -8204,8 +8204,19 @@ export async function run(): Promise<void> {
       ctxOf(codexId)?.pct === 50 && ctxOf(codexId)?.windowTokens === 258_400 && codexAgent === "alive",
       JSON.stringify({ codex: ctxOf(codexId), codexAgent }));
 
+    // by OCCUPANT, not slot number (server.ts#logPrompt writes openedAt for exactly this; self-token.ts
+    // reads its own fixture the same way): the journal outlives a slot's occupant and freeSlot hands
+    // out numbers an earlier module closed. slots.ts's keepCache fixture nudges its slot C for real and
+    // then kills it, so a steward or ctx:null control opened here on C's number read C's nudge as its
+    // own — red twice in `slots,watch` reruns while the tick had sent this control nothing.
+    const migrateOccupant = new Map([mainId, lane.slot, stewardId, unknownId, boundId, piId, codexId]
+      .map((id) => [id, state?.slots?.[String(id)]?.openedAt] as const));
+    check("migration tick setup: every control's occupant (openedAt) is known before the prompt journal is counted",
+      [...migrateOccupant.values()].every((at) => typeof at === "number" && at > 0),
+      JSON.stringify(Object.fromEntries(migrateOccupant)));
     const migratePrompts = async (slot: number) => (await plogRead())
-      .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+      .filter((e) => e.slot === slot && e.openedAt !== undefined && e.openedAt === migrateOccupant.get(slot)
+        && e.text.startsWith("[fleet] Dein Kontext ist bei "));
     let nudges = await migratePrompts(mainId);
     for (let i = 0; i < 80 && nudges.length === 0; i++) {
       await Bun.sleep(100);
@@ -8394,7 +8405,8 @@ export async function run(): Promise<void> {
     // send fails on it, and either way the prompt journal counts 1.
     check("tickMigrate never nudges a CODEX slot above the threshold — native compaction, no Fleet context succession",
       (await migratePrompts(codexId)).length === 0
-        && !(await plogRead()).some((e) => e.slot === codexId && /Kontext|context/i.test(e.text)),
+        && !(await plogRead()).some((e) => e.slot === codexId && e.openedAt === migrateOccupant.get(codexId)
+          && /Kontext|context/i.test(e.text)),
       `codex=${(await migratePrompts(codexId)).length}`);
 
     // TWO THRESHOLDS, NOT ONE KNOB WITH TWO READERS. The restart resets the process-local marker,

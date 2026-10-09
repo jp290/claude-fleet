@@ -2351,11 +2351,13 @@ export async function run(h: {
     const shardIdsOf = (dir: string, n: number): string[] =>
       Array.from({ length: n }, (_, i) => sha12(`${realpathSync(dir)}\u0000shard:${i + 1}/${n}`));
     let beatBox = true;
-    // the box's own cap — the split follows it (server.ts#auditShardCount); 3 everywhere but (1b)
-    let boxCap = 3;
+    // the box's own cap and load — the split is its FREE slots minus one (server.ts#auditShardCount):
+    // 4 free ⇒ the three shards every check below counts on; only (1b) moves them
+    let boxCap = 4;
+    let boxRunning = 0;
     const beat = async (): Promise<void> => {
       if (beatBox) await hpost("/api/helper/device", { deviceId: SHARDBOX, name: SHARD_NAME, mode: "active", load: 0.1,
-        running: 0, maxParallelSuites: boxCap, features: ["audit-shard"] });
+        running: boxRunning, maxParallelSuites: boxCap, features: ["audit-shard"] });
       await hpost("/api/helper/device", { deviceId: DEVICE, name: DEVICE_NAME, mode: "active", load: 0.1 });
     };
     const boxJobs = async (): Promise<HelperJobs> =>
@@ -2410,20 +2412,32 @@ export async function run(h: {
       check("(K11) should-reject: the WHOLE-suite job id is refused while the same audit is offered as shards",
         wholeClaim.status === 409 && (wholeErr.error ?? "").includes("3 shards"), `${wholeClaim.status} ${JSON.stringify(wholeErr)}`);
 
-      // (1b) THE SPLIT FOLLOWS THE MACHINE'S CAP (2026-10-09), not FLEET_AUDIT_SHARDS: the same unclaimed
-      // entry is listed as four shards while the box says it runs four suites at once, and as three
-      // again once it says three. Nothing is claimed here, so no run freezes either split.
-      // MUTATION: return AUDIT_SHARDS from auditShardCount ⇒ the four-shard list is three ⇒ red.
-      boxCap = 4;
+      // (1b) THE SPLIT FOLLOWS THE MACHINE'S FREE SLOTS, ONE KEPT BACK (2026-10-09): n = maxParallelSuites
+      // − running − 1, the fallback FLEET_AUDIT_SHARDS (3) below three free slots or with no fresh
+      // shard-capable box. Nothing is claimed here, so no run freezes any of these splits.
+      // MUTATION: split by capacity instead of free slots ⇒ cap 5 running 2 lists four ⇒ red; drop the
+      // kept-back slot ⇒ cap 5 running 0 lists five ⇒ red; split by the box's word after its heartbeat
+      // went stale ⇒ the silent box lists four ⇒ red.
+      const shardsAt = async (cap: number, running: number): Promise<string[]> => {
+        boxCap = cap; boxRunning = running;
+        await beat();
+        return repoJobs(await boxJobs()).map((j) => j.shard ?? "whole");
+      };
+      const free5 = await shardsAt(5, 0);
+      const free3 = await shardsAt(5, 2);
+      const free2 = await shardsAt(5, 3);
+      boxCap = 5; boxRunning = 0;
       await beat();
-      const fan4 = repoJobs(await boxJobs());
-      boxCap = 3;
-      await beat();
-      const fan3 = repoJobs(await boxJobs());
-      check("(K11) THE SPLIT FOLLOWS maxParallelSuites: a box that says 4 is offered 1/4..4/4 under FLEET_AUDIT_SHARDS=3, and 3 again when it says 3",
-        fan4.map((j) => j.shard).join(",") === "1/4,2/4,3/4,4/4" && fan4.map((j) => j.id).join(",") === shardIdsOf(REPO, 4).join(",")
-          && fan3.map((j) => j.id).join(",") === ids.join(","),
-        `cap4=${JSON.stringify(fan4.map((j) => j.shard))} cap3=${JSON.stringify(fan3.map((j) => j.shard))}`);
+      beatBox = false;
+      await Bun.sleep(3500);          // past HELPER_FRESH_MS (3 × the 1 s sweep): the box is no candidate
+      const silent = repoJobs(await boxJobs()).map((j) => j.shard ?? "whole");
+      beatBox = true;
+      const back = await shardsAt(4, 0);
+      check("(K11) THE SPLIT IS FREE SLOTS MINUS ONE: cap 5 running 0 ⇒ 4, running 2 ⇒ 2, running 3 ⇒ fallback 3, a silent box ⇒ fallback 3",
+        free5.join(",") === "1/4,2/4,3/4,4/4" && free3.join(",") === "1/2,2/2"
+          && free2.join(",") === "1/3,2/3,3/3" && silent.join(",") === "1/3,2/3,3/3"
+          && back.join(",") === "1/3,2/3,3/3" && repoJobs(await boxJobs()).map((j) => j.id).join(",") === ids.join(","),
+        `free5=${free5} free3=${free3} free2=${free2} silent=${silent} back=${back}`);
 
       // (2) THREE CONCURRENT CLAIMS, ONE TREE. They race the bundle build on purpose (a daemon with three
       // free slots POSTs all three in one tick). MUTATION: build a bundle per claim without the shared

@@ -29913,22 +29913,31 @@ const AUDIT_SHARDS = parseAuditShards(process.env.FLEET_AUDIT_SHARDS);
 // older tree loses the feature on its next beat. A commit-ancestry floor like the command kind's
 // (daemonKnowsCommandKind) was not an option: a lane cannot know the sha its own commit lands under.
 const AUDIT_SHARD_FEATURE = "audit-shard";
-// HOW MANY SHARDS A NEW AUDIT RUN IS OFFERED AS (2026-10-09) — the helper's own cap, not a smaller
-// constant. FLEET_AUDIT_SHARDS stays the on-switch (n < 2 is today, byte for byte) and the fallback
-// while no shard-capable device has said how many suites it runs at once; once one has, its
-// `maxParallelSuites` IS the split — the machine starts that many on one poll (helper-daemon/
-// daemon.ts#freeSuiteSlots), so a smaller n left slots idle while the audit's longest shard ran
-// alone. Measured before: live n = 3 on a 5-slot workhorse (.env note 2026-09-22). The largest cap
-// among the online shard-capable devices wins, bounded by AUDIT_SHARDS_MAX; a cap below 2 is no
-// split and leaves the fallback. Read at the job list, and FROZEN at a run's first claim like every
-// other fact of the run (AuditShardRun.n) — a cap that changes later moves the NEXT run only.
+// HOW MANY SHARDS A NEW AUDIT RUN IS OFFERED AS (2026-10-09, Kern-MAIN's correction the same day) —
+// the helpers' FREE suite slots, one kept back for a lane preview. FLEET_AUDIT_SHARDS stays the
+// on-switch (n < 2 is today, byte for byte) and the fallback.
+//   · FREE, not capacity: per claim candidate that declared AUDIT_SHARD_FEATURE and its cap,
+//     `maxParallelSuites − running`, where running is the larger of its own heartbeat figure and the
+//     claims this server holds for it — the reading helperSaturation takes, so a claim the daemon has
+//     not yet counted is still a slot taken. A machine draining for its own update has none free.
+//   · ONE SLOT KEPT BACK: n = free − 1. Measured before: an audit that took all five workhorse slots
+//     buys ~267 s (the `core` shard is the long path either way), while every lane preview offered in
+//     those ~10 minutes waits out its 180 s and runs on the Mac — on 2026-10-09 that bound the Mac's
+//     suite mutex for 90 minutes to one card (owner 12:0x: „[Zitat entfernt]“).
+//   · BELOW THREE FREE SLOTS, or with no such machine fresh, the fallback AUDIT_SHARDS: the split is a
+//     latency choice, and a busy or silent helper is no reason to change what the run looks like.
+// Read at the job list, and FROZEN at a run's first claim like every other fact of the run
+// (AuditShardRun.n) — the slots its own shards take never shrink the run that took them.
 function auditShardCount(now = Date.now()): number {
   if (AUDIT_SHARDS < 2) return AUDIT_SHARDS;
-  let cap = 0;
-  for (const d of helperDevices.values())
-    if (now - d.lastSeen < DEVICE_ONLINE_MS && d.features?.includes(AUDIT_SHARD_FEATURE)
-      && d.maxParallelSuites !== undefined) cap = Math.max(cap, d.maxParallelSuites);
-  return cap >= 2 ? Math.min(cap, AUDIT_SHARDS_MAX) : AUDIT_SHARDS;
+  const held = heldClaimsByDevice();
+  let free = 0;
+  for (const d of helperDevices.values()) {
+    if (!isHelperClaimCandidate(d, now) || !d.features?.includes(AUDIT_SHARD_FEATURE)
+      || d.maxParallelSuites === undefined || helperUpdateBlocks(d, now)) continue;
+    free += Math.max(0, d.maxParallelSuites - Math.max(d.running ?? 0, held.get(d.id)?.length ?? 0));
+  }
+  return free >= 3 ? Math.min(free - 1, AUDIT_SHARDS_MAX) : AUDIT_SHARDS;
 }
 // …AND THE SAME GUARD FOR A NARROWED PREVIEW. A lane-suite job that carries `modules` asks for
 // `FLEET_E2E_MODULES=<modules> ./e2e-isolated.sh`; a daemon without the `modulesEnv` fork runs

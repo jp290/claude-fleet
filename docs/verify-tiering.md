@@ -488,8 +488,9 @@ owner that morning: „[Zitat entfernt]“). The night before, every quiet-relea
 running or declared on disk (the branches it already covers excepted) is due at once, row
 `trigger: "no-land"`; the window and the ceiling hold it only while such a land exists, and the
 `QUIET` line in `server.log` names the land it waits behind. A new sharded run is offered as the
-helper's own `maxParallelSuites` (`server.ts#auditShardCount`; `FLEET_AUDIT_SHARDS` stays the
-on-switch and the fallback).
+helpers' FREE suite slots minus one kept for a lane preview (`server.ts#auditShardCount`: per fresh
+shard-capable box `maxParallelSuites − running`; below three free slots `FLEET_AUDIT_SHARDS`, which
+also stays the on-switch).
 **And a helper's audit no longer falls back onto this Mac** (`server.ts#AUDIT_HELPER_ONLY`): an
 offerable entry waits for a helper however long that takes — visible as `hold: "waiting for helper"`
 in `GET /api/post-land-audits` → `pending` and in the land's memory view, and as a

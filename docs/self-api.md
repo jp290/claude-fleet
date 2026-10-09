@@ -238,6 +238,14 @@ Dieselbe Zustellung gilt für Owner-Autos (`POST /api/slots/:id/autos`), weil be
 `server.ts#createAutoForSlot` und `tickAutos` teilen. Ein Altbestand ohne `slotOpenedAt` geht ohne
 Occupant-Prüfung an den Slot.
 
+Trifft ein One-Shot auf einen belegten Composer (ein ungesendeter Entwurf in deiner Pane), wird er
+seit 2026-10-09 **geparkt statt verworfen** (`server.ts#parkFleetSend`): `lastResult: "parked —
+composer occupied (<N> chars); typed once it is empty"`, und sobald der Composer leer ist, tippt
+Fleet ihn genau einmal und bucht `lastResult: "sent"` (Audit `auto_fire` mit `parked`). Fleet leert
+dabei nie einen Entwurf und schickt kein Enter dahinter. Ein wiederkehrendes Auto wird nicht
+geparkt: es behält seinen nächsten Lauf. Wie lange so etwas wartet und wann der Owner davon hört,
+steht unter §watch („[Zitat entfernt]“).
+
 
 ## watch — `POST /api/self/watch`
 
@@ -273,6 +281,24 @@ curl -X POST http://<fleet-host>:<port>/api/self/watch \
   alle stehen `send-uncertain` und sind gespeichert, BEVOR tmux angefasst wird; eine
   Vor-Paste-Verweigerung (belegter Composer) setzt alle samt `attempts` zurück auf `pending`.
   Die Lese-Tür ist an deine Occupation gebunden (fremd oder ersetzt: 409, unbekannt: 404).
+- **Geparkt hinter einem Entwurf (seit 2026-10-09).** Hält dein Composer einen ungesendeten Text,
+  bleibt ein Event `pending` unter dem Composer-Hold. `GET /api/self/events/<id>` liefert dann
+  zusätzlich `delivery: "parked"` und `parked: {draftChars, since, holds, nextProbeAt}`. Das ist
+  dasselbe Wort wie im `/send`-Beleg mit `whenFree`, und es entfällt, sobald das Event getippt ist.
+  Die Owner-Liste `GET /api/events` trägt an derselben Zeile `parked`. Die Slot-Zeile in
+  `/api/sessions` zählt unter `parkedSend` alles, was hinter dem Entwurf DIESES Occupants wartet:
+  geparkte Owner-Sends, geparkte Fleet-Texte und gehaltene Events. Fleet-eigene Hinweise an die
+  Orchestratorin (Rückfrage `attention-orchestrator`, `program-event-orphan`, `report-orphan`)
+  und One-Shot-Autos parken in derselben Liste (`server.ts#parkFleetSend`). Ihr Deckel zählt
+  getrennt: je Slot 3 Owner-Sends und 3 Fleet-Texte. Ein Fleet-Text wartet höchstens 2 h
+  (`PARKED_FLEET_TTL_MS`), und vor seiner Paste läuft die Prüfung seines Absenders erneut.
+  Wartet etwas länger als `PARKED_HINT_MS` (120 Ticks, in Produktion 10 min), bekommt der Owner
+  GENAU EINE Inbox-Zeile `harness-block` mit `payload.tool: "composer-held"`
+  (`server.ts#tickParkedHints`). Solange dieselbe Wartestrecke anhält, kommt keine zweite. Erst
+  wenn alles zugestellt oder verworfen ist und eine neue Verweigerung kommt, darf sie wieder
+  erscheinen. Fleet leert nie einen Entwurf und schickt kein Enter dahinter. Anlass: Am 08.10.
+  von 20:10 bis 20:49 hielt ein liegengebliebenes `/goal` den Composer der Orchestratorin (Slot 9),
+  und jede Fleet-Zustellung an sie wurde verworfen.
 - **`delivery: "pane" | "inbox"`** ist ein Abo-Fakt (fehlt = `pane`). Ein `inbox`-Event wird nie
   getippt — keine Zeile, kein Bündel, kein Paste (3ed20749: eine owner-besetzte Pane bekäme
   sonst Maschinentext in den Composer) — und steht mit `status: "inbox"` in `GET /api/self` und

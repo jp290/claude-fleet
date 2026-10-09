@@ -5058,7 +5058,36 @@ darf dann fehlen), `ort` (`worktree` · `repo` · `ordner`, sonst aus Rolle und 
 `details`; `packs=` bleibt die aeltere Schreibweise derselben Schalter. Der Hash ist eine Funktion der
 Entscheidung (Rolle, Ort, Commit, Tripel, Zustand je Zeile), nicht der gemessenen Bytes. `sessionAgents`
 ist der Render GENAU dieses Plans. `rollen` nennt das Standard-Tripel aus
-`model-register.ts#MODEL_DEFAULTS` mit Verfuegbarkeit. Kein Spawn-Pfad liest den Plan bisher.
+`model-register.ts#MODEL_DEFAULTS` mit Verfuegbarkeit.
+
+**Der Start nimmt den Plan an (seit 2026-10-09, Karte faafc637).** `planHash` ist versiegelt: er
+deckt die Entscheidung des Resolvers, den Hash des Registers (`SESSION_BLOCKS`), je gewähltem Pack
+seinen `sourceHash` und die `parts=`-Wahl (`server.ts#sealedPlanHash`). Die Lane-Tueren
+(`POST /api/lanes` ohne `attach`, `POST /api/slots/:id/open-worktree`) und `POST /api/slots/:id/open`
+nehmen `plan: {hash, role, ort?, bausteine?, packs?, parts?}` an — dieselben Eingaben wie die
+Query, `bausteine` als `"<id>=<zustand>,…"` oder `{id: zustand}`; Tripel und Ort kommen aus dem
+Body wie bisher. Die Tuer plant mit derselben Antwort neu (`server.ts#foundingPlanAnswer`) und
+- antwortet **409** mit `staleHash` und der vollstaendigen neuen Plan-Antwort, wenn der Hash nicht
+  mehr stimmt (Register, Pack-Fassung oder HEAD bewegt) — nichts wird gestartet;
+- antwortet **400** mit `refusals`, wenn sie den Plan nicht genau starten kann: eine angeschaltete
+  Zeile, die diese Tuer nicht liefert, oder eine Zeile, die der Plan aus hat und die Tuer trotzdem
+  liefert (`server.ts#planDoorRow`: `folgt` · `immer` · `nie`);
+- startet sonst genau diesen Plan. Eine Lane bekommt als `AGENTS.override.md` den Render des Plans
+  am eigenen Commit (Rolle, Owner-Heft-Zeiger, Lane-Ende, Memory-Zeiger, Anker der Packs, die `an`
+  sind); fuer eine Lane ausserhalb jedes Programs ist das byte-gleich die Datei der Vorschau. `/open`
+  schreibt keine Datei: die Packs, die `an` sind, gehen als Gruendungs-Prompt, unter einem
+  Orchestratorin-Label traegt die Karte die Anker des Plans.
+Die Antwort und eine Zeile in `context-receipts.jsonl` tragen dann `plan: {hash, satz, geliefert,
+ausgelassen, datei?}`: `geliefert` je Zeile `{id, weg, bytes, fassung, gemessen}` (`weg` =
+`Session-Datei` · `Prompt` · `native Datei` · `plan` · `Zustellung`; `gemessen: lieferung` aus dem
+gelieferten Text, `plan` aus der Messung des Plans, wo Fleet nichts schreibt; `fassung` = `sourceHash`
+eines Packs, sha256 eines Fleet-Texts, sonst `unknown`), `ausgelassen` je Zeile `{id, grund}` —
+`Plan: aus` mit Leitergrund oder Bedingung, oder warum diese Tuer eine `an`-Zeile nicht liefert
+(eine Hand-Gruendung traegt keine Karte: `task-brief`, `source-pointers`, `lane-notes`). `datei` ist
+`{pfad, bytes, sha256}` der geschriebenen Lane-Datei oder `unknown`. Ohne `plan` bleibt jede Tuer die
+alte und antwortet `plan: "none"`; `packs` und `plan` zusammen sind 400. `attach` und
+`bootstrap-main` lehnen einen Plan mit Grund ab (die MAIN-Tuer baut Brief, Schiene und Anker selbst).
+Nachfolge, Attach und Harness-Wechsel planen die Session-Datei weiterhin nicht neu.
 
 ### `tasks-archive.jsonl` — archivieren löscht nicht (seit 2026-09-15)
 

@@ -3192,10 +3192,12 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // The SEVENTH writer (2026-09-22, the founding window's packs at hand-foundings,
   // server.ts#deliverFoundingPacks) is a third rail of that shape: the door has already opened the
   // pane, so the chosen packs found into the slot the caller is holding and name `s` too.
+  // The EIGHTH (2026-10-09, faafc637, server.ts#writePlanReceipt) receipts a planned start whose
+  // delivery sent no prompt — a lane, whose file is the delivery: its brief pair is the empty brief's.
   const receiptWrites = [...server.matchAll(/appendEvent(?:Strict)?\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
     .map((m) => m[0]);
   pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
-    receiptWrites.length === 5
+    receiptWrites.length === 6
     && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
       && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
     `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
@@ -3203,7 +3205,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // that went back to `model: free.model` would write null for every unpinned slot again; one
   // without `snippet` would read as a row from before the count existed.
   pin("every context-receipt writer resolves the model through receiptModel and carries a snippet account",
-    receiptWrites.length === 5
+    receiptWrites.length === 6
     && receiptWrites.every((w) => /\.\.\.receiptModel\((?:free|s)\)/.test(w) && !/model: (?:free|s)\.model/.test(w)
       && /snippet: (snippet\.receipt|NO_SNIPPET_RECEIPT)/.test(w)),
     `${receiptWrites.filter((w) => !/receiptModel/.test(w)).length} without receiptModel, `
@@ -12750,19 +12752,27 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const tracked = spawnSync("git", ["ls-files", "*.ts", "*.tsx"], { encoding: "utf8" });
   const readers = tracked.stdout.trim().split("\n").filter((path) => path !== "e2e/pins.ts" && exists(path)
     && /(?:from\s*|import\s*\(|require\s*\()\s*["'][^"']*session-blocks["']/.test(read(path)));
-  // THE REGISTER IS READ, by one door (Owner-Ja F1, 07.10.): server.ts resolves it for GET
-  // /api/founding-plan only. No spawn path reads it yet — that is the next cut, and this pin moves then.
+  // THE REGISTER IS READ through ONE answer (Owner-Ja F1, 07.10.; faafc637 09.10.): server.ts
+  // resolves it in foundingPlanAnswer, which GET /api/founding-plan and the spawn doors' plan check
+  // (acceptFoundingPlan) both call — so a start compares against the window's own answer, never a second.
   const serverSrc = read("server.ts");
   const routeAt = serverSrc.indexOf('url.pathname === "/api/founding-plan" && req.method === "GET"');
   const routeEnd = routeAt < 0 ? -1 : serverSrc.indexOf("\n    }\n", routeAt);
   const planCalls = [...serverSrc.matchAll(/\bfoundingSessionPlan\(/g)].map((m) => m.index!);
   const planDef = serverSrc.indexOf("async function foundingSessionPlan(");
-  pin("S3 session blocks: server.ts is the only reader, and only the founding-plan route resolves the register",
+  const answerDef = serverSrc.indexOf("async function foundingPlanAnswer(");
+  const answerEnd = answerDef < 0 ? -1 : serverSrc.indexOf("\n}\n", answerDef);
+  const acceptDef = serverSrc.indexOf("async function acceptFoundingPlan(");
+  const acceptEnd = acceptDef < 0 ? -1 : serverSrc.indexOf("\n}\n", acceptDef);
+  const answerCalls = [...serverSrc.matchAll(/\bfoundingPlanAnswer\(/g)].map((m) => m.index!)
+    .filter((at) => at !== answerDef + "async function ".length);
+  pin("S3 session blocks: server.ts is the only reader, and only the one plan answer (route + start check) resolves the register",
     tracked.status === 0 && readers.join() === "server.ts" && !serverSrc.includes("defaultOn")
       && [...serverSrc.matchAll(/\bresolveSessionPlan\(/g)].length === 1 && serverSrc.indexOf("resolveSessionPlan(") > planDef
       && planCalls.length === 2 && planCalls.includes(planDef + "async function ".length)
-      && planCalls.every((at) => at === planDef + "async function ".length || (at > routeAt && at < routeEnd)),
-    `readers=${readers.join(", ")}; foundingSessionPlan sites=${planCalls.length}; route=${routeAt}..${routeEnd}`);
+      && planCalls.every((at) => at === planDef + "async function ".length || (at > answerDef && at < answerEnd))
+      && answerCalls.length === 2 && answerCalls.every((at) => (at > routeAt && at < routeEnd) || (at > acceptDef && at < acceptEnd)),
+    `readers=${readers.join(", ")}; foundingSessionPlan sites=${planCalls.length}; foundingPlanAnswer calls=${answerCalls.length}; route=${routeAt}..${routeEnd}`);
 
   // THE PLAN RESOLVER, pure: the same inputs give the same plan-hash, a switch moves it, and every
   // refusal names its rule. Measured bytes come from the caller; unknown stays unknown.

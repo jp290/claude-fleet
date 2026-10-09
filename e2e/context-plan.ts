@@ -6,10 +6,13 @@ import {
   CONTEXT_PACK_HARNESSES,
   CONTEXT_PACKS,
   CONTEXT_PACK_TRIGGERS,
+  type ContextPack,
+  type ContextPackMcpServer,
   type ContextPackTrigger,
   type ContextPackCapability,
 } from "../context-packs";
-import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, cardVariante, planContext, planProgramContext, resolveVariante, type ContextPlan,
+import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, cardVariante, claudeMcpConfigFlag, packMcpAnschluss, planContext,
+  planMcpServers, planProgramContext, resolvePackAnatomy, resolveVariante, type ContextPlan,
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
 import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
@@ -649,6 +652,7 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
   orchestrationTriggerChecks(check);
   foundingStandChecks(check);
   packAnatomyChecks(check);
+  packMcpChecks(check);
 
   if (!externalCheck) {
     console.log(rows.join("\n"));
@@ -735,6 +739,113 @@ function packAnatomyChecks(check: ContextPlanCheck): void {
     check(`pack anatomy: ${what} makes the pack manifest-invalid, never a silent half delivery`,
       plan.selected.length === 0 && plan.omitted.length === 1 && plan.omitted[0]?.why === "manifest-invalid", JSON.stringify(plan));
   }
+}
+
+// A ZUSATZ THAT BRINGS AN MCP SERVER (tranche 3 of the anatomy): the plan names per harness what the
+// spawn WOULD carry — claude the exact `--mcp-config` argument behind --strict-mcp-config, every other
+// harness its evidenced state — and no seed may carry one while ensureSlot hands nothing over.
+function packMcpChecks(check: ContextPlanCheck): void {
+  const server: ContextPackMcpServer = { name: "computer-use", command: "npx", args: ["-y", "@example/computer-use-mcp@1.2.3"] };
+  const pack = { id: "mcp-probe", useWhen: "Ein Pack mit MCP-Zusatz.", sources: [{ path: "docs/kern.md", anchor: "## Kern" }],
+    zusaetze: [{ id: "mcp-server", bedingung: { positions: ["lane"] as const }, sources: [], mcp: server }] };
+  const at = (harness: string, position: "lane" | "main" = "lane") =>
+    resolvePackAnatomy(pack, { position, harness, triggers: new Set<ContextPackTrigger>(["always"]) });
+  const zusatzOf = (harness: string, position: "lane" | "main" = "lane") => at(harness, position).anatomie?.zusaetze[0];
+  const json = '{"mcpServers":{"computer-use":{"command":"npx","args":["-y","@example/computer-use-mcp@1.2.3"]}}}';
+  const flag = `--mcp-config '${json}'`;
+
+  const claude = zusatzOf("claude");
+  check("pack mcp: claude — the Zusatz is on, apply, and the spawn would gain exactly --mcp-config '<json>'",
+    claude?.an === true && claude.mcp?.zustand === "apply" && claude.mcp.mitgaebe === flag && claudeMcpConfigFlag([server]) === flag,
+    JSON.stringify(claude?.mcp));
+  check("pack mcp: claude — the exact text-lane MCP tail is --strict-mcp-config then the pack's --mcp-config",
+    ` --strict-mcp-config ${claude?.mcp?.mitgaebe ?? ""}` === ` --strict-mcp-config --mcp-config '${json}'`, claude?.mcp?.mitgaebe ?? "none");
+  check("pack mcp: claude — the reason cites the installed CLI help and says WOULD, never delivered",
+    !!claude?.mcp && claude.mcp.beleg.includes("claude --help (2.1.295)") && claude.mcp.beleg.includes("wuerde")
+      && claude.mcp.beleg.includes("--strict-mcp-config") && !/\b(?:delivered|arrived|geliefert|angekommen|wird mitgegeben)\b/.test(JSON.stringify(claude.mcp)),
+    claude?.mcp?.beleg ?? "none");
+  check("pack mcp: the receipt entry names server, harness, zustand, beleg, mitgaebe — no delivery field",
+    JSON.stringify(Object.keys(claude?.mcp ?? {})) === JSON.stringify(["server", "harness", "zustand", "beleg", "mitgaebe"]),
+    JSON.stringify(Object.keys(claude?.mcp ?? {})));
+  // the shell yields the JSON byte for byte, also for an argument with a single quote in it
+  const quoted = { ...server, args: ["--name", "it's"] };
+  const said = spawnSync("/bin/sh", ["-c", `printf '%s' ${claudeMcpConfigFlag([quoted]).slice("--mcp-config ".length)}`], { encoding: "utf8" });
+  check("pack mcp: claude — the single-quoted JSON survives the shell byte for byte, a quote in an argument included",
+    said.status === 0 && said.stdout === JSON.stringify({ mcpServers: { "computer-use": { command: "npx", args: ["--name", "it's"] } } }),
+    `${said.status} ${said.stdout}`);
+
+  const evidenced: [string, string][] = [["codex", "codex --help (codex-cli 0.160.0)"], ["pi", "pi mcp --help (pi 1.0.2)"], ["pi-zai", "pi mcp --help (pi 1.0.2)"]];
+  for (const [harness, source] of evidenced) {
+    const z = zusatzOf(harness);
+    check(`pack mcp: ${harness} — unsupported with its CLI evidence, and nothing the spawn would carry`,
+      z?.an === true && z.mcp?.zustand === "unsupported" && z.mcp.beleg.startsWith(source) && !("mitgaebe" in z.mcp) && z.mcp.harness === harness,
+      JSON.stringify(z?.mcp));
+  }
+  for (const harness of CONTEXT_PACK_HARNESSES.filter((h) => !["claude", "codex", "pi", "pi-zai"].includes(h))) {
+    const z = zusatzOf(harness);
+    check(`pack mcp: ${harness} — not evidenced, so unsupported`,
+      z?.mcp?.zustand === "unsupported" && z.mcp.beleg.startsWith("nicht belegt") && !("mitgaebe" in z.mcp), JSON.stringify(z?.mcp));
+  }
+  const byModel = packMcpAnschluss(server, "claude-opus-5-5", true);
+  check("pack mcp: no compatibility from a model name — a model id as harness is not evidenced",
+    byModel.zustand === "unsupported" && byModel.beleg.startsWith("nicht belegt") && !("mitgaebe" in byModel), JSON.stringify(byModel));
+  const off = zusatzOf("claude", "main");
+  check("pack mcp: a Zusatz that is off still names its state, but nothing the spawn would carry",
+    off?.an === false && off.mcp?.zustand === "apply" && !("mitgaebe" in off.mcp), JSON.stringify(off));
+  const later = packMcpAnschluss(server, "claude", true, "vor-dem-land");
+  check("pack mcp: a Zusatz with a zeitpunkt is borrowed later, so its server is unsupported — it only arrives at a start",
+    later.zustand === "unsupported" && !("mitgaebe" in later), JSON.stringify(later));
+  const planOf = (harness: string, position: "lane" | "main") => {
+    const resolved = at(harness, position);
+    return { selected: [{ id: pack.id, hardness: "guidance" as const, sources: resolved.sources, estimatedBytes: 0,
+      ...(resolved.anatomie ? { anatomie: resolved.anatomie } : {}) }] };
+  };
+  check("pack mcp: planMcpServers takes exactly the applying servers that are on",
+    JSON.stringify(planMcpServers(planOf("claude", "lane"))) === JSON.stringify([server])
+      && planMcpServers(planOf("claude", "main")).length === 0 && planMcpServers(planOf("pi", "lane")).length === 0,
+    JSON.stringify(planMcpServers(planOf("claude", "lane"))));
+  const plainZusatz = resolvePackAnatomy({ ...pack, zusaetze: [{ id: "ohne", bedingung: { positions: ["lane"] }, sources: [] }] },
+    { position: "lane", harness: "claude", triggers: new Set<ContextPackTrigger>(["always"]) }).anatomie?.zusaetze[0];
+  check("pack mcp: a Zusatz without mcp carries no mcp key — its receipt keeps its bytes",
+    !!plainZusatz && !("mcp" in plainZusatz), JSON.stringify(plainZusatz));
+
+  // THE SPAWN SIDE (server.ts#agentCmd): the pack's flag follows the strict flag, on the claude branch only
+  const source = readFileSync(join(import.meta.dir, "../server.ts"), "utf8");
+  const acStart = source.indexOf("function agentCmd(");
+  const acCode = source.slice(acStart, source.indexOf("\n}\n", acStart)).split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const claudeBranch = acCode.slice(acCode.indexOf("if (claude) {"), acCode.indexOf("else if (HARNESS_MODEL_FLAG"));
+  check("pack mcp: agentCmd appends claudeMcpConfigFlag right after --strict-mcp-config, once, on the claude branch",
+    claudeBranch.includes('if (!browserMcp) cmd += " --strict-mcp-config";\n    if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;')
+      && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 1, `branch=${claudeBranch.length}b`);
+  check("pack mcp: only the claude adapter reads o.packMcp — the one harness the evidence table says apply to",
+    (source.match(/o\.packMcp/g) ?? []).length === 1
+      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.rulebookRole, o\.packMcp \?\? \[\], o\.remoteName\)/.test(source),
+    `${(source.match(/o\.packMcp/g) ?? []).length} reads`);
+
+  // THE CUT (clarification 51c72127): ensureSlot hands no pack server to spawnCmd, so no seed may carry
+  // an MCP Zusatz — a receipt would otherwise say "apply" for a founding whose pane never gets it. The
+  // follow-up card that wires the hand-over on every spawn (open/heal/restart/wake) lifts THIS check.
+  const esStart = source.indexOf("async function ensureSlot(");
+  const esCall = source.slice(source.indexOf("h.spawnCmd({", esStart), source.indexOf("})}`);", esStart));
+  const handsOver = /\bpackMcp\b/.test(esCall);
+  const seeds: readonly ContextPack[] = CONTEXT_PACKS;
+  const withMcp = seeds.filter((seed) => "zusaetze" in seed && (seed.zusaetze ?? []).some((zusatz) => zusatz.mcp !== undefined)).map((seed) => seed.id);
+  check("pack mcp: no Fleet seed carries an MCP Zusatz while ensureSlot hands none to spawnCmd (the hand-over is its own card)",
+    esCall.length > 0 && (handsOver || withMcp.length === 0),
+    `handsOver=${handsOver} seedsWithMcp=${withMcp.join(",") || "none"} — lift only together with the ensureSlot hand-over`);
+
+  // THE MANIFEST SIDE stays closed: context-manifest.ts knows no `mcp` key, so a repo pack naming one
+  // is refused whole, never half delivered without its server
+  const files = { "docs/kern.md": "## Kern\nimmer.\n" };
+  const manifestPack = { id: "repo-mcp", useWhen: "Ein Repo-Pack mit MCP.", scope: "repo-contract", audience: "agent", triggers: ["always"],
+    hardness: "guidance", sources: [{ path: "docs/kern.md", anchor: "## Kern" }], requiredCapabilities: ["tracked-source-read"],
+    harnesses: ["claude"], modes: ["mutating"], estimatedBytes: 1, evidence: "tree-anchor", owner: "owner", status: "active",
+    zusaetze: [{ id: "mcp-server", bedingung: { positions: ["lane"] }, sources: [{ path: "docs/kern.md", anchor: "## Kern" }], mcp: server }] };
+  const refused = planRepoContext({ manifest: readContextManifest(JSON.stringify([manifestPack])),
+    repo: { trackedPaths: new Set(Object.keys(files)), sourceBytes: new Map(Object.entries(files)) },
+    facts: { harness: "claude", mode: "mutating", triggers: ["always"], capabilities: ["tracked-source-read"], position: "lane" } });
+  check("pack mcp: a repo manifest Zusatz with mcp is manifest-invalid — the manifest door stays closed",
+    refused.selected.length === 0 && refused.omitted[0]?.why === "manifest-invalid", JSON.stringify(refused));
 }
 
 function taskCatalogChecks(check: ContextPlanCheck): void {

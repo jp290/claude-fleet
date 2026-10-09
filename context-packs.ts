@@ -102,7 +102,37 @@ export interface ContextPackZusatz {
   readonly id: string;
   readonly bedingung: ContextPackBedingung;
   readonly sources: readonly ContextPackSource[];
+  /** an MCP server this Zusatz brings when it is on (CONTEXT_PACK_MCP_ANSCHLUSS) */
+  readonly mcp?: ContextPackMcpServer;
 }
+
+// A ZUSATZ THAT BRINGS AN MCP SERVER (tranche 3 of the anatomy; owner 08.10.: „[Zitat entfernt]“
+// ). The Zusatz names ONE stdio server — a name, a command, its arguments — and nothing
+// else: no env, no URL, no token, because a pack selection installs nothing and sets up no rights,
+// accounts or consent. Whether the server ARRIVES is the harness's question, answered below from
+// evidence per harness and never from a model name; the plan states the answer for the founding's
+// harness (context-plan.ts#packMcpAnschluss). Slot.browser stays its own switch: this adds a
+// server, it never turns the ambient ones on or off.
+export const CONTEXT_PACK_MCP_ZUSTAENDE = ["apply", "unsupported", "not-applicable"] as const;
+export type ContextPackMcpZustand = (typeof CONTEXT_PACK_MCP_ZUSTAENDE)[number];
+export const CONTEXT_PACK_MCP_NAME = /^[a-z][a-z0-9-]{0,39}$/;
+export interface ContextPackMcpServer {
+  readonly name: string;
+  readonly command: string;
+  readonly args?: readonly string[];
+}
+// EVIDENCE PER HARNESS, read 2026-10-09 off the installed binaries' own help. A harness this table
+// does not name is `unsupported` with "nicht belegt" — silence is never an `apply`.
+export const CONTEXT_PACK_MCP_ANSCHLUSS: Readonly<Partial<Record<ContextPackHarness, { readonly zustand: ContextPackMcpZustand; readonly beleg: string }>>> = {
+  claude: { zustand: "apply", beleg: "claude --help (2.1.295): --mcp-config laedt MCP-Server aus JSON-Strings, --strict-mcp-config nur diese; "
+    + "der Spawn wuerde den Server ueber --mcp-config mit --strict-mcp-config mitgeben (agentCmd), nichts in ~/.claude geschrieben" },
+  codex: { zustand: "unsupported", beleg: "codex --help (codex-cli 0.160.0): -c koennte mcp_servers.<name> je Start setzen, "
+    + "aber der Fleet-Adapter traegt keinen Pack-Server auf seiner Zeile" },
+  pi: { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): MCP-Server nur aus ~/.pi/agent/mcp.json oder .pi/mcp.json, kein Startflag; "
+    + "ein Pack installiert nichts" },
+  "pi-zai": { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): nur mcp.json, kein Startflag; pi-zai startet mit --no-approve "
+    + "und liest kein .pi/mcp.json des Projekts, sein Agent-Verzeichnis beschreibt ein Pack nicht" },
+};
 export interface ContextPackVariante {
   readonly sources: readonly ContextPackSource[];
   readonly useWhen?: string;

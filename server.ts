@@ -47,7 +47,7 @@ import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
-import { cardVariante, planContext, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
+import { cardVariante, claudeMcpConfigFlag, planContext, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPackAnatomie, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
@@ -59,6 +59,7 @@ import {
 import {
   CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS,
   type ContextPackCapability,
+  type ContextPackMcpServer,
   type ContextPackMode,
   type ContextPackTrigger,
   type ContextPosition,
@@ -337,15 +338,15 @@ const RULEBOOK_CUT_MODE: RulebookCutMode = (() => {
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  remoteName: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, remoteName)}; exec ${SHELL}`;
+  packMcp: readonly ContextPackMcpServer[] = [], remoteName: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, remoteName)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  remoteName: string | null = null): string {
+  packMcp: readonly ContextPackMcpServer[] = [], remoteName: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -375,6 +376,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // plugins and the claude.ai connectors too); a lane that needs one is a browser lane. Nothing is
     // written to ~/.claude/settings.json — the profile lives on this line only (pinned).
     if (!browserMcp) cmd += " --strict-mcp-config";
+    // THE PACK'S MCP SERVERS (a Zusatz with `mcp`, context-packs.ts#CONTEXT_PACK_MCP_ANSCHLUSS): right
+    // after the strict flag, so a text lane loads exactly these and no ambient one; a browser lane or
+    // a MAIN keeps its ambient servers beside them. The spelling is claudeMcpConfigFlag's alone — the
+    // plan names the same bytes (e2e/context-plan.ts holds both). Per launch, never a settings write.
+    // NO CALLER PASSES ANY YET: ensureSlot hands nothing over, so the plan says "would", and a check in
+    // e2e/context-plan.ts keeps every seed free of an MCP Zusatz until the hand-over is its own card.
+    if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;
     const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
     if (rulebook) {
       const render = rulebook.render;
@@ -512,7 +520,10 @@ interface Harness {
     remoteName: string | null; webSearch?: boolean; projectDocMaxBytes?: number;
     // the slot's lane branch from Fleet's own record (Slot.worktree.branch), null for a non-lane.
     // Only pi-zai reads it: its fence grants writing that ONE ref, never one read from the worktree.
-    laneBranch?: string | null }): string;
+    laneBranch?: string | null;
+    // the MCP servers the founding plan's Zusaetze bring (context-plan.ts#planMcpServers). Only an
+    // adapter whose CONTEXT_PACK_MCP_ANSCHLUSS row is `apply` reads it — today claude alone.
+    packMcp?: readonly ContextPackMcpServer[] }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -749,7 +760,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.remoteName),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.remoteName),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier

@@ -2,12 +2,16 @@ import {
   type ContextPack,
   CONTEXT_PACKS,
   CONTEXT_PACK_HARNESSES,
+  CONTEXT_PACK_MCP_ANSCHLUSS,
   contextPartId,
   CONTEXT_POSITIONS,
   CONTEXT_POSITION_VARIANTEN,
   CONTEXT_VARIANTE_POSITION,
   type ContextPackBedingung,
   type ContextPackFassung,
+  type ContextPackHarness,
+  type ContextPackMcpServer,
+  type ContextPackMcpZustand,
   type ContextPositionVariante,
   type ContextPackVarianten,
   type ContextPackZusatz,
@@ -98,8 +102,55 @@ export interface ContextPackAnatomie {
     /** the condition keys that did not hold; absent when the Zusatz is on */
     readonly verfehlt?: readonly ("triggers" | "positions" | "harnesses")[];
     readonly teile: readonly string[];
+    /** only on a Zusatz that brings an MCP server: whether it arrives under this founding's harness */
+    readonly mcp?: PackMcpAnschluss;
   }[];
   readonly fassung?: ContextPackFassung;
+}
+
+/** What the spawn of THIS harness WOULD carry of a Zusatz's MCP server, with the evidence. `mitgaebe`
+ *  is the exact argument the claude line would gain, present only when the Zusatz is on and the
+ *  harness applies. A statement about the spawn line, never a delivery: no field here says "arrived". */
+export interface PackMcpAnschluss {
+  readonly server: ContextPackMcpServer;
+  readonly harness: string;
+  readonly zustand: ContextPackMcpZustand;
+  readonly beleg: string;
+  readonly mitgaebe?: string;
+}
+
+const shellSingleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/** The ONE spelling of a pack's MCP servers on a claude line: `--mcp-config '<json>'`, the JSON in
+ *  claude's own mcpServers shape. server.ts#agentCmd appends exactly this after a text lane's
+ *  --strict-mcp-config, so the line names these servers and no ambient one. "" for none. Pure. */
+export function claudeMcpConfigFlag(servers: readonly ContextPackMcpServer[]): string {
+  if (servers.length === 0) return "";
+  const mcpServers = Object.fromEntries(servers.map((server) => [server.name, { command: server.command, args: [...(server.args ?? [])] }]));
+  return `--mcp-config ${shellSingleQuote(JSON.stringify({ mcpServers }))}`;
+}
+
+const MCP_NICHT_BELEGT = "nicht belegt: fuer diesen Harness liegt kein Beleg eines MCP-Anschlusses vor";
+const MCP_NUR_BEIM_START = "ein MCP-Server kommt nur beim Start an; ein Zusatz mit Zeitpunkt wird spaeter ausgeliehen";
+
+/** Judge one Zusatz's MCP server for a harness: the evidence table, else `unsupported` — never a
+ *  guess from the harness or model name. `an` = the Zusatz is on for this founding. Pure. */
+export function packMcpAnschluss(server: ContextPackMcpServer, harness: string, an: boolean, zeitpunkt?: string): PackMcpAnschluss {
+  const known = (CONTEXT_PACK_HARNESSES as readonly string[]).includes(harness)
+    ? CONTEXT_PACK_MCP_ANSCHLUSS[harness as ContextPackHarness] : undefined;
+  const copy: ContextPackMcpServer = { name: server.name, command: server.command, ...(server.args ? { args: [...server.args] } : {}) };
+  if (!known) return { server: copy, harness, zustand: "unsupported", beleg: MCP_NICHT_BELEGT };
+  if (known.zustand === "apply" && zeitpunkt) return { server: copy, harness, zustand: "unsupported", beleg: MCP_NUR_BEIM_START };
+  return { server: copy, harness, zustand: known.zustand, beleg: known.beleg,
+    ...(known.zustand === "apply" && an ? { mitgaebe: claudeMcpConfigFlag([copy]) } : {}) };
+}
+
+/** The MCP servers a plan's spawn would carry: every Zusatz that is on and applies, in plan order.
+ *  No spawn reads it yet: ensureSlot hands nothing over, and e2e/context-plan.ts keeps every seed
+ *  free of an MCP Zusatz until it does. */
+export function planMcpServers(plan: Pick<ContextPlan, "selected">): ContextPackMcpServer[] {
+  return plan.selected.flatMap((pack) => (pack.anatomie?.zusaetze ?? [])
+    .flatMap((zusatz) => zusatz.an && zusatz.mcp?.mitgaebe ? [zusatz.mcp.server] : []));
 }
 
 // `useWhen` is OPTIONAL on a selection although it is mandatory on a Fleet seed: a repo-declared
@@ -188,7 +239,8 @@ export interface ContextPackAnatomy {
  * Zusaetze are on. A variant key and a Zusatz conditioned on a variant belong to that variant ALONE:
  * unchosen they are not part of the plan at all, so a pack whose only anatomy is a variant's plans
  * byte for byte as before. A Zusatz naming a zeitpunkt that is on delivers its parts as `ausleihe`
- * marked with the moment — named now, borrowed then. Pure.
+ * marked with the moment — named now, borrowed then. A Zusatz that brings an MCP server carries,
+ * on or off, whether that server arrives under the founding's harness (packMcpAnschluss). Pure.
  */
 export function resolvePackAnatomy(pack: ContextPackAnatomy, ctx: { readonly position?: ContextPosition;
   readonly variante?: ContextPositionVariante; readonly harness: string; readonly triggers: ReadonlySet<ContextPackTrigger> }):
@@ -218,7 +270,8 @@ export function resolvePackAnatomy(pack: ContextPackAnatomy, ctx: { readonly pos
     const zeitpunkt = b.zeitpunkt?.[0];
     zusaetze.push({ id: zusatz.id, bedingung, an: verfehlt.length === 0,
       ...(zeitpunkt && verfehlt.length === 0 ? { ort: "ausleihe" as const } : {}), ...(verfehlt.length ? { verfehlt } : {}),
-      teile: own.map((source) => contextPartId(pack.id, source, 0)) });
+      teile: own.map((source) => contextPartId(pack.id, source, 0)),
+      ...(zusatz.mcp ? { mcp: packMcpAnschluss(zusatz.mcp, ctx.harness, verfehlt.length === 0, zeitpunkt) } : {}) });
     if (verfehlt.length === 0) sources.push(...(zeitpunkt
       ? own.map((source) => ({ ...source, positions: BORROW_ONLY, zeitpunkt }))
       : own));

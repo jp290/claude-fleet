@@ -1561,6 +1561,10 @@ export async function run(h: {
   await tBeat();
   const tmRowsBefore = (await newRepoRows()).length;
   const tmDocsBefore = (await rowsFor(shortChainRepo)).length;
+  // server.log from BEFORE the hold can first be printed: the QUIET line is written once per change,
+  // by the first drain pass that finds the entry held and starts nothing — at the held land's own
+  // tail or only after the docs run below, whichever the scheduler makes first
+  const tmLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
   const tmHeldLane = await tOpenHeld("cadencehold3");
   const tmD = await openLane(REPO, "cadenced");
   const tmDLanded = await driveMerge(tmD, tmD.branch);
@@ -1579,7 +1583,6 @@ export async function run(h: {
     `inFlight=${tmH.inFlight} snap-releaseAt=${tmSnapAt - (tmHeld?.releaseAt ?? 0)}ms listed=${!!tmListedEarly} pending=${JSON.stringify(tmHeld)}`);
   // …and a DOCS-ONLY land into the short-chain repo meanwhile: local-only work (install+pins, never
   // offered), and the land in flight is in ANOTHER repo — so nothing holds it, and it runs HERE at once
-  const tmLogFrom = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").length : 0;
   const tmDocs = (await (await post("/api/lanes", { repo: shortChainRepo })).json()) as Lane;
   mkdirSync(`${tmDocs.cwd}/docs`, { recursive: true });
   await Bun.write(`${tmDocs.cwd}/docs/cadence.md`, "cadence measurement note\n");
@@ -1599,10 +1602,15 @@ export async function run(h: {
       && tmDocsRow.trigger === "no-land" && tmDocsCover > 0 && tmDocsRow.startedAt - tmDocsCover < T_MAX_MS,
     `waited=${tmDocsRow ? tmDocsRow.startedAt - tmDocsCover : "no row"}ms ceiling=${T_MAX_MS}`
     + ` trigger=${tmDocsRow?.trigger} remote=${!!tmDocsRow?.remote}`);
-  // the docs land kicked the drain while REPO's entry was held: that pass says so, once, in words
-  const tmLog = existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(tmLogFrom) : "";
+  // REPO's entry was held through all of it: a drain pass that started nothing says so, once, in
+  // words — bounded by the drain's own 30 s re-check of the lands in flight
+  const tmQuiet = (l: string): boolean => l.includes("post-land audit QUIET:") && l.includes(base(REPO)) && l.includes(tmH.ln.branch);
+  const tmReadLog = (): string => existsSync(`${ROOT}/server.log`) ? readFileSync(`${ROOT}/server.log`, "utf8").slice(tmLogFrom) : "";
+  let tmLog = tmReadLog();
+  for (const until = Date.now() + 35_000; !tmLog.split("\n").some(tmQuiet) && Date.now() < until; tmLog = tmReadLog())
+    await Bun.sleep(250);
   check("(T.m) …and server.log names the hold in words: QUIET, the repo, the land it waits behind, and the moment it is released",
-    tmLog.split("\n").some((l) => l.includes("post-land audit QUIET:") && l.includes(base(REPO)) && l.includes(tmH.ln.branch)),
+    tmLog.split("\n").some(tmQuiet),
     tmLog.split("\n").filter((l) => l.includes("post-land audit")).slice(-3).join(" | ").slice(0, 400));
   const tmSeenAt = await tListedAt(T_MAX_MS + 20_000);
   const tmStillInFlight = await tRunning(tmH.ln);

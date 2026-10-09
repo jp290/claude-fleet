@@ -2712,12 +2712,23 @@ export async function run(): Promise<void> {
           graceReady && pid > 0 && !(await pasteBufferLive()),
           JSON.stringify({ ready: graceReady, standIn: pid > 0, composerBytes: stateText().length }));
         // Remove exactly what this fixture left in the composer, as its author, and see it empty.
+        // The stand-in rewrites its state file per byte with fopen("w"): a read between the
+        // truncate and the write is an empty FILE, which stateText() reports as an empty composer.
+        // Twice on 09.10. (helper runs 6f661fe618dc, fa226af5c943) that read ended the wait with
+        // ~430 BSpaces still queued, and the next send met "composer occupied (426 chars)". So a
+        // state counts only with its phase line written: `null` is "mid-write, read again".
+        const stateRead = (): string | null => {
+          const raw = readFileSync(stateFile, "utf8");
+          const eol = raw.indexOf("\n");
+          return eol > 0 && /^[a-z]+:/.test(raw) ? raw.slice(eol + 1) : null;
+        };
         const clearFixtureComposer = async (what: string): Promise<void> => {
-          const held = stateText();
+          const held = (await until(() => { const text = stateRead(); return text === null ? null : { text }; },
+            { timeoutMs: 3000, stepMs: 10, what: `arrival grace fixture: a whole state read before clearing ${what}` })).text;
           if (held) await tmuxOut("send-keys", "-t", `=s${slot}:`, "-N", String([...held].length), "BSpace");
           await until(async () => {
             const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `=s${slot}:`);
-            return stateText() === "" && frame.code === 0 && composerBuffer({ kind: "rules" }, frame.out) === "";
+            return stateRead() === "" && frame.code === 0 && composerBuffer({ kind: "rules" }, frame.out) === "";
           }, { timeoutMs: 3000, what: `arrival grace fixture: ${what} cleared by its author` });
         };
         // One send against a stopped stand-in. `contAfterMs` = SIGCONT that long after the paste was

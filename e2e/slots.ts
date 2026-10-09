@@ -2413,8 +2413,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // flag and the lane opened in place, the stand of every machine, who holds an alarm, the worktree
   // field — each a DOM claim, and every click judged by the request it sent. A browser that cannot run
   // is the PROBE line — red, never a skip.
+  let arbeitsorte: ArbeitsorteDomResult[] = [];
   try {
-    for (const result of await runArbeitsorteDom(sourceRoot)) {
+    arbeitsorte = await runArbeitsorteDom(sourceRoot);
+    for (const result of arbeitsorte) {
       const facts = JSON.stringify(result.facts.focus ? { focus: result.facts.focus, ...result.facts } : result.facts).slice(0, 1500);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok,
@@ -2424,18 +2426,32 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("arbeitsorte DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
       error instanceof Error ? error.message : String(error));
   }
-  // and each statement against its mutant: the claim that pins it must go red (ARBEITSORTE_MUTANTS)
+  // and each statement against its mutant: the claim that pins it must go red (ARBEITSORTE_MUTANTS) —
+  // all in ONE Chromium, each mutant in a browser context of its own. A shared browser that cannot
+  // start is a red PROBE line, and every mutant then starts its own as before: never a skip
+  const mutantProfile = mkdtempSync(resolve(tmpdir(), "fleet-arbeitsorte-mutants-"));
+  let mutantBrowser: ArbeitsorteBrowser | undefined;
+  try {
+    mutantBrowser = await startArbeitsorteBrowser(`${mutantProfile}/profile`);
+  } catch (error) {
+    check("arbeitsorte DOM MUTATION — PROBE: one Chromium runs every mutant", false, error instanceof Error ? error.message : String(error));
+  }
   for (const m of ARBEITSORTE_MUTANTS) {
     try {
       const names = typeof m.claim === "string" ? [m.claim] : m.claim;
-      const hit = (await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [m.width ?? 390], mutate: m }))
-        .flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
+      const width = m.width ?? 390;
+      const until = Object.keys(arbeitsorte.find((r) => r.state === m.state && r.width === width)?.claims ?? {}).filter((c) => names.some((n) => c.includes(n)));
+      const runs = await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [width], mutate: m, browser: mutantBrowser, until })
+        .catch((error: unknown) => { if (error instanceof ArbeitsorteVerdictsIn) return [error.result]; throw error; });
+      const hit = runs.flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
       check(`arbeitsorte DOM MUTATION — ${m.name}: "${names.join('…" · "')}…" turns red`,
         names.every((n) => hit.some(([c]) => c.includes(n))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
     } catch (error) {
       check(`arbeitsorte DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
     }
   }
+  await mutantBrowser?.close();
+  rmSync(mutantProfile, { recursive: true, force: true });
 
   // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
@@ -2532,9 +2548,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // Arbeitsorte → session → changes → notepad → history → "Mehr" (Setup, Rechte, Files, prompts as
   // tabs). Setup (`su`), Rechte (`rsec`), the session's Checks (`ck`) and the tools fold (`tsec`) left
   // the push list, the deploy line (`dsec0`) went into the Arbeitsorte's Live row — all asserted absent.
-  check("client: the board renders in the owner's order — alarms → Arbeitsorte → session → changes → notepad → history → more",
+  // Owner-Runde 8 (2026-10-09, „[Zitat entfernt]“): „[Zitat entfernt]“ moved up
+  // between the changes and the notepad — the order the DOM claim of the Arbeitsorte probe reads too
+  check("client: the board renders in the owner's order (Owner-Runde 8) — alarms → Arbeitsorte → session → changes → more → notepad → history",
     at("pla0") >= 0 && at("pla0") < at("esec0") && at("esec0") < at("ranke") && at("ranke") < at("idsec")
-    && at("idsec") < at("work") && at("work") < at("noteSec") && at("noteSec") < at("csec") && at("csec") < at("msec")
+    && at("idsec") < at("work") && at("work") < at("msec") && at("msec") < at("noteSec") && at("noteSec") < at("csec")
     && at("lsec") === -1 && at("gsec") === -1 && at("dsec1") === -1 && at("dsec0") === -1
     && at("su") === -1 && at("rsec") === -1 && at("ck") === -1 && at("tsec") === -1,
     JSON.stringify(pushOrder));
@@ -2629,7 +2647,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // Arbeitsorte — no Check or Land row in the session block, no Checks section of its own
   check("client: the session's checks are a value of its lane, not a section of their own",
     !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && !/kvRow\("Check"/.test(cliSrc) && !/kvRow\("Land"/.test(cliSrc)
-    && /const flag = laneFlag\(w\);/.test(boardSrc) && /out\.push\(wayLine\(w, mine\)\);/.test(boardSrc)
+    // since Owner-Runde 8b the gear for the land form hangs on the way line, so it stands in `wl` first
+    && /const flag = laneFlag\(w\);/.test(boardSrc) && /const wl = wayLine\(w, mine\);/.test(boardSrc) && /out\.push\(wl\);/.test(boardSrc)
     && !/No suite reported in the last few minutes/.test(cliSrc),
     "laneRow + laneFlag + wayLine in src/board.ts");
   // WHOSE FACT: every section head carries one word from the closed set, and the two machine
@@ -2733,7 +2752,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // do; where the SERVER caps (200 status lines, the newest 50 commits), the board names the cap
   // instead of letting a cut list read as "all of it".
   check("client: the file and commit lists are not truncated in the client, and a server cap is named",
-    !/brief\.uncommittedFiles\.slice\(/.test(boardSrc) && !/brief\.files\.slice\(/.test(boardSrc)
+    !/brief\.uncommittedFiles\.slice\(/.test(boardSrc)
+    // the changed files stand under Changes since Owner-Runde 9 („[Zitat entfernt]“
+    // ): five, like History's three on purpose, the whole list one button away
+    && /all \? brief\.files : brief\.files\.slice\(0, FILES_SHOWN\)/.test(boardSrc) && /`Alle \$\{total\} Dateien`/.test(boardSrc)
     && /brief\.uncommitted > brief\.uncommittedFiles\.length/.test(boardSrc)
     && /the server reads at most 200 status lines/.test(boardSrc)
     && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest \$\{brief\.commitsCap\}/.test(boardSrc)
@@ -12146,6 +12168,28 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     with: "  return `${a.tagName}\\u0000${a.className}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
+// A MUTANT NEEDS ITS OWN VERDICTS ONLY (UI-MAIN e5b9a171: preview shard 2 lapsed twice; the 33 lane
+// mutants walked the whole lane, ~9.7 s each). `until` names the claim keys an UNMUTATED run gave the
+// mutant's names; once each of them has its verdict the walk stops and its result travels in this
+// error. A claim is assigned once and never refined (137 keys, 137 assignments), so the verdicts are
+// the ones the whole walk would give. A key the mutated run never assigns keeps the walk going to
+// its end, as before; a catch inside the walk that swallows the stop only costs the time.
+export class ArbeitsorteVerdictsIn extends Error {
+  constructor(readonly result: ArbeitsorteDomResult) { super("arbeitsorte DOM: the mutant's claims have their verdicts"); }
+}
+function claimsUntil(until: readonly string[] | undefined, result: (claims: Record<string, boolean>) => ArbeitsorteDomResult): Record<string, boolean> {
+  const raw: Record<string, boolean> = {};
+  if (!until?.length) return raw;
+  const pending = new Set(until);
+  return new Proxy(raw, {
+    set(target, key, value: boolean) {
+      if (typeof key !== "string") return false;
+      target[key] = value;
+      if (pending.delete(key) && pending.size === 0) throw new ArbeitsorteVerdictsIn(result({ ...target }));
+      return true;
+    },
+  });
+}
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
 // own annotation), `viele3`/`viele30` for its &n=3 / &n=30; `laneb` is the draft's variant B, and the
 // app shows the chosen variant A there (owner-Ja 2026-10-05: „[Zitat entfernt]“)
@@ -12155,8 +12199,38 @@ export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "ueberga
 // swaps one needle of src/board.ts in the bundle the page runs; a needle that is not in the source
 // throws, so a probe that could not apply its mutation fails as ITSELF and never reads as caught.
 export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/plaudit.ts" | "public/index.html" };
+// THE PROBE'S BROWSER: headless Chromium with CDP on a free port, its endpoint read from stderr. One
+// run starts its own; the mutants share one (UI-MAIN e5b9a171: preview shard 2 lapsed twice once
+// this lane's 83 mutants each started a Chromium, ~2.9 s apiece before the page ran)
+export interface ArbeitsorteBrowser { endpoint: string; close: () => Promise<void> }
+export async function startArbeitsorteBrowser(profile: string): Promise<ArbeitsorteBrowser> {
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
+  // A MOUSE, WHATEVER THE MACHINE: the Linux helper's headless Chromium reports no pointing device, so
+  // `(hover: hover)` never matched there and every hover note stayed hidden (slots run 41ccbf9f01f3:
+  // both diamond notes of `land` red, green on this Mac). The blink settings give every run the
+  // desktop's fine pointer and hover — measured both ways: 1/2 → "false,false,false", 2/4 → "true,true,true"
+  const pointer = "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4";
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${profile}`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const close = async () => { browser.kill(); await browser.exited; };
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let startupLog = "";
+  try {
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    return { endpoint, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+// `browser`: a running one to use instead of starting a Chromium — this run then works in a browser
+// context of its own (its own cache and storage, as a fresh profile had them; an app.js the previous
+// mutant left in a shared cache would otherwise answer for this one) and leaves the process running
 export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
-  only: { states?: readonly string[]; widths?: readonly number[]; mutate?: ArbeitsorteMutant } = {}): Promise<ArbeitsorteDomResult[]> {
+  only: { states?: readonly string[]; widths?: readonly number[]; mutate?: ArbeitsorteMutant; browser?: ArbeitsorteBrowser; until?: readonly string[] } = {}): Promise<ArbeitsorteDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-arbeitsorte-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   if (artifacts) mkdirSync(artifacts, { recursive: true });
@@ -12369,18 +12443,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       { slot: 11, label: null, phase: "done", suite: "Vorschau", exitCode: 0, at: fx.now - 40_000, origin: "lane", branch: "fleet/261005-insel-am-telefon-1b2c" },
       { slot: 16, label: null, phase: "failed", suite: "Vorschau", exitCode: 1, at: fx.now - 70_000, origin: "lane", branch: "fleet/261005-modell-register-0f41" }] }
     : { lock: null, reports: [] };
-  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("arbeitsorte DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let ownBrowser: ArbeitsorteBrowser | null = null;
   let socket: WebSocket | undefined;
+  let leaveContext: (() => Promise<void>) | null = null;
   try {
-    let startupTimer: ReturnType<typeof setTimeout> | undefined;
-    let startupLog = "";
-    const endpoint = await Promise.race([
-      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
-      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
-    ]).finally(() => clearTimeout(startupTimer));
-    socket = new WebSocket(endpoint);
+    if (!only.browser) ownBrowser = await startArbeitsorteBrowser(`${scratch}/profile`);
+    const browser = only.browser ?? ownBrowser;
+    if (!browser) throw new Error("arbeitsorte DOM probe: no browser");
+    socket = new WebSocket(browser.endpoint);
     await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
     let serial = 0, sessionId: string | undefined;
     let loaded: (() => void) | null = null;
@@ -12620,14 +12690,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
     const results: ArbeitsorteDomResult[] = [];
     let targetId = "";
+    let contextId: string | undefined;
+    if (only.browser) {
+      contextId = String((await send("Target.createBrowserContext", {})).browserContextId);
+      const id = contextId;
+      leaveContext = async () => { sessionId = undefined; await send("Target.disposeBrowserContext", { browserContextId: id }).catch(() => undefined); };
+    }
     for (const [width, height] of ([[1200, 900], [390, 844]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
       const phone = width < 700;
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
-        const claims: Record<string, boolean> = {};
         const facts: Record<string, unknown> = {};
+        const claims = claimsUntil(only.until, (c) => ({ width, height, state: st, claims: c, facts }));
         fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
-        targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+        targetId = String((await send("Target.createTarget", { url: "about:blank", ...(contextId ? { browserContextId: contextId } : {}) })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
         await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
         await send("Page.enable"); await send("Runtime.enable");
@@ -13960,7 +14036,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     }
     return results;
   } finally {
-    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+    await leaveContext?.();
+    socket?.close(); await ownBrowser?.close(); rmSync(scratch, { recursive: true, force: true });
   }
 }
 

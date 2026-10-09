@@ -3116,7 +3116,9 @@
   #board .zr.base .rt .ref.on { color: var(--chat-ink); text-decoration: underline; text-underline-offset: 3px; }
   #board .zr.base .ti { grid-column: 4; }
   /* the repo's head */
-  #board .zr.repo { cursor: pointer; grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto; }
+  /* the name keeps room of its own (owner 2026-10-08: „[Zitat entfernt]“): beside "Live-Session" the
+     right side wraps before the name shrinks under a word — the Linux helper's wider sans left it 2 px */
+  #board .zr.repo { cursor: pointer; grid-template-columns: var(--rk-rail) minmax(min(100%, 8em), 1fr) auto; }
   #board .zr.repo .fx { grid-column: 1; color: var(--chat-faint); display: grid; place-items: center start; }
   #board .zr.repo .fx .ico { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform var(--t); }
   #board .zr.repo.auf .fx .ico { transform: none; }
@@ -3126,7 +3128,7 @@
   #board .zr .cnt { color: var(--chat-faint); font-weight: 400; font-size: var(--chat-ui-fs); margin-left: 6px; }
   #board .zr .tag { font-size: 10px; color: var(--chat-faint); border: 1px solid var(--chat-edge); border-radius: 4px; padding: 0 4px;
     margin-left: 6px; font-weight: 400; }
-  #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 4px; }
+  #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 2px 4px; }
   #board .zr.repo .rt .tag { margin-left: 0; }
   /* the remote is quiet text in the count line (owner 2026-10-08) */
   #board .zr.repo .cnt .tag { border: 0; padding: 0; margin: 0; font-size: inherit; color: inherit; border-radius: 0; }

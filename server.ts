@@ -31736,6 +31736,15 @@ async function postLandAuditSummary(): Promise<PostLandAuditInfo | null> {
 // Same null-when-quiet rule as gateView: an untroubled fleet pays four bytes for this on a 2 s poll.
 function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
   const r = runningPostLandAudit;
+  const now = Date.now();
+  // A SHARDED helper run is a run too (measured 2026-10-09: main@520dcb1c, shard 1 green, shard 2
+  // on the helper, shard 3 open — and this view said "WAITING 3", running null, because it knew only
+  // the local run). It is reported when no local run is, the oldest first; its covers are masked by
+  // coverKey, not identity — a run restored at boot holds copies, not the queue's objects. Only the
+  // run SHOWN is masked: a second open run (another repo) keeps its covers in `waiting` rather than
+  // vanishing from every line. Same reading as the lane view's (workplaceCheckObservations).
+  const shardRun = r ? null : [...auditShardRuns.values()].sort((a, b) => a.firstClaimAt - b.firstClaimAt)[0] ?? null;
+  const shardCovers = new Set((shardRun?.covers ?? []).map(coverKey));
   // the covers this run FROZE are the head of its repo's queue entry (the drain slices, it does not
   // delete — see its comment), and `slice()` copies the objects BY REFERENCE. So identity separates
   // "already being audited" from "arrived while it ran" without a second bookkeeping field.
@@ -31746,15 +31755,24 @@ function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
       for (const c of g.covers)
         // a PARKED entry (its repo has no audit command) is not waiting for a run — nothing is
         // configured to run it. Masked here, where "waiting" is the claim; the queue keeps it.
-        if (!inflight.has(c) && auditCmdFor(repo))
+        if (!inflight.has(c) && !(shardRun?.repo === repo && shardCovers.has(coverKey(c))) && auditCmdFor(repo))
           waiting.push({ repo: basename(repo), main: g.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
   const running: PostLandAuditLiveInfo["running"] = r
     ? { phase: "running", repo: basename(r.repo), main: r.main, mainSha: r.mainSha,
         startedAt: r.startedAt, covers: r.covers.map((c) => c.branch) }
-    : auditDraining
-      ? { phase: "starting", repo: null, main: null, mainSha: null, startedAt: null, covers: [] }
-      : null;
+    : shardRun
+      ? { phase: "running", repo: basename(shardRun.repo), main: shardRun.main, mainSha: shardRun.mainSha,
+          startedAt: shardRun.firstClaimAt, covers: shardRun.covers.map((c) => c.branch),
+          sharded: { n: shardRun.n, shards: shardRun.shards.map((s) => ({ k: s.k,
+            // an expired claim without a result is a lapse the next sweep books — not running any more
+            state: s.result ? "reported" as const : s.closed || (s.claim && s.claim.expiresAt <= now) ? "closed" as const
+              : s.claim ? "running" as const : "open" as const,
+            device: s.result?.name ?? s.claim?.name ?? null })) } }
+      : auditDraining
+        ? { phase: "starting", repo: null, main: null, mainSha: null, startedAt: null, covers: [] }
+        : null;
   if (!running && !waiting.length) return null;
+  // `stats` is THIS machine's local distribution and says nothing about a helper's shards
   return { running, waiting, stats: r ? auditStats(r.repo) : null };
 }
 

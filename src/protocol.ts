@@ -418,6 +418,11 @@ export interface PostLandAuditLiveInfo {
     phase: "running" | "starting";
     repo: string | null; main: string | null; mainSha: string | null;
     startedAt: number | null; covers: string[];
+    // present only on a SHARDED helper run (server.ts#auditShardRuns): `startedAt` is then its first
+    // claim, and `shards` is one entry per k of n. `running` = a live claim, `open` = nobody holds it
+    // yet, `closed` = it will produce no result (lapsed, unclaimed, or a sibling already ruled green
+    // out). A run between two claims has no claim at all and is still THIS run, not a wait.
+    sharded?: { n: number; shards: { k: number; state: "reported" | "running" | "open" | "closed"; device: string | null }[] };
   } | null;
   // lands whose audit has not begun: coalesced into the NEXT run, and today indistinguishable from
   // "no audit planned" on every surface. `at` is when the land queued them.

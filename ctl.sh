@@ -861,7 +861,12 @@ else if (live === null) liveLine = "live: idle — no audit running, none waitin
 else {
   const run = live.running, wait = live.waiting ?? [];
   const parts = [];
-  if (run?.phase === "running") {
+  if (run?.phase === "running" && run.sharded) {
+    // a helper's sharded run (server.ts#postLandAuditLiveView): clocked from its first claim, one
+    // k/n state per shard — a run between two claims is still this run, never a WAITING line
+    const sh = run.sharded.shards.map((s) => `${s.k}/${run.sharded.n} ${s.state}${s.device ? ` ${s.device}` : ""}`).join(", ");
+    parts.push(`RUNNING (sharded) ${run.repo} ${run.main}@${short(run.mainSha)} since first claim ${sec(run.startedAt)} shards ${sh} covers ${run.covers.join(", ") || "-"}`);
+  } else if (run?.phase === "running") {
     const st = live.stats ? ` (p50 ${ms(live.stats.p50)} p90 ${ms(live.stats.p90)} over ${live.stats.n})` : "";
     parts.push(`RUNNING ${run.repo} ${run.main}@${short(run.mainSha)} for ${sec(run.startedAt)} covers ${run.covers.join(", ") || "-"}${st}`);
   } else if (run?.phase === "starting") parts.push("STARTING — the drain holds its lock, the run's identity is not known yet");

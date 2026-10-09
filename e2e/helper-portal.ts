@@ -21,7 +21,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASE, ROOT, check, get, paneEnv, post } from "./harness";
+import { dirname } from "node:path";
+import { BASE, ROOT, TOKEN, check, get, paneEnv, post } from "./harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, waitMerge, type Lane, type MergeVerdict } from "./lane-helpers";
 import { laneSuiteWatchMessage } from "../lane-signals";
 
@@ -129,7 +130,11 @@ interface Row {
 interface PendingAudit { repo: string; main: string; covers: number; oldestAt?: number; newestAt?: number;
   hold: string | null; releaseAt?: number }
 interface LiveView {
-  postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null;
+  postLandAuditLive: {
+    running: { repo: string | null; phase: string; mainSha: string | null; startedAt: number | null; covers: string[];
+      sharded?: { n: number; shards: { k: number; state: string; device: string | null }[] } } | null;
+    waiting: { repo: string; branch: string }[];
+  } | null;
 }
 
 const DEVICE = "e2e0device01";        // matches the server's /^[a-z0-9]{8,32}$/
@@ -207,8 +212,12 @@ export async function run(h: {
     (await ownerDevices())?.find((d) => d.id === DEVICE)?.instance;
   const jobFor = async (repo: string): Promise<HelperJob | undefined> =>
     (await jobs()).jobs.find((j) => j.repo === repo.split("/").pop());
-  const liveRepo = async (): Promise<string | null> =>
-    (((await (await get("/api/sessions")).json()) as LiveView).postLandAuditLive?.running?.repo) ?? null;
+  // the LOCAL run's repo: a helper's sharded run is in `running` too (it carries `sharded`), and every
+  // reader of this one asks "did the drain take the tree HERE", which that run never answers
+  const liveRepo = async (): Promise<string | null> => {
+    const run = ((await (await get("/api/sessions")).json()) as LiveView).postLandAuditLive?.running;
+    return run && !run.sharded ? run.repo : null;
+  };
   // poll until the drain is demonstrably inside the decoy's run — never a sleep-then-look, which is
   // the shape of the pane flake this suite removed elsewhere
   const waitLocalRun = async (repo: string, timeoutMs = 60_000): Promise<boolean> => {
@@ -2596,8 +2605,45 @@ export async function run(h: {
       await driveMerge(lapse, lapse.branch);
       const lapseSha = headOf();
       await Bun.sleep(1500);
-      const lapseClaims = await claimAll(ids);
+      // (5a) THE LIVE VIEW OF A SHARDED RUN IN FLIGHT. Shards 1+2 are claimed, 1 reports, 3 stays open:
+      // one run, three states, no local run. Measured 2026-10-09 on the live fleet: that state read
+      // "WAITING 3" with running null, and a session hunted a stalled helper for a quarter hour.
+      // MUTATION: drop the auditShardRuns arm in server.ts#postLandAuditLiveView ⇒ running null and the
+      // lapse lane's cover back in waiting ⇒ red; drop the `run.sharded` arm in `ctl.sh audits` ⇒ no
+      // "RUNNING (sharded)" ⇒ red.
+      const lapseClaims12 = await claimAll(ids.slice(0, 2));
       await report(ids[0]!, { exitCode: 0, fails: [], tail: "PASS  one ok\nALL PASS" });
+      const inFlight = ((await (await get("/api/sessions")).json()) as LiveView).postLandAuditLive;
+      const flightRun = inFlight?.running ?? null;
+      const flightFirst = Math.min(...lapseClaims12.bodies.map((b) => b.job?.claimedAt ?? Infinity));
+      check("(K11) A SHARDED RUN IN FLIGHT IS RUNNING, NOT WAITING: postLandAuditLive.running is the run (tree, first claim, covers, 1/3 reported · 2/3 running · 3/3 open) and waiting holds none of its covers",
+        lapseClaims12.statuses.every((st) => st === 200) && flightRun?.phase === "running" && flightRun.repo === base(REPO)
+          && flightRun.mainSha === lapseSha && flightRun.covers.includes(lapse.branch)
+          && typeof flightRun.startedAt === "number" && flightRun.startedAt <= flightFirst && flightFirst - flightRun.startedAt < 10_000
+          && flightRun.sharded?.n === 3
+          && flightRun.sharded.shards.map((x) => `${x.k}:${x.state}`).join(",") === "1:reported,2:running,3:open"
+          && flightRun.sharded.shards[0]?.device === SHARD_NAME && flightRun.sharded.shards[2]?.device === null
+          && !(inFlight?.waiting ?? []).some((w) => w.branch === lapse.branch)
+          && (await liveRepo()) === null,
+        `claims=${lapseClaims12.statuses} first=${flightFirst} live=${JSON.stringify(inFlight)} want=${lapseSha.slice(0, 8)}`);
+      // …and the verb a session actually reads it through. ctl.sh is staged into the instance only by
+      // e2e-isolated.sh; this harness's copy has none, so the source tree (behind the node_modules
+      // link) is the fallback — FLEET_CTL_HOME stays the instance, URL and token are this server's.
+      const srcCtl = (() => { try { return `${dirname(realpathSync(`${ROOT}/node_modules`))}/ctl.sh`; } catch { return null; } })();
+      const ctlPath = [`${ROOT}/ctl.sh`, srcCtl].find((p): p is string => !!p && existsSync(p)) ?? null;
+      const ctlRun = ctlPath ? Bun.spawn([ctlPath, "audits"], { stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, FLEET_CTL_URL: BASE, FLEET_CTL_TOKEN: TOKEN, FLEET_CTL_HOME: ROOT } as Record<string, string> }) : null;
+      const ctlOut = ctlRun ? await new Response(ctlRun.stdout).text() : "";
+      const ctlErr = ctlRun ? await new Response(ctlRun.stderr).text() : "";
+      const ctlCode = ctlRun ? await ctlRun.exited : null;
+      const ctlLive = ctlOut.split("\n").find((l) => l.startsWith("live:")) ?? "";
+      check("(K11) …and ./ctl.sh audits prints it as RUNNING (sharded) with each shard's state, never as WAITING",
+        ctlCode === 0 && ctlLive.includes(`RUNNING (sharded) ${base(REPO)} `) && ctlLive.includes(lapseSha.slice(0, 12))
+          && ctlLive.includes(`1/3 reported ${SHARD_NAME}`) && ctlLive.includes(`2/3 running ${SHARD_NAME}`) && ctlLive.includes("3/3 open")
+          && !ctlLive.includes(`${lapse.branch}@`),
+        ctlPath ? `exit=${ctlCode} ${ctlLive.slice(0, 400)} ${ctlErr.slice(0, 200)}` : "NOT MEASURED — no ctl.sh in the instance or behind its node_modules link");
+      const lapseClaim3 = await claimAll([ids[2]!]);
+      const lapseClaims = { statuses: [...lapseClaims12.statuses, ...lapseClaim3.statuses] };
       await report(ids[1]!, { exitCode: 0, fails: [], tail: "PASS  two ok\nALL PASS" });
       const lapseRows = await waitNewRepoRows(rowsBeforeLapse + 1, 45_000);
       const lapseRow = lapseRows.find((r) => r.mainSha === lapseSha);

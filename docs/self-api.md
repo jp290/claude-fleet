@@ -5257,9 +5257,9 @@ Aufrufstellen, beide Routen, kein Tick).
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
-# eine Live-Bau-Lane, deren Commits als EIN Commit auf main landen (§squash unten):
+# eine Live-Bau-Lane: ihre Commits landen als EIN Commit, und die Lane läuft weiter (§squash, §keep):
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' -d '{"squash":true}'
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' -d '{"squash":true,"keep":true}'
 ```
 
 Erfolg: `{running:true, task, laneSlot, candidate, sessionIdMatch, selfLand,
@@ -5585,6 +5585,38 @@ Commits wie bisher, und deren Bodies bleiben das Befund-Register auf main.
   Squash wird dieselbe Frage als Lesung gestellt. Der Wert steht in `MERGE_ERROR_REASONS` und
   blockiert `done-looking` also nicht: die Lane hat weitergearbeitet, was eine Live-Lane tut, und
   derselbe Land auf ihrer neuen Spitze geht durch dieselbe Tür.
+
+### Der Schalter `keep`: landen und weiterlaufen (bc9d0a79, seit 2026-10-09)
+
+Ein Live-Worktree landet mehrmals, über Tage, ohne neue Zeile und ohne neuen Worktree
+(`docs/messungen/2026-10-07-live-worktree-konzept.md` §7, Schnitt 4). Mit `{"keep":true}` läuft
+der Land mit **demselben** Gate, **derselben** `fleet/land`-Note und **demselben** Post-Land-Audit.
+Danach (`server.ts#landLane`, Parameter `keep`):
+
+- **Worktree, Slot, Branch und die Zeile bleiben stehen**, und die Zeile bleibt `sent`. Die
+  Outcome-Zeile, die Notizen, die Land-Watch der MAIN und das Merge-Ereignis sind die eines Lands.
+- **`worktree.baseSha` wird `mainAfter`.** Ein späterer Land, eine Outcome-Zeile oder ein Teardown
+  rechnet sonst gegen den ersten Fork.
+- **`mergeLast` wird geleert** (`mergeJob#record`): der Land hinterlässt kein Verdikt an der Lane.
+  Die Trail-Zeile `merge_verdict`, die Note und die Outcome-Zeile halten den Land fest.
+- **Kein Rebase danach:** der Land war ein Fast-Forward, also IST der Lane-HEAD das neue main.
+  Zusammen mit `squash` steht der Branch schon vor dem Fast-Forward auf S, und der nächste Land
+  fasst nur die Commits seit S zusammen.
+- **Der nächste Land derselben Zeile** braucht einen neuen Commit; derselbe Kandidat trägt die Note
+  und wird mit `already landed` abgelehnt. `landReadyRows` nennt die Zeile erst nach einem
+  **frischen** `complete`-Report wieder, weil der alte vom Land verbraucht ist (`landCalledAt`).
+- **Phase:** Eine `sent`-Zeile mit `landed`-Outcome projiziert `RUNNING`, solange nichts Neues ahead
+  ist, und `REVIEWABLE`, sobald ein neuer Commit done-looking ist. Den verbrauchten Report liest R11b
+  nicht als offene Behauptung (`server.ts#newestLaneReportFor`); ein frischer `complete` über nichts
+  Neuem bleibt der Widerspruch.
+- **Der automatische Lane-Close** schließt eine solche Lane nicht: jeder Report ist von einem Land
+  verbraucht, und sie wartet auf ihre nächste Tranche (`server.ts#laneAutoCloseRefusal`).
+- **Erst ein Land ohne `keep`** (oder ein Kill) schließt die Lane und setzt die Zeile auf `done`, so
+  wie jeder Land bisher.
+- **Die Owner-Türen behalten nichts:** ⏏ (`POST /api/slots/:id/land`) landet bereits gemergte oder
+  gepushte Arbeit, und dort muss main nicht der Lane-HEAD sein. ⏏ und ⏫ verweigern `keep` und
+  `squash` mit 409, statt die Schalter still fallen zu lassen. Auch der Confirm-Arm (`guarded`)
+  verweigert beide.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 

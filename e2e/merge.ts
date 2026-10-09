@@ -2882,6 +2882,167 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 
+  // bc9d0a79 · THE KEPT LAND. One live lane lands three times through the SAME row: first with
+  // {"squash":true,"keep":true} (two commits → one S1, the lane and its row stay, its fork moves to
+  // S1, no verdict is left on it, and the row projects RUNNING), then after two more commits and a
+  // fresh complete report with {"keep":true} alone (both commits land as they are — no squash
+  // without the switch), and last with no switch at all, which closes the lane and the row as every
+  // land always has. ⏏ and ⏫ refuse `keep` instead of dropping it.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const mainBefore = git2("rev-parse", "main");
+    const programR = await post("/api/programs", {
+      title: "Kept land", intent: "Land a live lane more than once.",
+      successCriterion: "One row lands several times.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false,
+      text: "Ein Live-Worktree landet und laeuft weiter." });
+    const rowId = ((await taskR.json()) as { task?: { id: string } }).task?.id ?? "";
+    const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+    const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+    type KeptSlot = { id: number; cwd: string | null; lastOutput: number;
+      git: { dirty: number; ahead: number } | null; worktree?: { branch?: string; baseSha?: string } };
+    const laneNow = async (): Promise<{ now: number; slot: KeptSlot | undefined }> => {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: KeptSlot[] };
+      return { now: sx.now, slot: sx.slots.find((s) => s.id === laneSlot) };
+    };
+    const first = (await laneNow()).slot;
+    const cwd = first?.cwd ?? "";
+    const branch = first?.worktree?.branch ?? "";
+    const laneToken = tokenOf(laneSlot);
+    const commitIn = (file: string, msg: string): void => {
+      writeFileSync(`${cwd}/${file}`, `${file}\n`);
+      spawnSync("git", ["-C", cwd, "add", file]);
+      spawnSync("git", ["-C", cwd, "commit", "-qm", msg]);
+    };
+    const report = (text: string): Promise<Response> => fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "x-fleet-self-token": laneToken, "content-type": "application/json" },
+      body: JSON.stringify({ status: "complete", text }) });
+    const doneLooking = async (ahead: number): Promise<boolean> => {
+      try {
+        return await until(async () => {
+          const brief = (await plogRead()).some((e) => e.cwd === cwd && e.source === "auto");
+          const { now, slot } = await laneNow();
+          return brief && !!slot?.lastOutput && slot.git?.dirty === 0 && slot.git.ahead === ahead
+            && now - slot.lastOutput >= 1500;
+        }, { timeoutMs: 30_000, stepMs: 100, what: `kept lane done-looking with ${ahead} ahead` });
+      } catch { return false; }
+    };
+    const land = (body: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${rowId}/land`, {
+      method: "POST", headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body });
+    // a land is settled when no job holds the lane (or, for the closing land, the lane is gone —
+    // the route then answers 400) and main has moved past `from`
+    const settled = async (from: string): Promise<boolean> => {
+      try {
+        return await until(async () => {
+          const r = await get(`/api/slots/${laneSlot}/merge`);
+          const m = (await r.json()) as { running?: boolean };
+          return (m.running === false || r.status === 400) && git2("rev-parse", "main") !== from;
+        }, { timeoutMs: 20_000, stepMs: 100, what: "kept land settled" });
+      } catch { return false; }
+    };
+    const rowStatus = async (): Promise<string | undefined> => ((await (await get("/api/tasks")).json()) as {
+      tasks: { id: string; status: string }[] }).tasks.find((r) => r.id === rowId)?.status;
+    const noteOf = (sha: string): { squash?: { commits?: number } } | null => {
+      try { return JSON.parse(git2("notes", "--ref=fleet/land", "show", sha)) as { squash?: { commits?: number } }; }
+      catch { return null; }
+    };
+    if (cwd) { commitIn("kept1.txt", "feat(kept): erste Tranche"); commitIn("kept2.txt", "feat(kept): zweite Tranche"); }
+    const report1 = await report("KEPT-REPORT-1");
+    const ready1 = await doneLooking(2);
+    check("kept land setup: a green-only MAIN and a live lane with two commits and a complete report",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true && promotionR?.ok === true
+        && /^[0-9a-f]{32}$/.test(mainToken) && dispatchR?.ok === true && cwd !== "" && branch !== ""
+        && report1.ok && ready1,
+      JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error,
+        promotion: promotionR?.status, dispatch: dispatchR?.status, cwd, branch, report: report1.status, ready1 }));
+    // the owner doors never keep: ⏏ lands already-merged work, where main need not be the lane HEAD
+    const ejectKeep = await post(`/api/slots/${laneSlot}/land`, { keep: true });
+    const mergeKeep = await post(`/api/slots/${laneSlot}/merge`, { keep: true });
+    check("kept land: ⏏ and ⏫ refuse keep (409) and leave the lane and main where they were",
+      ejectKeep.status === 409 && mergeKeep.status === 409 && exists(cwd)
+        && (await laneNow()).slot?.cwd === cwd && git2("rev-parse", "main") === mainBefore,
+      JSON.stringify({ eject: ejectKeep.status, merge: mergeKeep.status, eText: await ejectKeep.text() }));
+    // LAND 1 — squash + keep
+    const land1 = await land('{"squash":true,"keep":true}');
+    const started1 = (await land1.json()) as { running?: boolean; keep?: boolean; squash?: boolean };
+    const settled1 = await settled(mainBefore);
+    const s1 = git2("rev-parse", "main");
+    const after1 = (await laneNow()).slot;
+    const merge1 = (await (await get(`/api/slots/${laneSlot}/merge`)).json()) as { last?: unknown };
+    const outcome1 = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as {
+      outcomes: { branch?: string; commitCount?: number; headSha?: string | null }[];
+    }).outcomes.filter((o) => o.branch === branch).at(-1);
+    const facts1 = { land: land1.status, started1, settled1, status: await rowStatus(),
+      oneCommit: git2("rev-list", "--count", `${mainBefore}..${s1}`), laneHead: spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"]).stdout.toString().trim(),
+      worktree: exists(cwd), slotCwd: after1?.cwd, baseSha: after1?.worktree?.baseSha, branchTip: git2("rev-parse", `refs/heads/${branch}`),
+      last: merge1.last ?? null, note: noteOf(s1)?.squash ?? null, outcome: outcome1, s1 };
+    check("kept land: {squash,keep} lands ONE commit and leaves worktree, slot, branch and the row (sent) standing, branch and lane HEAD on S1, worktree.baseSha = S1, no verdict left",
+      land1.ok && started1.running === true && started1.keep === true && started1.squash === true && settled1
+        && facts1.status === "sent" && facts1.oneCommit === "1" && facts1.laneHead === s1 && facts1.branchTip === s1
+        && facts1.worktree && facts1.slotCwd === cwd && facts1.baseSha === s1 && facts1.last === null
+        && facts1.note?.commits === 2 && outcome1?.commitCount === 2 && outcome1.headSha === s1,
+      JSON.stringify(facts1));
+    // the git tick has to have seen the land before the projection reads ahead=0
+    try { await until(async () => (await laneNow()).slot?.git?.ahead === 0,
+      { timeoutMs: 10_000, stepMs: 100, what: "kept lane git tick after land 1" }); } catch { /* the phase check names it */ }
+    const execR = await fetch(`${BASE}/api/self/program-execution`, { headers: { "x-fleet-self-token": mainToken } });
+    const exec1 = (await execR.json()) as {
+      programs?: { program?: { id: string }; landbereit?: { rows: { taskId: string }[] };
+        tasks?: { rows: { id: string; phase: string; phaseBasis: string[] }[] } }[] };
+    const prog1 = exec1.programs?.find((p) => p.program?.id === programId);
+    const row1 = prog1?.tasks?.rows.find((r) => r.id === rowId);
+    // a read that found no program or no row fails as the read, with what it did see
+    check("kept land: a sent row with a landed outcome projects RUNNING (not R11b's OWNER_GATE) and is not land-ready until a fresh report",
+      row1?.phase === "RUNNING" && !row1.phaseBasis.some((b) => b.startsWith("R11b"))
+        && prog1?.landbereit?.rows.some((r) => r.taskId === rowId) === false,
+      JSON.stringify({ exec: execR.status, programs: exec1.programs?.map((p) => p.program?.id) ?? null,
+        row: row1 ?? null, landbereit: prog1?.landbereit ?? null }));
+    const again = await land('{"keep":true}');
+    check("kept land: the landed tip cannot land twice — the same row answers 409 already landed until a new commit",
+      again.status === 409 && (await again.text()).includes("already landed"), `${again.status}`);
+    // LAND 2 — keep alone, two new commits, a fresh report: no squash without the switch
+    commitIn("kept3.txt", "fix(kept): dritte Tranche");
+    commitIn("kept4.txt", "fix(kept): vierte Tranche");
+    const report2 = await report("KEPT-REPORT-2");
+    const ready2 = await doneLooking(2);
+    const land2 = await land('{"keep":true}');
+    const settled2 = await settled(s1);
+    const s2 = git2("rev-parse", "main");
+    const after2 = (await laneNow()).slot;
+    const facts2 = { report2: report2.status, ready2, land: land2.status, settled2, status: await rowStatus(),
+      count: git2("rev-list", "--count", `${s1}..${s2}`), baseSha: after2?.worktree?.baseSha,
+      slotCwd: after2?.cwd, note: noteOf(s2), s2 };
+    check("kept land: the same row lands again after a fresh complete report; without squash both commits land as they are, and the lane stays with baseSha on the new main",
+      report2.ok && ready2 && land2.ok && settled2 && facts2.status === "sent" && facts2.count === "2"
+        && facts2.baseSha === s2 && facts2.slotCwd === cwd && facts2.note !== null && facts2.note.squash === undefined,
+      JSON.stringify(facts2));
+    // LAND 3 — no switch: the land as it always was closes the lane and the row
+    commitIn("kept5.txt", "chore(kept): letzte Tranche");
+    const ready3 = await doneLooking(1);
+    const land3 = await land("");
+    const settled3 = await settled(s2);
+    let closed = false;
+    try { closed = await until(async () => (await rowStatus()) === "done" && (await laneNow()).slot?.cwd === null,
+      { timeoutMs: 20_000, stepMs: 100, what: "unkept land closes the row and the lane" }); } catch { /* checked below */ }
+    check("kept land: a land without keep closes the lane and the row exactly as before",
+      ready3 && land3.ok && settled3 && closed && git2("rev-list", "--count", `${s2}..main`) === "1" && !exists(cwd),
+      JSON.stringify({ ready3, land: land3.status, settled3, closed, status: await rowStatus() }));
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

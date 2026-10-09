@@ -107,6 +107,10 @@ export function phaseOutcomeIndex(sortedRows: readonly Record<string, unknown>[]
 // this one (`t.slot`, the N:1 edge landLane marks by). A head that is gone, or sits on another slot,
 // leaves the row on its own-id join — and so on R2, which is the honest answer when the edge cannot
 // be shown. Only terminal rows take this path; a sent row's outcome (a candidate sha) is untouched.
+// A `sent` row whose own outcome is `landed` is a lane a KEPT land left standing (bc9d0a79): no rule
+// reads that outcome for a sent row, so it projects by its live lane — RUNNING while nothing new is
+// ahead (the land's consumed report is no open claim, server.ts#newestLaneReportFor), REVIEWABLE
+// once a new commit is done-looking — and the landed head names its `candidate`.
 const WAVE_BRANCH_NOTE = /^(?:landed \((\S+)\)$|wave lane (\S+) \()/;
 
 export function phaseOutcomeFor(
@@ -137,8 +141,9 @@ export interface PhaseInput {
   idleThresholdMs: number;
   // I7 — the newest fleet-report STATUS the CURRENT lane occupant filed for this task (joined by
   // provenance.taskId AND the occupant triple, server.ts#newestLaneReportFor), or null when none
-  // is present. The claim half of R11b. null is a real answer — never filed, or fallen out of the
-  // retention tail (the view owns that caveat) — never "unknown".
+  // is present. The claim half of R11b. null is a real answer — never filed, fallen out of the
+  // retention tail (the view owns that caveat), or consumed by a land that kept the lane — never
+  // "unknown".
   report: string | null;
   // I8 — the lane's own isolated-suite preview, distilled to the three states the land door names
   // (server.ts#lanePreviewFact). NO phase rule reads it: a phase must not grade a verify debt, and

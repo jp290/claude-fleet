@@ -195,6 +195,23 @@ compare-and-swap refuses. The history ref is taken back and the verdict is
 the same question as a read. Without the switch, a land still fast-forwards whatever the branch
 holds at that moment, exactly as before.
 
+## 8. A kept land tears nothing down, and re-anchors the fork
+
+Since bc9d0a79 a MAIN can land with `{"keep":true}`. `landLane` then skips
+`removeWorktreeSafe` and `killSlot` and leaves the rows `sent`. It still writes everything else
+a land writes: the outcome row, the notes, the land watch and the merge event. Three facts change
+so that the next land of the same row is an ordinary one:
+
+- `worktree.baseSha` becomes `mainAfter`. This is the re-anchoring §5 asked for, here for the one
+  path where the lane outlives its land.
+- `mergeLast` is cleared, so no verdict stands in front of the next land.
+- The consumed report (`landCalledAt`) is no open claim, either for the phase (R11b) or for the
+  automatic close.
+
+No rebase follows the fast-forward: the lane HEAD is main. With `squash` it is S, because the
+branch moved before the fast-forward (§7). ⏏ refuses `keep`: it lands work already merged or
+pushed, where main is not necessarily the lane HEAD.
+
 ## What an automated rebase-and-land still needs
 
 Ranked by what actually blocked a human today:

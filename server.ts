@@ -3021,7 +3021,7 @@ function programPhaseInput(t: Task, programId: string, outcome: PhaseOutcomeFact
     idleThresholdMs: AUTO_REVIEW_IDLE_MS,
     // I7/I8 — both distilled here so the reducer and the view read ONE join each (the reducer's
     // pin forbids the ledger and the report array in program-phase.ts itself)
-    report: lane ? newestLaneReportFor(t.id, lane) : null,
+    report: lane ? newestLaneReportFor(t.id, lane, outcome?.disposition === "landed") : null,
     preview: lane ? lanePreviewFact(lane) : null,
     reviewPark,
   };
@@ -3064,14 +3064,21 @@ function latestReportFor(taskId: string, programId: string): {
 // slot number is not this lane's claim. Prunable like every fleet-report row — when the claim
 // falls out of the retention tail the row stops naming the contradiction (the view's retention
 // unknown line owns that at the ceiling).
-function newestLaneReportFor(taskId: string, lane: Slot): string | null {
-  let newest: FleetReport | null = null;
+// bc9d0a79 · A CLAIM A KEPT LAND ANSWERED IS NO OPEN CLAIM. After a land with `keep` the row is
+// still `sent`, its lane stands on main's new tip (ahead 0), and its newest report is the
+// `complete` that land consumed (landCalledAt). Read as open, that pair is R11b's contradiction —
+// an OWNER_GATE on a lane that did exactly what it said. So when the row's own outcome is a land
+// (`landed`, which a `sent` row only carries after a kept land) a consumed claim reads as none, and
+// the row is RUNNING; a FRESH complete over nothing new is still the contradiction.
+function newestLaneReportFor(taskId: string, lane: Slot, landed = false): string | null {
+  let newest: LandReadyReport | null = null;
   for (const r of fleetReports) {
     if (r.provenance.taskId !== taskId) continue;
     if (r.worker.slot !== lane.id || r.worker.openedAt !== lane.openedAt) continue;
     if (r.worker.branch !== (lane.worktree?.branch ?? "")) continue;
     if (!newest || r.reportedAt > newest.reportedAt) newest = r;
   }
+  if (landed && newest?.landCalledAt !== undefined) return null;
   return newest?.status ?? null;
 }
 
@@ -8711,7 +8718,13 @@ async function applyLandToNotes(repo: string, branch: string,
   if (changed) saveState();
 }
 async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
-  beforeTeardown?: () => Promise<void>): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
+  beforeTeardown?: () => Promise<void>, keep = false,
+): Promise<{ error: string; code: number } | { removed: string; branch: string } | { kept: string; branch: string }> {
+  // `keep` (bc9d0a79, set only by mergeJob from the MAIN's land call): the lane LANDS and goes on.
+  // The outcome row, the notes, the land watch and the merge event are exactly a land's; the
+  // worktree, the slot, the branch and the rows stay, `worktree.baseSha` moves to the main this land
+  // made, and the next land is the same row's. No rebase follows: the land was a fast-forward, so
+  // the lane HEAD IS main.
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
   // E4 · the last lock for every land door, ⏏ included: a shelved variant branch, or a variant of a
   // group nobody has decided yet, never lands (variantLandRefusal). The two merge routes ask the same
@@ -8728,7 +8741,8 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
   const landed = await buildLaneOutcome(s, "landed", facts);
-  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base, s.worktree.baseSha);
+  const fail = keep ? null
+    : await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree", s.worktree.base, s.worktree.baseSha);
   if (fail) return fail;
   // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
   // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
@@ -8747,18 +8761,22 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // carrying") is answerable only here, one statement earlier.
   const landedTaskIds = tasks.filter((t) => t.slot === s.id && t.status === "sent").map((t) => t.id);
   // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
-  // (which handles aborts) sees nothing left to detach
-  for (const t of tasks) {
-    if (t.slot === s.id && t.status === "sent") {
-      t.status = "done";
-      t.note = `landed (${branch})`;
+  // (which handles aborts) sees nothing left to detach. A KEPT land completes nothing: its rows
+  // stay `sent`, because the lane goes on and the self-land door lands only a `sent` row — the
+  // land that finally closes the lane is the one that marks them, and a variant group with them.
+  if (!keep) {
+    for (const t of tasks) {
+      if (t.slot === s.id && t.status === "sent") {
+        t.status = "done";
+        t.note = `landed (${branch})`;
+      }
     }
-  }
-  // E4 · a variant's land closes its GROUP: the one request the n variants worked is done now
-  for (const id of landedTaskIds) {
-    const row = tasks.find((t) => t.id === id);
-    const group = row ? variantGroupOf(row) : undefined;
-    if (group && group.status !== "done") { group.status = "done"; group.note = `landed via variant ${id} (${branch})`; }
+    // E4 · a variant's land closes its GROUP: the one request the n variants worked is done now
+    for (const id of landedTaskIds) {
+      const row = tasks.find((t) => t.id === id);
+      const group = row ? variantGroupOf(row) : undefined;
+      if (group && group.status !== "done") { group.status = "done"; group.note = `landed via variant ${id} (${branch})`; }
+    }
   }
   // N2, the note lifecycle (docs/notizen-verarbeitung-2026-09-06.md §3 N2). Two writes, and they
   // are deliberately independent of each other: a land STAMPS every pending note whose surface it
@@ -8785,6 +8803,14 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
   // tree go, so the work was already merged or already pushed — it does NOT say main moved here.
   else await mintMergeEvents(s.id, path, branch, { status: "merged", landed: true, branch,
     at: Date.now(), detail: "landed (⏏) — the lane was torn down directly, its work already merged or pushed" });
+  if (keep) {
+    // the lane's fork is now the main this land made: a later land, outcome row or teardown that
+    // read the first fork would count this land's commits a second time
+    if (facts.mainAfter && s.cwd === path && s.worktree?.branch === branch) s.worktree.baseSha = facts.mainAfter;
+    saveState();
+    void tickGit().catch(() => {});
+    return { kept: path, branch };
+  }
   await killSlot(s, "landed");
   void tickGit().catch(() => {});
   return { removed: path, branch };
@@ -17538,13 +17564,14 @@ async function guardedConfirmJob(lane: Slot, cwd: string, repo: string, main: st
 function landSwitchesFrom(raw: string): LandSwitches | { error: string } {
   if (!raw.trim()) return NO_LAND_SWITCHES;
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {squash?} or empty" }; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {squash?}" };
-  const extra = Object.keys(parsed).filter((k) => k !== "squash");
-  if (extra.length) return { error: `the land call reads squash only — [${extra.join(", ")}] is not read` };
-  const { squash } = parsed as { squash?: unknown };
+  try { parsed = JSON.parse(raw); } catch { return { error: "body must be JSON {squash?, keep?} or empty" }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "body must be an object {squash?, keep?}" };
+  const extra = Object.keys(parsed).filter((k) => k !== "squash" && k !== "keep");
+  if (extra.length) return { error: `the land call reads squash and keep only — [${extra.join(", ")}] is not read` };
+  const { squash, keep } = parsed as { squash?: unknown; keep?: unknown };
   if (squash !== undefined && typeof squash !== "boolean") return { error: "squash must be a boolean" };
-  return { squash: squash === true };
+  if (keep !== undefined && typeof keep !== "boolean") return { error: "keep must be a boolean" };
+  return { squash: squash === true, keep: keep === true };
 }
 
 // ACP · THE FOURTH CONSUMER OF THE AUTHORITY BRACKET, and the only one that moves an INTEGRATION
@@ -17819,8 +17846,8 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     if (resolvedCandidate) {
       // the confirm lands the REVIEWED candidate exactly as it was reviewed, through its own path
       // (confirmResolvedCandidate) — a switch there would be silently dropped, so it is refused
-      if (switches.squash)
-        return json({ error: "this call confirms a reviewed conflict resolution, which lands the reviewed candidate as it is — squash applies to the gated land only; call again without it" }, 409);
+      if (switches.squash || switches.keep)
+        return json({ error: "this call confirms a reviewed conflict resolution, which lands the reviewed candidate as it is and closes the lane — squash and keep apply to the gated land only; call again without them" }, 409);
       selfConfirmSpent.set(t.id, candidate);
       audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=guarded confirm=resolved-candidate`);
       const confirmJob: Promise<void> = guardedConfirmJob(lane, cwd, repo, integration, branch, actor)
@@ -17844,7 +17871,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     // spent where the run actually starts, not at the guard: a later rung that refuses must not
     // consume the one re-run a server-down verdict earns
     if (serverDownRetry) serverDownRetrySpent.set(t.id, candidate);
-    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}${switches.squash ? " squash" : ""}`);
+    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}${switches.squash ? " squash" : ""}${switches.keep ? " keep" : ""}`);
     // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
@@ -17858,7 +17885,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     // that re-ran it would be the auto-land this Program's non-goals forbid.
     return json({ running: true, task: { id: t.id, status: t.status, programId: t.programId },
       laneSlot: lane.id, candidate, sessionIdMatch, selfLand: policy.selfLand,
-      ...(switches.squash ? { squash: true } : {}),
+      ...(switches.squash ? { squash: true } : {}), ...(switches.keep ? { keep: true } : {}),
       watch: { kind: "merge", target: lane.id }, ansatzReviews: taskAnsatzReviews(t) });
   } finally {
     mergeStart.delete(lane.id);
@@ -24319,7 +24346,7 @@ if (RATE_LIMIT_RESUME_RAW && !RATE_LIMIT_RESUME_ON && !/^(0|off|false|no)$/i.tes
 // the reports THIS occupant filed — the worker arm of fleetReportsFor, without the receiver arm. A
 // lane must never be closed on the strength of a report it merely RECEIVED (it cannot receive one),
 // and slot ids recycle, so the exact triple is the join and nothing weaker.
-function laneOwnReports(s: Slot): FleetReport[] {
+function laneOwnReports(s: Slot): LandReadyReport[] {
   return fleetReports.filter((r) => r.worker.slot === s.id && r.worker.openedAt === s.openedAt
     && r.worker.sessionId === s.sessionId);
 }
@@ -24463,6 +24490,13 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
   // a close nobody can reconstruct the authority for is a close that must not happen.
   const own = laneOwnReports(s);
   if (own.length === 0) return "this lane filed no terminal report";
+  // bc9d0a79 · A KEPT LANE IS NOT SPENT. After a land with `keep` it stands on main's new tip (ahead
+  // 0), with no merge verdict (mergeJob's record clears it) and every report it filed consumed by
+  // that land — exactly the shape this close reads as finished, and the opposite of what its MAIN
+  // asked for. It waits for its next tranche; a land without `keep`, or a kill, is what ends it. A
+  // land that was called and did NOT take leaves its verdict, which the clause above refuses on.
+  if (own.every((r) => r.landCalledAt !== undefined))
+    return "every report of this lane was consumed by a land that kept it — it waits for its next tranche";
   // EVERY report, not merely the newest. Deciding one and leaving another open is a MAIN that is
   // still reading, and "never closes a lane whose report is undecided" has to mean every row the
   // lane filed — the newest-only reading would close a lane over an unanswered question.
@@ -28947,9 +28981,10 @@ interface LandProvenance {
 // a9629daa · THE ONE RECORD OF A SQUASH LAND, on the note, the intent and the outcome's facts alike.
 interface LandSquash { from: string; commits: number; ref: string }
 // The switches of the MAIN's land call (POST /api/self/tasks/:id/land, server.ts#landSwitchesFrom).
-// Both off is the land as it always was; nothing but that door ever sets one.
-interface LandSwitches { squash: boolean }
-const NO_LAND_SWITCHES: LandSwitches = { squash: false };
+// Both off is the land as it always was; nothing but that door ever sets one. `keep` (bc9d0a79):
+// the lane lands and goes on — worktree, slot, branch and row stay, the next land is the same row's.
+interface LandSwitches { squash: boolean; keep: boolean }
+const NO_LAND_SWITCHES: LandSwitches = { squash: false, keep: false };
 // The outcome of ONE push attempt. `ok:false` says the fleet's history stopped at this machine.
 //
 // W5d SPLIT THE FALSE ARM IN TWO, and the split is what lets a caller decide instead of guess.
@@ -37928,8 +37963,8 @@ function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: strin
 // THE REPORT THE LAND STANDS ON: the newest `complete` report this lane occupant filed that no land
 // has consumed yet — read before recordLandCalled stamps it. Null is an answer (no report, or only
 // consumed ones), and S then carries the lane's subject lines alone.
-function squashReportFor(s: Slot): FleetReport | null {
-  let newest: FleetReport | null = null;
+function squashReportFor(s: Slot): LandReadyReport | null {
+  let newest: LandReadyReport | null = null;
   for (const r of fleetReports) {
     if (r.status !== "complete" || r.landCalledAt !== undefined) continue;
     if (r.worker.slot !== s.id || r.worker.openedAt !== s.openedAt || r.worker.branch !== s.worktree?.branch) continue;
@@ -37957,7 +37992,7 @@ interface SquashPlan { sha: string; squash: LandSquash }
 // number is chosen. `null` = mainBefore..H holds at most one commit, and the land is byte for byte the
 // one without the switch. An unreadable series is an error, never a guess at a count.
 async function planSquashLand(s: Slot, cwd: string, root: string, branch: string, mainBefore: string,
-  gated: string, report: FleetReport | null): Promise<SquashPlan | null | { error: string }> {
+  gated: string, report: LandReadyReport | null): Promise<SquashPlan | null | { error: string }> {
   const count = await git(cwd, "rev-list", "--count", `${mainBefore}..${gated}`);
   const commits = Number(count.out);
   if (count.code !== 0 || !Number.isInteger(commits)) return { error: `the lane series ${mainBefore.slice(0, 8)}..${gated.slice(0, 8)} could not be counted` };
@@ -38026,7 +38061,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // a9629daa · the report a squash commit's body quotes, read before the line below consumes it
   const squashReport = switches.squash ? squashReportFor(s) : null;
   // …and the tip each gate below measured. A land with a switch moves the lane branch itself (the
-  // squash CAS), so it must know which commit was proven; every gate site sets it just before it runs.
+  // squash CAS) or leaves the lane working on (keep), so it must know which commit was proven; every
+  // gate site sets it just before it runs.
   let gatedTip: string | null = null;
   // the squash this land made, once: a lost fast-forward's retry re-rebases the ONE commit S, and a
   // land that moved the branch but did not take still says where the series went (tail below)
@@ -38113,7 +38149,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // finally got the machine, and on the land that took it in round two alike.
       const withWait = waitRounds ? { ...r, waitRounds } : r;
       const bound = await bindCandidate(resolverRuns.length ? { ...withWait, resolverRuns } : withWait);
-      mergeLast.set(s.id, bound);
+      // bc9d0a79 · A KEPT LAND LEAVES NO VERDICT ON ITS LANE. The lane goes on working, and a
+      // `merged` row under its slot would stand in front of its next land as if this one were still
+      // somebody's to look at (landReadyRows, the auto-close's verdict clause). The trail row below,
+      // the land note and the outcome row keep the record.
+      if (bound.landed && switches.keep && s.cwd === cwd) mergeLast.delete(s.id);
+      else mergeLast.set(s.id, bound);
       // M1 · ONE LEDGER ROW PER VERDICT, at the one place every verdict form is written. Until
       // this row existed a non-landing verdict left no durable trace at all: `MergeLast` is kept
       // only as the LAST verdict per slot in fleet.json, a land note exists only for a land, and
@@ -38516,7 +38557,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
         macWhyOf(firstVerifyPlan);
-        if (switches.squash) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+        if (switches.squash || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
         // the helper route's gate is runLandGate, which runs the local half here and hands the
         // suites to the helper; every other land runs its chain here, exactly as before
         let verify = dirtyStop ? undefined : gateDenied
@@ -38727,7 +38768,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   break;
                 }
                 squashed = squashPlan.squash;
-              } else if (switches.squash && gatedTip) {
+              } else if ((switches.squash || switches.keep) && gatedTip) {
                 const tipNow = (await git(root, "rev-parse", branch)).out;
                 if (tipNow !== gatedTip) {
                   clearLandIntent(root);
@@ -38876,7 +38917,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   candidateMainSha = landMain; // a reviewable verdict from here on describes THIS main
                   const retryPlan = await verifyPlanFor(cwd, root, landMain);
                   macWhyOf(retryPlan);
-                  if (switches.squash) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+                  if (switches.squash || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
                   if (landByHelper && retryPlan) verify = await gateRun(() => runLandGate(landCtx, landMain, retryPlan, 0));
                   else verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));
                   // a retry may NEVER turn a non-green gate into a land by rolling it again: the
@@ -38936,7 +38977,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
                       mainAfter, landedBy: actor, ...(shadow ? { cleanReviewShadow: shadow } : {}),
                       ...(squashed ? { squash: squashed } : {}) },
-                      () => mintMergeEvents(s.id, cwd, branch, landedOutcome))
+                      () => mintMergeEvents(s.id, cwd, branch, landedOutcome), switches.keep)
                   : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
                 res = "error" in land
                   ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
@@ -38992,9 +39033,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     res = { ...res, detail: `${res.detail} — the lane branch stands on its squash commit; its ${squashed.commits} commits stay under ${squashed.ref}`.slice(0, 600) };
   await record(res);
   // THE VERDICT GOES BACK TO WHOEVER ASKED. After `record`, never before: the fact is on disk
-  // first, so a death between the two loses a notification and never a verdict. A land tore the
-  // worktree down and is filtered out inside. The ACTOR is what picked the receiver — the lane on
-  // an owner ⏫, the Program-MAIN that called the self-land door on its own.
+  // first, so a death between the two loses a notification and never a verdict. A land is filtered
+  // out inside — one that tore the worktree down, and one that KEPT it (bc9d0a79), whose verdict
+  // `record` has already cleared; the MAIN learns either from its merge watch. The ACTOR is what
+  // picked the receiver — the lane on an owner ⏫, the Program-MAIN that called the self-land door
+  // on its own.
   await deliverMergeVerdict(s, cwd, branch, verdictTo);
 }
 
@@ -50424,6 +50467,10 @@ Bun.serve<WSData>({
       try {
         if (commitInflight.has(s.id)) return json({ status: "blocked", detail: "a commit is in progress on this lane — try again in a moment" });
         const body = await readJson(req);
+        // bc9d0a79 · the land switches belong to the Program-MAIN's land call; ⏫ lands and closes the
+        // lane, and says so rather than dropping a switch it would not honour
+        if (body?.keep !== undefined || body?.squash !== undefined)
+          return json({ error: "keep and squash are switches of the Program-MAIN's land call (POST /api/self/tasks/:id/land) — ⏫ lands the lane and closes it" }, 409);
         const { repo, branch } = s.worktree;
         const cwd = s.cwd;
         // DOOR 1'S ACCEPTANCE PRECONDITION (rejectedReportForLand, 2026-09-07). Asked HERE — after
@@ -52253,6 +52300,12 @@ Bun.serve<WSData>({
         return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned, ...(s.permissions ? { permissions: s.permissions } : {}) });
       }
       if (slotMatch[2] === "land") {
+        // bc9d0a79 · ⏏ REFUSES `keep`. It lands work that is already merged or pushed, where main is
+        // not necessarily the lane HEAD — a lane kept there would go on from a base it never landed
+        // on. So ⏏ always closes, and a switch asked of it is refused rather than dropped.
+        const asked = await readJson(req);
+        if (asked?.keep !== undefined || asked?.squash !== undefined)
+          return json({ error: "⏏ lands work already merged or pushed and always closes the lane — main need not be the lane HEAD here, so keep and squash are switches of the Program-MAIN's land call only" }, 409);
         const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerLandActor(req, s) });
         if ("error" in land) return json({ error: land.error }, land.code);
         return json({ ok: true, ...land });

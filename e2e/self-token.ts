@@ -1841,11 +1841,22 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     .sort((a, b) => b.id - a.id).slice(0, 4).map((x) => x.id);
   const PANE_TOKEN_WAIT_MS = 30_000;
   const OPENED_AT_WAIT_MS = 5_000;
+  // THE TOKEN PROBE'S ROW MUST NOT END ON THE PANE'S LAST COLUMN. paneEnv reads `capture-pane -J`; a
+  // typed row that fills the width exactly (or a multiple of it) is flagged wrapped, so -J glues the
+  // printf's answer onto the command row and the line-anchored marker never matches: 30 s, then
+  // `timeout`, although the shell answered. Every diagnosed red of the setup check is that row —
+  // `helper-user@workhorse:<ROOT>/owner-program-repo$ printf 'envprobe-fleet-self-token-22=[%s]\n'
+  // "$FLEET_SELF_TOKEN"` at 200 columns on the fixed 200-column pane (6-digit instance pid; slots 15/14
+  // with a 3-digit probe number and a 7-digit pid). So the width follows the cwd: a prompt prints the
+  // cwd at most once, the probe line is under 80 columns, and the rest of a prompt stays far below the
+  // slack — the row then fits one physical line with columns to spare, whatever the host's PS1.
+  const PANE_ROW_SLACK = 512;
   const setupDetails: Record<string, unknown>[] = [];
   const openFree = async (cwd: string, label: string): Promise<{ slot: number; tok: string; openedAt: number }> => {
     const slot = setupSlots.shift() ?? 0;
+    const paneCols = cwd.length + PANE_ROW_SLACK;
     const detail: Record<string, unknown> = { label, slot, freeSlot: "missing", openResponse: "not-attempted",
-      paneToken: "not-probed", openedAt: "not-observed" };
+      paneCols, paneToken: "not-probed", openedAt: "not-observed" };
     setupDetails.push(detail);
     if (!slot) return { slot: 0, tok: "", openedAt: 0 };
     const killed = await post(`/api/slots/${slot}/kill`, {});
@@ -1857,8 +1868,9 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     const body = await r.json().catch(() => null) as { error?: string; reason?: string } | null;
     detail.openResponse = { status: r.status, error: body?.error ?? (body === null ? "invalid-json" : undefined), reason: body?.reason };
     if (!r.ok) return { slot: 0, tok: "", openedAt: 0 };
-    // Recycled slots retain their dimensions. A previous tiny pane must not clip the marked reply.
-    await tmuxOut("resize-window", "-t", `=s${slot}:`, "-x", "200", "-y", "50");
+    // Recycled slots retain their dimensions. A previous tiny pane must not clip the marked reply,
+    // and the probe row must stay narrower than the pane (PANE_ROW_SLACK above).
+    await tmuxOut("resize-window", "-t", `=s${slot}:`, "-x", String(paneCols), "-y", "50");
     const token = await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN", PANE_TOKEN_WAIT_MS);
     detail.paneToken = token === null ? "timeout" : token === "" ? "empty" : /^[0-9a-f]{32}$/.test(token) ? "ready" : "invalid";
     detail.paneTokenWaitMs = PANE_TOKEN_WAIT_MS;

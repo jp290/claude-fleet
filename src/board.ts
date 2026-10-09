@@ -2877,10 +2877,6 @@ const RANKE_CSS = `
   #board .zd.run.free .dv { display: inline-flex; align-items: center; gap: 3px; margin: 0; color: var(--chat-prose); }
   #board .zd.run.free .dv .q { color: var(--chat-faint); }
   #board .zd.run.free .who { display: inline-flex; align-items: baseline; gap: 4px; margin: 0; font-weight: 400; color: var(--chat-mute); }
-  /* WHERE YOU ARE: the mark of the server this page comes from (#testInstanceStandRows) */
-  #board .zr.mach[data-hier] > .zs::before { content: attr(data-hier); display: inline-block;
-    padding: 0 6px; border: 1px solid var(--chat-ink); border-radius: var(--r1); color: var(--chat-ink); font-size: 10.5px; line-height: 15px; }
-  #board .zr.mach[data-hier] > .zs::before { content: "hier"; margin-right: 8px; }
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     #board .rk-btn.live-btn .lx { display: none; }
     #board .zd.live-new .live-in { min-height: 40px; font-size: 16px; }
@@ -3579,6 +3575,12 @@ function machinesLegend(): HTMLElement {
 // instance the green square its lane line draws, the Live-Server its glyph. The mark is drawn by CSS
 // from data-hier, so the row's words stay what they say.
 const HERE_MARK = "hier";
+// ONE WORD WITH ITS STATE (owner 2026-10-09: „[Zitat entfernt]“
+// ): the mark is said in the state's own chip — „[Zitat entfernt]“
+function markHere(row: HTMLElement): void {
+  row.dataset.hier = HERE_MARK;
+  row.querySelector(":scope > .zs")?.append(` · ${HERE_MARK}`);
+}
 function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   // EVERY MACHINE ROW BUILT ALIKE (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
   // 
@@ -3594,7 +3596,7 @@ function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
     "Hier: diese Seite kommt von dieser Testinstanz, nicht vom Live-Server");
   const [row] = rows;
   row.dataset.glyph = "testinstanz";
-  row.dataset.hier = HERE_MARK;
+  markHere(row);
   row.querySelector(":scope > .fx")?.replaceChildren(el("span", "sq up"));
   return rows;
 }
@@ -3908,7 +3910,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest");
     // the page comes from the Live-Server: its row carries the mark (#testInstanceStandRows)
     if (lead) {
-      rows[0].dataset.hier = HERE_MARK;
+      markHere(rows[0]);
       rows[0].title = `Hier: diese Seite kommt vom Live-Server — ${rows[0].title}`;
     }
     here.append(...rows);
@@ -4389,6 +4391,9 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
 // the target's own row and ends in its head — dashed while the lane waits to land, solid once it has
 // landed; the diamond of a running check sits ON it (.lgate). The focused lane's way back is ink.
 // Drawn after the column is in the document, since it needs the rows' positions.
+// how far right of the row's last mark the diamond's centre stands: two dashes of the way back
+// (3 + 2.5 each, path.back.wait) and the diamond's own half
+const GATE_DASHES = 16;
 export function drawRankeLines(root: HTMLElement): void {
   for (const rk of root.querySelectorAll<HTMLElement>(".rk")) {
     rk.querySelector(":scope > svg")?.remove();
@@ -4425,13 +4430,14 @@ export function drawRankeLines(root: HTMLElement): void {
       // drawn FROM the rail, so a dashed way back begins with a dash where it joins (no gap at the rail)
       const x0 = Math.round(end(row)) + 4;
       paths.push({ cls: `back ${row.dataset.land === "wait" ? "wait" : "land"}${own ? " ink" : ""}`, d: `M${rx} ${b[1]}H${x0}`, id: row.dataset.id });
-      // the diamond sits ON that line right beside the row's last mark (the test instance's square,
-      // the flag), its centre on the line's own coordinates — placed from the same numbers, never
-      // guessed by CSS, and never on the rail
+      // the diamond sits ON that line a few dashes after the row's last mark (the test instance's
+      // square, the flag — owner 2026-10-09: „[Zitat entfernt]“
+      // ), its centre on the line's own coordinates —
+      // placed from the same numbers, never guessed by CSS, and never on the rail
       const gb = row.querySelector<HTMLElement>(":scope > .lgate");
       if (gb) {
         const rb = row.getBoundingClientRect();
-        const gx = Math.min(x0 + 5, rx - 7);
+        const gx = Math.min(x0 + GATE_DASHES, rx - 7);
         gb.style.left = `${gx - (rb.left - tb.left)}px`;
         // the note opens leftwards from the diamond and never past the column's left edge
         gb.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
@@ -4466,17 +4472,23 @@ export function drawRankeLines(root: HTMLElement): void {
     // 
     // 
     // kürzer werden"): every row of the Ranke carries the bar, the focused and the opened one in the
-    // surface, the hovered one in the hover tone; it ends with the row's words and its git stand, so the
-    // test instance's square, the flag and the diamond stand beside it on the column's ground
-    const words = (row: Element): number => Math.max(...[...row.querySelectorAll(":scope > .nm, :scope > .rt, :scope > .lr > .gs")]
-      .map((e) => e.getBoundingClientRect().right - tb.left), 0);
+    // surface, the hovered one in the hover tone. IT REACHES THE ROW'S FIRST MARK (owner, the same day:
+    // „[Zitat entfernt]“): it ends at the
+    // test instance's square or the flag, the git stand (↑n) inside; a row without a mark ends where its
+    // way back begins
+    const firstMark = (row: Element): number | null => {
+      const xs = [...row.querySelectorAll(":scope > .ti, :scope > .lr > :not(.gs)")].filter((e) => e.getClientRects().length)
+        .map((e) => e.getBoundingClientRect().left - tb.left);
+      return xs.length ? Math.min(...xs) : null;
+    };
     for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.zw, :scope > .zr.base")) {
       const p = mid(row);
       if (!p) continue;
       const off = row.getBoundingClientRect().left - tb.left;
+      const mark = firstMark(row);
       row.style.setProperty("--zb-l", `${p[0] - off}px`);
-      row.style.setProperty("--zb-w", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);
-      row.dataset.bar = "words";
+      row.style.setProperty("--zb-w", `${Math.max(0, (mark !== null ? Math.round(mark) - 2 : Math.round(end(row)) + 4) - p[0])}px`);
+      row.dataset.bar = mark !== null ? "mark" : "end";
     }
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("aria-hidden", "true");

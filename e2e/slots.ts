@@ -12034,11 +12034,13 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !placedRuns.has(b.key)).sort(` },
   { name: "a run line names no session", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "    if (s?.cwd) who.append(", with: "    if (false) who.append(" },
-  { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from carries the mark",
-    needle: "      rows[0].dataset.hier = HERE_MARK;", with: "" },
+  { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from says so in its state",
+    needle: "      markHere(rows[0]);", with: "" },
   // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note
-  { name: "the diamond sits midway to the rail", state: "land", claim: "every diamond stands on its way back right beside the row's last mark",
-    needle: "        const gx = Math.min(x0 + 5, rx - 7);", with: "        const gx = (x0 + rx) / 2;" },
+  { name: "the diamond sits midway to the rail", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
+    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - 7);", with: "        const gx = (x0 + rx) / 2;" },
+  { name: "the diamond sits on the square again", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
+    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - 7);", with: "        const gx = Math.min(x0 + 5, rx - 7);" },
   { name: "a run that ended leaves no colour", state: "viele", claim: "a run that just ended colours its lane's diamond",
     needle: `  return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;`, with: "  return looks.length ? null : null;" },
   { name: "the note never shows", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
@@ -12051,15 +12053,17 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
   { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
-  { name: "the bar runs on over the square", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
-    needle: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);", with: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(end(row)) + 4 - p[0])}px`);" },
-  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point to the end of its words",
-    needle: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, Math.round(words(row)) + 4 - p[0])}px`);", with: "      row.style.setProperty(\"--zb-w\", `${Math.max(0, (rails.get(row.dataset.id ?? \"\")?.x ?? Math.round(words(row)) + 4) - p[0])}px`);" },
-  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+  { name: "the bar runs on over the square", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
+    needle: "      const mark = firstMark(row);", with: "      const mark = null as number | null;" },
+  { name: "the bar stops short of the square again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
+    needle: "(mark !== null ? Math.round(mark) - 2 : Math.round(end(row)) + 4)", with: "(mark !== null ? Math.round(mark) - 14 : Math.round(end(row)) + 4)" },
+  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point up to its test instance's square",
+    needle: "      const mark = firstMark(row);", with: "      const mark = rails.get(row.dataset.id ?? \"\")?.x ?? firstMark(row);" },
+  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
     needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
-  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
     needle: "  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }", with: "" },
-  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point to the end of its words",
+  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "" },
   { name: "the hovered row paints its whole ground again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "  #board .ranke .rk > .zr[data-bar]:not(:hover) { background: none; }" },
@@ -12466,7 +12470,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           barBox: r.dataset.bar ? (() => { const s = getComputedStyle(r, '::before'), b = r.getBoundingClientRect(); return { l: b.left + parseFloat(s.left), r: b.left + parseFloat(s.left) + parseFloat(s.width), bg: s.backgroundColor }; })() : null,
           ndC: (() => { const n = r.querySelector(':scope > .nd'); if (!n) return null; const b = n.getBoundingClientRect(); return b.left + b.width / 2; })(),
           wordsR: Math.max(...[...r.querySelectorAll(':scope > .nm, :scope > .rt, :scope > .lr > .gs')].map((e) => e.getBoundingClientRect().right), 0),
-          marksL: Math.min(...[...r.querySelectorAll(':scope > .ti, :scope > .lr > .ti, :scope > .lr > .lflag, :scope > .lgate')].filter((e) => e.getClientRects().length)
+          marksL: Math.min(...[...r.querySelectorAll(':scope > .ti, :scope > .lr > :not(.gs)')].filter((e) => e.getClientRects().length)
             .map((e) => e.getBoundingClientRect().left), Infinity) }; });
       const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent),
         points: [...z.querySelectorAll('.way i')].map((i) => ({ key: i.dataset.key ?? null, cls: i.className })), way: z.querySelector('.way')?.title ?? '', wayAria: z.querySelector('.way')?.getAttribute('aria-label') ?? '' }));
@@ -12494,7 +12498,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         heads: [...sec.querySelectorAll('.zr > .zhead')].map((h) => ({ row: h.parentElement.dataset.id ?? null, next: h.classList.contains('next'),
           x: (() => { const b = h.getBoundingClientRect(); return b.left + b.width / 2; })() })),
         hier: [...sec.querySelectorAll('[data-hier]')].map((e) => ({ cls: String(e.className), text: e.innerText.replace(/\\s+/g, ' ').trim(),
-          mark: e.classList.contains('mach') ? getComputedStyle(e.querySelector(':scope > .zs'), '::before').content : getComputedStyle(e, '::after').content })),
+          chip: e.querySelector(':scope > .zs')?.textContent ?? null })),
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'), machineCards: body.querySelectorAll('.testinstanzmachine').length, cut,
         live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'), faint: probe('var(--chat-faint)'), ink: probe('var(--chat-ink)'),
@@ -12507,14 +12511,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
       machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null;
       bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null;
-      // the right edge of the row's words and git stand; the left edge of its marks (square, flag, diamond), null without one
+      // the right edge of the row's words and git stand; the left edge of its first mark (square, flag), null without one
       wordsR: number; marksL: number | null };
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
       backs: { cls: string | null; for: string | null; y: number; x0: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
         gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
-      heads: { row: string | null; next: boolean; x: number }[]; hier: { cls: string; text: string; mark: string }[];
+      heads: { row: string | null; next: boolean; x: number }[]; hier: { cls: string; text: string; chip: string | null }[];
       secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
@@ -12640,19 +12644,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             return b.length === 1 && (b[0].cls ?? "").split(" ").includes(landedIds.has(x.id ?? "") ? "land" : "wait"); })
           && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
         // THE BAR OF A ROW (owner 2026-10-09: „[Zitat entfernt]“
-        // ; the same day, shorter: "dass das Testinstanz-öffnen-Quadrat noch angezeigt wird …
-        // vielleicht sollte der Balken dahingegen kürzer werden"): the row's ground runs from its own point
-        // to the end of its words and its git stand — its square, flag and diamond stand beside it — and the
-        // row itself paints no ground
+        // ; the same day, shorter: „[Zitat entfernt]“, and "bei
+        // anderen Slots schließt die graue Hinterlegung nicht an das View-Element … an"): the row's ground
+        // runs from its own point over its words and git stand up to its first mark (the square, the flag),
+        // 2 px short of it — a row without a mark to where its way back begins — and paints no ground itself
         const barClaim = (rr: Read, fr: Row | undefined, kind: string) => {
           facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, wordsR: fr.wordsR, marksL: fr.marksL, ground: fr.ground, fade: fr.fade } };
-          return !!fr?.barBox && fr.bar === "words" && fr.ndC !== null
-            && Math.abs(fr.barBox.l - fr.ndC) <= 1 && fr.barBox.r >= fr.wordsR && fr.barBox.r <= fr.wordsR + 6
-            && (fr.marksL === null || fr.marksL >= fr.barBox.r - 0.5) && fr.barBox.bg !== "rgba(0, 0, 0, 0)"
-            && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
+          return !!fr?.barBox && fr.ndC !== null && Math.abs(fr.barBox.l - fr.ndC) <= 1 && fr.barBox.r >= fr.wordsR
+            && (fr.marksL !== null ? fr.bar === "mark" && Math.abs(fr.barBox.r - (fr.marksL - 2)) <= 1 : fr.bar === "end")
+            && fr.barBox.bg !== "rgba(0, 0, 0, 0)" && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
         };
         if (st === "lane") {
-          claims[`${tag}the focused row's bar runs from its point to the end of its words and git stand — 3A's square, flag and diamond beside it — and the row paints no ground of its own`] =
+          claims[`${tag}the focused row's bar runs from its point over its words and git stand up to its first mark — 3A's — and the row paints no ground of its own`] =
             barClaim(r, lane(r, 9), "focus");
           // UNDER THE POINTER THE SAME BAR (owner 2026-10-09: „[Zitat entfernt]“
           // ): 3B hovered carries the bar
@@ -12666,15 +12669,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
             await settle(100);
             const before = lane(r, 10)?.barBox?.bg ?? null;
-            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point to the end of its words, and no ground across the row`] =
+            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point up to its first mark, and no ground across the row`] =
               !!c && barClaim(rh, lane(rh, 10), "hover") && before === "rgba(0, 0, 0, 0)" && lane(rh, 10)?.barBox?.bg !== lane(rh, 9)?.barBox?.bg;
           }
         }
-        // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“): the server this page comes
-        // from carries the mark — here the Live row of this machine, and nothing else
+        // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“; the same day: „[Zitat entfernt]“
+        // ): the server this page comes from says so in its state chip — here the Live row
+        // of this machine, and nothing else
         facts.hier = r.hier;
-        claims[`${tag}the server this page comes from carries the mark "hier" — the Live row of this machine, and only it`] =
-          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("mach") && r.hier[0].mark === '"hier"' && r.hier[0].text.startsWith("Mac");
+        claims[`${tag}the server this page comes from says so in its state — "${st === "alarm" ? "Neustart fällig" : "läuft"} · hier" at the Live row of this machine, and only there`] =
+          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("mach") && r.hier[0].text.startsWith("Mac")
+          && r.hier[0].chip === `${st === "alarm" ? "Neustart fällig" : "läuft"} · hier`;
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
         claims[`${tag}nothing in the top of Info is cut — no text of the alarm, the Arbeitsorte or the session head runs out under an ellipsis`] = r.cut.length === 0;
@@ -12699,8 +12704,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}a machine row names its kind and roles once: Mac "dieser Rechner", workhorse "Helfer · verlinkt", mainMacbook "Helfer", Zweite Fleet "Fleet-Instanz"`] =
           mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer · verlinkt"
           && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "Fleet-Instanz";
-        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"}", workhorse "läuft" like every machine that runs, Zweite Fleet "verlinkt", mainMacbook "still"`] =
-          mach("Mac")?.chip === (st === "alarm" ? "Neustart fällig" : "läuft") && mach("Mac")?.tone === (st === "alarm" ? "wait" : "live")
+        claims[`${tag}each machine's state is a dot and a word at the row's end: Mac "${st === "alarm" ? "Neustart fällig" : "läuft"} · hier", workhorse "läuft" like every machine that runs, Zweite Fleet "verlinkt", mainMacbook "still"`] =
+          mach("Mac")?.chip === `${st === "alarm" ? "Neustart fällig" : "läuft"} · hier` && mach("Mac")?.tone === (st === "alarm" ? "wait" : "live")
           && mach("workhorse")?.chip === "läuft" && mach("workhorse")?.tone === "live"
           && mach("Zweite Fleet")?.chip === "verlinkt" && mach("mainMacbook")?.chip === "still";
         // SENTENCES FOR PEOPLE (owner 2026-10-08: „[Zitat entfernt]“
@@ -12782,12 +12787,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && (st === "land" ? /^Landprüfung läuft \d+:\d\d von ~4:10 · .+ · auf Mac — /.test(gateOf(9)?.aria ?? "") : /^Eine Prüfung läuft/.test(gateOf(9)?.aria ?? ""))
             && zeitRow.flag?.look === "ok" && zeitRow.flag.color === r.live
             && (st === "land" ? gateOf(10)?.gate === "queue" && onLine(10, zeit) && /^Vorschau wartet/.test(gateOf(10)?.aria ?? "") : !gateOf(10));
-          // BESIDE THE ROW'S LAST MARK (owner 2026-10-09: „[Zitat entfernt]“
-          // ): its centre 9 px right of the row's end (#drawRankeLines:
-          // the line starts 4 px past it, the centre 5 px on), never midway to the rail — measured 2026-10-09:
-          // 9 px at 1200 and 390, the midway mutant 14 and 11
-          claims[`${tag}every diamond stands on its way back right beside the row's last mark — its centre 9 px (±1) past the row's end`] =
-            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && g.gap >= 8 && g.gap <= 10);
+          // A FEW DASHES AFTER THE ROW'S LAST MARK (owner 2026-10-09: „[Zitat entfernt]“
+          // ; the same day: "dass der grüne
+          // Testinstanz-Button … mit der Raute … verbunden wird über ein paar gestrichelte Linien"): its centre
+          // 18 px right of the row's end at 1200 (#drawRankeLines, GATE_DASHES), and where the rail comes
+          // first 7 px before it — measured 2026-10-09: 18 px at 1200, 11 px at 390; the midway mutant 14 at 1200
+          claims[`${tag}every diamond stands on its way back a few dashes after the row's last mark — its centre ${phone ? "11" : "18"} px (±1) past the row's end`] =
+            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && Math.abs(g.gap - (phone ? 11 : 18)) <= 1);
           claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
             && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
         }
@@ -13603,16 +13609,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         }
         if (st === "main" && !phone) {
           // …and a stem's bar is as short: with one lane landing straight in main, the focused main's bar
-          // ends with its words, short of the head its lanes come back to on the rail
+          // ends at its square, short of the head its lanes come back to on the rail
           fx.mainLane = true;
           await navigate("http://fleet.fixture/");
-          const barred = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => x.dataset.bar === 'words' && x.classList.contains('base'))`, 8000);
+          const barred = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => !!x.dataset.bar && x.classList.contains('base'))`, 8000);
           await settle(200);
           const rm = await read();
           fx.mainLane = false;
           const head = rm.heads.find((h) => h.row === `${REPO}#main`)?.x;
           const mrow = byId(rm, `${REPO}#main`);
-          claims[`${tag}the focused main's bar runs from its point to the end of its words, short of its head on the rail, and the row paints no ground of its own`] =
+          claims[`${tag}the focused main's bar runs from its point up to its test instance's square, short of its head on the rail, and the row paints no ground of its own`] =
             barred && barClaim(rm, mrow, "main") && head !== undefined && !!mrow?.barBox && mrow.barBox.r < head - 4;
         }
         if (st === "lane" && !phone) {
@@ -13635,8 +13641,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               chipR: z ? z.getBoundingClientRect().right : 0, fcL: f ? f.getBoundingClientRect().left : 0 }; })()`);
           fx.ti = false;
           facts.tiDevices = { shown: tiShown, groups, tiRow };
-          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "hier", "läuft" as dot and word and the chevron at the row's end`] =
-            !!tiRow && tiRow.chip === "läuft" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
+          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "läuft · hier" as dot and words and the chevron at the row's end`] =
+            !!tiRow && tiRow.chip === "läuft · hier" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
           claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz [hier]", in this machine's group, and nowhere as a machine of its own`] =
             tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz [hier]"])
             && groups.slice(1).every((g) => !g.some((x) => /^(live|Live-Server)$/.test(x)));

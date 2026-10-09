@@ -233,8 +233,13 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   `post-land-audit-queue.json` (ein Eintrag je Repo, ein `main`) wird beim Laden je Cover dem Zweig
   zugeordnet, der es enthält; ein Cover, das kein bekannter Tip enthält, wird mit Logzeile
   (`post-land audit queue: dropped …`) benannt verworfen (`e2e`: `fleet-e2e-postland-audit.ts` Sektion R).
-  **`FLEET_AUDIT_SHARDS=n` (2..8) teilt einen Helfer-Audit in n parallele Jobs** (`server.ts#AuditShardRun`):
-  ein offerierbarer Eintrag erscheint als n Audit-Jobs mit `shard:"k/n"`, jeder läuft auf dem Daemon mit
+  **`FLEET_AUDIT_SHARDS=n` (2..8) schaltet die Teilung eines Helfer-Audits ein** (`server.ts#AuditShardRun`).
+  Die Zahl der Shards n folgt seit 2026-10-09 den FREIEN Suite-Plätzen (`server.ts#auditShardCount`): je
+  frischem Gerät mit `audit-shard` `maxParallelSuites` minus dem größeren aus seinem `running` und den
+  Claims, die der Server für es hält, ohne ein Gerät im Update-Drain, summiert; davon einer für eine
+  Lane-Vorschau zurück, also n = frei − 1, höchstens 8; unter drei freien Plätzen gilt `FLEET_AUDIT_SHARDS`
+  selbst. n wird bei jeder Job-Liste neu gelesen und beim ersten Claim eines Laufs eingefroren.
+  Ein offerierbarer Eintrag erscheint als n Audit-Jobs mit `shard:"k/n"`, jeder läuft auf dem Daemon mit
   `FLEET_E2E_SHARD=k/n` (`helper-daemon/daemon.ts#shardEnv`) und belegt dort einen Suite-Slot. Der ERSTE
   Shard-Claim baut das eine Bundle und friert Covers und Sha ein; alle n Shards messen damit denselben Baum.
   Die Zeile entsteht erst, wenn jeder Shard terminal ist (`server.ts#writeShardedAuditRow`, dieselben Senken

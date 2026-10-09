@@ -174,8 +174,8 @@
   #instwrap { display: none; position: relative; flex: none; }
   #instwrap.on { display: flex; }
   #instbtn { display: flex; align-items: center; gap: 4px; max-width: 120px; overflow: hidden;
-    padding: 2px 6px; border-radius: 6px; border: 1px solid var(--chat-edge); background: var(--chat-raised);
-    color: var(--chat-prose); font-size: var(--chat-ui-fs); font-family: var(--chat-mono); line-height: 1.5; }
+    padding: 2px 4px; border-radius: 6px; border: 1px solid var(--chat-edge); background: var(--chat-raised);
+    color: var(--chat-prose); font-size: var(--chat-ui-fs); font-family: var(--chat-sans); line-height: 1.5; }
   #instbtn.pick { cursor: pointer; }
   #instbtn.pick:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
   #instmenu { display: none; position: absolute; z-index: 40; top: calc(100% + 4px); right: 0;
@@ -200,14 +200,20 @@
   #instbtn .devname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #instbtn .devname:empty { display: none; }
   #instbtn .devcount { flex: none; color: var(--chat-faint); font-variant-numeric: tabular-nums; }
-  /* the chip's devices as Geräte draws them (G0.2) */
-  #instbtn .devsigns { display: flex; align-items: center; gap: 3px; flex: none; }
-  #instbtn .devsign { display: grid; place-items: center; color: var(--chat-faint); }
-  #instbtn .devsign .ico { width: 13px; height: 13px; }
+  /* the chip's devices as Geräte draws them (G0.2): the glyph inks of #board .zr.mach > .fx, one
+     for one — läuft green, Neustart fällig amber, verlinkt ink, nicht angemeldet mute, still faint —
+     then "answering/shown" (.devn) */
+  #instbtn .devsigns { display: flex; align-items: center; gap: 2px; flex: none; }
+  #instbtn .devsign { display: grid; place-items: center; color: var(--chat-mute); }
+  #instbtn .devsign .ico { width: 12px; height: 12px; }
   #instbtn .devsign[data-tone="live"] { color: var(--q-live); }
   #instbtn .devsign[data-tone="wait"] { color: var(--q-wait); }
   #instbtn .devsign[data-tone="link"] { color: var(--chat-ink); }
-  #instbtn .devsign[data-tone="off"] { color: var(--q-wait); opacity: .7; }
+  #instbtn .devsign[data-tone="still"] { color: var(--chat-faint); }
+  /* 2px, not the chip's 4: the head's 250px hold "Claude Fleet" whole beside four devices and the count */
+  #instbtn .devn { margin-left: -2px; font-weight: 400; }
+  #instbtn .devn .devon { color: var(--chat-ink); }
+  #instbtn .devn .devof { color: var(--chat-faint); }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px; }
   /* Layout choices use the tab row; the function controls keep their two-row grouping. */
   #sidetools { --queue-scale: 1.48; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
@@ -305,7 +311,11 @@
   .slot .laneref { font-size: var(--chat-ui-fs); padding: 1px 5px; }
   .slot.current .n, .slot.current .laneref {
     background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.16); }
-  .slot.empty .n { color: var(--chat-faint); background: var(--chat-surface); }
+  /* THE ROLE AS THE CHIP'S SHAPE (client.ts#slotRow; the name carries no role word any more):
+     round for the Orchestratorin, an ink edge for a Program-MAIN, a lane keeps its "2A" chip. No
+     colour — the hue stays the project's (G0.2). */
+  .slot .n[data-role="orchestrator"] { border-radius: var(--r2); }
+  .slot .n[data-role="program-main"] { box-shadow: inset 0 0 0 1px var(--chat-mute); }
   /* A FREE PLACE IS ONE LINE AND IT IS FLATTER THAN A SESSION. It carries one fact (its number)
      and an invitation; a session carries eight. At the old geometry it cost 45px against a
      session's 61 — eleven of them ate 495 of the bar's 775px, and the axis ran off the bottom of a
@@ -313,7 +323,12 @@
      must keep standing on one left edge); only its height gives way, and only where there is no
      session for a mark to stand for. */
   .slot.empty { padding: 5px 8px 5px 6px; }
-  .slot.empty .mark { height: 16px; }
+  /* the free places are ONE row (client.ts#freeRow): a plus in the marks' column, then the words */
+  .slot .freeplus { flex: none; width: var(--mark-size, 26px); height: 20px; display: grid; place-items: center;
+    color: var(--chat-mute); }
+  .slot .freeplus .ico { width: 14px; height: 14px; }
+  .slot.empty .lbl { color: var(--chat-mute); }
+  .slot.empty:hover .lbl, .slot.empty:hover .freeplus { color: var(--chat-ink); }
   /* THE THREE SUCCESSION FASSUNGEN — scaffolding behind #band=a|b|c (src/client.ts, BAND_VARIANT).
      No new colour, no new edge, no new family: .succ is the same mono-on-faint the other readings of
      line 2 use, .succhip is the address chip's own recipe at the lane size, and the band's rule is
@@ -356,7 +371,9 @@
   .slot .lc.editing { background: var(--amber); }
   .slot .lc.ready { box-shadow: inset 0 0 0 1.5px var(--q-live); }
   @media (prefers-reduced-motion: reduce) { .slot .bandtrack.snap, .slot .bandtrack.snap.mouse { transition: none; } }
-  .slot .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* THE NAME IS READ WHOLE: it breaks between words onto a second line rather than ending in "…"
+     (Leisten-Karte 2026-10-08) — the role word and the model that made it long are gone (rowName) */
+  .slot .lbl { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.25;
     letter-spacing: -0.005em; }
   .slot.current .lbl { color: var(--chat-ink); }
   .slot .lbl.dim { color: var(--chat-faint); }
@@ -1063,7 +1080,7 @@
   .slot .ctxfill { flex: none; display: inline-flex; align-items: center; height: 18px; line-height: 1;
     font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
     color: var(--chat-mute); font-variant-numeric: tabular-nums; }
-  .slot .ctxfill.unknown { color: var(--chat-faint); }
+  .slot .ctxfill.unknown, .slot .ctxfill.ago { color: var(--chat-faint); }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES
      here are the board's own and unchanged by the naming, so the two pages share a vocabulary, not
      a look. Only the twelve most-used tones are named; one-off shades stay literal on purpose, so a
@@ -3779,6 +3796,11 @@
      no width to the box and cannot shift its neighbours */
   .slot .quicklane { color: var(--chat-faint); box-shadow: inset 0 0 0 1px var(--chat-edge); }
   .slot .quicklane:hover { color: var(--chat-ink); background: var(--chat-raised); }
+  /* ⎇+ ONLY ON THE FOCUSED ROW (Leisten-Karte 2026-10-08: twelve identical chips were noise, and
+     their width was the names'). Not under the hand either: shown on hover it either took the name's
+     width (the name jumped onto a second line) or sat in the hover strip over the ⎇N fold chip.
+     One rule on purpose — drop it and ⎇+ stands on every row again; Info › Projekte keeps its + */
+  .slot:not(.current) .r1 .quicklane { display: none; }
 
   #gate .panel { width: 380px; }
   #gate p { font-size: 11px; color: var(--dim); line-height: 1.5; }

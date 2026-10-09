@@ -280,9 +280,20 @@ export async function run(): Promise<void> {
         && bandBalls.find((b) => b.slot === 19)?.name === "4A"
         && bandBalls.find((b) => b.slot === 17)?.name === "Slot 17",
       meterClientError || bandBalls.map((b) => `${b.slot}:${b.name}`).join(" "));
+    // ONE LINE PER RUN since ab6c00d5 (owner 2026-10-08): the row's words are src/board.ts#runSentence,
+    // whose kind word is meterKind(...).label; the hover keeps meterKind(...).title. Counted over code
+    // with whole-line comments stripped, so a commented-out anchor cannot satisfy it.
+    const meterCode = meterClient.replace(/^[ \t]*\/\/.*$/gm, "");
+    const sentenceCode = /^function runSentence\(b: MeterBall\): string \{[\s\S]*?^\}/m.exec(meterCode)?.[0] ?? "";
+    const meterWords = {
+      sentenceLabel: /const kind = [^\n]*meterKind\(b\.kind\)\.label;/.test(sentenceCode)
+        && /return `\$\{kind\} /.test(sentenceCode),
+      rowUsesSentence: /el\("span", "w", runSentence\(b\)\)/.test(meterCode),
+      hoverTitle: /line\.title = `[^`\n]*\$\{meterKind\(b\.kind\)\.title\}`/.test(meterCode),
+    };
     check("(LS.meter) the right tab uses the German row words and explains them on hover",
-      /meterLine\(b, serverClock\(\), true\)/.test(meterClient)
-        && /meterKind\(b\.kind\)\.title/.test(meterClient), meterClientError || "suite meter renderer");
+      !meterClientError && Object.values(meterWords).every(Boolean),
+      meterClientError || `dead: ${Object.entries(meterWords).filter(([, ok]) => !ok).map(([k]) => k).join(",") || "-"}`);
     check("(LS.meter) an unlabelled lane is named by its branch's four hex, the part lanes do NOT share",
       laneTail("fleet/260918203940-4198") === "4198"
       && laneTail("fleet/260918-aepfel-oel-und-strassen-abcd") === "abcd"

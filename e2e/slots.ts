@@ -2166,14 +2166,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("founding window: a free place, ⎇+ and the board's + Lane all open src/founding.ts — no one-click lane is left",
     // a regex, not the import as a string: e2e-stage.sh scans this file's TEXT for relative from-clauses
     /import \{ openLaneFounding, openPicker \} from "\.\/founding";/.test(clientCode)
-    && /row\.onclick = \(\) => openPicker\(s\.id\)/.test(clientCode)
+    && /row\.onclick = \(\) => openPicker\(first\.id\)/.test(clientCode)
     && /q\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(repo, parent\); \};/.test(clientCode)
     && /add\.onclick = \(e\) => \{ e\.stopPropagation\(\); openLaneFounding\(R\.repo\); \};/.test(boardCode)
     && foundCode.includes("export function openPicker(slotId: number)") && foundCode.includes("export function openLaneFounding(repo: string, parent?: LaneAnchor)")
     // should-reject: the one-click lane without packs, and the rejected 2026-09-22 surface
     && !/function newLane\(|newLane\(/.test(boardCode + clientCode)
     && !/function openPicker\(|\bgfStep\b|\bGF_ROLES\b|\brenderGf\b|"gf-(orch|plain|steward|wt-new|wt-old)"/.test(clientCode),
-    "client.ts emptyRow + quickLaneChip, board.ts + Lane in the Arbeitsorte, founding.ts exports");
+    "client.ts freeRow + quickLaneChip, board.ts + Lane in the Arbeitsorte, founding.ts exports");
   const foundCss = (() => {
     const at = indexSrc.indexOf("THE FOUNDING WINDOW (src/founding.ts");
     const end = indexSrc.indexOf("/* end of THE FOUNDING WINDOW */", at);
@@ -2458,6 +2458,29 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         m.claims.every((x) => hit.some(([c]) => c.includes(x))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
     } catch (error) {
       check(`strip DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  // THE LEFT BAR, LIVE STRAND (Leisten-Karte 2026-10-08), same rig: the devices in the head as Info
+  // draws them with their count, the free places as one row, each name whole and without its role
+  // word, the role as the chip's shape, at most one quiet reading, ⎇+ at rest on the focused row —
+  // then each statement against its mutant (LEISTE_MUTANTS). A browser that cannot run is the PROBE
+  // line — red, never a skip.
+  try {
+    for (const result of await runLeisteDom(sourceRoot))
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`leiste DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.detail[claim] ?? result.detail.missing).slice(0, 1500));
+  } catch (error) {
+    check("leiste DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+  }
+  for (const m of LEISTE_MUTANTS) {
+    try {
+      const hit = (await runLeisteDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => m.claims.some((x) => c.includes(x)));
+      check(`leiste DOM MUTATION — ${m.name}: ${m.claims.map((x) => `"${x}…"`).join(" and ")} turn${m.claims.length === 1 ? "s" : ""} red`,
+        m.claims.every((x) => hit.some(([c]) => c.includes(x))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      check(`leiste DOM MUTATION — ${m.name}: PROBE could not run its mutant`, false, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3275,21 +3298,26 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       cliSrc.includes("openLaneFounding(repo, parent)")
         && cliSrc.includes("quickLaneChip(s.repo ?? s.cwd, parent ?? undefined)"),
       "quickLaneChip → openLaneFounding parent");
-    const renderSrc = cut("function renderSlots()", "function emptyRow(");
-    const emptySrc = cut("function emptyRow(", "// The whole stack");
+    const renderSrc = cut("function renderSlots()", "function freeRow(");
+    const emptySrc = cut("function freeRow(", "// The whole stack");
     const stackUiSrc = cut("function setStackOpen(", "function renderChips(");
     const rowSrc = cut("function slotRow(", "function renderChips(");
     const showSlotSrc = cut("function showSlot(", "window.addEventListener");
-    check("fixed empty rows and active non-lane rows retain their displayed slot numbers",
-      renderSrc.includes("slotsEl.appendChild(emptyRow(s))")
-        && emptySrc.includes('el("span", "n", String(s.id))')
-        && /else \{\s*r1\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
-      "renderSlots + emptyRow + slotRow main-number branch");
+    // the free places are ONE row since the Leisten-Karte (2026-10-08); it carries no number of its
+    // own and founds in the first free place — what it does is measured in runLeisteDom
+    check("active non-lane rows retain their displayed slot numbers; the free places close the list as one row",
+      /if \(!isActive\(s\)\) \{ free\.push\(s\); continue; \}/.test(renderSrc)
+        && renderSrc.includes("slotsEl.appendChild(freeRow(free))")
+        && !emptySrc.includes('el("span", "n"')
+        && /const n = el\("span", "n", String\(s\.id\)\);[\s\S]*?r1\.append\(n, lbl\)/.test(rowSrc),
+      "renderSlots + freeRow + slotRow main-number branch");
     // THE BAND NAME IS THE LANE'S ONLY ADDRESS in the bar. The branch suffix is not beside it, not
     // under it and not in a second chip — it is in the tooltip, with the rest of the git facts. A
     // second visible address is exactly what the model was confirmed to remove.
     check("an active lane row shows its band name and NOTHING else as its address",
-      /if \(s\.worktree\) \{[\s\S]*?el\("span", "laneref", refs\.get\(s\.id\)[\s\S]*?\} else \{\s*r1\.append\(el\("span", "n"/.test(rowSrc)
+      // the lane branch appends its band chip and the label, nothing else; the other branch builds the
+      // number chip (it carries the role shape since the Leisten-Karte, 2026-10-08)
+      /if \(s\.worktree\) \{[\s\S]*?el\("span", "laneref", refs\.get\(s\.id\)[\s\S]*?r1\.append\(ref, lbl\);\s*\} else \{[\s\S]*?const n = el\("span", "n"/.test(rowSrc)
         && (rowSrc.match(/"n", String\(s\.id\)/g) ?? []).length === 1
         && !rowSrc.includes('"lanesep"') && !rowSrc.includes('"laneidentity"')
         && !indexSrc.includes(".lanesep") && !indexSrc.includes(".laneidentity")
@@ -3354,10 +3382,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     {
       const stackSrc = cut("function renderStack(", "// Edge 1:");
       const sepCalls = renderSrc.match(/sepBefore\(s\.id\)/g) ?? [];
-      check("sidebar: a stroke separates the places by number after 4, 8, 12 — lanes under their MAIN never count",
+      check("sidebar: a stroke separates the places by number after 4, 8, 12 — lanes under their MAIN never count; one more closes them above the free row",
         /const g = Math\.ceil\(id \/ 4\);\s*if \(group && g !== group\) slotsEl\.appendChild\(el\("div", "slotsep"\)\);/.test(renderSrc)
-          && sepCalls.length === 3
-          && /sepBefore\(s\.id\); slotsEl\.appendChild\(emptyRow\(s\)\)/.test(renderSrc)
+          && sepCalls.length === 2
+          && /if \(free\.length\) \{\s*if \(group\) slotsEl\.appendChild\(el\("div", "slotsep"\)\);\s*slotsEl\.appendChild\(freeRow\(free\)\);/.test(renderSrc)
           && /sepBefore\(s\.id\); renderStack\(g, refs\)/.test(renderSrc)
           && /continue; \/\/ folded[^\n]*\n\s*sepBefore\(s\.id\);\s*slotsEl\.appendChild\(slotRow\(s, undefined, refs\)\)/.test(renderSrc)
           && !/sepBefore|slotsep/.test(stackSrc),
@@ -3376,14 +3404,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           && /#side\.collapsed \.slotsep \{ display: none; \}/.test(indexSrc),
         painted.map((m) => m[1].trim()).join(" | ") || "no painted .slotsep rule");
     }
-    // A FREE PLACE IS A PLACE: numbered, visible in the axis, and clickable across the whole row.
-    // "Visible" is the part a hairline treatment would quietly lose, so the label says what a click
-    // does instead of leaving the row to be read as a gap.
-    check("empty rows stay numbered, say what a click does, and are clickable as a whole row",
-      emptySrc.includes('el("span", "n", String(s.id))')
-        && emptySrc.includes('el("span", "lbl dim", "free · start a session")')
-        && emptySrc.includes("row.onclick = () => openPicker(s.id)")
-        && /\.slot\.empty \.n \{/.test(indexSrc),
+    // THE FREE PLACES ARE ONE ROW (Leisten-Karte 2026-10-08): it says what a click does, in words, and
+    // is clickable as a whole row; the founding opens at the first free place (runLeisteDom measures it)
+    check("the free row says what a click does and is clickable as a whole row",
+      emptySrc.includes('el("span", "lbl", "Neue Session")') && emptySrc.includes('icon("plus")')
+        && emptySrc.includes("row.onclick = () => openPicker(first.id)")
+        && /\.slot \.freeplus \{/.test(indexSrc),
       emptySrc.slice(0, 300));
     check("the band name replaces the slot number without a redundant permanent lane glyph",
       !rowSrc.includes('"lanechip"') && !indexSrc.includes(".slot .lanechip"),
@@ -3467,14 +3493,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("client: every row reserves the session mark's place, at one declared size, with nothing in it",
       /const mk = el\("span", "mark"\);\s*r1\.appendChild\(mk\)/.test(rowSrc)
         && /markItems\.push\(\{ el: mk, facts: markFacts\(/.test(rowSrc)
-        && /el\("span", "mark"\)/.test(emptySrc) && /markItems\.push\(\{ el: mk, facts: null \}\)/.test(emptySrc)
+        // the free row draws no plant: its place in the column holds the plus (freeRow)
+        && !/el\("span", "mark"\)|markItems\.push/.test(emptySrc)
         && /placeMarks\(marks, slotsEl, markItems\)/.test(cliSrc)
         && /\.slot \.mark \{[^}]*width: var\(--mark-size, 26px\)[^}]*height: var\(--mark-size, 26px\)/.test(indexSrc)
         && /\.slot\.lane \{ --mark-size: 21px; \}/.test(indexSrc)
         // nothing is drawn into it: no content, no background, no border anywhere in the bar
         && !/el\("span", "mark", /.test(cliSrc)
         && !/\.slot \.mark[^{]*\{[^}]*(background|border|content)/.test(indexSrc),
-      "the mark placeholder in slotRow/emptyRow + its CSS");
+      "the mark placeholder in slotRow + its CSS");
     // THE RESTING ROW IS THE OWNER'S FIVE, ON ONE LINE (2026-09-21, verbatim: „[Zitat entfernt]“
     // ). The second line is gone.
     // What the line said moved to the label's tooltip, never into nothing. Round 8 brought ONE
@@ -3814,9 +3841,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && !/transparent|gradient|opacity/i.test(slotactCss)
         && indexSrc.includes(".slot:hover .slotact, .slot:focus-within .slotact { display: flex; }"),
       slotactCss.trim());
-    // round 9, "Reihe": the ctx is a NUMBER ("24%"), and unknown is "?" — never 0, never empty
-    check("unknown context remains the literal ? reading, and a known one is a bare percentage",
-      rowSrc.includes('c ? `${Math.round(c.pct)}%` : "?"'),
+    // round 9, "Reihe": the ctx is a NUMBER ("24%"); unknown is no longer drawn as "?" (Leisten-Karte
+    // 2026-10-08: „[Zitat entfernt]“) — it is said in the state's tooltip, never as 0
+    check("a known context is a bare percentage; an unknown one is a sentence in the tooltip, never 0 and never \"?\"",
+      rowSrc.includes('el("span", "ctxfill", `${Math.round(c.pct)}%`)') && rowSrc.includes('"Kontext unbekannt — ')
+        && rowSrc.includes("if (!c) live.title += `\\n${fillWord}`;") && !rowSrc.includes(': "?")'),
       "slotRow context source");
     // ONE LINE PER SESSION IN THE PHONE DRAWER (row 69bdf591; owner 2026-09-22 „[Zitat entfernt]“
     // ). The row's own line and the action strip share one flex line, the old
@@ -9289,6 +9318,302 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
   }
 }
 
+// THE LEFT BAR, LIVE STRAND (Leisten-Karte 2026-10-08; owner 11:33: „[Zitat entfernt]“
+// 
+// ; 12:14 "die Namen der Lanes"), measured
+// on the real client bundle behind the fixture origin, same rig as runStripDom, at 1440 × 900 and in
+// the 390 × 844 drawer, on a TEST INSTANCE (instance.source set): the devices in the head, glyph for
+// glyph and in Info's own glyph ink (read off #board's CSS on the same page), with the count
+// answering/shown and the helper placeholder Info draws there; the free places as ONE row that founds
+// in the first free place; each name whole and without its role word; the role as the chip's shape;
+// at most one quiet reading per slot — no "?", no sleep bar; ⎇+ at rest only on the focused row.
+// Every claim reads the DOM; LEISTE_MUTANTS turns each one red against a mutated bundle (run() drives
+// them): a mutant boots once, at its one width.
+export type LeisteMutant = { name: string; width: 390 | 1440; claims: readonly string[];
+  file: "src/client.ts" | "public/index.html"; needle: string; with: string };
+export const LEISTE_MUTANTS: readonly LeisteMutant[] = [
+  { name: "a device not in Info's ink (nicht angemeldet amber again)", width: 1440, claims: ["in the ink Info's Geräte gives"],
+    file: "public/index.html", needle: `#instbtn .devsign { display: grid; place-items: center; color: var(--chat-mute); }`,
+    with: `#instbtn .devsign { display: grid; place-items: center; color: var(--q-wait); }` },
+  { name: "the helper placeholder missing on a test instance", width: 1440, claims: ["in the ink Info's Geräte gives", "the count answering/shown"],
+    file: "src/client.ts", needle: `if (!signs || !source || signs.some((sg) => sg.glyph === "server")) return signs;`, with: `return signs;` },
+  { name: "no count beside the devices", width: 390, claims: ["the count answering/shown"],
+    file: "src/client.ts", needle: "instBtn.replaceChildren(box, count);", with: "instBtn.replaceChildren(box);" },
+  { name: "the known count as bright as the connected one", width: 1440, claims: ["the count answering/shown"],
+    file: "public/index.html", needle: "#instbtn .devn .devof { color: var(--chat-faint); }", with: "#instbtn .devn .devof { color: var(--chat-ink); }" },
+  { name: "a tap does not choose the row", width: 390, claims: ["a tap on another row chooses it"],
+    file: "src/client.ts", needle: "row.onclick = stack && !open ? () => setStackOpen(stack, true) : (e) => showSlot(s.id, e.timeStamp);",
+    with: "row.onclick = stack && !open ? () => setStackOpen(stack, true) : () => {};" },
+  { name: "a row per free place again", width: 1440, claims: ["the free places are ONE row"],
+    file: "src/client.ts", needle: `if (!isActive(s)) { free.push(s); continue; }`, with: `if (!isActive(s)) { slotsEl.appendChild(freeRow([s])); continue; }` },
+  { name: "the role word back in the name", width: 390, claims: ["each name stands whole and without its role word"],
+    file: "src/client.ts", needle: `const lbl = el("span", "lbl", rowName(s));`, with: `const lbl = el("span", "lbl", displayLabel);` },
+  { name: "a long name cut with …", width: 1440, claims: ["each name stands whole and without its role word"],
+    file: "public/index.html", needle: `.slot .lbl { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere;`,
+    with: `.slot .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;` },
+  { name: "the role not on the chip", width: 1440, claims: ["the role is the chip's shape"],
+    file: "src/client.ts", needle: `if (s.role) n.dataset.role = s.role;`, with: `` },
+  { name: "the \"?\" back for an unknown fill", width: 390, claims: ["at most one quiet reading"],
+    file: "src/client.ts", needle: "} else if (c) {\n        const cx = el(\"span\", \"ctxfill\", `${Math.round(c.pct)}%`);",
+    with: "} else {\n        const cx = el(\"span\", \"ctxfill\", c ? `${Math.round(c.pct)}%` : \"?\");" },
+  { name: "the sleep bar back beside the age", width: 1440, claims: ["at most one quiet reading"],
+    file: "src/client.ts", needle: `if (state !== "sleep") r1.appendChild(live);`, with: `r1.appendChild(live);` },
+  { name: "⎇+ on every row", width: 1440, claims: ["⎇+ stands only on the focused row"],
+    file: "public/index.html", needle: `.slot:not(.current) .r1 .quicklane { display: none; }`, with: `` },
+  { name: "⎇+ shown under the hand, so a hover narrows the name", width: 1440, claims: ["a hover moves no name"],
+    file: "public/index.html", needle: `.slot:not(.current) .r1 .quicklane { display: none; }`, with: `.slot:not(.current):not(:hover) .r1 .quicklane { display: none; }` },
+  { name: "⎇+ on every row of the phone", width: 390, claims: ["⎇+ stands only on the focused row"],
+    file: "public/index.html", needle: `.slot:not(.current) .r1 .quicklane { display: none; }`, with: `` },
+];
+export interface LeisteDomResult { width: number; height: number; claims: Record<string, boolean>; detail: Record<string, unknown> }
+export async function runLeisteDom(sourceRoot: string, only: { mutate?: LeisteMutant; artifacts?: string } = {}): Promise<LeisteDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-leiste-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const m = only.mutate;
+  let applied = !m || m.file === "public/index.html";
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser",
+    plugins: m && m.file !== "public/index.html" ? [{ name: "leiste-mutant", setup(build) {
+      const target = resolve(sourceRoot, m.file);
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
+        if (path !== target) return;
+        const source = readFileSync(path, "utf8");
+        applied = source.includes(m.needle);
+        return { contents: source.replace(m.needle, m.with), loader: "ts" };
+      });
+    } }] : [] });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (m?.file === "public/index.html") { applied = indexHtml.includes(m.needle); indexHtml = indexHtml.replace(m.needle, m.with); }
+  if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`leiste mutant: needle not in ${m!.file}: ${m!.needle.slice(0, 80)}`); }
+  const appJs = await built.outputs[0].text();
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
+  // three hours on the server clock: Gamma said nothing since 0 and is ASLEEP, the others rest or work
+  const NOW = 3 * 3600_000;
+  const LONG = "Oberfläche aus einem Guss und die lange Leiste";
+  const ctx = (pct: number) => ({ pct, usedTokens: pct * 2000, windowTokens: 200_000 });
+  const git = { branch: "main", dirty: 0, ahead: 0, behind: 0 };
+  const slots = [
+    { id: 1, cwd: "/fixture/nordwerk", repo: "/fixture/nordwerk", label: "🎛 Orchestratorin · Opus 5.5", role: "orchestrator", model: "claude-opus-5-5", openedAt: 1000, lastOutput: NOW, ctx: ctx(12), git },
+    { id: 2, cwd: "/fixture/oberflaeche", repo: "/fixture/oberflaeche", label: `Program-MAIN: ${LONG} · Opus 5.5`, role: "program-main", model: "claude-opus-5-5", openedAt: 2000, lastOutput: NOW - 60_000, git },
+    { id: 3, cwd: "/fixture/steward", repo: "/fixture/steward", label: "⚙ steward", openedAt: 3000, lastOutput: 0 },
+    { id: 4, cwd: "/fixture/werkbank", repo: "/fixture/werkbank", label: "Werkbank", openedAt: 4000, lastOutput: NOW - 60_000, ctx: ctx(45), git },
+    ...Array.from({ length: 12 }, (_, i) => ({ id: i + 5, cwd: null })),
+  ];
+  const NAMES = ["Orchestratorin", LONG, "steward", "Werkbank"];
+  const SOURCE = { branch: "fleet/261008-leiste-fixture", head: "1ae90e50c0ffee00", dirty: 0, measuredAt: NOW, target: { branch: "main", head: "1ae90e50c0ffee00", ahead: 0 } };
+  // Arbeitsorte: one linked fleet; this computer is the instance itself, the helper is the placeholder
+  const WORKTREES = { repos: [], measuredAt: NOW, cacheMs: 60_000, stands: [{ kind: "linked-instance", repo: null, name: "workhorse", path: null, head: null,
+    basis: "link-only", codeScope: "server", observedAt: null, target: null, remote: null, update: null, reasons: [] }] };
+  const fx = { sessions: 0 };
+  const HARNESSES = { harnesses: [{ id: "claude", default: true, note: null, effortLevels: ["low", "medium", "high", "xhigh"], models: modelsForHarness("claude"),
+    supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+    modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) };
+  const FAKE = `(() => { window.__ws = [];
+    class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      constructor(url) { this.url = String(url); this.readyState = 0; this.binaryType = 'blob'; window.__ws.push(this);
+        setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
+      send() {} close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
+    window.WebSocket = FakeWS;
+    window.__fx = { shown: (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none' && !e.closest('[hidden]') }; })()`;
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("leiste DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const mm = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (mm) return mm[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
+      if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: NOW, chips: [], slots, tasks: [], instance: { name: "mac", source: SOURCE } }); }
+      if (p === "/api/worktrees") return void json(requestId, WORKTREES);
+      if (p === "/api/harnesses") return void json(requestId, HARNESSES);
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    let targetId = "";
+    const missing: string[] = [];
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) { missing.push(expression.replace(/\s+/g, " ").slice(0, 120)); return null as T; }
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const wait = (condition: string, ms = 4000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const centre = (expression: string) => evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e || !window.__fx.shown(e)) return null;
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    const shot = async (name: string) => {
+      if (!only.artifacts) return;
+      const r = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(only.artifacts, `leiste-${name}.png`), Buffer.from(String(r.data), "base64"));
+    };
+    const boot = async (width: number, height: number) => {
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = undefined;
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: FAKE });
+      const phone = width < 700;
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setTouchEmulationEnabled", phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: "http://fleet.fixture/blank" }); await Promise.race([done, Bun.sleep(15000)]);
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 })); localStorage.setItem('fleet.board', '0'); })()`);
+      const done2 = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: "http://fleet.fixture/" }); await Promise.race([done2, Bun.sleep(15000)]);
+      // the devices arrive with the second poll after the Arbeitsorte were read once
+      const booted = await wait(`document.querySelector('#slots .slot.current[data-slot="1"]') && document.querySelectorAll('#instbtn .devsign').length > 0`, 12000);
+      if (!booted) throw new Error("leiste DOM: the client did not boot in the fixture origin: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      if (phone) { await evaluate("document.body.classList.add('drawer')"); await settle(400); }
+      await settle(300);
+    };
+
+    const results: LeisteDomResult[] = [];
+    const widths = m ? [m.width] : [1440, 390] as const;
+    for (const width of widths) {
+      const height = width === 390 ? 844 : 900;
+      const claims: Record<string, boolean> = {}, detail: Record<string, unknown> = {};
+      const say = (claim: string, ok: boolean, facts: unknown) => { claims[claim] = ok; detail[claim] = facts; };
+      await boot(width, height);
+      await shot(`${width}`);
+
+      // 1 · THE DEVICES: Info's glyph ink per state is read off #board's own rule on this page
+      const dev = await evaluate<{ signs: { glyph: string; tone: string; ink: string; shown: boolean }[]; info: Record<string, string>; count: string; title: string; titleCut: boolean;
+        on: { text: string; ink: string; weight: string } | null; of: { text: string; ink: string; weight: string } | null; ink: string; faint: string }>(`(() => {
+        const probe = document.createElement('div'); probe.className = 'zr mach'; const fx = document.createElement('span'); fx.className = 'fx'; probe.appendChild(fx);
+        const board = document.querySelector('#board'), info = {};
+        for (const t of ['live', 'wait', 'link', 'off', 'still']) { probe.dataset.tone = t; board.appendChild(probe); info[t] = getComputedStyle(fx).color; probe.remove(); }
+        const signs = [...document.querySelectorAll('#instbtn .devsign')].map((d) => ({ glyph: d.dataset.glyph, tone: d.dataset.tone, ink: getComputedStyle(d).color, shown: window.__fx.shown(d) }));
+        // the title's TEXT against its box (a range, not scrollWidth: that rounds a 0.4px ellipsis away)
+        const t = document.querySelector('#sidetitle'), tr = document.createRange(); tr.selectNodeContents(t);
+        const part = (sel) => { const e = document.querySelector(sel); if (!e) return null; const cs = getComputedStyle(e); return { text: e.textContent, ink: cs.color, weight: cs.fontWeight }; };
+        const tok = (v) => { const i = document.createElement('i'); i.style.color = 'var(' + v + ')'; document.body.appendChild(i); const c = getComputedStyle(i).color; i.remove(); return c; };
+        return { signs, info, count: document.querySelector('#instbtn .devn')?.textContent ?? '', title: document.querySelector('#instbtn').title,
+          titleCut: tr.getBoundingClientRect().width > t.getBoundingClientRect().width,
+          on: part('#instbtn .devn .devon'), of: part('#instbtn .devn .devof'), ink: tok('--chat-ink'), faint: tok('--chat-faint') }; })()`);
+      say("the head draws Info's devices — this computer, the linked fleet and, on a test instance, the helper — one glyph each, in the ink Info's Geräte gives its state",
+        JSON.stringify(dev.signs.map((sg) => `${sg.glyph}:${sg.tone}`)) === JSON.stringify(["laptop:live", "link:link", "server:off"])
+        && dev.signs.every((sg) => sg.shown && sg.ink === dev.info[sg.tone]), dev);
+      say("beside them the count answering/shown (1/3) — the 1 in plain weight and ink, the /3 muted — the tooltip says \"1 verbunden, 3 bekannt\", and the title Claude Fleet stays whole",
+        dev.count === "1/3" && dev.on?.text === "1" && dev.of?.text === "/3" && dev.on.weight === "400" && dev.on.ink === dev.ink && dev.of.ink === dev.faint
+        && dev.title.startsWith("1 verbunden, 3 bekannt: mac läuft, workhorse verlinkt, Helfer nicht angemeldet") && !dev.titleCut, dev);
+
+      // 2 · THE FREE PLACES
+      const free = await evaluate<{ rows: number; text: string; slot: string; title: string; numbers: number; last: boolean }>(`(() => {
+        const rows = [...document.querySelectorAll('#slots .slot.empty')], r = rows[0];
+        return { rows: rows.length, text: r?.innerText.trim() ?? '', slot: r?.dataset.slot ?? '', title: r?.title ?? '', numbers: r ? r.querySelectorAll('.n').length : -1,
+          last: !!r && r === document.querySelector('#slots').lastElementChild }; })()`);
+      let founded = false;
+      if (free.rows >= 1) {
+        await evaluate("document.querySelector('#slots .slot.empty').click()");
+        founded = await wait("!!document.querySelector('#shell-found')", 4000);
+        if (founded) { await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+          await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await settle(300); }
+        if (width < 700) { await evaluate("document.body.classList.add('drawer')"); await settle(300); }
+      }
+      say("the free places are ONE row at the end, \"Neue Session\" with no number, founding in the first free place (5) — its tooltip names all twelve",
+        free.rows === 1 && free.text === "Neue Session" && free.numbers === 0 && free.last && free.slot === "5"
+        && free.title.includes("12 Plätze frei (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)") && founded, { ...free, founded });
+
+      // 3 · NAMES, ROLES, READINGS, ⎇+
+      const rows = await evaluate<{ id: string; name: string; cut: boolean; chip: { radius: string; shadow: string } | null; readings: { cls: string; text: string }[]; quick: boolean; quickHere: boolean }[]>(`(() =>
+        [...document.querySelectorAll('#slots .slot:not(.empty)')].map((row) => { const r1 = row.querySelector(':scope > .r1, :scope .bandview .r1:not(.pastcell)');
+          const lbl = r1.querySelector('.lbl'), n = r1.querySelector('.n'), cs = n ? getComputedStyle(n) : null;
+          return { id: row.dataset.slot, name: lbl.innerText.trim(), cut: lbl.scrollWidth > lbl.clientWidth + 1 || lbl.scrollHeight > lbl.clientHeight + 1 || /…$/.test(lbl.innerText.trim()),
+            chip: cs && { radius: cs.borderTopLeftRadius, shadow: cs.boxShadow },
+            readings: [...r1.children].filter((c) => c.matches('.ctxfill, .act, .lc') && window.__fx.shown(c)).map((c) => ({ cls: c.className, text: c.textContent })),
+            quick: !!r1.querySelector('.quicklane') && window.__fx.shown(r1.querySelector('.quicklane')), quickHere: !!r1.querySelector('.quicklane') }; }))()`);
+      const mute = await evaluate<string>(`(() => { const t = document.createElement('i'); t.style.color = 'var(--chat-mute)'; document.body.appendChild(t); const c = getComputedStyle(t).color; t.remove(); return c; })()`);
+      say("each name stands whole and without its role word or model — Orchestratorin, the long Program-MAIN title, steward, Werkbank — never cut and never ending in …",
+        JSON.stringify(rows.map((r) => r.name)) === JSON.stringify(NAMES) && rows.every((r) => !r.cut), rows.map((r) => ({ id: r.id, name: r.name, cut: r.cut })));
+      const chip = Object.fromEntries(rows.map((r) => [r.id, r.chip]));
+      say("the role is the chip's shape, not a word and not a colour: the Orchestratorin's chip is round, the Program-MAIN's has an ink edge, a plain session's neither",
+        parseFloat(chip["1"]?.radius ?? "0") >= 9 && parseFloat(chip["4"]?.radius ?? "0") < 9 && !!chip["2"]?.shadow.includes(mute)
+        && !chip["4"]?.shadow.includes(mute) && !chip["1"]?.shadow.includes(mute), { chip, mute });
+      const reading = Object.fromEntries(rows.map((r) => [r.id, r.readings]));
+      say("at most one quiet reading beside the state: no \"?\" for an unknown fill (Program-MAIN shows only its state), and the sleeping steward shows its age 3h instead of the sleep bar",
+        rows.every((r) => r.readings.every((x) => x.text !== "?" && !/\bsleep\b/.test(x.cls)))
+        && JSON.stringify(reading["2"]?.map((x) => x.cls)) === JSON.stringify(["act rest"])
+        && JSON.stringify(reading["3"]) === JSON.stringify([{ cls: "ctxfill ago", text: "3h" }])
+        && reading["1"]?.[0]?.text === "12%" && reading["4"]?.[0]?.text === "45%", reading);
+      let hovered: boolean | null = null;
+      if (width >= 700) {
+        // under the hand nothing joins the row: the name keeps the width it had at rest, so no hover
+        // pushes a name onto another line (⎇+ shown on hover did exactly that)
+        const nameW = `document.querySelector('#slots .slot[data-slot="2"] .r1 .lbl').getBoundingClientRect().width`;
+        await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: height - 1 }); await settle(100);
+        const restW = await evaluate<number>(nameW);
+        const at2 = await centre(`document.querySelector('#slots .slot[data-slot="2"]')`);
+        if (at2) { await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at2 }); await settle(150);
+          hovered = restW === await evaluate<number>(nameW); }
+        await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: height - 1 }); await settle(100);
+      }
+      say(`⎇+ stands only on the focused row (1); the other repo sessions keep it in the row, hidden${width >= 700 ? " — and a hover moves no name" : " on the phone"}`,
+        JSON.stringify(rows.filter((r) => r.quick).map((r) => r.id)) === JSON.stringify(["1"])
+        && rows.filter((r) => r.id === "2" || r.id === "4").every((r) => r.quickHere)
+        && (width >= 700 ? hovered === true : true),
+        { quick: rows.map((r) => [r.id, r.quick, r.quickHere]), hovered });
+      // TOUCH HAS NO HOVER (Orchestratorin 2026-10-09): a tap chooses the row, and THEN its ⎇+ stands
+      if (width < 700) {
+        const at = await centre(`document.querySelector('#slots .slot[data-slot="4"] .r1 .lbl')`);
+        let chosen = false, quickShown = false, othersHidden = false;
+        if (at) {
+          await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
+          await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          chosen = await wait(`document.querySelector('#slots .slot[data-slot="4"]')?.classList.contains('current')`, 3000);
+          await settle(200);
+          quickShown = await evaluate<boolean>(`window.__fx.shown(document.querySelector('#slots .slot[data-slot="4"] .r1 .quicklane'))`);
+          othersHidden = await evaluate<boolean>(`[...document.querySelectorAll('#slots .slot:not([data-slot="4"]) .r1 .quicklane')].every((q) => !window.__fx.shown(q))`);
+        }
+        say("a tap on another row chooses it, and then that row — and only that row — shows its ⎇+ (Werkbank, 4)",
+          !!at && chosen && quickShown && othersHidden, { at, chosen, quickShown, othersHidden });
+      }
+      if (missing.length) detail.missing = [...missing];
+      missing.length = 0;
+      results.push({ width, height, claims, detail });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 // THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
 // gebaut", docs/design/insel-glas-notiz.md §1–§4), measured in TWO engines on the real client bundle
 // behind the fixture origin: Chromium through CDP (the suite's own browser, always) and WebKit
@@ -10174,7 +10499,8 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           setC.ok && !knownC.some((p) => p.projectKey === kGone);
 
         // --- the founding window: rights in the profile field, no grant field in the start, a fresh read after it
-        const F = (await rows()).find((r) => r.id <= 16 && !r.cwd && !taken.has(r.id));
+        // the bar's ONE free row founds in the FIRST free place (client.ts#freeRow) — so that is F
+        const F = (await rows()).find((r) => r.id <= 16 && !r.cwd);
         if (!F) throw new Error("rights DOM: no free band slot for the founding");
         taken.add(F.id); // the founding opens it — killed with the rest
         await freshTarget();

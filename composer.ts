@@ -154,10 +154,13 @@ export type DeliveryComposerResidue = {
   visibleChars: number;
 };
 
+// Claude Code folds a long paste into one placeholder, and the "+M lines" half is optional: a
+// one-line payload (or a newer TUI) shows only "[Pasted text #27]" — measured live 2026-10-09 12:54
+// on Slot 4, a 2437-char fleet-event that read "partial" and was never submitted.
 export function composerCollapsedPaste(rows: readonly string[], header: string): string | null {
   if (!header) return null;
-  const parts = rows.join("").match(/\[Pasted ?text ?#(\d+) ?\+(\d+) ?lines\]$/);
-  const label = parts ? `[Pasted text #${parts[1]} +${parts[2]} lines]` : null;
+  const parts = rows.join("").match(/\[Pasted ?text ?#(\d+)(?: ?\+(\d+) ?lines)?\]$/);
+  const label = parts ? `[Pasted text #${parts[1]}${parts[2] === undefined ? "" : ` +${parts[2]} lines`}]` : null;
   const display = label ? header + label : null;
   return display && composerHoldsExactly(rows, display) ? display : null;
 }

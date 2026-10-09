@@ -137,6 +137,31 @@ export async function run(): Promise<void> {
     check("stuck-delivery foreign composer is not the measured paste: " + foreign.slice(-32),
       composerDeliveryResidue([foreign], payload, collapsed) === null
         && composerCollapsedPaste([foreign], header) !== header + label);
+  // live 2026-10-09 12:54, Slot 4: a 2437-char fleet-event showed the placeholder WITHOUT "+M lines"
+  const short = "[Pasted text #27]";
+  const shortRows = composerRows(form, `\x1b[39m❯ ${header}${short}\n${"─".repeat(40)}\n`) ?? [];
+  const shortCollapsed = composerCollapsedPaste(shortRows, header);
+  check("stuck-delivery placeholder without a line count is the same collapsed paste",
+    shortCollapsed === header + short && composerDeliveryResidue(shortRows, payload, shortCollapsed)?.kind === "collapsed-paste");
+  for (const foreign of [header + short + " owner", header + "[Pasted text#27]"])
+    check("stuck-delivery foreign composer is not the short placeholder: " + foreign.slice(-32),
+      composerCollapsedPaste([foreign], header) === null
+        && composerDeliveryResidue([foreign], payload, shortCollapsed) === null);
+  const collapsedSource = readFileSync(`${ROOT}/composer.ts`, "utf8")
+    .match(/export function composerCollapsedPaste[\s\S]*?\n}\n/)?.[0];
+  check("stuck-delivery SETUP: composerCollapsedPaste is readable", collapsedSource !== undefined);
+  if (collapsedSource) {
+    const recognizes = (source: string): boolean => {
+      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace(/^export /, ""));
+      const fn = new Function("composerHoldsExactly", `${compiled}; return composerCollapsedPaste;`)(
+        composerHoldsExactly) as typeof composerCollapsedPaste;
+      return fn(shortRows, header) === header + short && fn(rows, header) === header + label;
+    };
+    check("stuck-delivery the readable source recognizes both placeholder forms", recognizes(collapsedSource));
+    const countRequired = collapsedSource.replace("lines)?\\]", "lines)\\]");
+    check("stuck-delivery mutation: a mandatory \"+M lines\" misses the short placeholder",
+      countRequired !== collapsedSource && !recognizes(countRequired));
+  }
   check("stuck-delivery dim hint is empty and never a delivery remainder",
     composerDeliveryResidue(composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [], payload, collapsed) === null);
 

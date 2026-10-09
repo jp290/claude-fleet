@@ -12053,17 +12053,19 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
   { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
-  { name: "the bar runs on over the square", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
-    needle: "      const mark = firstMark(row);", with: "      const mark = null as number | null;" },
-  { name: "the bar stops short of the square again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
-    needle: "(mark !== null ? Math.round(mark) - 2 : Math.round(end(row)) + 4)", with: "(mark !== null ? Math.round(mark) - 14 : Math.round(end(row)) + 4)" },
-  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point up to its test instance's square",
-    needle: "      const mark = firstMark(row);", with: "      const mark = rails.get(row.dataset.id ?? \"\")?.x ?? firstMark(row);" },
-  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
+  { name: "the bar stops short of the square again", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(Math.min(...[...row.querySelectorAll(\":scope > .ti, :scope > .lr > :not(.gs)\")].map((e) => e.getBoundingClientRect().left - tb.left), end(row) + 6)) - 2 - p[0])" },
+  { name: "the hovered bar runs on into the way back", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
+    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(end(row)) + 14 - p[0])" },
+  { name: "a row with a square reads as one without", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+    needle: "      row.dataset.bar = hasMark(row) ? \"mark\" : \"end\";", with: "      row.dataset.bar = \"end\";" },
+  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point over its test instance's square",
+    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, (rails.get(row.dataset.id ?? \"\")?.x ?? Math.round(end(row)) + 4) - p[0])" },
+  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
     needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
-  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
+  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
     needle: "  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }", with: "" },
-  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words and git stand up to its first mark",
+  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "" },
   { name: "the hovered row paints its whole ground again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "  #board .ranke .rk > .zr[data-bar]:not(:hover) { background: none; }" },
@@ -12470,8 +12472,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           barBox: r.dataset.bar ? (() => { const s = getComputedStyle(r, '::before'), b = r.getBoundingClientRect(); return { l: b.left + parseFloat(s.left), r: b.left + parseFloat(s.left) + parseFloat(s.width), bg: s.backgroundColor }; })() : null,
           ndC: (() => { const n = r.querySelector(':scope > .nd'); if (!n) return null; const b = n.getBoundingClientRect(); return b.left + b.width / 2; })(),
           wordsR: Math.max(...[...r.querySelectorAll(':scope > .nm, :scope > .rt, :scope > .lr > .gs')].map((e) => e.getBoundingClientRect().right), 0),
-          marksL: Math.min(...[...r.querySelectorAll(':scope > .ti, :scope > .lr > :not(.gs)')].filter((e) => e.getClientRects().length)
-            .map((e) => e.getBoundingClientRect().left), Infinity) }; });
+          marksR: Math.max(...[...r.querySelectorAll(':scope > .ti, :scope > .lr > :not(.gs)')].filter((e) => e.getClientRects().length)
+            .map((e) => e.getBoundingClientRect().right), -Infinity),
+          endR: Math.max(...[...r.querySelectorAll(':scope > .lr, :scope > .nm, :scope > .rt, :scope > .ti, :scope > .fc')].map((e) => e.getBoundingClientRect().right), 0) }; });
       const lines = [...sec.querySelectorAll('.zd')].map((z) => ({ cls: z.className, for: z.dataset.for ?? null, text: z.innerText.replace(/\\s+/g, ' ').trim(), title: z.querySelector('.tx')?.title ?? '', buttons: [...z.querySelectorAll('button')].map((b) => b.textContent),
         points: [...z.querySelectorAll('.way i')].map((i) => ({ key: i.dataset.key ?? null, cls: i.className })), way: z.querySelector('.way')?.title ?? '', wayAria: z.querySelector('.way')?.getAttribute('aria-label') ?? '' }));
       const body = document.querySelector('#boardbody');
@@ -12511,8 +12514,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
       machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null;
       bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null;
-      // the right edge of the row's words and git stand; the left edge of its first mark (square, flag), null without one
-      wordsR: number; marksL: number | null };
+      // the right edge of the row's words and git stand; the right edge of its last mark (square, flag), null without one;
+      // the right edge of everything the row says, where its way back begins (src/board.ts#drawRankeLines, end)
+      wordsR: number; marksR: number | null; endR: number };
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
@@ -12645,17 +12649,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
         // THE BAR OF A ROW (owner 2026-10-09: „[Zitat entfernt]“
         // ; the same day, shorter: „[Zitat entfernt]“, and "bei
-        // anderen Slots schließt die graue Hinterlegung nicht an das View-Element … an"): the row's ground
-        // runs from its own point over its words and git stand up to its first mark (the square, the flag),
-        // 2 px short of it — a row without a mark to where its way back begins — and paints no ground itself
+        // anderen Slots schließt die graue Hinterlegung nicht an das View-Element … an"; then "dass der grüne
+        // Button der Testinstanz innerhalb des grau hinterlegten Objekts sich befindet"): the row's ground
+        // runs from its own point over its words, git stand and marks (the square, the flag) to 4 px past
+        // the last, where its way back begins — and paints no ground itself
         const barClaim = (rr: Read, fr: Row | undefined, kind: string) => {
-          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, wordsR: fr.wordsR, marksL: fr.marksL, ground: fr.ground, fade: fr.fade } };
+          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, wordsR: fr.wordsR, marksR: fr.marksR, endR: fr.endR, ground: fr.ground, fade: fr.fade } };
           return !!fr?.barBox && fr.ndC !== null && Math.abs(fr.barBox.l - fr.ndC) <= 1 && fr.barBox.r >= fr.wordsR
-            && (fr.marksL !== null ? fr.bar === "mark" && Math.abs(fr.barBox.r - (fr.marksL - 2)) <= 1 : fr.bar === "end")
+            && Math.abs(fr.barBox.r - (fr.endR + 4)) <= 1
+            && (fr.marksR !== null ? fr.bar === "mark" && fr.barBox.r >= fr.marksR + 3 : fr.bar === "end")
             && fr.barBox.bg !== "rgba(0, 0, 0, 0)" && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
         };
         if (st === "lane") {
-          claims[`${tag}the focused row's bar runs from its point over its words and git stand up to its first mark — 3A's — and the row paints no ground of its own`] =
+          claims[`${tag}the focused row's bar runs from its point over its words, git stand and marks — 3A's square inside — and the row paints no ground of its own`] =
             barClaim(r, lane(r, 9), "focus");
           // UNDER THE POINTER THE SAME BAR (owner 2026-10-09: „[Zitat entfernt]“
           // ): 3B hovered carries the bar
@@ -12669,7 +12675,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
             await settle(100);
             const before = lane(r, 10)?.barBox?.bg ?? null;
-            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point up to its first mark, and no ground across the row`] =
+            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point over its marks, and no ground across the row`] =
               !!c && barClaim(rh, lane(rh, 10), "hover") && before === "rgba(0, 0, 0, 0)" && lane(rh, 10)?.barBox?.bg !== lane(rh, 9)?.barBox?.bg;
           }
         }
@@ -13610,7 +13616,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         }
         if (st === "main" && !phone) {
           // …and a stem's bar is as short: with one lane landing straight in main, the focused main's bar
-          // ends at its square, short of the head its lanes come back to on the rail
+          // holds its square, short of the head its lanes come back to on the rail
           fx.mainLane = true;
           await navigate("http://fleet.fixture/");
           const barred = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => !!x.dataset.bar && x.classList.contains('base'))`, 8000);
@@ -13619,7 +13625,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           fx.mainLane = false;
           const head = rm.heads.find((h) => h.row === `${REPO}#main`)?.x;
           const mrow = byId(rm, `${REPO}#main`);
-          claims[`${tag}the focused main's bar runs from its point up to its test instance's square, short of its head on the rail, and the row paints no ground of its own`] =
+          claims[`${tag}the focused main's bar runs from its point over its test instance's square, short of its head on the rail, and the row paints no ground of its own`] =
             barred && barClaim(rm, mrow, "main") && head !== undefined && !!mrow?.barBox && mrow.barBox.r < head - 4;
         }
         if (st === "lane" && !phone) {

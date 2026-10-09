@@ -2795,9 +2795,10 @@ const RANKE_CSS = `
   #board .ranke .rk > svg path.back { stroke: var(--chat-mute); }
   #board .ranke .rk > svg path.back.wait { stroke-dasharray: 3 2.5; }
   #board .ranke .rk > svg path.ink { stroke: var(--chat-ink); }
-  /* THE BAR OF A ROW (#drawRankeLines): from its point to the end of its words, under the lines and the
-     points; the row's words stand over it — the surface where you stand or opened, the hover tone under
-     the pointer. No fade: every repaint builds the row anew until the bar is measured */
+  /* THE BAR OF A ROW (#drawRankeLines): from its point over its words and marks to where its way back
+     begins, under the lines and the points; the row's words and marks stand over it — the surface where
+     you stand or opened, the hover tone under the pointer. No fade: every repaint builds the row anew
+     until the bar is measured */
   #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }
   #board .ranke .rk > .zr[data-bar] { background: none; }
   #board .ranke .rk > .zr[data-bar]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--zb-l); width: var(--zb-w);
@@ -4593,23 +4594,20 @@ export function drawRankeLines(root: HTMLElement): void {
     // 
     // 
     // kürzer werden"): every row of the Ranke carries the bar, the focused and the opened one in the
-    // surface, the hovered one in the hover tone. IT REACHES THE ROW'S FIRST MARK (owner, the same day:
-    // „[Zitat entfernt]“): it ends at the
-    // test instance's square or the flag, the git stand (↑n) inside; a row without a mark ends where its
-    // way back begins
-    const firstMark = (row: Element): number | null => {
-      const xs = [...row.querySelectorAll(":scope > .ti, :scope > .lr > :not(.gs)")].filter((e) => e.getClientRects().length)
-        .map((e) => e.getBoundingClientRect().left - tb.left);
-      return xs.length ? Math.min(...xs) : null;
-    };
+    // surface, the hovered one in the hover tone. THE MARKS STAND INSIDE IT (owner, the same day: „[Zitat entfernt]“
+    // ; then "dass der grüne
+    // Button der Testinstanz innerhalb des grau hinterlegten Objekts sich befindet"): it holds everything
+    // the row says — words, git stand (↑n), the test instance's square, the flag — and ends where the
+    // row's way back begins, so the dashes to the diamond leave from its end
+    const hasMark = (row: Element): boolean =>
+      [...row.querySelectorAll(":scope > .ti, :scope > .lr > :not(.gs)")].some((e) => e.getClientRects().length > 0);
     for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.zw, :scope > .zr.base")) {
       const p = mid(row);
       if (!p) continue;
       const off = row.getBoundingClientRect().left - tb.left;
-      const mark = firstMark(row);
       row.style.setProperty("--zb-l", `${p[0] - off}px`);
-      row.style.setProperty("--zb-w", `${Math.max(0, (mark !== null ? Math.round(mark) - 2 : Math.round(end(row)) + 4) - p[0])}px`);
-      row.dataset.bar = mark !== null ? "mark" : "end";
+      row.style.setProperty("--zb-w", `${Math.max(0, Math.round(end(row)) + 4 - p[0])}px`);
+      row.dataset.bar = hasMark(row) ? "mark" : "end";
     }
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("aria-hidden", "true");

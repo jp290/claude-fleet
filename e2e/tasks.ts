@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION } from "../card-extract";
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION,
+  buildNeighborIndex, renderNeighborLines, NEIGHBOR_MAX_PER_SIDE } from "../card-extract";
 import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
 import { classify as laneModelClass } from "../lane-context-cost";
@@ -10538,6 +10539,49 @@ export async function run(ctx: Ctx): Promise<void> {
       && sizeAbsent.body.size === undefined && !sizeAbsent.gaps.some((g) => g.startsWith("size")),
       JSON.stringify({ sizeHeader: sizeHeader.body.size, sizeMid: sizeMid.body.size,
         prose: sizeProse.gaps, bogus: sizeBogus.gaps, absent: sizeAbsent.body.size }));
+    // NACHBARN (row 4be5f0fa): the validator writes each CHECKED symbol's call edges onto the card —
+    // callers at their call site, callees at their definition, importers whose calls the graph missed,
+    // a recursion dropped, the cap counted, a `_src`-flipped link read the way graphify explain reads it.
+    {
+      const node = (id: string, label: string, file: string, line: number, file_type = "code") =>
+        ({ id, label, source_file: file, source_location: `L${line}`, file_type });
+      const call = (source: string, target: string, file: string, line: number, extra: Record<string, unknown> = {}) =>
+        ({ relation: "calls", source, target, source_file: file, source_location: `L${line}`, ...extra });
+      const hubCallers = Array.from({ length: NEIGHBOR_MAX_PER_SIDE + 2 }, (_, i) => node(`c${i}`, `caller${i}()`, "e2e/x.ts", 10 + i));
+      const graph = { built_at_commit: "0123456789abcdef0123456789abcdef01234567", nodes: [
+        node("tv", "taskView()", "server.ts", 2500), node("dv", "deployVerb()", "server.ts", 40),
+        node("git", "git()", "server.ts", 6), node("pinsfile", "pins.ts", "e2e/pins.ts", 1),
+        node("flip", "flipped()", "server.ts", 90), ...hubCallers ],
+        links: [ call("dv", "tv", "server.ts", 44), call("tv", "git", "server.ts", 2510), call("tv", "tv", "server.ts", 2520),
+          // persisted flipped: the link says git → flip, `_src` says flip is the caller
+          call("git", "flip", "server.ts", 95, { _src: "flip" }),
+          { relation: "imports_from", source: "pinsfile", target: "tv", source_file: "e2e/pins.ts", source_location: "L3" },
+          { relation: "contains", source: "pinsfile", target: "tv", source_file: "server.ts", source_location: "L2500" },
+          ...hubCallers.map((c, i) => call(c.id, "git", "e2e/x.ts", 100 + i)) ] };
+      const neighbors = buildNeighborIndex(graph);
+      const nb = validateCard({ ziel: "z", done: "d", verify: "bun e2e/pins.ts",
+        surface: { files: ["server.ts"], symbols: ["server.ts#taskView", "server.ts#neverThere"] } }, { ...cardCtx, neighbors });
+      const lines = nb.body.surface.neighbors ? renderNeighborLines(nb.body.surface.neighbors) : [];
+      const gitLine = neighbors?.of("server.ts", "git");
+      const flipLine = neighbors?.of("server.ts", "flipped");
+      check("(nachbarn) a checked FLAECHE symbol carries one NACHBARN line from the graph; an unresolved one none",
+        nb.body.surface.neighbors?.graph === graph.built_at_commit && lines.length === 1
+        && lines[0] === "NACHBARN server.ts#taskView: ← deployVerb server.ts:L44 · → git server.ts:L6 · ⇠ importiert in e2e/pins.ts",
+        JSON.stringify({ lines, gaps: nb.gaps }));
+      check("(nachbarn) a hub shows NEIGHBOR_MAX_PER_SIDE callers and counts the rest; a `_src`-flipped link keeps its true direction",
+        // twelve callers (ten hub, taskView, the flipped one), sorted by file then line: e2e/x.ts first
+        gitLine?.callers.length === NEIGHBOR_MAX_PER_SIDE && gitLine.moreCallers === 4 && gitLine.callers[0] === "caller0 e2e/x.ts:L100"
+        && JSON.stringify(flipLine?.callees) === JSON.stringify(["git server.ts:L6"]) && !gitLine.callees.includes("flipped server.ts:L90"),
+        JSON.stringify({ gitLine, flipLine }));
+      const noEdges = validateCard({ ziel: "z", done: "d", verify: "bun e2e/pins.ts",
+        surface: { files: ["server.ts"], symbols: ["server.ts#taskView"] } },
+        { ...cardCtx, neighbors: buildNeighborIndex({ nodes: graph.nodes }) });
+      const noIndex = validateCard({ ziel: "z", done: "d", verify: "bun e2e/pins.ts",
+        surface: { files: ["server.ts"], symbols: ["server.ts#taskView"] } }, { ...cardCtx, symbolIndex: null, neighbors });
+      check("(nachbarn) a node-only graph and an unchecked symbol add no NACHBARN — absence, never an empty claim",
+        noEdges.body.surface.neighbors === undefined && noIndex.body.surface.neighbors === undefined
+        && noEdges.valid && noIndex.valid, JSON.stringify({ noEdges: noEdges.body.surface, noIndex: noIndex.body.surface }));
+    }
     // the other half of the same rule: a path nobody named at all is refused by the same line, so a
     // model that invents a plausible tracked file gets a gap rather than a surface.
     const unnamed = validateCard({ surface: { files: ["server.ts", "e2e/pins.ts"] } },

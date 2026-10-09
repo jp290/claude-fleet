@@ -72,7 +72,10 @@ export interface TaskCardRole { harness: string | null; model: string | null; ef
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
 // so they are their own field with their own rule; absent = the row names none.
 // `unchecked` are the entries of `symbols` that NO index checked — see cardUncheckedSymbols.
-export interface TaskCardSurface { files: string[]; symbols: string[]; ranges: SymbolRange[] | null; creates?: string[]; unchecked?: string[] }
+// `neighbors` is the graph's answer to "what does this symbol touch", read once at filing (see
+// buildNeighborIndex); absent = no graph with edges, or no validated symbol the graph carries.
+export interface TaskCardSurface { files: string[]; symbols: string[]; ranges: SymbolRange[] | null; creates?: string[]; unchecked?: string[];
+  neighbors?: CardNeighbors }
 export interface TaskCardBody {
   ziel: string;
   rolle: TaskCardRole;
@@ -134,6 +137,8 @@ export interface CardValidationContext {
   declares: (file: string, symbol: string) => boolean;
   // Is this id a row of the queue? Asked for every `after` entry.
   rowKnown: (id: string) => boolean;
+  // The main graph's call edges (buildNeighborIndex); absent or null = no NACHBARN on this card.
+  neighbors?: NeighborIndex | null;
 }
 
 // `valid` answers "may this card head a dispatch"; `surfaceValid` answers the narrower "may its
@@ -500,13 +505,25 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     else gaps.push(`size: "${rawSize}" is not stated in the request`);
   }
   const unchecked = ctx.symbolIndex ? [] : cardUncheckedSymbols({ symbols, ranges: null });
+  // Only CHECKED symbols get neighbours: an unchecked one stands on file existence alone, and a
+  // neighbour list under it would read as the graph vouching for a symbol nobody resolved.
+  const neighborRows = ctx.symbolIndex && ctx.neighbors
+    ? symbols.flatMap((ref) => {
+      const [file, symbol] = splitSymbolRef(ref)!;
+      const hit = ctx.neighbors!.of(file, symbol);
+      return hit ? [{ symbol: ref, ...hit }] : [];
+    })
+    : [];
+  const neighbors: CardNeighbors | null = neighborRows.length
+    ? { graph: ctx.neighbors!.commit, symbols: neighborRows } : null;
   const body: TaskCardBody = {
     ziel, rolle, done, verify,
     // A file with a declaration-only symbol keeps NO ranges: a partial list would tell
     // task-land-waves.ts#collidesOn "only near the resolved symbol", and two rows meeting at the
     // unresolved one would be separated. No range in a file already reads as "where is unknown".
     surface: { files, symbols, ranges: ctx.symbolIndex ? ranges.filter((r) => !rangeless.has(r.file)) : null,
-      ...(creates.length ? { creates } : {}), ...(unchecked.length ? { unchecked } : {}) },
+      ...(creates.length ? { creates } : {}), ...(unchecked.length ? { unchecked } : {}),
+      ...(neighbors ? { neighbors } : {}) },
     verboten: list(raw.verboten),
     ...(web ? { web } : {}),
     ...(typeof raw.delegation === "string" && raw.delegation.trim() ? { delegation: text1(raw.delegation) } : {}),
@@ -523,6 +540,136 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   const firstSurfaceGap = gaps.find((g) => g.startsWith("surface."));
   if (firstSurfaceGap && cardSurfaceValid(kept)) kept[MAX_LIST - 1] = firstSurfaceGap;
   return { body, valid: cardValid(gaps), surfaceValid: cardSurfaceValid(gaps), gaps: kept };
+}
+
+// --- NACHBARN: THE NEIGHBOURHOOD OF A SURFACE SYMBOL, read off the main graph at filing.
+//
+// Why at filing and not in the lane (measured 2026-10-09, row 4be5f0fa): 170 lane sessions in seven
+// days ran 0 graphify calls against 1293 rg/grep. The card already answers "which file, which
+// symbol"; what a 50 000-line server.ts leaves open is who calls that symbol and what it calls — and
+// that is a deterministic read of the graph's `calls` edges, the same edges `graphify explain`
+// prints. So the validator writes them onto the card once, and the lane reads a line instead of
+// having to know there is a tool to ask.
+//
+// One entry per neighbour, `label file:Lnn`:
+//   callers ← the CALL SITE in the caller's file (the edge's own location — where to go and look)
+//   callees → the callee's DEFINITION (the call site lies inside the symbol the lane is reading)
+//   importers ⇠ a file that IMPORTS the symbol but whose calls the graph did not resolve — measured
+//               on validateCard: three calls in server.ts, zero `calls` edges, one `imports` edge.
+//               Without this a used symbol would read as unused by exactly the file that uses it.
+// Sorted by file, then line, then label — byte-stable for the same graph. Capped per side; the
+// count of what the cap left out rides along, so a hub never reads as a leaf.
+export const NEIGHBOR_MAX_PER_SIDE = 8;
+// `indirect_call` is graphify's name for a call through a value (a callback, a table entry): still a
+// call, still a neighbour. `references`, `imports` and `contains` are not calls.
+const NEIGHBOR_RELATIONS: ReadonlySet<string> = new Set(["calls", "indirect_call"]);
+const IMPORT_RELATIONS: ReadonlySet<string> = new Set(["imports", "imports_from"]);
+
+export interface SymbolNeighbors { symbol: string; callers: string[]; callees: string[]; importers?: string[];
+  moreCallers?: number; moreCallees?: number }
+// `graph` is the commit the graph was built at (graph.json#built_at_commit), null when it does not say.
+export interface CardNeighbors { graph: string | null; symbols: SymbolNeighbors[] }
+export interface NeighborIndex {
+  commit: string | null;
+  of: (file: string, symbol: string) => Omit<SymbolNeighbors, "symbol"> | null;
+}
+
+// the same normalisation task-metadata.ts#symbolKey applies to a graph label: `spawnCmd()` and
+// `.spawnCmd()` are the symbol `spawnCmd`
+const graphSymbol = (label: string): string => label.replace(/\(\)$/, "").replace(/^\.+/, "");
+const lineOf = (loc: unknown): number => {
+  const m = typeof loc === "string" ? /^L(\d+)/.exec(loc) : null;
+  return m ? Number(m[1]) : 0;
+};
+
+/**
+ * The pure half: a parsed graph.json in, a lookup out — or null when the graph carries no edges at
+ * all (a node-only graph, like the suites' fixtures, says nothing about neighbours, which is not
+ * the same as "no neighbours"). The caller reads and caches the file.
+ */
+export function buildNeighborIndex(graph: unknown): NeighborIndex | null {
+  if (!graph || typeof graph !== "object") return null;
+  const g = graph as { nodes?: unknown; links?: unknown; edges?: unknown; built_at_commit?: unknown };
+  const links = Array.isArray(g.links) ? g.links : Array.isArray(g.edges) ? g.edges : null;
+  if (!Array.isArray(g.nodes) || !links) return null;
+  type Node = { label: string; file: string; line: number };
+  const nodes = new Map<string, Node>();
+  const byKey = new Map<string, string[]>();
+  for (const raw of g.nodes as Record<string, unknown>[]) {
+    if (!raw || typeof raw.id !== "string" || typeof raw.label !== "string" || typeof raw.source_file !== "string") continue;
+    const node = { label: graphSymbol(raw.label), file: raw.source_file, line: lineOf(raw.source_location) };
+    nodes.set(raw.id, node);
+    if (raw.file_type !== "code") continue;
+    const key = `${node.file}#${node.label}`;
+    const ids = byKey.get(key);
+    if (ids) ids.push(raw.id); else byKey.set(key, [raw.id]);
+  }
+  type Edge = { other: string; file: string; line: number };
+  const callersOf = new Map<string, Edge[]>();
+  const calleesOf = new Map<string, Edge[]>();
+  const importersOf = new Map<string, Edge[]>();
+  const push = (map: Map<string, Edge[]>, id: string, edge: Edge): void => {
+    const list = map.get(id);
+    if (list) list.push(edge); else map.set(id, [edge]);
+  };
+  for (const raw of links as Record<string, unknown>[]) {
+    const relation = String(raw?.relation);
+    const isImport = IMPORT_RELATIONS.has(relation);
+    if (!raw || (!NEIGHBOR_RELATIONS.has(relation) && !isImport)) continue;
+    // graphify stores an edge's true direction in `_src` when the link was persisted flipped (the
+    // rule `graphify explain` follows); without the marker the link order is the direction
+    const flipped = typeof raw._src === "string" && raw._src === raw.target;
+    const from = flipped ? raw.target : raw.source;
+    const to = flipped ? raw.source : raw.target;
+    if (typeof from !== "string" || typeof to !== "string" || from === to) continue;
+    const site = { file: typeof raw.source_file === "string" ? raw.source_file : "", line: lineOf(raw.source_location) };
+    if (isImport) { push(importersOf, to, { other: from, ...site }); continue; }
+    const callee = nodes.get(to);
+    push(callersOf, to, { other: from, ...site });
+    push(calleesOf, from, { other: to, file: callee?.file ?? "", line: callee?.line ?? 0 });
+  }
+  const side = (ids: readonly string[], of: ReadonlyMap<string, Edge[]>): { shown: string[]; more: number } => {
+    const own = new Set(ids);
+    const seen = new Map<string, { label: string; file: string; line: number }>();
+    for (const id of ids) for (const e of of.get(id) ?? []) {
+      if (own.has(e.other)) continue; // a recursion is not a neighbour
+      const label = nodes.get(e.other)?.label ?? e.other;
+      const key = `${label}\0${e.file}\0${e.line}`;
+      if (!seen.has(key)) seen.set(key, { label, file: e.file, line: e.line });
+    }
+    // code-unit order, not localeCompare: the same graph must render the same bytes on every host
+    const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+    const all = [...seen.values()].sort((a, b) => cmp(a.file, b.file) || a.line - b.line || cmp(a.label, b.label));
+    return { shown: all.slice(0, NEIGHBOR_MAX_PER_SIDE).map((e) => `${e.label} ${e.file}${e.line ? `:L${e.line}` : ""}`),
+      more: Math.max(0, all.length - NEIGHBOR_MAX_PER_SIDE) };
+  };
+  return {
+    commit: typeof g.built_at_commit === "string" && /^[0-9a-f]{7,64}$/.test(g.built_at_commit) ? g.built_at_commit : null,
+    of: (file, symbol) => {
+      const ids = byKey.get(`${file}#${symbol}`);
+      if (!ids) return null;
+      const callers = side(ids, callersOf);
+      const callees = side(ids, calleesOf);
+      const callerFiles = new Set(ids.flatMap((id) => (callersOf.get(id) ?? []).map((e) => e.file)));
+      const importers = [...new Set(ids.flatMap((id) => (importersOf.get(id) ?? []).map((e) => e.file)))]
+        .filter((file) => file && !callerFiles.has(file)).sort().slice(0, NEIGHBOR_MAX_PER_SIDE);
+      if (!callers.shown.length && !callees.shown.length && !importers.length) return null;
+      return { callers: callers.shown, callees: callees.shown, ...(importers.length ? { importers } : {}),
+        ...(callers.more ? { moreCallers: callers.more } : {}), ...(callees.more ? { moreCallees: callees.more } : {}) };
+    },
+  };
+}
+
+/**
+ * One `NACHBARN` line per symbol, exactly as the lane reads it:
+ *   NACHBARN server.ts#deployRun: ← deployVerb server.ts:L46448 · → git server.ts:L2210, … (+3)
+ *   NACHBARN card-extract.ts#validateCard: ← run e2e/tasks.ts:L9950 · → … · ⇠ importiert in server.ts
+ */
+export function renderNeighborLines(neighbors: CardNeighbors): string[] {
+  const part = (arrow: string, list: readonly string[], more = 0): string =>
+    list.length ? `${arrow} ${list.join(", ")}${more ? ` (+${more})` : ""}` : "";
+  return neighbors.symbols.map((n) => `NACHBARN ${n.symbol}: ${[part("←", n.callers, n.moreCallers),
+    part("→", n.callees, n.moreCallees), part("⇠ importiert in", n.importers ?? [])].filter(Boolean).join(" · ")}`);
 }
 
 // --- THE FILING FORMAT (docs/messungen/2026-09-13-task-aggregation-a-e-fable.md §A). A row whose

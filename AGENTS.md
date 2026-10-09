@@ -279,8 +279,14 @@ Three host rules that otherwise live only in the private lane overlay, which a C
 - Search git-ignored files with `rg -uu` or `grep`, because plain `rg` honours `.gitignore` and
   returns an empty result for CLAUDE.md, fleet.json, the ledgers and .env.
 
-`graphify-out/` exists only in the main checkout, so a missing graph is normal: query that one
-read-only (`--graph` under `git rev-parse --git-common-dir`), use `rg`/`ast-grep` for symbols.
+A lane of this repo reads the main checkout's code graph at `graphify-out/graph.json`, a read-only
+link the server lays at spawn (`server.ts#linkLaneGraph`), with no `--graph`. Ask it for a symbol's
+neighbourhood before grepping a large file: `graphify explain "<symbol>"` lists callers and callees
+with `file:line` in about a second, `graphify path "<A>" "<B>"` joins two symbols; the card's
+NACHBARN lines are that answer, read at filing. The free-text `graphify query` mostly returns
+Markdown headings here and is optional. Never `graphify update`, `graphify .` or `save-result` in a
+lane: `update` refuses there by construction, and a lane-built graph dies with the worktree. No graph
+(an older lane, a foreign repo) is normal: use `rg`/`ast-grep`.
 
 ## Reporting
 

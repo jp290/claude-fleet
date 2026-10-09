@@ -1,16 +1,5 @@
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun \"$CLAUDE_PROJECT_DIR/.claude/hooks/graphify-once.ts\""
-          }
-        ]
-      }
-    ],
     "PermissionRequest": [
       {
         "matcher": "",

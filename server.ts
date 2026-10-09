@@ -10,7 +10,7 @@ import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
-import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
+import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname, loadavg } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
@@ -75,12 +75,13 @@ import { buildTrace, type TraceInput, type TraceLiveLane, type TraceRefs } from 
 import { TimelineIndex, timelineStamp, type TimelineReceipt, type TimelineSource } from "./trace-timeline";
 import {
   clusterForFiles, deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp, readSymbolIndexSnapshot,
-  resolveSurfaceRanges, symbolGraphStamp, surfaceSha,
+  resolveSurfaceRanges, symbolGraphStamp, surfaceSha, SYMBOL_GRAPH_PATH,
   type TaskFilesOrigin, type TrackedSnapshot, type SymbolIndex, type SymbolIndexSnapshot,
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAdvisoryGap, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
-  CARD_VALIDATOR_VERSION, type TaskCardBody, type CardValidationContext, type RawCard } from "./card-extract";
+  CARD_VALIDATOR_VERSION, buildNeighborIndex, renderNeighborLines, type TaskCardBody, type CardValidationContext, type RawCard,
+  type CardNeighbors, type NeighborIndex } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
 // The LAND fold of the collision facts. The wave button does not re-decide R1/R2/R3 or the program
@@ -5639,8 +5640,9 @@ function taskBaseSnapshotFor(repoRaw: string, requested?: string): TrackedSnapsh
 }
 // The graph half of the surface, cached exactly like the tracked snapshot above and for the same
 // reason: it is a REPOSITORY fact shared by every row, and re-reading a 10 000-node graph per row
-// per 2 s poll is not a projection, it is a load. `null` is the lane's honest answer — graphify-out/
-// is gitignored and lives only in the main checkout.
+// per 2 s poll is not a projection, it is a load. `null` is the honest answer of a checkout without
+// graphify-out/ (gitignored; built only in the main checkout, which a lane reads through its link —
+// linkLaneGraph).
 // The cache is keyed on repo + resolved commit with the graph file stamp, including FAILURES: a
 // graph.json that exists but does not parse reads null forever, and a cache that only remembered
 // successes would re-read ten megabytes per row per 2 s poll for as long as the file stayed broken.
@@ -5659,6 +5661,24 @@ function symbolIndexFor(tree: TrackedSnapshot | null): SymbolIndexSnapshot | nul
   const snapshot = readSymbolIndexSnapshot(repo, tree);
   symbolIndexCache.set(key, { snapshot, stamp, checkedAt: now });
   return snapshot;
+}
+// THE CALL EDGES of the same graph, for the card's NACHBARN (card-extract.ts#buildNeighborIndex).
+// Keyed on the graph file alone — edges are a property of the graph, not of the commit a row reads —
+// and, like the cache above, a failure is remembered for 5 s instead of re-parsing 18 MB per filing.
+// Measured 2026-10-09 on the main graph (17 541 nodes, 27 862 links): parse 44 ms, index 13 ms.
+const neighborIndexCache = new Map<string, { index: NeighborIndex | null; stamp: string | null; checkedAt: number }>();
+function neighborIndexFor(repo: string): NeighborIndex | null {
+  const now = Date.now();
+  const stamp = symbolGraphStamp(repo);
+  const hit = neighborIndexCache.get(repo);
+  if (hit && hit.stamp === stamp && (hit.index || now - hit.checkedAt < 5000)) return hit.index;
+  let index: NeighborIndex | null = null;
+  if (stamp) {
+    try { index = buildNeighborIndex(JSON.parse(readFileSync(resolve(repo, SYMBOL_GRAPH_PATH), "utf8"))); }
+    catch { index = null; }
+  }
+  neighborIndexCache.set(repo, { index, stamp, checkedAt: now });
+  return index;
 }
 
 // WHY THE SURFACE IS STORED NOW AND WAS NOT BEFORE. Until 2026-09-12 every reader re-derived it,
@@ -7731,9 +7751,70 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
 // runs in the tree: switching TO pi-zai removes the copies, switching away writes them again. Only
 // GITIGNORED names are touched either way — a tracked file of that name is the repo's work, not a
 // copy. The fence additionally refuses their content inside any pi-zai cwd (server/pi-zai-fence.ts).
+// THE MAIN GRAPH, READABLE FROM EVERY LANE WITHOUT A PATH (Owner 2026-10-09: „[Zitat entfernt]“
+// ; row 4be5f0fa). Measured before: 170 lane sessions in seven days, 0
+// graphify calls — a lane's tree has no graphify-out/ (gitignored), and the one hint was a
+// `--graph "$(dirname "$(git rev-parse --git-common-dir)")/…"` recipe nobody typed.
+// Every read verb defaults to ./graphify-out/graph.json, so that is where the lane finds it. Three
+// facts fix the form:
+//   · NOT a copy of graphify-out/ — 750 MB of dated snapshots and caches per lane.
+//   · NOT a link to the main checkout's graph.json: graphify writes THROUGH a symlink
+//     (graphify/paths.py#_atomic_replace resolves it first), so a lane's `graphify update .` or
+//     `graphify .` would replace the owner's map with a lane's tree. The link points at a VIEW — one
+//     copy per repository under the git common dir, outside every worktree and every `git archive`,
+//     republished when the main graph moved (rebuildMainCheckoutGraph, and here on a stale view).
+//     A write through the link reaches that copy and nothing else, and the next publish heals it.
+//   · `graphify update` refuses before it writes anything: it opens graphify-out/.rebuild.lock
+//     (graphify/watch.py#_rebuild_lock) before reading a file, and in a lane that name is a
+//     DIRECTORY. Measured: exit 1, view and main graph byte-identical (docs/messungen/
+//     2026-10-09-graphify-in-der-lane.md).
+// `save-result` writes graphify-out/memory/ — the lane's own directory, gone with the worktree.
+// Gitignored or nothing, the same rule as PRIVATE_SCAFFOLD below: an untracked graphify-out/ blocks
+// `land` (buildCodeGraph's comment), so a repo that does not ignore it gets no link. Best-effort:
+// every failure leaves the lane without a graph, which is the state every lane had before.
+const LANE_GRAPH_VIEW_DIR = "fleet-lane-graph";
+async function laneGraphView(root: string): Promise<string | null> {
+  const source = resolve(root, SYMBOL_GRAPH_PATH);
+  let src: ReturnType<typeof statSync>;
+  try { src = statSync(source); } catch { return null; }
+  if ((await git(root, "check-ignore", "-q", "graphify-out/")).code !== 0) return null;
+  const common = await git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (common.code !== 0 || !common.out) return null;
+  const dir = `${common.out}/${LANE_GRAPH_VIEW_DIR}`;
+  const view = `${dir}/graph.json`;
+  try {
+    const seen = statSync(view);
+    // the copy carries the source's mtime, so "same size, same mtime" is "same publish"
+    if (seen.size === src.size && Math.round(seen.mtimeMs) === Math.round(src.mtimeMs)) return view;
+  } catch { /* no view yet */ }
+  mkdirSync(dir, { recursive: true });
+  // no await between copy and rename: two spawns in this process cannot interleave on the temp name
+  const tmp = `${view}.${process.pid}.tmp`;
+  copyFileSync(source, tmp);
+  utimesSync(tmp, src.atime, src.mtime);
+  renameSync(tmp, view);
+  return view;
+}
+async function linkLaneGraph(root: string, path: string): Promise<void> {
+  try {
+    const out = `${path}/graphify-out`;
+    // a graphify-out/ the lane already has is its own, or this link from an earlier call
+    // (switchLaneHarness runs the scaffold again)
+    if (existsSync(out)) return;
+    if ((await git(path, "check-ignore", "-q", "graphify-out/")).code !== 0) return;
+    const view = await laneGraphView(root);
+    if (!view) return;
+    mkdirSync(`${out}/.rebuild.lock`, { recursive: true });
+    symlinkSync(view, `${out}/graph.json`);
+  } catch (e) {
+    console.log(`graph: lane link skipped for ${basename(path)} — ${e instanceof Error ? e.message : "threw"}`.slice(0, 240));
+  }
+}
 const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
 async function laneScaffoldFor(root: string, path: string, harness: Harness,
   variante: ContextPositionVariante | null = null): Promise<void> {
+  // every harness reads the graph the same way; it is no private scaffold, so it stands before the split
+  await linkLaneGraph(root, path);
   if (scaffoldFree(harness)) {
     for (const f of PRIVATE_SCAFFOLD) {
       if (!existsSync(`${path}/${f}`) || (await git(path, "check-ignore", "-q", f)).code !== 0) continue;
@@ -19830,13 +19911,13 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`, readiness.screen ?? null); return; }
   try {
     const context = prepared?.context ?? await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
-    const { notesBlock, snippetBlock, studioLaneBlock } = context;
+    const { notesBlock, snippetBlock, neighborBlock, studioLaneBlock } = context;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     const deliveredBrief = clarify
-      ? `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\n${ownerKorrekturenPointer()}${context.anchorBlock}`
-      : `${brief}${notesBlock}${snippetBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
+      ? `${brief}${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}\n\n${ownerKorrekturenPointer()}${context.anchorBlock}`
+      : `${brief}${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -19853,7 +19934,7 @@ interface LaneContextDelivery {
   sessionAgents: SessionAgents;
   /** the variant the plan ACCEPTED (laneVarianteRaw → resolveVariante); null = the plain lane */
   variante: ContextPositionVariante | null;
-  notesBlock: string; snippetBlock: string; studioLaneBlock: string; anchorBlock: string;
+  notesBlock: string; snippetBlock: string; neighborBlock: string; studioLaneBlock: string; anchorBlock: string;
   record: (deliveredBrief: string, at: number) => Promise<void>;
 }
 
@@ -19964,12 +20045,14 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
   const snippetBlock = snippet.block;
+  // NACHBARN right behind the source package it extends, for the same position reason; clarify none.
+  const neighborBlock = clarify ? "" : laneNeighborBlock(sourceRows);
   const sessionAgents = await foundingSessionAgents({ repoRoot: wt.path, head: laneHead.out, plan },
     free.harness, "lane", undefined, clarify ? "" : `${ownerKorrekturenPointer()}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver, variante)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { sessionAgents, variante, notesBlock, snippetBlock, studioLaneBlock, anchorBlock,
-    block: `${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}`,
+  return { sessionAgents, variante, notesBlock, snippetBlock, neighborBlock, studioLaneBlock, anchorBlock,
+    block: `${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}${anchorBlock}`,
     record: async (deliveredBrief, at) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
       // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -20018,6 +20101,36 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
       });
     },
   };
+}
+
+// THE CARD'S NACHBARN, delivered (card-extract.ts#renderNeighborLines): one line per card symbol the
+// main graph knows, read at FILING — so the line numbers are the graph's stand, which the head names;
+// the Quellpaket above is cut from the lane's own commit. A wave renders every row's lines, each once.
+// A row without neighbours (no graph, no edges, an old card) adds nothing, so its brief keeps its
+// exact bytes. The cap is a guard: eight entries a side keep one line under ~600 B.
+const LANE_NEIGHBOR_MAX_BYTES = 2048;
+function laneNeighborBlock(rows: readonly Task[]): string {
+  const lines: string[] = [];
+  const graphs = new Set<string>();
+  for (const row of rows) {
+    const neighbors = row.card?.surface.neighbors;
+    if (!neighbors) continue;
+    if (neighbors.graph) graphs.add(neighbors.graph.slice(0, 12));
+    for (const line of renderNeighborLines(neighbors)) if (!lines.includes(line)) lines.push(line);
+  }
+  if (!lines.length) return "";
+  const stand = graphs.size ? `, Graph-Stand ${[...graphs].join(", ")}` : "";
+  const head = `Nachbarn aus dem Haupt-Graphen (beim Filen gelesen${stand}; ← Aufrufer an der Aufrufstelle, → Aufgerufene an ihrer Definition; mehr: graphify explain "<symbol>", graphify path "<A>" "<B>"):`;
+  const kept: string[] = [];
+  let bytes = Buffer.byteLength(head);
+  for (const line of lines) {
+    const size = Buffer.byteLength(line) + 1;
+    if (bytes + size > LANE_NEIGHBOR_MAX_BYTES) break;
+    kept.push(line);
+    bytes += size;
+  }
+  const omitted = lines.length - kept.length;
+  return `\n\n${head}\n${kept.join("\n")}${omitted ? `\n(+${omitted} NACHBARN-Zeilen ausgelassen — graphify explain liefert sie)` : ""}`;
 }
 
 // The lane's source package, rendered (context-snippets.ts). THE COMMIT IS THE LANE'S OWN HEAD, read
@@ -20490,6 +20603,9 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
     classKnown: (v) => !!snapshot && executionClassFor(snapshot.repo, v) !== null,
     declares: (file, symbol) => !!snapshot?.paths.has(file) && declaresSymbol(sourceOf(file), symbol),
     rowKnown: (id) => tasks.some((t) => t.id === id),
+    // the same graph file the symbol index read, so a NACHBARN line never comes from a graph the
+    // symbol check did not use; no index → no neighbours
+    neighbors: index && snapshot ? neighborIndexFor(snapshot.repo) : null,
   };
 };
 // THE FILING FORMAT NEEDS NO MODEL (card-extract.ts#parseFormattedCard): a row whose own text opens
@@ -20730,6 +20846,30 @@ const normFileList = (v: unknown): string[] | undefined => {
 // recorded): it is not a claim about the tree but the date of the rules, and cardDue reads it. Nothing is re-validated against the tree (that
 // needs a repository and this is the loader); the card is a READING, and the tick re-reads it when
 // the text moves.
+// The card's NACHBARN read back off disk: SHAPE only, like every other card field here. An entry is
+// kept only for a symbol the card still names, so a hand-edit cannot attach neighbours to a symbol
+// the validator never resolved; anything malformed drops the whole field (absent = "not read").
+const normCardNeighbors = (v: unknown, symbols: readonly string[]): { neighbors: CardNeighbors } | null => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const raw = v as Record<string, unknown>;
+  if (!Array.isArray(raw.symbols)) return null;
+  const strs = (x: unknown): string[] => (Array.isArray(x) ? x : [])
+    .filter((e): e is string => typeof e === "string" && !!e).map((e) => e.slice(0, 200)).slice(0, 8);
+  const count = (x: unknown): number => (Number.isInteger(x) && (x as number) > 0 ? x as number : 0);
+  const rows = (raw.symbols as unknown[]).flatMap((e) => {
+    if (!e || typeof e !== "object") return [];
+    const n = e as Record<string, unknown>;
+    if (typeof n.symbol !== "string" || !symbols.includes(n.symbol)) return [];
+    const importers = strs(n.importers);
+    return [{ symbol: n.symbol, callers: strs(n.callers), callees: strs(n.callees),
+      ...(importers.length ? { importers } : {}),
+      ...(count(n.moreCallers) ? { moreCallers: count(n.moreCallers) } : {}),
+      ...(count(n.moreCallees) ? { moreCallees: count(n.moreCallees) } : {}) }];
+  });
+  if (!rows.length) return null;
+  const graph = typeof raw.graph === "string" && /^[0-9a-f]{7,64}$/.test(raw.graph) ? raw.graph : null;
+  return { neighbors: { graph, symbols: rows } };
+};
 const normTaskCard = (v: unknown): TaskCard | undefined => {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const raw = v as Record<string, unknown>;
@@ -20757,7 +20897,8 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
     rolle: { harness: field(role.harness), model: field(role.model), effort: field(role.effort) },
     surface: { files: strs(surface.files), symbols, ranges,
       ...(strs(surface.creates).length ? { creates: strs(surface.creates) } : {}),
-      ...(unchecked.length ? { unchecked } : {}) },
+      ...(unchecked.length ? { unchecked } : {}),
+      ...(normCardNeighbors(surface.neighbors, symbols) ?? {}) },
     ...(field(raw.program) ? { program: field(raw.program)! } : {}),
     ...(strs(raw.after).length ? { after: strs(raw.after) } : {}),
     ...(isTaskCardSize(raw.size) ? { size: raw.size } : {}),
@@ -36114,6 +36255,9 @@ async function rebuildMainCheckoutGraph(repo: string, main: string): Promise<num
     }
     const code = await runGraphStep(["graphify", ".", "--code-only"], holder.path);
     if (code !== 0) { console.log(`graph: ${basename(repo)} — graphify . --code-only exited ${code}`); return null; }
+    // the lanes read this graph through their view (linkLaneGraph): republish it now, not at the next spawn
+    await laneGraphView(holder.path).catch((e) =>
+      console.log(`graph: ${basename(repo)} — lane view not published: ${e instanceof Error ? e.message : "threw"}`.slice(0, 240)));
     return code;
   } catch (e) {
     console.log(`graph: ${basename(repo)} — rebuild failed: ${e instanceof Error ? e.message : "threw"}`.slice(0, 240));

@@ -90,7 +90,6 @@ import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
 // Claude Code runs the file, so only the file run proves what the session sees
 import { HARNESS_BLOCK_ROUTE, WAITING_NOTIFICATIONS, decide as hookDecide } from "../.claude/hooks/lane-permission";
-import { graphifyOnce } from "../.claude/hooks/graphify-once";
 
 const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
@@ -11610,44 +11609,20 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // .gitignore rather than `git check-ignore`, because the post-land audit runs from a git archive.
   const ignored = read(".gitignore").split("\n").some((l) => l.trim() === ".claude/settings.json");
   pin(`${RULE_HOOK} — .claude/settings.json is not gitignored (an ignored copy never reaches a lane)`, !ignored);
-  const graphifyOnceRel = ".claude/hooks/graphify-once.ts";
-  const graphify = groups("PreToolUse").some((g) => g.matcher === "Bash|Grep"
-    && (g.hooks ?? []).some((c) => c.command === `bun "$CLAUDE_PROJECT_DIR/${graphifyOnceRel}"`));
-  const readGuard = cmds("PreToolUse").some((c) => (c.command ?? "").includes("hook-guard read"));
-  pin(`${RULE_HOOK} — graphify's Bash|Grep search hint runs through the session-once hook (no read guard or host path)`,
-    graphify && !readGuard && !read(".claude/settings.json").includes("/Users/"),
-    `search=${graphify} read=${readGuard}`);
+  // NO GRAPHIFY HOOK (2026-10-09, row 4be5f0fa): the Bash|Grep hint fired once in one main-checkout
+  // session five times, asked for the free-text `query` at the moment the session already knew its
+  // symbol, and changed nothing; in a lane it never fired at all. The graph now reaches a lane as the
+  // card's NACHBARN line and as a read-only graphify-out/graph.json (server.ts#linkLaneGraph).
+  const graphifyHook = cmds("PreToolUse").some((c) => /graphify/.test(c.command ?? ""));
+  pin(`${RULE_HOOK} — no PreToolUse hook runs graphify (no search hint, no read guard, no host path)`,
+    !graphifyHook && !exists(".claude/hooks/graphify-once.ts") && !read(".claude/settings.json").includes("/Users/"),
+    `hook=${graphifyHook}`);
   const plugins = Object.values(settings?.enabledPlugins ?? {});
   pin(`${RULE_HOOK} — project settings disable the measured user plugins and exclude global Claude rules`,
     plugins.length > 0 && plugins.every((enabled) => enabled === false)
       && settings?.claudeMdExcludes?.includes("**/.claude/CLAUDE.md") === true,
     `disabled=${plugins.filter((enabled) => enabled === false).length} total=${plugins.length}`);
 
-  const onceHome = mkdtempSync(join(tmpdir(), "fleet-graphify-pin-"));
-  try {
-    mkdirSync(`${onceHome}/.local/bin`, { recursive: true });
-    const fakeGraphify = `${onceHome}/.local/bin/graphify`;
-    writeFileSync(fakeGraphify, "#!/bin/sh\n[ \"$1\" = hook-guard ] && [ \"$2\" = search ] || exit 9\nbody=$(cat)\n[ -n \"$body\" ] || exit 8\nprintf 'graphify-hint\\n'\nexit \"${GRAPHIFY_FAKE_EXIT:-0}\"\n");
-    chmodSync(fakeGraphify, 0o755);
-    const onceRun = (sessionId: string, fakeExit = "0") => spawnSync("bun", [`${ROOT}/${graphifyOnceRel}`], {
-      input: JSON.stringify({ session_id: sessionId, hook_event_name: "PreToolUse", tool_name: "Bash" }),
-      env: { ...process.env, HOME: onceHome, TMPDIR: onceHome, GRAPHIFY_FAKE_EXIT: fakeExit },
-      encoding: "utf8", timeout: 10_000,
-    });
-    const first = onceRun("first-session");
-    const repeat = onceRun("first-session");
-    const next = onceRun("next-session");
-    const invalid = onceRun("../escape");
-    const failedGuard = onceRun("error-session", "7");
-    pin(`${RULE_HOOK} — graphify emits once per valid session, again for another session, and never for an unsafe id`,
-      [first, repeat, next, invalid].every((r) => r.status === 0)
-        && first.stdout === "graphify-hint\n" && repeat.stdout === ""
-        && next.stdout === "graphify-hint\n" && invalid.stdout === "",
-      `first=${JSON.stringify(first.stdout)} repeat=${JSON.stringify(repeat.stdout)} next=${JSON.stringify(next.stdout)} invalid=${JSON.stringify(invalid.stdout)}`);
-    pin(`${RULE_HOOK} — the first call forwards graphify's stdout and exit code`,
-      failedGuard.status === 7 && failedGuard.stdout === "graphify-hint\n",
-      `exit=${failedGuard.status} stdout=${JSON.stringify(failedGuard.stdout)}`);
-  } finally { rmSync(onceHome, { recursive: true, force: true }); }
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
   const srvHook = read("server.ts");
   const bakesLane = srvHook.includes("export FLEET_SELF_URL='http://${HOST}:${PORT}'; ${s.worktree ? \"export FLEET_SELF_LANE='1'; \" : \"\"}");

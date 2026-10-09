@@ -84,6 +84,48 @@ export async function run(lc: LaneCtx): Promise<void> {
       if (ownerPlanted) rmSync(`${REPO}/OWNER.md`, { force: true });
     }
   }
+  // THE MAIN GRAPH IN EVERY LANE (row 4be5f0fa, server.ts#linkLaneGraph): a lane of a repo that
+  // IGNORES graphify-out/ gets graphify-out/graph.json as a link to the one view under the git common
+  // dir — byte-equal to the source graph — beside a .rebuild.lock DIRECTORY that makes `graphify
+  // update` refuse before it writes, and the lane stays clean. The ignore comes from .git/info/exclude,
+  // so the fixture repo's tracked .gitignore and every other check's tree stay as they were.
+  {
+    const exclude = `${REPO}/.git/info/exclude`;
+    const excludeBefore = exists(exclude) ? readFileSync(exclude, "utf8") : null;
+    const graphDir = `${REPO}/graphify-out`;
+    const graphPlanted = !exists(graphDir);
+    const graph = JSON.stringify({ nodes: [{ id: "x", label: "x()", file_type: "code", source_file: "code.txt", source_location: "L1" }], links: [] });
+    const lgDir = `${REPO}.worktrees/e2e-lane-graph`;
+    try {
+      if (graphPlanted) {
+        mkdirSync(`${REPO}/.git/info`, { recursive: true });
+        writeFileSync(exclude, `${excludeBefore ?? ""}${excludeBefore && !excludeBefore.endsWith("\n") ? "\n" : ""}graphify-out/\n`);
+        mkdirSync(graphDir);
+        writeFileSync(`${graphDir}/graph.json`, graph);
+      }
+      await post("/api/slots/7/kill", {});
+      const lg = await post("/api/slots/7/open-worktree", { repo: REPO, branch: "e2e-lane-graph" });
+      const link = `${lgDir}/graphify-out/graph.json`;
+      const view = `${realpathSync(`${REPO}/.git`)}/fleet-lane-graph/graph.json`;
+      const isLink = ((): boolean => { try { return lstatSync(link).isSymbolicLink(); } catch { return false; } })();
+      const target = ((): string => { try { return realpathSync(link); } catch { return ""; } })();
+      const lockDir = ((): boolean => { try { return statSync(`${lgDir}/graphify-out/.rebuild.lock`).isDirectory(); } catch { return false; } })();
+      const viewBytes = exists(view) ? readFileSync(view, "utf8") : "";
+      const lgStatus = spawnSync("git", ["status", "--porcelain"], { cwd: lgDir, encoding: "utf8" });
+      await post("/api/slots/7/kill", {});
+      check("a lane of a repo that ignores graphify-out/ reads the main graph: a link to the common-dir view, a lock DIRECTORY, a clean tree",
+        graphPlanted && lg.ok && isLink && target === view && viewBytes === graph && lockDir
+          && lgStatus.status === 0 && lgStatus.stdout.trim() === "",
+        JSON.stringify({ planted: graphPlanted, status: lg.status, isLink, target, view, same: viewBytes === graph, lockDir, porcelain: lgStatus.stdout.trim() }));
+    } finally {
+      spawnSync("git", ["worktree", "remove", "--force", lgDir], { cwd: REPO });
+      if (graphPlanted) {
+        rmSync(graphDir, { recursive: true, force: true });
+        rmSync(`${REPO}/.git/fleet-lane-graph`, { recursive: true, force: true });
+        if (excludeBefore === null) rmSync(exclude, { force: true }); else writeFileSync(exclude, excludeBefore);
+      }
+    }
+  }
   // ...and the same road for the container harness, which is the one where the lane path MATTERS:
   // its whole cut is that git stays host-local while only the agent moves into the box, so a lane
   // is its primary shape. `-w "$PWD"` is what carries the worktree's own path in — the pane's cwd

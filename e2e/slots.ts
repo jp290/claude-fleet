@@ -2629,7 +2629,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // Arbeitsorte — no Check or Land row in the session block, no Checks section of its own
   check("client: the session's checks are a value of its lane, not a section of their own",
     !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && !/kvRow\("Check"/.test(cliSrc) && !/kvRow\("Land"/.test(cliSrc)
-    && /const flag = laneFlag\(w, mine\);/.test(boardSrc) && /out\.push\(wayLine\(w\)\);/.test(boardSrc)
+    && /const flag = laneFlag\(w\);/.test(boardSrc) && /out\.push\(wayLine\(w, mine\)\);/.test(boardSrc)
     && !/No suite reported in the last few minutes/.test(cliSrc),
     "laneRow + laneFlag + wayLine in src/board.ts");
   // WHOSE FACT: every section head carries one word from the closed set, and the two machine
@@ -7474,18 +7474,23 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         if (await evaluate<boolean>(`!!document.querySelector('#shell-files')`)) await key("Escape");
         fx.meterLane = true;
         const rowUp = await wait(`[...document.querySelectorAll('#boardbody .ranke .rkruns .zd.run .who')].some((n) => n.textContent.includes(' · '))`, 15000);
-        const meter = await evaluate<{ name: string; cut: boolean; lines: number; board: number; glyphInside: boolean; glyph: string | null } | null>(`(() => {
+        // since 2026-10-09 (owner, the block „[Zitat entfernt]“ in one line: „[Zitat entfernt]“
+        // ): the session is its band chip and its name beside it, the machine its
+        // glyph and its name in the line — read apart, so the claim stays about the words, not a separator
+        const meter = await evaluate<{ ref: string | null; name: string; cut: boolean; lines: number; board: number; glyphInside: boolean; glyph: string | null } | null>(`(() => {
           const n = [...document.querySelectorAll('#boardbody .ranke .rkruns .zd.run .who')].find((e) => e.textContent.includes(' · '));
           if (!n) return null;
-          const line = n.closest('.zd.run'), lb = line.getBoundingClientRect(), dv = line.querySelector('.dv');
+          const line = n.closest('.zd.run'), lb = line.getBoundingClientRect(), dv = line.querySelector('.dv'), ref = n.querySelector('.ref');
           const lh = parseFloat(getComputedStyle(n).lineHeight) || 16;
-          return { name: n.textContent, cut: n.scrollWidth > n.clientWidth + 0.5 || getComputedStyle(n).textOverflow === 'ellipsis' && n.scrollWidth > n.clientWidth,
+          return { ref: ref?.textContent ?? null, name: [...n.childNodes].filter((c) => c !== ref).map((c) => c.textContent).join('').trim(),
+            cut: n.scrollWidth > n.clientWidth + 0.5 || getComputedStyle(n).textOverflow === 'ellipsis' && n.scrollWidth > n.clientWidth,
             lines: Math.round(n.getBoundingClientRect().height / lh), board: document.querySelector('#board').getBoundingClientRect().width,
-            glyph: dv?.getAttribute('aria-label') ?? null, glyphInside: !!dv && dv.getBoundingClientRect().right <= lb.right + 0.5 && dv.getBoundingClientRect().left >= lb.left - 0.5 }; })()`);
+            glyph: dv ? dv.innerText.replace(/\\s+/g, ' ').trim() : null, glyphInside: !!dv && !!dv.querySelector('svg') && dv.getBoundingClientRect().right <= lb.right + 0.5 && dv.getBoundingClientRect().left >= lb.left - 0.5 }; })()`);
         await shot(width, "meter-row");
         facts.meter = { rowUp, ...meter };
         claims["Checks at the board's real width (≤ 360 px): a titled lane's run names the lane in full — its Kurztitel whole, in calm case, wrapped not cut — and its machine stays in the line"] =
-          !!meter && meter.board <= 360 && !meter.cut && /^\w+ · Oberflaeche · I1 /.test(meter.name) && meter.name.endsWith(` · ${shortTitle(LANE_TITLE)}`) && meter.glyphInside && meter.glyph === "läuft auf Dieser Rechner";
+          !!meter && meter.board <= 360 && !meter.cut && /^\d+[A-Z]$/.test(meter.ref ?? "") && meter.name === shortTitle(LANE_TITLE)
+          && meter.glyphInside && meter.glyph === "auf Dieser Rechner";
         fx.meterLane = false;
       }
 

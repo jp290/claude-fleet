@@ -2473,6 +2473,69 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: dispatchWasOn });
   }
 
+  // --- THE PAUSED HARNESS (model-register.ts#HARNESS_AVAILABILITY): Codex is paused in the register,
+  // and this suite lifts the pause with FLEET_HARNESS_RESUME=codex so its adapter checks keep running
+  // (e2e-isolated.sh). One restart WITHOUT that key shows the fleet the owner runs: the catalogue says
+  // why, the role defaults name no Codex, and every door that would start a codex row answers 409
+  // with the reason — nothing is spawned, and the row keeps its choice (no silent rewrite).
+  {
+    type PRow = { id: string; status: string; spawn?: { harness: string | null } };
+    const pRow = async (id: string): Promise<PRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: PRow[] }).tasks.find((t) => t.id === id);
+    const occupied = async (): Promise<number> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { cwd: string | null }[] }).slots.filter((x) => x.cwd).length;
+    const pDispatchWasOn = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    await restartSrv({ FLEET_HARNESS_RESUME: "" });
+    try {
+      await post("/api/dispatch", { on: false });
+      const cat = (await (await get("/api/harnesses")).json()) as {
+        harnesses: { id: string; availability?: { status: string; since?: string; reason?: string } }[];
+        modelDefaults: Record<string, { harness: string; id: string; effort: string | null }> };
+      const codex = cat.harnesses.find((h) => h.id === "codex");
+      const claude = cat.harnesses.find((h) => h.id === "claude");
+      check("paused harness: GET /api/harnesses names codex unavailable with its date and reason, claude available",
+        codex?.availability?.status === "unavailable" && !!codex.availability.since && (codex.availability.reason ?? "").length > 20
+          && claude?.availability?.status === "available",
+        JSON.stringify({ codex: codex?.availability, claude: claude?.availability }));
+      const opus = (r: { harness: string; id: string; effort: string | null } | undefined): boolean =>
+        r?.harness === "claude" && r.id === "claude-opus-5-5[1m]" && r.effort === "high";
+      const execRoles = ["summaryExec", "commitMsgExec", "enhanceExec", "digestExec", "reviewExec", "mergeExec", "repairExec", "cleanReviewExec", "cardExec"];
+      check("paused harness: the served role defaults put worker, denk and every *Exec role on claude/opus-5-5[1m]/high, main and orchestrator unchanged",
+        opus(cat.modelDefaults.worker) && opus(cat.modelDefaults.denk) && execRoles.every((r) => opus(cat.modelDefaults[r]))
+          && JSON.stringify(cat.modelDefaults.main) === JSON.stringify(MODEL_DEFAULTS.main)
+          && JSON.stringify(cat.modelDefaults.orchestrator) === JSON.stringify(MODEL_DEFAULTS.orchestrator)
+          && Object.values(cat.modelDefaults).every((d) => d.harness !== "codex"),
+        JSON.stringify(cat.modelDefaults));
+
+      // a row filed WITH a codex choice (the filing door stays open: a row is not a start), then started
+      const filed = ((await (await post("/api/tasks", { text: "paused codex dispatch fixture", kind: "auftrag", queue: false,
+        harness: "codex", model: "gpt-6.1-sol", effort: "high" })).json()) as { task: PRow }).task;
+      const slotsBefore = await occupied();
+      const d = await post(`/api/tasks/${filed.id}/dispatch`, {});
+      const dBody = (await d.json()) as { error?: string; slot?: number };
+      const afterDispatch = await pRow(filed.id);
+      check("paused harness: dispatching a codex row answers 409 with the reason, spawns nothing and keeps the row's choice",
+        d.status === 409 && (dBody.error ?? "").includes("harness codex is unavailable since") && (dBody.error ?? "").includes("subscription")
+          && dBody.slot === undefined && await occupied() === slotsBefore
+          && afterDispatch?.status === filed.status && afterDispatch?.spawn?.harness === "codex",
+        `${d.status} ${JSON.stringify(dBody)} row=${JSON.stringify(afterDispatch)} slots=${slotsBefore}`);
+      const override = await post(`/api/tasks/${filed.id}/dispatch`, { harness: "codex" });
+      check("paused harness: a dispatch body naming codex is refused the same way",
+        override.status === 409 && (await override.text()).includes("unavailable since"), String(override.status));
+
+      const plain = ((await (await post("/api/tasks", { text: "paused codex spawn fixture", kind: "auftrag", queue: false })).json()) as { task: PRow }).task;
+      const sp = await post(`/api/tasks/${plain.id}/spawn`, { harness: "codex", model: "gpt-6.1-sol", effort: "high" });
+      const spText = await sp.text();
+      check("paused harness: setting a codex worker on a row answers 409 with the reason and stores nothing",
+        sp.status === 409 && spText.includes("harness codex is unavailable since") && !(await pRow(plain.id))?.spawn,
+        `${sp.status} ${spText}`);
+      for (const id of [filed.id, plain.id]) await post(`/api/tasks/${id}/delete`, {});
+    } finally {
+      await restartSrv();
+      await post("/api/dispatch", { on: pDispatchWasOn });
+    }
+  }
+
   // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---
   {
     type KRow = { id: string; kind: string; status: string; note: string | null;

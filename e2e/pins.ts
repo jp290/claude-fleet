@@ -70,7 +70,7 @@ import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { BoxDraft, DraftBook } from "../src/drafts";
 import { fleetEventBundleText } from "../src/delivery-format";
 import { runningEffort, runningModel } from "../src/running";
-import { MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
+import { HARNESS_AVAILABILITY, MODEL_ALIASES, MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, roleDefaultsFor, codexModelSupport, modelEntry, modelsForHarness, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole } from "../model-register";
 import { FLEET_DEFAULT_MODEL, WORKER_CONTRACTS } from "../src/protocol";
 import { modelLabel, modelWindow } from "../src/modelname";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -5169,8 +5169,9 @@ export default function (pi) {
 
   const routesStart = server.indexOf("const WORKER_ROUTES = {");
   const routesBody = routesStart < 0 ? "" : server.slice(routesStart, server.indexOf("} satisfies Record<WorkerName, WorkerRouteConfig>;", routesStart));
-  const codexRoutes = [...routesBody.matchAll(/^  (\w+): codexWorkerRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+)\),$/gm)]
-    .map((m) => `${m[1]}:${m[2]}`).sort();
+  // the route reads its own worker's register role: the second argument must name the key's own worker
+  const codexRoutes = [...routesBody.matchAll(/^  (\w+): codexWorkerRoute\(process\.env\.(FLEET_WORKER_ROUTE_[A-Z]+), "(\w+)"\),$/gm)]
+    .filter((m) => m[1] === m[3]).map((m) => `${m[1]}:${m[2]}`).sort();
   const claudeRoutes = [...routesBody.matchAll(/^  (\w+): \{ route: "claude" \},$/gm)].map((m) => m[1]).sort();
   pin("all workers own an explicit Claude rollback key",
     JSON.stringify(codexRoutes) === JSON.stringify([
@@ -12320,7 +12321,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   let select: ((env: Record<string, string>) => Record<FleetWorkerRole, ReturnType<typeof resolveWorkerModel>>) | null = null;
   try {
     const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source + "\nreturn WORKER_MODELS;");
-    select = (env) => new Function("process", "resolveWorkerModel", code)({ env }, resolveWorkerModel);
+    select = (env) => new Function("process", "resolveWorkerModel", "roleDefaultsFor", code)({ env }, resolveWorkerModel, roleDefaultsFor);
   } catch { /* missing or malformed source fails under its own pin */ }
   const selected = select?.({});
   pin("worker source selection executes with model AND effort from register on both routes",
@@ -12345,34 +12346,50 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     const role = binding[1] as FleetWorkerRole;
     const key = binding[3]!;
     const routeKey = role === "cleanReview" ? "CLEANREVIEW" : key;
+    // the register role behind the default route (binding[4]: summaryExec, …) and a valid and a
+    // wrong-harness override for whichever harness it names — so these pins hold while Codex is
+    // paused AND the day it returns
+    const exec = MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS];
+    const validOther = exec.harness === "codex" ? "gpt-6-astra" : "claude-sonnet-5-5[1m]";
+    const wrongHarness = exec.harness === "codex" ? MODEL_DEFAULTS.card.id : "gpt-6.1-sol";
     const defaultSelection = selected?.[role];
-    const override = select?.({ [`FLEET_${key}_CODEX_MODEL`]: MODEL_DEFAULTS.denk.id,
-      [`FLEET_${key}_CODEX_EFFORT`]: "high" })?.[role];
+    const override = select?.({ [`FLEET_${key}_CODEX_MODEL`]: validOther,
+      [`FLEET_${key}_CODEX_EFFORT`]: "low" })?.[role];
     const back = select?.({ [`FLEET_WORKER_ROUTE_${routeKey}`]: "claude" })?.[role];
-    const invalid = select?.({ [`FLEET_${key}_CODEX_MODEL`]: MODEL_DEFAULTS.card.id,
+    const invalid = select?.({ [`FLEET_${key}_CODEX_MODEL`]: wrongHarness,
       [`FLEET_${key}_CODEX_EFFORT`]: "unsafe-effort" })?.[role];
-    pin(`${role}: default Codex selection is Sol 6.1/medium and accepts valid independent overrides`,
-      defaultSelection?.harness === "codex" && defaultSelection.model === "gpt-6.1-sol"
-        && defaultSelection.effort === "medium" && override?.model === MODEL_DEFAULTS.denk.id
-        && override.effort === "high" && override.modelSource === "env" && override.effortSource === "env",
+    pin(`${role}: the default selection is its register role and accepts valid independent overrides`,
+      defaultSelection?.harness === exec.harness && defaultSelection.model === exec.id
+        && defaultSelection.effort === exec.effort && override?.model === validOther
+        && override.effort === "low" && override.modelSource === "env" && override.effortSource === "env",
       JSON.stringify({ defaultSelection, override }));
+    const codexBack = select?.({ [`FLEET_WORKER_ROUTE_${routeKey}`]: "codex-exec" })?.[role];
+    const codexRole = roleDefaultsFor({ status: "available" })[binding[4] as keyof typeof MODEL_DEFAULTS];
+    pin(`${role}: the explicit codex-exec key resolves against the kept Codex table, even while Codex is paused`,
+      codexBack?.harness === "codex" && codexBack.model === codexRole.id && codexBack.effort === codexRole.effort
+        && codexBack.modelSource === "register" && codexBack.warnings.length === 0,
+      JSON.stringify(codexBack));
     pin(`${role}: explicit Claude rollback preserves the role default; wrong-harness and invalid effort are rejected`,
       back?.harness === "claude" && back.model === MODEL_DEFAULTS[role].id
-        && back.effort === MODEL_DEFAULTS[role].effort && invalid?.model === "gpt-6.1-sol"
-        && invalid.effort === "medium" && invalid.modelSource === "register"
+        && back.effort === MODEL_DEFAULTS[role].effort && invalid?.model === exec.id
+        && invalid.effort === exec.effort && invalid.modelSource === "register"
         && invalid.effortSource === "register" && invalid.warnings.length === 2,
       JSON.stringify({ back, invalid }));
   }
   const rejected = resolveWorkerModel("card", "unlisted-model", "unsafe-effort");
-  const wrongHarness = resolveWorkerModel("card", MODEL_DEFAULTS.worker.id);
+  const wrongHarness = resolveWorkerModel("card", "gpt-6.1-sol");
   const old = MODEL_REGISTER.find((entry) => entry.harness === "claude" && entry.status === "superseded");
   const superseded = resolveWorkerModel("enhance", old?.id);
+  // a Codex selection as the register produces it when Codex is available — built here, because
+  // while it is paused no register role resolves to one
+  const codexSelection: ReturnType<typeof resolveWorkerModel> = { harness: "codex", model: "gpt-6.1-sol", effort: "medium",
+    modelSource: "register", effortSource: "register", warnings: [] };
   pin("worker boot diagnostics reject invalid overrides and name superseded/unavailable/unknown selections",
     rejected.model === MODEL_DEFAULTS.card.id && rejected.effort === MODEL_DEFAULTS.card.effort
       && rejected.warnings.length === 2 && wrongHarness.modelSource === "register"
       && workerModelWarnings(superseded, null).some((warning) => warning.startsWith("superseded model"))
-      && workerModelWarnings(resolveWorkerModel("summaryExec"), { models: [] }).includes("codexAvailability=unavailable")
-      && workerModelWarnings(resolveWorkerModel("summaryExec"), null).includes("codexAvailability=unknown")
+      && workerModelWarnings(codexSelection, { models: [] }).includes("codexAvailability=unavailable")
+      && workerModelWarnings(codexSelection, null).includes("codexAvailability=unknown")
       && executable.includes("Object.entries(WORKER_MODELS)")
       && executable.includes("source=${selection.modelSource} effortSource=${selection.effortSource}")
       && executable.includes("console.warn(`[fleet] WORKER MODEL ${role}"),
@@ -12385,7 +12402,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     if (bootStart >= 0 && bootEnd > bootStart && selected) {
       const code = new Bun.Transpiler({ loader: "ts" }).transformSync(executable.slice(bootStart, bootEnd));
       new Function("WORKER_MODELS", "workerModelWarnings", "readFileSync", "resolve", "homedir", "process", "console", code)(
-        { ...selected, enhance: superseded, card: rejected }, workerModelWarnings,
+        { ...selected, summary: codexSelection, enhance: superseded, card: rejected }, workerModelWarnings,
         () => JSON.stringify({ models: [] }), resolve, () => "/synthetic", { env: {} },
         { log: (line: string) => bootLines.push(line), warn: (line: string) => warningLines.push(line) });
       bootRan = true;
@@ -12432,11 +12449,16 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   } catch { /* a missing or unexecutable command expression fails its own check */ }
   pin("worker command expressions preserve implicit effort and pass only explicit effort overrides",
     effortArgvProved, "Claude, Codex and subprocess argv with null and high effort");
-  pin("Claude fallback efforts remain implicit while every Codex default is Sol 6.1/medium",
+  const withCodex = roleDefaultsFor({ status: "available" });
+  pin("Claude fallback efforts remain implicit; every default-route role is Opus 5.5/high while Codex is paused and Sol 6.1/medium when it returns",
     roles.every((role) => MODEL_DEFAULTS[role as FleetWorkerRole].effort === null)
-      && bindings.filter((binding) => binding[4]).every((binding) => MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].effort === "medium"
-        && MODEL_DEFAULTS[binding[4] as keyof typeof MODEL_DEFAULTS].id === "gpt-6.1-sol"),
-    "Claude null omits its flag; Codex defaults are explicit and register-owned");
+      && bindings.filter((binding) => binding[4]).every((binding) => {
+        const role = binding[4] as keyof typeof MODEL_DEFAULTS;
+        const paused = MODEL_DEFAULTS[role], back = withCodex[role];
+        return paused.harness === "claude" && paused.id === "claude-opus-5-5[1m]" && paused.effort === "high"
+          && back.harness === "codex" && back.id === "gpt-6.1-sol" && back.effort === "medium";
+      }),
+    "Claude null omits its flag; the default-route roles are explicit and register-owned on both sides of the switch");
   pin("merge and repair retain the existing Sonnet worker tier and implicit CLI effort",
     MODEL_DEFAULTS.merge.id === MODEL_DEFAULTS.summary.id && MODEL_DEFAULTS.repair.id === MODEL_DEFAULTS.summary.id
       && MODEL_DEFAULTS.merge.effort === null && MODEL_DEFAULTS.repair.effort === null,
@@ -12448,9 +12470,22 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin("model register: role defaults are current entries and the interactive protocol uses main",
     defaults.every(({ harness, id }) => modelEntry(harness, id)?.status === "current")
       && FLEET_DEFAULT_MODEL === MODEL_DEFAULTS.main.id
-      && MODEL_DEFAULTS.worker.harness === "codex" && MODEL_DEFAULTS.worker.id === "gpt-6.1-sol"
-      && MODEL_DEFAULTS.worker.effort === "high" && MODEL_DEFAULTS.denk.id === "gpt-6-astra",
+      && [MODEL_DEFAULTS.worker, MODEL_DEFAULTS.denk].every((d) =>
+        d.harness === "claude" && d.id === "claude-opus-5-5[1m]" && d.effort === "high"),
     JSON.stringify(defaults));
+  // THE SWITCH (model-register.ts#HARNESS_AVAILABILITY): while Codex is paused no role default names
+  // it, and the table the switch restores is exactly the one in force until 2026-10-08
+  const codexBack = roleDefaultsFor({ status: "available" });
+  pin("model register: Codex is paused with a reason, no role default names it, and the switch restores its choices",
+    HARNESS_AVAILABILITY.codex?.status === "unavailable" && !!HARNESS_AVAILABILITY.codex.reason
+      && /^\d{4}-\d{2}-\d{2}$/.test(HARNESS_AVAILABILITY.codex.since)
+      && Object.values(MODEL_DEFAULTS).every((d) => d.harness !== "codex")
+      && JSON.stringify(roleDefaultsFor({ status: "unavailable", since: "x", reason: "x" })) === JSON.stringify(MODEL_DEFAULTS)
+      && codexBack.worker.harness === "codex" && codexBack.worker.id === "gpt-6.1-sol" && codexBack.worker.effort === "high"
+      && codexBack.denk.id === "gpt-6-astra" && codexBack.denk.effort === "medium"
+      && codexBack.main.id === MODEL_DEFAULTS.main.id && codexBack.orchestrator.id === MODEL_DEFAULTS.orchestrator.id
+      && Object.values(codexBack).every(({ harness, id }) => modelEntry(harness, id)?.status === "current"),
+    JSON.stringify({ codex: HARNESS_AVAILABILITY.codex, worker: codexBack.worker, denk: codexBack.denk }));
   pin("model register: every stated successor is current and superseded ids remain in adapter menus",
     MODEL_REGISTER.filter((entry) => entry.status === "superseded").every((entry) =>
       (!entry.supersededBy || modelEntry(entry.harness, entry.supersededBy)?.status === "current")
@@ -12459,8 +12494,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modelEntry("pi-zai", "glm-5.3-flash")?.status === "current",
     JSON.stringify(MODEL_REGISTER.filter((entry) => entry.status === "superseded")));
   pin("model register: the current alias and displayed GPT-6 windows come from registered ids",
-    MODEL_ALIASES.opus === MODEL_DEFAULTS.main.id && MODEL_ALIASES.astra === MODEL_DEFAULTS.denk.id
-      && MODEL_ALIASES.sol === MODEL_DEFAULTS.worker.id
+    MODEL_ALIASES.opus === MODEL_DEFAULTS.main.id && MODEL_ALIASES.astra === "gpt-6-astra"
+      && MODEL_ALIASES.sol === "gpt-6.1-sol" && modelEntry("codex", MODEL_ALIASES.astra)?.status === "current"
       && MODEL_ALIASES["sol 6.1"] === "gpt-6.1-sol" && MODEL_ALIASES["gpt-6.1 sol"] === "gpt-6.1-sol"
       && modelWindow("gpt-6.1-sol") === 258_400
       && modelWindow("gpt-6-sol") === 272_000 && modelWindow("gpt-6-astra") === 272_000

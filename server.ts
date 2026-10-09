@@ -13,7 +13,7 @@ import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:f
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname, loadavg } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1976,12 +1976,18 @@ const harnessOf = (id: string | null | undefined): Harness =>
 // fail-toward-safe rule as harnessOf.
 const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? null);
 
+// The route key picks the role: `claude` → the plain role (`summary`, with its legacy env keys);
+// `codex-exec` → the register role resolved against the Codex table even while Codex is paused (an
+// operator's explicit way back, warned at boot by workerModelWarnings); anything else → the register
+// role as MODEL_DEFAULTS has it. The `_CODEX_` env keys name that register role, whatever its harness.
 function fleetWorkerModel(role: FleetWorkerRole, key: string, execRole?: ModelRole, legacy = "SUMMARY", routeKey = key) {
-  const useExec = execRole && process.env[`FLEET_WORKER_ROUTE_${routeKey}`] !== "claude";
+  const configured = process.env[`FLEET_WORKER_ROUTE_${routeKey}`];
+  const useExec = execRole && configured !== "claude";
   const prefix = useExec ? `${key}_CODEX` : key;
   return resolveWorkerModel(useExec ? execRole : role,
     process.env[`FLEET_${prefix}_MODEL`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_MODEL`]),
-    process.env[`FLEET_${prefix}_EFFORT`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_EFFORT`]));
+    process.env[`FLEET_${prefix}_EFFORT`] ?? (useExec ? undefined : process.env[`FLEET_${legacy}_EFFORT`]),
+    useExec && configured === "codex-exec" ? roleDefaultsFor({ status: "available" }) : undefined);
 }
 const WORKER_MODELS = {
   summary: fleetWorkerModel("summary", "SUMMARY", "summaryExec"),
@@ -2213,6 +2219,8 @@ function taskVariantsFromBody(body: Record<string, unknown> | null):
     if (!choice.ok) return { ok: false, error: `variant ${i + 1}: ${choice.error}` };
     const spawn = choice.spawn ?? DEFAULT_SPAWN;
     const h = harnessOf(spawn.harness);
+    const paused = harnessPausedError(h);
+    if (paused) return { ok: false, error: `variant ${i + 1}: ${paused}` };
     if (!harnessAutomatableFor(h))
       return { ok: false, error: `variant ${i + 1}: harness ${h.id} is not automatable — a variant group starts unattended (${harnessAutomationWhy()})` };
     out.push({ ...spawn });
@@ -11785,6 +11793,17 @@ function harnessAutomatable(s: Slot): boolean {
 }
 // The SAME question about a Harness rather than a slot's harness: releaseTaskForMain asks it about
 // the adapter the TICK would spawn. Both gates share this one body so they cannot drift.
+// A PAUSED harness (model-register.ts#HARNESS_AVAILABILITY): the sentence every door that would start a
+// row or a session on it answers with — 409, before anything is reserved or spawned — and null while it
+// is available. Asked at each door rather than folded into harnessOf: a stored codex choice must stay
+// what it is (no row is rewritten onto another harness) and be refused by name, never silently run as
+// something else.
+function harnessPausedError(h: Harness): string | null {
+  const a = harnessAvailability(h.id);
+  return a.status === "unavailable"
+    ? `harness ${h.id} is unavailable since ${a.since}: ${a.reason} — nothing was started; name another harness for this row`
+    : null;
+}
 function harnessAutomatableFor(h: Harness): boolean {
   // the default adapter never consults the flag: it is the harness every automation on this fleet
   // already drives, and gating it would turn one env var into a fleet-wide kill switch by accident.
@@ -13443,6 +13462,8 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
   const ho = harnessIdOf(body);
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
   const hh = harnessOf(ho.harness);
+  const switchPaused = harnessPausedError(hh);
+  if (switchPaused) return json({ error: switchPaused }, 409);
   if (!hh.allowsLanes) return json({ error: `harness ${hh.id} is main-session only — it cannot carry a lane` }, 400);
   const mo = modelOf(body, hh);
   if (!mo.ok) return json({ error: mo.error }, 400);
@@ -17341,6 +17362,8 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // The two conditions live in harnessAutomatableFor, which is also what canDeliver's slot-level
   // gate asks — one predicate, so this door cannot drift away from that one.
   const spawnH = harnessOf(taskSpawnOf(t).harness);
+  const releasePaused = harnessPausedError(spawnH);
+  if (releasePaused) return json({ error: releasePaused }, 409);
   if (!harnessAutomatableFor(spawnH))
     return json({ error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);
   // (8) THE CAP, counted per Program over the rows this door has released and the tick has not yet
@@ -17579,7 +17602,8 @@ async function releaseValidView(program: Program): Promise<ReleaseValidView> {
       ...(!repo ? ["the program's repo cannot be derived — no live MAIN checkout and no dispatch repo"]
         : !target ? ["no dispatch repo is configured — a released row would have nowhere to run"]
           : repoCanon(target) !== repo ? [`targets ${basename(repoCanon(target))} — this program releases in ${basename(repo)}`] : []),
-      ...(harnessAutomatableFor(spawnH) ? [] : [`harness ${spawnH.id} is not automatable — no unattended path may drive it`]),
+      ...(harnessPausedError(spawnH) ? [harnessPausedError(spawnH)!]
+        : harnessAutomatableFor(spawnH) ? [] : [`harness ${spawnH.id} is not automatable — no unattended path may drive it`]),
       ...(release.released ? [] : [release.why ?? "not released under card-valid"]),
     ];
     return { id: t.id, releasable: reasons.length === 0, release, reasons,
@@ -19117,6 +19141,8 @@ async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; op
   if (extra.length) return json({ error: `this door reads harness, model, effort and permissions only — [${extra.join(", ")}] is not read` }, 400);
   const choice = taskSpawnFromBody(body);
   if (!choice.ok) return json({ error: choice.error }, 400);
+  const choicePaused = harnessPausedError(harnessOf(choice.spawn?.harness));
+  if (choicePaused) return json({ error: choicePaused }, 409);
   if (!tasks.includes(t) || t.kind !== "auftrag" || t.variants?.length || t.variantOf !== undefined
     || (t.status !== "pending" && t.status !== "queued") || dispatchingTasks.has(t.id))
     return json({ error: "task changed while its worker was being set" }, 409);
@@ -19423,6 +19449,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   // slot is reserved; this lock stays for any caller that skips that gate (pinned in e2e/pins.ts).
   const guard = slotOpeningGuard(free);
   const spawnH = harnessOf(spawn.harness);
+  const spawnPaused = harnessPausedError(spawnH);
+  if (spawnPaused) return { ok: false, error: spawnPaused };
   const spawnPermissions = permissionsOf(spawn.permissions === undefined ? null : { permissions: spawn.permissions }, spawnH);
   if (!spawnPermissions.ok) return { ok: false, error: spawnPermissions.error };
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
@@ -21400,6 +21428,10 @@ async function startVariantGroup(row: Task, ownerAct: boolean): Promise<VariantG
   if (rows.some((r) => dispatchingTasks.has(r.id))) return { started: false, why: "a variant of this group is already being dispatched" };
   const repo = group.repo ?? DISPATCH_REPO;
   if (!repo) return { started: false, why: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" };
+  for (const r of rows) {
+    const paused = harnessPausedError(harnessOf(taskSpawnOf(r).harness));
+    if (paused) return hold(`waiting: variant ${r.variantIndex}/${n} — ${paused}`);
+  }
   if (!ownerAct) {
     for (const r of rows) {
       const h = harnessOf(taskSpawnOf(r).harness);
@@ -22012,6 +22044,8 @@ async function tickDispatch(): Promise<void> {
       // held row into a harness report — that would be classifying the whole queue away.
       const rowSpawn = taskSpawnOf(next);
       const rowH = harnessOf(rowSpawn.harness);
+      const rowPaused = harnessPausedError(rowH);
+      if (rowPaused) { waiting(`waiting: ${rowPaused}`); continue; }
       if (!harnessAutomatableFor(rowH)) {
         waiting(`waiting: harness ${rowH.id} is not automatable — no unattended path may drive it, hand dispatch only (${harnessAutomationWhy()})`);
         continue;
@@ -23721,21 +23755,25 @@ interface WorkerRunObservation {
   backend?: "codex-exec";
   usage?: CodexExecUsage;
 }
-// Each migrated worker owns one explicit rollback key. Absence, codex-exec, and invalid values
-// all fail toward the cheaper default; only the literal `claude` can authorize Claude spend.
-const codexWorkerRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
-  ? { route: "claude" }
-  : { route: "codex-exec" };
+// Each migrated worker owns one explicit rollback key, and the route is the harness of the model it
+// resolved (fleetWorkerModel): the literal `claude` pins the Claude route with the plain role, the
+// literal `codex-exec` names Codex explicitly, and absence or any other value follows the register
+// role — the Claude route while Codex is paused (model-register.ts#HARNESS_AVAILABILITY), codex-exec
+// again the day it is available, with no edit here.
+const codexWorkerRoute = (configured: string | undefined, worker: WorkerName): WorkerRouteConfig =>
+  configured === "claude" || WORKER_MODELS[worker].harness !== "codex"
+    ? { route: "claude" }
+    : { route: "codex-exec" };
 const WORKER_ROUTES = {
-  summary: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
-  review: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REVIEW),
-  commitMsg: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
-  enhance: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
-  merge: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_MERGE),
-  repair: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REPAIR),
-  cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW),
-  digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
-  card: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CARD),
+  summary: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY, "summary"),
+  review: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REVIEW, "review"),
+  commitMsg: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG, "commitMsg"),
+  enhance: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE, "enhance"),
+  merge: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_MERGE, "merge"),
+  repair: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_REPAIR, "repair"),
+  cleanReview: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CLEANREVIEW, "cleanReview"),
+  digest: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_DIGEST, "digest"),
+  card: codexWorkerRoute(process.env.FLEET_WORKER_ROUTE_CARD, "card"),
 } satisfies Record<WorkerName, WorkerRouteConfig>;
 function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
   return WORKER_ROUTES[worker];
@@ -40026,6 +40064,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
         : id === "orchestratorin" ? MODEL_DEFAULTS.orchestrator : null;
       return { id, wort: ROLLE_WORT[id], standard: d ? { harness: d.harness, modell: d.id, effort: d.effort } : null,
         verfuegbarkeit: !d ? "available" : !HARNESSES.some((h) => h.id === d.harness) ? "unavailable"
+          : harnessAvailability(d.harness).status === "unavailable" ? "unavailable"
           : d.harness === "codex" ? codexAvailability(readCodexModelsCache(), d.id) : "unknown" };
     }),
   };
@@ -41831,6 +41870,8 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   const ho = harnessIdOf(body);
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
   const hh = harnessOf(ho.harness);
+  const hhPaused = harnessPausedError(hh);
+  if (hhPaused) return json({ error: hhPaused }, 409);
   const mo = modelOf(body, hh);
   if (!mo.ok) return json({ error: mo.error }, 400);
   const eo = effortOf(body, hh);
@@ -50215,6 +50256,8 @@ Bun.serve<WSData>({
       const laneH = harnessIdOf(body);
       if (!laneH.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
       const laneHarness = harnessOf(laneH.harness);
+      const lanePaused = harnessPausedError(laneHarness);
+      if (lanePaused) return json({ error: lanePaused }, 409);
       const laneModel = modelOf(body, laneHarness);
       if (!laneModel.ok) return json({ error: laneModel.error }, 400);
       const laneEffort = effortOf(body, laneHarness);
@@ -51001,6 +51044,10 @@ Bun.serve<WSData>({
           // agent vs place — see Harness.role. Published rather than inferred from the id, because
           // "is `container` an agent?" is exactly the question the client got wrong by guessing.
           role: h.role,
+          // available | unavailable (+ since, reason) — model-register.ts#HARNESS_AVAILABILITY. An
+          // unavailable harness keeps every other field: it is paused, not removed, and every start
+          // door answers 409 with this reason.
+          availability: harnessAvailability(h.id),
         })),
         // A null model on the default adapter still launches this concrete model, and the picker must be
         // able to say WHICH. Claude-only on purpose: a foreign adapter keeps its own implicit default.
@@ -51703,6 +51750,8 @@ Bun.serve<WSData>({
       const wRowSpawn = taskSpawnOf(wHead);
       const wHarnessId = wNames("harness") ? wh.harness : wRowSpawn.harness;
       const wHarness = harnessOf(wHarnessId);
+      const wPaused = harnessPausedError(wHarness);
+      if (wPaused) return json({ error: wPaused }, 409);
       const wModel = modelOf(wNames("model") ? wBody : { model: wRowSpawn.model }, wHarness);
       if (!wModel.ok) return json({ error: wModel.error }, 400);
       const wEffort = effortOf(wNames("effort") ? wBody : { effort: wRowSpawn.effort }, wHarness);
@@ -51790,6 +51839,8 @@ Bun.serve<WSData>({
         dNames(k) ? "body" : dRowSpawn[k] ? dRowFrom : "default";
       const dHarnessId = dNames("harness") ? dh.harness : dRowSpawn.harness;
       const dHarness = harnessOf(dHarnessId);
+      const dPaused = harnessPausedError(dHarness);
+      if (dPaused) return json({ error: dPaused }, 409);
       const dModel = modelOf(dNames("model") ? dBody : { model: dRowSpawn.model }, dHarness);
       if (!dModel.ok) return json({ error: dModel.error }, 400);
       const dEffort = effortOf(dNames("effort") ? dBody : { effort: dRowSpawn.effort }, dHarness);
@@ -52368,6 +52419,8 @@ Bun.serve<WSData>({
         const ho = harnessIdOf(body);
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
         const hh = harnessOf(ho.harness);
+        const hhPaused = harnessPausedError(hh);
+        if (hhPaused) return json({ error: hhPaused }, 409);
         const mo = modelOf(body, hh);
         if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);
@@ -52474,6 +52527,8 @@ Bun.serve<WSData>({
         const ho = harnessIdOf(body);
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
         const hh = harnessOf(ho.harness);
+        const hhPaused = harnessPausedError(hh);
+        if (hhPaused) return json({ error: hhPaused }, 409);
         const mo = modelOf(body, hh);
         if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);

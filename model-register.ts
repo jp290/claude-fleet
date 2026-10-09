@@ -13,20 +13,33 @@ export interface ModelEntry {
   displayWindow?: number;
 }
 
-export const MODEL_DEFAULTS = {
-  orchestrator: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
-  main: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+// WHICH HARNESSES THIS FLEET CAN RUN — a harness is PAUSED here, never removed (an ended
+// subscription, an account its models refuse). Absent means available. While an entry says
+// `unavailable`, every reader follows from here: MODEL_DEFAULTS leaves the harness's role choices out
+// (CODEX_ROLE_DEFAULTS below keeps them), GET /api/harnesses publishes the reason, every door that
+// would start a row or a session on it answers 409 with that reason, and a worker whose register
+// role is not on it takes the Claude route. The adapter (server.ts#CODEX_HARNESS,
+// server.ts#workerViaCodexExec) stays whole. Two ways back, by how much returns:
+//   - FLEET_HARNESS_RESUME=codex (env, comma list, restart): the doors start it again on an explicit
+//     choice; the role defaults stay where they are. The e2e suite runs this way, which keeps every
+//     adapter check alive while the pause stands.
+//   - delete the entry here: the doors open AND MODEL_DEFAULTS takes CODEX_ROLE_DEFAULTS back.
+export type HarnessAvailability = { status: "available" } | { status: "unavailable"; since: string; reason: string };
+export const HARNESS_AVAILABILITY: Readonly<Record<string, HarnessAvailability>> = {
+  codex: { status: "unavailable", since: "2026-10-08",
+    reason: "the Codex subscription ended (owner 2026-10-08): every Codex model answers 400 \"not supported when using Codex with a ChatGPT account\"" },
+};
+// What a door asks: the register's entry, lifted by FLEET_HARNESS_RESUME. Read per call, never cached.
+export const harnessAvailability = (id: string, resume = process.env.FLEET_HARNESS_RESUME ?? ""): HarnessAvailability =>
+  resume.split(",").map((x) => x.trim()).includes(id) ? { status: "available" } : HARNESS_AVAILABILITY[id] ?? { status: "available" };
+
+type RoleDefault = { harness: ModelHarness; id: string; effort: string | null };
+const OPUS_WORKER = { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" } as const;
+// The Codex role choices in force until 2026-10-08, kept as data: MODEL_DEFAULTS takes them back the
+// moment HARNESS_AVAILABILITY.codex is available again. Edit them here, not by re-typing the table.
+const CODEX_ROLE_DEFAULTS = {
   worker: { harness: "codex", id: "gpt-6.1-sol", effort: "high" },
   denk: { harness: "codex", id: "gpt-6-astra", effort: "medium" },
-  summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  commitMsg: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  enhance: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  digest: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  review: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  merge: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  repair: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: null },
   summaryExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   commitMsgExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   enhanceExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
@@ -36,7 +49,39 @@ export const MODEL_DEFAULTS = {
   repairExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   cleanReviewExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
   cardExec: { harness: "codex", id: "gpt-6.1-sol", effort: "medium" },
-} as const satisfies Readonly<Record<ModelRole, { harness: ModelHarness; id: string; effort: string | null }>>;
+} as const satisfies Readonly<Partial<Record<ModelRole, RoleDefault>>>;
+
+const ROLE_DEFAULTS = {
+  orchestrator: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  main: { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" },
+  // worker, denk and the nine *Exec roles: Opus 5.5 at high (owner 2026-10-09: „[Zitat entfernt]“)
+  worker: OPUS_WORKER,
+  denk: OPUS_WORKER,
+  summary: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  commitMsg: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  enhance: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  digest: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  review: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  merge: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  repair: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
+  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: null },
+  summaryExec: OPUS_WORKER,
+  commitMsgExec: OPUS_WORKER,
+  enhanceExec: OPUS_WORKER,
+  digestExec: OPUS_WORKER,
+  reviewExec: OPUS_WORKER,
+  mergeExec: OPUS_WORKER,
+  repairExec: OPUS_WORKER,
+  cleanReviewExec: OPUS_WORKER,
+  cardExec: OPUS_WORKER,
+} as const satisfies Readonly<Record<ModelRole, RoleDefault>>;
+
+// The role table for a given Codex availability — exported so the way back is checked, not promised.
+export const roleDefaultsFor = (codex: HarnessAvailability) =>
+  codex.status === "available" ? { ...ROLE_DEFAULTS, ...CODEX_ROLE_DEFAULTS } : ROLE_DEFAULTS;
+// the register entry alone — FLEET_HARNESS_RESUME never moves a default
+export const MODEL_DEFAULTS = roleDefaultsFor(HARNESS_AVAILABILITY.codex ?? { status: "available" });
 
 export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "claude", id: "claude-opus-5-5[1m]", status: "current", displayWindow: 1_000_000 },
@@ -70,9 +115,10 @@ export const MODEL_ALIASES: Readonly<Record<string, string>> = {
   sonnet: "claude-sonnet-5-5", "sonnet 5.5": "claude-sonnet-5-5", "claude sonnet 5.5": "claude-sonnet-5-5",
   "sonnet 5": "claude-sonnet-5", "claude sonnet 5": "claude-sonnet-5",
   fable: "claude-fable-5-1[1m]", "fable 5.1": "claude-fable-5-1[1m]", "claude fable 5.1": "claude-fable-5-1[1m]",
-  astra: MODEL_DEFAULTS.denk.id, "gpt-6 astra": MODEL_DEFAULTS.denk.id,
-  sol: MODEL_DEFAULTS.worker.id, "gpt-6 sol": MODEL_DEFAULTS.worker.id,
-  "sol 6.1": MODEL_DEFAULTS.worker.id, "gpt-6.1 sol": MODEL_DEFAULTS.worker.id,
+  // the Codex names point at their models, never at a role: a role can move off Codex, the name cannot
+  astra: "gpt-6-astra", "gpt-6 astra": "gpt-6-astra",
+  sol: "gpt-6.1-sol", "gpt-6 sol": "gpt-6.1-sol",
+  "sol 6.1": "gpt-6.1-sol", "gpt-6.1 sol": "gpt-6.1-sol",
 };
 
 export const modelsForHarness = (harness: ModelHarness): string[] =>
@@ -143,8 +189,11 @@ export function codexModelSupport(cache: unknown, id: string | null,
   return { ...base, availability, reason: availability === "available" ? "catalog-listed" : "catalog-excluded" };
 }
 
-export function resolveWorkerModel(role: ModelRole, envModel?: string, envEffort?: string) {
-  const fallback = MODEL_DEFAULTS[role];
+// `defaults` is the role table to resolve against: MODEL_DEFAULTS, or — for a worker whose operator
+// names the codex-exec route explicitly — roleDefaultsFor({ status: "available" }).
+export function resolveWorkerModel(role: ModelRole, envModel?: string, envEffort?: string,
+  defaults: Readonly<Record<ModelRole, RoleDefault>> = MODEL_DEFAULTS) {
+  const fallback = defaults[role];
   const entry = envModel ? modelEntry(fallback.harness, envModel) : undefined;
   const levels = fallback.harness === "claude"
     ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -167,6 +216,8 @@ export function workerModelWarnings(selection: ReturnType<typeof resolveWorkerMo
     ...selection.warnings,
     ...(!entry ? ["model absent from MODEL_REGISTER"] : []),
     ...(entry?.status === "superseded" ? [`superseded model; successor=${entry.supersededBy ?? "unknown"}`] : []),
+    ...((a) => a.status === "unavailable" ? [`harness ${selection.harness} unavailable since ${a.since}: ${a.reason}`] : [])(
+      harnessAvailability(selection.harness)),
     ...(selection.harness === "codex" && codexAvailability(cache, selection.model) !== "available"
       ? [`codexAvailability=${codexAvailability(cache, selection.model)}`] : []),
   ];

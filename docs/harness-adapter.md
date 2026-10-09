@@ -358,32 +358,78 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   behaupteten die Aktion auf einem Host ohne Simulator. Beide Haelften sind widerlegbar: faellt die
   Plattform-Klausel aus `simReapArming`, wird die Nicht-darwin-Haelfte rot.
 
+## Pausierte Harness — Codex seit 2026-10-08
+
+Das Codex-Abo ist am 2026-10-08 ausgelaufen (Owner); seither antwortet jedes Codex-Modell mit 400
+„[Zitat entfernt]“. Codex ist darum **pausiert, nicht
+entfernt**: `model-register.ts#HARNESS_AVAILABILITY` traegt den Eintrag `codex` mit `since` und
+`reason`, und alles Weitere folgt aus diesem einen Eintrag.
+
+- **Rollen-Defaults:** `model-register.ts#MODEL_DEFAULTS` ist `roleDefaultsFor(<Eintrag>)`. Solange
+  Codex pausiert ist, stehen `worker`, `denk` und alle neun `*Exec`-Rollen auf
+  `claude/claude-opus-5-5[1m]/high` (Owner 2026-10-09: „[Zitat entfernt]“); `main` und
+  `orchestrator` sind unberuehrt. Die bisherigen Codex-Wahlen (`worker` gpt-6.1-sol/high, `denk`
+  gpt-6-astra/medium, `*Exec` gpt-6.1-sol/medium) stehen unveraendert als
+  `model-register.ts#CODEX_ROLE_DEFAULTS` daneben.
+- **Katalog:** `GET /api/harnesses` traegt je Harness `availability` —
+  `{status:"available"}` oder `{status:"unavailable", since, reason}`. Alle anderen Felder einer
+  pausierten Harness bleiben, wie sie sind.
+- **Tueren:** jede Tuer, die eine Zeile oder Session auf einer pausierten Harness starten wuerde,
+  antwortet **409 mit dem Grund**, bevor ein Platz reserviert oder etwas gespawnt wird
+  (`server.ts#harnessPausedError`): Dispatch (`/api/tasks/:id/dispatch`, Welle, `dispatchTask`
+  selbst), der Worker-Wechsel einer Zeile (`/api/tasks/:id/spawn`, `/api/self/tasks/:id/spawn`),
+  Release, Varianten, Slot-`open`, `open-worktree`, `/api/lanes`, `lane-harness` und
+  `bootstrap-main`. Der Tick laesst eine solche Zeile mit `waiting: harness codex is unavailable …`
+  stehen. Keine Zeile wird umgeschrieben: eine gespeicherte codex-Wahl bleibt, wird aber laut
+  verweigert — die ROLLE aendert die MAIN per brief/spawn. Das Einreichen einer Zeile mit
+  codex-Wahl bleibt offen (Einreichen ist kein Start).
+- **Worker-Routen:** ohne Routen-Key folgt jeder Worker seiner Register-Rolle (`summaryExec` …),
+  also dem Claude-Pfad, solange Codex pausiert ist (siehe unten).
+
+**Codex zurueckholen — zwei Stufen, je nachdem wie viel zurueckkommen soll:**
+
+1. `FLEET_HARNESS_RESUME=codex` in `.env` (Komma-Liste) + Neustart: die Tueren starten Codex wieder
+   auf ausdrueckliche Wahl, `GET /api/harnesses` meldet `available`. Die Rollen-Defaults bleiben
+   auf Opus. Ein einzelner Worker geht mit `FLEET_WORKER_ROUTE_<KEY>=codex-exec` zurueck auf
+   `codex exec` und loest dabei gegen `CODEX_ROLE_DEFAULTS` auf. Die e2e-Suite laeuft so
+   (`e2e-isolated.sh`), damit jeder Adapter-Check den Rueckweg weiter beweist; der Check
+   „paused harness" in `e2e/tasks.ts` startet einmal ohne den Key und beweist die 409.
+2. Den Eintrag `codex` aus `HARNESS_AVAILABILITY` loeschen: dann oeffnen sich die Tueren UND
+   `MODEL_DEFAULTS` nimmt `CODEX_ROLE_DEFAULTS` zurueck; die Worker-Routen gehen ohne Key wieder
+   ueber `codex exec`. Kein weiterer Edit noetig — die Pins in `e2e/pins.ts` pruefen
+   `roleDefaultsFor({status:"available"})` gegen die alte Tabelle.
+
 ## Modell-Tiers
 
-- `MODEL_DEFAULTS.worker` (`model-register.ts`) ist `codex/gpt-6.1-sol/high`. Sol 6.1 ist
+- `MODEL_DEFAULTS.worker` (`model-register.ts`) ist `claude/claude-opus-5-5[1m]/high`, solange Codex
+  pausiert ist (§Pausierte Harness); sonst `codex/gpt-6.1-sol/high`. Sol 6.1 ist
   `current`; gpt-6-sol und gpt-5.6-sol bleiben im Register als `superseded` mit direktem Nachfolger
-  `gpt-6.1-sol`. Die Aliase `sol`, `sol 6.1` und `gpt-6.1 sol` folgen dem Worker-Default.
+  `gpt-6.1-sol`. Die Aliase `sol`, `sol 6.1` und `gpt-6.1 sol` nennen gpt-6.1-sol, `astra`
+  gpt-6-astra — als Modellnamen, nicht als Rollenverweis.
   Das angezeigte Kontextfenster von Sol 6.1 ist 258 400 Tokens, gemessen als `model_context_window`
   im Rollout einer gpt-6.1-sol-Session vom 2026-09-29.
 - `DEFAULT_MODEL` (`server.ts`, Override `FLEET_MODEL`) bleibt die Auswahl für Sessions/Lanes.
   Fleet-eigene Worker beziehen Modell **und Effort** aus `model-register.ts#MODEL_DEFAULTS`;
   `server.ts#WORKER_MODELS` löst die validierte Auswahl einmal beim Boot auf. Neun Rollen: summary,
   commitMsg, enhance, digest, review, merge, repair, cleanReview und card.
-- Alle neun Worker-Routen laufen standardmäßig über `codex exec`. Die neun rollenbezogenen
-  `*Exec`-Defaults sind `codex/gpt-6.1-sol` mit Effort `medium`.
-  Der interaktive Worker-Default bleibt davon unabhängig auf `high`.
-  Nur der exakte Wert `claude` an `FLEET_WORKER_ROUTE_SUMMARY`, `_COMMITMSG`, `_ENHANCE`, `_DIGEST`,
-  `_REVIEW`, `_CLEANREVIEW`, `_CARD`, `_MERGE` oder `_REPAIR` wählt den bisherigen
-  Claude-Session-Pfad mit dessen unverändertem Toolprofil.
-  Fehlende, `codex-exec` und ungültige Werte wählen Codex; `FLEET_*_CMD` und Repo-Worker-Kommandos
-  behalten Vorrang vor der Route.
+- Die Route eines Workers ist die Harness des Modells, das er aufloest
+  (`server.ts#fleetWorkerModel`, `server.ts#codexWorkerRoute`). Fehlende und ungueltige Werte an
+  `FLEET_WORKER_ROUTE_SUMMARY`, `_COMMITMSG`, `_ENHANCE`, `_DIGEST`, `_REVIEW`, `_CLEANREVIEW`,
+  `_CARD`, `_MERGE` oder `_REPAIR` folgen der `*Exec`-Register-Rolle: solange Codex pausiert ist
+  `claude/claude-opus-5-5[1m]/high` auf dem Claude-Session-Pfad, sonst `codex/gpt-6.1-sol/medium`
+  ueber `codex exec`. Der exakte Wert `claude` waehlt den Claude-Session-Pfad mit der schlichten
+  Rolle (Sonnet 5.5 bzw. Haiku 4.5, unveraendertes Toolprofil); der exakte Wert `codex-exec` waehlt
+  `codex exec` gegen `CODEX_ROLE_DEFAULTS`, auch waehrend der Pause — dann warnt die Boot-Zeile
+  laut `harness codex unavailable since …`. `FLEET_*_CMD` und Repo-Worker-Kommandos behalten
+  Vorrang vor der Route.
 - Claude-Fallbackdefaults bleiben unverändert: summary, commitMsg, enhance, digest, review,
   cleanReview, merge und repair verwenden Sonnet 5.5;
   card Haiku 4.5. Alle Claude-Defaults tragen `effort: null` und lassen den CLI-Effort-Flag weg.
   Der effektive CLI-Default ist unbekannt. Modell und Effort können unabhängig überschrieben werden.
 - Worker-Overrides heißen `FLEET_<KEY>_MODEL` und `FLEET_<KEY>_EFFORT`, mit den Keys SUMMARY,
   COMMITMSG, ENHANCE, DIGEST, REVIEW, MERGE, REPAIR, CLEAN_REVIEW und CARD.
-  Auf Headless-Routen heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT`; die bisherigen Claude-Keys
+  Fuer die `*Exec`-Register-Rolle heißen sie `FLEET_<KEY>_CODEX_MODEL|EFFORT` — der Name nennt die
+  Rolle, nicht die Harness, und gilt auch, solange sie auf Claude steht; die bisherigen Claude-Keys
   ändern diese Routen weiterhin nicht. Ohne rollenbezogenen Override gelten für Claude die
   bisherigen `FLEET_SUMMARY_MODEL|EFFORT`. Card hat eigene Keys.
 - Beim Boot werden Overrides gegen `MODEL_REGISTER` und die Effort-Stufen der Harness geprüft.

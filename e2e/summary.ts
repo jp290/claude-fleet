@@ -7,11 +7,14 @@ import { dirname, join } from "node:path";
 import { buildEnhancePrompt } from "../enhance-prompt";
 import { HARVEST_LINE_MAX_BYTES, HARVEST_TICK_BYTES, TRANSCRIPT_TAIL_READ_BYTES, harvestStep, readTranscriptTail,
   tailCutMark, transcriptTailText, type HarvestCursor, type HarvestDrop, type TailView } from "../server/transcript-read";
-import { MODEL_DEFAULTS } from "../model-register";
+import { MODEL_DEFAULTS, roleDefaultsFor } from "../model-register";
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 
 const MIB = 1024 * 1024;
+// the Codex role table the explicit `codex-exec` route resolves against, kept while Codex is paused
+// (model-register.ts#HARNESS_AVAILABILITY) — what the codex-exec checks below expect on the wire
+const CODEX = roleDefaultsFor({ status: "available" });
 
 // the pre-budget server.ts#transcriptTail, verbatim in its logic — the oracle for "a normal file renders
 // what it rendered before"
@@ -212,9 +215,10 @@ export async function run(): Promise<void> {
       throw e;
     }
   };
-  const validWorkerRun = (row: Record<string, unknown> | undefined, started: number, ok: boolean, route: string): boolean =>
+  const validWorkerRun = (row: Record<string, unknown> | undefined, started: number, ok: boolean, route: string,
+    expect: { id: string; effort: string | null } = MODEL_DEFAULTS.summaryExec): boolean =>
     !!row && row.worker === "summary" && row.role === "summary" && row.route === route && row.ok === ok
-    && row.model === MODEL_DEFAULTS.summaryExec.id && row.effort === MODEL_DEFAULTS.summaryExec.effort
+    && row.model === expect.id && row.effort === expect.effort
     && typeof row.at === "number" && row.at >= started && row.at <= Date.now()
     && typeof row.ms === "number" && Number.isInteger(row.ms) && row.ms >= 0 && row.ms <= Date.now() - started
     && Object.keys(row).sort().join(",") === (ok ? "at,effort,model,ms,ok,role,route,worker" : "at,effort,error,model,ms,ok,role,route,worker");
@@ -247,9 +251,10 @@ export async function run(): Promise<void> {
 
   // --- per-worker Codex exec route ------------------------------------------------------------
   // The wrapper deliberately sets FLEET_SUMMARY_CMD for every ordinary check above. Precedence 1
-  // makes those checks immune to the new production default. Only this bounded restart section
-  // passes an explicit empty value, so the fake Codex binary exercises precedence 2; finally
-  // restores the original wrapper env before the next e2e family runs.
+  // makes those checks immune to the production route. Only this bounded restart section passes an
+  // explicit empty value, so the fake Codex binary exercises precedence 2 — through the explicit
+  // `codex-exec` route key, the way back while Codex is paused; finally restores the original
+  // wrapper env before the next e2e family runs.
   const fakeCodex = `${ROOT}/fakecodex`;
   const modeFile = `${ROOT}/codex-mode`;
   const runsFile = `${ROOT}/codex-runs`;
@@ -259,6 +264,10 @@ export async function run(): Promise<void> {
     FLEET_ENHANCE_CMD: "",
     FLEET_DIGEST_CMD: "",
     FLEET_REVIEW_CMD: "",
+    FLEET_WORKER_ROUTE_SUMMARY: "codex-exec",
+    FLEET_WORKER_ROUTE_COMMITMSG: "codex-exec",
+    FLEET_WORKER_ROUTE_ENHANCE: "codex-exec",
+    FLEET_WORKER_ROUTE_REVIEW: "codex-exec",
     FLEET_SUMMARY_MODEL: MODEL_DEFAULTS.summary.id,
     FLEET_CODEX_EXEC_BIN: fakeCodex,
     FLEET_CODEX_EXEC_TIMEOUT_MS: "1500",
@@ -292,9 +301,25 @@ export async function run(): Promise<void> {
     rmSync(`${ROOT}/codex-killed`, { force: true });
   };
   try {
-    check("FLEET_SUMMARY_CMD precedence keeps the ordinary suite off the default Codex route",
+    check("FLEET_SUMMARY_CMD precedence keeps the ordinary suite off the Codex route",
       runs() === 0, `codexRuns=${runs()}`);
     rmSync(runsFile, { force: true });
+    // THE PAUSED DEFAULT: no route key → the register role, which names Claude while Codex is paused.
+    // Probed against an adapter that cannot host session workers, so the Claude route shows itself
+    // as that named refusal — without starting Claude — and the fake Codex binary is never run.
+    const { FLEET_WORKER_ROUTE_SUMMARY: _route, ...noRouteEnv } = codexEnv;
+    for (const [label, env] of [
+      ["no route key", noRouteEnv],
+      ["an invalid route key", { ...noRouteEnv, FLEET_WORKER_ROUTE_SUMMARY: "not-a-route" }],
+    ] as const) {
+      await restartSrv({ ...env, FLEET_WORKER_HARNESS: "codex" });
+      const pausedRes = await post("/api/slots/1/summary", {});
+      const paused = (await pausedRes.json()) as { error?: string };
+      check(`summary with ${label} takes the register role (${MODEL_DEFAULTS.summaryExec.harness}) and never execs Codex while it is paused`,
+        MODEL_DEFAULTS.summaryExec.harness === "claude" && pausedRes.status === 500
+        && (paused.error ?? "").includes('harness "codex" cannot host a worker session') && runs() === 0,
+        `${pausedRes.status} ${paused.error ?? ""} codexRuns=${runs()}`);
+    }
     await setMode("success");
     await restartSrv(codexEnv);
     const cxRunsBefore = workerRuns().length;
@@ -305,12 +330,12 @@ export async function run(): Promise<void> {
       cached?: boolean; raw?: boolean };
     check("codex summary parses the -o last message and exposes its actual backend/model/observed usage",
       cx1res.ok && cx1.summary === "codex summary of the session" && cx1.raw === false
-      && cx1.model === MODEL_DEFAULTS.worker.id && cx1.backend === "codex-exec"
+      && cx1.model === CODEX.summaryExec.id && cx1.backend === "codex-exec"
       && cx1.usage?.input === 17 && cx1.usage?.output === 5,
       JSON.stringify(cx1).slice(0, 240));
     const cxRows = workerRuns().slice(cxRunsBefore);
     check("worker ledger records exactly one successful codex-exec run with metadata only",
-      cxRows.length === 1 && validWorkerRun(cxRows[0], cxStarted, true, "codex-exec"), JSON.stringify(cxRows));
+      cxRows.length === 1 && validWorkerRun(cxRows[0], cxStarted, true, "codex-exec", CODEX.summaryExec), JSON.stringify(cxRows));
 
     const argv = readFileSync(`${ROOT}/codex-argv`, "utf8").split("\n").filter(Boolean);
     const pair = (flag: string, value: string): boolean => {
@@ -318,7 +343,7 @@ export async function run(): Promise<void> {
       return at >= 0 && argv[at + 1] === value && argv.lastIndexOf(flag) === at;
     };
     check("codex summary argv pins the exact model, read-only sandbox and ephemeral headless protocol",
-      argv[0] === "exec" && pair("-m", MODEL_DEFAULTS.worker.id) && pair("-c", 'model_reasoning_effort=medium') && pair("-s", "read-only")
+      argv[0] === "exec" && pair("-m", CODEX.summaryExec.id) && pair("-c", 'model_reasoning_effort=medium') && pair("-s", "read-only")
       && argv.includes("--ephemeral") && argv.includes("--skip-git-repo-check")
       && pair("--color", "never") && argv.includes("--json") && argv.includes("-o")
       && argv[argv.length - 1] === "-" && !argv.some((a) => a.startsWith("--dangerously")), argv.join(" "));
@@ -336,8 +361,8 @@ export async function run(): Promise<void> {
       `cached=${cx2.cached} runs=${runs()}/${cxRuns}`);
 
     for (const [label, model, effort, expectedModel, expectedEffort] of [
-      ["valid override", MODEL_DEFAULTS.denk.id, "high", MODEL_DEFAULTS.denk.id, "high"],
-      ["wrong-harness override", MODEL_DEFAULTS.card.id, "unsafe-effort", MODEL_DEFAULTS.summaryExec.id, "medium"],
+      ["valid override", CODEX.denk.id, "high", CODEX.denk.id, "high"],
+      ["wrong-harness override", MODEL_DEFAULTS.card.id, "unsafe-effort", CODEX.summaryExec.id, "medium"],
     ] as const) {
       await restartSrv({ ...codexEnv, FLEET_SUMMARY_CODEX_MODEL: model, FLEET_SUMMARY_CODEX_EFFORT: effort });
       const before = workerRuns().length;
@@ -356,12 +381,12 @@ export async function run(): Promise<void> {
     }
 
     await setMode("unknown");
-    await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_SUMMARY: "not-a-route" });
+    await restartSrv(codexEnv);
     const unknownRes = await post("/api/slots/1/summary", {});
     const unknown = (await unknownRes.json()) as { summary?: string; model?: string; backend?: string; usage?: unknown };
-    check("an invalid summary route fails toward Codex, while unobserved usage stays absent (never estimated)",
+    check("codex-exec unobserved usage stays absent (never estimated)",
       unknownRes.ok && unknown.summary === "codex summary without usage"
-      && unknown.model === MODEL_DEFAULTS.worker.id && unknown.backend === "codex-exec"
+      && unknown.model === CODEX.summaryExec.id && unknown.backend === "codex-exec"
       && unknown.usage === undefined, JSON.stringify(unknown));
 
     for (const [mode, message] of [
@@ -405,7 +430,7 @@ export async function run(): Promise<void> {
     check("worker ledger records exactly one failed codex-exec exit-1 run and its bounded diagnostic",
       failRes.status === 500 && fail.error?.startsWith(`worker via codex exec exited 1: ${failureText}`) === true
       && fail.error.includes("/private-worker.txt")
-      && failRows.length === 1 && validWorkerRun(failedRow, failedStarted, false, "codex-exec")
+      && failRows.length === 1 && validWorkerRun(failedRow, failedStarted, false, "codex-exec", CODEX.summaryExec)
       && typeof failedRow?.error === "string" && failedRow.error.length > 0 && failedRow.error.length <= 300
       && failedRow.error.startsWith(`worker via codex exec exited 1: ${failureText}`)
       && !failedRow.error.includes("/") && !failedRow.error.includes("private response")
@@ -481,7 +506,7 @@ export async function run(): Promise<void> {
         enh.brief?.text === "codex enhanced prompt. own your work! /sharpen3" && enh.brief.edited === false
         && runs() === beforeEnhance + 1, `${JSON.stringify(enh)} codexRuns=${runs()}/${beforeEnhance}`);
       check("Codex enhance pins the register model/medium/read-only/ephemeral and receives the complete marked prompt only on stdin",
-        enhanceArgv[enhanceArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+        enhanceArgv[enhanceArgv.indexOf("-m") + 1] === CODEX.enhanceExec.id
         && enhanceArgv[enhanceArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
         && enhanceArgv[enhanceArgv.indexOf("-s") + 1] === "read-only" && enhanceArgv.includes("--ephemeral")
         && enhancePrompt === buildEnhancePrompt(enhanceDraft, facts)
@@ -549,7 +574,7 @@ export async function run(): Promise<void> {
             commitRes.ok && committed.committed === true && committed.subject === "feat(worker): codex spark commit message"
             && committed.messageFallback === undefined, `${commitRes.status} ${JSON.stringify(committed)}`);
           check("Codex commitMsg pins the register model/medium/read-only/ephemeral and receives its complete marked diff prompt only on stdin",
-            commitArgv[commitArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+            commitArgv[commitArgv.indexOf("-m") + 1] === CODEX.commitMsgExec.id
             && commitArgv[commitArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
             && commitArgv[commitArgv.indexOf("-s") + 1] === "read-only" && commitArgv.includes("--ephemeral")
             && commitPrompt.includes(WORKER_CONTRACTS.commitMsg.mark)
@@ -565,10 +590,10 @@ export async function run(): Promise<void> {
           const review = (await reviewRes.json()) as { findings?: unknown[]; notes?: string; raw?: boolean; model?: string };
           const reviewArgv = latestArgv();
           const reviewPrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
-          check("previously Claude-routed review defaults to Codex with the register model and medium effort",
+          check("the explicit codex-exec review route runs the kept Codex model and medium effort",
             reviewRes.ok && review.raw === false && review.findings?.length === 0
-            && review.notes === "codex review of the lane" && review.model === MODEL_DEFAULTS.worker.id && runs() === beforeReview + 1
-            && reviewArgv[0] === "exec" && reviewArgv[reviewArgv.indexOf("-m") + 1] === MODEL_DEFAULTS.worker.id
+            && review.notes === "codex review of the lane" && review.model === CODEX.reviewExec.id && runs() === beforeReview + 1
+            && reviewArgv[0] === "exec" && reviewArgv[reviewArgv.indexOf("-m") + 1] === CODEX.reviewExec.id
             && reviewArgv[reviewArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
             && reviewArgv[reviewArgv.indexOf("-s") + 1] === "read-only"
             && reviewArgv.includes("--ephemeral") && reviewPrompt.includes(WORKER_CONTRACTS.review.mark)
@@ -637,7 +662,7 @@ export async function run(): Promise<void> {
     const back = (await backRes.json()) as { summary?: string; model?: string; backend?: string; usage?: unknown };
     check("FLEET_SUMMARY_CMD remains first and preserves the old summary response defaults",
       backRes.ok && back.summary === "fake summary of the session" && back.backend === undefined
-      && back.usage === undefined && back.model !== MODEL_DEFAULTS.worker.id && runs() === beforeSummaryRollback,
+      && back.usage === undefined && back.model !== CODEX.summaryExec.id && runs() === beforeSummaryRollback,
       `${JSON.stringify(back)} codexRuns=${runs()}/${beforeSummaryRollback}`);
   } finally {
     writeFileSync(fakeCodex, originalCodex);

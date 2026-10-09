@@ -1,7 +1,7 @@
 // The ⏫ merge/land paths: the agent verdicts (blocked / lying / resolved / prose), the server's
 // own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
-import { MODEL_DEFAULTS } from "../model-register";
+import { MODEL_DEFAULTS, roleDefaultsFor } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { WORKER_CONTRACTS } from "../src/protocol";
@@ -136,12 +136,17 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
   type WriteLane = { slot: number; cwd: string; branch: string };
   let lane: WriteLane | null = null;
   try {
-    for (const mode of ["default", "invalid", "merge-rollback", "repair-rollback", "merge-error", "repair-error"]) {
+    // `default` (no key) and `invalid` follow the register role — Claude while Codex is paused
+    // (model-register.ts#HARNESS_AVAILABILITY), which the codex FLEET_WORKER_HARNESS turns into a
+    // named refusal; `codex-exec` is the explicit way back, and the error/rollback modes ride on it.
+    const routeFor = (mode: string, worker: "merge" | "repair"): string =>
+      mode === `${worker}-rollback` ? "claude" : mode === "default" ? "" : mode === "invalid" ? "invalid" : "codex-exec";
+    for (const mode of ["codex-exec", "default", "invalid", "merge-rollback", "repair-rollback", "merge-error", "repair-error"]) {
       rmSync(runsFile, { force: true });
       writeFileSync(modeFile, mode);
       await restartSrv({ ...env,
-        FLEET_WORKER_ROUTE_MERGE: mode === "merge-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
-        FLEET_WORKER_ROUTE_REPAIR: mode === "repair-rollback" ? "claude" : mode === "invalid" ? "invalid" : "",
+        FLEET_WORKER_ROUTE_MERGE: routeFor(mode, "merge"),
+        FLEET_WORKER_ROUTE_REPAIR: routeFor(mode, "repair"),
       });
       lane = (await (await post("/api/lanes", { repo })).json()) as WriteLane;
       if (!lane?.slot || !lane.cwd) throw new Error("Codex write fixture lane did not open");
@@ -154,20 +159,20 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
       await post(`/api/slots/${lane.slot}/merge`, {});
       const verdict = await waitMerge(lane.slot);
       const observed = runs();
-      const expectedWorkers = mode === "merge-rollback" ? []
+      const expectedWorkers = mode === "merge-rollback" || mode === "default" || mode === "invalid" ? []
         : mode === "merge-error" || mode === "repair-rollback" ? ["merge"] : ["merge", "repair"];
       check(`Codex writing workers ${mode}: only the selected transports spawn`,
         JSON.stringify(observed.map((r) => r.worker)) === JSON.stringify(expectedWorkers),
         JSON.stringify(observed.map((r) => r.worker)));
-      if (mode === "default" || mode === "invalid") {
+      if (mode === "codex-exec") {
         check(`Codex writing workers ${mode}: real conflict + red verify trigger one committed repair`,
           verdict.last?.status === "resolved" && verdict.last.verify?.ok === true
             && verdict.last.landed === false && verdict.last.repairRounds === 1
             && git(lane.cwd, "log", "-1", "--format=%s") === "repair: remove marker"
             && readFileSync(`${lane.cwd}/code.txt`, "utf8") === "root\nmain\nlane\n",
           JSON.stringify(verdict.last));
-      } else if (mode.endsWith("rollback")) {
-        check(`${mode}: exact claude env value restores the session path without a Codex fallback`,
+      } else if (mode.endsWith("rollback") || mode === "default" || mode === "invalid") {
+        check(`${mode}: ${mode.endsWith("rollback") ? "exact claude env value restores" : "the paused register role takes"} the session path without a Codex fallback`,
           verdict.last?.status === "error"
             && verdict.last.detail.includes('harness "codex" cannot host a worker session'),
           JSON.stringify(verdict.last));
@@ -183,7 +188,7 @@ pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps({"status": status
         const pair = (flag: string, value: string): boolean => r.argv[r.argv.indexOf(flag) + 1] === value;
         const configs = r.argv.filter((_, i) => r.argv[i - 1] === "-c");
         check(`${mode} ${r.worker}: argv pins Sol 6.1, medium, workspace-write and the lane cwd`,
-          r.argv[0] === "exec" && pair("-m", "gpt-6.1-sol") && MODEL_DEFAULTS.worker.id === "gpt-6.1-sol"
+          r.argv[0] === "exec" && pair("-m", "gpt-6.1-sol") && roleDefaultsFor({ status: "available" })[`${r.worker}Exec`].id === "gpt-6.1-sol"
             && pair("-s", "workspace-write") && r.argv.includes("--ephemeral") && r.argv.at(-1) === "-"
             && configs.includes('model_reasoning_effort=medium') && r.cwd === realpathSync(lane.cwd)
             && r.prompt.includes(WORKER_CONTRACTS[r.worker].mark), JSON.stringify({ argv: r.argv, cwd: r.cwd }));

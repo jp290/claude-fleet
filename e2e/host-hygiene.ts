@@ -276,7 +276,7 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     const startPlanWaves = () => [{plan: {ids: ['released'], rows: [{id: 'released', release: {released: true}}], next: 'now'}, land: {}}];
     const programDispatchOn = () => false, programDispatchStopped = () => false;
     const taskSpawnOf = () => ({harness: 'stand-in'}), harnessOf = () => ({id: 'stand-in'});
-    const harnessAutomatableFor = () => true, harnessLimitFor = () => null;
+    const harnessAutomatableFor = () => true, harnessLimitFor = () => null, harnessPausedError = () => null;
     const inRepo = () => false, repoLaneCap = () => ({max: 10, source: 'repo'});
     const variantReserveHolds = () => null, freeSessionSlot = () => ({id: 1});
     const canDeliver = async () => ({ok: true}), releaseVerdictNow = () => ({released: true, by: 'owner'});

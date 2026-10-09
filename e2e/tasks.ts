@@ -2076,8 +2076,8 @@ export async function run(ctx: Ctx): Promise<void> {
       const previousSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6-sol");
       const newSol = modelCat.modelRegistry?.find((m) => m.harness === "codex" && m.id === "gpt-6.1-sol");
       check("model catalogue serves the role default and warns on superseded Sol without removing it",
-        modelCat.modelDefaults?.worker?.harness === "codex" && modelCat.modelDefaults.worker.id === "gpt-6.1-sol"
-          && modelCat.modelDefaults.worker.effort === "high"
+        modelCat.modelDefaults?.worker?.harness === MODEL_DEFAULTS.worker.harness && modelCat.modelDefaults.worker.id === MODEL_DEFAULTS.worker.id
+          && modelCat.modelDefaults.worker.effort === MODEL_DEFAULTS.worker.effort
           && oldSol?.status === "superseded" && oldSol.supersededBy === "gpt-6.1-sol"
           && previousSol?.status === "superseded" && previousSol.supersededBy === "gpt-6.1-sol"
           && newSol?.status === "current"
@@ -10401,7 +10401,7 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("chmod", ["+x", FAKECARD]);
     const cardGuardOk = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
       "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
-    check("(j2) card stand-in accepts the exact registered model and medium effort",
+    check("(j2) card stand-in accepts the exact registered model and its register effort",
       cardGuardOk.status === 0 && cardGuardOk.stdout.toString().trim() === cardAnswer,
       `exit=${cardGuardOk.status} answer=${cardGuardOk.stdout.toString().trim()}`);
     const cardGuardModel = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.card.id,
@@ -10409,7 +10409,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j2) card stand-in rejects the wrong model with exact Exit17",
       cardGuardModel.status === 17, `exit=${cardGuardModel.status}`);
     const cardGuardEffort = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
-      "--effort", "high"], { input: "guard probe" });
+      "--effort", ["low", "medium", "high"].find((e) => e !== MODEL_DEFAULTS.cardExec.effort)!], { input: "guard probe" });
     check("(j2) card stand-in rejects the wrong effort with exact Exit17",
       cardGuardEffort.status === 17, `exit=${cardGuardEffort.status}`);
 

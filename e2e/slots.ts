@@ -7635,7 +7635,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         && /^Gelesen \d\d:\d\d:\d\d Wann die Fleet die Dateien gelesen hat\.$/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
       claims["usage, model: the owner's preference unbekannt, the default, the sessions' selection and the model really used apart; no quota switch"] =
         /^Deine Vorgabe unbekannt Von dir ist keine Modell-Vorgabe hinterlegt\.$/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
-        && /^Standard Worker .*Sol.* · MAIN .*Opus/.test(uM.defaults ?? "") && /^An Sessions gewählt 2 Sessions/.test(uM.selected ?? "")
+        && new RegExp(`^Standard Worker .*${MODEL_DEFAULTS.worker.harness === "codex" ? "Sol" : "Opus"}.* · MAIN .*Opus`).test(uM.defaults ?? "") && /^An Sessions gewählt 2 Sessions/.test(uM.selected ?? "")
         && /Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst\./.test(uM.selected ?? "")
         && /^Wirklich benutzt unbekannt Welches Modell wirklich geantwortet hat, ist nicht erfasst\.$/.test(uM.turn ?? "")
         && /^Zustand unbekannt Für andere Abos erfasst die Fleet noch keinen Verbrauch\.$/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);

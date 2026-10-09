@@ -3287,20 +3287,6 @@
   #board .rk-btn.del:hover { color: var(--danger); }
   #board .rk-btn .ico { width: 12px; height: 12px; }
   #board .rk-btn.ib { width: 22px; padding: 0; justify-content: center; }
-  /* THE LIVE SESSION (src/board.ts#startLiveSession): the sentence under a project's head, the Live
-     mark at the lane's name, Mergen and a failure on lines of their own under the lane */
-  #board .rk-btn.live-btn { gap: 0; }
-  #board .rk-btn.live-btn.on { color: var(--chat-ink); }
-  #board .zd.live-new { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 0 6px var(--rk-rail); }
-  #board .zd.live-new .live-in { flex: 1 1 180px; min-width: 0; min-height: 22px; padding: 0 7px; border: 1px solid var(--chat-edge);
-    border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink); font: inherit; }
-  #board .zd.live-new .live-in:focus { outline: none; border-color: var(--c-edge-hi); }
-  #board .zd.live-new > .err { flex-basis: 100%; }
-  #board .zr.zw .nm .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
-    color: var(--chat-ink); font-size: 0.85em; line-height: 1.4; vertical-align: 1px; white-space: nowrap; }
-  #board .zd.live-merge { display: flex; justify-content: flex-end; padding: 0 0 4px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
-  #board .zd.live-err { display: block; padding: 0 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); }
-  #board .zd.live-err > .err { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
   @media (prefers-reduced-motion: reduce) { #board .zr, #board .rk-btn { transition: none; } }
   /* the phone: what one taps is 40 px high (G0.7) */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
@@ -3325,9 +3311,6 @@
     #board .zd.ti > .tx { flex-basis: 100%; }
     #board .zd.ti > .r { margin-left: 0; }
     #board .rk-btn.ib { width: 40px; padding: 0; justify-content: center; }
-    #board .rk-btn.live-btn .lx { display: none; }
-    #board .zd.live-new .live-in { min-height: 40px; font-size: 16px; }
-    #board .zd.live-merge { justify-content: flex-start; }
   }
 
   /* machine alarms — only drawn when something is due */

@@ -1942,10 +1942,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // ): the folded panel „[Zitat entfernt]“ and its meter rows left — a run stands
   // under its opened lane, or in the block "Prüfungen" of the Arbeitsorte, drawn after the projects so
   // what found its lane is not said twice
-  check("B5: the checks are the block Prüfungen of the Arbeitsorte, and every run stands once — at its lane or in the block",
+  // MINIMAL (owner 2026-10-09: „[Zitat entfernt]“): the
+  // block says every run that runs or waits in one line; at its lane the run is the diamond on the way back
+  check("B5: the checks are the block Prüfungen of the Arbeitsorte — one line per run that runs or waits; at its lane the run is the diamond on its way back",
     /checks = block\("runs", "Prüfungen"\)/.test(cliSrc)
-      && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done" && !placedRuns\.has\(b\.key\)\)/.test(cliSrc)
-      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(place\) placedRuns\.add\(b\.key\);/.test(cliSrc)
+      && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done"\)\.sort\(/.test(cliSrc)
+      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(gate\) row\.appendChild\(gateButton\(gateKey, gate, mine\)\);/.test(cliSrc)
       && cliSrc.indexOf("checks.appendChild(runRows(focusSlot === null));") > cliSrc.indexOf("projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));")
       && !/"Alle Prüfläufe"/.test(cliSrc) && !/meterOpen/.test(cliSrc)
       && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "runRows + arbeitsorteSection in src/board.ts");
@@ -2426,7 +2428,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   for (const m of ARBEITSORTE_MUTANTS) {
     try {
       const names = typeof m.claim === "string" ? [m.claim] : m.claim;
-      const hit = (await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [390], mutate: m }))
+      const hit = (await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [m.width ?? 390], mutate: m }))
         .flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
       check(`arbeitsorte DOM MUTATION — ${m.name}: "${names.join('…" · "')}…" turns red`,
         names.every((n) => hit.some(([c]) => c.includes(n))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
@@ -11939,7 +11941,8 @@ async function runCodexPermissions(): Promise<void> {
 // THE MUTATION PROBES of the one-row-per-machine card (owner 2026-10-07): each statement's claim,
 // and the one swap in src/board.ts that must turn it red — run in the narrowed state at 390 px. A
 // needle that left the source throws in runArbeitsorteDom: the probe fails as itself, never "caught".
-export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string | readonly string[]; needle: string; with: string; file?: ArbeitsorteMutant["file"] }[] = [
+// `width` where the state draws Info only on the desktop (`leer`: no session, so the phone shows none)
+export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string | readonly string[]; needle: string; with: string; file?: ArbeitsorteMutant["file"]; width?: number }[] = [
   { name: "machines keyed by carrier, not by name", state: "doppelt", claim: "every machine stands once as one row",
     needle: "const key = st.name ? machineKey(st.name) : ", with: "const key = st.name ? `${st.kind}:${machineKey(st.name)}` : " },
   { name: "nameless helpers folded into one machine", state: "doppelt", claim: "every machine stands once as one row",
@@ -11948,10 +11951,11 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: `{ label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null }`, with: `{ label: "Fleet-Instanz", text: null, st }` },
   { name: "a tap shows no other carrier", state: "doppelt", claim: "a tap on workhorse opens its instance",
     needle: "for (const f of facts) {", with: "for (const f of [] as MachineFact[]) {" },
-  { name: "every project shown, none behind the row", state: "doppelt", claim: "a project with running work stands open",
-    needle: "const quiet = wp.repos.filter((R) => R.repo !== focusRepo && !repoAtWork(R));", with: "const quiet: WorkplaceRepo[] = [];" },
-  { name: "a session merely sitting in a checkout counts as work", state: "doppelt", claim: "a project with running work stands open",
-    needle: "(s.repo ?? s.cwd) === R.repo && busy(s));", with: "(s.repo ?? s.cwd) === R.repo);" },
+  { name: "every project shown, none behind the row", state: "leer", width: 1200, claim: "with no running work every project waits behind one row",
+    needle: "const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));", with: "const quiet: WorkplaceRepo[] = [];" },
+  // ("a session merely sitting in a checkout counts as work" left with the owner's 2026-10-09 word: a focused
+  // session shows its project alone, so repoAtWork decides only the overview — whose fixture, `leer`, has no
+  // session at all to sit anywhere; the statement has no witness until a state carries one)
   { name: "a detached worktree reads \"ohne Branch\" again", state: "doppelt", claim: "a detached worktree says what it is",
     needle: ": `losgelöst · ${laneWords(baseName(w.path))}`);", with: ": \"ohne Branch\");" },
   { name: "a date inside a branch name stays in its words", state: "doppelt", claim: "none carries a date in its words",
@@ -11960,7 +11964,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "if (alike.length < 2) continue;", with: "continue;" },
   { name: "a worktree on the stem stands as a lane too", state: "doppelt", claim: "overhaul stands once",
     needle: "stemWt.set(w.branch, w);", with: "void w;" },
-  { name: "the quiet projects' row opens nothing", state: "doppelt", claim: "the quiet project is one tap away",
+  { name: "the quiet projects' row opens nothing", state: "leer", width: 1200, claim: "the quiet project is one tap away",
     needle: "if (rankeQuietOpen) for (const R of quiet)", with: "if (false) for (const R of quiet)" },
   // THE LANE'S FLAG AND THE OPENED LANE (owner 2026-10-08): the closed row quiet, a tap opens in place
   { name: "the closed row draws the five points again", state: "lane", claim: "a closed lane carries no row of points",
@@ -12003,6 +12007,26 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "liveErr.set(cwd, `Der Auftrag", with: "void (`Der Auftrag" },
   { name: "an instance that did not start goes unsaid", state: "live", claim: "an instance that did not start is said at the lane",
     needle: "liveErr.set(cwd, `${liveErr.get(cwd)", with: "void (`${liveErr.get(cwd)" },
+  // THE LANE VIEW, OWNER ROUND 2026-10-09 (UI-MAIN: „[Zitat entfernt]“)
+  { name: "a lane has no way back", state: "lane", claim: "every lane runs back to its target's rail",
+    needle: `  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";`, with: "" },
+  { name: "a landed lane's way back stays dashed", state: "viele", claim: "every lane runs back to its target's rail",
+    needle: `  row.dataset.land = w.target.landed === "yes" ? "yes" : "wait";`, with: `  row.dataset.land = "wait";` },
+  { name: "a running check draws no diamond", state: "land", claim: "3A's flag says only results",
+    needle: "  if (gate) row.appendChild(gateButton(gateKey, gate, mine));", with: "  void gateKey;" },
+  { name: "the flag says the running check again", state: "lane", claim: "3A's flag says only results",
+    needle: "  const reds = redStages(w);\n  if (reds.length) return { cls: \"bad\", old: old(reds) };",
+    with: "  const reds = redStages(w);\n  if (WAY_CHECKS.some(({ key }) => w.checks?.[key]?.state === \"running\")) return { cls: \"bad\", old: false };\n  if (reds.length) return { cls: \"bad\", old: old(reds) };" },
+  { name: "a tap on the diamond says nothing", state: "land", claim: "a tap on 3A's diamond says what runs",
+    needle: "  if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine));", with: "" },
+  { name: "every project beside the focused one", state: "lane", claim: "only the focused session's project stands",
+    needle: "const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;", with: "const focusR: WorkplaceRepo | undefined = undefined;" },
+  { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
+    needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !placedRuns.has(b.key)).sort(` },
+  { name: "a run line names no session", state: "land", claim: "the Prüfungen block says every run in one line",
+    needle: "    if (s?.cwd) who.append(", with: "    if (false) who.append(" },
+  { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from carries the mark",
+    needle: "      rows[0].dataset.hier = HERE_MARK;", with: "" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // the draft's states (docs/design/rechter-tab-entwurf.html ?z=…, `zweck` excepted — it is the draft's
@@ -12391,6 +12415,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         head: sec.querySelector('h3')?.textContent ?? null,
         blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0 })),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
+        backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1) })),
+        gates: [...sec.querySelectorAll('.zr > .lgate')].map((g) => { const b = g.getBoundingClientRect(), t = g.closest('.rk').getBoundingClientRect();
+          return { row: g.parentElement.dataset.slot ?? g.parentElement.dataset.id ?? null, gate: g.dataset.gate ?? null, placed: g.dataset.placed ?? null,
+            cy: Math.round(b.top + b.height / 2 - t.top), title: g.title, vis: vis(g) }; }),
+        heads: [...sec.querySelectorAll('.zr > .zhead')].map((h) => ({ row: h.parentElement.dataset.id ?? null, next: h.classList.contains('next') })),
+        hier: [...sec.querySelectorAll('[data-hier]')].map((e) => ({ cls: String(e.className), text: e.innerText.replace(/\\s+/g, ' ').trim(),
+          mark: e.classList.contains('mach') ? getComputedStyle(e.querySelector(':scope > .zs'), '::before').content : getComputedStyle(e, '::after').content })),
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'), machineCards: body.querySelectorAll('.testinstanzmachine').length, cut,
         live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'), faint: probe('var(--chat-faint)'), ink: probe('var(--chat-ink)'),
@@ -12405,6 +12436,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
     type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
+      backs: { cls: string | null; for: string | null; y: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; vis: boolean }[];
+      heads: { row: string | null; next: boolean }[]; hier: { cls: string; text: string; mark: string }[];
       secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
@@ -12484,10 +12517,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.quiet = { ...quiet, drawn };
           claims[`${st}: with no running work every project waits behind one row "3 ruhige Projekte", no head drawn, and one tap draws the three, each still closed`] =
             quiet.heads === 0 && quiet.fold === "3 ruhige Projekte" && quiet.exp === "false" && drawn;
-          for (const name of ["claude-fleet", "rezepte-app"]) {
+          for (const name of ["claude-fleet", "rezepte-app", "alte-skripte"]) {
             await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith(${JSON.stringify(name)}))?.click()`);
             await settle(150);
           }
+          // a quiet project opens like any — its stamp-only branch reads "Zweig vom 20.09."
+          const stamp = await wait(`[...document.querySelectorAll('#boardbody .zr.zw .nm')].some((x) => x.textContent === 'Zweig vom 20.09.')`, 3000);
+          claims[`${st}: the quiet project is one tap away and opens like any — its stamp-only branch reads "Zweig vom 20.09."`] = drawn && stamp;
+          // a tap that drew nothing is that claim's red, not a probe that could not run: nothing below has rows to read
+          if (!drawn) { results.push({ width, height, state: st, claims, facts }); continue; }
         }
         const shown = await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 15000);
         if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the Ranke did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
@@ -12500,8 +12538,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
         // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
         // the machines — each under its own small head, so the eye finds a kind of thing, not a row; the
-        // block Prüfungen stands only while a run has no lane to stand at (here: `land`, both lanes closed)
-        claims[`${tag}the Arbeitsorte stand in blocks under their own heads: Projekte · Prüfungen (only while a run stands outside a lane) · Geräte`] =
+        // block Prüfungen stands only while a run runs or waits (here: `land`)
+        claims[`${tag}the Arbeitsorte stand in blocks under their own heads: Projekte · Prüfungen (only while a run runs or waits) · Geräte`] =
           JSON.stringify(r.blocks.map((b) => b.title)) === JSON.stringify(["Projekte", "Prüfungen", "Geräte"])
           && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title)) === JSON.stringify(st === "land" ? ["Projekte", "Prüfungen", "Geräte"] : ["Projekte", "Geräte"]);
         const zw = branchRows(r);
@@ -12515,6 +12553,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}a closed lane carries no row of points and at most one flag — its words, every stage, are the flag's title, aria-label and held word`] =
           zw.every((x) => x.points === 0 && (!x.flag || (!!x.flag.look && x.flag.title.length > 4
             && x.flag.aria === x.flag.title.split("\n").join(". ") && x.flag.hold === x.flag.title)));
+        // THE WAY BACK (owner 2026-10-09: „[Zitat entfernt]“): every lane runs on
+        // past its row's end to its target's rail — dashed until it has landed, solid after — and the
+        // rail ends in its target's head
+        const landedIds = new Set(lanesOf(st).filter((l) => l.landed === "yes").map(pathOf));
+        facts.backs = { backs: r.backs, heads: r.heads, landed: [...landedIds] };
+        claims[`${tag}every lane runs back to its target's rail on the right — dashed until it has landed, solid after — and the rail ends in its target's head`] =
+          zw.length > 0 && zw.every((x) => { const b = r.backs.filter((p) => p.for === x.id);
+            return b.length === 1 && (b[0].cls ?? "").split(" ").includes(landedIds.has(x.id ?? "") ? "land" : "wait"); })
+          && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
+        // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“): the server this page comes
+        // from carries the mark — here the Live row of this machine, and nothing else
+        facts.hier = r.hier;
+        claims[`${tag}the server this page comes from carries the mark "hier" — the Live row of this machine, and only it`] =
+          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("mach") && r.hier[0].mark === '"hier"' && r.hier[0].text.startsWith("Mac");
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
         claims[`${tag}nothing in the top of Info is cut — no text of the alarm, the Arbeitsorte or the session head runs out under an ellipsis`] = r.cut.length === 0;
@@ -12568,16 +12620,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         facts.repos = { heads: repos.map((x) => ({ text: x.text, tag: x.tag, chip: x.chip, cls: x.cls, exp: x.exp, title: x.title })), quiet: quietRow ? { text: quietRow.text, exp: quietRow.exp } : null };
         // FEWER WORDS (owner 2026-10-08): the head shows a remote only where the copy and its image differ
         claims[`${tag}every repo the server reads is a group; its head shows a remote only where copy and image differ ("origin ↑3"), the rest — "ohne Remote" too — is its title`] =
-          repos.length === (st === "leer" ? 3 : 2)
+          repos.length === (st === "leer" ? 3 : 1)
           && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main: [0-9a-f]{7} · 3 vor, 0 hinter/.test(x.title))
-          && repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === null && !/Remote/.test(x.text) && /ohne Remote/.test(x.title));
+          && (st !== "leer" || repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === null && !/Remote/.test(x.text) && /ohne Remote/.test(x.title)));
         // THE PROJECT'S STATE (owner 2026-10-08, round 2): dot and word at the head's end
         const pWord = st === "leer" ? "ruhig" : ["viele", "viele30", "branch"].includes(st) ? "1 wartet auf dich" : "1 arbeitet";
         claims[`${tag}a project head says its state as a dot and a word: claude-fleet "${pWord}"`] =
           repos.some((x) => x.text.startsWith("claude-fleet") && x.chip === pWord);
-        if (st !== "leer") claims[`${tag}a project with running work stands open, a project whose session only sits in its checkout waits behind "1 ruhiges Projekt"`] =
-          repos.every((x) => x.exp === "true") && !repos.some((x) => x.text.startsWith("alte-skripte"))
-          && quietRow?.text === "1 ruhiges Projekt" && quietRow.exp === "false";
+        // ONLY THE FOCUSED SESSION'S PROJECT (owner 2026-10-09: „[Zitat entfernt]“
+        // ); the
+        // overview with its quiet row stays for a session outside every project (`leer`)
+        if (st !== "leer") claims[`${tag}only the focused session's project stands — claude-fleet open, no other project, no row of quiet ones`] =
+          repos.length === 1 && repos[0].text.startsWith("claude-fleet") && repos[0].exp === "true" && !quietRow;
         const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
         // how many land on a stem is said by its lanes' own words, not again on the stem: the tip and the
         // count are the stems' titles (owner 2026-10-08: the row had crowded into two lines)
@@ -12608,13 +12662,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           claims[`${tag}the own path main → overhaul → 3A is drawn in ink`] = r.inkPaths === 1;
           claims[`${tag}the node says the state: 3A works (green), 3B is still (a ring), the word in the tooltip`] =
             mine.nd === r.live && mine.title.includes("arbeitet") && zeitRow.node === "still" && zeitRow.nd !== r.live && /still/.test(zeitRow.title);
-          // ONE FLAG (owner 2026-10-08: „[Zitat entfernt]“
-          // ): 3A has a check running — ink; 3B's finished green
-          claims[`${tag}3A's flag runs (ink) and names its stages — Beweis grün, ${st === "land" ? "its land check running" : "Vorschau läuft"}; 3B's is ${st === "land" ? "an ink ring while its preview waits" : "green"}`] =
-            mine.flag?.look === "run" && mine.flag.color === r.ink && /Beweis: grün/.test(mine.flag.title)
-            && (st === "land" ? /^Landprüfung \d+:\d\d von ~4:10/.test(mine.flag.title) && /Landprüfung: läuft/.test(mine.flag.title) : /Vorschau: läuft/.test(mine.flag.title))
-            && (st === "land" ? zeitRow.flag?.cls === "lflag queue" && /^Vorschau wartet/.test(zeitRow.flag.title) && zeitRow.flag.color === r.ink
-              : zeitRow.flag?.look === "ok" && zeitRow.flag.color === r.live);
+          // ONE FLAG FOR RESULTS, THE DIAMOND FOR WHAT RUNS (owner 2026-10-09: „[Zitat entfernt]“
+          // ):
+          // 3A's flag says Beweis grün; that its ${st === "land" ? "land check" : "preview"} runs is the filled diamond ON its way back
+          const gateOf = (slot: number) => r.gates.find((g) => g.row === String(slot));
+          const onLine = (slot: number, l: Lane) => { const g = gateOf(slot), b = r.backs.find((p) => p.for === pathOf(l)); return !!g && !!b && Math.abs(g.cy - b.y) <= 1; };
+          facts.gates = r.gates;
+          claims[`${tag}3A's flag says only results — Beweis grün; that its ${st === "land" ? "land check" : "preview"} runs is the filled diamond on its way back; 3B ${st === "land" ? "carries an ink-ring diamond while its preview waits" : "has no diamond"}`] =
+            mine.flag?.look === "ok" && mine.flag.color === r.live && /Beweis: grün/.test(mine.flag.title) && !/läuft|wartet/.test(mine.flag.title)
+            && gateOf(9)?.gate === "run" && gateOf(9)?.placed === "1" && gateOf(9)?.vis === true && onLine(9, own)
+            && (st === "land" ? /^Landprüfung \d+:\d\d von ~4:10 · .+ · auf Mac — /.test(gateOf(9)?.title ?? "") : /^Eine Prüfung läuft/.test(gateOf(9)?.title ?? ""))
+            && zeitRow.flag?.look === "ok" && zeitRow.flag.color === r.live
+            && (st === "land" ? gateOf(10)?.gate === "queue" && onLine(10, zeit) && /^Vorschau wartet/.test(gateOf(10)?.title ?? "") : !gateOf(10));
           claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
             && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
         }
@@ -12631,9 +12690,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if (st === "land") {
             const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
             facts.runsClosed = free0.map((l) => `${l.cls}: ${l.text}`);
-            claims[`${tag}while 3A is closed its land check stands in the Prüfungen block, named by the lane, beside 3B's waiting preview — each run once`] =
+            claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
               free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
-              && /^3A · Rechter Tab dichter Landprüfung/.test(free0[0]?.text ?? "") && /^3B · Zeitleiste Vorschau wartet/.test(free0[1]?.text ?? "");
+              && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste";
+            // A TAP ON THE DIAMOND says what runs and where: 3A's land check, on Mac
+            await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
+            await wait(`document.querySelector('#boardbody .zd.gate')`, 3000);
+            const gl = (await read()).lines.find((l) => l.cls.split(" ").includes("gate"));
+            facts.gateTap = gl ?? null;
+            claims[`${tag}a tap on 3A's diamond says what runs and on which machine — under the lane, the lane stays closed`] =
+              !!gl && gl.for === `gate:${pathOf(own)}` && /^Landprüfung \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac$/.test(gl.text)
+              && await evaluate<boolean>(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`);
+            await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
+            await wait(`!document.querySelector('#boardbody .zd.gate')`, 3000);
           }
           await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"]')?.click()`);
           await wait(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'true' && document.querySelector('#boardbody .zd.wl')`, 3000);
@@ -12651,9 +12720,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && wl.wayAria.startsWith("Weg nach overhaul: 1 Beweis: grün");
           if (st === "land") {
             const runs = r.lines.filter((l) => l.cls.split(" ").includes("run"));
-            claims[`${tag}opened, 3A's land check stands once — under the lane, with the glyph of its machine; the Prüfungen block keeps only 3B's preview`] =
+            claims[`${tag}opened, 3A's land check stands under the lane with the glyph of its machine; the Prüfungen block still says both runs, one line each`] =
               runs.filter((l) => !l.cls.split(" ").includes("free")).length === 1 && /^Landprüfung /.test(runs.find((l) => !l.cls.split(" ").includes("free"))?.text ?? "")
-              && runs.filter((l) => l.cls.split(" ").includes("free")).length === 1 && /^3B · Zeitleiste/.test(runs.find((l) => l.cls.split(" ").includes("free"))?.text ?? "")
+              && runs.filter((l) => l.cls.split(" ").includes("free")).length === 2
               && await evaluate<boolean>(`!!document.querySelector('#boardbody .zd.run:not(.free) .dv[aria-label="läuft auf Mac"]')`);
           }
           await shot(`${st}-offen-${width}`);
@@ -12855,24 +12924,24 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         }
         if (st === "land") await shot(`${st}-${width}`);
         if (st === "viele" || st === "branch" || st === "viele30") {
-          // the second repo is at work (slot 13 works), so it stands open without a click
-          await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') !== 'true')?.click()`);
-          await wait(`document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
-          await settle(200);
+          // only the focused session's project stands (owner 2026-10-09): rezepte-app's slot 13 is not drawn
           r = await read();
           const z2 = branchRows(r);
           const fold = r.rows.find((x) => x.cls.includes("zf"));
           const flagR2 = new Set(z2.filter((x) => x.flag).map((x) => x.flag!.box.r));
           facts.many = { rows: z2.length, fold: fold?.text, flagR: [...flagR2], flags: z2.map((x) => `${x.slot ?? x.id}: ${x.flag?.cls ?? "-"}`) };
-          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; the flags still stand in one column across both repos`] =
-            !!fold && /\d+ ohne Session/.test(fold.text) && flagR2.size === 1 && z2.some((x) => x.slot === "13");
+          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; the flags still stand in one column`] =
+            !!fold && /\d+ ohne Session/.test(fold.text) && flagR2.size === 1 && !z2.some((x) => x.slot === "13");
           const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
           // ONE FLAG, ITS LOOKS (src/board.ts#flagLook): red where a check is red — a ring when that result
-          // is on an older stand; an ink ring while one waits; ink while one runs; nothing where no check
-          // has a result to tell (a skipped proof, an unreadable record alone)
-          claims[`${tag}the flags read apart: a red result on an older stand is a red ring, a waiting run an ink ring, a running check after the land ink, nothing to tell no flag`] =
-            c.flag?.cls === "lflag bad old" && c.flag.color === r.danger && d.flag?.cls === "lflag queue" && d.flag.color === r.ink
-            && e.flag?.cls === "lflag run" && !g.flag && !f.flag;
+          // is on an older stand; green where all that finished passed; nothing where no check has a result
+          // to tell (a skipped proof, an unreadable record alone). What waits or runs is the DIAMOND on the
+          // way back (#gateLook): a ring while it waits, filled while it runs — on a landed lane's solid line too
+          const gate2 = (slot: number) => r.gates.find((x) => x.row === String(slot))?.gate ?? null;
+          facts.manyGates = r.gates.map((x) => `${x.row}: ${x.gate}`);
+          claims[`${tag}the flags read apart: a red result on an older stand is a red ring, a finished green one green, nothing to tell no flag; a waiting check is a ring diamond, the running check after a land a filled one`] =
+            c.flag?.cls === "lflag bad old" && c.flag.color === r.danger && d.flag?.cls === "lflag ok" && gate2(12) === "queue"
+            && e.flag?.cls === "lflag ok" && gate2(14) === "run" && !g.flag && !f.flag && gate2(16) === null && gate2(15) === null;
           claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
           await shot(`${st}-${width}`);
           if (st === "viele") {
@@ -12952,17 +13021,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const ol = r.lines.find((l) => l.cls.includes("zx2"));
           claims[`${tag}a tap on that stem opens the worktree's line with Öffnen, as its own row did`] =
             r.lines.some((l) => l.for === overWt && l.text.startsWith("overhaul")) && !!ol && ol.buttons.includes("Öffnen");
-          // the quiet project: one tap draws it closed, one more opens it
-          await evaluate(`document.querySelector('#boardbody .ranke .zr.zq')?.click()`);
-          await wait(`[...document.querySelectorAll('#boardbody .zr.repo')].some((x) => x.innerText.startsWith('alte-skripte'))`, 3000);
-          r = await read();
-          const old = r.rows.find((x) => x.cls.split(" ").includes("repo") && x.text.startsWith("alte-skripte"));
-          await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('alte-skripte'))?.click()`);
-          await wait(`[...document.querySelectorAll('#boardbody .zr.zw .nm')].some((x) => x.textContent === 'Zweig vom 20.09.')`, 3000);
-          r = await read();
-          facts.quiet = { head: old?.text, exp: old?.exp, rows: branchRows(r).filter((x) => x.id?.startsWith(REPO3)).map((x) => x.name) };
-          claims[`${tag}the quiet project is one tap away and opens like any — its stamp-only branch reads "Zweig vom 20.09."`] =
-            old?.exp === "false" && branchRows(r).some((x) => x.id?.startsWith(REPO3) && x.name === "Zweig vom 20.09.");
           await shot(`${st}-getippt-${width}`);
         }
         if (st === "main") {
@@ -13350,16 +13408,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           }
           if (st === "branch") {
             // the repos the owner opened or closed by hand survive a reload (src/prefs.ts, fleet.ranke.repos):
-            // rezepte-app stands open because it is at work — closed by hand, it stays closed
-            await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') === 'true')?.click()`);
-            await wait(`!document.querySelector('#boardbody .zr[data-slot="13"]')`, 3000);
+            // claude-fleet stands open because it is the focused session's and at work — closed by hand, it stays closed
+            await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('claude-fleet') && x.getAttribute('aria-expanded') === 'true')?.click()`);
+            await wait(`!document.querySelector('#boardbody .zr[data-slot="9"]')`, 3000);
             // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
             if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
             await navigate("http://fleet.fixture/");
             if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); }
-            const back = await wait(`[...document.querySelectorAll('#boardbody .zr.repo')].some((x) => x.innerText.startsWith('rezepte-app') && x.getAttribute('aria-expanded') === 'false')
-              && !!document.querySelector('#boardbody .zr[data-slot="9"]') && !document.querySelector('#boardbody .zr[data-slot="13"]')`, 15000);
-            facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s13: !!document.querySelector('#boardbody .zr[data-slot="13"]'),
+            const back = await wait(`[...document.querySelectorAll('#boardbody .zr.repo')].some((x) => x.innerText.startsWith('claude-fleet') && x.getAttribute('aria-expanded') === 'false')
+              && !document.querySelector('#boardbody .zr[data-slot="9"]')`, 15000);
+            facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s9: !!document.querySelector('#boardbody .zr[data-slot="9"]'),
               text: (document.querySelector('#boardbody')?.innerText ?? '').slice(0, 300) })`);
             claims[`${it}a project closed by hand stays closed across a reload, though it is at work`] = back;
           }

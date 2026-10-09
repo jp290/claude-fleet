@@ -2714,8 +2714,10 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
 // and land the commits as made — and the field says so, rather than promising a switch that is dropped.
 type LandForm = "commits" | "squash";
 const LAND_FORM_WORD: Record<LandForm, string> = { commits: "alle Commits", squash: "ein Commit" };
+// what "ein Commit" means, in the Kern's words (25225eeb): the series stays under the lane's history ref,
+// and a lane of one commit lands as it is
 const LAND_FORM_SAY: Record<LandForm, string> = { commits: "Die Commits landen so, wie sie gemacht wurden",
-  squash: "Die Commits der Lane werden beim Land zu einem zusammengefasst" };
+  squash: "Die Commits der Lane landen als ein Commit — ihre Reihe bleibt im Verlauf der Lane erhalten, eine Lane mit nur einem Commit landet unverändert" };
 const LAND_FORM_NOTE = "Gilt, wenn die MAIN die Lane landet — „Mergen“ hier landet bis auf Weiteres alle Commits, wie sie gemacht wurden.";
 type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
 let landFormOpen: string | null = null;

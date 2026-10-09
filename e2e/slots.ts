@@ -12090,6 +12090,11 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: ".replace(isLiveLane(w.branch) ? /^live\\s+/ : /$^/, \"\")", with: "" },
   { name: "the live field says nothing of what it makes", state: "live", width: 1200, claim: "a project head carries Live-Session",
     needle: "  box.appendChild(el(\"div\", \"hint live-hint\", \"Eine Lane mit eigener Testinstanz · am Ende Mergen\"));", with: "" },
+  // round 8: "Mehr zu dieser Session" above the notepad and History
+  { name: "Mehr zu dieser Session stands last again", state: "lane", width: 1200, claim: "the sections stand in the owner's order",
+    needle: "    boardBody.replaceChildren(...nodes);", with: "    nodes.push(...nodes.splice(nodes.indexOf(msec), 1)); boardBody.replaceChildren(...nodes);" },
+  { name: "a rule stands between Projekte and Prüfungen again", state: "land", claim: "no rule between Projekte and Prüfungen",
+    needle: "  #board .rkblock.rk-proj + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }", with: "" },
   { name: "a helper that reports says angemeldet again", state: "lane", claim: "each machine's state is a dot and a word at the row's end",
     needle: "return { tone: \"live\", word: \"läuft\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };", with: "return { tone: \"live\", word: \"angemeldet\", title: `Meldet sich regelmäßig als Helfer — ${ago}` };" },
   { name: "the test instance's row says läuft in its name again", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
@@ -12514,7 +12519,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
       return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
         head: sec.querySelector('h3')?.textContent ?? null,
-        blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0 })),
+        blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0,
+          rule: getComputedStyle(b).borderTopWidth })),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1),
           x0: p.closest('.rk').getBoundingClientRect().left + Number(/H([\\d.]+)$/.exec(p.getAttribute('d') ?? '')?.[1] ?? NaN) })),
@@ -12545,7 +12551,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       // the right edge of everything the row says, where its way back begins (src/board.ts#drawRankeLines, end)
       wordsR: number; marksR: number | null; endR: number };
     type Line = { cls: string; for: string | null; text: string; title: string; buttons: string[]; points: { key: string | null; cls: string }[]; way: string; wayAria: string };
-    type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean }[]; rows: Row[];
+    type Read = { index: number; before: string[]; next: string | null; head: string | null; blocks: { cls: string; title: string | null; shown: boolean; rule: string }[]; rows: Row[];
       lines: Line[]; text: string; svgPaths: number; inkPaths: number;
       backs: { cls: string | null; for: string | null; y: number; x0: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
         gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
@@ -12670,6 +12676,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}the Arbeitsorte stand in blocks under their own heads: Projekte · Prüfungen (only while a run runs or waits) · Geräte`] =
           JSON.stringify(r.blocks.map((b) => b.title)) === JSON.stringify(["Projekte", "Prüfungen", "Geräte"])
           && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title)) === JSON.stringify(st === "land" ? ["Projekte", "Prüfungen", "Geräte"] : ["Projekte", "Geräte"]);
+        // THE CHECKS STAND WITH THE PROJECTS (owner 2026-10-09: „[Zitat entfernt]“
+        // ): no
+        // rule above Prüfungen; Geräte keeps its own
+        if (st === "land") claims[`${tag}no rule between Projekte and Prüfungen; Geräte keeps its rule`] =
+          r.blocks.find((b) => b.title === "Prüfungen")?.rule === "0px" && r.blocks.find((b) => b.title === "Geräte")?.rule === "1px";
         const zw = branchRows(r);
         const flagR = new Set(zw.filter((x) => x.flag).map((x) => x.flag!.box.r)), lrR = new Set(zw.map((x) => x.lr?.r));
         facts.columns = { flagR: [...flagR], lrR: [...lrR], heights: [...new Set(zw.map((x) => x.box.h))] };
@@ -13396,15 +13407,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // Arbeitsorte and a lane's own flag — no word button in the head, no strip pinned under it
           claims[`${it}the checks are the block "Prüfungen" in the Arbeitsorte — no button in its head, no strip under the column head`] =
             !n.meter.inHead && n.meter.btn === null && n.meter.rows === null && !n.oldMeter;
-          // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Notizblock → History → Mehr
+          // the order of the sections after the alarms: Arbeitsorte → Session → Changes → Mehr → Notizblock → History
+          // (owner 2026-10-09: „[Zitat entfernt]“)
           const order = n.kids.map((k) => k.includes("ranke") ? "ranke" : k.includes("bhead") ? "sess" : k.includes("bchanges") ? "changes"
             : k.includes("bnotesec") ? "note" : k.includes("bhist") ? "history" : k.includes("bmore") ? "more" : k.includes("bnopane") ? "nopane"
             : /plasec|berrs/.test(k) ? "alarm" : k.includes("testinstanzmachine") ? "machine" : k).filter((k) => k !== "alarm");
           // the machine's test instances no longer close the column (an instance opens at its lane)
           const story = order;
-          claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Notizblock → History → Mehr`] = !story.includes("machine") && (!hasSession
+          claims[`${it}the sections stand in the owner's order: Arbeitsorte → Session → Changes → Mehr → Notizblock → History`] = !story.includes("machine") && (!hasSession
             ? JSON.stringify(story) === JSON.stringify(["ranke", "nopane"])
-            : JSON.stringify(story) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "note", "history", "more"] : ["ranke", "sess", "changes", "history", "more"]));
+            : JSON.stringify(story) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "more", "note", "history"] : ["ranke", "sess", "changes", "more", "history"]));
           claims[`${it}no process word anywhere in the column's visible text`] = !PROCESS.test(n.bodyText) && !ADDRESS.test(n.bodyText);
           if (!hasSession) claims[`${it}without a session the column says so in one sentence and draws no session block`] = /Wähle eine Pane, um ihre Session zu sehen\./.test(n.bodyText) && !n.sess;
           if (hasSession && detail && n.sess) {

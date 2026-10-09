@@ -1495,7 +1495,13 @@ export async function renderBoard() {
       const work = changesSection(c, brief);
       nodes.push(work);
     }
-    // 4 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn
+    // 4 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
+    // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts). It
+    // stands above the notepad and History (owner 2026-10-09: „[Zitat entfernt]“
+    // )
+    const msec = moreSection(c);
+    nodes.push(msec);
+    // 5 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn
     // from the lanes read alone, so it stands even when the brief failed; a repo session (the primary
     // checkout is no board row) and a failed lanes read draw none.
     {
@@ -1507,7 +1513,7 @@ export async function renderBoard() {
         nodes.push(noteSec);
       }
     }
-    // 5 — HISTORY: the three newest commits, the full list behind one button
+    // 6 — HISTORY: the three newest commits, the full list behind one button
     if (brief) {
       const csec = historySection(c, brief);
       nodes.push(csec);
@@ -1520,10 +1526,6 @@ export async function renderBoard() {
         nodes.push(lfail);
       }
     }
-    // 6 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
-    // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts)
-    const msec = moreSection(c);
-    nodes.push(msec);
     perfRebuild("renderBoard");
     boardBody.replaceChildren(...nodes);
     drawRankeLines(boardBody);
@@ -2870,6 +2872,10 @@ const RANKE_CSS = `
   #board .gw i.old { background: transparent; }
   #board .gw i.ok.old { box-shadow: inset 0 0 0 1.25px var(--q-live); }
   #board .gw i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
+  /* THE CHECKS STAND WITH THE PROJECTS (owner 2026-10-09: „[Zitat entfernt]“
+     
+     ): no rule between the two, a small gap; the devices keep theirs */
+  #board .rkblock.rk-proj + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }
   /* THE CHECKS FOLD (#runsSummary): the block's head opens and closes it; closed, one line */
   #board .rk-runs > .rkbh.fold { cursor: pointer; border-radius: var(--r1); }
   #board .rk-runs > .rkbh.fold > .ico { margin-left: auto; width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }

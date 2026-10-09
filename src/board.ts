@@ -4376,9 +4376,11 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     // HELPER DEVICES NEVER VANISH SILENTLY (owner, 2026-10-06): a snapshot carries none (their data
     // is stripped at the copy), so the group says so instead of being absent. The live fleet keeps
     // its old picture: helpers stand when they report, and a fleet truly without any says nothing.
+    // Offline like every silent device, and WHY in the row's own words (UI-MAIN d00a5a9d: "nicht
+    // angemeldet" is another act for the owner than „[Zitat entfernt]“, and a phone has no hover)
     const g = el("div", "grp");
     g.appendChild(machineHead(KIND_HELPER, "Helfer", "",
-      { tone: "off", word: "offline", title: "Eine Testinstanz trägt keine Helfer-Geräte über" },
+      { tone: "off", word: "offline · nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" },
       "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
     devices.appendChild(g);
   }

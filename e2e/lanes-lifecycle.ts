@@ -499,14 +499,18 @@ async function snapshotTruthChecks(): Promise<void> {
   // source — the board paints the snapshot rows only from instance.source (comments stripped first)
   const boardCode = stripped(readFileSync(`${src}/src/board.ts`, "utf8"));
   // since 2026-10-08 (owner: the hollow ring and „[Zitat entfernt]“ read as „[Zitat entfernt]“) the row
-  // says the instance runs, and the helper placeholder is a machine row in the Geräte grammar: the
-  // helper glyph, the word "Helfer" and the state "nicht angemeldet", its reason on hover
-  const wired = (c: string) => c.includes("here.appendChild(testInstanceStandRow(instanceSource))")
-    && c.includes('el("b", "", "Testinstanz läuft")')
+  // says the instance runs, and the helper placeholder is a machine row in the Geräte grammar; since
+  // the owner's round 4/9 of 2026-10-09 („[Zitat entfernt]“, devices online/offline) the
+  // instance is a device row like every other — its square, "Testinstanz", the port and the green
+  // "hier" — and the helper says "offline" with its reason in the row (UI-MAIN d00a5a9d: a phone
+  // has no hover), the copy's reason still on hover
+  const wired = (c: string) => c.includes("here.append(...testInstanceStandRows(instanceSource))")
+    && c.includes('machineRow("testinstanz", "Testinstanz",')
+    && c.includes('{ ...HERE_STATE, title: "Diese Seite kommt von dieser Testinstanz" }')
     && /instanceSource && !helpers\.size/.test(c)
     && c.includes('machineHead(KIND_HELPER, "Helfer", "",')
-    && c.includes('{ tone: "off", word: "nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" }');
-  check("snapshot board: the machine group paints the Testinstanz row and the helper placeholder only from instance.source",
+    && c.includes('{ tone: "off", word: "offline · nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" }');
+  check("snapshot board (Owner-Runde 9, 2026-10-09): the machine group paints the Testinstanz device row and the helper placeholder only from instance.source",
     wired(boardCode), "");
   check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
     !wired(boardCode.replace(/instanceSource && !helpers\.size/, "false")));
@@ -516,11 +520,14 @@ async function snapshotTruthChecks(): Promise<void> {
     const dom = await snapshotBoardDom(src);
     for (const v of dom.views) {
       const p = v.pages;
-      check(`snapshot DOM ${v.size}: the machine group says "Testinstanz läuft" and never claims a Live stand`,
-        p.carried.rowText === "Testinstanz läuft" && !/Live|Sein Stand|läuft auf/.test(p.carried.rowText),
-        JSON.stringify(p.carried.rowText));
-      check(`snapshot DOM ${v.size}: the helper devices stand as one row "Helfer · nicht angemeldet", the reason — the copy carries none — on hover`,
-        p.carried.helperText === "nicht angemeldet" && /Testinstanz/.test(p.carried.helperTitle ?? ""), JSON.stringify([p.carried.helperText, p.carried.helperTitle]));
+      // (Owner-Runde 9, 2026-10-09) the instance runs: it answers this page, so its device row carries
+      // the live tone and the mark "hier"; no live-server stand row is painted, so nothing claims a Live stand
+      check(`snapshot DOM ${v.size} (Owner-Runde 9): the machine group's Testinstanz device row says it runs here — live tone, "hier" — and never claims a Live stand`,
+        p.carried.tiRow !== null && p.carried.tiRow.tone === "live" && p.carried.tiRow.state === "hier"
+        && p.carried.rowText === "(no row)" && !/Live|Sein Stand|läuft auf/.test(p.carried.tiRow.text),
+        JSON.stringify({ ti: p.carried.tiRow, row: p.carried.rowText }));
+      check(`snapshot DOM ${v.size}: the helper devices stand as one row "Helfer · offline · nicht angemeldet", the reason — the copy carries none — on hover`,
+        p.carried.helperText === "offline · nicht angemeldet" && /Testinstanz/.test(p.carried.helperTitle ?? ""), JSON.stringify([p.carried.helperText, p.carried.helperTitle]));
       check(`snapshot DOM ${v.size}: the copy is no workplace — no repo group row under the machine`,
         p.carried.repoRows === 0, JSON.stringify(p.carried.repoRows));
       check(`snapshot DOM ${v.size}: a carried binding reads "Ihr Program", never "An keinen Auftrag, kein Program gebunden"`,
@@ -534,9 +541,9 @@ async function snapshotTruthChecks(): Promise<void> {
       check(`snapshot DOM ${v.size} MUTATION: without the sentence the painted calm is gone and the claim is red`,
         p.mutant.brief !== null && !p.mutant.brief.includes("Kein Git in diesem Ordner"), JSON.stringify(p.mutant.brief));
       check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — the live server's own sentence, no placeholder, "Keine" rights`,
-        p.live.rowText === "Sein Stand ist nicht belegt." && p.live.helperText === null
+        p.live.rowText === "Sein Stand ist nicht belegt." && p.live.helperText === null && p.live.tiRow === null
         && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
-        JSON.stringify({ row: p.live.rowText, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
+        JSON.stringify({ row: p.live.rowText, ti: p.live.tiRow, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
     }
   } catch (error) {
     check("snapshot DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
@@ -546,7 +553,7 @@ async function snapshotTruthChecks(): Promise<void> {
 // THE SNAPSHOT BOARD IN A REAL BROWSER (the rig of instanceBandDom, fed with the board's wire):
 // the built bundle behind a fixture origin; three loads per width (1200×900, 390×844) — a snapshot
 // with a carried binding, a snapshot whose carried binding cannot be read, and the live fleet.
-interface SnapshotPageFacts { rowText: string; helperText: string | null; helperTitle: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
+interface SnapshotPageFacts { rowText: string; tiRow: { tone: string | null; state: string | null; text: string } | null; helperText: string | null; helperTitle: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
 async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
@@ -655,9 +662,11 @@ async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: st
         // .nm's textContent INCLUDES a .cnt child where machineHead appends a sub, so the name is read
         // from the first text node — exact equality on textContent never matches there
         const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helfer');
+        // the test instance's own device row (Owner-Runde 9): its tone, the state chip's word, its text
+        const ti = document.querySelector('#board .zr.mach[data-glyph="testinstanz"]');
         const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');
         const brief = document.querySelector('#board .bfail .bstate, #board .bempty');
-        return { rowText: row ?? '(no row)', helperText: helper ? helper.querySelector(':scope > .zs')?.textContent ?? null : null, helperTitle: helper ? helper.title : null,
+        return { rowText: row ?? '(no row)', tiRow: ti ? { tone: ti.dataset.tone ?? null, state: ti.querySelector(':scope > .zs')?.textContent ?? null, text: ti.textContent ?? '' } : null, helperText: helper ? helper.querySelector(':scope > .zs')?.textContent ?? null : null, helperTitle: helper ? helper.title : null,
           repoRows: document.querySelectorAll('#board .zd').length, rights,
           brief: brief ? brief.textContent : null, briefLen: (document.getElementById('board')?.textContent ?? '').length };
       })()`);

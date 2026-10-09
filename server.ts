@@ -1,6 +1,6 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, laneExitIdleAct, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
@@ -19638,7 +19638,14 @@ Live-Quelle fuer den aktuellen Empfaenger: GET /api/self mit Header x-fleet-self
    body takes ONLY those two fields. A report is a MESSAGE, never a state change — it does not move
    your task's status, does not land anything, and does not deploy.
 
-${laneExitIdleAct(variante, `http://${HOST}:${PORT}`)}
+${variante === "live-bau" ? laneExitLiveBauAct(`http://${HOST}:${PORT}`) : `3. THEN GO IDLE. Do not poll for a reply and do not schedule a check-in to wait for one: the server
+   delivers the report to your coordinator, and any answer arrives in this pane on its own. The same
+   holds for a preview you hand to another machine: after POST /api/self/suite-offer you go idle and
+   the terminal result — green or red — is delivered into this pane by itself. Do not poll.
+   The same holds while your OWN verify runs: run it in the foreground with a timeout sized to the
+   gate's \`timeoutMs\`, or in the background and wait for its completion event — never a
+   \`sleep\`/\`tail\` loop over a log (a \`nohup\` log is block-buffered; "0 PASS lines" is an
+   observer error, not a hang). A \`waitedOut\` verdict never looked at your tree; it is not red.`}
 
 `;
 }

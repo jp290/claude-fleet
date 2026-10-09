@@ -1,4 +1,4 @@
-import { laneExitIdleAct, renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
+import { laneExitLiveBauAct, renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
 import { sectionAt, sourceSection } from "../context-sections";
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
@@ -1286,7 +1286,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     'return { roles: [LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_ROLE_CARD + "\\n" + ORCHESTRATOR_CONTEXT_LINE_CODEX], laneExitFooter, mainFooter: RAIL_HEAD + RAIL_TAIL };',
   ].join("\n"));
   const deps = { HOST: "127.0.0.1", PORT: 8790, MAX_FLEET_REPORT_TEXT: 4000,
-    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex", laneExitIdleAct };
+    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex", laneExitLiveBauAct };
   const templates = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {
     roles: string[]; laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null) => string; mainFooter: string;
   };

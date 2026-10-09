@@ -2951,8 +2951,10 @@
     --b-mono: var(--chat-mono);
     /* the column's ground is PURE BLACK (owner, 2026-09-20: „[Zitat entfernt]“
        ) — the token, never a literal, so it stays one definition. */
-    /* 360 px (owner 2026-10-08): a lane's whole state fits its row */
-    width: 360px; background: var(--chat-void); border-left: 1px solid var(--b-rule);
+    /* 360 px (owner 2026-10-08): a lane's whole state fits its row; 336 px with its own type a step smaller
+       (owner 2026-10-09: „[Zitat entfernt]“
+       ) — the row still holds the same */
+    width: 336px; background: var(--chat-void); border-left: 1px solid var(--b-rule);
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
@@ -2971,7 +2973,7 @@
   #board #boardclose .ico { width: 14px; height: 14px; }
   #board #boardclose:hover { background: var(--b-hover); }
   body.board .panetools .boardtoggle { visibility: hidden; }
-  #board #boardbody { padding: 0 12px 20px; font-size: 12.5px; line-height: 1.45; }
+  #board #boardbody { padding: 0 12px 20px; font-size: 12px; line-height: 1.45; }
 
   /* sections */
   /* THE THIRD VERSION'S RHYTHM (rechter-tab-notiz.md §3b): air between GROUPS, not between rows —

@@ -278,7 +278,23 @@ export function suiteMeter(inp: MeterInput): Meter {
       title: titleOf(slot) });
   }
 
-  if (auditRuns) {
+  if (auditRuns?.sharded) {
+    // A SHARDED HELPER RUN (server.ts#postLandAuditLiveView) is the helpers' work from its first
+    // claim to its row, also BETWEEN two claims, when no device holds a shard: drawing it as a run
+    // "here" with this machine's p50 would be a Mac run that does not exist. The place is the
+    // machines running a shard now, else the ones that ran one; `runs` is the running shards, the
+    // same count the devices report (0 between claims — the ball stays, the station adds nothing).
+    const sh = auditRuns.sharded;
+    const names = (states: string[]) => [...new Set(sh.shards.filter((x) => states.includes(x.state) && x.device)
+      .map((x) => x.device!))];
+    const running = sh.shards.filter((x) => x.state === "running").length;
+    const reported = sh.shards.filter((x) => x.state === "reported").length;
+    const sha = (auditRuns.mainSha ?? "").slice(0, 8);
+    const where = names(["running"]).join(", ") || auditHeld?.device || names(["reported", "closed"]).join(", ") || "helper";
+    balls.push({ key: "audit:run", station: "helper", slot: null, name: "post-land check", branch: auditRuns.main,
+      kind: "post-land check", what: `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""} · ${reported}/${sh.n} parts done`,
+      where, tone: "plain", at: auditRuns.startedAt ?? 0, expect: null, runs: running });
+  } else if (auditRuns) {
     const sha = (auditRuns.mainSha ?? "").slice(0, 8);
     const tree = `${auditRuns.main ?? "main"}${sha ? `@${sha}` : ""}`;
     // the local distribution (`stats`) is THIS machine's cost and says nothing about a helper's run

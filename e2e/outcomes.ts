@@ -63,6 +63,30 @@ export async function run(): Promise<void> {
       !!heldLocal && heldLocal.expect === null && !meterLine(heldLocal, now).join(" ").includes("~"),
       JSON.stringify(heldLocal && meterLine(heldLocal, now)));
 
+    // (2a) A SHARDED RUN BETWEEN TWO CLAIMS (server.ts#postLandAuditLiveView `running.sharded`): shard 1
+    // reported by workhorse, 2 and 3 open, no device holds a claim. It is the helpers' run — never a
+    // run "here" clocked against this machine's p50. MUTATION: drop the `auditRuns?.sharded` arm in
+    // src/suitemeter.ts ⇒ station run, where "mac", expect = stats ⇒ red.
+    const shardRun = (states: string[]) => ({ running: { phase: "running" as const, repo: "claude-fleet", main: "main",
+      mainSha: "520dcb1c0123456789", startedAt: now - 900_000, covers: ["fleet/x-1a2b"],
+      sharded: { n: 3, shards: states.map((state, i) => ({ k: i + 1, state: state as "reported" | "running" | "open" | "closed",
+        device: state === "open" ? null : "workhorse" })) } }, waiting: [], stats });
+    const between = suiteMeter({ ...base, audit: shardRun(["reported", "open", "open"]) });
+    const betweenBall = between.balls.find((b) => b.key === "audit:run");
+    check("(meter-row) a sharded run BETWEEN two claims is ONE ball at 'helper' on the shard machine, no local expectation, no run counted here",
+      between.balls.filter((b) => b.name === "post-land check").length === 1 && betweenBall?.station === "helper"
+        && betweenBall.where === "workhorse" && betweenBall.expect === null && betweenBall.at === now - 900_000
+        && betweenBall.what === "main@520dcb1c · 1/3 parts done" && meterRuns(between.balls, "helper") === 0
+        && meterRuns(between.balls, "run") === 0 && !meterLine(betweenBall, now).join(" ").includes("~"),
+      JSON.stringify(betweenBall && { ...betweenBall, line: meterLine(betweenBall, now) }));
+    const inShard = suiteMeter({ ...base, audit: shardRun(["reported", "running", "open"]),
+      devices: [{ name: "workhorse", claims: [claim(now - 60_000)] }] });
+    check("(meter-row) …and with shard 2 out it is still that ball, counting the ONE running shard at the helper",
+      inShard.balls.filter((b) => b.name === "post-land check").length === 1
+        && inShard.balls[0]?.station === "helper" && inShard.balls[0].where === "workhorse"
+        && meterRuns(inShard.balls, "helper") === 1 && inShard.balls[0].expect === null,
+      JSON.stringify(inShard.balls));
+
     // (2b) THE HELPER STATION COUNTS WHAT THE DEVICE RUNS (note 159df4c9, 29.09.: „[Zitat entfernt]“
     //  while the daemon reported running=5). The device's claim list
     // (server.ts#helperDevicesView) is the one count; a gate script a session handed over is a

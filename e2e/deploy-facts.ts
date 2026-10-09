@@ -677,6 +677,82 @@ export async function run(): Promise<void> {
         measuredD === 200 && f3.status === 200 && f3.b.queued === false && f3.b.state === "seen"
           && (await waitingFor(tipD)).length === 0,
         `measure=${measuredD} job=${JSON.stringify(jobD)} ${f3.status} ${JSON.stringify(f3.b).slice(0, 300)}`);
+
+      // (g) GATE-ONLY (owner-Ja 2026-10-09 21:2x): the audit never catches a tip that moves 41 times a
+      // day, so a tip whose every land since the youngest GREEN-audited ancestor (tipD, just above)
+      // passed a FULL land gate goes out stamped `unaudited: "gate-only"` with that ancestor — and
+      // queues nothing, the tip's audit keeps its cadence. The notes are written here the way
+      // writeLandNote writes them. Every refusal after it keeps TODAY's text, byte for byte.
+      // MUTATIONS, one per refusal, each turns its 409 into a 202 over a green anchor below it:
+      // drop the red arm of server.ts#deployGateOnlyOf ⇒ (g2); drop its `class` test ⇒ (g3).
+      const gitIn = (...args: string[]): string =>
+        spawnSync("git", ["-C", FIX, "-c", "user.email=e2e@local", "-c", "user.name=e2e", ...args], { encoding: "utf8" }).stdout.trim();
+      const landNote = (after: string, before: string, cls: string): void => {
+        gitIn("notes", "--ref=fleet/land", "add", "-f", "-m", JSON.stringify({
+          branch: "e2e/gate-only", base: "main", mainBefore: before, mainAfter: after,
+          verify: { cmd: "e2e", ok: true, out: "ALL PASS", at: Date.now(), mainSha: before, class: cls },
+          confirmedByHuman: false, at: Date.now() }), after);
+      };
+      const TODAY_UNSEEN = "tip not audited — no full audit of this tip exists — its audit was queued now, past the cadence's quiet window";
+      const drain = async (): Promise<number> => {
+        let n = 0;
+        for (const j of await auditJobs()) if (await measure(j.id, 0) === 200) n++;
+        return n;
+      };
+      // (g1) two full-gated lands above the green tipD ⇒ 202, stamped, nothing queued
+      commit("server.ts", "// v12 — landed through a full gate");
+      const g1 = headNow();
+      landNote(g1, tipD, "full");
+      commit("server.ts", "// v13 — landed through a full gate as well");
+      const g2 = headNow();
+      landNote(g2, g1, "full");
+      const g = await deployAsk();
+      const queuedOnGate = (await waitingFor(g2)).length + (await auditJobs()).length;
+      if (g.status === 202) await rebootAfterDeploy();
+      const rowG = await deployRow(g.b.id);
+      const gb = g.b as DeployAnswer & { gateOnly?: { ancestor?: string; lands?: string[] } };
+      const rg = rowG as (DeployRowX & { gateOnly?: { ancestor?: string; auditAt?: number; lands?: string[] } }) | undefined;
+      check("§7g a tip whose lands since the youngest green-audited ancestor all passed a FULL gate deploys without force: 202, `unaudited: gate-only` + the ancestor, nothing queued",
+        g.status === 202 && gb.unaudited === "gate-only" && gb.gateOnly?.ancestor === tipD && queuedOnGate === 0
+          && rg?.ok === true && rg.target === g2 && rg.unaudited === "gate-only" && rg.audit === undefined
+          && rg.gateOnly?.ancestor === tipD && typeof rg.gateOnly.auditAt === "number"
+          && JSON.stringify(rg.gateOnly.lands) === JSON.stringify([g2, g1]),
+        `${g.status} ${JSON.stringify(g.b).slice(0, 300)} queued=${queuedOnGate} row=${JSON.stringify(rowG).slice(0, 400)}`);
+      // (g2) a RED full audit without a verdict on a land in between ⇒ today's 409
+      const auditG2 = await tipAsk({ sha: g2 });
+      const jobG2 = (await auditJobs())[0];
+      const redG2 = jobG2 ? await measure(jobG2.id, 1) : 0;
+      commit("server.ts", "// v14 — full-gated, above a red nobody judged");
+      const g3 = headNow();
+      landNote(g3, g2, "full");
+      const h = await deployAsk();
+      if (h.status === 202) await rebootAfterDeploy();
+      check("§7g a red, unadjudicated full audit between the tip and its green ancestor stays 409 with today's text",
+        auditG2.b.queued === true && redG2 === 200 && ledgerFor(g2).some((r) => r.result === "red")
+          && h.status === 409 && h.b.reason === TODAY_UNSEEN && h.b.audit?.queued === true && h.b.unaudited === undefined,
+        `audit-tip=${JSON.stringify(auditG2.b).slice(0, 160)} red=${redG2} ${h.status} ${JSON.stringify(h.b).slice(0, 300)}`);
+      const drainedG3 = await drain(); // g3 is now green-audited: the anchor of the next two
+      // (g3) a docs-or-prose gate above that green anchor ⇒ today's 409
+      commit("server.ts", "// v15 — landed through the docs chain");
+      const g4 = headNow();
+      landNote(g4, g3, "docs-or-prose");
+      const k = await deployAsk();
+      if (k.status === 202) await rebootAfterDeploy();
+      check("§7g a docs-or-prose land gate between the tip and its green ancestor stays 409 with today's text",
+        drainedG3 === 1 && ledgerFor(g3).some((r) => r.result === "green")
+          && k.status === 409 && k.b.reason === TODAY_UNSEEN && k.b.unaudited === undefined,
+        `drained=${drainedG3} ${k.status} ${JSON.stringify(k.b).slice(0, 300)}`);
+      const drainedG4 = await drain();
+      // (g4) a commit no land note carries (a direct commit) ⇒ today's 409
+      commit("server.ts", "// v16 — a direct commit, no note");
+      const g5 = headNow();
+      const m5 = await deployAsk();
+      if (m5.status === 202) await rebootAfterDeploy();
+      const drainedG5 = await drain();
+      check("§7g a commit without a land note above a green ancestor stays 409 with today's text, and the queue is empty after",
+        drainedG4 === 1 && m5.status === 409 && m5.b.reason === TODAY_UNSEEN && m5.b.audit?.mainAfter === g5
+          && drainedG5 === 1 && (await auditJobs()).length === 0 && (await waitingFor(g5)).length === 0,
+        `drained=${drainedG4}/${drainedG5} ${m5.status} ${JSON.stringify(m5.b).slice(0, 300)}`);
       await restartSrv({ FLEET_REPO_DIR: FIX });
     }
 

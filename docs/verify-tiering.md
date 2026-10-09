@@ -523,6 +523,20 @@ row `unaudited: "forced"`; an admitted deploy carries `audit{at,result,adjudicat
 no tier-2 command applies to is `unaudited: "no-audit-command"` — nothing to wait for. Proof:
 `e2e/deploy-facts.ts` §7 (run by `./e2e-isolated.sh`).
 
+**The deploy may go out on the youngest audited ancestor's word, added 2026-10-09 (owner-Ja ~21:2x
+via the orchestrator).** Over the 24 h before: 41 lands, 23 full audits with a median of 41 min — the
+audit never caught the tip, so the rule above refused every deploy for 12 h although every audit in
+between was green (`ed748b8c` went live only by the owner's force). `server.ts#deployGateOnlyOf`
+closes that gap from the land gate's own record: from the tip it walks the `fleet/land` notes land by
+land (`mainAfter` → `mainBefore`), and each land must have passed its gate with `verify.ok: true`,
+`verify.class: "full"`, not `stale`, on `verify.mainSha == mainBefore`; it ends on the first boundary
+with a GREEN full audit row. Then `POST /api/deploy` answers `202` without force, queues nothing (the
+tip's own audit keeps its cadence) and stamps the row `unaudited: "gate-only"` with
+`gateOnly{ancestor,auditAt,lands}`. A missing note (a direct commit), a `docs-or-prose` or
+`source-or-public` gate, or a red full audit without a verdict on a boundary in between gives no way
+through: the deploy answers exactly what the rule above answers. A red tip is never walked past, and
+`force` is unchanged. Proof: `e2e/deploy-facts.ts` §7g.
+
 **The source class, added 2026-10-08 (owner: „[Zitat entfernt]“
 ).** A candidate whose every changed path is `src/`, `public/` or docs no longer runs
 the whole configured chain at the land gate. `verify-proportion.ts#gateChainFor` names the class,

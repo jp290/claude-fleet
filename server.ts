@@ -46024,13 +46024,15 @@ interface DeployMarker {
   buildMs: number; buildCmd: string; restartCmd: string;
   audit?: DeployAuditStamp;       // which full audit of `target` admitted it (deployAuditOf)
   unaudited?: DeployUnaudited;    // …or why none did. Exactly one of the two on every new marker
+  gateOnly?: DeployGateOnly;      // with `unaudited: "gate-only"` only: the audited ancestor (deployGateOnlyOf)
 }
 // THE TIP'S AUDIT, AS THE LEDGER ROW CARRIES IT. `audit` names the row that let the deploy through;
-// `unaudited` says why none did — `forced` (the owner's {„[Zitat entfernt]“:true}) or `no-audit-command` (no
-// tier-2 command applies to this repo, so there is nothing to wait for). Absent on both: a row
-// written before the precondition existed.
+// `unaudited` says why none did — `forced` (the owner's {„[Zitat entfernt]“:true}), `no-audit-command` (no
+// tier-2 command applies to this repo, so there is nothing to wait for) or `gate-only` (every land
+// since the youngest green-audited ancestor passed a full land gate; `gateOnly` names that ancestor
+// and the lands). Absent on both: a row written before the precondition existed.
 interface DeployAuditStamp { at: number; result: "green" | "red"; adjudication?: AdjudicationVerdict }
-type DeployUnaudited = "forced" | "no-audit-command";
+type DeployUnaudited = "forced" | "no-audit-command" | "gate-only";
 interface DeployRow {
   at: number; id: string; by: DeployBy;
   stage: "build" | "restart" | "boot";
@@ -46044,6 +46046,7 @@ interface DeployRow {
   ms?: number;
   audit?: DeployAuditStamp;
   unaudited?: DeployUnaudited;
+  gateOnly?: DeployGateOnly;
 }
 
 function appendDeployRow(row: DeployRow): Promise<void> {
@@ -46134,6 +46137,7 @@ async function judgeDeploy(m: DeployMarker, stage: DeployRow["stage"], extra?: s
     ms: Date.now() - m.at,
     ...(m.audit ? { audit: m.audit } : {}),
     ...(m.unaudited ? { unaudited: m.unaudited } : {}),
+    ...(m.gateOnly ? { gateOnly: m.gateOnly } : {}),
   };
 }
 
@@ -46342,6 +46346,53 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
     why: deploy ? "no full audit of this tip exists — its audit was queued now, past the cadence's quiet window"
       : "no full audit of this tip exists — its audit was queued now, under the cadence a land's audit keeps" };
 }
+
+// THE DEPLOY'S SECOND WAY PAST AN UNAUDITED TIP (owner-Ja 2026-10-09 21:2x via the orchestrator: the
+// deploy may go out on the youngest audited ancestor's word). Measured over the 24 h before: 41
+// lands, 23 full audits with a median of 41 min — the audit never catches the tip, and deployAuditOf
+// wants a row with mainSha == HEAD, so nothing deployed for 12 h although every audit in between was
+// green (ed748b8c went live only by the owner's force). What covers the commits the audit has not
+// reached is the LAND GATE: its fleet/land note says the merged tree ran tsc, build and the gate
+// suites (`verify.class`, `steps`, `adopted`) on exactly the base the land fast-forwarded from.
+// The walk goes land by land from the tip, mainAfter → mainBefore, and every step must hold:
+//   · a note on the boundary, readable, whose `mainAfter` IS that boundary and whose `mainBefore`
+//     is an ancestor of it (so the ranges compose to exactly anchor..target, whatever the DAG);
+//   · `verify.ok === true`, `verify.class === "full"`, not `stale`, and `verify.mainSha` is that
+//     `mainBefore` — the gate saw the tree that landed, not one main had already moved past;
+//   · no full audit row on the boundary that is RED without an adjudication.
+// It ends on the first boundary below the tip with a GREEN full audit row — that ancestor is the
+// stamp. A missing note (a direct commit), a docs-or-prose or source-or-public gate, an unreadable
+// note or MAX_LANDS steps without an anchor are `null`, and the deploy answers what it answers
+// today. It reads and never writes: the tip's own audit keeps its queue and its cadence.
+const DEPLOY_GATE_ONLY_MAX_LANDS = 100;
+interface DeployGateOnly { ancestor: string; auditAt: number; lands: string[] }
+async function deployGateOnlyOf(repo: string, target: string): Promise<DeployGateOnly | null> {
+  const canon = repoCanon(repo);
+  const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+  const full = rows.map(validAuditRow).filter((r): r is PostLandAuditRow => !!r && repoCanon(r.repo) === canon
+    && r.proportional !== true);
+  let adjudicated: Map<number, AuditAdjudication> | null = null;
+  const lands: string[] = [];
+  let at = target;
+  for (let i = 0; i < DEPLOY_GATE_ONLY_MAX_LANDS; i++) {
+    const read = await readLandNote(repo, at);
+    if (read.state !== "read") return null;
+    const note = read.note as { mainBefore?: unknown; mainAfter?: unknown; verify?: Partial<NonNullable<MergeLast["verify"]>> };
+    const v = note.verify;
+    const before = note.mainBefore;
+    if (note.mainAfter !== at || typeof before !== "string" || !/^[0-9a-f]{40,64}$/.test(before) || before === at
+      || !v || v.ok !== true || v.class !== "full" || v.stale === true || v.mainSha !== before) return null;
+    if ((await git(repo, "merge-base", "--is-ancestor", before, at)).code !== 0) return null;
+    lands.push(at);
+    at = before;
+    const here = full.filter((r) => r.mainSha === at);
+    const green = here.filter((r) => r.result === "green").at(-1);
+    if (green) return { ancestor: at, auditAt: green.at, lands };
+    const red = here.filter((r) => r.result === "red").at(-1);
+    if (red && !(adjudicated ??= await adjudicationsByAudit()).has(red.at)) return null;
+  }
+  return null;
+}
 // THE DOOR ITSELF — owner-only by position, an explicit call and nothing else: no tick and no
 // movement of main ever reaches it, because tier 2 hangs on the land on purpose. It names the tip it
 // audits (the integration branch's head, not the checkout's HEAD — the deploy's question is what
@@ -46417,17 +46468,27 @@ async function deployRun(by: DeployPrincipal, force: boolean): Promise<Response>
     return json({ ok: false, stage: "preflight",
       reason: "HEAD is unreadable — a deploy whose target cannot be named cannot be verified either" }, 409);
   const target = hd.out;
-  // PHASE 0 — THE TIP WAS MEASURED, OR THIS DEPLOY WAITS FOR IT (deployAuditOf). Only the owner's
-  // explicit force goes past an unmeasured tip, and the row says so.
-  const tip = await deployAuditOf(target, !force);
-  if (tip.state === "unseen" && !force)
+  // PHASE 0 — THE TIP WAS MEASURED, OR EVERY LAND SINCE ITS YOUNGEST GREEN-AUDITED ANCESTOR PASSED A
+  // FULL GATE (deployGateOnlyOf), OR THIS DEPLOY WAITS FOR IT (deployAuditOf). The first reading
+  // queues nothing: a tip the gate chain carries goes out without releasing its audit past the
+  // cadence. Only when that chain does not carry is the tip asked again with enqueue, so every
+  // refusal keeps today's answer. A red tip without a verdict is never walked past, and the owner's
+  // explicit force stays what it was: it goes past an unmeasured tip, and the row says so.
+  const probe = await deployAuditOf(target, false);
+  const gateOnly = !force && probe.state === "unseen" && probe.redAt === undefined
+    ? await deployGateOnlyOf(probe.repo, target) : null;
+  const tip = gateOnly || force || probe.state !== "unseen" ? probe : await deployAuditOf(target, true);
+  if (tip.state === "unseen" && !force && !gateOnly)
     return json({ ok: false, stage: "preflight", target, reason: `tip not audited — ${tip.why}`,
       audit: { repo: tip.repo, mainAfter: target, queued: tip.queued, ...(tip.redAt ? { redAt: tip.redAt } : {}) },
       next: tip.next,
       force: by === "owner" ? "POST /api/deploy {\"force\":true} deploys this tip unaudited and stamps the row `unaudited: forced`"
         : "only the owner can force a deploy past an unaudited tip" }, 409);
-  const auditStamp: Pick<DeployMarker, "audit" | "unaudited"> = tip.state === "seen" ? { audit: tip.stamp }
-    : tip.state === "not-applicable" ? { unaudited: "no-audit-command" } : { unaudited: "forced" };
+  const auditStamp: Pick<DeployMarker, "audit" | "unaudited" | "gateOnly"> = tip.state === "seen" ? { audit: tip.stamp }
+    : tip.state === "not-applicable" ? { unaudited: "no-audit-command" }
+    : gateOnly ? { unaudited: "gate-only", gateOnly } : { unaudited: "forced" };
+  if (gateOnly)
+    audit("deploy", undefined, `${target.slice(0, 7)} gate-only: ${gateOnly.lands.length} full-gated land(s) above ${gateOnly.ancestor.slice(0, 7)}, its full audit green (row at ${gateOnly.auditAt})`);
   if (auditStamp.unaudited === "forced")
     audit("deploy", undefined, `${target.slice(0, 7)} FORCED past an unaudited tip by the owner — ${tip.state === "unseen" ? tip.why : ""}`.slice(0, 240));
   const id = randomBytes(4).toString("hex");

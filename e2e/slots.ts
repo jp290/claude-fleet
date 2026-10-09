@@ -11986,7 +11986,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // THE TEST INSTANCE AT THE PHONE (K19): the opened lane without its instance line
   { name: "the opened lane draws no instance line", state: "modell",
     claim: ["a running test instance is a green square IN its branch's row", "its line says the deadline", "Öffnen asks the slot's route"],
-    needle: `  if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));`, with: "" },
+    needle: `  else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));`, with: "" },
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
   { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live-Server says in one sentence how it runs",
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },

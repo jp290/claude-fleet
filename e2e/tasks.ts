@@ -277,10 +277,10 @@ void makeCodexCliObserver().tick();
       && label(local, now).includes(new Date(local.observedAt!).toISOString())
       && label(local, now).includes(local.binary!) && label(stale, now).includes("unknown (stale-snapshot)"));
     type Node = { children: Node[]; text: string; style: Record<string, string>; title: string;
-      onclick: (() => void) | null; classList: { add: (name: string) => void };
+      onclick: (() => void) | null; classList: { add: (name: string) => void }; setAttribute: (name: string, value: string) => void;
       append: (...nodes: Node[]) => void; appendChild: (node: Node) => void; replaceChildren: (...nodes: Node[]) => void };
     const node = (_tag = "", _className = "", text = ""): Node => {
-      const n: Node = { children: [], text, style: {}, title: "", onclick: null, classList: { add: () => {} },
+      const n: Node = { children: [], text, style: {}, title: "", onclick: null, classList: { add: () => {} }, setAttribute: () => {},
         append: (...nodes) => { n.children.push(...nodes); }, appendChild: (x) => { n.children.push(x); },
         replaceChildren: (...nodes) => { n.children = nodes; } };
       return n;
@@ -291,6 +291,8 @@ void makeCodexCliObserver().tick();
     const headEnd = clientSource.indexOf("\n}\n", headStart) + 3;
     const deps = { instWrap: node(), instBtn: button, instMenu: menu, el: node, codexCliLabel: label,
       codexCliUnknown, compareCodexCli, codexCliSnapshotFrom, MORE_HOSTS: "Computers",
+      // src/board.ts#machineSigns: null = the Arbeitsorte not read yet, the chip keeps its screens
+      machineSigns: () => null,
       hostSign: (_icon: string, text: string) => [node("span", "", text)],
       instOriginOf: (url: string) => new URL(url).origin, location: { origin: "https://mac.example", assign: () => {} },
       setInstMenu: (value: boolean) => { open = value; }, instMenuOpen: () => open };
@@ -3362,6 +3364,7 @@ export async function run(ctx: Ctx): Promise<void> {
         SEND_BOOT_FRESH_MS: 0, paneAgentAt: async () => "alive", SEND_BOOT_WAIT_MS: 250,
         SOCK: "probe", Bun: { sleep: async () => {}, spawn: () => ({ stdin: { write: () => {}, end: async () => {} },
           exited: Promise.resolve(0) }) },
+        SNAPSHOT_MIRROR: null, // server.ts#SNAPSHOT_MIRROR: a live instance, not a read-only mirror
         audit: () => {}, SendAgentNotAlive: Refused, SendRefused: Refused, SendComposerOccupied: Occupied,
         randomBytes, waitForSendTestLatch: async () => {}, SEND_BEFORE_PASTE_TEST_LATCH: null,
         SEND_AFTER_PASTE_TEST_LATCH: null, OWN_PASTE_QUIET_MS: 1000, OWN_PASTE_QUIET_TAIL_MS: 100,

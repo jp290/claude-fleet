@@ -482,6 +482,14 @@ burst into one run on the newest tip that names every land as a cover; the ceili
 day that is never quiet from never being measured. A held entry is not on the helper's job list, its
 claim is a 409, and it wakes nobody; the ledger row carries `trigger: "quiet" | "max-wait"` (or
 `"deploy"`, the one exception — see the deploy paragraph below).
+**Since 2026-10-09 both numbers only bound a wait for ANOTHER land** (`server.ts#auditLandsInFlight`;
+owner that morning: „[Zitat entfernt]“). The night before, every quiet-released row started
+1 206–1 220 s after a land nothing followed. Now an entry with no further land of its repo reserved,
+running or declared on disk (the branches it already covers excepted) is due at once, row
+`trigger: "no-land"`; the window and the ceiling hold it only while such a land exists, and the
+`QUIET` line in `server.log` names the land it waits behind. A new sharded run is offered as the
+helper's own `maxParallelSuites` (`server.ts#auditShardCount`; `FLEET_AUDIT_SHARDS` stays the
+on-switch and the fallback).
 **And a helper's audit no longer falls back onto this Mac** (`server.ts#AUDIT_HELPER_ONLY`): an
 offerable entry waits for a helper however long that takes — visible as `hold: "waiting for helper"`
 in `GET /api/post-land-audits` → `pending` and in the land's memory view, and as a

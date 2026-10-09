@@ -590,7 +590,16 @@ exit 0
     JSON.stringify({ result: progRow?.result, covers: progRow?.covers }));
   await setAuditMode("green");
 
-  const progEntries = await auditRedEntries(progMainToken);
+  // THE POINTER FOLLOWS THE ROW, it is not written with it: the ledger append comes first, and
+  // server.ts#writeAuditInboxEntries runs after mintAuditEvents and the program join, each an await.
+  // Read at the row's first sight, the inbox can still be empty — measured 2026-10-09 (run
+  // postland-audit-20261009T110926Z-59740: `{"entries":0}`, and the subject line then threw). Polled
+  // for a few seconds; a writer that never writes still fails this check as itself.
+  let progEntries = await auditRedEntries(progMainToken);
+  for (let i = 0; i < 50 && progEntries.length === 0; i++) {
+    await Bun.sleep(100);
+    progEntries = await auditRedEntries(progMainToken);
+  }
   const progSubject = progEntries[0]?.subject as Record<string, unknown> | undefined;
   const progCovers = (progSubject?.covers ?? []) as string[];
   // BREAKS IF: the writer appends per COVER instead of per Program (two pointers for one row), or the
@@ -609,7 +618,7 @@ exit 0
       && String(progSubject.tail ?? "").includes("2 FAILURES")
       && progSubject.adjudicated === null
       && String(progSubject.door ?? "").includes("POST /api/post-land-audits/adjudicate"),
-    JSON.stringify(progSubject).slice(0, 600));
+    String(JSON.stringify(progSubject)).slice(0, 600));
   // BREAKS IF: the ping tick does not know `program-inbox` (it would ping anyway), or the writer
   // reports the hand-off as `delivered` — a paste that never happened.
   await Bun.sleep(1500); // several ping ticks and several inbox-nudge ticks

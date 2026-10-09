@@ -2,7 +2,7 @@ import type { CodexFirstTurn } from "../server/conversation-read";
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
-import { initBoard, machineSigns, MachineSign, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -232,21 +232,11 @@ function renderInstanceBand(source: InstanceSource | null) {
   tiBand.title = band.title;
 }
 
-// THE DEVICES THE HEAD SHOWS are Info's (src/board.ts#machineSigns) — plus the helper placeholder
-// Info draws on a test instance ("HELPER DEVICES NEVER VANISH SILENTLY", src/board.ts), which
-// machineSigns leaves out: a snapshot carries no helper, and the chip would count one device fewer
-// than the Geräte block beside it (Leisten-Lane 9A, 2026-10-08).
-function headSigns(source: InstanceSource | null): MachineSign[] | null {
+// `switches` is the Umschalter half, handed in rather than read from module state: the renderer's
+// free names are a contract with the extracted-source fixture in e2e/tasks.ts (R3c), and an
+// omitted argument is the board without test instances it has always rendered
+function renderInstanceHead(switches: readonly SwitchLink[] = []) {
   const signs = machineSigns();
-  if (!signs || !source || signs.some((sg) => sg.glyph === "server")) return signs;
-  return [...signs, { glyph: "server", tone: "off", name: "Helfer", word: "nicht angemeldet" }];
-}
-
-// `switches` is the Umschalter half and `signs` the devices (headSigns), both handed in rather than
-// read from module state: the renderer's free names are a contract with the extracted-source
-// fixture in e2e/tasks.ts (R3c), and an omitted argument is the board without test instances, and
-// without read Arbeitsorte, it has always rendered
-function renderInstanceHead(switches: readonly SwitchLink[] = [], signs: readonly MachineSign[] | null = null) {
   const key = JSON.stringify([signs, instanceName, instanceLinks, switches, instanceCodexCli,
     Math.floor(instanceObservedNow / 60_000), codexCliUnknown(instanceCodexCli, instanceObservedNow),
     instanceLinks.map((link) => codexCliUnknown(link.codexCli, instanceObservedNow))]);
@@ -267,35 +257,24 @@ function renderInstanceHead(switches: readonly SwitchLink[] = [], signs: readonl
   // ): one glyph per machine in
   // its state's colour (src/board.ts#machineSigns), so the count of green ones IS the count of what
   // answers. Until the Arbeitsorte were read once the chip keeps its screens and "1/2".
-  // …and HOW MANY answer, as a number beside them (owner 2026-10-08: „[Zitat entfernt]“
-  // ): answering / shown, the same two counts the tooltip spells out.
-  const answering = signs ? signs.filter((sg) => sg.tone === "live" || sg.tone === "wait").length : 0;
   if (signs) {
     const box = el("span", "devsigns");
     for (const sg of signs.slice(0, DEV_SIGNS_MAX)) {
       const d = el("span", "devsign");
       d.dataset.tone = sg.tone;
-      d.dataset.glyph = sg.glyph;
       d.appendChild(icon(sg.glyph));
       box.appendChild(d);
     }
     if (signs.length > DEV_SIGNS_MAX) box.appendChild(el("span", "devcount", `+${signs.length - DEV_SIGNS_MAX}`));
-    // the ⇄ of the Umschalter left the chip with the count's arrival: the head's 250px hold the
-    // title, the devices and one number, not a fourth thing — the tooltip and the menu name it
-    // the connected count reads first and in plain weight, the known count behind it muted
-    // (Orchestratorin 2026-10-09: „[Zitat entfernt]“)
-    const count = el("span", "devcount devn");
-    count.append(el("span", "devon", String(answering)), el("span", "devof", `/${signs.length}`));
-    instBtn.replaceChildren(box, count);
+    instBtn.replaceChildren(box, ...(switches.length ? [el("span", "devcount", "⇄")] : []));
   } else instBtn.replaceChildren(...hostSign(n > 1 ? "screens" : "screen", instanceName ?? ""),
     el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"),
     ...(switches.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
-  instBtn.title = (signs ? `${answering} verbunden, ${signs.length} bekannt: `
+  const answering = signs ? signs.filter((sg) => sg.tone === "live" || sg.tone === "wait").length : 0;
+  instBtn.title = (signs ? `${answering} von ${signs.length} ${signs.length === 1 ? "Gerät antwortet" : "Geräten antworten"}: `
       + `${signs.map((sg) => `${sg.name} ${sg.word}`).join(", ")}. ` : "")
     + (n > 1 ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.` : MORE_HOSTS);
-  // the reflected property, not setAttribute: the same aria-label in every engine this page runs in,
-  // and the R3c fixture (e2e/tasks.ts) hands in plain objects that carry properties, not attributes
-  instBtn.ariaLabel = instBtn.title;
+  instBtn.setAttribute("aria-label", instBtn.title);
   if (switches.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
     : ` · Umschalter: ${tis} ${tis === 1 ? "Testinstanz" : "Testinstanzen"} dieser Maschine`;
   instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
@@ -6325,14 +6304,6 @@ export function laneLabel(s: SlotInfo): string {
   const label = s.label ?? baseName(s.cwd ?? "");
   return s.worktree && s.taskTitle && (!s.label || s.label.startsWith("⎇ ")) ? shortTitle(s.taskTitle) : label;
 }
-// THE NAME THE BAR SHOWS: the label without the role it used to carry in front ("Program-MAIN:",
-// "⎇ ", "🎛", "⚙") and without the model behind it (board.ts#nameWithoutModel) — the chip's shape
-// carries the role now, the tooltip the full label. A label that IS only a role word stays itself.
-const ROLE_PREFIX_RE = /^(?:program-main\b|main(?=\s*[:·]))\s*[:·–-]?\s*|^(?:⎇|🎛|⚙)\uFE0F?\s*/iu;
-export function rowName(s: SlotInfo): string {
-  const name = nameWithoutModel(s);
-  return name.replace(ROLE_PREFIX_RE, "").trim() || name;
-}
 // a lane named from its BRANCH (a land, an undo): "<Lane-Referenz> · <Kurztitel>" while a slot still
 // holds that branch and has a title, otherwise the four hex as before
 export function laneNameOfBranch(branch: string): string {
@@ -7012,10 +6983,11 @@ export function renderSlots() {
   perfRebuild("renderSlots");
   slotsEl.replaceChildren();
   markItems = [];
-  // Every session gets a row at its number — but a lane whose project has a home in this list
-  // renders under it instead (§F3 edge 3): four sessions plus twelve empty rows overflowed a phone
-  // screen, and folding the lanes bought that back. The free places no longer hold a row each: they
-  // close the list as ONE row that founds in the first of them (freeRow, Leisten-Karte 2026-10-08).
+  // Every slot still gets a row and empty slots still hold their place — but a lane whose project
+  // has a home in this list now renders under it instead of at its own number. The "slots are fixed
+  // places" principle is bent HERE and only here, deliberately (§F3 edge 3): four sessions plus
+  // twelve empty rows overflowed a phone screen, and folding the lanes is what buys that back.
+  // Empty rows do not move, so "start a session in slot 7" still means the same place.
   const stacks = stacksOf();
   const refs = laneBandNames(stacks);
   const stackAt = new Map(stacks.map((g) => [g.at, g]));
@@ -7030,47 +7002,35 @@ export function renderSlots() {
     if (group && g !== group) slotsEl.appendChild(el("div", "slotsep"));
     group = g;
   };
-  const free: SlotInfo[] = [];
   for (const s of fleet) {
     if (s.id > 16 && !isActive(s)) continue;
-    if (!isActive(s)) { free.push(s); continue; }
+    if (!isActive(s)) { sepBefore(s.id); slotsEl.appendChild(emptyRow(s)); continue; }
     const g = stackAt.get(s.id);
     if (g) { sepBefore(s.id); renderStack(g, refs); continue; }
     if (stackedLanes.has(s.id)) continue; // folded (or drawn) under its persisted anchor/header
     sepBefore(s.id);
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
-  // the free places close the list as ONE row, after a stroke when sessions stand above it
-  if (free.length) {
-    if (group) slotsEl.appendChild(el("div", "slotsep"));
-    slotsEl.appendChild(freeRow(free));
-  }
   if (bandFocus) slotsEl.querySelector<HTMLElement>(`.slot[data-slot="${bandFocus}"] .bandview`)?.focus();
   placeMarks(marks, slotsEl, markItems);
 }
 
-// THE FREE PLACES ARE ONE ROW (owner 2026-10-08 via the Leisten-Karte: „[Zitat entfernt]“
-// ). Four or twelve rows that all said „[Zitat entfernt]“ were the bar's longest
-// stretch and told nothing a single line does not: it starts a session in the first free place —
-// the same choice the phone's Sessions sheet makes (renderSheet, "Neue Session") — and its tooltip
-// names every free number. The row keeps `.slot.empty` and that first number as `data-slot`, so a
-// click lands where the founding window says it will.
-function freeRow(free: readonly SlotInfo[]): HTMLElement {
-  const first = free[0];
+// A FREE PLACE IS STILL A PLACE (owner: „[Zitat entfernt]“
+// ). It keeps its number, it stays visible in the axis rather than thinning to a
+// hairline, and the whole row is the click target — so the numbers run 1..16 unbroken whether or not
+// anything lives at them, and choosing the number IS the ordering.
+function emptyRow(s: SlotInfo): HTMLElement {
   const row = el("div", "slot empty");
-  row.dataset.slot = String(first.id);
-  row.dataset.free = String(free.length);
+  row.dataset.slot = String(s.id);
   const r1 = el("div", "r1");
-  const plus = el("span", "freeplus");
-  plus.appendChild(icon("plus"));
-  r1.append(plus, el("span", "lbl", "Neue Session"));
+  const mk = el("span", "mark");
+  markItems.push({ el: mk, facts: null }); // bare soil: the place holds the column's axis
+  r1.append(mk, el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
   row.appendChild(r1);
-  row.title = free.length === 1 ? `Eine Session auf dem freien Platz ${first.id} gründen`
-    : `Eine Session gründen — ${free.length} Plätze frei (${free.map((s) => s.id).join(", ")}), sie beginnt auf Platz ${first.id}`;
-  row.onclick = () => openPicker(first.id);
-  // The ⎇+ quick-lane chip used to hang on every empty row — twelve identical chips the moment a
-  // repo session had focus, none of them saying which repo they meant. It lives on the stack
-  // anchor (see slotRow), where the repo is named right next to it.
+  row.onclick = () => openPicker(s.id);
+  // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
+  // moment a repo session had focus, none of them saying which repo they meant. It lives on the
+  // stack anchor now (see slotRow), where the repo is named right next to it.
   return row;
 }
 
@@ -7168,7 +7128,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   const r1 = el("div", "r1");
   {
       const displayLabel = laneLabel(s);
-      const lbl = el("span", "lbl", rowName(s));
+      const lbl = el("span", "lbl", displayLabel);
       // THE SESSION MARK — Fassung B "Zweig", the owner's choice (src/marks.ts). The span only
       // reserves the geometry; the bar's one canvas draws into it (placeMarks, end of renderSlots),
       // from facts registered below once the row's state glyph is known.
@@ -7207,12 +7167,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         ref.title = lbl.title;
         r1.append(ref, lbl);
       } else {
-        // THE ROLE IS THE CHIP'S SHAPE, never a word in the name (rowName) and never a colour:
-        // round for the Orchestratorin, an ink edge for a Program-MAIN — the server's role, not the label
-        const n = el("span", "n", String(s.id));
-        if (s.role) n.dataset.role = s.role;
-        n.title = `${s.role ? ROLE_WORD[s.role] : "Session"} · Slot ${s.id}`;
-        r1.append(n, lbl);
+        r1.append(el("span", "n", String(s.id)), lbl);
       }
       lbl.ondblclick = (e) => {
         e.stopPropagation();
@@ -7224,9 +7179,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // state below (hidHot).
       if (stack) r1.appendChild(laneCountChip(stack, open));
       // ⎇+ — the one button the owner calls right as it is. Not on lanes: a lane off a lane would
-      // nest .worktrees inside a worktree. It shows only on the FOCUSED row (Leisten-Karte
-      // 2026-10-08: the width is the name's) — ONE CSS rule in public/index.html
-      // (".slot:not(.current) .r1 .quicklane"); drop it and ⎇+ stands on every row again.
+      // nest .worktrees inside a worktree.
       if (s.git && !s.worktree) {
         const parent = normalizeLaneAnchor({ slot: s.id, openedAt: s.openedAt });
         r1.appendChild(quickLaneChip(s.repo ?? s.cwd, parent ?? undefined));
@@ -7246,30 +7199,21 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
       // unknown case is drawn as "?", never as 0% and never as an empty bar: a blank meter reads
       // as "fresh session", which is the one wrong answer this fact must not be able to give.
-      // AT MOST ONE QUIET READING beside the state (Leisten-Karte 2026-10-08: „[Zitat entfernt]“
-      // ). An unknown fill is no longer drawn as "?" — it says so in
-      // the state's tooltip, and still never reads as 0% or an empty bar. A session asleep shows how
-      // long it has been quiet instead of the flat bar beside a "?": the age is its one reading, and
-      // its fill moves to that reading's tooltip.
-      const c = s.ctx ?? null;
-      const fillWord = c
-        ? `Kontext ${Math.round(c.pct)} % — ${c.usedTokens.toLocaleString()} von ${c.windowTokens.toLocaleString()} Eingabe-Tokens`
-        : "Kontext unbekannt — für diesen Slot liegt noch kein Transkript mit Verbrauchszahl vor (oder Harness/Modell sind nicht messbar). Kein leerer Kontext.";
-      const hidHot = !!stack && !open && stack.lanes.some(
-        (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
-      const state = slotState(s, serverNow, visible || hidHot);
-      if (state === "sleep") {
-        const age = el("span", "ctxfill ago", sinceShort(serverNow - s.lastOutput));
-        age.title = `${STATE_WORD.sleep} — still seit ${sinceShort(serverNow - s.lastOutput)} · ${new Date(s.lastOutput).toLocaleString()}\n${fillWord}`;
-        r1.appendChild(age);
-      } else if (c) {
-        const cx = el("span", "ctxfill", `${Math.round(c.pct)}%`);
-        cx.title = fillWord;
+      {
+        const c = s.ctx ?? null;
+        const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `${Math.round(c.pct)}%` : "?");
+        cx.title = c
+          ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
+          : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
+            + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
         r1.appendChild(cx);
       }
       // The state, in one glyph and FIVE readings. Each has its own SHAPE (the CSS), so the five
       // survive a greyscale screenshot; how long ago the session last spoke — line 2's other reading
-      // — is in the tooltip beside the word. Asleep, the age above IS the reading, so no glyph.
+      // — is in the tooltip beside the word.
+      const hidHot = !!stack && !open && stack.lanes.some(
+        (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
+      const state = slotState(s, serverNow, visible || hidHot);
       // the mark reads the output's freshness and `awaiting` itself (src/marks.ts#markFacts)
       markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
       const live = el("span", `act ${state}`);
@@ -7277,8 +7221,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
         + `\nlast output ${sinceShort(serverNow - s.lastOutput)} ago · ${new Date(s.lastOutput).toLocaleString()}`;
       if (s.codexRecovery) live.title += `\n${codexTurnLine(s)}`;
-      if (!c) live.title += `\n${fillWord}`;
-      if (state !== "sleep") r1.appendChild(live);
+      r1.appendChild(live);
       row.appendChild(r1);
       const firstTurn = codexTurnOf(s);
       if (firstTurn && (firstTurn.turn.state === "failed" || firstTurn.turn.error)) {
@@ -7641,8 +7584,8 @@ export async function refresh() {
     });
     instanceCodexCli = codexCliSnapshotFrom(data.codexCli);
     instanceObservedNow = data.now;
+    renderInstanceHead(switchLinks);
     const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
-    renderInstanceHead(switchLinks, headSigns(tiSource));
     renderInstanceBand(tiSource);
     setInstanceSource(tiSource);
     briefCompilerOn = data.briefCompiler?.on;

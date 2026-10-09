@@ -396,3 +396,70 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
   readStates.set(snapshot, state);
   return snapshot;
 }
+
+// THE DETAIL SIDE: one retained record's tool block, read back by a caller that already holds the
+// exact byte range of an indexed event. The list above drops arguments and result text; this is the
+// only place they are decoded again, and everything leaving it has passed redactDetail first.
+export const DETAIL_FIELD_BYTES = 65_536;
+const SECRET_KEY = /token$|secret|passw|api[_-]?key|authorization|cookie|credential|private[_-]?key/i;
+const SECRET_SPANS: RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+  /\bsk-[A-Za-z0-9_-]{12,}/g,
+  /(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi,
+  /(x-fleet-self-token["']?\s*[:=]\s*["']?)[^\s'"]+/gi,
+  // what the markers above never knew: a secret-named assignment, a basic credential, a URL login, vendor key shapes
+  /(\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIALS?)(?:_[A-Za-z0-9]+)*["']?\s*[=:]\s*["']?)[^\s'"&;,}]+/gi,
+  /(Basic\s+)[A-Za-z0-9+/=]{8,}/g, /(:\/\/[^\s:/@]+:)[^\s@/]+(?=@)/g,
+  /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/g, /\bAKIA[0-9A-Z]{16}\b/g,
+];
+export function redactText(s: string, redactions: readonly string[]): string {
+  let out = s;
+  for (const m of [...redactions].filter((m) => m.length > 0).sort((a, b) => b.length - a.length))
+    if (out.includes(m)) out = out.split(m).join("[redacted]");
+  for (const re of SECRET_SPANS) out = out.replace(re, (_m: string, keep?: unknown) => `${typeof keep === "string" ? keep : ""}[redacted]`);
+  return out;
+}
+export function redactDetail(v: unknown, redactions: readonly string[]): unknown {
+  if (typeof v === "string") return redactText(v, redactions);
+  if (Array.isArray(v)) return v.map((x) => redactDetail(x, redactions));
+  if (v !== null && typeof v === "object")
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [redactText(k, redactions),
+      SECRET_KEY.test(k) && typeof x === "string" ? "[redacted]" : redactDetail(x, redactions)]));
+  return v;
+}
+export type DetailField = { value: unknown; bytes: number; truncated: false }
+  | { value: null; preview: string; bytes: number; truncated: true };
+function field(v: unknown, redactions: readonly string[]): DetailField | null {
+  if (v === undefined || v === null) return null;
+  const clean = redactDetail(v, redactions), json = JSON.stringify(clean), bytes = encoder.encode(json).length;
+  if (bytes <= DETAIL_FIELD_BYTES) return { value: clean, bytes, truncated: false };
+  return { value: null, preview: new TextDecoder().decode(encoder.encode(json).slice(0, DETAIL_FIELD_BYTES)).replace(/�$/, ""),
+    bytes, truncated: true };
+}
+export interface NativeDetailPart { arguments: DetailField | null; result: DetailField | null; error: DetailField | null }
+// raw is the record WITHOUT its LF, exactly the bytes the event's fp was taken over.
+export function nativeDetailOf(format: string, raw: Uint8Array, block: number, kind: string, call: string,
+  redactions: readonly string[]): { ok: true; part: NativeDetailPart } | { ok: false; code: string } {
+  let row: Record<string, unknown>;
+  try { row = obj(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw))); } catch { return { ok: false, code: "malformed-record" }; }
+  const m = obj(row.message), p = obj(row.payload), content = Array.isArray(m.content) ? m.content : [];
+  const b = obj(content[block]);
+  const none: NativeDetailPart = { arguments: null, result: null, error: null };
+  const result = (v: unknown, isError: unknown): NativeDetailPart => isError === true
+    ? { ...none, error: field(v, redactions) } : { ...none, result: field(v, redactions) };
+  if (format === "claude-jsonl") {
+    if (kind === "tool.call" && b.type === "tool_use" && b.id === call) return { ok: true, part: { ...none, arguments: field(b.input ?? {}, redactions) } };
+    if (kind === "tool.result" && b.type === "tool_result" && b.tool_use_id === call) return { ok: true, part: result(b.content, b.is_error) };
+  } else if (format === "codex-rollout-jsonl" && block === 0 && p.call_id === call) {
+    if (kind === "tool.call" && (p.type === "function_call" || p.type === "custom_tool_call"))
+      return { ok: true, part: { ...none, arguments: field(p.type === "function_call" ? p.arguments : p.input, redactions) } };
+    if (kind === "tool.result" && (p.type === "function_call_output" || p.type === "custom_tool_call_output"))
+      return { ok: true, part: result(p.output, undefined) };
+  } else if (format === "pi-session-jsonl") {
+    if (kind === "tool.call" && m.role === "assistant" && b.type === "toolCall" && b.id === call)
+      return { ok: true, part: { ...none, arguments: field(b.arguments ?? {}, redactions) } };
+    if (kind === "tool.result" && block === 0 && m.role === "toolResult" && m.toolCallId === call)
+      return { ok: true, part: result(m.content, m.isError) };
+  }
+  return { ok: false, code: "record-block-mismatch" };
+}

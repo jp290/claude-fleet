@@ -817,7 +817,19 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const fixT = (await (await post("/api/tasks", { text: "sec-matrix-fixture", queue: false })).json()) as { task: { id: string } };
   await post(`/api/tasks/${fixT.task.id}/done`, {});
   const probes = [...dangerous(idle?.id ?? 16), ...taskSurface(fixT.task.id),
-    { path: "/api/timeline?from=0&to=9999999999999", method: "GET" as const, owner: 200 as const }];
+    { path: "/api/timeline?from=0&to=9999999999999", method: "GET" as const, owner: 200 as const },
+    // the timeline detail door: an id this index never handed out is the owner's 404, never a read
+    { path: `/api/timeline/detail?ref=${"0".repeat(64)}`, method: "GET" as const, owner: 404 as const }];
+  // The detail door opens only ids the index issued (trace-timeline.ts#TimelineIndex.detail). Mutation:
+  // let an id outside the index fall through to the tombstone answer — the forged ref then reads 200.
+  const forgedRefs = await Promise.all([`ref=${"f".repeat(64)}`, `ref=${"0".repeat(64)}&path=/etc/passwd`,
+    `ref=${encodeURIComponent(`native:${"a".repeat(64)}@0+10#0`)}`, "file=/etc/passwd", "ref=..%2F..%2Fetc%2Fpasswd"]
+    .map(async (q) => { const r = await get(`/api/timeline/detail?${q}`);
+      return { q, status: r.status, body: await r.json().catch(() => null) as { error?: string; work?: { sourceReads?: number } } | null }; }));
+  check("§2 timeline detail: a ref the index never issued is 404 before any read; a path, locator or file parameter is 400",
+    forgedRefs[0]!.status === 404 && forgedRefs.slice(1).every((r) => r.status === 400)
+      && forgedRefs.every((r) => r.body?.work?.sourceReads === 0 && typeof r.body.error === "string"),
+    JSON.stringify(forgedRefs.map((r) => [r.q, r.status, r.body?.work])));
   // A scoped self credential, taken from state rather than a pane probe (deterministic, and it is
   // the same string the pane exports — server.ts reads it from exactly here). SLOT 2 BY NAME, and
   // that name is the point: it is a PLAIN (non-lane) session, and since 2026-08-07 its pane carries

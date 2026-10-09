@@ -1,11 +1,14 @@
 // Paged local session timeline over identity-bound native sources and the existing buildTrace ledger projection.
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { normalizeNative, type NativeBinding, type NativeGap, type NativeSnapshot } from "./trace-native";
+import { nativeDetailOf, normalizeNative, type DetailField, type NativeBinding, type NativeEvent, type NativeGap,
+  type NativeSnapshot } from "./trace-native";
 import { TRACE_GENERATIONS, type TraceEvent, type TraceResult } from "./trace-index";
 
 export const TIMELINE_BUDGET = { scanBytes: 1_048_576, pageBytes: 65_536, pageEvents: 100,
   rowBytes: 8_388_608, sessions: 20_000, cursorMs: 600_000, cursors: 300 } as const;
+// Event ids whose snapshot the index dropped answer the detail door as a named gap, oldest evicted first.
+export const TIMELINE_RETIRED_REFS = 20_000;
 const digest = (v: string): string => createHash("sha256").update(v).digest("hex");
 const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v)
   ? v as Record<string, unknown> : {};
@@ -85,6 +88,7 @@ export class TimelineIndex {
   private work = { readBytes: 0, sourceReads: 0 };
   private projections = new Map<string, { revision: string; sessions: TimelineSession[]; entries: TimelineEntry[]; ledger: TimelinePage["ledger"] }>();
   private cursors = new Map<string, { query: string; revision: string; offset: number; at: number }>();
+  private retired = new Map<string, string>();
   constructor(private deps: TimelineDeps) {
     this.carriers = deps.carriers.flatMap((c) => TRACE_GENERATIONS.map((gen): Carrier => ({
       ...c, file: c.file + gen, stamp: null, offset: 0, tail: new Uint8Array(), skipping: false,
@@ -92,6 +96,11 @@ export class TimelineIndex {
   }
   private key(r: Pick<TimelineReceipt, "session" | "slot" | "openedAt">): string {
     return digest(JSON.stringify([this.deps.host, r.session, r.slot, r.openedAt]));
+  }
+  // Remembers only ids and the reason their bytes left the index: no events, no source path.
+  private retire(n: { snapshot?: { events: readonly { id: string }[] } } | undefined, code: string): void {
+    for (const e of n?.snapshot?.events ?? []) { this.retired.delete(e.id); this.retired.set(e.id, code); }
+    while (this.retired.size > TIMELINE_RETIRED_REFS) this.retired.delete(this.retired.keys().next().value!);
   }
   private accept(carrier: Carrier, row: Record<string, unknown>, proof: string): void {
     if (carrier.kind === "prompts") {
@@ -182,20 +191,21 @@ export class TimelineIndex {
     for (const [key, r] of receipts) r.harness ??= previousReceipts.get(key)?.harness ?? null;
     this.receipts = receipts;
     const indexedKeys = new Set([...receipts.keys()].slice(0, TIMELINE_BUDGET.sessions));
-    for (const key of this.native.keys()) if (!indexedKeys.has(key)) { this.native.delete(key); changed = true; }
+    for (const [key, n] of this.native) if (!indexedKeys.has(key)) { this.retire(n, "source-not-indexed"); this.native.delete(key); changed = true; }
     const occupations = new Map<string, number>();
     for (const r of receipts.values()) occupations.set(r.session, (occupations.get(r.session) ?? 0) + 1);
     for (const [key, r] of [...receipts].slice(0, TIMELINE_BUDGET.sessions)) {
       let n = this.native.get(key);
       const bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness, occupations.get(r.session)]));
       if (!n || n.bindingKey !== bindingKey) {
+        this.retire(n, "source-binding-changed");
         n = { file: null, stamp: null, offset: 0, generation: 1, bindingKey, gaps: [], chunks: [], verifyTarget: null, verified: 0 }; this.native.set(key, n); changed = true;
       }
       if (!n.file || !timelineStamp(n.file)) {
         const resolved = this.deps.resolve(r);
         if (resolved && timelineStamp(resolved.file)) { n.file = resolved.file; n.source = resolved; r.harness = resolved.harness; n.bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness, occupations.get(r.session)])); }
         else {
-          if (n.snapshot) { n.snapshot = undefined; n.offset = 0; n.stamp = null; n.generation++; changed = true; }
+          if (n.snapshot) { this.retire(n, "source-missing"); n.snapshot = undefined; n.offset = 0; n.stamp = null; n.generation++; changed = true; }
           n.gaps = [{ code: r.harness && !["claude", "codex", "pi", "pi-zai", "pi-ox"].includes(r.harness)
             ? "unsupported-source" : "source-missing" }]; continue;
         }
@@ -205,6 +215,7 @@ export class TimelineIndex {
       if (stamp.key === n.stamp?.key && n.offset === stamp.size) continue;
       if (n.stamp && (stamp.inode !== n.stamp.inode || stamp.size < n.offset
         || stamp.size === n.stamp.size && stamp.key !== n.stamp.key)) {
+        this.retire(n, "source-rewritten");
         n.offset = 0; n.snapshot = undefined; n.generation++; n.chunks = []; n.verifyTarget = null; n.gaps = [{ code: "source-rewritten" }]; changed = true;
       }
       if (n.stamp && n.stamp.key !== stamp.key && stamp.size > n.stamp.size) {
@@ -215,6 +226,7 @@ export class TimelineIndex {
           const bytes = readRange(n.file!, chunk.offset, chunk.bytes);
           this.work.sourceReads++; this.work.readBytes += bytes.length; left -= bytes.length;
           if (digest(Buffer.from(bytes).toString("base64")) !== chunk.hash) {
+            this.retire(n, "source-rewritten");
             n.offset = 0; n.snapshot = undefined; n.generation++; n.chunks = []; n.verifyTarget = null;
             n.gaps = [{ code: "source-rewritten" }]; break;
           }
@@ -236,10 +248,15 @@ export class TimelineIndex {
         harness: source.harness, format: source.format, version: `generation-${n.generation}`, bytes: b,
         byteOffset: n.offset, observedAt: Date.now(), binding, redactions: this.deps.redactions() }, n.snapshot);
       if (timelineStamp(n.file!)?.key !== stamp.key) {
+        this.retire(n, "source-changed-during-read");
         n.stamp = null; n.offset = 0; n.snapshot = undefined; n.chunks = []; n.verifyTarget = null; n.generation++;
         n.gaps = [{ code: "source-changed-during-read" }]; changed = true; continue;
       }
       n.chunks.push({ offset: n.offset, bytes: b.length, hash: digest(Buffer.from(b).toString("base64")) });
+      if (n.snapshot) {
+        const kept = new Set(snapshot.events.map((e) => e.id));
+        this.retire({ snapshot: { events: n.snapshot.events.filter((e) => !kept.has(e.id)) } }, "source-rewritten");
+      }
       n.snapshot = snapshot; n.offset += b.length; n.stamp = stamp;
       left -= b.length; this.work.readBytes += b.length; this.work.sourceReads++; changed = true;
     }
@@ -376,4 +393,85 @@ export class TimelineIndex {
     }
     return { status: 200, body: answer };
   }
+  // THE DETAIL DOOR: one native call, opened by an event id this index handed out in a page. The id
+  // is looked up before anything is read; only the retained byte range of that event is re-read, and
+  // only if its fingerprint still matches. A dropped or changed source answers as a gap, not an error.
+  async detail(url: URL): Promise<{ status: number; body: TimelineDetail | { error: string; work: TimelineDetail["work"] } }> {
+    const work = { readBytes: 0, sourceReads: 0 };
+    const q = url.searchParams, ref = q.get("ref") ?? "";
+    if ([...q.keys()].some((k) => k !== "ref") || q.getAll("ref").length !== 1 || !/^[a-f0-9]{64}$/.test(ref))
+      return { status: 400, body: { error: "detail takes exactly one ref: an entry id from GET /api/timeline", work } };
+    await this.update();
+    const occupations = new Map<string, number>();
+    for (const r of this.receipts.values()) occupations.set(r.session, (occupations.get(r.session) ?? 0) + 1);
+    let hit: { key: string; n: NativeState; e: NativeEvent } | undefined;
+    for (const [key, n] of this.native) {
+      const e = n.snapshot?.events.find((x) => x.id === ref);
+      if (e) { hit = { key, n, e }; break; }
+    }
+    const base = { schema: "fleet.timeline-detail/v1" as const, host: this.deps.host, revision: String(this.revision), ref };
+    if (!hit) {
+      const code = this.retired.get(ref);
+      if (!code) return { status: 404, body: { error: "unknown-reference: not an entry this timeline index handed out", work } };
+      return { status: 200, body: { ...base, state: "gap", sessionKey: null, session: null, source: null, call: null, result: null,
+        arguments: null, error: null, resultText: null, status: "unknown", outcome: "unknown", separation: null, duration: null,
+        durationBasis: DURATION_BASIS, clockUncertainty: "unknown", gaps: [{ code }], work } };
+    }
+    const { key, n, e } = hit, snapshot = n.snapshot!, source = n.source!;
+    const call = e.kind === "tool.call" ? e : snapshot.events.find((x) => x.id === e.pair) ?? null;
+    const result = e.kind === "tool.result" ? e : e.pair ? snapshot.events.find((x) => x.id === e.pair) ?? null : null;
+    const gaps: NativeGap[] = [];
+    if (!call) gaps.push({ code: "orphan-result" });
+    if (!result) gaps.push({ code: "missing-result" });
+    const stamp = n.file ? timelineStamp(n.file) : null;
+    const redactions = this.deps.redactions();
+    const read = (ev: NativeEvent | null): { part: Partial<Record<"arguments" | "result" | "error", DetailField | null>> } | null => {
+      if (!ev) return null;
+      const range = { offset: ev.record.offset, bytes: ev.record.bytes };
+      if (!n.file || !stamp) { gaps.push({ code: "source-missing", ...range }); return null; }
+      if (stamp.inode !== n.stamp?.inode || ev.record.offset + ev.record.bytes > Math.min(n.offset, stamp.size)) {
+        gaps.push({ code: "source-rewritten", ...range }); return null;
+      }
+      const raw = readRange(n.file, ev.record.offset, ev.record.bytes);
+      work.sourceReads++; work.readBytes += raw.length;
+      if (raw.length !== ev.record.bytes || createHash("sha256").update(raw).digest("hex").slice(0, 16) !== ev.detailRef?.fp) {
+        gaps.push({ code: "source-rewritten", ...range }); return null;
+      }
+      const d = nativeDetailOf(source.format, raw, ev.record.block, ev.kind, ev.refs.call ?? "", redactions);
+      if (!d.ok) { gaps.push({ code: d.code, ...range }); return null; }
+      return { part: d.part };
+    };
+    const c = read(call), r = read(result);
+    const side = (ev: NativeEvent | null) => ev && { id: ev.id, kind: ev.kind, call: ev.refs.call ?? null,
+      occurredAt: ev.occurredAt, observedAt: ev.observedAt, atClock: ev.atClock, status: ev.status, outcome: ev.outcome,
+      range: { offset: ev.record.offset, bytes: ev.record.bytes, block: ev.record.block, recordId: ev.record.id,
+        parent: ev.record.parent, sidechain: ev.record.sidechain, locator: ev.detailRef?.locator ?? null, fp: ev.detailRef?.fp ?? null } };
+    const head = call ?? result!;
+    return { status: 200, body: { ...base, state: gaps.some((g) => DETAIL_LOST.has(g.code)) ? "gap" : "read",
+      sessionKey: (occupations.get(snapshot.identity?.session ?? "") ?? 0) > 1 ? null : key, session: snapshot.identity?.session ?? null,
+      source: { id: snapshot.source, harness: source.harness, format: source.format, version: snapshot.version,
+        name: n.file ? n.file.slice(n.file.lastIndexOf("/") + 1) : null, availableBytes: stamp?.size ?? null },
+      tool: head.tool, call: side(call), result: side(result),
+      arguments: c?.part.arguments ?? null, resultText: r?.part.result ?? null, error: r?.part.error ?? null,
+      status: head.status, outcome: head.outcome, separation: head.separation, duration: null, durationBasis: DURATION_BASIS,
+      clockUncertainty: "unknown", gaps, work } };
+  }
+}
+const DURATION_BASIS = "native formats record no two ends of a shared tool-runtime clock; separation is record-time distance only";
+const DETAIL_LOST = new Set(["source-missing", "source-rewritten", "malformed-record", "record-block-mismatch"]);
+export interface TimelineDetailSide {
+  id: string; kind: string; call: string | null; occurredAt: number | null; observedAt: number; atClock: string;
+  status: NativeEvent["status"]; outcome: NativeEvent["outcome"];
+  range: { offset: number; bytes: number; block: number; recordId: string | null; parent: string | null; sidechain: boolean;
+    locator: string | null; fp: string | null };
+}
+export interface TimelineDetail {
+  schema: "fleet.timeline-detail/v1"; host: string; revision: string; ref: string; state: "read" | "gap";
+  sessionKey: string | null; session: string | null;
+  source: { id: string; harness: string; format: string; version: string; name: string | null; availableBytes: number | null } | null;
+  tool?: NativeEvent["tool"]; call: TimelineDetailSide | null; result: TimelineDetailSide | null;
+  arguments: DetailField | null; resultText: DetailField | null; error: DetailField | null;
+  status: NativeEvent["status"]; outcome: NativeEvent["outcome"]; separation: NativeEvent["separation"];
+  duration: null; durationBasis: string; clockUncertainty: "unknown"; gaps: NativeGap[];
+  work: { readBytes: number; sourceReads: number };
 }

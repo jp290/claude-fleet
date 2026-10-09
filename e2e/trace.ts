@@ -19,11 +19,12 @@
 //   old task  — answer a task older than every horizon with `read`, zero events, or a 404.
 //   malformed — drop a torn line instead of counting it.
 import { NATIVE_CANARY, NATIVE_FIXTURES, runNativeProbes } from "./trace-native-fixtures";
-import { TimelineIndex, TIMELINE_BUDGET, type TimelinePage, type TimelineReceipt } from "../trace-timeline";
+import { TimelineIndex, TIMELINE_BUDGET, TIMELINE_RETIRED_REFS, type TimelineDetail, type TimelinePage,
+  type TimelineReceipt } from "../trace-timeline";
 import { normalizeNative } from "../trace-native";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { check, IP, PORT, ROOT, SOCK } from "./harness";
 import { TRACE_FAMILIES, type SourceCoverage, type SourceHorizon, type TraceEvent } from "../trace-index";
 
@@ -253,6 +254,103 @@ async function timelineProbes(): Promise<void> {
       && (await index.page(new URL("http://fixture/api/timeline?from=20&to=10"))).status === 400);
 }
 
+// THE DETAIL DOOR (TimelineIndex#detail). What each check turns red under, stated as the mutation:
+//   opens     — read the range of the event's own record only (drop the pair lookup) or report a
+//               stored timestamp instead of the record's: the result text, the second time or the
+//               byte range of the result goes missing.
+//   redaction — use only normalizeNative's markers in redactText (drop SECRET_SPANS' assignment rule
+//               and redactDetail's SECRET_KEY rule): the two unmarked secrets come back verbatim.
+//   refusal   — let an id outside this.native fall through to the tombstone answer: 404 becomes 200.
+//   gaps      — skip retire() on a rewrite or a vanished file: the old id becomes a 404, not a gap.
+//   cap       — drop the eviction loop in retire(): the map outgrows TIMELINE_RETIRED_REFS.
+export const DETAIL_SECRETS = { assigned: `pw-${randomBytes(8).toString("hex")}`, keyed: `k-${randomBytes(8).toString("hex")}`,
+  bearer: `bearer${randomBytes(8).toString("hex")}` };
+// a value missing from an answer must fail the check that reads it, never throw out of the module
+const shows = (v: unknown, s: string): boolean => (JSON.stringify(v) ?? "").includes(s);
+async function timelineDetailProbes(): Promise<void> {
+  const dir = `${FIX}/detail`; mkdirSync(dir, { recursive: true });
+  const sid = "50000000-0000-4000-8000-000000000001", cwd = "/synthetic/detail";
+  const at = (ms: number): string => new Date(CREATED + ms).toISOString();
+  const row = (uuid: string, parent: string | null, ms: number, type: string, block: unknown) => ({ type, sessionId: sid, cwd,
+    uuid, parentUuid: parent, timestamp: at(ms), message: { content: [{ type: "text", text: "lead" }, block] } });
+  const rows = [
+    row("d-call", null, 1000, "assistant", { type: "tool_use", id: "bash-1", name: "Bash",
+      input: { command: `DB_PASSWORD=${DETAIL_SECRETS.assigned} ./run ${NATIVE_CANARY}`, headers: { api_key: DETAIL_SECRETS.keyed } } }),
+    row("d-result", "d-call", 2500, "user", { type: "tool_result", tool_use_id: "bash-1",
+      content: `ran ok, Authorization: Bearer ${DETAIL_SECRETS.bearer}`, is_error: false }),
+    row("d-edit", "d-result", 3000, "assistant", { type: "tool_use", id: "edit-2", name: "Edit", input: { file_path: "src/a.ts" } }),
+    row("d-fail", "d-edit", 3200, "user", { type: "tool_result", tool_use_id: "edit-2", content: "old_string not found", is_error: true }),
+    row("d-wait", "d-fail", 4000, "assistant", { type: "tool_use", id: "read-3", name: "Read", input: { file_path: "src/b.ts" } }),
+  ];
+  const file = `${dir}/detail-source.jsonl`; writeFileSync(file, jsonl(rows));
+  const receipt: TimelineReceipt = { session: sid, cwd, slot: 3, openedAt: CREATED, harness: "claude", project: "project-1",
+    program: PROGRAM, task: TASK, branch: BRANCH, at: CREATED, proof: "c".repeat(64) };
+  const index = new TimelineIndex({ host: "test-host", carriers: [], live: () => [receipt], tasks: () => [],
+    resolve: (r) => ({ file, harness: "claude", format: "claude-jsonl", cwd: r.cwd }),
+    worktreeOf: () => cwd, projectOf: () => "project-1", redactions: () => [NATIVE_CANARY], traceVersion: () => "fixed",
+    trace: async () => ({ result: "unknown-task", task: TASK, searched: [], horizon: [] }) });
+  const url = new URL("http://fixture/api/timeline?from=0&to=9999999999999");
+  const page = (await index.page(url)).body as TimelinePage;
+  const entry = (call: string, kind: string) => page.entries.find((e) => e.event?.refs.call === call && e.event.kind === kind)!;
+  const open = async (ref: string, extra = "") => {
+    const r = await index.detail(new URL(`http://fixture/api/timeline/detail?ref=${ref}${extra}`));
+    return { status: r.status, body: r.body as TimelineDetail };
+  };
+  const fp = (offset: number, bytes: number): string => createHash("sha256")
+    .update(new TextEncoder().encode(jsonl(rows)).subarray(offset, offset + bytes)).digest("hex").slice(0, 16);
+  const callEntry = entry("bash-1", "tool.call"), resultEntry = entry("bash-1", "tool.result");
+  const viaCall = await open(callEntry.id), viaResult = await open(resultEntry.id);
+  const d = viaCall.body, args = d.arguments?.value as { command?: string } | undefined;
+  check("timeline detail opens exactly one call with arguments, result, both record times and the original byte ranges",
+    viaCall.status === 200 && d.state === "read" && d.gaps.length === 0 && d.call?.call === "bash-1"
+      && !!args?.command?.includes("./run") && shows(d.resultText?.value, "ran ok") && d.error === null
+      && d.call.occurredAt === CREATED + 1000 && d.result?.occurredAt === CREATED + 2500
+      && d.separation?.ms === 1500 && d.duration === null && d.clockUncertainty === "unknown"
+      && d.source?.name === "detail-source.jsonl" && d.source.harness === "claude"
+      && d.call.range.offset === 0 && d.call.range.block === 1 && d.call.range.fp === fp(d.call.range.offset, d.call.range.bytes)
+      && d.result.range.offset === d.call.range.bytes + 1 && d.result.range.fp === fp(d.result.range.offset, d.result.range.bytes)
+      && viaResult.status === 200 && JSON.stringify({ ...viaResult.body, ref: "", revision: "" }) === JSON.stringify({ ...d, ref: "", revision: "" })
+      && d.work.sourceReads === 2, JSON.stringify(viaCall));
+  const failed = (await open(entry("edit-2", "tool.call").id)).body;
+  check("timeline detail carries a failed result as its error, not as a result",
+    failed.state === "read" && failed.outcome === "error" && failed.resultText === null
+      && shows(failed.error?.value, "old_string not found"), JSON.stringify(failed));
+  const waiting = (await open(entry("read-3", "tool.call").id)).body;
+  check("timeline detail of a pending call names its missing result instead of inventing one",
+    waiting.state === "read" && waiting.status === "pending" && waiting.result === null && waiting.resultText === null
+      && waiting.gaps.some((g) => g.code === "missing-result") && !!waiting.arguments, JSON.stringify(waiting));
+  const wire = JSON.stringify([viaCall.body, viaResult.body]);
+  check("timeline detail redacts normalizeNative's own markers: the canary and a bearer value",
+    !wire.includes(NATIVE_CANARY) && !wire.includes(DETAIL_SECRETS.bearer) && wire.includes("[redacted]"));
+  check("timeline detail redacts secrets the markers never knew: an assigned password and a secret-named key",
+    !wire.includes(DETAIL_SECRETS.assigned) && !wire.includes(DETAIL_SECRETS.keyed), wire);
+  const forged = await open(createHash("sha256").update("never issued").digest("hex"));
+  const locator = callEntry.event!.detailRef!.locator;
+  const refused = [await open(encodeURIComponent(locator)), await open(callEntry.id, "&path=/etc/passwd"),
+    await open(callEntry.id, `&ref=${resultEntry.id}`), await open("..%2F..%2Fetc%2Fpasswd")];
+  check("timeline detail refuses an id the index never issued without reading, and any path, locator or second ref",
+    forged.status === 404 && forged.body.work.sourceReads === 0 && !("arguments" in forged.body)
+      && refused.every((r) => r.status === 400 && r.body.work.sourceReads === 0), JSON.stringify([forged, ...refused.map((r) => r.status)]));
+  writeFileSync(file, jsonl(rows).replace("ran ok", "ran OK"));
+  const rewritten = await open(callEntry.id);
+  check("timeline detail of a rewritten source answers a named gap without old bytes",
+    rewritten.status === 200 && rewritten.body.state === "gap" && rewritten.body.gaps.some((g) => g.code === "source-rewritten")
+      && rewritten.body.arguments === null && rewritten.body.resultText === null, JSON.stringify(rewritten));
+  const fresh = (await index.page(url)).body as TimelinePage;
+  const freshCall = fresh.entries.find((e) => e.event?.refs.call === "bash-1" && e.event.kind === "tool.call")!;
+  rmSync(file);
+  const vanished = await open(freshCall.id);
+  check("timeline detail of a deleted source answers a named gap, never an empty success",
+    freshCall.id !== callEntry.id && vanished.status === 200 && vanished.body.state === "gap"
+      && vanished.body.gaps.some((g) => g.code === "source-missing") && vanished.body.arguments === null, JSON.stringify(vanished));
+  const many = Array.from({ length: TIMELINE_RETIRED_REFS + 1 }, (_, i) => ({ id: createHash("sha256").update(`cap-${i}`).digest("hex") }));
+  index["retire"]({ snapshot: { events: many } }, "source-rewritten");
+  const [evicted, kept] = [await open(many[0]!.id), await open(many[1]!.id)];
+  check("timeline detail tombstones are capped at TIMELINE_RETIRED_REFS and evict the oldest first",
+    index["retired"].size === TIMELINE_RETIRED_REFS && evicted.status === 404 && kept.status === 200 && kept.body.state === "gap",
+    `size=${index["retired"].size} evicted=${evicted.status} kept=${kept.status}`);
+}
+
 const TIMELINE_SIDS = NATIVE_FIXTURES.map((_, i) => `40000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
 function timelineFixtures(dir: string): void {
   const proposedCwd = `${FIX}/native-repo`; mkdirSync(proposedCwd, { recursive: true });
@@ -264,6 +362,8 @@ function timelineFixtures(dir: string): void {
     const text = new TextDecoder().decode(f.input.bytes).replaceAll(f.input.binding!.sessionId, sid)
       .replaceAll(f.input.binding!.cwd, cwd).replace(/2026-01-01T00:00:[0-9:.]+Z/g,
         (at: string) => new Date(DISPATCHED + Date.parse(at) - Date.parse("2026-01-01T00:00:00.000Z")).toISOString());
+    // the owner credential inside a codex payload: the detail route must strip what this instance knows as secret
+    const payload = f.name === "codex" ? text.replaceAll(NATIVE_CANARY, `${NATIVE_CANARY} ${TOKEN}`) : text;
     let file: string;
     if (f.name === "claude") file = `${dir}/native-claude/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}/${sid}.jsonl`;
     else if (f.name === "codex") file = `${dir}/native-codex/2026/01/01/rollout-test-${sid}.jsonl`;
@@ -272,7 +372,7 @@ function timelineFixtures(dir: string): void {
       const real = realpathSync(cwd);
       file = `${root}/sessions/--${real.replace(/^\/+/, "").replaceAll("/", "-")}--/test_${sid}.jsonl`;
     }
-    mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true }); writeFileSync(file, text);
+    mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true }); writeFileSync(file, payload);
     prompts.push({ ts: DISPATCHED, slot: 20 + i, openedAt: DISPATCHED, sessionId: sid, cwd, text: NATIVE_CANARY });
     lanes.push({ s: 20 + i, openedAt: DISPATCHED, sessionId: sid, taskId: TASK, programId: PROGRAM,
       branch: BRANCH, projectKey: "project-fixture" });
@@ -325,6 +425,23 @@ async function timelineRouteProbes(base: string, headers: Record<string, string>
   const bad = await fetch(`${base}/api/timeline?${query}&file=/etc/passwd`, { headers });
   const anon = await fetch(`${base}/api/timeline?${query}`);
   check("timeline route is owner-only and has no caller-selected file door", bad.status === 400 && anon.status === 401);
+  const codexCall = tool.find((e) => e.event?.kind === "tool.call" && e.event.refs.call === "exec-1")!;
+  const detail = async (q: string, h: Record<string, string> = headers) => {
+    const r = await fetch(`${base}/api/timeline/detail?${q}`, { headers: h });
+    return { status: r.status, text: await r.text() };
+  };
+  const opened = await detail(`ref=${codexCall.id}`);
+  const openedBody = JSON.parse(opened.text) as TimelineDetail;
+  check("timeline detail route opens a listed native call with its source range, redacted on the wire",
+    opened.status === 200 && openedBody.state === "read" && openedBody.call?.call === "exec-1"
+      && shows(openedBody.arguments?.value, "tools.first") && openedBody.resultText !== null
+      && openedBody.call.range.locator === codexCall.event!.detailRef!.locator && openedBody.source?.harness === "codex"
+      && !opened.text.includes(TOKEN) && opened.text.includes("[redacted]"), opened.text.slice(0, 600));
+  const [forged, pathed, anonDetail] = [await detail(`ref=${"0".repeat(64)}`), await detail(`ref=${codexCall.id}&file=/etc/passwd`),
+    await detail(`ref=${codexCall.id}`, {})];
+  check("timeline detail route refuses a never-issued ref, a caller path and a missing owner credential",
+    forged.status === 404 && pathed.status === 400 && anonDetail.status === 401 && !forged.text.includes("arguments"),
+    `${forged.status} ${pathed.status} ${anonDetail.status}`);
 }
 
 export async function run(): Promise<void> {
@@ -338,6 +455,7 @@ export async function run(): Promise<void> {
 
   timelineFixtures(dir);
   await timelineProbes();
+  await timelineDetailProbes();
   const port = PORT + OFF;
   const sock = `${SOCK}trace${OFF}`;
   const base = `http://${IP}:${port}`;

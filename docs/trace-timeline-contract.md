@@ -249,7 +249,8 @@ Original-IDs, Parent-/Sidechain-/Pi-Branchbelege und late/missing/orphan bleiben
 wie im nativen Vertrag erhalten. Innere Codex-exec-Aufrufe sind unsupported.
 Argumente, Resultattexte, Reporttext und Prüflogbytes fehlen in der Liste.
 `detailRef` ist nur der vorhandene Locator/Fingerprint, keine Leseberechtigung;
-die autorisierte Detailtür ist eine andere Karte. Der bestehende Exportredaktor
+die autorisierte Detailtür ist `GET /api/timeline/detail` (Abschnitt C3 unten), und
+sie öffnet über die Eintrags-ID, nie über den Locator. Der bestehende Exportredaktor
 reinigt zusätzlich die serialisierte Antwort mit den bekannten Credentialwerten.
 
 ## C2: Quellen-, Lücken- und Oberflächenmatrix
@@ -385,3 +386,69 @@ gleichem Vollstand null Lücken/Invalidierungen und identische Eventwerte; ein
 geänderter Vollstand muss alle vier Refs invalidieren. Gegenmutation: die
 Blockprüfung wieder durch `hash(bytes[0..previous.inputBytes]) ===
 previous.inputHash` ersetzen. Die unveränderte Probe wird damit gezielt rot.
+
+## C3: Detail-Tür für einen Call
+
+`GET /api/timeline/detail?ref=<entry.id>` liegt hinter demselben Owner-Token-Gate wie die
+Liste (`trace-timeline.ts#TimelineIndex.detail`, Route in `server.ts`). `ref` ist die
+`id` eines nativen Eintrags aus `GET /api/timeline` (64 Hexzeichen, die Event-ID des
+Adapters) — der Call- oder der Resultat-Eintrag öffnen denselben Call. Andere
+Parameter, ein zweites `ref`, ein Locator (`native:…`) oder ein Pfad geben 400; ohne
+Ownercredential 401. Die Tür nimmt keinen Pfad und keinen Bytebereich vom Aufrufer:
+Datei und Bereich kommen ausschließlich aus dem Indexzustand, der das Event ausgegeben hat.
+
+**Ablauf.** Erst ein Indexschritt wie bei der Liste (`update`), dann der Lookup der ID
+in den gehaltenen Snapshots. Eine ID, die der Index nie ausgegeben hat, ist **404
+`unknown-reference`, bevor irgendeine Datei gelesen wird** (`work.sourceReads: 0`).
+Gefunden, liest die Tür genau die Bereiche `record.offset+record.bytes` des Calls und
+seines gepaarten Resultats (höchstens zwei Reads), prüft Länge, inode und den
+Fingerprint `fp` und dekodiert erst dann den Block `record.block`
+(`trace-native.ts#nativeDetailOf`). Ein Ledger-Eintrag (`buildTrace`) ist kein nativer
+Call und bleibt 404; seine Originalreferenz bleibt an `/api/trace`.
+
+| Feld | Vertrag |
+|---|---|
+| `schema`, `host`, `revision`, `ref` | `fleet.timeline-detail/v1`, wie die Liste; `revision` ist die Indexrevision beim Lesen |
+| `state` | `read`, oder `gap`, sobald eine Quelle fehlt, umgeschrieben ist oder der Block nicht mehr passt |
+| `call`, `result` | je `{id, kind, call, occurredAt, observedAt, atClock, status, outcome, range}`; `range = {offset, bytes, block, recordId, parent, sidechain, locator, fp}` ist der Bytebereich der Originalquelle |
+| `source` | `{id, harness, format, version, name, availableBytes}`: opake Source-ID, Generation, Dateiname (Basename, nie Verzeichnis oder cwd) und aktuelle Dateigröße |
+| `arguments`, `resultText`, `error` | je ein `DetailField` `{value, bytes, truncated:false}` oder `{value:null, preview, bytes, truncated:true}`; Fehler heißt explizites `is_error`/`isError: true`, Codex-Outputs bleiben `resultText` mit `outcome:unknown` |
+| `status`, `outcome`, `separation` | wie im nativen Vertrag; `separation` ist Recordzeit-Abstand, keine Laufzeit |
+| `duration`, `durationBasis` | `null` mit benanntem Grund: keine der drei Formate belegt zwei Enden einer gemeinsamen Tool-Laufzeituhr |
+| `gaps[]` | `missing-result`, `orphan-result`, `source-missing`, `source-rewritten`, `malformed-record`, `record-block-mismatch`, jeweils mit Bytebereich, wo einer belegt ist |
+| `work` | Reads und Bytes dieses Aufrufs, auch an jeder 400/404 |
+
+**Lücke statt Fehler.** Eine Quelle, die nach dem Ausgeben gelöscht, umgeschrieben,
+geschrumpft oder neu gebunden wurde, antwortet 200 mit `state:"gap"` und benanntem
+Code, nie mit alten Bytes und nie als leerer Erfolg. Hat ein Indexschritt den Snapshot
+schon verworfen, hält der Index die ID in einer Grabstein-Map
+(`TIMELINE_RETIRED_REFS = 20000`, älteste zuerst verdrängt; nur ID und Grund, kein Event,
+kein Pfad): `source-missing`, `source-rewritten`, `source-binding-changed`,
+`source-not-indexed`, `source-changed-during-read`. Eine aus dem Deckel gefallene ID ist
+wieder 404. Die Map ist Prozesszustand wie Cursor und Parserzustand; keine neue Retention.
+
+**Redaktion.** Jeder Wert läuft vor dem Ausliefern durch `trace-native.ts#redactDetail`:
+die Redaktionsmarker des Index (dieselben, die `normalizeNative` bekommt), die
+Credentialmuster aus `hasSecret` (`sk-…`, `Bearer …`, `x-fleet-self-token`,
+Private-Key-Blöcke), und — der Gegenfall, den diese Marker nicht kannten — Zuweisungen an
+geheimnisbenannte Variablen (`DB_PASSWORD=…`, `"api_key": …`), `Basic`-Credentials,
+URL-Logins, GitHub-/AWS-Schlüsselformen sowie String-Werte geheimnisbenannter JSON-Schlüssel.
+Danach reinigt der bestehende Exportredaktor die serialisierte Antwort ein zweites Mal.
+Redigiert wird vor dem Kürzen: jedes Feld ist auf `DETAIL_FIELD_BYTES = 65536` B
+serialisiertes UTF-8 begrenzt, darüber `truncated:true` mit Vorschau und Originalgröße.
+Das ist keine Garantie für unbekannte Geheimnisformen in beliebigem Freitext.
+
+**Checks und ihre Mutationen** (`e2e/trace.ts#timelineDetailProbes`, Route in
+`#timelineRouteProbes`, Matrix in `e2e/security.ts` §2):
+
+| Check | Gegenmutation, die ihn rot macht |
+|---|---|
+| öffnet genau einen Call mit Argumenten, Resultat, Zeiten und Bereich; Fehler als `error` | Paarlookup in `detail` streichen (nur das eigene Event lesen) |
+| redigiert die Marker von `normalizeNative` (Canary, Bearer) | `redactText` ohne Marker und `SECRET_SPANS` |
+| redigiert unbekannte Geheimnisse (Zuweisung, geheimnisbenannter Schlüssel) | nur die `hasSecret`-Muster behalten; so lief der Check vor dem Fix rot |
+| unbekannte ID 404 ohne Read; Pfad, Locator, zweites `ref` 400 (Einheit, Route, `security.ts`) | `if (!code) return … 404` streichen: die gefälschte ID liest 200 |
+| umgeschriebene / gelöschte Quelle ist benannte Lücke | `retire` beim Rewrite bzw. beim Verschwinden streichen: alte ID wird 404 |
+| Grabsteine gedeckelt, älteste zuerst verdrängt | Verdrängungsschleife in `retire` streichen |
+
+Client: `not-applicable` in dieser Karte; die Zeitleisten-UI ruft die Tür noch nicht auf.
+Wire, Server, Docs und Probes: `apply`. Keine Share-, Grant-, Host- oder Retentionsänderung.

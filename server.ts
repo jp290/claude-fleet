@@ -47748,6 +47748,16 @@ Bun.serve<WSData>({
     // archive copy is read inside) and the lane holding the task now, the one place an occupation
     // key is known without inference. A wave follower is not found here: its lane is on record under
     // its head's id (resolveTaskLane says the same).
+    // THE TIMELINE DETAIL DOOR (trace-timeline.ts#TimelineIndex.detail): one native call opened by an
+    // entry id the index handed out on a page — arguments, result, error, times and the source byte
+    // range, redacted twice (the index's markers, then this export redactor). No path is accepted;
+    // an id the index never issued is 404 before any file is read, a dropped source is a named gap.
+    if (url.pathname === "/api/timeline/detail" && req.method === "GET") {
+      const answer = await timelineIndex.detail(url);
+      const clean = exportRedactor().clean(JSON.stringify(answer.body));
+      return new Response(clean, { status: answer.status, headers: {
+        "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    }
     if (url.pathname === "/api/timeline" && req.method === "GET") {
       const answer = await timelineIndex.page(url);
       const clean = exportRedactor().clean(JSON.stringify(answer.body));

@@ -12136,6 +12136,11 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}", with: "" },
   { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Starten does",
     needle: "  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce(", with: "  if (false) box.appendChild(LIVE_HOW.reduce(" },
+  // round 10: the new live lane's way in
+  { name: "no bar while the lane is made", state: "live", width: 1200, claim: "Starten first draws a bar with the sentence",
+    needle: "  if (arriving) g.appendChild(liveGhost(arriving));", with: "" },
+  { name: "a new live lane jumps into its row", state: "live", width: 1200, claim: "Starten first draws a bar with the sentence",
+    needle: "    if (flip) liveFlipAfter(flip);", with: "" },
   { name: "the focus restore scrolls to its button again", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
     needle: "  return `${a.tagName}\\u0000${cls}\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;",
     with: "  return `${a.tagName}\\u0000${a.className}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;" },
@@ -13237,6 +13242,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             e1 === "Die Live-Session wurde nicht gestartet: no free lane place." && !fx.writes.some((w) => w.path === "/send" || /testinstanz|rename/.test(w.path));
           // 2 — all three steps answer: the lane, the sentence with the fixed paragraph, its instance
           fx.liveFail = null; fx.writes = [];
+          // THE WAY IN (owner 2026-10-09: „[Zitat entfernt]“
+          // ): what
+          // the column holds when the bar first stands, and when the lane's own row is first drawn
+          await evaluate(`(() => { window.__arr = { ghost: null, row: null }; const body = document.querySelector('#boardbody');
+            const mo = new MutationObserver(() => { const g = body.querySelector('.live-ghost');
+              if (g && !window.__arr.ghost) window.__arr.ghost = { text: g.querySelector('.tx')?.firstChild?.textContent ?? '', live: g.querySelector('.livetag')?.textContent ?? '',
+                underField: g.previousElementSibling?.classList.contains('live-new') ?? false, st: g.querySelector('.st')?.textContent ?? '' };
+              const r = body.querySelector('.ranke .rk > .zr[data-slot="14"]');
+              if (r && !window.__arr.row) { window.__arr.row = { kf: r.getAnimations().map((a) => String(a.effect?.getKeyframes?.()[0]?.transform ?? '')),
+                ghost: !!body.querySelector('.live-ghost'), field: !!body.querySelector('.zd.live-new') }; mo.disconnect(); } });
+            mo.observe(body, { childList: true, subtree: true }); })()`);
           await go();
           const made = () => fx.liveMade[0];
           const started = await wait(`(() => { const z = [...document.querySelectorAll('#boardbody .zd.ti')].find((x) => x.dataset.for && x.dataset.for.includes('die-zeitleiste-soll')); return z && /Öffnen/.test(z.innerText) && !document.querySelector('#boardbody .zd.live-new'); })()`, 5000);
@@ -13256,6 +13272,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && JSON.stringify(tw) === JSON.stringify({ action: "up", ttlMin: 240 }) && JSON.stringify(nw) === JSON.stringify({ label: "⎇ Die Zeitleiste soll zur Stunde spring…" })
             && at("/api/lanes") < at("/send") && at("/send") < at("/api/slots/14/testinstanz")
             && await liveTag(14) === "Live" && (made() ? tiOf(r, made()!)?.buttons.join(",") : "") === "Öffnen,Stoppen,Mergen";
+          const arr = await evaluate<{ ghost: { text: string; live: string; underField: boolean; st: string } | null; row: { kf: string[]; ghost: boolean; field: boolean } | null }>(`window.__arr`);
+          facts.arrive = arr;
+          claims[`${tag}Starten first draws a bar with the sentence and Live under the field; the paint that draws the lane's row slides it in from there, and field and bar are gone`] =
+            !!arr.ghost && arr.ghost.text.startsWith("Die Zeitleiste soll zur Stunde spring") && arr.ghost.live === "Live" && arr.ghost.underField
+            && !!arr.row && arr.row.kf.some((t) => /^translateY\(-?\d/.test(t)) && !arr.row.ghost && !arr.row.field;
           // 3 — the sentence does not arrive: said at the lane, the lane stands, its instance still starts
           fx.liveFail = "send"; fx.writes = [];
           await startOpen("Die Leiste breiter");

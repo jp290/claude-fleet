@@ -1372,7 +1372,63 @@ function boardFocusKey(a: HTMLElement): string {
   const cls = (a.getAttribute("class") ?? "").split(" ").filter((c) => c && c !== "on").join(" ");
   return `${a.tagName}\u0000${cls}\u0000${a.getAttribute("aria-label") ?? ""}\u0000${(a.textContent ?? "").slice(0, 40)}`;
 }
+// THE PAINT THAT DRAWS A NEW LIVE LANE'S ROW (#liveArrive) moves the column instead of jumping it: every
+// lane row (by its worktree), every block of the Arbeitsorte after the projects and every section under
+// them starts where it stood and slides to where it now is — the new row from the bar under the field,
+// the lines a moment after. Measured before the swap (top in the viewport), played after it.
+type LiveFlip = { path: string; from: Map<string, number>; ghost: number | null };
+function flipKeyed(root: HTMLElement): [string, HTMLElement][] {
+  const out: [string, HTMLElement][] = [];
+  for (const rk of root.querySelectorAll<HTMLElement>(".ranke .rk")) {
+    // an opened row's lines go with their row: the key of the row before them
+    let row = "";
+    for (const k of rk.children) {
+      if (!(k instanceof HTMLElement) || k.tagName === "svg") continue;
+      if (k.classList.contains("zr") && k.dataset.id) row = `row:${k.dataset.id}`;
+      if (row) out.push([k.classList.contains("zr") && k.dataset.id ? row : `${row}>${out.filter(([x]) => x.startsWith(`${row}>`)).length}`, k]);
+    }
+  }
+  for (const b of root.querySelectorAll<HTMLElement>(".ranke > .rkblock:not(.rk-proj)")) out.push([`blk:${b.className}`, b]);
+  const ranke = root.querySelector<HTMLElement>(":scope > .ranke");
+  for (let n = ranke?.nextElementSibling; n; n = n.nextElementSibling) if (n instanceof HTMLElement) out.push([`sec:${n.className}`, n]);
+  return out;
+}
+function liveFlipBefore(next: HTMLElement[]): LiveFlip | null {
+  const a = liveArrive;
+  if (!a?.path) return null;
+  const sel = `.ranke .rk > .zr[data-id="${CSS.escape(a.path)}"]`;
+  if (!next.some((n) => n.querySelector(sel))) return null;
+  liveArrive = null;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  const from = new Map(flipKeyed(boardBody).map(([k, e]) => [k, e.getBoundingClientRect().top]));
+  const ghost = boardBody.querySelector<HTMLElement>(`.live-ghost[data-for="${CSS.escape(a.repo)}"]`)?.getBoundingClientRect().top ?? null;
+  return { path: a.path, from, ghost };
+}
+let boardAnimUntil = 0;
+let boardAnimTimer: ReturnType<typeof setTimeout> | null = null;
+function liveFlipAfter(f: LiveFlip): void {
+  const opts: KeyframeAnimationOptions = { duration: LIVE_ARRIVE_MS, easing: "cubic-bezier(.2,.7,.2,1)" };
+  const mine = `row:${f.path}`;
+  for (const [k, e] of flipKeyed(boardBody)) {
+    const to = e.getBoundingClientRect().top;
+    const own = k === mine || k.startsWith(`${mine}>`);
+    const was = own ? f.ghost : f.from.get(k) ?? null;
+    if (was === null) { if (own) e.animate([{ opacity: 0 }, { opacity: 1 }], opts); continue; }
+    if (Math.abs(was - to) < 1) continue;
+    e.animate(own ? [{ transform: `translateY(${was - to}px)`, opacity: k === mine ? 0.7 : 0 }, { transform: "none", opacity: 1 }]
+      : [{ transform: `translateY(${was - to}px)` }, { transform: "none" }], opts);
+  }
+  // the lines are drawn where the rows end up: they come in once the rows are there
+  for (const svg of boardBody.querySelectorAll<SVGElement>(".ranke .rk > svg"))
+    svg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: LIVE_ARRIVE_MS - 100, fill: "backwards" });
+  boardAnimUntil = Date.now() + LIVE_ARRIVE_MS;
+}
 export async function renderBoard() {
+  // a lane on its way in (#liveFlipAfter) finishes its way before the column is built anew
+  if (Date.now() < boardAnimUntil) {
+    boardAnimTimer ??= setTimeout(() => { boardAnimTimer = null; void renderBoard(); }, boardAnimUntil - Date.now() + 30);
+    return;
+  }
   // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
@@ -1401,10 +1457,12 @@ export async function renderBoard() {
       const y0 = boardBody.scrollTop;
       boardPop = null;
       perfRebuild("renderBoard");
-      boardBody.replaceChildren(...plaTop, ...(er ? [er] : []),
-        arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen."));
+      const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen.")];
+      const flip0 = liveFlipBefore(next);
+      boardBody.replaceChildren(...next);
       boardBody.scrollTop = y0;
       drawRankeLines(boardBody);
+      if (flip0) liveFlipAfter(flip0);
       return;
     }
     const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
@@ -1536,6 +1594,7 @@ export async function renderBoard() {
       }
     }
     perfRebuild("renderBoard");
+    const flip = liveFlipBefore(nodes);
     boardBody.replaceChildren(...nodes);
     drawRankeLines(boardBody);
     boardBody.scrollTop = y;
@@ -1545,6 +1604,7 @@ export async function renderBoard() {
     const opened = popScroll && !isMobile() ? boardBody.querySelector<HTMLElement>(".bpop") : null;
     if (opened) { popScroll = false; opened.scrollIntoView({ block: "nearest" }); }
     if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
+    if (flip) liveFlipAfter(flip);
     if (focusKey) {
       for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
         if (boardFocusKey(cand) !== focusKey) continue;
@@ -2678,6 +2738,18 @@ function liveBranch(text: string): string {
 let liveDraft: { repo: string; text: string } | null = null;
 const liveBusy = new Set<string>();
 const liveErr = new Map<string, string>();
+// THE NEW LANE'S WAY IN (owner 2026-10-09: „[Zitat entfernt]“
+// 
+// ): from Starten until the lane's own row is drawn, the field holds its
+// sentence and a bar stands under it (#liveGhost); the paint that draws the row moves every row and
+// block from where it stood — the new row from the bar (#liveFlipBefore, #liveFlipAfter). `path` is
+// the lane's worktree once it exists; past `until` the bar gives up and the row simply appears.
+let liveArrive: { repo: string; sentence: string; path: string | null; until: number } | null = null;
+const LIVE_ARRIVE_MS = 520;
+function liveArriving(repo: string, rows: WorkplaceRow[]): NonNullable<typeof liveArrive> | null {
+  const a = liveArrive;
+  return a && a.repo === repo && a.until > Date.now() && !rows.some((w) => w.path === a.path) ? a : null;
+}
 // a test instance's first `up` races the session's `bun install`: one more try after this pause
 const LIVE_TI_RETRY_MS = 60_000;
 // server.ts#MAX_LABEL is 40, "⎇ " takes two of them
@@ -2691,6 +2763,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
   if (!sentence || liveBusy.has(repo)) return;
   liveBusy.add(repo);
   liveErr.delete(repo);
+  liveArrive = { repo, sentence, path: null, until: Date.now() + 120_000 };
   void renderBoard();
   // 1 — the lane
   let slot: number, cwd: string;
@@ -2702,9 +2775,12 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
   } catch (error) {
     liveErr.set(repo, `Die Live-Session wurde nicht gestartet: ${error instanceof Error ? error.message : String(error)}.`);
     liveBusy.delete(repo);
+    liveArrive = null;
     void renderBoard();
     return;
   }
+  // the bar waits under the field for the lane's own row — a reload of the Arbeitsorte away
+  liveArrive = { repo, sentence, path: cwd, until: Date.now() + 20_000 };
   liveDraft = null;
   liveBusy.delete(repo);
   rankeRepos.set(repo, true);
@@ -2825,16 +2901,28 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
   }
   return box;
 }
+// the bar under the field while the lane is made: the sentence as the lane will be called, Live, and
+// what is happening; the paint that draws the lane's own row moves that row from here (#liveFlipAfter)
+function liveGhost(a: NonNullable<typeof liveArrive>): HTMLElement {
+  const g = el("div", "zd live-ghost");
+  g.dataset.for = a.repo;
+  const tx = el("span", "tx", a.sentence.length > LIVE_LABEL_MAX ? `${a.sentence.slice(0, LIVE_LABEL_MAX - 1).trimEnd()}…` : a.sentence);
+  tx.appendChild(el("span", "livetag", "Live"));
+  g.append(el("span", "nd"), tx, el("span", "st", a.path ? "Lane steht" : "wird angelegt…"));
+  g.title = "Die Lane wird angelegt — gleich steht sie in der Reihe ihres Projekts";
+  return g;
+}
 // under a project's head while its field is open: the sentence, Starten, and what failed before a lane existed
-function liveField(repo: string): HTMLElement {
+function liveField(repo: string, arrive: NonNullable<typeof liveArrive> | null): HTMLElement {
   const box = el("div", "zd live-new");
   box.dataset.for = repo;
-  const busy = liveBusy.has(repo);
+  // until the lane's row is drawn the field holds its sentence, as it was sent
+  const busy = liveBusy.has(repo) || !!arrive;
   const f = el("input", "live-in") as HTMLInputElement;
   f.type = "text";
   f.placeholder = "Auftrag in einem Satz";
   f.setAttribute("aria-label", "Auftrag in einem Satz");
-  f.value = liveDraft?.repo === repo ? liveDraft.text : "";
+  f.value = arrive ? arrive.sentence : liveDraft?.repo === repo ? liveDraft.text : "";
   f.disabled = busy;
   f.oninput = () => { liveDraft = { repo, text: f.value }; go.disabled = busy || !f.value.trim(); };
   f.onkeydown = (e) => { if (e.key === "Enter" && f.value.trim()) { e.preventDefault(); void startLiveSession(repo, f.value); } };
@@ -2911,6 +2999,17 @@ const RANKE_CSS = `
   #board .zd.live-new > .rk-btn.live-i.on { color: var(--chat-ink); }
   #board .zd.live-new > .live-how { flex-basis: 100%; margin: 2px 0 0; padding: 0 2px 0 1.4em; color: var(--chat-mute); white-space: normal; }
   #board .zd.live-new > .live-how li + li { margin-top: 3px; }
+  /* THE NEW LANE'S BAR while it is made (#liveGhost): a lane's row in the surface of an opened one, its point
+     breathing until the lane's own row takes its place and slides in from here */
+  #board .zd.live-ghost { min-height: var(--rk-row); margin: 0 0 4px; border-radius: 4px; background: var(--chat-surface); }
+  #board .zd.live-ghost > .nd { grid-column: 1; justify-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--q-live);
+    animation: live-breathe 1.2s ease-in-out infinite; }
+  #board .zd.live-ghost > .tx { grid-column: 2 / 4; min-width: 0; color: var(--chat-ink); white-space: normal; overflow-wrap: anywhere; }
+  #board .zd.live-ghost .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    color: var(--chat-ink); font-size: 0.85em; line-height: 1.2; vertical-align: 1px; white-space: nowrap; }
+  #board .zd.live-ghost > .st { grid-column: 4 / -1; justify-self: end; padding-right: 8px; color: var(--chat-faint); white-space: nowrap; }
+  @keyframes live-breathe { 50% { opacity: 0.3; } }
+  @media (prefers-reduced-motion: reduce) { #board .zd.live-ghost > .nd { animation: none; } }
   #board .zr.zw .nm .livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     color: var(--chat-ink); font-size: 0.85em; line-height: 1.2; vertical-align: 1px; white-space: nowrap; }
   /* THE LAND FORM (#landFormField): the gear in a project's head and at the end of an opened lane's way;
@@ -4362,7 +4461,8 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openLaneFounding(R.repo); };
   // THE LIVE SESSION (src/board.ts#startLiveSession): a sentence under the head, a lane from it
-  const liveOpen = liveDraft?.repo === R.repo || liveBusy.has(R.repo) || liveErr.has(R.repo);
+  const arriving = liveArriving(R.repo, rows);
+  const liveOpen = liveDraft?.repo === R.repo || liveBusy.has(R.repo) || liveErr.has(R.repo) || !!arriving;
   const live = el("button", `rk-btn quiet live-btn${liveOpen ? " on" : ""}`) as HTMLButtonElement;
   // the phone shows "Live" only: beside the state word the whole name crowded the project's name
   live.append(el("span", "", "Live"), el("span", "lx", "-Session"));
@@ -4388,7 +4488,8 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   });
   head.setAttribute("aria-expanded", String(isOpen));
   g.appendChild(head);
-  if (liveOpen) g.appendChild(liveField(R.repo));
+  if (liveOpen) g.appendChild(liveField(R.repo, arriving));
+  if (arriving) g.appendChild(liveGhost(arriving));
   if (!isOpen) return g;
   if (R.worktrees === null) {
     g.appendChild(el("div", "bstate", `Die Worktrees dieses Repos konnten nicht gelesen werden — ${R.reasons.map((r) => r.reason).join(", ") || "ohne Grund"}.`));

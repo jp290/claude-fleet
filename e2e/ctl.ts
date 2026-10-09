@@ -1050,6 +1050,79 @@ await import(pathToFileURL(process.argv[2]).href);
   cleanInboxState.programs = (cleanInboxState.programs as { id: string }[]).filter((p) => p.id !== programId && p.id !== foreignProgramId);
   writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleanInboxState, null, 2));
   await restartSrv();
+  // === the Orchestrator's three ways ============================================================
+  // An unbound session with the Orchestrator label: its self token met 409 on `file` and `inbox`, and
+  // the one door that carried its messages served the whole rail (136 427 B for 4 unread payloads,
+  // docs/messungen/2026-10-09-rollen-kontext-inventar.md §5 Z1). The three program-to-orchestrator
+  // sends above are its inbound rows here — the Programs are gone, the messages are not.
+  const orchSlot = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+    .slots.find((s) => s.cwd === null)?.id ?? 0;
+  const orchOpened = orchSlot ? await post(`/api/slots/${orchSlot}/open`, { cwd: REPO, label: "🎛 Orchestratorin · ctl" }) : null;
+  const orchTok = orchOpened?.ok ? await selfTokenOf(orchSlot) : "";
+  const orchH = { "x-fleet-self-token": orchTok };
+  const orchEnv = { FLEET_SELF_TOKEN: orchTok, FLEET_SELF_SLOT: String(orchSlot) };
+  interface MessageView { addresses: { kind: string; role?: string }[]; unread: number; droppedFleetWide: number;
+    entries: { id: string; to: { kind: string; role?: string }; readBy: unknown }[]; unknown: string[] }
+  const orchRole = orchTok ? ((await (await fetch(`${BASE}/api/self`, { headers: orchH })).json()) as
+    { position?: { role?: string } }).position?.role : undefined;
+  const firstView = orchTok ? ((await (await fetch(`${BASE}/api/self/messages`, { headers: orchH })).json()) as MessageView) : null;
+  const toOrch = (firstView?.entries ?? []).filter((e) => e.to.kind === "role" && e.to.role === "orchestrator");
+  check("ctl orchestrator setup: an unbound Orchestrator-labelled session reads role orchestrator and holds the three sends",
+    /^[0-9a-f]{32}$/.test(orchTok) && orchRole === "orchestrator" && toOrch.length >= 3
+      && !!firstView?.addresses.some((a) => a.kind === "role" && a.role === "orchestrator"),
+    `slot ${orchSlot} ${orchOpened?.status} role=${orchRole} toOrchestrator=${toOrch.length}`);
+  const receipted = toOrch[0]?.id ?? "";
+  const orchReceipt = receipted ? await fetch(`${BASE}/api/self/messages/${receipted}/read`, { method: "POST", headers: orchH }) : null;
+  const allText = orchTok ? await (await fetch(`${BASE}/api/self/messages`, { headers: orchH })).text() : "";
+  const unreadText = orchTok ? await (await fetch(`${BASE}/api/self/messages?unread=1`, { headers: orchH })).text() : "";
+  let allView: MessageView | null = null, unreadView: MessageView | null = null;
+  try { allView = JSON.parse(allText) as MessageView; unreadView = JSON.parse(unreadText) as MessageView; } catch { /* named below */ }
+  const wantUnread = (allView?.entries ?? []).filter((e) => e.readBy === null && e.to.kind === "role" && e.to.role === "orchestrator");
+  check("GET /api/self/messages?unread=1: exactly the unread inbound rows, the receipted one gone, every other field as unfiltered",
+    orchReceipt?.ok === true && !!allView && !!unreadView && wantUnread.length >= 2
+      && unreadView.entries.map((e) => e.id).join() === wantUnread.map((e) => e.id).join()
+      && !unreadView.entries.some((e) => e.id === receipted) && allView.entries.some((e) => e.id === receipted)
+      && unreadView.unread === allView.unread && unreadView.unread === wantUnread.length
+      && JSON.stringify(Object.keys(unreadView)) === JSON.stringify(Object.keys(allView))
+      && JSON.stringify([unreadView.addresses, unreadView.droppedFleetWide, unreadView.unknown])
+        === JSON.stringify([allView.addresses, allView.droppedFleetWide, allView.unknown]),
+    `receipt=${orchReceipt?.status} all=${allView?.entries.length} unread=${unreadView?.entries.length} want=${wantUnread.length}`);
+  check("GET /api/self/messages without the filter: the bytes are the pre-filter projection, key for key in its order",
+    !!allView && allText === JSON.stringify({ addresses: allView.addresses, unread: allView.unread,
+      droppedFleetWide: allView.droppedFleetWide, entries: allView.entries, unknown: allView.unknown }),
+    `${Buffer.byteLength(allText)} B keys=${allView ? Object.keys(allView).join() : "unparsed"}`);
+  const badFilter = orchTok ? await fetch(`${BASE}/api/self/messages?unread=0`, { headers: orchH }) : null;
+  check("GET /api/self/messages?unread=0: any value but 1 is a named 400",
+    badFilter?.status === 400 && (((await badFilter.json()) as { error?: string }).error ?? "").includes("unread takes exactly 1"),
+    `${badFilter?.status}`);
+  const orchInbox = await ctl(["inbox"], orchEnv);
+  const namedDoor = await ctl(["get", "/api/self/messages?unread=1", "--json"], orchEnv);
+  check("ctl inbox as the Orchestrator: one sentence names the filtered message door instead of a 409, and that door carries",
+    orchInbox.code === 1 && orchInbox.err.trim().split("\n").length === 1
+      && orchInbox.err.includes("./ctl.sh get '/api/self/messages?unread=1'") && !orchInbox.err.includes("409")
+      && namedDoor.code === 0 && (namedDoor.json as MessageView | null)?.entries.map((e) => e.id).join() === wantUnread.map((e) => e.id).join(),
+    `inbox=${orchInbox.code} ${orchInbox.err.trim()} get=${namedDoor.code}`);
+  const orchCard = `${ROOT}/ctl-orchestrator-card.json`;
+  writeFileSync(orchCard, JSON.stringify({ ...payload, repo: REPO }));
+  const rowsBeforeOrch = (await queueRows()).length;
+  const orchFile = await ctl(["file", orchCard, "--json"], orchEnv);
+  const rowsAfterRefusal = (await queueRows()).length;
+  const ownerWay = await ctl(["file", orchCard, "--json"], { ...orchEnv, FLEET_SELF_TOKEN: "" });
+  const ownerWayId = (ownerWay.json as { task?: { id?: string } })?.task?.id ?? "";
+  check("ctl file as the Orchestrator: one sentence names the owner door instead of a 409, no row, and that way files a valid card",
+    orchFile.code === 1 && orchFile.err.trim().split("\n").length === 1
+      && orchFile.err.includes(`FLEET_SELF_TOKEN= ./ctl.sh file ${orchCard}`) && orchFile.err.includes("POST /api/tasks")
+      && (orchFile.json as { way?: string } | null)?.way === orchFile.err.trim()
+      && rowsAfterRefusal === rowsBeforeOrch
+      && ownerWay.code === 0 && (await queueRows()).find((t) => t.id === ownerWayId)?.card?.valid === true,
+    `file=${orchFile.code} ${orchFile.err.trim()} rows=${rowsBeforeOrch}->${rowsAfterRefusal} owner=${ownerWay.code} ${ownerWay.err}`);
+  check("ctl orchestrator ways: no output exposes either credential",
+    [orchInbox, namedDoor, orchFile, ownerWay].every((r) => ![TOKEN, orchTok].some((token) => r.out.includes(token) || r.err.includes(token))),
+    "credential strings absent");
+  if (ownerWayId) await post(`/api/tasks/${ownerWayId}/delete`, {});
+  rmSync(orchCard, { force: true });
+  if (orchSlot) await post(`/api/slots/${orchSlot}/kill`, {});
+
   const bogus = await ctl(["nosuchverb"]);
   check("ctl usage: an unknown verb exits 2 and names itself",
     bogus.code === 2 && bogus.err.includes('unknown verb "nosuchverb"'), `exit ${bogus.code}`);

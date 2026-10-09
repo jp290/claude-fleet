@@ -3253,6 +3253,25 @@ Frage eine Antwort. `droppedFleetWide`
 heißt so, wie es heißt: der Deckel liegt auf dem GANZEN Record, die Zahl ist also nicht „so viele
 DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, die genau das sagt.
 
+**Filter `?unread=1` (seit 2026-10-10, `server.ts#messageViewFor`):** `GET /api/self/messages?unread=1`
+liefert in `entries` nur den **ungelesenen Eingang** — genau die Zeilen, deren Ids
+`GET /api/self` → `position.waitingOnMe` als `kind:"message"` nennt. Form und Schlüsselreihenfolge
+bleiben; `addresses`, `unread`, `droppedFleetWide` und `unknown` sind dieselben wie ohne Filter. Jeder
+andere Wert als `1` ist eine 400 mit Satz. **Ohne den Parameter ist die Antwort byte-gleich mit der
+vor dem Filter.** Anlass: die Orchestratorin las am 2026-10-09 für 4 ungelesene Payloads (3 156 B)
+die ganze Sicht, 102 Zeilen und 136 427 B (`docs/messungen/2026-10-09-rollen-kontext-inventar.md`
+Anhang A §0 Befund 5). `./state.sh --brief` nennt diesen Weg in der Gruppe `waiting` und in
+`own-messages`; aus einer Pane: `./ctl.sh get '/api/self/messages?unread=1'`.
+
+**Die Orchestratorin und die zwei Program-Verben von `ctl.sh`.** Sie hält keine Program-Bindung,
+darum antworten ihr `/api/self/inbox` und `/api/self/tasks` 409 (`mainUnboundError`). `./ctl.sh inbox`
+und `./ctl.sh file` fragen nach genau dieser Verweigerung `GET /api/self` → `position.role`; ist es
+`orchestrator`, nennen sie statt des 409 in einem Satz die Tür, die trägt: `inbox` diese gefilterte
+Nachrichten-Sicht, `file` die Owner-Tür `POST /api/tasks` als `FLEET_SELF_TOKEN= ./ctl.sh file
+<cardjson>` (Owner-Credential aus `fleet.json` des Haupt-Checkouts). Das Verb wechselt das Credential
+nicht selbst. Lane und gebundene MAIN erreichen diesen Zweig nie: ihre Verweigerungen tragen andere
+Sätze, ihre Ausgabe ist unverändert.
+
 **Antworten auf eine Adresse:**
 
 | Fall | Antwort | Gespeichert? |

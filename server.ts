@@ -16785,9 +16785,15 @@ function messageRetentionUnknown(): string[] {
 }
 
 // GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
-function messageViewFor(s: Slot): Response {
+// `?unread=1` keeps only the caller's UNREAD INBOUND rows — what `waitingOnMe` names by id. Measured
+// 2026-10-09 (docs/messungen/2026-10-09-rollen-kontext-inventar.md, Anhang A §0 Befund 5): the
+// Orchestrator's whole view was 102 rows and 136 427 B for 4 unread payloads of 3 156 B. Without
+// the parameter this function answers byte for byte what it answered before the filter existed.
+function messageViewFor(s: Slot, unreadParam: string | null = null): Response {
   const mine = messageAddressesFor(s);
   if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS, ...roleConflictFor(s) }, 409);
+  if (unreadParam !== null && unreadParam !== "1")
+    return json({ error: "unread takes exactly 1 — GET /api/self/messages?unread=1 reads only your unread inbound messages; without it the view is both ends of your threads" }, 400);
   const unknown = messageRetentionUnknown();
   // BOTH ENDS OF THE CALLER'S OWN THREADS, and the outbound half is not a convenience. A reply
   // carries `replyTo`, so a view of inbound rows only would hand a successor an id it cannot
@@ -16796,13 +16802,15 @@ function messageViewFor(s: Slot): Response {
   const entries = messages.entries
     .filter((m) => messageInboundFor(s, m, mine) || mine.some((a) => sameAddress(a, m.from)))
     .sort((a, b) => b.at - a.at);
+  const shown = unreadParam === null ? entries
+    : entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine));
   // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
   // not "how many of YOUR messages fell off" and must not read like it.
   // `unread` counts only what was addressed TO the caller: a message it sent itself is not news,
   // and counting it would make an idle MAIN look like it owes an answer to its own question.
   return json({ addresses: mine,
     unread: entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine)).length,
-    droppedFleetWide: messages.dropped, entries, unknown });
+    droppedFleetWide: messages.dropped, entries: shown, unknown });
 }
 
 // POST /api/self/messages — the send half.
@@ -47954,7 +47962,7 @@ Bun.serve<WSData>({
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      if (req.method === "GET") return messageViewFor(s);
+      if (req.method === "GET") return messageViewFor(s, url.searchParams.get("unread"));
       return await sendMessageFor(s, await readJson(req));
     }
 

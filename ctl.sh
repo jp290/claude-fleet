@@ -170,6 +170,15 @@ const selfError = (r, verb) => {
   const choice = r.status === 409 && /^this session is bound MAIN of \d+ active programs \(([^)]+)\).*name the one this act belongs to as programId$/.exec(error);
   return choice ? `choose a Program: ./ctl.sh ${verb} … --program <id> (available: ${choice[1]})` : error;
 };
+// THE ORCHESTRATOR'S WAY, asked only AFTER a self door refused this session as unbound: a lane and a
+// bound MAIN never reach this, so their output is the one they had. The role is the server's
+// (GET /api/self → position.role), never guessed from a label here. The answer is a sentence that
+// names the door which carries the act — the verb does not switch credentials on its own.
+const orchestratorWay = async (r, way) => {
+  if (r.status !== 409 || !/^not the current bound MAIN of an active program/.test(r.body?.error ?? "")) return null;
+  const me = await api("/api/self", { headers: selfH() });
+  return me.ok && me.body?.position?.role === "orchestrator" ? way : null;
+};
 const api = async (path, opts = {}) => {
   const r = await fetch(URL_ + path, opts);
   const text = await r.text();
@@ -259,26 +268,31 @@ inbox)
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const ack = process.env.CTL_ACK;
-const fail = (r) => { console.error(`inbox: ${r.status} ${selfError(r, "inbox")}`); process.exit(1); };
+const ORCHESTRATOR_INBOX = "inbox: the Orchestrator has no Program inbox — her messages are ./ctl.sh get '/api/self/messages?unread=1' (only the unread ones addressed to her), each receipted with POST /api/self/messages/<id>/read";
+const fail = async (r) => {
+  const way = await orchestratorWay(r, ORCHESTRATOR_INBOX);
+  console.error(way ?? `inbox: ${r.status} ${selfError(r, "inbox")}`);
+  process.exit(1);
+};
 const inboxPath = "/api/self/inbox" + (chosenProgram ? `?program=${encodeURIComponent(chosenProgram)}` : "");
 let r;
 const acknowledged = [];
 if (ack && ack !== "all") {
   r = await api(`/api/self/inbox/${ack}/read`, { method: "POST", headers: selfH() });
-  if (!r.ok) fail(r);
+  if (!r.ok) await fail(r);
   acknowledged.push(ack);
 }
 r = await api(inboxPath, { headers: selfH() });
-if (!r.ok) fail(r);
+if (!r.ok) await fail(r);
 if (ack === "all") {
   for (const entry of r.body.entries ?? []) {
     if (entry.readBy !== null) continue;
     const read = await api(`/api/self/inbox/${entry.id}/read`, { method: "POST", headers: selfH() });
-    if (!read.ok) fail(read);
+    if (!read.ok) await fail(read);
     acknowledged.push(entry.id);
   }
   r = await api(inboxPath, { headers: selfH() });
-  if (!r.ok) fail(r);
+  if (!r.ok) await fail(r);
 }
 out({ ...r.body, acknowledged }, [`inbox: unread=${r.body.unread} dropped=${r.body.dropped} acknowledged=${acknowledged.length}`,
   ...(r.body.entries ?? []).map((e) => `${e.id} ${e.kind} ${e.readBy === null ? "unread" : "read"} ${e.ref}`),
@@ -347,6 +361,13 @@ if (verb === "comment") {
 }
 const r = await api(path, { method: "POST", headers, body: JSON.stringify(body) });
 const error = r.ok ? null : selfError(r, verb);
+const way = verb === "file" && process.env.CTL_FILE_AUTH === "self" ? await orchestratorWay(r,
+  `file: the Orchestrator holds no Program binding, so the self door files nothing for her — the owner door POST /api/tasks carries it: FLEET_SELF_TOKEN= ./ctl.sh file ${process.env.CTL_INPUT}`) : null;
+if (way) {
+  console.error(way);
+  out({ ok: false, status: r.status, task: null, comment: null, error, way }, [way]);
+  process.exit(1);
+}
 if (!r.ok) console.error(`${verb}: ${r.status} ${error}`);
 out({ ok: r.ok, status: r.status, task: r.body?.task ?? null, comment: r.body?.comment ?? null, error },
   [`${verb}: ${r.status} ${r.ok ? (r.body?.task?.id ?? r.body?.comment?.id ?? "ok") : error}`]);

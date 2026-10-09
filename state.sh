@@ -249,11 +249,15 @@ def own(self):
                   width=RECORD_WIDTH, record=True, rank=lambda r: not (isinstance(r, dict) and r.get('target')))
         else:
             emit('unknown lineage record reason=lost-or-unreadable; detail: GET /api/self')
-    group('waiting', position.get('waitingOnMe'), 'GET /api/self')
+    # a waiting MESSAGE is an id here; its payload is behind the filtered message view, never the whole
+    # rail (136 427 B for 4 unread payloads on 2026-10-09). The other kinds keep their own door.
+    unread_messages = 'GET /api/self/messages?unread=1'
+    group('waiting', position.get('waitingOnMe'), f'{unread_messages} (kind message); GET /api/self', lambda r:
+          f"door={unread_messages if isinstance(r, dict) and r.get('kind') == 'message' else 'GET /api/self'} {compact(r)}")
     messages = position.get('messages')
     if isinstance(messages, dict):
         unread = messages.get('unread', 'unknown') if not messages.get('unknown') else f"unknown (retainedUnread={messages.get('unread', 'unknown')})"
-        emit(f"own-messages unread={unread} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages; POST /api/self/messages/<id>/read after reading")
+        emit(f"own-messages unread={unread} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages?unread=1; POST /api/self/messages/<id>/read after reading")
         group('message-unknown', messages.get('unknown'), 'GET /api/self/messages')
     else:
         emit('unknown own-messages reason=missing-status; detail: GET /api/self/messages')

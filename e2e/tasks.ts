@@ -351,6 +351,118 @@ function codexFirstTurnFixtures(): void {
     idGapFailure?.state === "failed" && idGapFailure.error?.message === "observed failure", JSON.stringify(idGapFailure));
 }
 
+// --- (hb) THE HOST LOAD BRAKE (server.ts#measureHostBrake, its gate in server.ts#tickDispatch). The
+// lane caps count lanes, not the machine; FLEET_HOST_LOAD_MAX and FLEET_HOST_SWAP_MAX_PCT arm a brake
+// on every UNATTENDED start while a reading is above its threshold. The machine is simulated through
+// FLEET_TEST_HOST_PRESSURE — a file the sensor reads INSTEAD of loadavg/sysctl — so the reading can
+// cross a threshold while the server keeps running. Four facts, none visible to tsc:
+//   (0) thresholds empty, the simulated overload is never read: a released row starts as before;
+//   (a) armed, each half alone holds: the released row stays QUEUED and its board note names
+//       host-brake with both readings and both thresholds (load above, then swap above);
+//   (b) a hand start (POST /api/tasks/:id/dispatch) is not braked — it is the owner's act;
+//   (c) both readings drop below, and the SAME row starts with no further act.
+// On the tree before the brake (a) is red: the env is unknown there and the row starts at once.
+// Every precondition fails as itself, like (e2) above. ---
+async function hostBrakeChecks(ctx: Ctx): Promise<void> {
+  type HRow = { id: string; status: string; note?: string | null; slot?: number | null };
+  type HSlot = { id: number; cwd: string | null; worktree: unknown | null };
+  const hSess = async (): Promise<{ slots: HSlot[]; tasks: HRow[]; dispatch: { maxLanes: number } }> =>
+    (await (await get("/api/sessions")).json()) as { slots: HSlot[]; tasks: HRow[]; dispatch: { maxLanes: number } };
+  const hRow = async (id: string): Promise<HRow | undefined> => (await hSess()).tasks.find((t) => t.id === id);
+  const hTill = async (id: string, ok: (r: HRow | undefined) => boolean, tries = 60): Promise<HRow | undefined> => {
+    let last = await hRow(id);
+    for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await hRow(id); }
+    return last;
+  };
+  const hRowFile = async (text: string, queue: boolean): Promise<string> =>
+    ((await (await post("/api/tasks", { text, queue })).json()) as { task?: { id: string } }).task?.id ?? "";
+  // a clean field: no foreign lane and no foreign queued row can start or hold ahead of the probes
+  const hClear = async (): Promise<void> => {
+    const kills = (await hSess()).slots.filter((s) => s.worktree && s.id !== ctx.restartSelfSlot);
+    for (const s of kills) await post(`/api/slots/${s.id}/kill`, {});
+    await slotsEmptied(kills.map((s) => s.id));
+    for (const t of (await hSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+  };
+  const dir = mkdtempSync(join(tmpdir(), "fleet-e2e-host-brake-"));
+  const pressure = join(dir, "pressure.json");
+  const press = (load5: number, swapPct: number): void => writeFileSync(pressure, JSON.stringify({ load5, swapPct }));
+  const isBrake = (r: HRow | undefined, load5: number, swapPct: number): boolean =>
+    (r?.note ?? "").startsWith(`waiting: host-brake load5=${load5} (max 20) swapPct=${swapPct} (max 80)`);
+  const made: string[] = [];
+  try {
+    // (0) OFF — the simulated machine reads far above any threshold, and no threshold is set. The
+    // empty values are passed on purpose: restartSrv forwards this process's FLEET_* env otherwise.
+    press(40, 90);
+    await restartSrv({ FLEET_HOST_LOAD_MAX: "", FLEET_HOST_SWAP_MAX_PCT: "", FLEET_TEST_HOST_PRESSURE: pressure,
+      FLEET_DISPATCH_MAX_LANES: "6" });
+    await hClear();
+    const field = await hSess();
+    check("(hb) fixture: the field is clean — two slots free, the lifted repo cap reached the server",
+      field.dispatch.maxLanes === 6 && field.slots.filter((s) => !s.cwd).length >= 2
+      && field.slots.filter((s) => s.worktree).length < field.dispatch.maxLanes,
+      JSON.stringify({ maxLanes: field.dispatch.maxLanes, free: field.slots.filter((s) => !s.cwd).length }));
+    await post("/api/dispatch", { on: true });
+    const off = await hRowFile("(hb)(0) a released row — the host reads overloaded, the brake is not armed", true);
+    made.push(off);
+    const offRow = await hTill(off, (r) => r?.status === "sent");
+    check("(hb)(0) without FLEET_HOST_LOAD_MAX/FLEET_HOST_SWAP_MAX_PCT a simulated overload is not read — the released row starts as before",
+      !!off && offRow?.status === "sent" && !(offRow.note ?? "").includes("host-brake"), JSON.stringify(offRow ?? null));
+    // retired before its lane closes, so no brief tail can requeue it into the armed half
+    await post(`/api/tasks/${off}/done`, {});
+    await post("/api/dispatch", { on: false });
+    await hClear();
+
+    // (a) ARMED, the load half above, the swap half below
+    press(40, 10);
+    await restartSrv({ FLEET_HOST_LOAD_MAX: "20", FLEET_HOST_SWAP_MAX_PCT: "80", FLEET_TEST_HOST_PRESSURE: pressure,
+      FLEET_DISPATCH_MAX_LANES: "6" });
+    await post("/api/dispatch", { on: true });
+    const held = await hRowFile("(hb)(a) a released row — the host reads above its load threshold", true);
+    made.push(held);
+    // the note is the tick's own witness: only the tick writes it, and only on a row it would start
+    const loadRow = await hTill(held, (r) => isBrake(r, 40, 10));
+    await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
+    const loadStill = await hRow(held);
+    check("(hb)(a) armed, load above: the released row stays QUEUED and its note names host-brake with both readings and thresholds",
+      !!held && isBrake(loadRow, 40, 10) && loadStill?.status === "queued" && loadStill.slot == null,
+      JSON.stringify({ first: loadRow ?? null, later: loadStill ?? null }));
+
+    // (b) THE HAND START, while the brake holds the queued row
+    const hand = await hRowFile("(hb)(b) a row started by hand while the brake holds", false);
+    made.push(hand);
+    const handRes = await post(`/api/tasks/${hand}/dispatch`, {});
+    const handRow = await hTill(hand, (r) => r?.status === "sent");
+    const heldBeside = await hRow(held);
+    check("(hb)(b) a hand start passes the brake — POST /api/tasks/:id/dispatch starts its row while the released one stays held",
+      handRes.ok && handRow?.status === "sent" && heldBeside?.status === "queued" && isBrake(heldBeside, 40, 10),
+      JSON.stringify({ http: handRes.status, hand: handRow ?? null, held: heldBeside ?? null }));
+
+    // (a) …the swap half alone holds as well
+    press(5, 90);
+    const swapRow = await hTill(held, (r) => isBrake(r, 5, 90));
+    check("(hb)(a) armed, swap above with load below: the row stays QUEUED and the note follows the reading",
+      isBrake(swapRow, 5, 90) && swapRow?.status === "queued", JSON.stringify(swapRow ?? null));
+
+    // (c) both below — the same row, no act in between
+    press(5, 10);
+    const freed = await hTill(held, (r) => r?.status === "sent", 80);
+    // held right up to the drop, or "starts on its own" would be true of a row that never waited
+    check("(hb)(c) both readings below their thresholds — the held row starts on its own; the brake is a wait, not a refusal",
+      swapRow?.status === "queued" && freed?.status === "sent", JSON.stringify({ before: swapRow?.status, after: freed ?? null }));
+  } finally {
+    // dispatcher OFF first (a killed lane's brief tail can requeue its row), then every lane and row
+    // of this block; the final restart hands the next section the env it had before this block.
+    await post("/api/dispatch", { on: false });
+    for (const s of (await hSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    for (const id of made.filter(Boolean)) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    rmSync(dir, { recursive: true, force: true });
+    await restartSrv();
+  }
+}
+
 export async function run(ctx: Ctx): Promise<void> {
   {
     const source = readFileSync(`${ROOT}/server.ts`, "utf8");
@@ -4037,6 +4149,8 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     await restartSrv();
   }
+
+  await hostBrakeChecks(ctx);
 
   // --- (v) E4 · THE VARIANT GROUP (server/types.ts#Task.variants; criterion of row 1ed2f6a0, T1/T2/T5/T6).
   // One request, n agents, exactly one land. Four facts, none visible to tsc, each on the live server:

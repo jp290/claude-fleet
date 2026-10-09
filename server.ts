@@ -12,7 +12,7 @@ import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
-import { tmpdir, homedir, hostname } from "node:os";
+import { tmpdir, homedir, hostname, loadavg } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -21467,6 +21467,72 @@ function diskSpaceWaitNote(space: HostDiskSpace): string {
 function tickHostDiskSpace(): void {
   if (measureHostDiskSpace().state === "ready") kickAuditDrain();
 }
+// HOST LOAD BRAKE. The lane caps count lanes, not the machine: on 2026-10-08 20:30 the 8 GB Mac
+// thrashed swap (19 sessions, the server, five test instances, a local audit; 5-min load 46, ~70 s
+// answers, three lands dead at their budget) until the owner braked by hand. FLEET_HOST_LOAD_MAX
+// (5-min load average) and FLEET_HOST_SWAP_MAX_PCT (swap used of total, in %) each arm one half;
+// while a reading is above its threshold tickDispatch starts no lane and the row that would have
+// started says `waiting: host-brake …`, then starts on its own once both are back at or below.
+// Unset, empty or not a positive number: nothing is read and the tick is what it was. Read only:
+// no running lane is touched, and a hand start (ctl.sh dispatch, POST /api/tasks/:id/dispatch)
+// never passes here — it is the owner's act. A failed reading holds, like the disk floor above.
+// FLEET_TEST_HOST_PRESSURE names a file `{"load5":n,"swapPct":n}` read INSTEAD of the machine —
+// the e2e seam ((hb) in e2e/tasks.ts). It lives inside this section because e2e/host-hygiene.ts
+// runs tickDispatch on exactly this slice.
+function hostBrakeMax(value: string | undefined): number | null {
+  const max = value?.trim() ? Number(value) : NaN;
+  return Number.isFinite(max) && max > 0 ? max : null;
+}
+const HOST_LOAD_MAX = hostBrakeMax(process.env.FLEET_HOST_LOAD_MAX);
+const HOST_SWAP_MAX_PCT = hostBrakeMax(process.env.FLEET_HOST_SWAP_MAX_PCT);
+const HOST_PRESSURE_TEST_FILE = process.env.FLEET_TEST_HOST_PRESSURE || null;
+type HostBrake = { held: boolean; load5: number | null; swapPct: number | null };
+let hostBrakeHeld = false;
+function hostSwapPct(): number | null {
+  let total = NaN, used = NaN;
+  if (process.platform === "darwin") {
+    // `total = 3072.00M  used = 1890.38M  free = 1181.62M  (encrypted)`
+    const p = Bun.spawnSync(["/usr/sbin/sysctl", "-n", "vm.swapusage"]); // absolute: launchd PATH may lack /usr/sbin
+    const unit = { K: 1 / 1024, M: 1, G: 1024, T: 1024 * 1024 } as Record<string, number>;
+    const size = (name: string): number => {
+      const m = new RegExp(`${name} = ([\\d.]+)([KMGT])`).exec(new TextDecoder().decode(p.stdout));
+      return p.exitCode === 0 && m ? Number(m[1]) * (unit[m[2]] ?? NaN) : NaN;
+    };
+    total = size("total"); used = size("used");
+  } else if (process.platform === "linux") {
+    const info = readFileSync("/proc/meminfo", "utf8");
+    total = Number(/^SwapTotal:\s+(\d+)/m.exec(info)?.[1]);
+    used = total - Number(/^SwapFree:\s+(\d+)/m.exec(info)?.[1]);
+  }
+  if (!Number.isFinite(total) || !Number.isFinite(used)) return null;
+  return total > 0 ? (used / total) * 100 : 0;
+}
+function measureHostBrake(): HostBrake | null {
+  if (HOST_LOAD_MAX === null && HOST_SWAP_MAX_PCT === null) return null;
+  let load5: number | null = null, swapPct: number | null = null;
+  try {
+    if (HOST_PRESSURE_TEST_FILE) {
+      const sim = JSON.parse(readFileSync(HOST_PRESSURE_TEST_FILE, "utf8")) as { load5?: unknown; swapPct?: unknown };
+      if (typeof sim.load5 === "number") load5 = sim.load5;
+      if (typeof sim.swapPct === "number") swapPct = sim.swapPct;
+    } else {
+      if (HOST_LOAD_MAX !== null) load5 = loadavg()[1] ?? null;
+      if (HOST_SWAP_MAX_PCT !== null) swapPct = hostSwapPct();
+    }
+  } catch { /* a failed reading holds starts, never retires work */ }
+  const held = (HOST_LOAD_MAX !== null && (load5 === null || load5 > HOST_LOAD_MAX))
+    || (HOST_SWAP_MAX_PCT !== null && (swapPct === null || swapPct > HOST_SWAP_MAX_PCT));
+  if (held !== hostBrakeHeld)
+    console.log(`host-brake ${held ? "held" : "released"}: load5=${load5} max=${HOST_LOAD_MAX} swapPct=${swapPct} max=${HOST_SWAP_MAX_PCT}`);
+  hostBrakeHeld = held;
+  return { held, load5, swapPct };
+}
+function hostBrakeWaitNote(brake: HostBrake): string {
+  const half = (name: string, value: number | null, max: number | null): string[] =>
+    max === null ? [] : [`${name}=${value === null ? "unreadable" : Number(value.toFixed(2))} (max ${max})`];
+  return `waiting: host-brake ${[...half("load5", brake.load5, HOST_LOAD_MAX), ...half("swapPct", brake.swapPct, HOST_SWAP_MAX_PCT)].join(" ")}`
+    + " — no new lane while above; starts on its own below, running lanes untouched";
+}
 // --- end host disk admission ---
 
 async function tickDispatch(): Promise<void> {
@@ -21502,6 +21568,8 @@ async function tickDispatch(): Promise<void> {
     // TWO SETS were derived here — the running task ids and the open lanes' branch names — for the
     // queue analyst's collision read alone, and they went with it on 2026-09-10. Nothing else in
     // this tick asked what is running by NAME; the caps count lanes, they do not identify them.
+    let brake: HostBrake | null | undefined; // rule at measureHostBrake: once per tick, only if a row gets there
+    const hostBrake = (): HostBrake | null => brake === undefined ? (brake = measureHostBrake()) : brake;
     for (const { plan, land, rows } of candidates) {
       // THE HEAD of the wave — the row every per-row gate below reads, exactly as it read the one
       // candidate before waves. A wave never crosses a program (the land fold's own boundary), so
@@ -21522,9 +21590,10 @@ async function tickDispatch(): Promise<void> {
       }
       // E4: a variant starts only with its whole group — startVariantGroup asks every gate below of all n
       if (next.variantOf) {
+        const hb = hostBrake();
         const space = measureHostDiskSpace();
-        if (space.state === "disk-space-held") {
-          const note = diskSpaceWaitNote(space);
+        if (hb?.held || space.state === "disk-space-held") {
+          const note = hb?.held ? hostBrakeWaitNote(hb) : diskSpaceWaitNote(space);
           let changed = false;
           for (const row of rows) if (tickOwnsRow(row) && row.note !== note) { row.note = note; changed = true; }
           if (changed) saveState();
@@ -21664,6 +21733,8 @@ async function tickDispatch(): Promise<void> {
       if (reserved) { waiting(variantReserveNote(reserved)); continue; }
       const free = freeSessionSlot("lane");
       if (!free) { waiting(`waiting: ${sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free lane place" : "no free slot")}`); return; }
+      const hb = hostBrake();
+      if (hb?.held) { waiting(hostBrakeWaitNote(hb)); continue; }
       // THE UNATTENDED INVARIANT STOOD HERE, and it is gone with the reader that satisfied it.
       // Until 2026-09-10 an unattended start required a queue-analyst verdict on this row, fresh
       // against the tree it would run on (analysis-staleness.ts) and against the exact brief it
@@ -42583,6 +42654,10 @@ void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge 
 tickHostDiskSpace();
 setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
+// the host load brake rides tickDispatch and reads nothing unarmed (measureHostBrake); armed, the boot says so
+if (HOST_LOAD_MAX !== null || HOST_SWAP_MAX_PCT !== null)
+  console.log(`[fleet] host-brake armed: FLEET_HOST_LOAD_MAX=${HOST_LOAD_MAX} FLEET_HOST_SWAP_MAX_PCT=${HOST_SWAP_MAX_PCT}`
+    + (HOST_PRESSURE_TEST_FILE ? ` — readings simulated from FLEET_TEST_HOST_PRESSURE=${HOST_PRESSURE_TEST_FILE}` : ""));
 // no tick or gate reacts to a snapshot row; the one reader is the memory door (view=observations)
 if (STATE_SNAPSHOT_MS > 0) setInterval(() => void appendEvent(STATE_SNAPSHOT_FILE, buildStateSnapshot(Date.now())), STATE_SNAPSHOT_MS);
 console.log(`[fleet] state snapshot ${STATE_SNAPSHOT_MS > 0 ? `armed: FLEET_STATE_SNAPSHOT_MS=${STATE_SNAPSHOT_MS}` : "off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered"}`);

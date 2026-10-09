@@ -464,7 +464,7 @@
      in a 2-up/2x2 layout it isn't always obvious at a glance which pane just changed */
   @keyframes paneflash { 0%, 100% { box-shadow: 0 0 0 0 #7aa2f700; } 25% { box-shadow: 0 0 0 3px var(--accent), 0 0 18px 3px #7aa2f799; } }
   .pane.flash { animation: paneflash 0.6s ease-out; }
-  .paneterm { position: absolute; inset: 4px var(--tr, 0px) 0 6px; }
+  .paneterm { position: absolute; inset: 4px 0 0 6px; }
   /* conversation view: same rectangle as the terminal, structured messages instead of cells.
      Owner 2026-09-19: clear copyable text, formatted, on a completely black ground with small white
      flakes drifting over it; modern like other GUI coding agents; the size cleanly adjustable.
@@ -572,7 +572,7 @@
   .pane.chat .termwidth, .pane.chat .panereload { visibility: hidden; }
   /* the width toggle's "on": the terminal takes the chat column's width, centred — the pane's own
      fit path reads the new box and tmux gets the new column count; no second resize path */
-  .pane.tcolim .paneterm { left: 0; right: 0; width: min(var(--chat-col), 100% - var(--tr, 0px)); margin-inline: auto; }
+  .pane.tcolim .paneterm { left: 0; right: 0; width: min(var(--chat-col), 100%); margin-inline: auto; }
   .msg { margin: 0 0 20px; }
   .msg pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: var(--chat-mono); }
   /* YOUR messages are the anchors this view exists for (↑/↓, the outline): a right-hand bubble */

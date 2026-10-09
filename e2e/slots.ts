@@ -2340,8 +2340,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       error instanceof Error ? error.message : String(error));
   }
 
-  // THREE SMALL PAINS AT THE COMPOSER AND THE TERMINAL (card 2026-10-09), same rig: the draft through a
-  // reload and a send, ➤ for an ended session's draft, the terminal's box across ℹ — then each part's
+  // THE DRAFT AND ➤ OF THE COMPOSER (card "Drei kleine Schmerzen" 2026-10-09), same rig: the draft
+  // through a reload and a send, ➤ for an ended session's draft — then each part's
   // claim against its mutant (KEEP_MUTANTS). A browser that cannot run is the PROBE line — red, never a skip.
   try {
     for (const result of await runComposerKeepDom(sourceRoot)) {
@@ -8208,17 +8208,16 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
   }
 }
 
-// THREE SMALL PAINS AT THE COMPOSER AND THE TERMINAL (card "Drei kleine Schmerzen an der Eingabe und
-// am Terminal", 2026-10-09), measured in a real browser on the real client bundle, same rig as the
-// send target probe: a fixture origin, a fake socket per pane, /send and /resize intercepted. (1) A
+// THE DRAFT AND ➤ OF THE COMPOSER (card "Drei kleine Schmerzen an der Eingabe und am Terminal",
+// 2026-10-09), measured in a real browser on the real client bundle, same rig as the
+// send target probe: a fixture origin, a fake socket per pane, /send intercepted. (1) A
 // typed draft survives a reload and is gone after a send — and one whose session ended while the
 // page was gone does not come back (src/drafts.ts#keepDrafts). (2) A draft for an ended session
 // leaves ➤ locked: aria-disabled and the empty field's quiet surface (src/composer.ts#renderTarget).
-// (3) ℹ on and off leave the terminal's box and its column count alone at the desk, and the phone's
-// terminal reserves nothing (src/client.ts#syncTermReserve). Every claim reads
-// the DOM or the requests the page sent; KEEP_MUTANTS turns each part's claim red against a mutated
+// (Part 3 of the card, the terminal across ℹ, left this lane: its own row, an Info layer over the
+// terminal, UI-MAIN 2026-10-09.) Every claim reads the DOM or the requests the page sent; KEEP_MUTANTS turns each part's claim red against a mutated
 // bundle — a mutant boots once, at its one width, and runs only its own step.
-export type KeepStep = "reload" | "orphan" | "info";
+export type KeepStep = "reload" | "orphan";
 export type KeepMutant = { name: string; width: 390 | 1440; step: KeepStep; claim: string;
   file: "src/client.ts" | "src/composer.ts" | "public/index.html"; needle: string; with: string };
 export const KEEP_MUTANTS: readonly KeepMutant[] = [
@@ -8226,8 +8225,6 @@ export const KEEP_MUTANTS: readonly KeepMutant[] = [
     file: "src/client.ts", needle: "    restoreDrafts(); // the first read of the slot rows", with: "    // the first read of the slot rows" },
   { name: "➤ never says it is locked", width: 390, step: "orphan", claim: "➤ reads locked",
     file: "src/composer.ts", needle: `send.setAttribute("aria-disabled", String(orphan));`, with: `send.setAttribute("aria-disabled", "false");` },
-  { name: "a closed Info column gives its width back to the terminal", width: 1440, step: "info", claim: "ℹ on and off keep the terminal's width",
-    file: "src/client.ts", needle: "document.documentElement.style.setProperty(\"--tr\", `${px}px`);", with: "" },
 ];
 export interface ComposerKeepDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: KeepMutant; artifacts?: string } = {}): Promise<ComposerKeepDomResult[]> {
@@ -8253,7 +8250,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
   type Row = { id: number; cwd: string | null; label?: string; openedAt?: number; repo?: string };
-  const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], resizes: [] as { cols: number; rows: number }[], sessions: 0 };
+  const fx = { slots: [] as Row[], sends: [] as { slot: number; text: string }[], sessions: 0 };
   const fresh = (): Row[] => [
     { id: 1, cwd: "/fixture/alpha", repo: "/fixture/alpha", label: "Alpha", openedAt: 1000 },
     { id: 2, cwd: "/fixture/beta", repo: "/fixture/beta", label: "Beta", openedAt: 2000 },
@@ -8263,7 +8260,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
     class FakeWS { static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
       constructor(url) { this.url = String(url); this.readyState = 0; this.sent = ''; this.binaryType = 'blob'; window.__ws.push(this);
         setTimeout(() => { if (this.readyState !== 0) return; this.readyState = 1; this.onopen?.({});
-          this.onmessage?.({ data: new TextEncoder().encode('fixture ' + 'w'.repeat(150) + '\\r\\n$ ').buffer }); }, 0); }
+          this.onmessage?.({ data: new TextEncoder().encode('fixture\\r\\n$ ').buffer }); }, 0); }
       send(b) { this.sent += typeof b === 'string' ? b : new TextDecoder().decode(b); }
       close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.({}); } }
     window.WebSocket = FakeWS; })()`;
@@ -8307,10 +8304,9 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
       const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string; postData?: string } };
       const p = new URL(request.url).pathname;
       if (request.method === "POST") {
-        let body: { slot?: number; text?: string; cols?: number; rows?: number } | null = null;
+        let body: { slot?: number; text?: string } | null = null;
         try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
         if (p === "/send") { fx.sends.push({ slot: Number(body?.slot), text: String(body?.text ?? "") }); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
-        if (p === "/resize") fx.resizes.push({ cols: Number(body?.cols), rows: Number(body?.rows) });
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -8371,20 +8367,14 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
     };
     const sendBtn = () => evaluate<{ aria: string | null; bg: string; color: string }>(`(() => { const b = document.querySelector('#send'), cs = getComputedStyle(b);
       return { aria: b.getAttribute('aria-disabled'), bg: cs.backgroundColor, color: cs.color }; })()`);
-    const termBox = () => evaluate<{ screen: number; term: number; pane: number; termRight: number; paneRight: number; board: boolean }>(`(() => {
-      const p = document.querySelector('#panes .pane'), t = p.querySelector('.paneterm'), s = p.querySelector('.xterm-screen');
-      const pr = p.getBoundingClientRect(), tr = t.getBoundingClientRect();
-      return { screen: Math.round(s.getBoundingClientRect().width), term: Math.round(tr.width), pane: Math.round(pr.width),
-        termRight: Math.round(tr.right), paneRight: Math.round(pr.right), board: document.body.classList.contains('board') }; })()`);
     const results: ComposerKeepDomResult[] = [];
     for (const [width, height] of [[1440, 900], [390, 844]] as const) {
       if (m && m.width !== width) continue;
       const runs = (step: KeepStep) => !m || m.step === step;
       shotIndex = 0;
-      const phone = width < 700;
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
-      fx.slots = fresh(); fx.sends = []; fx.resizes = [];
+      fx.slots = fresh(); fx.sends = [];
       await freshTarget();
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
@@ -8443,28 +8433,6 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
         await evaluate("(() => { const t = document.querySelector('#input'); t.value = ''; t.dispatchEvent(new Event('input')); })()");
       }
 
-      if (runs("info")) {
-        // --- 3. ℹ on and off: the terminal keeps its box and its columns (desk); the phone reserves nothing
-        const before = await termBox();
-        const r0 = fx.resizes.length;
-        if (!phone) {
-          await click("document.querySelector('#panes .pane .boardtoggle')");
-          await wait("document.body.classList.contains('board')", 3000); await settle(800);
-          const on = await termBox();
-          await shot(width, "info-open");
-          await click("document.querySelector('#boardclose')");
-          await wait("!document.body.classList.contains('board')", 3000); await settle(800);
-          const off = await termBox();
-          facts.info = { before, on, off, resizes: fx.resizes.slice(r0) };
-          claims["ℹ on and off keep the terminal's width and columns: the same box, no /resize"] = on.board && !off.board
-            && before.screen === on.screen && on.screen === off.screen && before.term === on.term && on.term === off.term
-            && on.pane < before.pane && fx.resizes.length === r0;
-        } else {
-          facts.info = { before };
-          claims["the phone's terminal reserves no Info width: it reaches the pane's right edge"] = !before.board
-            && Math.abs(before.termRight - before.paneRight) <= 1;
-        }
-      }
       facts.missing = [...missing]; missing.length = 0;
       results.push({ width, height, claims, facts });
     }

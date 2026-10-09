@@ -8748,6 +8748,136 @@ export async function run(): Promise<void> {
     }
   }
 
+  // === A WATCH BEHIND AN OCCUPIED COMPOSER IS PARKED, NOT LOST (2026-10-09) ====================
+  // 08.10. 20:10-20:49 an unsent `/goal` (5 chars) held the Orchestratorin's composer, and every
+  // Fleet delivery to her was refused "composer occupied (5 chars) — nothing typed" for 40 minutes,
+  // until the owner read the log. The cut is server.ts#parkFleetSend, #fleetEventParked and
+  // #tickParkedHints. One live stand-in pane, one green deploy Watch, one owner draft, three facts:
+  // (1) the Watch row waits as `delivery: "parked"` with the draft's size, the slot shows it, and
+  // nothing is typed; (2) once it has waited PARKED_HINT_MS the owner inbox holds ONE
+  // `composer-held` row, and further ticks add no second; (3) the draft goes, the event is typed
+  // exactly once — read off the stand-in's turns ledger, not the server's receipt — and its
+  // receiver can acknowledge it. Fleet never touches the draft: it is never submitted.
+  {
+    const parkMode = process.env.FLEET_E2E_COMPOSER_MODE ?? "";
+    const parkState = process.env.FLEET_E2E_COMPOSER_STATE ?? "";
+    const turnsWith = (needle: string): number => {
+      let turns = "";
+      try { turns = readFileSync(`${parkState}.turns`, "utf8"); } catch { turns = ""; }
+      return turns.split("\n===TURN ").filter((turn) => turn.includes(needle)).length;
+    };
+    // server.ts#PARKED_HINT_MS, counted in ticks like the hold backoff
+    const parkedHintMs = AUTOS_TICK_MS * 120;
+    type ParkedRead = { event?: { status: string; attempts: number }; delivery?: string;
+      parked?: { draftChars?: number; since?: number; holds?: number } };
+    type HintRow = { id: string; kind: string; receiverSlot: number | null; subjectSlot?: number;
+      subjectOpenedAt?: number; status: string; payload?: { tool?: string | null; detail?: string } };
+    const parkSlot = await freeSlot();
+    try {
+      if (parkMode) writeFileSync(parkMode, "normal\n");
+      const parkOpen = parkSlot
+        ? await post(`/api/slots/${parkSlot}/open`, { cwd: REPO, label: "parked-watch-main", harness: "pi" }) : null;
+      let parkRow: { agent: string | null; openedAt: number; parkedSend?: { count: number; draftChars: number } } | undefined;
+      for (let i = 0; i < 80 && parkRow?.agent !== "alive"; i++) {
+        parkRow = ((await (await get("/api/sessions")).json()) as
+          { slots: { id: number; agent: string | null; openedAt: number }[] }).slots.find((x) => x.id === parkSlot);
+        if (parkRow?.agent !== "alive") await Bun.sleep(250);
+      }
+      const parkOpenedAt = parkRow?.openedAt ?? 0;
+      const parkTok = parkOpen?.ok ? await paneEnv(`s${parkSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+      const parkDraft = "an owner draft the parked watch must wait behind";
+      await tmuxOut("send-keys", "-l", "-t", `s${parkSlot}`, parkDraft);
+      let drafted = false;
+      for (let i = 0; i < 80 && !drafted; i++) {
+        drafted = (await tmuxOut("capture-pane", "-p", "-t", `s${parkSlot}`)).out.includes(parkDraft);
+        if (!drafted) await Bun.sleep(50);
+      }
+      check("parked watch fixture: a live stand-in `pi` session holds an owner draft and answers with its own Self token",
+        !!parkOpen?.ok && parkRow?.agent === "alive" && parkOpenedAt > 0 && /^[0-9a-f]{32}$/.test(parkTok)
+          && drafted && parkState !== "",
+        JSON.stringify({ slot: parkSlot, open: parkOpen?.status ?? null, agent: parkRow?.agent ?? null,
+          tok: parkTok.length, drafted, ledger: parkState !== "" }));
+
+      // (1) PARKED. The deploy row exists before the subscription, so the event is minted in the
+      // subscribe call and the next watch tick meets the draft.
+      const parkDeployId = ((Date.now() + 0x5eed) >>> 0).toString(16).padStart(8, "0");
+      appendDeploy(deployRow(parkDeployId, true, "boot", { hitTarget: true, bundleStale: false }));
+      const parkSub = await selfWatch(parkTok, { kind: "deploy", deployId: parkDeployId, idleSec: 0 });
+      const parkWatch = (await parkSub.json() as { watch?: DeployWatchRow }).watch;
+      const parkRead = async (id: string): Promise<ParkedRead | null> => {
+        const r = await fetch(`${BASE}/api/self/events/${id}`, { headers: { "x-fleet-self-token": parkTok } });
+        return r.ok ? await r.json() as ParkedRead : null;
+      };
+      let parkEvent: DeployEventRow | undefined;
+      let parked: ParkedRead | null = null;
+      for (let i = 0; i < 80 && parked?.delivery !== "parked"; i++) {
+        parkEvent = (await deployEventRows()).find((e) => e.watchId === parkWatch?.id);
+        parked = parkEvent ? await parkRead(parkEvent.id) : null;
+        if (parked?.delivery !== "parked") await Bun.sleep(250);
+      }
+      const parkId = parkEvent?.id ?? "no-parked-event";
+      parkRow = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; agent: string | null; openedAt: number; parkedSend?: { count: number; draftChars: number } }[] })
+        .slots.find((x) => x.id === parkSlot);
+      check("parked watch: a Watch delivery behind an occupied composer reads `delivery: \"parked\"` with the draft's size, the slot shows it waiting, and nothing is typed",
+        parkSub.ok && !!parkEvent && parked?.delivery === "parked" && parked.parked?.draftChars === parkDraft.length
+          && parked.event?.status === "pending" && parked.event.attempts === 0
+          && (parkRow?.parkedSend?.count ?? 0) >= 1 && parkRow?.parkedSend?.draftChars === parkDraft.length
+          && turnsWith(parkId) === 0,
+        JSON.stringify({ sub: parkSub.status, event: parkEvent?.id ?? null, read: parked,
+          slotView: parkRow?.parkedSend ?? null, typed: turnsWith(parkId) }));
+
+      // (2) ONE OWNER HINT. Measured from the parked row's own start, so the wait is the server's
+      // threshold and not a guess; then a full backoff ceiling more, during which the hint tick ran
+      // every tick and must not have minted a second row.
+      const hintRows = async (): Promise<HintRow[]> =>
+        ((await (await get("/api/events")).json()) as { events: HintRow[] }).events
+          .filter((e) => e.kind === "harness-block" && e.receiverSlot === null && e.subjectSlot === parkSlot
+            && e.subjectOpenedAt === parkOpenedAt && e.payload?.tool === "composer-held");
+      let hints: HintRow[] = [];
+      const hintDeadline = (parked?.parked?.since ?? Date.now()) + parkedHintMs + AUTOS_TICK_MS * 20 + 5000;
+      while (hints.length === 0 && Date.now() < hintDeadline) {
+        hints = await hintRows();
+        if (!hints.length) await Bun.sleep(250);
+      }
+      const hintSeenAfterMs = Date.now() - (parked?.parked?.since ?? Date.now());
+      await Bun.sleep(AUTOS_TICK_MS * 12 + 1000);
+      const hintsLater = await hintRows();
+      const stillParked = await parkRead(parkId);
+      check("parked watch: after PARKED_HINT_MS behind the draft the owner inbox holds exactly ONE composer-held hint, and later ticks add no second",
+        hints.length === 1 && hintsLater.length === 1 && hintsLater[0]?.id === hints[0]?.id
+          && hintsLater[0]?.status === "inbox" && hintSeenAfterMs >= parkedHintMs
+          && (hintsLater[0]?.payload?.detail ?? "").includes(`${parkDraft.length}-char draft`)
+          && stillParked?.delivery === "parked" && turnsWith(parkId) === 0,
+        JSON.stringify({ first: hints.length, later: hintsLater.length, seenAfterMs: hintSeenAfterMs,
+          thresholdMs: parkedHintMs, detail: hintsLater[0]?.payload?.detail ?? null, still: stillParked?.delivery ?? null }));
+
+      // (3) THE DRAFT GOES: typed once, parked no more, acknowledgeable — and the hint stays one row
+      await tmuxOut("send-keys", "-t", `s${parkSlot}`, "-N", String([...parkDraft].length), "BSpace");
+      let delivered: DeployEventRow | undefined;
+      for (let i = 0; i < 160 && delivered?.status !== "delivered"; i++) {
+        delivered = (await deployEventRows()).find((e) => e.id === parkId);
+        if (delivered?.status !== "delivered") await Bun.sleep(250);
+      }
+      await Bun.sleep(AUTOS_TICK_MS * 12 + 1000); // one more ceiling: a second paste would land inside it
+      const typed = turnsWith(parkId);
+      const afterRead = await parkRead(parkId);
+      const parkAck = await ackEvent(parkTok, parkId);
+      const acked = (await deployEventRows()).find((e) => e.id === parkId);
+      const hintsEnd = await hintRows();
+      check("parked watch: the cleared composer gets the parked Watch exactly once, it reads parked no more, its receiver acknowledges it, and the draft was never submitted",
+        delivered?.status === "delivered" && delivered.attempts === 1 && typed === 1
+          && !!afterRead && afterRead.delivery === undefined
+          && parkAck.ok && acked?.status === "acknowledged" && hintsEnd.length === 1 && turnsWith(parkDraft) === 0,
+        JSON.stringify({ status: delivered?.status ?? null, attempts: delivered?.attempts ?? null, typed,
+          after: afterRead?.delivery ?? null, ack: parkAck.status, acked: acked?.status ?? null,
+          hints: hintsEnd.length, draftSubmitted: turnsWith(parkDraft) }));
+    } finally {
+      if (parkMode) writeFileSync(parkMode, "normal\n");
+      if (parkSlot) await post(`/api/slots/${parkSlot}/kill`, {});
+    }
+  }
+
   // === PI-ZAI IS A WATCH TARGET ONCE THE OPERATOR CONSENTS (2026-09-18) ========================
   // server.ts#PI_ZAI_HARNESS flipped `automatable` together with its readiness seam. The two halves
   // of harnessAutomatableFor are measured on ONE live pi-zai lane: with the wrapper's flag at 0 the

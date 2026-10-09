@@ -87,9 +87,11 @@ Geräts, `null` wenn nie eines registriert war) · `mode` (dessen eigene letzte 
 DANEBEN statt eingerechnet: ein Gerät, das schlägt und `quiet` sagt, ist da und nimmt nichts —
 und das ist ein anderer Fall als „niemand da", weil nur im ersten Warten etwas bringt. Das ist
 absichtlich NICHT die strengere Kandidaten-Lesung (`server.ts#isHelperClaimCandidate`: Owner-Wunsch
-UND Selbstauskunft UND frischer Beat); die liest heute nur noch die Sättigung einer Vorschau-Wartezeit
-(`waitPolicy`, unten). Ein Post-Land-Audit fragt seit 2026-10-08 gar nicht mehr, ob ein Helfer da
-ist: auf einer Helfer-Installation wartet es auf ihn, ohne Frist und ohne Mac-Rückfall (`view=work`).
+UND Selbstauskunft UND frischer Beat); die liest heute nur die Sättigung einer Vorschau-Wartezeit
+(`waitPolicy`, unten) und, seit 2026-10-09, die Shard-Zahl eines Audits (`server.ts#auditShardCount`:
+freie Plätze solcher Geräte minus einer). Ob ein Post-Land-Audit startet, fragt seit 2026-10-08 nicht
+mehr, ob ein Helfer da ist: auf einer Helfer-Installation wartet es auf ihn, ohne Frist und ohne
+Mac-Rückfall (`view=work`).
 `takesModules` (seit 2026-09-28) beantwortet die engere Frage „nimmt irgendwer eine EINGEENGTE
 Vorschau?": `true` genau dann, wenn IRGENDEIN Gerät im selben Fenster in seinem letzten Heartbeat das
 Feature `lane-suite-modules` gemeldet hat (`server.ts#helperTakesModules`) — nicht nur das
@@ -1338,7 +1340,10 @@ konfiguriertem Audit) → `terminal` (Ledger, mit `result`, `adjudication`) → 
 `unknown` (mit `why`); ohne Land `not-landed`. **Eine fehlende Auditzeile ist nie `running`.**
 `queued` trägt auf einer Helfer-Installation (`FLEET_AUDIT_HELPER_GRACE_MS > 0`, seit 2026-10-08 nur
 noch Schalter, die Zahl wird nicht gelesen) `hold` (`server.ts#auditHoldOf`): `"quiet"` mit
-`releaseAt` — der Takt `server.ts#auditCadenceOf` hält den Lauf, bis das Repo `FLEET_AUDIT_QUIET_MS`
+`releaseAt` — der Takt `server.ts#auditCadenceOf` hält den Lauf nur, solange ein weiteres Land des
+Repos reserviert, laufend oder auf der Platte angekündigt ist (`server.ts#auditLandsInFlight`, seit
+2026-10-09; ohne eines ist der Eintrag sofort fällig, Ledger `trigger: "no-land"`), und dann, bis das
+Repo `FLEET_AUDIT_QUIET_MS`
 (Default 20 min) nach seinem jüngsten ungemessenen Land ruhig war, spätestens bis
 `FLEET_AUDIT_MAX_WAIT_MS` (Default 60 min) nach dem ältesten; ein Deploy, der auf den Tip wartet,
 gibt sofort frei — oder `"waiting for helper"`: freigegeben, und nur ein Helfer fährt ihn. Einen

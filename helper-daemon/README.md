@@ -71,15 +71,20 @@ shortening when a local branch has the same name. The configuration does not upd
   above zero names a deployment that hands its offerable audits to a helper (live: `60000`). Unset
   or `0` — every harness, a deployment that never enrolled a helper — leaves the Fleet's own drain
   as the only runner, starting on the land; nothing in this bullet applies there.
-  **TWO NUMBERS DECIDE WHEN.** A land no longer starts its audit. The repo's queue entry is held
+  **TWO NUMBERS DECIDE WHEN — AND ONLY WHILE ANOTHER LAND IS ON ITS WAY** (since 2026-10-09,
+  `server.ts#auditLandsInFlight`). With no further land of the repo reserved, running or pending on
+  disk, the entry is due at once, ledger `trigger: "no-land"`: the window guessed when a burst is
+  over, the land reservations say it (measured the night before: 1 206–1 220 s from land to audit on
+  every quiet-released row). While one is, the repo's queue entry is held
   until the repo has been quiet for `FLEET_AUDIT_QUIET_MS` (default 1 200 000 ms = 20 min) since its
   newest unmeasured land, or until `FLEET_AUDIT_MAX_WAIT_MS` (default 3 600 000 ms = 60 min) after
   its OLDEST unmeasured land, whichever comes first — no daily cap, no night run. The quiet window
   bundles a burst into one run on the newest tip; the ceiling keeps a day that is never quiet from
   never being measured. The one exception is a deploy waiting on a tip (`server.ts#deployAuditOf`),
   which releases that tip's audit at once. While the cadence holds an entry it is not on this
-  daemon's job list, its claim answers 409, and the wake rail sends no packet for it. The ledger row
-  names what released the run: `trigger: "quiet" | "max-wait" | "deploy"`.
+  daemon's job list, its claim answers 409, and the wake rail sends no packet for it; the Fleet's
+  drain looks again every 30 s whether the land it waits for has ended. The ledger row names what
+  released the run: `trigger: "no-land" | "quiet" | "max-wait" | "deploy"`.
   **THEN IT WAITS FOR A HELPER, HOWEVER LONG THAT TAKES — THERE IS NO MAC FALLBACK.** A released,
   offerable entry is never run by the Fleet's drain: not after a wait, not after a lapsed claim
   (which reopens it for the next claim). A daemon that is `off`, quiet or switched off therefore
@@ -145,6 +150,15 @@ shortening when a local branch has the same name. The configuration does not upd
   and the Fleet's claim door refuses a device whose own last heartbeat said it was full. That
   refusal uses nothing but the machine's own words — a device that reports neither field (a browser
   on the portal page, any daemon older than this) is uncapped, exactly as before.
+
+  The same two figures size a sharded audit (2026-10-09, `server.ts#auditShardCount`; on only while
+  the Fleet's `FLEET_AUDIT_SHARDS` is 2 or more): the FREE slots of every fresh `audit-shard` device —
+  `maxParallelSuites` minus the larger of its `running` and the claims the Fleet holds for it, none
+  while it drains for its own update — summed, minus one kept for a lane's preview, at most 8. Below
+  three free slots the split is `FLEET_AUDIT_SHARDS` itself. The Fleet reads it at every job list and
+  freezes it at the run's first claim; the shard ids carry their n, so a claim that arrives after the
+  figure moved still opens the run it was shown. Nothing on this side changed for it: a daemon that
+  already declares `audit-shard` needs no update.
 - **The quieter of the two modes wins.** The owner's `desiredMode`, pulled in the reply to this
   machine's heartbeat, always wins downwards; it never overrides quiet hours or the load threshold
   upwards, because the person who set those is standing next to the machine.

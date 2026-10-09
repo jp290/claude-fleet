@@ -302,8 +302,9 @@ const PRE_AUTH_ROUTES = [
   //   · the candidate must be readable and must not already carry a fleet/land note, a literally
   //     unchanged retry is refused as no-progress, the lane must be done-looking, and no merge or
   //     commit may be in flight (the SAME reservation pair the owner route holds).
-  // It reads NO body (the program comes from the binding, the lane from the row, the repo from the
-  // checkout, the candidate from the lane's HEAD), it starts nothing unattended, it writes into no
+  // Its body is CLOSED to the land switches (server.ts#landSwitchesFrom) — the program comes from the
+  // binding, the lane from the row, the repo from the checkout, the candidate from the lane's HEAD,
+  // and a switch only says how that candidate lands —, it starts nothing unattended, it writes into no
   // pane and it reaches no foreign slot. The land itself runs through the SAME mergeJob the owner
   // route calls — there is no second merge implementation.
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/land$/`,

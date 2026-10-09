@@ -5247,14 +5247,19 @@ curl -s -X POST "$FLEET_SELF_URL/api/self/harness-block" \
 
 **Die eine Self-Route, die einen Integrations-Branch bewegt.** Eine gebundene Program-MAIN landet
 eine done-looking Lane ihres EIGENEN Programs — ohne Owner-Token. Nicht-Lane-only (Lane 409,
-`⚙ steward` 409, beides nie 401). **Sie liest KEINEN Body:** Program kommt aus der Bindung, die
-Lane aus der Zeile, das Repo aus dem eigenen Checkout, der Kandidat aus dem HEAD der Lane. Es gibt
-keine zweite Merge-Implementierung — gelandet wird durch DASSELBE `mergeJob`, das die Owner-Route
-ruft (`e2e/pins.ts`: genau zwei Aufrufstellen, beide Routen, kein Tick).
+`⚙ steward` 409, beides nie 401). **Ihr Body ist GESCHLOSSEN** (`server.ts#landSwitchesFrom`): leer
+oder ein Objekt aus den Schaltern unten, je ein Boolean; jedes andere Feld ist 400. Program kommt aus
+der Bindung, die Lane aus der Zeile, das Repo aus dem eigenen Checkout, der Kandidat aus dem HEAD der
+Lane — ein Schalter sagt nur, WIE dieser Kandidat landet. Es gibt keine zweite Merge-Implementierung
+— gelandet wird durch DASSELBE `mergeJob`, das die Owner-Route ruft (`e2e/pins.ts`: genau zwei
+Aufrufstellen, beide Routen, kein Tick).
 
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+# eine Live-Bau-Lane, deren Commits als EIN Commit auf main landen (§squash unten):
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' -d '{"squash":true}'
 ```
 
 Erfolg: `{running:true, task, laneSlot, candidate, sessionIdMatch, selfLand,
@@ -5541,6 +5546,45 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
 - **Nicht betroffen:** `confirm-land` und die Boot-Nachholung. Beide bewegen `main` zuerst und
   pushen danach in `recordLand` wie vor W5d — sie schiedsrichten nicht, und ihr abgelehnter Push
   bleibt ein rotes `hubPush`-Feld auf der Land-Note.
+
+### Der Schalter `squash`: ein Commit je Land (a9629daa, seit 2026-10-09)
+
+Owner (08.10.): „[Zitat entfernt]“. Mit `{„[Zitat entfernt]“:true}` landet
+eine Lane mit mehr als einem Commit über `mainBefore` als **ein** Commit S
+(`server.ts#planSquashLand`, `#moveSquashLand`, Entwurf `docs/design/live-bau-profil-2026-10.md` §3).
+Nur mit dem Schalter, gesetzt von der MAIN für Live-Bau-Lanes: jede andere Lane landet ihre
+Commits wie bisher, und deren Bodies bleiben das Befund-Register auf main.
+
+- **S** = `git commit-tree H^{tree} -p mainBefore`. H ist die Spitze, die das Gate gemessen hat, und
+  weil S^{tree} = H^{tree} ist, gilt das Gate-Verdikt für S unverändert. Es gibt also keinen zweiten
+  Gate-Lauf, und übernommene grüne Helfer-Jobs bleiben über `treeSha` gültig.
+- **Betreff** `<typ>(<bereich>): <taskId> — <erster Satz aus ZIEL>`. Typ und Bereich kommen aus dem
+  jüngsten Lane-Betreff dieser Form, sonst `feat`. Ohne Karte nimmt er den ersten Satz der ersten
+  Zeile des Zeilentexts. **Body:** der `complete`-Report dieser Belegung, den noch kein Land verbraucht
+  hat, darunter `Lane-Commits (N, erster..letzter):` mit Kurz-Sha und Betreff je Zeile, dann jede
+  verschiedene `Co-Authored-By`-Zeile der Serie in der Reihenfolge ihres ersten Auftretens.
+- **Die Serie bleibt erreichbar** unter `refs/fleet/lane-history/<branch>/<n>`. `<n>` zählt die
+  Squash-Lands des Branches, und dieser Ref wird nie zur Nabe gepusht.
+- **Der Branch steht VOR dem Fast-Forward auf S.** Er geht per Compare-and-swap von H auf S, im
+  eigenen Repo der Lane. Der Baum ist identisch, Index und Working Tree bleiben unberührt. Erst danach
+  laufen Nabe, `advanceIntegration` und `recordLand` unverändert. Das ist kein Rebase, und es liegt
+  vor dem Fast-Forward. Verliert der Land die Vorspulung, rebast die Retry-Runde nur noch S.
+- **Die `fleet/land`-Note** trägt `squash {from: H, commits: N, ref}`. In `lane-outcomes.jsonl`
+  zählt `commitCount` die N Lane-Commits vor der Zusammenfassung; `headSha` und `mainAfter` sind S.
+- **Hat die Lane höchstens einen Commit**, ist der Land byte-gleich zu einem ohne Schalter.
+- **Ein Confirm** einer geprüften Konfliktlösung (`guarded`-Sprosse) landet den geprüften Kandidaten
+  so, wie er geprüft wurde, und verweigert den Schalter mit 409, statt ihn still fallen zu lassen.
+
+```
+{"status":"error","landed":false,"errorReason":"lane-moved","verify":{"ok":true,…},
+ "detail":"the lane committed after its gate: <branch> is at <sha>, not the gated <sha> — nothing was squashed or landed, lane kept; …"}
+```
+
+- **`lane-moved` = die Lane hat committet, während ihr Gate lief.** Das Compare-and-swap verweigert,
+  der History-Ref wird zurückgenommen, und main hat sich nicht bewegt. Bei einem Commit ohne
+  Squash wird dieselbe Frage als Lesung gestellt. Der Wert steht in `MERGE_ERROR_REASONS` und
+  blockiert `done-looking` also nicht: die Lane hat weitergearbeitet, was eine Live-Lane tut, und
+  derselbe Land auf ihrer neuen Spitze geht durch dieselbe Tür.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 

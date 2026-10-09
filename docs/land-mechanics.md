@@ -159,6 +159,42 @@ apart that looked identical from the outside.
 And the cheapest check of all: the lane's own last message said it plainly both times.
 `GET /api/steward/slots/:id/transcript` before deciding anything about a quiet lane.
 
+## 7. A squash land moves the lane branch, before the fast-forward and never after it
+
+Since a9629daa a MAIN can land with `{"squash":true}` (`docs/self-api.md` §land). This is for live
+lanes, where the owner said „[Zitat entfernt]“. It is the only land
+that writes a ref other than main and the land note, so the order is the contract:
+
+1. The gate measures the rebased tip H. `mergeJob` remembers H as the gated tip.
+2. Each fast-forward round **plans** S = `commit-tree H^{tree} -p mainBefore`. That writes an
+   object and moves no ref. The land intent names S as `laneTip`, so a restart in the
+   advance→record window finds main at S and finishes the land (`finishLandsInFlight`).
+3. Then comes the second look (`dirtyMainStop`). A dirty main stops here, and the lane branch
+   still points at H.
+4. The **move** (`server.ts#moveSquashLand`): H goes under `refs/fleet/lane-history/<branch>/<n>`
+   (create-only). Then the branch goes H→S by `update-ref <branch> S H` in the lane's own repo, and
+   a clone lane is mirrored. Since S^{tree} = H^{tree}, the index and the working tree stay as they
+   are, and `git status` stays clean.
+5. Hub push, `advanceIntegration` and `recordLand` run unchanged. Each of them reads the branch, and
+   the branch is S now.
+
+What each place sees afterwards:
+
+- **main** gets one commit per land.
+- **The note** on S carries `squash {from: H, commits: N, ref}`.
+- **The outcome row** counts N in `commitCount`. It reads the count off the land site, because the
+  lane HEAD is S by then. `headSha` and `mainAfter` are S.
+- **undo-land** and the **post-land audit** are untouched: one land is one commit to reset or to
+  audit.
+- **A lost fast-forward** re-rebases S alone. The retry round finds one commit and plans nothing,
+  and the note keeps the first round's `squash`.
+
+**The one new failure is the lane itself.** If the lane commits while its gate runs, the
+compare-and-swap refuses. The history ref is taken back and the verdict is
+`errorReason: "lane-moved"`; nothing has moved. A switch-bearing land with a single commit asks
+the same question as a read. Without the switch, a land still fast-forwards whatever the branch
+holds at that moment, exactly as before.
+
 ## What an automated rebase-and-land still needs
 
 Ranked by what actually blocked a human today:

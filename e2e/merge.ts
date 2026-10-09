@@ -2764,6 +2764,124 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", REPO2, "branch", "-D", "overhaul"]);
   }
 
+  // a9629daa · THE SQUASH LAND. A bound MAIN lands a three-commit lane with {"squash":true}: main
+  // gains exactly ONE commit S, S^{tree} is the gated tree, the subject names the row and the first
+  // ZIEL sentence, the body quotes the lane's complete report and its subjects, every distinct
+  // Co-Authored-By survives once, the series stays under refs/fleet/lane-history/<branch>/1, and the
+  // note and the outcome row say how many commits S stands for. The land WITHOUT the switch is the
+  // overhaul block above, which still lands as it always did.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const mainBefore = git2("rev-parse", "main");
+    const programR = await post("/api/programs", {
+      title: "Squash land", intent: "Land a live lane as one commit.",
+      successCriterion: "Main gains one commit per land.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false,
+      text: "Squash-Land fasst die Serie zusammen. Dieser zweite Satz bleibt aus dem Betreff." });
+    const rowId = ((await taskR.json()) as { task?: { id: string } }).task?.id ?? "";
+    const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+    const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+    const lane = ((await (await get("/api/sessions")).json()) as {
+      slots: { id: number; cwd: string | null; worktree?: { branch?: string } }[];
+    }).slots.find((s) => s.id === laneSlot);
+    const branch = lane?.worktree?.branch ?? "";
+    const commits: [string, string][] = [
+      ["sq1.txt", "feat(squash): erste Stufe\n\nBody eins.\n\nCo-Authored-By: Ada <ada@example.com>"],
+      ["sq2.txt", "fix(squash): zweite Stufe\n\nCo-Authored-By: Ada <ada@example.com>\nCo-Authored-By: Bob <bob@example.com>"],
+      ["sq3.txt", "chore: dritte Stufe\n\nCo-Authored-By: Bob <bob@example.com>"],
+    ];
+    if (lane?.cwd) for (const [file, msg] of commits) {
+      writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
+      spawnSync("git", ["-C", lane.cwd, "add", file]);
+      spawnSync("git", ["-C", lane.cwd, "commit", "-qm", msg]);
+    }
+    const reportR = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "x-fleet-self-token": tokenOf(laneSlot), "content-type": "application/json" },
+      body: JSON.stringify({ status: "complete", text: "SQUASH-REPORT-MARK: drei Stufen, ein Commit." }) });
+    let ready = false;
+    try {
+      ready = await until(async () => {
+        const brief = (await plogRead()).some((e) => e.cwd === lane?.cwd && e.source === "auto");
+        const sx = (await (await get("/api/sessions")).json()) as {
+          now: number; slots: { id: number; lastOutput: number; git: { dirty: number; ahead: number } | null }[];
+        };
+        const current = sx.slots.find((s) => s.id === laneSlot);
+        return brief && !!current?.lastOutput && current.git?.dirty === 0 && current.git.ahead === 3
+          && sx.now - current.lastOutput >= 1500;
+      }, { timeoutMs: 30_000, stepMs: 100, what: "squash lane done-looking with three commits" });
+    } catch { /* the setup check names the missing precondition */ }
+    check("squash land setup: a green-only MAIN, a lane with three commits and a complete report",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true
+        && promotionR?.ok === true && /^[0-9a-f]{32}$/.test(mainToken) && dispatchR?.ok === true
+        && branch.length > 0 && reportR.ok && ready,
+      JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error,
+        promotion: promotionR?.status, dispatch: dispatchR?.status, branch, report: reportR.status, ready }));
+    const land = (body: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${rowId}/land`, {
+      method: "POST", headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body });
+    const notBool = await land('{"squash":"yes"}');
+    const foreign = await land('{"squash":true,"repo":"elsewhere"}');
+    check("squash land: the land call's body is closed — a non-boolean switch and any other field are 400 and start nothing",
+      notBool.status === 400 && foreign.status === 400 && git2("rev-parse", "main") === mainBefore,
+      JSON.stringify({ notBool: notBool.status, foreign: foreign.status }));
+    const landR = await land('{"squash":true}');
+    const started = (await landR.json()) as { running?: boolean; squash?: boolean; error?: string };
+    let done = false;
+    try {
+      done = await until(async () => ((await (await get("/api/tasks")).json()) as {
+        tasks: { id: string; status: string }[] }).tasks.some((r) => r.id === rowId && r.status === "done"),
+      { timeoutMs: 20_000, stepMs: 100, what: "squash land row done" });
+    } catch { /* the land check reports the missing terminal state */ }
+    const mainAfter = git2("rev-parse", "main");
+    const historyRef = `refs/fleet/lane-history/${branch}/1`;
+    const series = git2("rev-parse", "--verify", "--quiet", historyRef);
+    const message = git2("log", "-1", "--format=%B", mainAfter);
+    const lines = message.split("\n");
+    type SquashNote = { squash?: { from?: string; commits?: number; ref?: string } };
+    let note: SquashNote | null = null;
+    try { note = JSON.parse(git2("notes", "--ref=fleet/land", "show", mainAfter)) as SquashNote; }
+    catch { /* checked below */ }
+    const outcome = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as {
+      outcomes: { branch?: string; commitCount?: number; headSha?: string | null; mainAfter?: string }[];
+    }).outcomes.filter((o) => o.branch === branch).at(-1);
+    const facts = {
+      land: landR.status, started, done, oneCommit: git2("rev-list", "--count", `${mainBefore}..${mainAfter}`),
+      parent: git2("rev-parse", `${mainAfter}^`) === mainBefore,
+      sameTree: series !== "" && git2("rev-parse", `${mainAfter}^{tree}`) === git2("rev-parse", `${series}^{tree}`),
+      seriesCount: series ? git2("rev-list", "--count", `${mainBefore}..${series}`) : "",
+      subject: lines[0], coAuthors: lines.filter((l) => /^co-authored-by:/i.test(l)),
+      note: note?.squash ?? null, outcome,
+    };
+    check("squash land: main gains ONE commit whose tree is the gated tree, the three commits stay under refs/fleet/lane-history",
+      landR.ok && started.running === true && started.squash === true && done
+        && facts.oneCommit === "1" && facts.parent && facts.sameTree && facts.seriesCount === "3",
+      JSON.stringify(facts));
+    check("squash land: subject <typ>(<bereich>): <taskId> — first ZIEL sentence; body = report + lane subjects; each Co-Authored-By once, in first-seen order",
+      facts.subject === `fix(squash): ${rowId} — Squash-Land fasst die Serie zusammen`
+        && message.includes("SQUASH-REPORT-MARK: drei Stufen, ein Commit.")
+        && message.includes("Lane-Commits (3, ")
+        && ["feat(squash): erste Stufe", "fix(squash): zweite Stufe", "chore: dritte Stufe"].every((s) => message.includes(s))
+        && JSON.stringify(facts.coAuthors) === JSON.stringify(["Co-Authored-By: Ada <ada@example.com>", "Co-Authored-By: Bob <bob@example.com>"]),
+      JSON.stringify({ message: message.slice(0, 800) }));
+    check("squash land: the fleet/land note carries squash{from,commits,ref} and the outcome row counts the three lane commits with S as head",
+      facts.note?.from === series && facts.note.commits === 3 && facts.note.ref === historyRef
+        && outcome?.commitCount === 3 && outcome.headSha === mainAfter && outcome.mainAfter === mainAfter,
+      JSON.stringify({ note: facts.note, outcome, series, mainAfter }));
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

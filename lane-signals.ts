@@ -81,8 +81,14 @@ const MERGE_BLOCKING = ["blocked", "error"];
 // The hub holds the lane tip on the old main; local main does not. Still nothing wrong with the
 // lane — it passed its gate and was accepted — so it is exempted like the four above. What differs
 // is the remedy: not a re-land but a human reconciling two shas, which is why it never retries.
-export type MergeErrorReason = "ff-lost" | "dirty-main" | "hub-lost" | "hub-unreachable" | "hub-only";
-export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main", "hub-lost", "hub-unreachable", "hub-only"];
+// THE SIXTH (a9629daa, the squash land): `lane-moved` — a land carrying a switch of the MAIN's land
+// call (`squash`, `keep`) found the lane branch on another commit than the one its gate measured,
+// because the lane committed while the gate ran. Nothing moved: the compare-and-swap that would put
+// the branch on the squash commit refused, and main was never advanced. The lane did nothing wrong
+// either — it went on working, which is what a live lane does — and the same land on its new tip
+// goes through the same door, so it is exempted for the reason `ff-lost` is.
+export type MergeErrorReason = "ff-lost" | "dirty-main" | "hub-lost" | "hub-unreachable" | "hub-only" | "lane-moved";
+export const MERGE_ERROR_REASONS: readonly MergeErrorReason[] = ["ff-lost", "dirty-main", "hub-lost", "hub-unreachable", "hub-only", "lane-moved"];
 
 export function mergeBlocksLane(m: LaneSignalView["merge"]): boolean {
   if (!MERGE_BLOCKING.includes(m?.status ?? "")) return false;

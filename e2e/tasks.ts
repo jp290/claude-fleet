@@ -10652,6 +10652,28 @@ export async function run(ctx: Ctx): Promise<void> {
       && !inventedWeb.valid && inventedWeb.gaps.includes('web: WEB: search is not declared in the request')
       && inventedWeb.body.web === undefined,
       JSON.stringify({ bad: badWeb.gaps, invented: inventedWeb.gaps }));
+    // (fmt-va) VARIANTE IS A FILING HEADER (card 66936847): inside the block it is read whole — the
+    // headers after it still file — and lands as card.variante; a value outside
+    // context-packs.ts#CONTEXT_POSITION_VARIANTEN is a refusing gap naming it; a card without the
+    // header carries no variante key at all. MUTATIONS (measured 2026-10-09 on a scratch copy):
+    // VARIANTE dropped from FORMAT_LINE turns (fmt-va1) and (fmt-va2) red (the block ends at it, the
+    // headers below become stray); the vocabulary test dropped in validateCard turns (fmt-va2) red; an
+    // unconditional `variante: field("VARIANTE")` in parseFormattedCard turns (fmt-va1) and (fmt-va3) red.
+    const vaText = webBaseText.replace("VERBOTEN:", "VARIANTE: live-bau\nVERBOTEN:");
+    const vaRaw = parseFormattedCard(vaText);
+    const vaCard = validateCard(vaRaw ?? {}, { ...cardCtx, sourceText: vaText });
+    check("(fmt-va1) a VARIANTE header inside the block files card.variante and leaves every other field as the card without it",
+      vaCard.valid && vaCard.body.variante === "live-bau"
+      && JSON.stringify({ ...vaCard, body: { ...vaCard.body, variante: undefined } }) === JSON.stringify(webAbsent),
+      JSON.stringify({ gaps: vaCard.gaps, variante: vaCard.body.variante ?? null, verboten: vaCard.body.verboten }));
+    const vaBadText = vaText.replace("VARIANTE: live-bau", "VARIANTE: live-bau-2");
+    const vaBad = validateCard(parseFormattedCard(vaBadText) ?? {}, { ...cardCtx, sourceText: vaBadText });
+    check("(fmt-va2) an unknown VARIANTE value refuses the card with a gap naming the value and the vocabulary",
+      !vaBad.valid && vaBad.gaps.includes('variante: "live-bau-2" is not one of live-bau') && vaBad.body.variante === undefined,
+      JSON.stringify(vaBad.gaps));
+    check("(fmt-va3) a card without a VARIANTE header carries no variante key — raw or validated",
+      webBaseRaw !== null && !("variante" in webBaseRaw) && !("variante" in webAbsent.body),
+      JSON.stringify({ raw: webBaseRaw && Object.keys(webBaseRaw), body: Object.keys(webAbsent.body) }));
     check("(s2) a card with no DELEGATION header grants no delegation field",
       vbRaw !== null && !("delegation" in validateCard(vbRaw, { ...cardCtx,
         sourceText: vbText.replaceAll("fleet-e2e.ts", "server.ts") }).body),
@@ -10861,8 +10883,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v11) CARD_VALIDATOR_VERSION is 12, so cards refused before WEB or earlier rules are read once more",
-      CARD_VALIDATOR_VERSION === 12, String(CARD_VALIDATOR_VERSION));
+    check("(v13) CARD_VALIDATOR_VERSION is 13, so cards refused before VARIANTE, WEB or earlier rules are read once more",
+      CARD_VALIDATOR_VERSION === 13, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the
@@ -13766,7 +13788,7 @@ export async function run(ctx: Ctx): Promise<void> {
       id: string; text: string; source: string; kind: string; status: string;
       programId?: string; repo?: string | null; releasedBy?: string; slot?: number | null;
       spawn?: { harness: string | null; model: string | null; effort: string | null };
-      card?: { valid?: boolean; rolle?: { harness: string; model: string; effort: string } };
+      card?: { valid?: boolean; rolle?: { harness: string; model: string; effort: string }; variante?: string };
     }
     const mState = (): MState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as MState;
     const mSess = async (): Promise<MSlot[]> =>
@@ -14258,6 +14280,29 @@ export async function run(ctx: Ctx): Promise<void> {
       rcListRes.status === 400 && rcListError.includes("card rejected, nothing filed")
         && rcListError.includes("verboten: arrived as a string, not a list") && !rcListFiled,
       `${rcListRes.status}:${rcListError} filed=${rcListFiled}`);
+    // (va) VARIANTE AT BOTH CREATE DOORS (card 66936847). The author card's `variante` is checked by
+    // validateCard against context-packs.ts#CONTEXT_POSITION_VARIANTEN like the header is: live-bau
+    // files and the stored card carries it; any other value is a 400 naming the gap at the owner door
+    // AND the MAIN door, and nothing is filed. MUTATION: accepting any value in validateCard (the
+    // vocabulary test dropped) is the mutant that turns (fmt-va2) red; the doors refuse through
+    // authorCardFrom's `!checked.valid` → 400, so the same mutant files the unknown value here.
+    const vaFiled = await rcFile({ text: "acp23 va live-bau row", card: { ...rcCard, variante: "live-bau" } });
+    const vaOwnerRes = await post("/api/tasks", { text: "acp23 va owner unknown", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, variante: "live-bau-2" } });
+    const vaOwnerError = ((await vaOwnerRes.json()) as { error?: string }).error ?? "";
+    const vaMainRes = await mFile(mToken, { text: "acp23 va main unknown", kind: "auftrag",
+      card: { ...rcCard, variante: "live-bau-2" } });
+    const vaMainError = ((await vaMainRes.json()) as { error?: string }).error ?? "";
+    const vaUnknownFiled = (await mAll()).some((t) => t.text === "acp23 va owner unknown" || t.text === "acp23 va main unknown");
+    const vaRow = await mRow(vaFiled);
+    check("(va1) an author card with variante live-bau files at the MAIN door and the stored card carries card.variante",
+      !!vaFiled && vaRow?.card?.valid === true && vaRow.card.variante === "live-bau",
+      JSON.stringify(vaRow?.card ?? null));
+    check("(va2) an author card with an unknown variante is refused 400 naming the gap at both create doors, and nothing is filed",
+      vaOwnerRes.status === 400 && vaOwnerError.includes('variante: "live-bau-2" is not one of live-bau')
+        && vaMainRes.status === 400 && vaMainError.includes('variante: "live-bau-2" is not one of live-bau') && !vaUnknownFiled,
+      `owner=${vaOwnerRes.status}:${vaOwnerError} main=${vaMainRes.status}:${vaMainError} filed=${vaUnknownFiled}`);
+    if (vaFiled) await post(`/api/tasks/${vaFiled}/delete`, {});
     // (rc2b) THE MAIN DOOR TAKES THE SAME CARD WITH after — and the RELEASE proves the stored id:
     // releaseCardRefusal would 409 naming rcPred if the door had not written what the card carries.
     const rcMainCarry = await rcFile({ text: `acp23 rc main-filed with after, NACH ${rcPred}`,

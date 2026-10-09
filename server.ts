@@ -57,7 +57,7 @@ import {
   stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
-  CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS,
+  CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, CONTEXT_POSITION_VARIANTEN,
   type ContextPackCapability,
   type ContextPackMcpServer,
   type ContextPackMode,
@@ -10000,14 +10000,14 @@ async function laneClosedNote(wt: LaneRef, base: string | null): Promise<string>
 //
 // ORDER is the sensor's own (created, id), the comparator task-land-waves.ts folds by, so the
 // brief, the board and the split door name the n rows in ONE sequence.
-// THE LANE'S VARIANT (card 1f9834a9): the rows' card texts through the ONE reader of the line
-// (context-plan.ts#cardVariante), judged by the plan's own rule (resolveVariante). Every seam that
-// writes or compares a lane's context — the plan, the CLAUDE.md render and its drift probe, the exit
-// footer, the baton — asks these two, so they cannot tell different stories. A variant row is read
-// off its group, like every other byte of its brief.
+// THE LANE'S VARIANT (card 1f9834a9, a card header since 66936847): the rows' cards and texts
+// through the ONE reader (context-plan.ts#cardVariante: `card.variante`, else the interim line of
+// the text), judged by the plan's own rule (resolveVariante). Every seam that writes or compares a
+// lane's context — the plan, the CLAUDE.md render and its drift probe, the exit footer, the baton —
+// asks these two, so they cannot tell different stories. A variant row is read off its group, like
+// every other byte of its brief.
 function laneVarianteRaw(rows: readonly Task[]): string | null {
-  const source = rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows;
-  return cardVariante(source.map((row) => row.text));
+  return cardVariante(rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows);
 }
 function laneVarianteOf(rows: readonly Task[]): ContextPositionVariante | null {
   return resolveVariante(laneVarianteRaw(rows), "lane").variante ?? null;
@@ -20506,7 +20506,7 @@ const cardValidationContext = (sourceText: string, snapshot: TrackedSnapshot | n
 // card is validated against the JOINED text — the string the model path validates against — so
 // the quote rule asks both paths the same question. `null` still hands the row to the extractor
 // exactly as before.
-const LABELED_FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|ZIEL|VERIFY|DONE|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const LABELED_FORMAT_LINE = /^\s*(ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|ZIEL|VERIFY|DONE|VERBOTEN|VARIANTE)\s*:[ \t]*(.*)$/i;
 const FALSE_GOAL_LEAD = /^(SUCHE|WARUM|NACH|QUELLEN|VORBEDINGUNG)\b/i;
 const EXPLICIT_GOAL_PLACEHOLDER = "__FLEET_EXPLICIT_GOAL__";
 
@@ -20855,9 +20855,9 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   base?: string): Promise<
   { ok: true; card: TaskCard } | { ok: false; status: 400 | 409; error: string }> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?}" };
+    return { ok: false, status: 400, error: "card must be an object {ziel, rolle?, klasse?, surface{files, symbols}, done, verify, verboten, size?, after?, variante?}" };
   const c = raw as Record<string, unknown>;
-  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after", "web"];
+  const known = ["ziel", "rolle", "klasse", "surface", "done", "verify", "verboten", "size", "after", "web", "variante"];
   const extra = Object.keys(c).filter((k) => !known.includes(k));
   if (extra.length) return { ok: false, status: 400, error: `card reads ${known.join(", ")} only — [${extra.join(", ")}] is not read` };
   const snapshot = repoRaw ? taskBaseSnapshotFor(repoRaw, base) : null;
@@ -20869,8 +20869,8 @@ async function authorCardFrom(raw: unknown, text: string, repoRaw: string | null
   const now = Date.now();
   const foreignVerifyCommand = await cardForeignVerifyCommand(snapshot.repo);
   const checked = validateCard({ ...c, ...(programId ? { program: programId } : {}) },
-    // an author's size is its own declaration, exactly like the surface line beside it
-    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}${c.web === "search" ? "\nWEB: search" : ""}`, snapshot, symbolIndexFor(snapshot), foreignVerifyCommand));
+    // an author's size and variant are its own declarations, exactly like the surface line beside them
+    cardValidationContext(`${text}\nFLAECHE: ${declared.join(" ")}${typeof c.size === "string" ? `\nGROESSE: ${c.size.trim().toLowerCase()}` : ""}${c.web === "search" ? "\nWEB: search" : ""}${typeof c.variante === "string" ? `\nVARIANTE: ${c.variante.trim()}` : ""}`, snapshot, symbolIndexFor(snapshot), foreignVerifyCommand));
   if (!checked.valid) return { ok: false, status: 400, error: `card rejected, nothing filed: ${checked.gaps.join("; ")}` };
   return { ok: true, card: { ...checked.body, model: "author", at: now, ms: 0, valid: true, surfaceValid: true,
     validatorVersion: CARD_VALIDATOR_VERSION, gaps: [] } };
@@ -40373,7 +40373,8 @@ THE LOOP, once per bounded act:
     without a model; the first paragraph after them is its goal. Required, each exactly once and on
     ONE line: ROLLE (harness/model/effort), GROESSE (klein, mittel or gross), FLAECHE (the tracked
     files the act changes; file#symbol allowed), VERIFY, DONE (one checkable sentence). Optional:
-    NEU (files it adds), NACH (queue ids it waits on), VERBOTEN (entries split by " · "). VERIFY
+    NEU (files it adds), NACH (queue ids it waits on), VERBOTEN (entries split by " · "),
+    VARIANTE (the lane's named variant, one of ${CONTEXT_POSITION_VARIANTEN.join(", ")}; absent = the plain lane). VERIFY
     names THIS repository's own proof command, verbatim as its AGENTS.md or scripts define it -
     never another repository's chain. A card without VERIFY is invalid. For example:
       ROLLE: claude/claude-opus-5-5[1m]/high

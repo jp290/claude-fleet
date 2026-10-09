@@ -6,6 +6,7 @@ import {
   CONTEXT_PACK_HARNESSES,
   CONTEXT_PACKS,
   CONTEXT_PACK_TRIGGERS,
+  CONTEXT_POSITION_VARIANTEN,
   type ContextPack,
   type ContextPackMcpServer,
   type ContextPackTrigger,
@@ -1397,7 +1398,8 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     'return { roles: [LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_ROLE_CARD + "\\n" + ORCHESTRATOR_CONTEXT_LINE_CODEX], laneExitFooter, mainFooter: RAIL_HEAD + RAIL_TAIL };',
   ].join("\n"));
   const deps = { HOST: "127.0.0.1", PORT: 8790, MAX_FLEET_REPORT_TEXT: 4000,
-    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex", laneExitLiveBauAct };
+    FLEET_REPORT_STATUSES: ["complete", "needs-main", "failed", "handoff"], nativeCompaction: (h: string) => h === "codex", laneExitLiveBauAct,
+    CONTEXT_POSITION_VARIANTEN };
   const templates = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {
     roles: string[]; laneExitFooter: (harness: string, receiver: { role: string; slot: number } | null) => string; mainFooter: string;
   };
@@ -1608,12 +1610,68 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
     !!plainCard && !!liveCard && liveCard.valid && plainCard.valid && JSON.stringify(liveRaw) === JSON.stringify(plainRaw)
       && JSON.stringify(liveCard) === JSON.stringify(plainCard) && !("strayHeaderLines" in (liveRaw ?? {})),
     JSON.stringify({ gaps: liveCard?.gaps, ziel: liveRaw?.ziel }));
-  check("live-bau card: the one reader takes live-bau from the line, nothing from a card without it",
-    cardVariante([liveText]) === "live-bau" && cardVariante([plainText]) === null
-      && resolveVariante(cardVariante([liveText]), "lane").variante === "live-bau",
-    JSON.stringify([cardVariante([liveText]), cardVariante([plainText])]));
+  // --- the HEADER (card 66936847): `VARIANTE:` inside the block is a card field, card.variante
+  const headerText = `${head}\nVARIANTE: live-bau\n${goal}\n`;
+  const headerRaw = parseFormattedCard(headerText);
+  const headerCard = headerRaw && validateCard(headerRaw, ctx(headerText));
+  check("live-bau card: the VARIANTE header is a valid card field — card.variante live-bau, every other byte the plain card's",
+    !!headerCard && !!plainCard && headerCard.valid && headerCard.body.variante === "live-bau"
+      && JSON.stringify({ ...headerCard, body: { ...headerCard.body, variante: undefined } }) === JSON.stringify(plainCard),
+    JSON.stringify({ gaps: headerCard?.gaps, variante: headerCard?.body.variante ?? null }));
+  const unknownText = headerText.replace("VARIANTE: live-bau", "VARIANTE: live-bau-2");
+  const unknownRaw = parseFormattedCard(unknownText);
+  const unknownCard = unknownRaw && validateCard(unknownRaw, ctx(unknownText));
+  check("live-bau card: an unknown VARIANTE header value is a named, refusing card gap and no card.variante",
+    !!unknownCard && !unknownCard.valid && unknownCard.gaps.includes('variante: "live-bau-2" is not one of live-bau')
+      && unknownCard.body.variante === undefined,
+    JSON.stringify(unknownCard?.gaps));
+  // without the header: parsed and validated byte for byte as before the field existed — the hash
+  // is of the raw card and the validation, one JSON line each, computed with main@6893601d.
+  // MUTATIONS (measured 2026-10-09 on a scratch copy): an unconditional `variante: field("VARIANTE")`
+  // in parseFormattedCard turns this check red; the vocabulary test dropped in validateCard turns
+  // the unknown-value check above red.
+  const plainBytes = `${JSON.stringify(plainRaw)}\n${JSON.stringify(plainCard)}`;
+  check("live-bau card: a card without VARIANTE parses and validates byte for byte as before the header existed",
+    createHash("sha256").update(plainBytes).digest("hex") === "8886ee426fd47b2a66c5b8ed5eb8cb7aa9a4950d700d1cfdbeb322a5bbd446d5",
+    plainBytes);
+
+  // --- the ONE reader: card.variante first, the interim line of the text for a card without it
+  const headerRow = { text: headerText, card: headerCard?.body ?? null };
+  const interimRow = { text: liveText, card: liveCard?.body ?? null };
+  const unknownRow = { text: unknownText, card: unknownCard?.body ?? null };
+  const plainRow = { text: plainText, card: plainCard?.body ?? null };
+  // a card read off the BRIEF (server.ts#formatCardOf reads the brief's block first) carries the
+  // field while the row's own text names none — only card.variante can answer for it
+  const briefRow = { text: plainText, card: { ...plainCard?.body, variante: "live-bau" } };
+  const reads = (reader: typeof cardVariante) => [reader([headerRow]), reader([briefRow]), reader([interimRow]), reader([unknownRow]), reader([plainRow])];
+  check("live-bau card: the one reader takes card.variante, the interim line for a card without it, the refused header's raw value, nothing from a plain row",
+    JSON.stringify(reads(cardVariante)) === JSON.stringify(["live-bau", "live-bau", "live-bau", "live-bau-2", null])
+      && resolveVariante(cardVariante([headerRow]), "lane").variante === "live-bau"
+      && resolveVariante(cardVariante([unknownRow]), "lane").verworfen?.startsWith('unbekannte Variante "live-bau-2"') === true,
+    JSON.stringify(reads(cardVariante)));
+  // MUTATION PROBES, run against the reader's own source: a reader of the text alone (the interim
+  // reader before the header) misses the brief-read card; a reader of card.variante alone drops the
+  // interim rows and lets the refused header's value vanish unnamed instead of reaching
+  // resolveVariante; a reader that unions both lets a text line outvote the card.
+  const planSource = readFileSync(join(import.meta.dir, "../context-plan.ts"), "utf8");
+  const readerSource = [planSource.match(/^const CARD_VARIANTE_LINE = .*;$/m)?.[0] ?? "",
+    planSource.slice(planSource.indexOf("export function cardVariante("), planSource.indexOf("\n}\n", planSource.indexOf("export function cardVariante(")) + 3)
+      .replace("export function", "function")].join("\n");
+  const compileReader = (code: string) => new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(`${code}\nreturn cardVariante;`))() as typeof cardVariante;
+  const cardTerm = "row.card?.variante !== undefined ? [row.card.variante]\n    : ";
+  const textTerm = "[...row.text.matchAll(CARD_VARIANTE_LINE)].map((hit) => hit[1]!)";
+  const textOnly = compileReader(readerSource.replace(cardTerm, ""));
+  const cardOnly = compileReader(readerSource.replace(textTerm, "[]"));
+  const union = compileReader(readerSource.replace(cardTerm + textTerm,
+    `[...(row.card?.variante !== undefined ? [row.card.variante] : []), ...${textTerm}]`));
+  const textlineOverCard = { text: `${plainText}\nVARIANTE: andere\n`, card: { ...plainCard?.body, variante: "live-bau" } };
+  check("live-bau card: mutation probes — text alone misses the brief-read card, card alone drops interim and refused values, a union lets the text outvote the card",
+    readerSource.includes(cardTerm + textTerm) && JSON.stringify(reads(compileReader(readerSource))) === JSON.stringify(reads(cardVariante))
+      && textOnly([briefRow]) === null && cardOnly([interimRow]) === null && cardOnly([unknownRow]) === null
+      && cardVariante([textlineOverCard]) === "live-bau" && union([textlineOverCard]) === "live-bau · andere",
+    JSON.stringify({ textOnly: textOnly([briefRow]), cardOnly: [cardOnly([interimRow]), cardOnly([unknownRow])], union: union([textlineOverCard]) }));
   const refusals = [resolveVariante("live-bau-2", "lane"), resolveVariante("live-bau", "main"),
-    resolveVariante(cardVariante([liveText, "VARIANTE: andere\n"]), "lane")];
+    resolveVariante(cardVariante([interimRow, { text: "VARIANTE: andere\n" }]), "lane")];
   check("live-bau card: an unknown value, another position and two different lines are variant none WITH a reason",
     refusals.every((r) => r.variante === undefined && typeof r.verworfen === "string" && r.verworfen.endsWith("Variante keine")),
     JSON.stringify(refusals));
@@ -1622,7 +1680,7 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
   const facts = { sourceTree: "fleet" as const, harness: "claude", mode: "mutating" as const, triggers: ["always", "verification"] as ContextPackTrigger[],
     capabilities: fullCapabilities(), position: "lane" as const };
   const plain = planContext(facts);
-  const live = planContext({ ...facts, variante: cardVariante([liveText]) });
+  const live = planContext({ ...facts, variante: cardVariante([headerRow]) });
   const unknown = planContext({ ...facts, variante: "live-bau-2" });
   check("live-bau plan: without the variant the plan is byte for byte the plain lane's — no variante, no anatomie on verify-e2e",
     JSON.stringify(plain) === JSON.stringify(planContext({ ...facts, variante: null }))
@@ -1647,6 +1705,22 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
     !("variante" in mainLive) && /gehoert zur Position lane/.test(mainLive.varianteVerworfen ?? "")
       && JSON.stringify(mainLive.selected) === JSON.stringify(planContext({ ...facts, position: "main" }).selected),
     mainLive.varianteVerworfen);
+  // --- the founding seam: server.ts#laneVarianteRaw/#laneVarianteOf, compiled from the server's own
+  // source, over the lane's rows — a variant row read off its group (variantSourceOf)
+  type LaneRow = { text: string; card?: { variante?: string } | null; variantOf?: string };
+  const groupSource = new Map<string, LaneRow>([["g-header", headerRow]]);
+  const seam = new Function("cardVariante", "resolveVariante", "variantSourceOf", new Bun.Transpiler({ loader: "ts" }).transformSync(
+    `${probe.fn("laneVarianteRaw")}\n${probe.fn("laneVarianteOf")}\nreturn { laneVarianteRaw, laneVarianteOf };`))(
+    cardVariante, resolveVariante, (row: LaneRow) => groupSource.get(row.variantOf!) ?? row) as
+    { laneVarianteRaw: (rows: readonly LaneRow[]) => string | null; laneVarianteOf: (rows: readonly LaneRow[]) => string | null };
+  const variantRow: LaneRow = { text: plainText, card: plainCard?.body ?? null, variantOf: "g-header" };
+  const founded = (rows: readonly LaneRow[]) => planContext({ ...facts, variante: seam.laneVarianteRaw(rows) });
+  check("live-bau founding: a header card, its variant row and an interim row found the live-bau lane; a refused value and a plain row the plain lane",
+    [[headerRow], [variantRow], [interimRow]].every((rows) => seam.laneVarianteOf(rows) === "live-bau" && JSON.stringify(founded(rows)) === JSON.stringify(live))
+      && seam.laneVarianteOf([unknownRow]) === null && JSON.stringify(founded([unknownRow]).selected) === JSON.stringify(plain.selected)
+      && /unbekannte Variante "live-bau-2"/.test(founded([unknownRow]).varianteVerworfen ?? "")
+      && seam.laneVarianteOf([plainRow]) === null && JSON.stringify(founded([plainRow])) === JSON.stringify(plain),
+    JSON.stringify([headerRow, variantRow, interimRow, unknownRow, plainRow].map((row) => seam.laneVarianteRaw([row]))));
   const repo = { trackedPaths: new Set([...tree.sourceBytes.keys(), ...sourceBytes.keys()]), sourceBytes: new Map([...tree.sourceBytes, ...sourceBytes]) };
   const repoPlain = planRepoContext({ manifest: tree.manifest, repo, facts });
   const repoLive = planRepoContext({ manifest: tree.manifest, repo, facts: { ...facts, variante: "live-bau" } });

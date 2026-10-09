@@ -1007,7 +1007,7 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   `POST /api/self/tasks` mit EXPLIZITEM `kind:"auftrag"` und
   bewusst gewähltem Spawn-Triple (`harness`/`model`/`effort`; der Default `notiz` läuft nie);
   der `text` öffnet mit den Karten-Kopfzeilen `ROLLE`/`GROESSE`/`FLAECHE`/`VERIFY`/`DONE` (optional
-  `NEU`/`NACH`/`VERBOTEN`), und `VERIFY` nennt das EIGENE Prüfkommando des Repos — der Brief zeigt
+  `NEU`/`NACH`/`VERBOTEN`/`VARIANTE`), und `VERIFY` nennt das EIGENE Prüfkommando des Repos — der Brief zeigt
   seit 2026-09-24 ein Beispiel dafür (`card-extract.ts#parseFormattedCard`) →
   `POST /api/self/tasks/:id/release` → **die Antwort ist ein QUEUE-FAKT, keine Lane** (kein Slot,
   kein Branch, keine Worker-Identität; wer darauf wartet, wartet auf nichts) → **warten ohne
@@ -1017,6 +1017,12 @@ Block, byte-identisch in allen vier Varianten, angehängt zwischen Program-JSON 
   `POST /api/self/tasks/:id/land`; ohne Promotion nennt sie das Board, und dann landet der Owner) →
   das zurückgegebene `watch:{kind:"merge",…}` abonnieren, bei `landed=YES` danach
   `{kind:"audit",repo,mainAfter:<candidate>}`.
+- **`VARIANTE` wählt die Variante der Lane** (seit Karte 66936847 ein Kopffeld): ein Wert aus
+  `context-packs.ts#CONTEXT_POSITION_VARIANTEN` (heute `live-bau`), gespeichert als `card.variante`;
+  ein anderer Wert ist eine benannte Kartenlücke `variante: …`, an einer Autorenkarte
+  (`card.variante`) eine 400. Der eine Leser ist `context-plan.ts#cardVariante`: `card.variante`,
+  und für eine Zeile, deren Karte das Feld nicht trägt, weiter die Zwischenform — die Zeile
+  `VARIANTE: …` nach dem Ziel-Absatz, in der Zeilen vor dem Kopffeld gefilet wurden.
 - **Was ankommt, kann eine FRAGE sein** (seit 2026-09-17): ein blockierter Worker fragt seine MAIN,
   nie den Owner. `GET /api/self/clarifications` listet die an dich adressierten Zeilen,
   `POST /api/self/clarifications/:id/reply` mit `{"text":…}` beantwortet genau eine. Eine

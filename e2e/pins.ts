@@ -3568,8 +3568,8 @@ await import(pathToFileURL(process.argv[2]).href);
   const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
   const classCardDocs = /`card\.klasse` und optional `card\.rolle`/.test(read("docs/self-api.md"));
   pin("the card template and class extension name the fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after","web"'
-    && agentsCard && classCardDocs
+    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after","web","variante"'
+    && agentsCard && classCardDocs && read("docs/self-api.md").includes("(`card.variante`) eine 400")
     && read("docs/harness-adapter.md").includes('`card.web: "search"`')
     && read("docs/harness-adapter.md").includes('`WEB: search`')
     && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
@@ -8467,7 +8467,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // (server.ts#memoryPointer, GET /api/self/memory) — a pointer to the reader, no copied state.
   // 2026-09-24: RAIL_TAIL's filing bullet now explains the card header fields with one example
   // whose VERIFY is the repository's own command — a foreign-repo MAIN has no other source for it.
-  const RAIL_COMMON_SHA256 = "5fc22a5ebcf90efa9512739f71fb3ae72ba9d6ca3ac3140efe83f6c72acb9ed8";
+  // 2026-10-09 (card 66936847): the filing bullet names the optional VARIANTE header, its values
+  // interpolated from context-packs.ts#CONTEXT_POSITION_VARIANTEN.
+  const RAIL_COMMON_SHA256 = "d72656816dad038a25aeeb63643e543e4dd052aaf9263bf104172b315fe78d7d";
   const railBody = (part: string): string =>
     part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
   const standardBytes = rail === ""
@@ -11536,9 +11538,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const RULE_CARD_V2 = "a card is refused by the tree, not by a stale graph or a foreign field";
   const cx = read("card-extract.ts");
   // v6 (2026-09-18): POST /api/self/criterion is a clarify row's verify. v12 (2026-10-06): a repo
-  // script matches in every spelling of the same repo-relative path.
-  const versionConst = /^export const CARD_VALIDATOR_VERSION = 12;$/m.test(cx);
-  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 12 (bump it when a rule change can turn a refusal into an acceptance)`,
+  // script matches in every spelling of the same repo-relative path. v13 (2026-10-09): VARIANTE is a
+  // filing header, so a block that carries it is read whole instead of ending at it.
+  const versionConst = /^export const CARD_VALIDATOR_VERSION = 13;$/m.test(cx);
+  pin(`${RULE_CARD_V2} — CARD_VALIDATOR_VERSION is 13 (bump it when a rule change can turn a refusal into an acceptance)`,
     versionConst, `const=${versionConst}`);
   // v3 (2026-09-13): the filing format. A formatted row is read by the PARSER before the extractor
   // is ever started, and the ledger says which of the two produced each card.
@@ -11556,7 +11559,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     declFallback, `declFallback=${declFallback}`);
   // v6 (2026-09-17): the re-read may not make the row poorer. A field the filing format cannot
   // spell is DROPPED by the sweep's unconditional overwrite the moment a brief moves the row.
-  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"\] as const;/.test(cx)
+  const formatVerboten = /const FORMAT_KEYS = \["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN", "VARIANTE"\] as const;/.test(cx)
     && /verboten: formatPhrases\(field\("VERBOTEN"\)\),/.test(cx) && !/verboten: \[\],\n/.test(cx.split("parseFormattedCard")[1] ?? "");
   pin(`${RULE_CARD_V2} — VERBOTEN is a FORMAT_KEY, so a re-read through the format path cannot drop the card's forbidding half`,
     formatVerboten, `formatVerboten=${formatVerboten}`);

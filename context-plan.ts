@@ -60,17 +60,22 @@ export interface ContextPlanInput {
   readonly variante?: string | null;
 }
 
-// --- THE VARIANT A CARD CHOOSES (card 1f9834a9). An INTERIM form, by decision of the Program-MAIN
-// (clarification 17398332): the card head has no VARIANTE field yet, so the variant is a line of the
-// row's text — `VARIANTE: live-bau`, standing after the goal paragraph, where
-// card-extract.ts#parseFormattedCard has already stopped reading headers and prose past the first
-// paragraph is no goal. This is the ONE reader of that line; every seam asks it, none re-parses.
+// --- THE VARIANT A CARD CHOOSES (card 1f9834a9; a header since card 66936847). The card head carries it:
+// `VARIANTE: live-bau` is a filing header (card-extract.ts#parseFormattedCard), checked against the
+// closed vocabulary by validateCard and stored as `card.variante`. Rows filed in the INTERIM form
+// (clarification 17398332) name it as a line after the goal paragraph, where no header is read; for
+// a row whose card does not carry the field, that line of its text still counts — the same line also
+// covers a row read before its card exists, and a header whose value the validator refused, which
+// then reaches resolveVariante and is refused there by name. This is the ONE reader of a lane's
+// variant; every seam asks it, none re-parses.
 const CARD_VARIANTE_LINE = /^[ \t]*VARIANTE[ \t]*:[ \t]*(.*?)[ \t]*$/gim;
 
-/** The raw variant the card texts name: null = no line; two different values come back joined, so
- *  resolveVariante refuses them by name instead of one silently winning. Pure. */
-export function cardVariante(texts: readonly string[]): string | null {
-  const values = [...new Set(texts.flatMap((text) => [...text.matchAll(CARD_VARIANTE_LINE)].map((hit) => hit[1]!)))];
+/** The raw variant the rows name, per row `card.variante` before the interim line of its text:
+ *  null = neither; two different values come back joined, so resolveVariante refuses them by name
+ *  instead of one silently winning. Pure. */
+export function cardVariante(rows: readonly { readonly text: string; readonly card?: { readonly variante?: string } | null }[]): string | null {
+  const values = [...new Set(rows.flatMap((row) => row.card?.variante !== undefined ? [row.card.variante]
+    : [...row.text.matchAll(CARD_VARIANTE_LINE)].map((hit) => hit[1]!)))];
   return values.length ? values.join(" · ") : null;
 }
 

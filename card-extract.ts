@@ -29,6 +29,7 @@ import { MODEL_ALIASES } from "./model-register";
 import { LOCAL_PROOF_STEPS, CLARIFY_CLOSE_ROUTE } from "./verify-proportion";
 import { intentText, declaresSymbol, splitSymbolRef, IDENT_SRC } from "./task-metadata";
 import { isTaskCardSize, type TaskCardSize } from "./task-waves";
+import { CONTEXT_POSITION_VARIANTEN, type ContextPositionVariante } from "./context-packs";
 import type { SymbolIndex, SymbolRange } from "./task-metadata";
 
 // The extractor's own contract mark and answer key. Deliberately NOT added to WORKER_CONTRACTS:
@@ -61,8 +62,11 @@ export const CARD_KEY = "card";
 //  12 (2026-10-06) — a repo script matches in every spelling of the same repo-relative path
 //                    ("./scripts/gate.sh", "scripts/gate.sh", „[Zitat entfernt]“); a same-named
 //                    script under a different path still refuses
+//  13 (2026-10-09) — VARIANTE is an optional filing header, checked against
+//                    context-packs.ts#CONTEXT_POSITION_VARIANTEN; a header block that carries it is
+//                    read whole instead of ending at it
 // Bump it whenever a change here can turn a refusal into an acceptance.
-export const CARD_VALIDATOR_VERSION = 12;
+export const CARD_VALIDATOR_VERSION = 13;
 
 export interface TaskCardRole { harness: string | null; model: string | null; effort: string | null }
 // `creates` are files the row will ADD. They cannot pass `files`' tracked-tree check by definition,
@@ -87,6 +91,10 @@ export interface TaskCardBody {
   // queue ids this row waits on (the filing header `NACH:`), each one checked to be a row of the
   // queue. The land fold never puts the row in a wave before them (task-land-waves.ts#wavesFor).
   after?: string[];
+  // the named variant of the lane this row founds (the filing header `VARIANTE:`), one of
+  // context-packs.ts#CONTEXT_POSITION_VARIANTEN; absent = the plain lane. Read by
+  // context-plan.ts#cardVariante and judged per founding by resolveVariante.
+  variante?: ContextPositionVariante;
 }
 
 /** What the model is allowed to have said. Every field is re-checked before it becomes a card. */
@@ -94,6 +102,7 @@ export interface RawCard {
   ziel?: unknown; rolle?: unknown; surface?: unknown;
   done?: unknown; verify?: unknown; verboten?: unknown; delegation?: unknown; klasse?: unknown; program?: unknown; size?: unknown; after?: unknown;
   web?: unknown;
+  variante?: unknown;
   // set only by the filing-format parser: header lines that stood AFTER the block it read. The
   // model path never carries one, so absence is the case for every other reading.
   strayHeaderLines?: unknown;
@@ -252,6 +261,18 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     else if (!/^\s*WEB\s*:[ \t]*search[ \t]*$/mi.test(ctx.sourceText))
       gaps.push('web: WEB: search is not declared in the request');
     else web = "search";
+  }
+  // VARIANTE: closed — a CONTEXT_POSITION_VARIANTEN name, declared as a header line of the text
+  // itself, or a refusing gap that names the value. Never a fallback to the plain lane: a card that
+  // asked for a variant and silently got none would found the wrong lane without a word.
+  let variante: ContextPositionVariante | undefined;
+  if (raw.variante !== undefined && raw.variante !== null) {
+    const value = typeof raw.variante === "string" ? raw.variante.trim() : "";
+    if (!(CONTEXT_POSITION_VARIANTEN as readonly string[]).includes(value))
+      gaps.push(`variante: "${value.slice(0, 40)}" is not one of ${CONTEXT_POSITION_VARIANTEN.join(", ")}`);
+    else if (!new RegExp(`^\\s*VARIANTE\\s*:[ \\t]*${value}[ \\t]*$`, "mi").test(ctx.sourceText))
+      gaps.push(`variante: VARIANTE: ${value} is not declared in the request`);
+    else variante = value as ContextPositionVariante;
   }
   const ziel = text1(raw.ziel);
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
@@ -493,6 +514,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
     ...(program ? { program } : {}),
     ...(size ? { size } : {}),
     ...(after.length ? { after } : {}),
+    ...(variante ? { variante } : {}),
   };
   // `surfaceValid` is re-derived from the STORED gaps on every load, so the cap may not cut away the
   // only surface gap: it takes the last slot rather than let a reload call the surface clean.
@@ -514,6 +536,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 //   VERIFY: volle Kette
 //   DONE: one checkable sentence
 //   VERBOTEN: nichts an server.ts · kein Auto-Dispatch  (optional: `·` separates the entries)
+//   VARIANTE: live-bau                               (optional: the lane's named variant)
 //   <prose — its first PARAGRAPH is the goal>
 //
 // An optional `[TITEL]` line may stand above the headers. The five without "optional" must ALL be
@@ -532,10 +555,14 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
 // (wave-brief.ts#renderCardHead renders it into every lane brief), so losing it silently is the
 // dangerous direction. Both readings are written to round-trip the head that renderCardHead emits:
 // `·` between entries, an em dash alone meaning none.
-const FORMAT_KEYS = ["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN"] as const;
+const FORMAT_KEYS = ["KLASSE", "ROLLE", "GROESSE", "FLAECHE", "NEU", "NACH", "WEB", "VERIFY", "DONE", "DELEGATION", "VERBOTEN", "VARIANTE"] as const;
 type FormatKey = typeof FORMAT_KEYS[number];
 const FORMAT_REQUIRED: readonly FormatKey[] = ["GROESSE", "FLAECHE", "VERIFY", "DONE"];
-const FORMAT_LINE = /^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|VERIFY|DONE|DELEGATION|VERBOTEN)\s*:[ \t]*(.*)$/i;
+const FORMAT_LINE = /^\s*(KLASSE|ROLLE|GROESSE|GRÖSSE|FLAECHE|FLÄCHE|NEU|NACH|WEB|VERIFY|DONE|DELEGATION|VERBOTEN|VARIANTE)\s*:[ \t]*(.*)$/i;
+// THE INTERIM VARIANT LINE (card 1f9834a9, clarification 17398332) stood AFTER the goal paragraph,
+// before VARIANTE was a header: such a line is no stray header but the form rows were filed in, and
+// context-plan.ts#cardVariante still reads it off the text for a card that does not carry the field.
+const FORMAT_INTERIM_VARIANTE = /^\s*VARIANTE\s*:/i;
 const formatKey = (word: string): FormatKey =>
   word.toUpperCase().replace("Ö", "OE").replace("Ä", "AE") as FormatKey;
 const FORMAT_DASH = /^[-\u2013\u2014]+$/;
@@ -583,7 +610,7 @@ export function parseFormattedCard(text: string): RawCard | null {
   // a line after the block that still carries a header key is not prose but an unfiled field: the
   // only way one gets past the block is a value above that reached for a second line. Collected,
   // never guessed at — the validator names each one as a gap.
-  const strayHeaderLines = rest.filter((line) => FORMAT_LINE.test(line)).map((line) => line.trim());
+  const strayHeaderLines = rest.filter((line) => FORMAT_LINE.test(line) && !FORMAT_INTERIM_VARIANTE.test(line)).map((line) => line.trim());
   const from = rest.findIndex((line) => line.trim());
   const blank = from < 0 ? -1 : rest.findIndex((line, i) => i > from && !line.trim());
   const prose = from < 0 ? title : rest.slice(from, blank < 0 ? rest.length : blank).join(" ");
@@ -595,6 +622,7 @@ export function parseFormattedCard(text: string): RawCard | null {
     ...(size ? { size } : {}),
     after: formatTokens(field("NACH")),
     ...(fields.has("WEB") ? { web: field("WEB") } : {}),
+    ...(fields.has("VARIANTE") ? { variante: field("VARIANTE") } : {}),
     ...(strayHeaderLines.length ? { strayHeaderLines } : {}),
   };
 }

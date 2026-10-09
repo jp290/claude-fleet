@@ -63,53 +63,53 @@ shortening when a local branch has the same name. The configuration does not upd
 - **`off` means not one request.** Quiet hours, `enabled: false`, and an owner wish of `off` all
   stop the daemon before it makes any call at all — no heartbeat, no job poll. A machine that does
   not poll claims nothing, and a claim that is never made cannot be lost: the portal's expiry rail
-  falls a job back to the Fleet's own drain.
-- **A fresh audit job may be held for this machine — `FLEET_AUDIT_HELPER_GRACE_MS`, on the Fleet
-  side.** A land kicks the Fleet's own drain synchronously, so without it an audit is already the
-  Fleet's before this daemon's 15 s poll has seen it exist (measured 2026-08-29,
-  `docs/messungen/workhorse-baseline-2026-08-29.md`). Set above zero, the Fleet's drain leaves such
-  an entry alone for that long — but only while a device is registered, wished `active`, reporting
-  `active` and beating recently. Unset or `0` is the old behaviour exactly. It never starves
-  anything: the moment the grace lapses the local drain takes the job, which is the same fallback
-  the expiry rail above provides, one step earlier.
-  **"BEATING RECENTLY" IS THE ONLINE WINDOW, NOT THE FRESHNESS ONE** (2026-09-17, `server.ts`, grep
-  `helperCandidateAgeMs`). A heartbeat counts as FRESH for `HELPER_FRESH_MS` (3 × the sweep, 45 s by
-  default) while the register — and every board that draws it — calls the machine ONLINE for
-  `FLEET_DEVICE_ONLINE_MS` (90 s). The drain used to ask only the first, so a drain that fell into
-  the gap between two beats read "no claim-capable helper is beating" and took a ~30-minute audit
-  onto the Fleet host's one suite mutex, irrevocably for that whole run. Now a device that is stale
-  but still inside the online window keeps its grace: the entry waits at most
-  `FLEET_AUDIT_HELPER_GRACE_MS` from its youngest cover and then runs locally as before, and a beat
-  arriving inside that grace makes the job claimable again. Seen past the online window is unchanged
-  — the entry runs here at once. The Fleet's `server.log` names it either way
-  (`post-land audit WAITING: …` while it holds, `post-land audit LOCAL: …` when it runs).
-  **AND IT ONLY EVER HOLDS A JOB THIS DAEMON COULD ACTUALLY TAKE** (2026-09-08, `server.ts`, grep
-  `helperClaimBar`). Four kinds of audit entry are never offered — a repo whose audit is its own
-  repo-worker executable, an entry whose every land passed the docs-only gate (the Fleet audits that
-  one with install+pins in seconds), a parked entry with no command, and (2026-09-13) a repo whose
-  tree fails the Fleet audit command's own `[ -f … ] ||` guard or has no `package.json` for this
-  daemon's install — measured 2026-09-02: Fremdprojekt was bundled and cloned here twice to end in
-  `exit 127`, where the same entry declines locally in 223 ms. The Fleet's drain asks
-  the same predicate the job list and the claim door do, so none of them waits out the grace for an
-  offer that could never arrive.
-  **THE OFFSET RUNS FROM CLAIMABILITY, NOT FROM THE LAND** (2026-09-07, `server.ts`, grep
-  `auditClaimableSince`; `docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md`). Claims lock
-  per REPO, so a land that arrives behind a live claim — or behind a local run of the same repo —
-  is unofferable for as long as that lasts, and measuring the grace from the land's own time spent
-  it while nobody could take the job. Measured: in three of five local runs the drain started
-  7 / 5 / 14 ms after the `helper_result` of the same repo. The clock now starts when the blocker
-  ends, so the grace is time this daemon really had. It is deliberately NOT persisted across a
-  Fleet restart.
-  **A FULL MACHINE STRETCHES THE WAIT INSTEAD OF LOSING THE JOB** (2026-09-13, `server.ts`, grep
-  `helperSaturation`; measured 2026-09-12 13:49–14:27, both work-horse slots held while a lane's
-  preview and an audit both fell back to the Fleet after 180 s / 60 s). When every claim-capable
-  device is full — its own `running`/`maxParallelSuites`, or the claims the Fleet holds for it,
-  whichever is larger — and the Fleet knows those claims, the audit grace runs to the earliest
-  claim `expiresAt` plus two sweep intervals, capped at `FLEET_VERIFY_WAIT_MS`; a lane's unclaimed
-  suite offer is served the same wait as `waitPolicy.unclaimedMs` with a `reason` ("helper saturated
-  until ~HH:MM"). A device that never reported a cap, or reports full with no claim the Fleet knows,
-  is not saturated, and nothing changes for it. Each local audit run logs its reason
-  (`post-land audit LOCAL: …` in `server.log`).
+  ends a claim that goes silent — a lane's preview gets its `unknown` verdict, and an audit job is
+  offered again to the next claim (on a helper deployment never to the Fleet's own drain, see below).
+- **On a helper deployment an audit is a helper's work ONLY — `FLEET_AUDIT_HELPER_GRACE_MS > 0`, on
+  the Fleet side, is the switch** (since 2026-10-08, `eaef9c74`; `server.ts#AUDIT_HELPER_ONLY`,
+  `server.ts#auditCadenceOf`, `docs/verify-tiering.md` §6.0b). The key's number is no longer read:
+  above zero names a deployment that hands its offerable audits to a helper (live: `60000`). Unset
+  or `0` — every harness, a deployment that never enrolled a helper — leaves the Fleet's own drain
+  as the only runner, starting on the land; nothing in this bullet applies there.
+  **TWO NUMBERS DECIDE WHEN.** A land no longer starts its audit. The repo's queue entry is held
+  until the repo has been quiet for `FLEET_AUDIT_QUIET_MS` (default 1 200 000 ms = 20 min) since its
+  newest unmeasured land, or until `FLEET_AUDIT_MAX_WAIT_MS` (default 3 600 000 ms = 60 min) after
+  its OLDEST unmeasured land, whichever comes first — no daily cap, no night run. The quiet window
+  bundles a burst into one run on the newest tip; the ceiling keeps a day that is never quiet from
+  never being measured. The one exception is a deploy waiting on a tip (`server.ts#deployAuditOf`),
+  which releases that tip's audit at once. While the cadence holds an entry it is not on this
+  daemon's job list, its claim answers 409, and the wake rail sends no packet for it. The ledger row
+  names what released the run: `trigger: "quiet" | "max-wait" | "deploy"`.
+  **THEN IT WAITS FOR A HELPER, HOWEVER LONG THAT TAKES — THERE IS NO MAC FALLBACK.** A released,
+  offerable entry is never run by the Fleet's drain: not after a wait, not after a lapsed claim
+  (which reopens it for the next claim). A daemon that is `off`, quiet or switched off therefore
+  leaves the audit queued, not run elsewhere. The wait is visible as `hold: "waiting for helper"`
+  in `GET /api/post-land-audits` → `pending` (beside `hold: "quiet"` with `releaseAt` while the
+  cadence holds) and in the land's memory view (`GET /api/self/memory`, `audit.hold`), and in the
+  Fleet's `server.log` as `post-land audit QUIET: … until …` and `post-land audit WAITING: … —
+  waiting for helper`. The drain does not ask whether a helper is online, fresh or full: the
+  per-audit wait in milliseconds, the online-window reading, the clock from claimability and the
+  saturation stretch that refined it until 2026-10-08 are gone with it (their measurements:
+  `docs/messungen/2026-09-07-audit-platzierung-gnadenfrist.md`, the body of `eaef9c74`).
+  **AND IT ONLY EVER HOLDS A JOB THIS DAEMON COULD ACTUALLY TAKE** (2026-09-08,
+  `server.ts#helperClaimBar`). Four kinds of audit entry are never offered — a repo whose audit is
+  its own repo-worker executable, an entry whose every land passed the docs-only gate (the Fleet
+  audits that one with install+pins in seconds), a parked entry with no command, and (2026-09-13) a
+  repo whose tree fails the Fleet audit command's own `[ -f … ] ||` guard or has no `package.json`
+  for this daemon's install — measured 2026-09-02: Fremdprojekt was bundled and cloned here twice to
+  end in `exit 127`, where the same entry declines locally in 223 ms. The Fleet runs the first,
+  second and fourth kind itself, under the same two numbers (`post-land audit LOCAL: …` names the
+  bar); the parked one waits until a command is configured. Drain, job list, claim door and wake
+  rail ask the same predicate, so none of them waits for an offer that could never arrive.
+  **A FULL MACHINE STRETCHES A LANE'S PREVIEW WAIT** (2026-09-13, `server.ts#helperSaturation`;
+  measured 2026-09-12 13:49–14:27, both work-horse slots held while a lane's preview fell back to
+  the Fleet after 180 s). When every claim-capable device is full — its own
+  `running`/`maxParallelSuites`, or the claims the Fleet holds for it, whichever is larger — and the
+  Fleet knows those claims, a lane's unclaimed suite offer is served a wait up to the earliest claim
+  `expiresAt` plus two sweep intervals, capped at `FLEET_VERIFY_WAIT_MS`, as
+  `waitPolicy.unclaimedMs` with a `reason` ("helper saturated until ~HH:MM"). A device that never
+  reported a cap, or reports full with no claim the Fleet knows, is not saturated. An audit does not
+  read this: it waits for the helper either way.
 - **A job the Fleet takes back is ended here, not finished.** A lane that lands, is closed or is
   recycled takes its preview offer with it (the Fleet reaps it in the slot teardown); an audit
   claim that lapsed is offered again. Either way the Fleet would answer the verdict with `409 no

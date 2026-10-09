@@ -86,7 +86,10 @@ Geräts, `null` wenn nie eines registriert war) · `mode` (dessen eigene letzte 
 (`server.ts#DEVICE_ONLINE_MS`, Default 90 000 ms, `FLEET_DEVICE_ONLINE_MS`). Der `mode` steht
 DANEBEN statt eingerechnet: ein Gerät, das schlägt und `quiet` sagt, ist da und nimmt nichts —
 und das ist ein anderer Fall als „niemand da", weil nur im ersten Warten etwas bringt. Das ist
-absichtlich NICHT `helperClaimCandidateExists` (die strengere Lesung der Audit-Gnadenfrist).
+absichtlich NICHT die strengere Kandidaten-Lesung (`server.ts#isHelperClaimCandidate`: Owner-Wunsch
+UND Selbstauskunft UND frischer Beat); die liest heute nur noch die Sättigung einer Vorschau-Wartezeit
+(`waitPolicy`, unten). Ein Post-Land-Audit fragt seit 2026-10-08 gar nicht mehr, ob ein Helfer da
+ist: auf einer Helfer-Installation wartet es auf ihn, ohne Frist und ohne Mac-Rückfall (`view=work`).
 `takesModules` (seit 2026-09-28) beantwortet die engere Frage „nimmt irgendwer eine EINGEENGTE
 Vorschau?": `true` genau dann, wenn IRGENDEIN Gerät im selben Fenster in seinem letzten Heartbeat das
 Feature `lane-suite-modules` gemeldet hat (`server.ts#helperTakesModules`) — nicht nur das
@@ -1333,6 +1336,16 @@ coverage, unknown[]}`. Je Zeile: `status`, `kind`, `slot`, **`hold:{grund,at,by,
 `running`/`starting` (flüchtig, Prozessspeicher) → `queued` (persistierte Queue, nur bei
 konfiguriertem Audit) → `terminal` (Ledger, mit `result`, `adjudication`) → `not-configured` →
 `unknown` (mit `why`); ohne Land `not-landed`. **Eine fehlende Auditzeile ist nie `running`.**
+`queued` trägt auf einer Helfer-Installation (`FLEET_AUDIT_HELPER_GRACE_MS > 0`, seit 2026-10-08 nur
+noch Schalter, die Zahl wird nicht gelesen) `hold` (`server.ts#auditHoldOf`): `"quiet"` mit
+`releaseAt` — der Takt `server.ts#auditCadenceOf` hält den Lauf, bis das Repo `FLEET_AUDIT_QUIET_MS`
+(Default 20 min) nach seinem jüngsten ungemessenen Land ruhig war, spätestens bis
+`FLEET_AUDIT_MAX_WAIT_MS` (Default 60 min) nach dem ältesten; ein Deploy, der auf den Tip wartet,
+gibt sofort frei — oder `"waiting for helper"`: freigegeben, und nur ein Helfer fährt ihn. Einen
+Mac-Rückfall gibt es nicht, auch nicht nach einem verfallenen Claim; lokal läuft nur, was kein Helfer
+nehmen kann (`server.ts#helperClaimBar`), unter denselben zwei Zahlen. Ohne Helfer fehlt `hold`: der
+lokale Drain startet auf dem Land. Dieselbe Lesung steht in `GET /api/post-land-audits` → `pending`;
+Herleitung: `docs/verify-tiering.md` §6.0b.
 `stateRevision` ist ein Hash über die in DIESER Antwort kopierten State-Felder, kein globaler
 Zähler; `bootEpoch` ist der Serverstart. Seite: höchstens 50 Zeilen und 32 KiB, was nicht passt,
 wird gezählt (`omitted`, `coverage:"truncated"`), nie still verworfen.

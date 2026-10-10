@@ -825,16 +825,17 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     if (opened !== null) await respawnScreen(opened, ">_ OpenAI Codex (v0.147.0)");
     const response = await pending;
-    const body = await response.json() as { slot?: number; label?: string };
-    return { program, status: response.status, slot: body.slot ?? null, answered: body.label ?? null,
+    // the founding answer is {ok, slot, program} — it carries no label, so the label is read off the slot
+    const body = await response.json() as { slot?: number };
+    return { program, status: response.status, slot: body.slot ?? null, opened,
       label: (await sessions()).slots.find((s) => s.id === body.slot)?.label ?? null };
   };
   const named = await foundUnlabelled("Overhaul: Kern und Fundament", { kurzname: " Kern " });
   check("Program-MAIN default label: a founding without label opens <Kurzname>-MAIN: <repo> · <model>, and the Program keeps the trimmed Kurzname",
-    named.status === 200 && named.label === `Kern-MAIN: ${repoName} · GPT-5.5` && named.answered === named.label
+    named.status === 200 && named.slot === named.opened && named.label === `Kern-MAIN: ${repoName} · GPT-5.5`
       && storedProgram(named.program.id)?.kurzname === "Kern"
       && (await ownerPrograms()).find((p) => p.id === named.program.id)?.kurzname === "Kern",
-    `${named.status} label=${named.label} answered=${named.answered} kurzname=${storedProgram(named.program.id)?.kurzname}`);
+    `${named.status} slot=${named.slot} opened=${named.opened} label=${named.label} kurzname=${storedProgram(named.program.id)?.kurzname}`);
   // validated BEFORE the live-MAIN answer: the old door read `existing:true` here and dropped the field
   const badKurz = await Promise.all(["x".repeat(25), "   ", 7].map((kurzname) =>
     beginBootstrap(named.program.id, { cwd: REPO, kurzname })));

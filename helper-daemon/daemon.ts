@@ -249,6 +249,25 @@ export function modulesEnv(kind: string | undefined, modules: unknown): Record<s
     || !modules.every((m) => typeof m === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m))) return null;
   return { FLEET_E2E_MODULES: (modules as string[]).join(",") };
 }
+// THE PORT BAND FORK, pure and exported (e2e/helper-daemon.ts#bandChecks): which port band a run
+// gets. Measured 2026-10-10 06:59 (post-land audit e900ed30, work-horse): two runs side by side each
+// took PORT=$((8800 + $$ % 2000)) in ./e2e-isolated.sh, their pids landed within the suite's own
+// port offsets of each other, and one fixture died on `EADDRINUSE` at 9857 — the squatter was the
+// other run, not a service. A pid cannot be made distinct mod 2000; a slot index can. So every run
+// holds the SMALLEST index no other run of this process holds, from its claim to its `finally`, and
+// the wrapper turns it into a sub-band of its own band (e2e-isolated.sh, grep FLEET_E2E_BAND). The
+// index means "which of my parallel runs", never "which wrapper": each wrapper's band is already
+// disjoint from the others', so one index per run serves all of them. PORT_BANDS is the wrapper's
+// count — ten sub-bands of 200 in its 2000 — and `null` (all held) is a job this daemon cannot run
+// apart, reported as such (127 → unknown), never run on a pid-derived port in its place.
+export const PORT_BANDS = 10;
+export function portBand(held: ReadonlySet<number>): number | null {
+  for (let i = 0; i < PORT_BANDS; i++) if (!held.has(i)) return i;
+  return null;
+}
+export function bandEnv(band: number): Record<string, string> {
+  return { FLEET_E2E_BAND: String(band) };
+}
 // The claim answer as it comes off the wire — unvalidated by us, so the two ref fields are typed
 // the way the server actually serves them: a lane-suite claim carries `branch`, an audit claim
 // carries `main`, and neither kind ever carries both (server.ts#helperClaim, #claimLaneSuite).
@@ -456,8 +475,8 @@ const liveGroups = new Set<number>();
 // JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
 // no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
 // `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for four
-// values: this run's own suite lock, its scratch TMPDIR, a shard job's FLEET_E2E_SHARD and a narrowed
-// preview's FLEET_E2E_MODULES (see `suiteEnv` in `work`). It is applied AFTER
+// values: this run's own suite lock, its scratch TMPDIR, its port band FLEET_E2E_BAND, a shard job's
+// FLEET_E2E_SHARD and a narrowed preview's FLEET_E2E_MODULES (see `suiteEnv` in `work`). It is applied AFTER
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
 export async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
@@ -842,6 +861,9 @@ export function jobsToStart(jobs: readonly JobView[], free: number, running: num
 // first await, and emptied in the same `finally`, so the claim window (where the fleet still lists
 // the job open) is covered from its first instant to its last.
 const startingJobs = new Set<string>();
+// THE PORT BANDS this process's runs hold (portBand): taken in `work` in the same synchronous step
+// that picks it, given back in its `finally`.
+const heldBands = new Set<number>();
 function start(cfg: HelperConfig, job: JobView): void {
   runningJobs++;
   startingJobs.add(job.id);
@@ -915,7 +937,16 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   // …and FLEET_E2E_MODULES, the other one, for a narrowed lane preview (modulesEnv): the runner runs
   // that selection's fixture closure. Absent on every other job. The fleet never sends both cuts on
   // one job, and the runner refuses them together by name.
-  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...shardVars, ...modulesVars };
+  // …and FLEET_E2E_BAND, at every cap and for every kind: a command job may be ./e2e-isolated.sh
+  // itself, and a wrapper that does not read it is untouched by it. No await between the pick and the
+  // add, so two runs of this process can never be handed the same index.
+  const band = portBand(heldBands);
+  if (band === null) {
+    await report(cfg, j, 127, `all ${PORT_BANDS} port bands are held by this daemon's runs — this daemon cannot run that job apart from them`);
+    return;
+  }
+  heldBands.add(band);
+  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...bandEnv(band), ...shardVars, ...modulesVars };
   // what proves a process belongs to THIS run when its reap comes (reapRun)
   const scope: RunScope = { tree: clone, tmp: scratch };
   // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn
@@ -1022,6 +1053,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   } finally {
     inFlight.delete(j.id);
     activeRunDirs.delete(runDir);
+    heldBands.delete(band);
     // the clone goes, `tmp/` stays: a red's kept instance is the evidence, and `pruneRuns` bounds it
     try { rmSync(clone, { recursive: true, force: true }); } catch { /* the verdict is already sent */ }
     try { rmSync(`${runDir}/job.bundle`, { force: true }); } catch { /* idem */ }

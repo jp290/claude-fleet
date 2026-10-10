@@ -146,6 +146,17 @@ shortening when a local branch has the same name. The configuration does not upd
   path is a literal in `e2e-stage.sh` and tmux follows `TMUX_TMPDIR`, so neither moves with it.
   `keepRuns` counts FINISHED run dirs: a run still in flight is never pruned and never counted.
 
+  At **every** cap, and for every job kind, each run also gets `FLEET_E2E_BAND`: the smallest port
+  band index (`0`–`9`) no other run of this daemon holds, given back when the run ends
+  (`daemon.ts#portBand`). `./e2e-isolated.sh` turns it into a 200-port sub-band of its own band
+  (`8800 + 200·band + $$ % 160`), so two runs side by side can no longer bind the same port — before
+  it, both took `8800 + $$ % 2000` and collided whenever their pids lay within the fixtures' port
+  offsets (`+1` … `+29`) of each other: `EADDRINUSE` on 9857 in post-land audit e900ed30,
+  2026-10-10. Without the variable the wrapper is unchanged. The other four wrappers (claude-gate,
+  clean-review, security, postland-audit) do not read it yet; their bands are disjoint from this
+  one's, so the same index can serve them once each splits its own band the same way. If all ten
+  are held the job is reported unrunnable (127), never run on a pid-derived port.
+
   The heartbeat carries `running` and `maxParallelSuites`, so the board shows `1/2 suite slots`,
   and the Fleet's claim door refuses a device whose own last heartbeat said it was full. That
   refusal uses nothing but the machine's own words — a device that reports neither field (a browser

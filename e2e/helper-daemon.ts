@@ -27,7 +27,7 @@ import { HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk } from "../src/protocol"
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
 import { artifactsOf, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
-  pointsAt, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
+  pointsAt, portBand, bandEnv, PORT_BANDS, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
   EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
 interface Row {
@@ -133,6 +133,89 @@ export async function reapChecks(check: (name: string, ok: boolean, detail?: str
   }
 }
 
+// ===== (HD) TWO RUNS ON ONE HELPER NEVER SHARE A PORT (2026-10-10 06:59, post-land audit e900ed30,
+// work-horse: shard 2 died on `EADDRINUSE` at 9857 beside shard 1 and lane previews — each run took
+// PORT from its own $$, and the squatter was the other run). The daemon's half (portBand → bandEnv)
+// is fed straight into the WRAPPER'S OWN LINES — the `# >>> port band` block of e2e-isolated.sh, run
+// in `sh` with $$ stood in for by every pid residue mod 2000 — so the statement is about the two
+// files that ship, not about a copy of their arithmetic here. A run occupies PORT … PORT+maxOff, and
+// maxOff is read out of the e2e/ modules that bind beside PORT, so a new fixture offset past the
+// sub-band's slack turns this red instead of colliding on a helper. `src` is the source tree: the
+// post-land-audit instance stages neither the wrapper nor those modules, and its node_modules link
+// is the pointer home (e2e-stage.sh (4)).
+// MUTATION: PORT=$((8800 + $$ % 2000)) for every run in e2e-isolated.sh (index ignored), or
+// `return 0` in daemon.ts#portBand ⇒ the two first run slots' ranges overlap ⇒ the first check red.
+export async function bandChecks(check: (name: string, ok: boolean, detail?: string) => void, src: string): Promise<void> {
+  let wrapper = "";
+  try { wrapper = readFileSync(`${src}/e2e-isolated.sh`, "utf8"); } catch { /* reported below */ }
+  const block = /^# >>> port band.*\n([\s\S]*?)^# <<< port band/m.exec(wrapper)?.[1] ?? "";
+  const offsets: number[] = [];
+  const unresolved: string[] = [];
+  let mods: string[] = [];
+  try { mods = readdirSync(`${src}/e2e`).filter((f) => f.endsWith(".ts")); } catch { /* reported below */ }
+  for (const f of mods) {
+    const text = readFileSync(`${src}/e2e/${f}`, "utf8");
+    for (const m of text.matchAll(/\bPORT \+ (\w+)/g)) {
+      const n = /^\d+$/.test(m[1]!) ? Number(m[1]) : Number(new RegExp(`\\bconst ${m[1]} = (\\d+)\\b`).exec(text)?.[1] ?? NaN);
+      if (Number.isFinite(n)) offsets.push(n); else unresolved.push(`${f}:${m[1]}`);
+    }
+  }
+  const maxOff = Math.max(0, ...offsets);
+  check("(HD) setup: the port-band block of e2e-isolated.sh and the fixture offsets beside PORT are readable from the source tree",
+    block.includes("PORT=") && offsets.length > 0 && unresolved.length === 0,
+    `src=${src} block=${block.length}B offsets=${JSON.stringify(offsets)} unresolved=${JSON.stringify(unresolved)}`);
+  if (!block.includes("PORT=")) return;
+  // every PORT the block yields for one environment, $$ swept over 0…1999 — one sh process, the
+  // block's own text with `$$` as the loop's pid
+  const PIDS = 2000;
+  const portsFor = (env: Record<string, string>): { ports: number[]; code: number | null; err: string } => {
+    const loop = `_hd_pid=0; while [ "$_hd_pid" -lt ${PIDS} ]; do\n${block.replaceAll("$$", "$_hd_pid")}\necho "$PORT"; _hd_pid=$((_hd_pid + 1)); done`;
+    const env0: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) if (v !== undefined && k !== "FLEET_E2E_BAND") env0[k] = v;
+    const r = spawnSync("sh", ["-c", loop], { env: { ...env0, ...env }, encoding: "utf8" });
+    return { ports: (r.stdout ?? "").split("\n").filter(Boolean).map(Number), code: r.status, err: (r.stderr ?? "").trim() };
+  };
+  const span = (ports: number[]): [number, number] => [Math.min(...ports), Math.max(...ports) + maxOff];
+  const apart = (a: [number, number], b: [number, number]): boolean => a[1] < b[0] || b[1] < a[0];
+  const inBand = (r: [number, number]): boolean => r[0] >= 8800 && r[1] <= 10799;
+  // the daemon's two first runs side by side: what `work` hands each one
+  const held = new Set<number>();
+  const first = portBand(held);
+  if (first !== null) held.add(first);
+  const second = portBand(held);
+  const runA = first === null ? null : portsFor(bandEnv(first));
+  const runB = second === null ? null : portsFor(bandEnv(second));
+  const spanA = runA && runA.ports.length === PIDS ? span(runA.ports) : null;
+  const spanB = runB && runB.ports.length === PIDS ? span(runB.ports) : null;
+  check("(HD) TWO PARALLEL RUNS OF ONE HELPER GET DISJOINT PORT RANGES — the daemon's first two run slots, through e2e-isolated.sh, for EVERY pair of pids, fixture offsets included",
+    first !== null && second !== null && first !== second && !!spanA && !!spanB && apart(spanA, spanB)
+      && inBand(spanA) && inBand(spanB),
+    `bands=${first},${second} runA=${JSON.stringify(spanA)} runB=${JSON.stringify(spanB)} maxOff=${maxOff}`
+    + ` codes=${runA?.code},${runB?.code} err=${JSON.stringify((runA?.err ?? "") + (runB?.err ?? ""))}`);
+  // …and the whole allocator: smallest free first, a freed index taken again, every index the
+  // daemon can hand out apart from every other and inside the wrapper's 8800–10799, none past them
+  const all = new Set<number>();
+  const order: (number | null)[] = [];
+  for (let i = 0; i <= PORT_BANDS; i++) { const b = portBand(all); order.push(b); if (b !== null) all.add(b); }
+  all.delete(3);
+  const reused = portBand(all);
+  const spans = Array.from({ length: PORT_BANDS }, (_, b) => portsFor(bandEnv(b))).map((r) => r.ports.length === PIDS ? span(r.ports) : null);
+  const clashes: string[] = [];
+  spans.forEach((a, i) => spans.forEach((b, k) => { if (i < k && (!a || !b || !apart(a, b))) clashes.push(`${i}∩${k}`); }));
+  check("(HD) …every one of the daemon's PORT_BANDS indices is handed out once, smallest free first, and each one's range is apart from all others and inside 8800–10799",
+    JSON.stringify(order) === JSON.stringify([...Array.from({ length: PORT_BANDS }, (_, i) => i), null]) && reused === 3
+      && clashes.length === 0 && spans.every((s) => !!s && inBand(s)),
+    `order=${JSON.stringify(order)} reused=${reused} clashes=[${clashes}] spans=${JSON.stringify(spans)}`);
+  // …and the two cases that are NOT a helper's run: no index is the old derivation byte for byte,
+  // and an index the wrapper cannot place is refused out loud rather than replaced by $$
+  const plain = portsFor({});
+  const asBefore = plain.ports.length === PIDS && plain.ports.every((p, pid) => p === 8800 + pid % 2000);
+  const refused = ["10", "x", "-1"].map((v) => portsFor({ FLEET_E2E_BAND: v }));
+  check("(HD) …without FLEET_E2E_BAND the PORT is 8800 + $$ % 2000 as before, and an index outside 0-9 stops the wrapper (exit 2) instead of falling back to $$",
+    asBefore && refused.every((r) => r.code === 2 && r.ports.length === 0 && r.err.includes("not a port band")),
+    `asBefore=${asBefore} refused=${JSON.stringify(refused.map((r) => ({ code: r.code, n: r.ports.length, err: r.err.slice(0, 80) })))}`);
+}
+
 export async function run(h: {
   REPO: string;
   setAuditMode: (m: string) => Promise<number>;
@@ -144,6 +227,11 @@ export async function run(h: {
   const { REPO, setAuditMode, killSrv, startSrv, auditRows, headOf } = h;
   await checkResultRetry(check);
   await reapChecks(check);
+  // the source tree, for bandChecks: the staged instance's node_modules pointer home, else (a run
+  // from a checkout, whose node_modules is no link) ROOT itself
+  let src = ROOT;
+  try { src = dirname(resolve(ROOT, readlinkSync(`${ROOT}/node_modules`))); } catch { /* not a link: ROOT is the tree */ }
+  await bandChecks(check, src);
 
   // ===== (HD.1) THE MODE ARITHMETIC, as pure functions ==========================================
   // These are the only checks in this module that need no server, and they are here rather than
@@ -1381,7 +1469,7 @@ export async function run(h: {
     const SLOW = `${ROOT}/fakeslowsuite`;
     await Bun.write(SLOW, [
       "#!/bin/sh",
-      `echo "slow suite start pwd=$(pwd) lock=[${"$"}{FLEET_SUITE_LOCK:-}] tmp=[${"$"}{TMPDIR:-}]"`,
+      `echo "slow suite start pwd=$(pwd) lock=[${"$"}{FLEET_SUITE_LOCK:-}] tmp=[${"$"}{TMPDIR:-}] band=[${"$"}{FLEET_E2E_BAND:-}]"`,
       `i=0; while [ ! -f ${JSON.stringify(REL)} ] && [ "$i" -lt 400 ]; do sleep 0.2; i=$((i + 1)); done`,
       'echo "PASS  the slow stand-in was released"',
       "exit 0",
@@ -1436,6 +1524,20 @@ export async function run(h: {
       }).filter((x): x is string => x !== null);
     };
     const locks = (): string[] => envOf(/lock=\[([^\]]*)\] tmp=/);
+    // …and the FLEET_E2E_BAND each got (daemon.ts#portBand), keyed by the lock the same line printed:
+    // above cap 1 that lock is the run's own, which is how the two live runs are picked out below
+    const bandsByLock = (): Map<string, string> => {
+      const out = new Map<string, string>();
+      let dirs: string[] = [];
+      try { dirs = readdirSync(WORK).filter((d) => d.startsWith("run-")); } catch { return out; }
+      for (const d of dirs) {
+        let text = "";
+        try { text = readFileSync(`${WORK}/${d}/suite.log`, "utf8"); } catch { continue; }
+        const m = /lock=\[([^\]]*)\] tmp=\[[^\]]*\] band=\[([^\]]*)\]/.exec(text);
+        if (m) out.set(m[1]!, m[2]!);
+      }
+      return out;
+    };
     // …and the TMPDIR each got (C1), paired with the run dir whose log printed it: a scratch is only
     // "its own" when it names THAT run's `tmp/`, not merely some run's
     const tmpsOwn = (): { dir: string; tmp: string }[] => {
@@ -1475,6 +1577,9 @@ export async function run(h: {
     check("(HD.10) …but its SCRATCH still leaves /tmp: even at cap 1 TMPDIR is that run's own <run dir>/tmp, and it exists",
       oneTmps.length === 1 && oneTmps[0]!.tmp === `${WORK}/${oneTmps[0]!.dir}/tmp` && existsSync(oneTmps[0]!.tmp),
       `tmps=${JSON.stringify(oneTmps)}`);
+    const oneBand = bandsByLock().get("");
+    check("(HD.10) …and the run carries port band 0 — the smallest index, handed to every kind at every cap",
+      oneBand === "0", `band=${JSON.stringify(oneBand)}`);
     one.proc.kill();
     await one.proc.exited;
 
@@ -1506,6 +1611,14 @@ export async function run(h: {
       parallelLocks.length === 2 && new Set(parallelLocks).size === 2
         && parallelLocks.every((l) => l.startsWith(`${WORK}/run-`) && l.endsWith("/e2e.lock")),
       `locks=${JSON.stringify(parallelLocks)}`);
+    // THE PORT HALF OF THE SAME STATEMENT (2026-10-10, EADDRINUSE beside a second run): two runs side
+    // by side must not be handed one port band, or ./e2e-isolated.sh puts both in the same 200 ports.
+    // MUTATION: drop `heldBands.add(band)` in daemon.ts#work ⇒ both runs read band 0 ⇒ red.
+    const byLock = bandsByLock();
+    const liveBands = parallelLocks.map((l) => byLock.get(l) ?? "");
+    check("(HD.10) …AND EACH PARALLEL RUN GOT ITS OWN PORT BAND — FLEET_E2E_BAND 0 and 1, never the same index twice",
+      liveBands.length === 2 && [...liveBands].sort().join(",") === "0,1",
+      `bands=${JSON.stringify(liveBands)} locks=${JSON.stringify(parallelLocks)}`);
     // the cap-1 run above may or may not survive the prune, so this too is read as a set: every run
     // that printed a scratch names its OWN dir, and the two live runs' scratches differ
     const twoTmps = tmpsOwn();

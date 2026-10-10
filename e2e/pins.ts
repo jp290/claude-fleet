@@ -9859,7 +9859,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         // C1 (2026-09-13): the scratch rides at EVERY cap, the lock only above 1 — both in the one env
         // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv), then a narrowed
         // preview's FLEET_E2E_MODULES (modulesEnv, §S10c) — the two cuts spread after the lock
-        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
+        // …and the run's port band FLEET_E2E_BAND (portBand, 2026-10-10 EADDRINUSE) between lock and cuts
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.bandEnv\(band\), \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         // …and the `scope` after it names which processes belong to the run, for its reap (5d56f628)

@@ -51,7 +51,27 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 # drill-3's contains 18789/18792 — a run whose $$ lands on one of those fails to bind.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-instance-$$"
 SOCK="fleettest$$"
-PORT=$((8800 + $$ % 2000))
+# THE HELPER'S PORT BAND. $$ keeps socket and dir apart, but NOT the port: a run binds PORT and the
+# fixtures PORT+1 … PORT+29 (e2e/restart.ts, e2e/self-token.ts, e2e/trace.ts, e2e/konzepte.ts), so
+# two runs side by side collide whenever their pids differ by less than that mod 2000. Measured
+# 2026-10-10 06:59 on the work-horse (post-land audit e900ed30): EADDRINUSE on 9857, held by the
+# other run. A helper daemon therefore hands each of its parallel runs a distinct FLEET_E2E_BAND
+# (helper-daemon/daemon.ts#portBand), and that index picks a 200-wide sub-band of this wrapper's
+# band: 8800 + 200*band, plus $$ % 160 so a leftover of an earlier run on the same index is not
+# hit every time. 160 + the largest offset (29) stays under 200 — e2e/helper-daemon.ts#bandChecks
+# runs this block and holds both facts. Without the variable (a hand-started run, a lane, the
+# Mac's own audit) PORT is what it always was. An index that is not one digit is refused, never
+# replaced by $$: that would be the collision again, silently.
+# >>> port band (e2e/helper-daemon.ts#bandChecks runs these lines)
+if [ -n "${FLEET_E2E_BAND:-}" ]; then
+  case "$FLEET_E2E_BAND" in
+    [0-9]) PORT=$((8800 + 200 * FLEET_E2E_BAND + $$ % 160)) ;;
+    *) echo "e2e-isolated: FLEET_E2E_BAND=$FLEET_E2E_BAND is not a port band (0-9)" >&2; exit 2 ;;
+  esac
+else
+  PORT=$((8800 + $$ % 2000))
+fi
+# <<< port band
 
 rm -rf "$DIR"
 mkdir -p "$DIR"

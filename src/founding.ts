@@ -126,7 +126,8 @@ interface State {
   place: string | null;
   info: DirInfoResp | null; infoErr: string | null; infoSeq: number;
   // THE PLAN of this start, and the query it answers; rollen stay from the first answer on
-  answer: Answer | null; answerFor: string | null; planErr: string | null; planSeq: number;
+  // planFor: the query asked last · answerFor: the query `answer` answers — only a readable answer moves it
+  answer: Answer | null; answerFor: string | null; planFor: string | null; planErr: string | null; planSeq: number;
   rollen: RolleRow[] | null;
   tripleFor: Role | null;               // the role whose standard triple the fields hold
   harness: string; model: string; effort: string; container: string; containerContext: string;
@@ -231,7 +232,7 @@ function open(entry: Entry) {
   S = {
     shell, flakes, entry, kind: "session", role: "lane", layer: "rolle", wt: "new", orphan: null,
     repos, view: repos.length ? "repos" : "folders", place: null,
-    info: null, infoErr: null, infoSeq: 0, answer: null, answerFor: null, planErr: null, planSeq: 0,
+    info: null, infoErr: null, infoSeq: 0, answer: null, answerFor: null, planFor: null, planErr: null, planSeq: 0,
     rollen: null, tripleFor: null, harness: "", model: "", effort: "", container: "", containerContext: "",
     switches: new Map(), last: null, note: null, moved: null, details: false,
     progs: null, progOther: 0, progErr: null, progSeq: 0, program: null,
@@ -487,7 +488,7 @@ function sessionView(): HTMLElement {
   right.append(lab("Was die Session bekommt"), getsRow());
   if (s.note) right.append(el("div", "fdnote warn", s.note));
   cols.append(left, right);
-  if (needsPlan() && s.answerFor !== planKey()) void loadPlan();
+  if (needsPlan() && s.planFor !== planKey()) void loadPlan();
   return cols;
 }
 
@@ -769,7 +770,7 @@ function anpassenView(): HTMLElement {
   box.append(top);
   if (s.role === "main") box.append(el("div", "fdnote", "Die MAIN-Tür (bootstrap-main) baut ihren Plan selbst und nimmt noch keine Schalter — hier steht, was sie bekommt."));
   if (s.note) box.append(el("div", "fdnote warn", s.note));
-  if (!a) { box.append(el("div", "fdnote", s.planErr ?? "Plan wird gelesen …")); if (needsPlan() && s.answerFor !== planKey()) void loadPlan(); return box; }
+  if (!a) { box.append(el("div", "fdnote", s.planErr ?? "Plan wird gelesen …")); if (needsPlan() && s.planFor !== planKey()) void loadPlan(); return box; }
   box.classList.toggle("fdshowdet", s.details);
   box.append(bausteinList(a));
   return box;
@@ -1210,6 +1211,7 @@ function choosePlace(path: string) {
     s.infoErr = null;
     s.answer = null;
     s.answerFor = null;
+    s.planFor = null;
     s.planErr = null;
     s.switches.clear();
     s.note = null;
@@ -1371,7 +1373,9 @@ async function loadPlan() {
   if (!s?.place) return;
   const seq = ++s.planSeq;
   const key = planKey();
-  s.answerFor = key;
+  s.planFor = key;
+  // a read again for the same query does not count the old answer while it is under way
+  if (s.answerFor === key) s.answerFor = null;
   s.planErr = null;
   let refused: string | null = null;
   try {
@@ -1385,6 +1389,7 @@ async function loadPlan() {
     else if (!validAnswer(j)) s.planErr = "Der Plan für diesen Start ist nicht lesbar — der Server antwortet in einer anderen Form.";
     else {
       s.answer = j;
+      s.answerFor = key;
       s.rollen = j.rollen;
       // the first answer names the role's standard; the fields take it, and the plan is read for it
       if (s.tripleFor !== s.role && agentHarnesses().length) { applyStandard(); }
@@ -1400,7 +1405,7 @@ async function loadPlan() {
         s.switches.delete(s.last);
         s.note = `${row?.wort ?? s.last}: ${refused}`;
         s.last = null;
-        s.answerFor = null;
+        s.planFor = null;
       }
       renderAll();
     }
@@ -1542,12 +1547,25 @@ function blocker(): string | null {
   if (s.planErr) return s.planErr;
   const a = fresh();
   if (!a) return "Der Plan für diesen Start wird gelesen …";
-  if (!a.start.startbar) return refusalSay(a);
+  if (!a.start.startbar && !planless(a)) return refusalSay(a);
   return null;
+}
+
+// NUR ORDNER WITHOUT A PLAN (MAIN, clarification c520fa32, 10.10.): while the plan route says
+// start.startbar:false for it, Nur Ordner starts over the existing /open door without a plan, and one
+// sentence says what that door gives it anyway — honest and usable, never grey for what starts. The
+// server need: /open for nur-ordner without the Fleet rows, or the plan takes them as "immer"
+// (server.ts#planDoorRow). Once the plan answers startbar:true this path and its sentence fall away.
+const planless = (a: Answer): boolean => S?.role === "nur-ordner" && !a.start.startbar;
+function planlessSay(a: Answer): string {
+  return `Startet ohne Plan über die bestehende Tür; sie gibt heute trotzdem ${refusalWords(a).join(", ")} mit.`;
 }
 
 // the door's refusals in owner words: which Bausteine it would deliver although the plan says no
 function refusalSay(a: Answer): string {
+  return `Diese Tür startet den Plan noch nicht genau so: sie liefert trotzdem ${refusalWords(a).join(", ")}.`;
+}
+function refusalWords(a: Answer): string[] {
   const words: string[] = [];
   for (const r of a.start.refusals) {
     const id = /^([a-z0-9:._-]+) /i.exec(r)?.[1];
@@ -1555,7 +1573,7 @@ function refusalSay(a: Answer): string {
     const word = w ?? r;
     if (!words.includes(word)) words.push(word);
   }
-  return `Diese Tür startet den Plan noch nicht genau so: sie liefert trotzdem ${words.join(", ")}.`;
+  return words;
 }
 
 // --- the foot: the plan's sentence, the deviations, and the one button ---------------------------------
@@ -1642,8 +1660,8 @@ function renderFoot() {
   }
   // bootstrap-main picks the free MAIN place itself — the clicked one is a likely answer, not a promise
   const seat = s.role === "main" && s.entry.kind === "slot" ? `Den Platz wählt der Server — nicht unbedingt Slot ${s.entry.slot}.` : null;
-  const why = s.moved ?? s.error ?? blocker() ?? seat;
-  if (why) text.append(el("div", `fdfootnote${s.moved || s.error || (a && !a.start.startbar) ? " warn" : ""}`, why));
+  const why = s.moved ?? s.error ?? blocker() ?? seat ?? (a && planless(a) ? planlessSay(a) : null);
+  if (why) text.append(el("div", `fdfootnote${s.moved || s.error || (a && !a.start.startbar && !planless(a)) ? " warn" : ""}`, why));
   if (a && !a.start.startbar && why === refusalSay(a)) text.lastElementChild!.setAttribute("title", a.start.refusals.join("\n"));
   const go = btn("fdgo");
   const label = s.busy ? "Startet …" : "Starten";
@@ -1690,7 +1708,8 @@ async function start() {
     const before = new Map(fleet.map((row) => [row.id, row.openedAt]));
     const requestedRole = s.role;
     const requestedPlace = s.role === "lane" && s.wt === "old" ? s.orphan! : s.place;
-    const a = fresh();
+    // a continued worktree starts without a plan: what the plan on screen would carry is not asked
+    const a = s.role === "lane" && s.wt === "old" ? null : fresh();
     const packs = a ? a.plan.bausteine.filter((b) => b.id.startsWith("pack:") && b.zustand === "an").map((b) => b.id.slice(5)) : [];
     const preview: StartPreview | null = a && packs.length
       ? { head: a.head ?? null, plannedAt: a.plannedAt ?? null, packs: a.selected.filter((p) => packs.includes(p.id)) } : null;
@@ -1714,19 +1733,20 @@ async function start() {
       result = said;
     } else {
       if (!a) return;
-      const plan = planBody(a);
+      // Nur Ordner while its door cannot start the plan: the existing /open, without one (see planless)
+      const plan = planless(a) ? null : planBody(a);
       const free = freePlace();
       const url = s.role === "lane" ? (s.entry.kind === "lane" ? "/api/lanes" : `/api/slots/${s.entry.slot}/open-worktree`) : `/api/slots/${free}/open`;
       const req = s.role === "lane"
         ? { repo: s.place, ...(s.entry.kind === "lane" && s.entry.parent ? { parent: s.entry.parent } : {}), branch: "", ...body, plan }
-        : { cwd: s.place, ...(s.role === "orchestratorin" ? { label: ORCH_LABEL } : {}), ...body, plan };
+        : { cwd: s.place, ...(s.role === "orchestratorin" ? { label: ORCH_LABEL } : {}), ...body, ...(plan ? { plan } : {}) };
       // the door names the slot it took where it picks one (/api/lanes); the others seat it where asked
       const seat = s.role !== "lane" ? free ?? undefined : s.entry.kind === "slot" ? s.entry.slot : undefined;
       const said = await door(url, req, onError, seat);
       if (!said) return;
       result = said;
     }
-    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedPlace, bound, preview, packs, a?.plan.planSatz ?? null);
+    if (result.ok && S === s) await captureProof(s, body, before.get(result.slot), result, requestedRole, requestedPlace, bound, preview, packs, a && !planless(a) ? a.plan.planSatz : null);
   } finally {
     // a start answers seconds later (boot grace plus readiness); by then the owner may have closed this
     // window and opened the next — only the window that asked shows the receipt
@@ -1747,7 +1767,7 @@ async function door(url: string, req: Record<string, unknown>, onError: (msg: st
   if (res.status === 409 && j && typeof j.staleHash === "string" && validAnswer(j)) {
     if (S === s) {
       s.answer = j;
-      s.answerFor = planKey();
+      s.answerFor = s.planFor = planKey();
       s.moved = `Der Plan hat sich seit der Vorschau bewegt — nichts gestartet. Oben steht der Plan von jetzt; Starten nimmt ihn.`;
       renderAll();
     }

@@ -886,7 +886,7 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
 }
 
 // --- THE CHECKS (card R4, rebuilt 2026-10-08): every suite on this machine, each run drawn once. A
-// lane's row carries ONE flag for its checks (src/board.ts#laneFlag); an opened lane shows its points
+// closed lane's row says nothing of its checks (owner 2026-10-10); an opened lane shows its points
 // and its run, the check after the land stands under its repo's main, and everything else — a run
 // without a lane, a closed lane's run named by the lane — stands in the Arbeitsorte's block
 // "Prüfungen" (src/board.ts#runRows), with the machine's one-at-a-time lock only when it needs
@@ -3290,35 +3290,6 @@ function laneWay(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
 }
 const WAY_CHECKS = WAY;
 const redStages = (w: WorkplaceRow) => WAY_CHECKS.filter(({ key }) => w.checks?.[key]?.state === "red");
-// THE LANE'S FLAG (owner 2026-10-08: „[Zitat entfernt]“
-// ): ONE flag
-// at the closed lane for what its checks CAME TO — red where one is red, green where all that finished
-// passed; a ring in red or green says that result is on an older stand than the worktree. That a check
-// RUNS or waits is the diamond's on the lane's way back (#gateLook). Nothing where no check has a
-// result. Every stage's words are its title, held word and aria-label.
-type FlagLook = { cls: "bad" | "ok"; old: boolean };
-function flagLook(w: WorkplaceRow): FlagLook | null {
-  // the check after the land names the integration commit, never this worktree: it is never "older"
-  const old = (keys: { key: keyof WorkplaceChecks }[]) => keys.every(({ key }) => key !== "audit" && w.checks?.[key]?.stale === true);
-  const reds = redStages(w);
-  if (reds.length) return { cls: "bad", old: old(reds) };
-  const greens = WAY_CHECKS.filter(({ key }) => w.checks?.[key]?.state === "green");
-  return greens.length ? { cls: "ok", old: old(greens) } : null;
-}
-function laneFlag(w: WorkplaceRow): HTMLElement | null {
-  const look = flagLook(w);
-  if (!look) return null;
-  const f = el("span", `lflag ${look.cls}${look.old ? " old" : ""}`);
-  f.appendChild(icon("flag"));
-  const says = WAY_CHECKS.filter(({ key }) => w.checks?.[key] && w.checks[key]?.state !== "running" && w.checks[key]?.state !== "waiting")
-    .map(({ key, word }) => stageSay(w, key, word));
-  f.setAttribute("role", "img");
-  f.setAttribute("aria-label", says.join(". "));
-  f.title = says.join("\n");
-  f.dataset.hold = f.title;
-  f.dataset.flag = look.cls;
-  return f;
-}
 // THE DIAMOND (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
 // 
 // ; first built 2026-10-08 in 954fd904 and taken back with that night's UI): a lane's check
@@ -3328,7 +3299,7 @@ function laneFlag(w: WorkplaceRow): HTMLElement | null {
 // ): filled
 // ink while one runs (here or on a helper), an ink ring while one only waits, and for the server's
 // last minutes after its runs ended filled green, filled red, or an amber ring without a result —
-// then it goes, and the flag keeps what the checks came to. Read from the runs naming the lane
+// then it goes, and what the checks came to stands at the opened lane's points (#wayLine). Read from the runs naming the lane
 // (MeterBall) and the checks' own states.
 type GateLook = "run" | "queue" | "ok" | "bad" | "unk";
 const endedLook = (b: MeterBall): GateLook => (b.tone === "ok" ? "ok" : b.tone === "red" ? "bad" : "unk");
@@ -4753,16 +4724,15 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   // a run that names its slot must name THIS lane's session too — a branch alone is not enough then
   const mine = (w.branch ? runsHere.byBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id);
   // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
-  // ): its git stand, ONE flag for
-  // its checks (src/board.ts#laneFlag), and the test instance's square only while that runs — the
-  // square before the flag, so every flag stands at the row's end, one under the other. The four
-  // points stand in the opened lane. A check that runs or waits is the DIAMOND on the lane's way
-  // back to its target (#gateLook, placed by #drawRankeLines), open or closed.
+  // ): its git stand and the test
+  // instance's square only while that runs. NO FLAG (owner 2026-10-10: „[Zitat entfernt]“
+  // 
+  // ): what its checks came to stands at the four points of the opened lane (#wayLine).
+  // A check that runs or waits, and for a few minutes how a run ended, is the DIAMOND on the lane's
+  // way back to its target (#gateLook, placed by #drawRankeLines), open or closed.
   const rt = el("span", "lr");
   rt.appendChild(gitSign(w, s));
   if (tiLook(w).cls === "up") rt.appendChild(tiSign(w));
-  const flag = laneFlag(w);
-  if (flag) rt.appendChild(flag);
   row.appendChild(rt);
   // every lane lands somewhere: its way back is dashed until it has landed AND the check after that
   // land is through (owner 2026-10-09: „[Zitat entfernt]“
@@ -4832,7 +4802,7 @@ export function drawRankeLines(root: HTMLElement): void {
       const n = row.querySelector(":scope > .nd")?.getBoundingClientRect();
       return n ? [Math.round(n.left + n.width / 2 - tb.left) + 0.5, Math.round(n.top + n.height / 2 - tb.top)] : null;
     };
-    // the right edge of what a row says (its git stand, square, flag, chevron), where its way back starts
+    // the right edge of what a row says (its git stand, square, chevron), where its way back starts
     const end = (row: Element): number => Math.max(...[...row.querySelectorAll(":scope > .lr, :scope > .nm, :scope > .rt, :scope > .ti, :scope > .fc")]
       .map((e) => e.getBoundingClientRect().right - tb.left), 0);
     // one rail per target, in the margin right of the rows; a nested target's rail stands one step in
@@ -4859,7 +4829,7 @@ export function drawRankeLines(root: HTMLElement): void {
       const x0 = Math.round(end(row)) + 4;
       paths.push({ cls: `back ${row.dataset.land === "wait" ? "wait" : "land"}${own ? " ink" : ""}`, d: `M${rx} ${b[1]}H${x0}`, id: row.dataset.id });
       // the diamond sits ON that line a few dashes after the row's last mark (the test instance's
-      // square, the flag — owner 2026-10-09: „[Zitat entfernt]“
+      // square, its git stand — owner 2026-10-09: „[Zitat entfernt]“
       // ), its centre on the line's own coordinates —
       // placed from the same numbers, never guessed by CSS, never on the rail (GATE_RAIL)
       const gb = row.querySelector<HTMLElement>(":scope > .lgate");
@@ -4913,7 +4883,7 @@ export function drawRankeLines(root: HTMLElement): void {
     // surface, the hovered one in the hover tone. THE MARKS STAND INSIDE IT (owner, the same day: „[Zitat entfernt]“
     // ; then "dass der grüne
     // Button der Testinstanz innerhalb des grau hinterlegten Objekts sich befindet"): it holds everything
-    // the row says — words, git stand (↑n), the test instance's square, the flag — and ends where the
+    // the row says — words, git stand (↑n), the test instance's square — and ends where the
     // row's way back begins, so the dashes to the diamond leave from its end
     const hasMark = (row: Element): boolean =>
       [...row.querySelectorAll(":scope > .ti, :scope > .lr > :not(.gs)")].some((e) => e.getClientRects().length > 0);

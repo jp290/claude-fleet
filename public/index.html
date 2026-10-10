@@ -3004,9 +3004,9 @@
   #board .bfail .bstate { color: var(--amber); }
 
   /* ARBEITSORTE — the Ranke as a table (cards e66909b1 + abe74821; rechter-tab-notiz.md §3b, 3A).
-     Every row has the same columns — lines · address · name · its end (git stand, test instance,
-     ONE flag) — so a sign stands at the same x in every repo. Colour only as a signal (G0.2):
-     --q-live works by itself (a check: passed, src/board.ts#laneFlag), --q-wait waits on you,
+     Every row has the same columns — lines · address · name · its end (git stand, test instance)
+     — so a sign stands at the same x in every repo. Colour only as a signal (G0.2):
+     --q-live works by itself (a check: passed, src/board.ts#wayPoint), --q-wait waits on you,
      --danger is red, --amber is unmeasured; motion is colour only (G0.4). */
   #board .ranke { --rk-row: 24px; --rk-sub: 20px; --rk-grp: 8px; --rk-lvl: 10px; --rk-rail: 28px;
     --rk-ref: 22px; --rk-cols: var(--rk-rail) var(--rk-ref) minmax(0, 1fr) auto 14px; }
@@ -3045,7 +3045,7 @@
   #board .way { display: inline-flex; align-items: center; gap: 3px; height: 100%; }
   #board .way i { width: 7px; height: 7px; border-radius: 50%; display: block; flex: none; box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
   #board .way i.none { width: 4px; height: 4px; margin: 1.5px; box-shadow: none; background: var(--chat-edge); }
-  /* the checks' colours are the lane flag's (src/board.ts#laneFlag) */
+  /* the checks' colours are the diamond's (src/board.ts#gateLook) */
   #board .way i.ok { background: var(--q-live); box-shadow: none; }
   #board .way i.run { background: var(--chat-ink); box-shadow: none; }
   #board .way i.queue { box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
@@ -3057,15 +3057,8 @@
   #board .way i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
   #board .way i.run.old { box-shadow: inset 0 0 0 1.25px var(--chat-ink); }
   /* landed is a diamond: the one point that is an event */
-  /* one flag at a closed lane (src/board.ts#laneFlag) */
-  #board .lflag { display: inline-grid; place-items: center; }
   /* the test instance's square at a closed lane is a sign, not a tap target */
   #board .zr .lr .ti { width: auto; height: auto; cursor: inherit; }
-  #board .lflag .ico { width: 12px; height: 12px; }
-  #board .lflag.run, #board .lflag.queue { color: var(--chat-ink); }
-  #board .lflag.bad { color: var(--danger); }
-  #board .lflag.ok { color: var(--q-live); }
-  #board .lflag:not(.queue):not(.old) .ico path:last-child { fill: currentColor; }
   #board .act { display: inline-grid; place-items: center; }
   #board .act .ico { width: 12px; height: 12px; }
   #board .act[data-tone="live"] { color: var(--q-live); }

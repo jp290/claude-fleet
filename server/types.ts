@@ -19,6 +19,7 @@ import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, HELPER_ARTIFACT_PATH_MAX, help
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
 import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
+import type { ContextPackMcpServer } from "../context-packs";
 import type { CodexFirstTurn } from "./conversation-read";
 import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX, HELPER_REPOS_BYTES_MAX,
   HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
@@ -2136,6 +2137,12 @@ interface Slot {
   // adapter; every other harness spawns without it. Set at open (body `remote`) or on a live slot by
   // the owner (POST /api/slots/:id/remote), effective from the pane's next spawn — the flag is on
   // the command line, like the label-keyed exports. Persisted; cleared on open/kill.
+  packMcp: readonly ContextPackMcpServer[]; // the MCP servers this occupant's FOUNDING PLAN chose (a pack
+  // Zusatz with `mcp`, context-plan.ts#planMcpServers), stamped by the founding door through openSlot
+  // and handed by ensureSlot to EVERY spawn — open, heal, restart, wake — as claudeMcpConfigFlag's one
+  // `--mcp-config` argument. Persisted because a heal or restart re-reads no plan (it keeps the lane's
+  // AGENTS.override.md). Read ONLY by the claude adapter (CONTEXT_PACK_MCP_ANSCHLUSS); [] = today's
+  // spawn line byte for byte. Installs nothing and touches no ~/.claude file. Cleared on open/kill.
   context: SlotContext | null; // the pane's context window and auto-compaction threshold, in tokens, for
   // an adapter that takes them (Codex: three `-c` overrides on the fresh AND resume line). null = no
   // flag, today's spawn line byte for byte. Validated 0 < compactAt < window <= the client's catalog

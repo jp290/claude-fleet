@@ -47,7 +47,7 @@ import {
   RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
-import { cardVariante, claudeMcpConfigFlag, planContext, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
+import { cardVariante, claudeMcpConfigFlag, planContext, planMcpServers, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPackAnatomie, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
   type PrivatePackResolution, type ProgramContextPack } from "./context-plan";
@@ -57,7 +57,7 @@ import {
   stampObservedSourceHashes, type ContextManifestRead,
 } from "./context-manifest";
 import {
-  CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, CONTEXT_POSITION_VARIANTEN,
+  CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, CONTEXT_POSITION_VARIANTEN, contextPackMcpServerOf,
   type ContextPackCapability,
   type ContextPackMcpServer,
   type ContextPackMode,
@@ -381,8 +381,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // after the strict flag, so a text lane loads exactly these and no ambient one; a browser lane or
     // a MAIN keeps its ambient servers beside them. The spelling is claudeMcpConfigFlag's alone — the
     // plan names the same bytes (e2e/context-plan.ts holds both). Per launch, never a settings write.
-    // NO CALLER PASSES ANY YET: ensureSlot hands nothing over, so the plan says "would", and a check in
-    // e2e/context-plan.ts keeps every seed free of an MCP Zusatz until the hand-over is its own card.
+    // THE CALLER is ensureSlot alone, with the slot's persisted founding selection (Slot.packMcp), on
+    // every spawn cause; [] adds nothing, so a slot without an MCP Zusatz spawns byte for byte as before.
     if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;
     const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
     if (rulebook) {
@@ -2559,6 +2559,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   browser: false,
   webSearch: false,
   remote: false,
+  packMcp: [],
   context: null,
   permissions: null,
   taskId: null,
@@ -6142,7 +6143,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9677,6 +9678,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
               const planned = await foundingPlanOf(s.worktree.repo, occupant.harness, "lane", undefined, variante);
               if (!current()) return;
               if (!planned.ok) throw new Error(planned.error);
+              // the file is re-planned, so the MCP selection follows the same plan (a heal WITH a file keeps the slot's)
+              s.packMcp = harnessOf(occupant.harness).id === "claude" ? planMcpServers(planned.value.plan) : [];
               const head = await gitRead(occupant.cwd, "rev-parse", "HEAD");
               if (!current()) return;
               if (head.code !== 0 || !head.out) throw new Error("could not read lane HEAD for session rules");
@@ -9707,6 +9710,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, rulebookRole,
           webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null, projectDocMaxBytes,
+          // THE FOUNDING'S MCP SERVERS, the same persisted list on open, heal, restart and wake (Slot.packMcp)
+          packMcp: s.packMcp,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
@@ -9827,7 +9832,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   box: BoxPin = NO_BOX, treeLease: GameMakerTreeLease | null = null,
   browser = false, context: SlotContext | null = null, remote = false, permissions: SlotPermissions | null | undefined = undefined, webSearch = false, preObservedSupport: CodexModelSupport | null = null,
   onCandidate: (occupant: SlotStreamOccupant) => void = () => {}, preparedLaneAgents?: SessionAgents,
-  foundingPlan?: AcceptedFoundingPlan): Promise<SlotOpenResult> {
+  foundingPlan?: AcceptedFoundingPlan,
+  // the founding plan's MCP servers (planMcpServers), stamped like every other spawn input below.
+  // Absent = the accepted plan's own, else none; a lane without either re-plans in ensureSlot.
+  packMcp?: readonly ContextPackMcpServer[]): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -9946,6 +9954,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
   s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
+  // ...nor a pane the previous occupant's MCP servers: only THIS founding's plan names them, claude only
+  s.packMcp = h.id === "claude" ? [...(packMcp ?? (foundingPlan ? acceptedPlanMcp(foundingPlan) : []))] : [];
   s.permissions = po.permissions;
   s.context = context; // ...nor a pane the previous occupant's context budget
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
@@ -10180,6 +10190,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.browser = false;
   s.webSearch = false;
   s.remote = false;
+  s.packMcp = [];
   s.context = null;
   s.permissions = null;
   s.taskId = null;
@@ -13333,7 +13344,7 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   try {
     try {
       const opened = await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions, r.webSearch,
-        null, undefined, r.context?.sessionAgents);
+        null, undefined, r.context?.sessionAgents, undefined, r.context?.packMcp);
       if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
         || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane restart");
     } catch (e) {
@@ -13702,6 +13713,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // the self door's brief stays byte for byte what it was
   const brief = opts.appendix === null ? ritual : `${ritual}\n\n${opts.appendix}`;
   const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  // the successor continues the same line in the same cwd: it keeps the founding's MCP servers
+  const carriedMcp = [...s.packMcp];
   if (opts.beforeKill) {
     const refused = await opts.beforeKill();
     if (refused) return refused;
@@ -13712,7 +13725,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { brief, path: "succession", draft, label },
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
-        null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate),
+        null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -19536,7 +19549,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       prepared = { ...preparedBrief, context };
       const opened = await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort, NO_BOX, null, spawn.browser === true,
         spawn.context ?? null, false, spawn.permissions, [next, ...(wave?.followers ?? [])].some((t) =>
-          t.card?.valid === true && t.card.web === "search"), null, undefined, context.sessionAgents);
+          t.card?.valid === true && t.card.web === "search"), null, undefined, context.sessionAgents, undefined, context.packMcp);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
         || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during dispatch open");
     } finally {
@@ -19975,6 +19988,8 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 interface LaneContextDelivery {
   block: string;
   sessionAgents: SessionAgents;
+  /** the plan's MCP servers (planMcpServers), stamped on the slot at the open beside sessionAgents */
+  packMcp: ContextPackMcpServer[];
   /** the variant the plan ACCEPTED (laneVarianteRaw → resolveVariante); null = the plain lane */
   variante: ContextPositionVariante | null;
   notesBlock: string; snippetBlock: string; neighborBlock: string; studioLaneBlock: string; anchorBlock: string;
@@ -20094,7 +20109,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
     free.harness, "lane", undefined, clarify ? "" : `${ownerKorrekturenPointer()}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver, variante)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { sessionAgents, variante, notesBlock, snippetBlock, neighborBlock, studioLaneBlock, anchorBlock,
+  return { sessionAgents, packMcp: planMcpServers(plan), variante, notesBlock, snippetBlock, neighborBlock, studioLaneBlock, anchorBlock,
     block: `${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}${anchorBlock}`,
     record: async (deliveredBrief, at) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
@@ -40259,6 +40274,12 @@ async function plannedLaneAgents(acc: AcceptedFoundingPlan, at: { repoRoot: stri
   return measured.agents;
 }
 
+// The MCP servers an accepted plan's founding carries: those of the packs its door delivers, so a pack
+// the window switched off or the door cannot carry brings none. openSlot stamps them on the slot.
+function acceptedPlanMcp(acc: AcceptedFoundingPlan): ContextPackMcpServer[] {
+  return planMcpServers({ selected: acc.answer.fp.plan.selected.filter((pack) => acc.geliefert.some((row) => row.id === `pack:${pack.id}`)) });
+}
+
 const sha256Of = (text: string): string => createHash("sha256").update(text).digest("hex");
 // THE RECEIPT'S PLAN BLOCK: hash and sentence, each delivered row with its way, bytes and version,
 // each left-out row with its reason. `gemessen` says where a byte number comes from — the delivered
@@ -41596,7 +41617,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
         (preObservedSupport, onCandidate) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
-          false, null, false, spawn.permissions, false, preObservedSupport, onCandidate),
+          false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, planMcpServers(plan)),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -41938,6 +41959,9 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       if (e instanceof GameMakerTreeConflict) return json({ error: e.message }, 409);
       throw e;
     }
+    // THE PLAN IS MADE BEFORE THE OPEN: its MCP servers ride the spawn (planMcpServers), and the brief
+    // below renders the same plan, so pane and receipt can never name two different selections
+    const foundingPlan = availableContextPlan(await programMainContextPlan(preflight.value, programMainContextFacts(preflight.value.frame, ho.harness)));
     const free = freeSessionSlot("main");
     if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free MAIN band" : "no free slot") }, 409);
     laneSpawn.add(free.id);
@@ -41954,7 +41978,8 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
         : `Program-MAIN: ${program.title}`.slice(0, MAX_LABEL);
       try {
         const opened = await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
-          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease, false, null, false, pe.permissions);
+          null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease, false, null, false, pe.permissions, false, null, undefined,
+          undefined, undefined, planMcpServers(foundingPlan));
         if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt
           || free.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during Program founding");
       } catch (e) {
@@ -42009,7 +42034,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = availableContextPlan(await programMainContextPlan(preflight.value, planFacts));
+      const plan = foundingPlan;
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildProgramMainBrief(program, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);
@@ -43602,6 +43627,13 @@ if (existsSync(STATE_FILE)) {
         if ((v as { browser?: unknown }).browser === true && hOf.browserProfile === "apply") s.browser = true;
         // ...and Remote Control, only `true` and only on the adapter that reads it
         if ((v as { remote?: unknown }).remote === true && hOf.id === "claude") s.remote = true;
+        // ...and the founding's MCP servers, on the one adapter that reads them, each re-judged by the
+        // shape check a manifest Zusatz passes: one broken entry drops the whole list, never half of it
+        const pmcp = (v as { packMcp?: unknown }).packMcp;
+        if (hOf.id === "claude" && Array.isArray(pmcp)) {
+          const judged = pmcp.map(contextPackMcpServerOf);
+          if (judged.every((j) => j.ok)) s.packMcp = judged.flatMap((j) => j.ok ? [j.server] : []);
+        }
         // ...and the context budget, re-judged by the same shape check as the doors: a broken or
         // hand-edited value loads as absent (today's spawn line), the slot itself stays
         if (takesContext(hOf)) s.context = slotContextFrom((v as { context?: unknown }).context);
@@ -52479,8 +52511,10 @@ Bun.serve<WSData>({
         }
         let modelSupport: CodexModelSupport | null = null;
         try {
+          // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
-            null, false, co.context, ro.remote, pe.permissions);
+            null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
+            acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : []);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;

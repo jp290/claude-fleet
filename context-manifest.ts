@@ -7,7 +7,7 @@
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
 import { createHash } from "node:crypto";
 import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
-import { CONTEXT_PACKS, CONTEXT_PACK_FASSUNGEN, CONTEXT_PACK_HARNESSES, CONTEXT_PACK_TRIGGERS, CONTEXT_PACK_ZEITPUNKTE, CONTEXT_PACK_ZUSAETZE_MAX,
+import { CONTEXT_PACKS, CONTEXT_PACK_FASSUNGEN, contextPackMcpServerOf, CONTEXT_PACK_HARNESSES, CONTEXT_PACK_TRIGGERS, CONTEXT_PACK_ZEITPUNKTE, CONTEXT_PACK_ZUSAETZE_MAX,
   CONTEXT_POSITIONS, CONTEXT_POSITION_VARIANTEN,
   contextPartId, type ContextPackCapability, type ContextPackHardness, type ContextPackGroup, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
@@ -109,7 +109,10 @@ const FLEET_SEED_IDS: ReadonlySet<string> = new Set(CONTEXT_PACKS.map((pack) => 
 // the tree exactly like a Kern anchor. Any finding makes the whole pack manifest-invalid.
 export const CONTEXT_PACK_ANATOMY_KEYS = ["zusaetze", "varianten", "fassung"] as const;
 const ZUSATZ_ID = /^[a-z][a-z0-9-]{0,39}$/;
-const ZUSATZ_KEYS: ReadonlySet<string> = new Set(["id", "bedingung", "sources"]);
+// `mcp` (tranche 3, card a8bc6c54): a Zusatz may bring ONE MCP server, judged by the same shape check
+// a slot's persisted selection passes (context-packs.ts#contextPackMcpServerOf). A Zusatz that only
+// brings a server may name no source of its own (`sources: []`).
+const ZUSATZ_KEYS: ReadonlySet<string> = new Set(["id", "bedingung", "sources", "mcp"]);
 const BEDINGUNG_VOCABULARY: Readonly<Record<string, readonly string[]>> = {
   triggers: CONTEXT_PACK_TRIGGERS, positions: CONTEXT_POSITIONS, harnesses: CONTEXT_PACK_HARNESSES,
   varianten: CONTEXT_POSITION_VARIANTEN, zeitpunkt: CONTEXT_PACK_ZEITPUNKTE };
@@ -164,7 +167,11 @@ export function packAnatomyIssues(core: Record<string, unknown>, anatomy: Record
           else if (!Array.isArray(value) || value.length === 0 || value.some((v) => !vocabulary.includes(v as string)))
             issues.push(`${where}: bedingung.${key} must be a non-empty list of ${vocabulary.join(", ")}`);
         }
-        sourcesIssues(zusatz.sources, where);
+        if ("mcp" in zusatz) {
+          const mcp = contextPackMcpServerOf(zusatz.mcp);
+          if (!mcp.ok) issues.push(`${where}: ${mcp.error}`);
+        }
+        if (!("mcp" in zusatz && Array.isArray(zusatz.sources) && zusatz.sources.length === 0)) sourcesIssues(zusatz.sources, where);
         if (typeof zusatz.id === "string" && Array.isArray(zusatz.sources))
           zusatzIds.push({ ids: zusatz.sources.map((source, i) =>
             contextPartId(packId, { id: isRecord(source) && typeof source.id === "string" ? source.id : `${zusatz.id}-${i + 1}` }, 0)),

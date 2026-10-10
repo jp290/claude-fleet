@@ -113,9 +113,10 @@ export interface ContextPackAnatomie {
   readonly fassung?: ContextPackFassung;
 }
 
-/** What the spawn of THIS harness WOULD carry of a Zusatz's MCP server, with the evidence. `mitgaebe`
- *  is the exact argument the claude line would gain, present only when the Zusatz is on and the
- *  harness applies. A statement about the spawn line, never a delivery: no field here says "arrived". */
+/** What the spawn of THIS harness carries of a Zusatz's MCP server, with the evidence. `mitgaebe`
+ *  is the exact argument the claude line gains, present only when the Zusatz is on and the harness
+ *  applies: the founding persists it on the slot (Slot.packMcp) and every spawn passes it. A
+ *  statement about the spawn line, not about the server's own start: no field here says "arrived". */
 export interface PackMcpAnschluss {
   readonly server: ContextPackMcpServer;
   readonly harness: string;
@@ -150,12 +151,15 @@ export function packMcpAnschluss(server: ContextPackMcpServer, harness: string, 
     ...(known.zustand === "apply" && an ? { mitgaebe: claudeMcpConfigFlag([copy]) } : {}) };
 }
 
-/** The MCP servers a plan's spawn would carry: every Zusatz that is on and applies, in plan order.
- *  No spawn reads it yet: ensureSlot hands nothing over, and e2e/context-plan.ts keeps every seed
- *  free of an MCP Zusatz until it does. */
+/** The MCP servers a plan's spawn carries: every Zusatz that is on and applies, in plan order, the
+ *  first of a name winning (claude's mcpServers is keyed by name). THE seam a founding reads before
+ *  it spawns: the door stamps this on the slot (server.ts#openSlot `packMcp`), ensureSlot hands the
+ *  slot's copy to every spawn. */
 export function planMcpServers(plan: Pick<ContextPlan, "selected">): ContextPackMcpServer[] {
+  const seen = new Set<string>();
   return plan.selected.flatMap((pack) => (pack.anatomie?.zusaetze ?? [])
-    .flatMap((zusatz) => zusatz.an && zusatz.mcp?.mitgaebe ? [zusatz.mcp.server] : []));
+    .flatMap((zusatz) => zusatz.an && zusatz.mcp?.mitgaebe && !seen.has(zusatz.mcp.server.name)
+      ? (seen.add(zusatz.mcp.server.name), [zusatz.mcp.server]) : []));
 }
 
 // `useWhen` is OPTIONAL on a selection although it is mandatory on a Fleet seed: a repo-declared

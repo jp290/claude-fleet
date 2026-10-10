@@ -604,6 +604,9 @@ export async function checkCodexSpawnFixtures(source: string,
           openSlot: open, s: slot, predecessor: { cwd: "/new" }, openRoot: "/new",
           spawn: { model: available.model, effort: null, permissions: null }, label: null, harness: "codex",
           box: { container: null, containerContext: null }, treeLease: null,
+          // the closures' MCP hand-over (card a8bc6c54): the generic rail carries the predecessor's
+          // selection, the Program rail its plan's — none here, a codex fixture spawns without one
+          carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
         });
         const at = source.indexOf("async function respawnInPlace(");
         const end = source.indexOf("\n}\n", at);

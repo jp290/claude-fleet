@@ -27,7 +27,7 @@ import { readFileSync, rmdirSync, rmSync } from "node:fs";
 import { AUTOS_TICK_MS, BASE, ROOT, afterTick, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
 import { FLEET_DEFAULT_MODEL } from "./src/protocol";
 import { runFreshPinnedTranscriptIsolation } from "./e2e/history";
-import { runSessionRollover } from "./e2e/slots";
+import { runPackMcpSpawn, runSessionRollover } from "./e2e/slots";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
@@ -238,6 +238,8 @@ check("alive-claude gate: lastResult reports sent", a2after?.lastResult === "sen
 await runFreshPinnedTranscriptIsolation(8);
 // …and the session rollover (e2e/slots.ts explains why it needs this harness's pin too).
 await runSessionRollover([8, 10, 11]);
+// …and a pack's MCP server on every spawn cause, read off the resident claude's argv (e2e/slots.ts).
+await runPackMcpSpawn((target) => paneArgv(target, "claude"));
 
 // steward-authenticated fetch helpers — reused by branch 4's fresh-for-gates test below.
 const stewTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";

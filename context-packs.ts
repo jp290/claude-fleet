@@ -121,11 +121,31 @@ export interface ContextPackMcpServer {
   readonly command: string;
   readonly args?: readonly string[];
 }
+const MCP_COMMAND_MAX = 256, MCP_ARGS_MAX = 32, MCP_ARG_MAX = 512;
+// no control byte: the server lands single-quoted on a tmux pane line (claudeMcpConfigFlag)
+const MCP_PLAIN = /^[^\u0000-\u001f\u007f]*$/;
+/** The ONE shape judge of a pack's MCP server, for every door that reads one it did not build: a repo
+ *  manifest's Zusatz (context-manifest.ts#packAnatomyIssues) and a slot's persisted selection
+ *  (fleet.json, Slot.packMcp). A copy with exactly the three keys, or the reason it is refused. */
+export function contextPackMcpServerOf(value: unknown): { ok: true; server: ContextPackMcpServer } | { ok: false; error: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { ok: false, error: "mcp must be { name, command, args? }" };
+  const v = value as Record<string, unknown>;
+  const unknown = Object.keys(v).filter((key) => key !== "name" && key !== "command" && key !== "args");
+  if (unknown.length) return { ok: false, error: `mcp: unknown key ${unknown[0]} (no env, URL or token — a pack installs nothing)` };
+  if (typeof v.name !== "string" || !CONTEXT_PACK_MCP_NAME.test(v.name)) return { ok: false, error: "mcp.name must match ^[a-z][a-z0-9-]{0,39}$" };
+  if (typeof v.command !== "string" || !v.command || v.command.length > MCP_COMMAND_MAX || !MCP_PLAIN.test(v.command))
+    return { ok: false, error: `mcp.command must be 1..${MCP_COMMAND_MAX} characters without control bytes` };
+  if (v.args !== undefined && (!Array.isArray(v.args) || v.args.length > MCP_ARGS_MAX
+    || v.args.some((arg) => typeof arg !== "string" || arg.length > MCP_ARG_MAX || !MCP_PLAIN.test(arg))))
+    return { ok: false, error: `mcp.args must be at most ${MCP_ARGS_MAX} strings of at most ${MCP_ARG_MAX} characters without control bytes` };
+  return { ok: true, server: { name: v.name, command: v.command, ...(v.args !== undefined ? { args: [...(v.args as string[])] } : {}) } };
+}
 // EVIDENCE PER HARNESS, read 2026-10-09 off the installed binaries' own help. A harness this table
 // does not name is `unsupported` with "nicht belegt" — silence is never an `apply`.
 export const CONTEXT_PACK_MCP_ANSCHLUSS: Readonly<Partial<Record<ContextPackHarness, { readonly zustand: ContextPackMcpZustand; readonly beleg: string }>>> = {
   claude: { zustand: "apply", beleg: "claude --help (2.1.295): --mcp-config laedt MCP-Server aus JSON-Strings, --strict-mcp-config nur diese; "
-    + "der Spawn wuerde den Server ueber --mcp-config mit --strict-mcp-config mitgeben (agentCmd), nichts in ~/.claude geschrieben" },
+    + "der Server wird mitgegeben: der Slot haelt die Auswahl (Slot.packMcp), jeder Spawn (open, heal, restart, wake) traegt sie "
+    + "als --mcp-config (agentCmd), eine Textlane hinter --strict-mcp-config; nichts in ~/.claude geschrieben" },
   codex: { zustand: "unsupported", beleg: "codex --help (codex-cli 0.160.0): -c koennte mcp_servers.<name> je Start setzen, "
     + "aber der Fleet-Adapter traegt keinen Pack-Server auf seiner Zeile" },
   pi: { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): MCP-Server nur aus ~/.pi/agent/mcp.json oder .pi/mcp.json, kein Startflag; "

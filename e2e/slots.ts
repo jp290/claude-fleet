@@ -14284,3 +14284,138 @@ export async function runSessionRollover(ids: readonly [number, number, number],
     }
   }
 }
+
+// THE PACK'S MCP SERVER ON EVERY SPAWN (card a8bc6c54, replacing the seed tripwire of clarification
+// 51c72127). A repo whose tracked manifest gives lane and MAIN a Zusatz with `mcp` founds a text lane;
+// the founding plan's selection is persisted on the slot (fleet.json `packMcp`) and the RESIDENT
+// claude's argv carries exactly claudeMcpConfigFlag's argument behind --strict-mcp-config after open,
+// heal (tmux session killed under it) and ↻ restart. A lane is never put to sleep (sleepSlot), so 💤→wake
+// is proven on a MAIN that /open founds with the pack chosen (`packs`): its plan stamps the same server,
+// and the resumed claude carries it. The control lane in a repo without that Zusatz carries no
+// --mcp-config at all and persists no packMcp: its line is today's, byte for byte.
+// It needs a resident claude and a real pin (wake resumes one), so it runs in ./e2e-claude-gate.sh
+// phase 1 with claude-hang installed; the gate file hands its argv reader in (paneArgv there).
+export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string[]>): Promise<void> {
+  const base = mkdtempSync(`${tmpdir()}/fleet-e2e-packmcp-`);
+  const server = { name: "pack-probe", command: "pack-mcp-fixture", args: ["--stdio"] };
+  const flag = `--mcp-config ${JSON.stringify({ mcpServers: { [server.name]: { command: server.command, args: server.args } } })}`;
+  const seen = `--strict-mcp-config ${flag}`;
+  const git = (cwd: string, ...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const repoWith = (name: string, manifest: unknown[] | null): string => {
+    const dir = `${base}/${name}`;
+    mkdirSync(`${dir}/docs`, { recursive: true });
+    writeFileSync(`${dir}/docs/kern.md`, "## Kern\nimmer.\n");
+    if (manifest) {
+      mkdirSync(`${dir}/.fleet`, { recursive: true });
+      writeFileSync(`${dir}/.fleet/context-packs.json`, JSON.stringify(manifest));
+    }
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".");
+    git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init");
+    return dir;
+  };
+  const pack = { id: "repo-mcp-probe", useWhen: "Ein Repo-Pack, dessen Lane-Zusatz einen MCP-Server mitbringt.", scope: "repo-contract",
+    audience: "agent", triggers: ["always"], hardness: "guidance", sources: [{ path: "docs/kern.md", anchor: "## Kern" }],
+    requiredCapabilities: ["tracked-source-read"], harnesses: ["claude"], modes: ["mutating"], estimatedBytes: 1,
+    evidence: "tree-anchor", owner: "owner", status: "active",
+    zusaetze: [{ id: "mcp-server", bedingung: { positions: ["lane", "main"] }, sources: [], mcp: server }] };
+  const withMcp = repoWith("mcp", [pack]);
+  const without = repoWith("plain", null);
+  const rowOf = (slot: number): { packMcp?: unknown; sessionId?: string | null } | undefined => {
+    try {
+      return (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { packMcp?: unknown; sessionId?: string | null }> }).slots?.[String(slot)];
+    } catch { return undefined; }
+  };
+  const argvNow = async (slot: number, budgetMs = 10_000): Promise<string> => {
+    const until = Date.now() + budgetMs;
+    for (;;) {
+      const argv = (await argvOf(`=s${slot}:`)).join(" | ");
+      if (argv || Date.now() >= until) return argv;
+      await Bun.sleep(150);
+    }
+  };
+  const opened: number[] = [];
+  const trFiles: string[] = [];
+  try {
+    const ln = await post("/api/lanes", { repo: withMcp });
+    const lnJ = (await ln.json()) as { slot?: number; cwd?: string; error?: string };
+    const L = lnJ.slot ?? 0;
+    if (L) opened.push(L);
+    const openArgv = L ? await argvNow(L) : "";
+    check("pack mcp spawn: open — the founding plan's server is persisted on the slot (fleet.json packMcp)",
+      ln.ok && JSON.stringify(rowOf(L)?.packMcp) === JSON.stringify([server]), `${ln.status} ${JSON.stringify(lnJ)} row=${JSON.stringify(rowOf(L)?.packMcp)}`);
+    check("pack mcp spawn: open — the resident claude's argv carries --strict-mcp-config then exactly the pack's --mcp-config",
+      openArgv.includes(seen) && openArgv.split("--mcp-config").length === 2, openArgv.slice(-260) || "no claude argv");
+
+    // heal: the pane dies under the slot; the 2 s self-heal rebuilds it from the slot's record alone
+    await tmuxOut("kill-session", "-t", `=s${L}`);
+    const killedAt = Date.now();
+    let healArgv = "";
+    while (Date.now() - killedAt < 12_000) {
+      healArgv = (await argvOf(`=s${L}:`)).join(" | ");
+      if (healArgv) break;
+      await Bun.sleep(200);
+    }
+    check("pack mcp spawn: heal — the rebuilt pane's claude carries the same --mcp-config (no plan re-read, the file and slot are kept)",
+      healArgv.includes(seen), healArgv.slice(-260) || "no claude argv after heal");
+
+    const rs = await post(`/api/slots/${L}/restart`, {});
+    const restartArgv = rs.ok ? await argvNow(L) : "";
+    check("pack mcp spawn: ↻ restart — the respawned claude carries the same --mcp-config",
+      rs.ok && restartArgv.includes(seen), `${rs.status} ${restartArgv.slice(-260) || "no claude argv"}`);
+
+    check("pack mcp spawn: the persisted selection is unchanged after heal and restart",
+      JSON.stringify(rowOf(L)?.packMcp) === JSON.stringify([server]), JSON.stringify(rowOf(L)?.packMcp));
+
+    // 💤→wake on a MAIN: /open with the pack chosen founds it on the plan that holds the Zusatz (the
+    // pack prompt itself waits on a ready frame claude-hang never paints; the spawn line is the point)
+    const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots
+      .filter((x) => !x.cwd && x.id <= 16).map((x) => x.id).reverse()[0] ?? 0;
+    const mo = free ? await post(`/api/slots/${free}/open`, { cwd: withMcp, packs: [pack.id] }) : null;
+    if (mo?.ok) opened.push(free);
+    const mainArgv = mo?.ok ? await argvNow(free) : "";
+    check("pack mcp spawn: a MAIN founded with the pack chosen carries the --mcp-config (beside its ambient servers, no strict flag)",
+      !!mo?.ok && mainArgv.includes(flag) && !mainArgv.includes("--strict-mcp-config")
+        && JSON.stringify(rowOf(free)?.packMcp) === JSON.stringify([server]),
+      `slot=${free} ${mo?.status ?? "-"} ${mainArgv.slice(-260) || "no claude argv"} row=${JSON.stringify(rowOf(free)?.packMcp)}`);
+    // the pin is read off the live argv (fleet.json is written on a debounce); sleep wants its
+    // transcript on disk, and the fake claude writes none
+    const pin = /--session-id ([0-9a-f-]{36})/.exec(mainArgv)?.[1] ?? null;
+    if (pin) {
+      const trDir = `${homedir()}/.claude/projects/${resolve(withMcp).replace(/[^a-zA-Z0-9]/g, "-")}`;
+      mkdirSync(trDir, { recursive: true });
+      const tr = `${trDir}/${pin}.jsonl`;
+      writeFileSync(tr, `${JSON.stringify({ type: "user", timestamp: "2026-10-10T00:00:00Z" })}\n`);
+      trFiles.push(tr);
+    }
+    for (let i = 0; i < 100; i++) {
+      const row = ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] }).slots.find((x) => x.id === free);
+      if (row && Date.now() - row.lastOutput > MERGE_IDLE_MS + 300) break;
+      await Bun.sleep(100);
+    }
+    const sl = free ? await post(`/api/slots/${free}/sleep`, {}) : null;
+    const slBody = sl ? await sl.text() : "";
+    const wk = sl?.ok ? await post(`/api/slots/${free}/wake`, {}) : null;
+    const wakeArgv = wk?.ok ? await argvNow(free) : "";
+    check("pack mcp spawn: 💤→wake — the resumed claude (--resume <pin>) carries the same --mcp-config",
+      !!sl?.ok && !!wk?.ok && wakeArgv.includes(`--resume ${pin}`) && wakeArgv.includes(flag),
+      `pin=${pin} sleep=${sl?.status ?? "-"} ${sl?.ok ? "" : slBody.slice(0, 200)} wake=${wk?.status ?? "-"} ${wakeArgv.slice(-260) || "no claude argv"}`);
+
+    const pl = await post("/api/lanes", { repo: without });
+    const plJ = (await pl.json()) as { slot?: number; error?: string };
+    const P = plJ.slot ?? 0;
+    if (P) opened.push(P);
+    const plainArgv = P ? await argvNow(P) : "";
+    check("pack mcp spawn: a lane whose plan chooses no MCP Zusatz spawns without --mcp-config and persists no packMcp",
+      pl.ok && plainArgv.includes("--strict-mcp-config") && !plainArgv.includes("--mcp-config") && rowOf(P) !== undefined && !("packMcp" in (rowOf(P) ?? {})),
+      `${pl.status} ${JSON.stringify(plJ)} ${plainArgv.slice(-200) || "no claude argv"}`);
+  } finally {
+    for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
+    for (const tr of trFiles) {
+      rmSync(tr, { force: true });
+      try { rmdirSync(dirname(tr)); } catch { /* not ours to empty — leave it */ }
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+}

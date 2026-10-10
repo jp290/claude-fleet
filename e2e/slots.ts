@@ -12082,19 +12082,19 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
   { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
-  { name: "the bar stops short of the square again", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+  { name: "the bar stops short of the square again", state: "viele", claim: "an opened row's bar runs over its words, git stand and marks",
     needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(Math.min(...[...row.querySelectorAll(\":scope > .ti, :scope > .lr > :not(.gs)\")].map((e) => e.getBoundingClientRect().left - tb.left), end(row) + 6)) - 2 - p[0])" },
   { name: "the hovered bar runs on into the way back", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
     needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(end(row)) + 14 - p[0])" },
-  { name: "a row with a square reads as one without", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+  { name: "a row with a square reads as one without", state: "viele", claim: "an opened row's bar runs over its words, git stand and marks",
     needle: "      row.dataset.bar = hasMark(row) ? \"mark\" : \"end\";", with: "      row.dataset.bar = \"end\";" },
   { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point over its test instance's square",
     needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, (rails.get(row.dataset.id ?? \"\")?.x ?? Math.round(end(row)) + 4) - p[0])" },
-  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words",
     needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
-  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words",
     needle: "  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }", with: "" },
-  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words, git stand and marks",
+  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "" },
   { name: "the hovered row paints its whole ground again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
     needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "  #board .ranke .rk > .zr[data-bar]:not(:hover) { background: none; }" },
@@ -12843,7 +12843,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && fr.barBox.bg !== "rgba(0, 0, 0, 0)" && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
         };
         if (st === "lane") {
-          claims[`${tag}the focused row's bar runs from its point over its words, git stand and marks — 3A's square inside — and the row paints no ground of its own`] =
+          // 3A carries no mark since the flag left the closed row (owner 2026-10-10): its bar ends past its
+          // git stand; the bar over a square is claimed on 3B opened in `viele`
+          claims[`${tag}the focused row's bar runs from its point over its words and git stand — 3A has no mark — and the row paints no ground of its own`] =
             barClaim(r, lane(r, 9), "focus");
           // UNDER THE POINTER THE SAME BAR (owner 2026-10-09: „[Zitat entfernt]“
           // ): 3B hovered carries the bar
@@ -13444,6 +13446,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               JSON.stringify(wc?.points.map((p) => p.cls)) === JSON.stringify(["ok", "bad old", "none", "none"])
               && /^Weg nach overhaul .*Vorschau rot · e2e\/slots\.ts: glass island/.test(wc?.text ?? "") && /2 Vorschau: rot · .* · auf einem älteren Stand als dieser Worktree/.test(wc?.way ?? "")
               && JSON.stringify(wd?.points.map((p) => p.cls)) === JSON.stringify(["ok", "queue", "none", "none"]) && /1 Beweis: grün/.test(wd?.way ?? "");
+            // THE BAR HOLDS THE SQUARE (owner 2026-10-09: „[Zitat entfernt]“
+            // ): 3B opened, its test instance up — the bar runs over the
+            // square to 4 px past the row's end (until 2026-10-10 3A's flag was the mark this claim read in `lane`)
+            await openLane(10);
+            const rb = await read();
+            claims[`${tag}an opened row's bar runs over its words, git stand and marks — 3B's square inside`] =
+              !!lane(rb, 10)?.ti && barClaim(rb, lane(rb, 10), "square");
             claims[`${tag}opened, a landed lane says "Land: gelandet als <sha> in overhaul" after its points and shows its check after the land running`] =
               JSON.stringify(we?.points.map((p) => p.cls)) === JSON.stringify(["ok", "ok", "ok", "run"])
               && (we?.way ?? "").endsWith(`\nLand: gelandet als ${sha7(hex("landed-e"))} in overhaul`);

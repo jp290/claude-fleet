@@ -1508,10 +1508,14 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     chosen.parts.find((part) => part.id === "verify-e2e.more")?.ort === "box"
     && chosen.parts.find((part) => part.id === "verify-e2e.lane")?.ort === "ausleihe"
     && chosen.parts.find((part) => part.id === "verify-e2e.kern")?.ort === "box");
+  const contractPack = CONTEXT_PACKS.find((pack) => pack.id === "portable-core");
+  const contractSource = contractPack && "sources" in contractPack ? contractPack.sources?.find((source) => source.id === "portable-core.contract") : undefined;
+  const contractSection = contractSource ? sectionAt(sourceBytes.get(contractSource.path)!, contractSource.path, contractSource.anchor) : null;
   for (const harness of ["codex", "pi", "pi-zai", "pi-ox", "pi-unfenced"]) {
     const empty = renderSessionAgents({ ...base, harness, plan: { selected: [], omitted: [] } });
+    const contract = empty.parts.find((part) => part.id === "portable-core.contract");
     check(`session agents: ${harness} keeps its mandatory portable contract even with optional packs off`,
-      empty.parts.find((part) => part.id === "portable-core.contract")?.bytes === 10335
+      contractSection !== null && contract?.content === contractSection && contract.bytes === Buffer.byteLength(contractSection)
       && empty.text.split("## Portable operating contract").length === 2 && empty.bytes < SESSION_AGENTS_LIMIT);
   }
   const privateBytes = "Private knowledge supplied at the boundary.\n";

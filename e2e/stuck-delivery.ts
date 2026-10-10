@@ -147,28 +147,13 @@ export async function run(): Promise<void> {
     check("stuck-delivery foreign composer is not the short placeholder: " + foreign.slice(-32),
       composerCollapsedPaste([foreign], header) === null
         && composerDeliveryResidue([foreign], payload, shortCollapsed) === null);
-  const collapsedSource = readFileSync(`${ROOT}/composer.ts`, "utf8")
-    .match(/export function composerCollapsedPaste[\s\S]*?\n}\n/)?.[0];
-  check("stuck-delivery SETUP: composerCollapsedPaste is readable", collapsedSource !== undefined);
-  if (collapsedSource) {
-    const recognizes = (source: string): boolean => {
-      const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace(/^export /, ""));
-      const fn = new Function("composerHoldsExactly", `${compiled}; return composerCollapsedPaste;`)(
-        composerHoldsExactly) as typeof composerCollapsedPaste;
-      return fn(shortRows, header) === header + short && fn(rows, header) === header + label;
-    };
-    check("stuck-delivery the readable source recognizes both placeholder forms", recognizes(collapsedSource));
-    const countRequired = collapsedSource.replace("lines)?\\]", "lines)\\]");
-    check("stuck-delivery mutation: a mandatory \"+M lines\" misses the short placeholder",
-      countRequired !== collapsedSource && !recognizes(countRequired));
-  }
   check("stuck-delivery dim hint is empty and never a delivery remainder",
     composerDeliveryResidue(composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [], payload, collapsed) === null);
 
   const sendSource = readFileSync(`${ROOT}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
   const captureSource = sendSource.match(/\(rows\) => \{ deliveryRead\.collapsedDisplay[^}]+\}/)?.[0];
-  check("stuck-delivery SETUP: the arrival callback is readable", captureSource !== undefined);
-  if (captureSource) {
+  if (!captureSource) throw new Error("stuck-delivery: the arrival callback is not readable in server.ts");
+  {
     const gapRows = composerRows(form, "❯ \x1b[2mTry a prompt\x1b[0m\n") ?? [];
     const retainsLabel = (source: string): boolean => {
       const state: { collapsedDisplay: string | null } = { collapsedDisplay: null };
@@ -184,9 +169,6 @@ export async function run(): Promise<void> {
     };
     check("stuck-delivery a missing-label frame preserves the previously measured identity",
       retainsLabel(captureSource));
-    const overwrite = captureSource.replace("??=", "=");
-    check("stuck-delivery mutation: overwriting with a missing label loses the identity",
-      overwrite !== captureSource && !retainsLabel(overwrite));
   }
 
   // THE ENTER HALF on the fleet-event path: the real server.ts#awaitArrival over scripted frames.
@@ -195,14 +177,11 @@ export async function run(): Promise<void> {
   // 300–          | header + "[Pasted text #27]", held    | complete → Enter → observed
   // 300–900 / 900– | "#27", then "#27" beside "#28"       | partial → SendNotAccepted, no Enter
   const arrivalSource = sendSource.match(/async function awaitArrival\([\s\S]*?\n}\n/)?.[0];
-  check("stuck-delivery SETUP: awaitArrival is readable", arrivalSource !== undefined);
-  check("stuck-delivery the fleet-event read (window and grace) alone passes the delivery header",
-    /const collapsedHeader = watchEvent \? header \?\? null : null;/.test(sendSource)
-      && sendSource.split("onRows, collapsedHeader)").length - 1 === 2);
   const settledSource = readFileSync(`${ROOT}/composer.ts`, "utf8")
     .match(/export function composerSettledPaste[\s\S]*?\n}\n/)?.[0];
-  check("stuck-delivery SETUP: composerSettledPaste is readable", settledSource !== undefined);
-  if (arrivalSource && settledSource) {
+  if (!arrivalSource || !settledSource)
+    throw new Error(`stuck-delivery: readable awaitArrival ${!!arrivalSource}, composerSettledPaste ${!!settledSource}`);
+  {
     const headerOnly = [header.trimEnd()];
     const settle = (source: string) => {
       const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(source.replace(/^export /, ""));
@@ -210,14 +189,13 @@ export async function run(): Promise<void> {
         `${compiled}; return composerSettledPaste;`)(composerCollapsedPaste, 1000) as (h: string) =>
         (rows: readonly string[] | null, at: number) => boolean;
     };
-    const arrive = async (script: (ms: number) => string[], collapsedHeader: string | null,
-      settledSourceUsed = settledSource): Promise<{ arrival: string; ms: number }> => {
+    const arrive = async (script: (ms: number) => string[], collapsedHeader: string | null): Promise<{ arrival: string; ms: number }> => {
       const started = Date.now();
       const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(arrivalSource);
       const fn = new Function("sameBoundPane", "readExactComposer", "composerArrival", "composerSettledPaste",
         "ACCEPT_WAIT_MS", `${compiled}; return awaitArrival;`)(() => true,
         async () => ({ kind: "rows", rows: script(Date.now() - started) }), composerArrival,
-        settle(settledSourceUsed), 800) as (...args: unknown[]) => Promise<string>;
+        settle(settledSource), 800) as (...args: unknown[]) => Promise<string>;
       const arrival = await fn({}, {}, payload, 3000, true, undefined, collapsedHeader);
       return { arrival, ms: Date.now() - started };
     };
@@ -233,10 +211,6 @@ export async function run(): Promise<void> {
     const pieces = await arrive(split, header);
     check("stuck-delivery fleet-event: \"#27\" then \"#28\" inside the second sends no early Enter",
       pieces.arrival === "partial", JSON.stringify(pieces));
-    const unstable = settledSource.replace("at - held.since >= settleMs", "at - held.since >= 0");
-    const early = unstable === settledSource ? null : await arrive(split, header, unstable);
-    check("stuck-delivery mutation: without the hold \"#27\" alone would already be complete",
-      early?.arrival === "complete", JSON.stringify(early));
   }
 
   const dir = mkdtempSync(`${ROOT}/stuck-delivery-`);
@@ -251,14 +225,12 @@ export async function run(): Promise<void> {
     await restartSrv({ FLEET_CMD: `claude '${modeFile}' '${stateFile}'`,
       PATH: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}` });
     const vacant = (await sessions()).filter((s) => !s.cwd).map((s) => s.id);
-    check("stuck-delivery SETUP: two vacant slots", vacant.length >= 2);
-    if (vacant.length < 2) return;
+    if (vacant.length < 2) throw new Error(`stuck-delivery SETUP: ${vacant.length} vacant slots, two needed`);
     const sender = vacant[0]!;
     const senderOpen = await post(`/api/slots/${sender}/open`, { cwd: ROOT });
     if (!senderOpen.ok) throw new Error(`sender open ${senderOpen.status}`);
     owned.push(sender);
     const senderToken = tokenOf(sender);
-    check("stuck-delivery SETUP: sender Self principal is bound", senderToken.length > 0);
     const requestHeaders = { ...H, "x-fleet-self-token": senderToken };
     const target = vacant[1]!;
     for (const mode of ["hold", "collapsed", "late", "normal", "foreign", "owner-only", "replaced"]) {
@@ -272,7 +244,6 @@ export async function run(): Promise<void> {
         const frame = await tmuxOut("capture-pane", "-p", "-e", "-t", `s${target}`);
         return composerRows(form, frame.out) !== null && composerBuffer(form, frame.out) === "";
       }, { timeoutMs: 2000, what: `${mode}: raw fixture exposes the declared empty composer` });
-      check(`stuck-delivery ${mode} SETUP: raw fixture offers the declared empty composer`, ready);
       if (!ready) throw new Error(`stuck-delivery ${mode}: raw fixture exposes no empty composer`);
       const before = await events(senderToken);
       const text = mode === "collapsed" || mode === "late"

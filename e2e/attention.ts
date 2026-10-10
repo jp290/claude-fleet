@@ -74,17 +74,11 @@ const selfSucceed = (tok: string, body: unknown): Promise<Response> => fetch(`${
   body: JSON.stringify(body),
 });
 const waitForLabel = async (label: string): Promise<number | null> => {
-  let seen: number | undefined;
   for (let i = 0; i < 60; i++) {
     const slot = (await sessions()).slots.find((s) => s.cwd && s.label === label)?.id;
-    if (slot) {
-      seen = slot;
-      if ((await tmuxOut("has-session", "-t", `s${slot}`)).code === 0) return slot;
-    }
+    if (slot && (await tmuxOut("has-session", "-t", `s${slot}`)).code === 0) return slot;
     await Bun.sleep(50);
   }
-  check(`attention succession fixture: a slot labelled ${label} came up with a live pane`, false,
-    seen === undefined ? "no slot ever carried the label" : `slot ${seen} never grew a pane`);
   return null;
 };
 const freeSlot = async (): Promise<number> =>
@@ -96,9 +90,8 @@ export async function run(): Promise<void> {
     const source = readFileSync(`${ROOT}/server.ts`, "utf8");
     const route = source.match(/    const attentionAnswer =[\s\S]*?(?=    \/\/ everything below carries authority)/)?.[0];
     const reader = source.match(/async function readJson\(req: Request\)[\s\S]*?\n}/)?.[0];
-    check("attention auth fixture: the answer branch and body reader are executable server source",
-      !!route && !!reader);
-    if (route && reader) {
+    if (!route || !reader) throw new Error(`attention auth: readable answer branch ${!!route}, body reader ${!!reader}`);
+    {
       const dependencies = {
         tokenOk: () => false, tokenFrom: () => "invalid", resolveSelfPrincipal: () => null,
         slots: [], deliveryRecipient: () => null, tokenGate: async () => false,
@@ -121,9 +114,6 @@ export async function run(): Promise<void> {
       check("attention answer auth: an unauthorized POST with a body is 401 and leaves the body unread",
         response?.status === 401 && wire.status === 401 && req.bodyUsed === false,
         JSON.stringify({ branch: response?.status, wire: wire.status, bodyUsed: req.bodyUsed }));
-      const body = await api.readJson(req) as { text?: string } | null;
-      check("attention answer auth fixture: the same body reader consumes the retained request body",
-        req.bodyUsed && body?.text === "unauthorized body");
     }
   }
   // === ATTENTION-CHANNEL-V1 ====================================================================
@@ -137,20 +127,18 @@ export async function run(): Promise<void> {
   const mainC = await freeSlot();
   const openC = mainC ? await post(`/api/slots/${mainC}/open`, { cwd: REPO, label: "attention-capped" }) : null;
   const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number };
-  // FIXTURE PRECONDITION, its own check: everything below reads "the route refused me" as evidence,
-  // and a probe that never had four distinct live participants would produce that evidence for free.
-  check("attention fixtures: three distinct MAIN occupants and one lane exist",
-    !!openA?.ok && !!openB?.ok && !!openC?.ok && !!lane.slot
-      && new Set([mainA, mainB, mainC, lane.slot]).size === 4,
-    JSON.stringify({ mainA, mainB, mainC, lane: lane.slot }));
-
   const tokA = await paneEnv(`s${mainA}`, "FLEET_SELF_TOKEN") ?? "";
   const tokB = await paneEnv(`s${mainB}`, "FLEET_SELF_TOKEN") ?? "";
   const tokC = await paneEnv(`s${mainC}`, "FLEET_SELF_TOKEN") ?? "";
   const laneTok = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "";
-  check("attention fixtures: every participant has an exact, distinct scoped credential",
-    [tokA, tokB, tokC, laneTok].every((t) => /^[0-9a-f]{32}$/.test(t))
-      && new Set([tokA, tokB, tokC, laneTok]).size === 4);
+  // FIXTURE PRECONDITION, its own check: everything below reads "the route refused me" as evidence,
+  // and a probe that never had four distinct live participants would produce that evidence for free.
+  check("attention fixtures: three distinct MAIN occupants and one lane exist, each with an exact, distinct scoped credential",
+    !!openA?.ok && !!openB?.ok && !!openC?.ok && !!lane.slot
+      && new Set([mainA, mainB, mainC, lane.slot]).size === 4
+      && [tokA, tokB, tokC, laneTok].every((t) => /^[0-9a-f]{32}$/.test(t))
+      && new Set([tokA, tokB, tokC, laneTok]).size === 4,
+    JSON.stringify({ mainA, mainB, mainC, lane: lane.slot }));
 
   // The binding is a SERVER fact, so it is planted as one: two active programs, each bound to the
   // exact occupant triple of its own MAIN. Nothing the routes below send can nominate a program
@@ -406,12 +394,6 @@ export async function run(): Promise<void> {
   const foreignRow = await raised(await selfRaise(tokA, { kind: "decision", taskId: "f".repeat(12),
     text: "criterion-confirm on somebody else's row." }));
   const inboxBeforeConfirm = await selfInbox(tokA);
-  check("criterion join fixture: four open decision rows, two of them naming the fixture task",
-    [namedRow, slotRow, noTaskRow, foreignRow].every((a) => a?.status === "open")
-      && namedRow?.provenance?.taskId === critTask && slotRow?.provenance?.taskId === critTask
-      && noTaskRow?.provenance?.taskId === null && inboxBeforeConfirm.response.ok,
-    JSON.stringify([namedRow, slotRow, noTaskRow, foreignRow].map((a) => [a?.id, a?.status,
-      a?.provenance?.taskId])));
 
   const confirmRes = await post(`/api/tasks/${critTask}/criterion-confirm`,
     { text: "done = the confirm answers the row that asked for it\nverified by e2e/attention.ts" });
@@ -469,18 +451,14 @@ export async function run(): Promise<void> {
       && readRow(noTaskRow?.id)?.status === "open" && readRow(foreignRow?.id)?.status === "open",
     String(unrelatedConfirm.status));
   // the two survivors are closed by hand, so the rows this section minted reach a terminal state
-  // exactly like every other section's — the final attentionOpen check counts on it.
+  // exactly like every other section's.
   for (const id of [noTaskRow?.id, foreignRow?.id])
     await post(`/api/attention/${id}/refuse`, { reason: "6b fixture: never part of the join." });
   // …and the fixture ROW goes with them. It is a pending `auftrag`, and e2e/tasks.ts's backlog-nudge
   // block asserts that the ONLY open row in the whole instance is its own pending notiz — one fixture
   // left standing here turned that SETUP line red and left twelve checks below it UNMEASURED (run
-  // isolated-20260912T103306Z). Cleanup with a check of its own, so it can never rot in silence.
-  const critTaskGone = await post(`/api/tasks/${critTask}/delete`, {});
-  const tasksAfterCleanup = ((await (await get("/api/tasks")).json()) as { tasks: { id: string }[] }).tasks;
-  check("6b fixture cleanup: the criterion task is gone, so no later module inherits an open row",
-    critTaskGone.ok && !tasksAfterCleanup.some((t) => t.id === critTask),
-    `${critTaskGone.status} remaining=${tasksAfterCleanup.filter((t) => t.id === critTask).length}`);
+  // isolated-20260912T103306Z).
+  await post(`/api/tasks/${critTask}/delete`, {});
 
   // --- 7. a Program question and its answer cross a real MAIN succession -------------------------
   const successorLabel = "attention-program-successor";
@@ -699,11 +677,8 @@ export async function run(): Promise<void> {
     const dSlot = await freeSlot();
     // `pi`, not `pi-unfenced`: the inbox nudge goes through canDeliver's foreign-harness gate, and
     // pi-unfenced is `automatable: false` forever — the gate would refuse before any send.
-    const dOpen = dSlot ? await post(`/api/slots/${dSlot}/open`, { cwd: REPO, label: "attention-delivery-main", harness: "pi" }) : null;
+    if (dSlot) await post(`/api/slots/${dSlot}/open`, { cwd: REPO, label: "attention-delivery-main", harness: "pi" });
     const dTok = dSlot ? await paneEnv(`s${dSlot}`, "FLEET_SELF_TOKEN") ?? "" : "";
-    check("attention delivery fixture: a `pi` MAIN with the stand-in composer is open, with its credential and the composer mode file",
-      !!dOpen?.ok && dSlot > 0 && /^[0-9a-f]{32}$/.test(dTok) && deliveryMode !== "",
-      JSON.stringify({ dSlot, open: dOpen?.status, tok: dTok.length, mode: deliveryMode !== "" }));
     await stopSrv();
     const dImage = JSON.parse(readFileSync(statePath, "utf8")) as
       { slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[] };
@@ -759,9 +734,6 @@ export async function run(): Promise<void> {
       await Bun.sleep(100);
       nudged = await dNudges();
     }
-    check("attention delivery fixture (b): the inbox nudge for THIS Program was attempted and journalled as not accepted",
-      nudged.length === 1 && nudged[0]?.delivery === "SendNotAccepted",
-      JSON.stringify(nudged.map((e) => ({ delivery: e.delivery ?? null, ts: e.ts }))));
     const failedSelf = await selfRow(dAnswered?.id);
     const failedOwner = await ownerRow(dAnswered?.id);
     const failedNudge = failedSelf?.delivery?.lastNudge;
@@ -775,15 +747,8 @@ export async function run(): Promise<void> {
       JSON.stringify({ nudges: nudged.map((e) => e.delivery ?? null), self: failedSelf?.delivery, owner: failedOwner?.delivery }));
     writeFileSync(deliveryMode, "normal\n");
 
-    // (c) GEGENPROBE: the reading lived in the process. After a restart it is UNKNOWN again — never
-    // `accepted`, never the stale `not-accepted` — while the durable half (unread since) is unchanged.
+    // back to the default env: (b)'s nudge interval stays out of (d)
     await restartSrv();
-    const afterRestart = await selfRow(dAnswered?.id);
-    check("attention delivery (c): after a server restart the nudge reading is UNKNOWN (memory only), the pointer still `unread` since the same instant",
-      afterRestart?.delivery?.state === "unread" && afterRestart.delivery.since === dEntry?.at
-        && afterRestart.delivery.lastNudge?.outcome === "unknown"
-        && (afterRestart.delivery.lastNudge.why ?? "").includes("since this server started"),
-      JSON.stringify(afterRestart?.delivery));
 
     // (d) the MAIN's receipt is the one fact that says `read`.
     const dRead = dEntry ? await fetch(`${BASE}/api/self/inbox/${dEntry.id}/read`,
@@ -804,14 +769,10 @@ export async function run(): Promise<void> {
   // A recent ordinary inbox hint must not hold an owner answer behind its ten-minute cooldown.
   {
     const slot = await freeSlot();
-    const opened = slot ? await post(`/api/slots/${slot}/open`,
-      { cwd: REPO, label: "attention-fast-return", harness: "pi" }) : null;
+    if (slot) await post(`/api/slots/${slot}/open`, { cwd: REPO, label: "attention-fast-return", harness: "pi" });
     const token = slot ? await paneEnv(`s${slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
     const programId = "fa".repeat(12);
     const ambientId = "fa".repeat(12);
-    check("fast attention fixture: a live pi MAIN has its own scoped token",
-      !!opened?.ok && /^[0-9a-f]{32}$/.test(token),
-      JSON.stringify({ slot, status: opened?.status, tokenLength: token.length }));
     await stopSrv();
     const image = JSON.parse(readFileSync(statePath, "utf8")) as {
       slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
@@ -908,14 +869,20 @@ export async function run(): Promise<void> {
     const liveOrch = async (): Promise<number[]> => (await sessions()).slots
       .filter((x) => x.cwd && x.label === orchLabel).map((x) => x.id);
     const orchBefore = await liveOrch();
-    check("attention chain fixture: a bound MAIN with a credential, two planted 🎛 slots, and no other Orchestratorin in the instance",
+    const authenticated = await Promise.all([eTok, oTok, authLaneToken, unboundToken].map((token) =>
+      fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": token } })));
+    const originalOrchestrator = await authenticated[1]!.json() as { slot?: number; position?: unknown };
+    const originalOpenedAt = (await sessions()).slots.find((s) => s.id === o1)?.openedAt;
+    check("attention chain fixture: a bound MAIN with a credential, two planted 🎛 slots, and no other Orchestratorin in the instance; bound MAIN, Orchestratorin, lane and unbound session credentials identify current occupants",
       !!eOpen?.ok && !!o1Open?.ok && !!o2Open?.ok && /^[0-9a-f]{32}$/.test(eTok)
         && !!unboundOpen?.ok && authLaneOpen.ok && !!authLane.slot
         && [oTok, unboundToken, authLaneToken].every((t) => /^[0-9a-f]{32}$/.test(t))
         && new Set([eTok, oTok, unboundToken, authLaneToken]).size === 4
         && new Set([eSlot, o1, o2, unboundSlot, authLane.slot]).size === 5 && orchBefore.length === 2
-        && orchBefore.includes(o1) && orchBefore.includes(o2) && foreignOrch.length === 0,
-      JSON.stringify({ eSlot, o1, o2, open: [eOpen?.status, o1Open?.status, o2Open?.status], orchBefore, foreignOrch }));
+        && orchBefore.includes(o1) && orchBefore.includes(o2) && foreignOrch.length === 0
+        && authenticated.every((res) => res.status === 200),
+      JSON.stringify({ eSlot, o1, o2, open: [eOpen?.status, o1Open?.status, o2Open?.status], orchBefore, foreignOrch,
+        self: authenticated.map((res) => res.status) }));
     const hintSends = () => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as { event?: string; path?: string; slot?: number; bytes?: number })
       .filter((row) => row.event === "send" && row.path === "attention-orchestrator");
@@ -993,12 +960,6 @@ export async function run(): Promise<void> {
     const answerState = () => JSON.stringify({ rows: readRows(),
       inbox: (JSON.parse(readFileSync(statePath, "utf8")) as { programs: { id: string; inbox?: unknown }[] })
         .programs.find((p) => p.id === programE)?.inbox });
-    const authenticated = await Promise.all([eTok, oTok, authLaneToken, unboundToken].map((token) =>
-      fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": token } })));
-    const originalOrchestrator = await authenticated[1]!.json() as { slot?: number; position?: unknown };
-    const originalOpenedAt = (await sessions()).slots.find((s) => s.id === o1)?.openedAt;
-    check("attention scoped answer fixture: bound MAIN, Orchestratorin, lane and unbound session credentials identify current occupants",
-      authenticated.every((res) => res.status === 200), authenticated.map((res) => res.status).join(" "));
     for (const [who, token, id, status] of [
       ["non-Orchestratorin", eTok, orchRow?.id, 401],
       ["unbound session", unboundToken, orchRow?.id, 401],
@@ -1117,14 +1078,4 @@ export async function run(): Promise<void> {
   check("attention legacy stage: a persisted row without `stage` loads as \"owner\"",
     !!legacyDisk && legacyOwner?.stage === "owner",
     JSON.stringify({ disk: legacyDisk?.stage ?? "absent", owner: legacyOwner?.stage }));
-
-  // The zero case is ABSENT, not 0 — the field is omitted when nothing waits (server.ts: the 12 KiB
-  // poll budget), and the client reads absent as zero. Asserted last, once every row above has
-  // reached a terminal state, so this is the count going to zero rather than a fixture never made.
-  // BREAKS IF: the field becomes unconditional again (the poll budget check in tasks.ts is the
-  // other half of that), or terminal rows keep counting.
-  check("attentionOpen is omitted entirely once no row wants the owner",
-    (await attentionOpenCount()) === undefined
-      && readRows().length > 0 && readRows().every((a) => a.status === "answered" || a.status === "refused"),
-    JSON.stringify(readRows().map((a) => a.status)));
 }

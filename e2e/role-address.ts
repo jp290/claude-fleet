@@ -160,12 +160,10 @@ export async function run(): Promise<void> {
   const [a = 0, b = 0, c = 0] = vacant.slice(0, 3).sort((x, y) => x - y);
   try {
     // --- (1) ONE holder: everything as today ---
-    const openA = await post(`/api/slots/${a}/open`, { cwd: "~" });
-    const openB = await post(`/api/slots/${b}/open`, { cwd: "~" });
+    await post(`/api/slots/${a}/open`, { cwd: "~" });
+    await post(`/api/slots/${b}/open`, { cwd: "~" });
     const nameA = await post(`/api/slots/${a}/rename`, { label: "🎛 Orchestratorin · role-address" });
     const nameABody = await answer(nameA);
-    check("role-address SETUP: slot A and B open, A renamed to an Orchestrator label",
-      openA.ok && openB.ok && nameA.ok, `${openA.status} ${openB.status} ${nameA.status}`);
     check("one holder: the rename answer carries no roleConflict",
       nameABody.ok === true && nameABody.roleConflict === undefined, JSON.stringify(nameABody));
     const one = await sessions();

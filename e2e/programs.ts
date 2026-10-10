@@ -8350,14 +8350,26 @@ export async function run(ctx: Ctx): Promise<void> {
   const spawnBefore = auditLines();
   const pendingChoice = await selfSpawn(successorToken, spawnPending, { harness: "codex" });
   const queuedChoice = await selfSpawn(successorToken, spawnQueued, { harness: "codex" });
-  const spawnTrail = auditSince(spawnBefore).filter((r) => r.event === "task_spawn");
+  // the door answers before its audit line exists: server.ts#setTaskSpawn saves, calls audit() and
+  // returns, while the append waits its turn in server/persist.ts#queueEventWrite behind every earlier
+  // event — a single read right after the second answer raced that queue (red in Lane 20's preview on
+  // 10.10., rerun green). A server that never writes the lines runs the 5 s budget out and stays red
+  const spawnTrailOf = () => auditSince(spawnBefore).filter((r) => r.event === "task_spawn");
+  const spawnWaitFrom = Date.now();
+  let spawnTrailAfter: number | null = null;
+  try {
+    await until(() => spawnTrailOf().length >= 2, { timeoutMs: 5000, what: "two task_spawn audit lines" });
+    spawnTrailAfter = Date.now() - spawnWaitFrom;
+  } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+  const spawnTrail = spawnTrailOf();
   check("MAIN spawn: its own pending and queued rows retain the new worker choice and audit the exact occupant",
     pendingChoice.status === 200 && queuedChoice.status === 200
       && (await taskRow(spawnPending))?.spawn?.harness === "codex"
       && (await taskRow(spawnQueued))?.spawn?.harness === "codex"
       && spawnTrail.length === 2 && spawnTrail.every((r) => r.slot === successorSlot
         && r.detail?.includes(`Slot ${successorSlot} openedAt=${releaseBinding?.openedAt}`)),
-    JSON.stringify({ pending: pendingChoice.status, queued: queuedChoice.status, trail: spawnTrail }));
+    JSON.stringify({ pending: pendingChoice.status, queued: queuedChoice.status, trail: spawnTrail,
+      after: spawnTrailAfter ?? ">5000" }));
   const restoredQueuedSpawn = await selfSpawn(successorToken, spawnQueued, {});
   check("MAIN spawn cleanup: the queued row returns to its original worker choice",
     restoredQueuedSpawn.status === 200 && (await taskRow(spawnQueued))?.spawn === undefined,

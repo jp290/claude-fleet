@@ -43,7 +43,7 @@ import { SHARD_UNITS, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
-import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, SERVER_MODULE_ANCHORS, selectModules } from "../suite-modules";
+import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, PROBE_HOSTS, SERVER_MODULE_ANCHORS, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -11425,14 +11425,64 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // --- THE GATE'S ADVICE AND THE RUNNER'S FILTER ARE ONE TABLE. modulesForPaths is what
   // localProof.modules is computed from; it may only ever name modules this runner boots, and it
   // must stay silent about a footprint it cannot place entirely.
+  // (since 2026-10-10 a file whose browser probes e2e/dom.ts runs names `dom` as well — PROBE_HOSTS)
   pin(`${RULE_MODULES} — localProof.modules names only runner modules, and nothing for a footprint it cannot place`,
-    JSON.stringify(modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"])) === JSON.stringify(["slots", "tasks"])
+    JSON.stringify(modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"])) === JSON.stringify(["slots", "dom", "tasks"])
+      && JSON.stringify(modulesForPaths(["e2e/timeline-ui.ts"])) === JSON.stringify(["dom"])
       && modulesForPaths(["e2e/tasks.ts", "server.ts"]) === null
       && modulesForPaths(["e2e/harness.ts"]) === null
       && modulesForPaths(["e2e/pins.ts"]) === null
       && modulesForPaths([]) === null,
-    JSON.stringify({ two: modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"]), mixed: modulesForPaths(["e2e/tasks.ts", "server.ts"]),
-      plumbing: modulesForPaths(["e2e/harness.ts"]) }));
+    JSON.stringify({ two: modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"]), host: modulesForPaths(["e2e/timeline-ui.ts"]),
+      mixed: modulesForPaths(["e2e/tasks.ts", "server.ts"]), plumbing: modulesForPaths(["e2e/harness.ts"]) }));
+
+  // --- A RUN WITHOUT `dom` STARTS NO BROWSER (Z1, 2026-10-10). Three halves, none of which a suite
+  // run could see from inside the run it is filtering:
+  //   1. the runner points FLEET_E2E_BROWSER and FLEET_E2E_PLAYWRIGHT at a path that cannot run
+  //      whenever `dom` is not among the modules that will run;
+  //   2. every browser start in e2e/ resolves its executable through FLEET_E2E_BROWSER first (one
+  //      `process.env.FLEET_E2E_BROWSER ??` per `--headless` spawn, per file), and the one WebKit
+  //      path through FLEET_E2E_PLAYWRIGHT — so the switch in 1. reaches every one of them;
+  //   3. every file with a browser start is e2e/dom.ts or a host whose probes `dom` runs, and in no
+  //      host does the module's own run() reach a browser start: the top-level functions holding a
+  //      spawn, closed over their callers in the same file, never include `run`.
+  {
+    const RULE_DOM = "a run without the dom module starts no browser";
+    const code = (f: string) => read(f).split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+    const runnerSrc = code("fleet-e2e.ts");
+    const switched = /if \(willRun && !willRun\.has\("dom"\)\) \{\n\s*process\.env\.FLEET_E2E_BROWSER = NO_BROWSER;\n\s*process\.env\.FLEET_E2E_PLAYWRIGHT = NO_BROWSER;\n\}/.test(runnerSrc)
+      && /const NO_BROWSER = "\/nonexistent\/[\w-]+";/.test(runnerSrc);
+    pin(`${RULE_DOM} — the runner points FLEET_E2E_BROWSER and FLEET_E2E_PLAYWRIGHT at a path that cannot run when dom is not selected`,
+      switched, `switch=${switched}`);
+    const files = readdirSync(`${ROOT}/e2e`).filter((f) => f.endsWith(".ts") && f !== "pins.ts").map((f) => `e2e/${f}`);
+    const spawning = files.map((f) => ({ f, src: code(f) }))
+      .map(({ f, src }) => ({ f, src, spawns: (src.match(/["']--headless["']/g) ?? []).length,
+        resolved: (src.match(/process\.env\.FLEET_E2E_BROWSER \?\?/g) ?? []).length }))
+      .filter((x) => x.spawns > 0);
+    const unresolved = spawning.filter((x) => x.resolved !== x.spawns).map((x) => `${x.f}:${x.resolved}/${x.spawns}`);
+    const webkit = files.filter((f) => /playwright-core|await import\(playwright\)/.test(code(f)));
+    const webkitOk = webkit.every((f) => code(f).includes('process.env.FLEET_E2E_PLAYWRIGHT ?? ""'));
+    pin(`${RULE_DOM} — every browser start in e2e/ resolves Chromium through FLEET_E2E_BROWSER, WebKit through FLEET_E2E_PLAYWRIGHT`,
+      spawning.length >= 4 && unresolved.length === 0 && webkitOk,
+      `spawning=[${spawning.map((x) => x.f)}] unresolved=[${unresolved}] webkit=[${webkit}] webkitOk=${webkitOk}`);
+    const outside = spawning.filter((x) => x.f !== "e2e/dom.ts" && !(PROBE_HOSTS[x.f] ?? []).includes("dom")).map((x) => x.f);
+    const reached: string[] = [];
+    for (const { f, src } of spawning) {
+      // top-level functions, each with its body up to the next one
+      const heads = [...src.matchAll(/^(?:export )?(?:async )?function (\w+)/gm)];
+      const fns = heads.map((h, i) => ({ name: h[1]!, body: src.slice(h.index!, heads[i + 1]?.index ?? src.length) }));
+      const browsing = new Set(fns.filter((fn) => /["']--headless["']/.test(fn.body)).map((fn) => fn.name));
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const fn of fns) if (!browsing.has(fn.name) && [...browsing].some((b) => new RegExp(`\\b${b}\\(`).test(fn.body))) { browsing.add(fn.name); grew = true; }
+      }
+      if (f !== "e2e/dom.ts" && browsing.has("run")) reached.push(f);
+    }
+    pin(`${RULE_DOM} — every file that starts a browser is e2e/dom.ts or a host dom runs, and no host's own run() reaches a start`,
+      spawning.some((x) => x.f === "e2e/dom.ts") === false && outside.length === 0 && reached.length === 0
+        && Object.keys(PROBE_HOSTS).every((h) => spawning.some((x) => x.f === h)),
+      `outside=[${outside}] reachedFromRun=[${reached}] hosts=[${Object.keys(PROBE_HOSTS)}]`);
+  }
 
   const anchorGaps = SERVER_MODULE_ANCHORS.filter((a) => {
     const source = serverU.module("server.ts");

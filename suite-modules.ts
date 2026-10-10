@@ -151,6 +151,9 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "auth" },
   { module: "dirs-pins" },
   { module: "slots", writes: ["server:slots-1-2-open", "server:slots-1-2-driven"] },
+  // every check that starts a browser (e2e/dom.ts). No edge: its one instance probe (runRightsDom)
+  // opens and kills its own slots and lanes and needs only free band slots — previewable alone
+  { module: "dom" },
   { module: "history", reads: ["server:slots-1-2-driven"] },
   { module: "summary", reads: ["server:slots-1-2-driven"] },
   { module: "transport", reads: ["server:slots-1-2-driven"] },
@@ -195,7 +198,6 @@ export const MODULE_FIXTURES: readonly ModuleFixtures[] = [
   { module: "host-hygiene" },
   { module: "state-snapshot" },
   { module: "trace" },
-  { module: "timeline-ui" },
   { module: "konzepte" },
   { module: "role-address" },
   { module: "stuck-delivery" },
@@ -212,10 +214,23 @@ const fixtureByName = new Map(FIXTURES.map((f) => [f.name, f]));
 const writersOf = (fixture: string): string[] =>
   MODULE_FIXTURES.filter((m) => (m.writes ?? []).includes(fixture)).map((m) => m.module);
 
-/** The module a changed file belongs to, or null when the path is not a runner check module. */
-const moduleForPath = (path: string): string | null => {
+// FILES WHOSE PROBES ANOTHER MODULE RUNS. The browser probes stay in their family's file as a
+// library, and e2e/dom.ts drives them; a change in such a file is therefore answered by `dom` as
+// well as by the file's own module — without this, a lane that touched runArbeitsorteDom in
+// e2e/slots.ts would be offered a `slots` preview that never starts the browser it changed.
+// e2e/timeline-ui.ts is no runner module of its own any more: it is ONLY a host.
+export const PROBE_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  "e2e/slots.ts": ["dom"],
+  "e2e/lanes-lifecycle.ts": ["dom"],
+  "e2e/drops.ts": ["dom"],
+  "e2e/timeline-ui.ts": ["dom"],
+};
+
+/** The modules a changed file belongs to — its own and those running its probes; empty when none. */
+const modulesForPath = (path: string): string[] => {
   const m = /^e2e\/([\w-]+)\.ts$/.exec(path);
-  return m && byModule.has(m[1]!) ? m[1]! : null;
+  const own = m && byModule.has(m[1]!) ? [m[1]!] : [];
+  return [...own, ...(PROBE_HOSTS[path] ?? [])];
 };
 
 export interface FootprintEvidence {
@@ -298,14 +313,19 @@ export function modulesForPaths(paths: readonly string[], evidence?: FootprintEv
   const reasons: string[] = [];
   if (paths.length === 0) reasons.push("empty footprint: no coverage to narrow");
   for (const path of paths) {
-    const mod = moduleForPath(path);
-    if (mod) {
+    const mods = modulesForPath(path);
+    if (mods.length) {
+      // the evidence is the changed file itself, as the gate reads it: it must transpile, and where
+      // it is the module's own file it must carry the check family; a host only lends its probes
       const code = evidence ? executable(evidence.checks?.[path] ?? "") : null;
-      if (evidence && (!code || !/\bcheck\(/.test(code))) {
-        reasons.push(`${path}: missing executable check family`);
-      } else {
-        named.add(mod);
-        anchors.push({ source: path, check: `${path}#run` });
+      for (const mod of mods) {
+        const own = path === `e2e/${mod}.ts`;
+        if (evidence && (!code || (own && !/\bcheck\(/.test(code)))) {
+          reasons.push(`${path}: missing executable check family`);
+        } else {
+          named.add(mod);
+          anchors.push({ source: path, check: `e2e/${mod}.ts#run` });
+        }
       }
       continue;
     }

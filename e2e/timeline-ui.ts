@@ -17,9 +17,9 @@
 // WHAT IS NOT PROVEN HERE: that the live route answers this wire shape — it does not exist yet
 // (lane 91040c44 builds it). The last claim is the honest half of that: without the route the lens
 // names the 404 and draws no track.
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { NATIVE_CANARY, NATIVE_FIXTURES, loadNativeUiFixtures } from "./trace-native-fixtures";
 import { normalizeNative } from "../trace-native";
 import type { TraceEvent } from "../trace-index";
@@ -605,36 +605,5 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
     browser.kill();
     await browser.exited.catch(() => undefined);
     rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-export async function run(): Promise<void> {
-  // the harness is loaded HERE, not at the top: it reads the instance's fleet.json on import, and
-  // the rig above is a library a scratch probe may run against any checkout without an instance
-  const { ROOT, check } = await import("./harness");
-  // the scratch copy carries server.ts + public/ but not src/ — the link back to the checkout is the
-  // node_modules symlink, so the real source is its realpath's parent (as in e2e/drops.ts)
-  const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
-  try {
-    for (const result of await runTimelineDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
-      for (const [claim, ok] of Object.entries(result.claims))
-        check(`timeline DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
-    }
-  } catch (error) {
-    check("timeline DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
-      error instanceof Error ? error.message : String(error));
-    return;
-  }
-  // every mutant must turn its claim red at its one viewport (1200×900 unless it is a phone claim) —
-  // a needle that left the source fails as the probe
-  for (const m of TIMELINE_MUTANTS) {
-    try {
-      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
-      check(`timeline DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
-        JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      check(`timeline DOM mutant — PROBE: ${m.name}`, false, error instanceof Error ? error.message : String(error));
-    }
   }
 }

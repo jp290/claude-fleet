@@ -439,24 +439,7 @@ async function instanceBandChecks(): Promise<void> {
   check("band client MUTATION: the wiring predicate is red without the hidden toggle",
     !wired(client.replace("tiBand.hidden = !source;", ""), html) && !wired(client, html.replace('<div id="tiband" hidden></div>', '<div id="tiband"></div>')));
 
-  // DOM — the real client bundle in Chromium at 900 × 700 and 390 × 844 with a long branch and a long
-  // target: nothing clipped in either width, the target sentence whole. Mutation: segments that may not
-  // shrink below their text (`flex: none` in the review's words).
-  try {
-    const dom = await instanceBandDom(src);
-    for (const v of dom.views) {
-      check(`band DOM SETUP ${v.size}: Chromium paints the band from a fixture instance.source`, v.real.shown && v.real.text === dom.expected,
-        JSON.stringify(v.real).slice(0, 600));
-      check(`band DOM ${v.size}: with a long branch and target no segment overflows and the target sentence stands whole in the band`,
-        v.real.shown && v.real.clipped.length === 0 && v.real.bandOverflow === false && v.real.lastWhole, JSON.stringify(v.real).slice(0, 900));
-      check(`band DOM ${v.size} MUTATION: with unshrinkable segments (flex:none / nowrap) the same claim is red`,
-        v.mutant.shown && (v.mutant.clipped.length > 0 || v.mutant.bandOverflow || !v.mutant.lastWhole), JSON.stringify(v.mutant).slice(0, 900));
-      check(`band DOM ${v.size}: without instance.source (the live fleet) the band is hidden and the app starts at the top`,
-        v.live.shown === false && v.live.htmlClass === false && v.live.appTop === 0, JSON.stringify(v.live));
-    }
-  } catch (error) {
-    check("band DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
-  }
+  // DOM — the real client bundle in Chromium (instanceBandDom below): runs in e2e/dom.ts
 }
 
 // THE SNAPSHOT TELLS THE TRUTH ABOUT ITSELF (owner, 2026-10-06): a snapshot copy has no .git, so
@@ -515,46 +498,14 @@ async function snapshotTruthChecks(): Promise<void> {
   check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
     !wired(boardCode.replace(/instanceSource && !helpers\.size/, "false")));
 
-  // DOM — three pages per width: carried binding, unreadable binding, live fleet
-  try {
-    const dom = await snapshotBoardDom(src);
-    for (const v of dom.views) {
-      const p = v.pages;
-      // (Owner-Runde 9, 2026-10-09) the instance runs: it answers this page, so its device row carries
-      // the live tone and the mark "hier"; no live-server stand row is painted, so nothing claims a Live stand
-      check(`snapshot DOM ${v.size} (Owner-Runde 9): the machine group's Testinstanz device row says it runs here — live tone, "hier" — and never claims a Live stand`,
-        p.carried.tiRow !== null && p.carried.tiRow.tone === "live" && p.carried.tiRow.state === "hier"
-        && p.carried.rowText === "(no row)" && !/Live|Sein Stand|läuft auf/.test(p.carried.tiRow.text),
-        JSON.stringify({ ti: p.carried.tiRow, row: p.carried.rowText }));
-      check(`snapshot DOM ${v.size}: the helper devices stand as one row "Helfer · offline · nicht angemeldet", the reason — the copy carries none — on hover`,
-        p.carried.helperText === "offline · nicht angemeldet" && /Testinstanz/.test(p.carried.helperTitle ?? ""), JSON.stringify([p.carried.helperText, p.carried.helperTitle]));
-      check(`snapshot DOM ${v.size}: the copy is no workplace — no repo group row under the machine`,
-        p.carried.repoRows === 0, JSON.stringify(p.carried.repoRows));
-      check(`snapshot DOM ${v.size}: a carried binding reads "Ihr Program", never "An keinen Auftrag, kein Program gebunden"`,
-        p.carried.rights.includes("Ihr Program") && !p.carried.rights.includes("An keinen Auftrag"),
-        JSON.stringify(p.carried.rights).slice(0, 300));
-      check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Im Snapshot nicht belegt", never "Keine"`,
-        p.unknown.rights.includes("Im Snapshot nicht belegt") && !p.unknown.rights.includes("An keinen Auftrag"),
-        JSON.stringify(p.unknown.rights).slice(0, 300));
-      check(`snapshot DOM ${v.size}: a git:none brief stands as the board's calm sentence, the column is not empty`,
-        p.carried.brief?.includes("Kein Git in diesem Ordner") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
-      check(`snapshot DOM ${v.size} MUTATION: without the sentence the painted calm is gone and the claim is red`,
-        p.mutant.brief !== null && !p.mutant.brief.includes("Kein Git in diesem Ordner"), JSON.stringify(p.mutant.brief));
-      check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — the live server's own sentence, no placeholder, "Keine" rights`,
-        p.live.rowText === "Sein Stand ist nicht belegt." && p.live.helperText === null && p.live.tiRow === null
-        && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
-        JSON.stringify({ row: p.live.rowText, ti: p.live.tiRow, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
-    }
-  } catch (error) {
-    check("snapshot DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false, error instanceof Error ? error.message : String(error));
-  }
+  // DOM — three pages per width (snapshotBoardDom below): runs in e2e/dom.ts
 }
 
 // THE SNAPSHOT BOARD IN A REAL BROWSER (the rig of instanceBandDom, fed with the board's wire):
 // the built bundle behind a fixture origin; three loads per width (1200×900, 390×844) — a snapshot
 // with a carried binding, a snapshot whose carried binding cannot be read, and the live fleet.
 interface SnapshotPageFacts { rowText: string; tiRow: { tone: string | null; state: string | null; text: string } | null; helperText: string | null; helperTitle: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
-async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
+export async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
@@ -693,7 +644,7 @@ async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: st
 // (900 × 700, 390 × 844): the band with long names, the same with segments that cannot shrink
 // (nowrap), and an /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
 interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][] }
-async function instanceBandDom(sourceRoot: string): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[]; expected: string }> {
+export async function instanceBandDom(sourceRoot: string): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[]; expected: string }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();

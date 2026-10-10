@@ -5460,6 +5460,22 @@ die anderen 34 „allein“-Zeilen steht kein Lauf dahinter, sondern nur die Abw
 in dieser Tabelle — und die Tabelle modelliert, was ein Modul HERSTELLT, nicht was es voraussetzt,
 ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist ihr erster Messpunkt.
 
+**`dom` — jede Prüfung, die einen Browser startet (2026-10-10, erster Baustein von Z1,
+`docs/messungen/2026-10-10-verifikation-neu-zugeschnitten.md`).** Die Proben bleiben als Bibliothek
+in ihrer Familie (`e2e/slots.ts` runFoundingFocusDom … runRightsDom, `e2e/lanes-lifecycle.ts`
+instanceBandDom/snapshotBoardDom, `e2e/drops.ts` runDropChatDom, `e2e/timeline-ui.ts`
+runTimelineDom); `e2e/dom.ts` fährt sie mit ihren unveränderten Check-Namen, als Schritt direkt
+nach `slots` und als eigene Unit `dom` in `e2e/ctx.ts#SHARD_UNITS`. Das frühere Modul
+`timeline-ui` ging darin auf — die Datei ist nur noch Wirt. Zwei Folgen:
+- **Ohne `dom` startet kein Browser.** Fehlt `dom` in der Auswahl (Module oder Shard), setzt
+  `fleet-e2e.ts` `FLEET_E2E_BROWSER`/`FLEET_E2E_PLAYWRIGHT` auf einen Pfad, der nicht laufen kann:
+  eine Browser-Probe außerhalb von `dom` scheitert dann als ihre eigene PROBE-Zeile, statt Chromium
+  zu starten. `e2e/pins.ts` hält beide Hälften (der Schalter im Runner; jede Startstelle in `e2e/`
+  liest die Variable zuerst und liegt in einer Datei, deren Proben `dom` fährt).
+- **Ein Wirt meldet auch `dom`.** `suite-modules.ts#PROBE_HOSTS` bildet eine Änderung an einer der
+  vier Wirtsdateien zusätzlich auf `dom` ab, damit `localProof.modules` die Probe mitfährt, die die
+  Lane geändert hat (`e2e/slots.ts` → `slots`, `dom`).
+
 | Modul | liest | schreibt | Schluss allein |
 | --- | --- | --- | --- |
 | `context-packs` | — | — | allein |
@@ -5473,6 +5489,7 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `auth` | — | — | allein |
 | `dirs-pins` | — | — | allein |
 | `slots` | — | `server:slots-1-2-open` `server:slots-1-2-driven` | allein |
+| `dom` | — | — | allein |
 | `history` | `server:slots-1-2-driven` | — | 2: slots history |
 | `summary` | `server:slots-1-2-driven` | — | 2: slots summary |
 | `transport` | `server:slots-1-2-driven` | — | 2: slots transport |
@@ -5509,7 +5526,6 @@ ohne es zu lesen (§16a Grenze 2). Wer eine dieser Auswahlen zuerst fährt, ist 
 | `host-hygiene` | — | — | allein |
 | `state-snapshot` | — | — | allein |
 | `trace` | — | — | allein |
-| `timeline-ui` | — | — | allein |
 | `konzepte` | — | — | allein |
 | `role-address` | — | — | allein |
 | `stuck-delivery` | — | — | allein |
@@ -5655,7 +5671,7 @@ nicht betroffen (keine Kante), drei ziehen `restart`:
 
 | Modul nach `restart` | zieht `restart`? | Weg |
 | --- | --- | --- |
-| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` · `state-snapshot` · `trace` · `timeline-ui` · `konzepte` · `role-address` · `stuck-delivery` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
+| `verify-queue` · `deploy-facts` · `errors` · `host-hygiene` · `state-snapshot` · `trace` · `konzepte` · `role-address` · `stuck-delivery` | **nein** | keine Kante — Schluss ist jeweils das Modul allein |
 | `steward-core` | ja | liest `ctx.gapRepo`/`ctx.auditPath`/`ctx.planted*`, die nur `restart` schreibt |
 | `steward-outcomes` | ja | über `sc.*` → `steward-core` → `restart` |
 | `security` | ja | liest `ctx.auditPath` → `restart` |

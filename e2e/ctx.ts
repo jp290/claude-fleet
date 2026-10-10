@@ -103,6 +103,12 @@ export interface StewardCtx {
 // cookies. The two weights are their first sharded measurement (preview 5f0f615ff53c, shards 1/3
 // and 2/3, 2026-10-10 03:0x): core 1 586 s, core-tasks 674 s; `lanes` is its median plus
 // land-provenance's.
+//
+// `dom` (2026-10-10, first step of Z1 — docs/messungen/2026-10-10-verifikation-neu-zugeschnitten.md):
+// every check that starts a browser, out of slots (core), lanes-lifecycle (lanes), drops and the
+// former unit timeline-ui, so a run can leave the browser out by its unit or module choice. No
+// fixture crosses its boundary: its one instance probe opens and kills its own slots and lanes.
+// The weights of dom, core, lanes and drops are their first sharded measurement on the Workhorse.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
@@ -110,16 +116,17 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "tmux-locale", seconds: 2, modules: ["tmux-locale"] },
   { unit: "bytes", seconds: 2, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 1586, modules: ["slots", "history", "summary", "transport", "autos", "share",
+  { unit: "core", seconds: 1200, modules: ["slots", "history", "summary", "transport", "autos", "share",
     "review", "self-token", "trailstats", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
   { unit: "core-tasks", seconds: 674, modules: ["self-token", "outcomes", "tasks"] },
   { unit: "programs", seconds: 653, modules: ["self-token", "programs"] },
-  { unit: "lanes", seconds: 681, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
+  { unit: "lanes", seconds: 650, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
   { unit: "watch", seconds: 421, modules: ["watch", "delivery-class"] },
   { unit: "attention", seconds: 25, modules: ["attention"] },
   { unit: "lane-risk", seconds: 1, modules: ["lane-risk"] },
   { unit: "explorer", seconds: 1, modules: ["explorer"] },
-  { unit: "drops", seconds: 11, modules: ["drops"] },
+  { unit: "drops", seconds: 4, modules: ["drops"] },
+  { unit: "dom", seconds: 500, modules: ["dom"] },
   { unit: "ctl", seconds: 54, modules: ["ctl"] },
   { unit: "concurrency", seconds: 5, modules: ["concurrency"] },
   { unit: "lane-suite", seconds: 43, modules: ["lane-suite"] },
@@ -133,7 +140,6 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "host-hygiene", seconds: 54, modules: ["host-hygiene"] },
   { unit: "state-snapshot", seconds: 8, modules: ["state-snapshot"] },
   { unit: "trace", seconds: 2, modules: ["trace"] },
-  { unit: "timeline-ui", seconds: 114, modules: ["timeline-ui"] },
   { unit: "konzepte", seconds: 93, modules: ["konzepte"] },
   { unit: "role-address", seconds: 3, modules: ["role-address"] },
   { unit: "stuck-delivery", seconds: 39, modules: ["stuck-delivery"] },

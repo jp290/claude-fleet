@@ -38,6 +38,7 @@ import * as bytes from "./e2e/bytes";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
 import * as slots from "./e2e/slots";
+import * as dom from "./e2e/dom";
 import * as history from "./e2e/history";
 import * as summary from "./e2e/summary";
 import * as transport from "./e2e/transport";
@@ -76,7 +77,6 @@ import * as errors from "./e2e/errors";
 import * as hostHygiene from "./e2e/host-hygiene";
 import * as stateSnapshot from "./e2e/state-snapshot";
 import * as trace from "./e2e/trace";
-import * as timelineUi from "./e2e/timeline-ui";
 import * as konzepte from "./e2e/konzepte";
 import * as roleAddress from "./e2e/role-address";
 import * as stuckDelivery from "./e2e/stuck-delivery";
@@ -128,6 +128,17 @@ const willRun: ReadonlySet<string> | null = plan
   : myUnits
     ? new Set(SHARD_UNITS.filter((u) => myUnits.has(u.unit)).flatMap((u) => u.modules))
     : null;
+
+// A RUN WITHOUT THE BROWSER PROBES STARTS NO BROWSER. Every check that starts one sits in e2e/dom.ts,
+// and every probe resolves its Chromium through FLEET_E2E_BROWSER first (and WebKit through
+// FLEET_E2E_PLAYWRIGHT) — e2e/pins.ts holds both. A run whose modules leave `dom` out points them at
+// a path that cannot run, so a browser probe that slipped into another module fails there as its own
+// PROBE line instead of starting a browser, and the flag-less run is untouched.
+const NO_BROWSER = "/nonexistent/fleet-e2e-dom-not-selected";
+if (willRun && !willRun.has("dom")) {
+  process.env.FLEET_E2E_BROWSER = NO_BROWSER;
+  process.env.FLEET_E2E_PLAYWRIGHT = NO_BROWSER;
+}
 
 const ctx = newCtx();
 // the two fixtures the single-file suite passed between sections as local variables
@@ -194,6 +205,13 @@ const steps: Step[] = [
   // --- slots, streaming, export, prompt history/log, transcript, brief, ✨ summary ---
   { unit: "core", module: "slots", run: async () => {
     await slots.run();
+  } },
+  // --- every check that starts a browser (e2e/dom.ts), its own unit so a run can leave them out.
+  // Right after slots.ts, inside whose run() they used to sit: the one probe that measures this
+  // instance (runRightsDom) still meets slots 1+2 open, as it did there and as the base fixture
+  // plants them for a run without slots.ts. The rest serve the bundle behind a fixture origin.
+  { unit: "dom", module: "dom", run: async () => {
+    await dom.run();
   } },
   { unit: "core", module: "history", run: async () => {
     await history.run();
@@ -372,12 +390,6 @@ const steps: Step[] = [
   // instance over ledgers it writes itself (three audit generations), so it touches no fixture here.
   { unit: "trace", module: "trace", run: async () => {
     await trace.run();
-  } },
-  // --- the session timeline lens (src/timeline.ts + src/client.ts), operated in a headless Chromium
-  // against a fixture origin — the one route it reads is served from e2e/trace-native-fixtures.ts.
-  // Its own unit: it touches no server fixture and runs the bundle, not the suite's srv.
-  { unit: "timeline-ui", module: "timeline-ui", run: async () => {
-    await timelineUi.run();
   } },
   // --- the konzept ledger (konzept-ledger.ts). Same reason as its two neighbours: it boots its OWN
   // scratch instance with a planted Program binding and a konzept root it owns, so it touches no fixture here.

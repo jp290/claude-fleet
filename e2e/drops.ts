@@ -15,9 +15,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
-import { BASE, REPO, ROOT, TOKEN, check, post } from "./harness";
+import { BASE, REPO, TOKEN, check, post } from "./harness";
 
 const SLOT = 10; // free: the rest of the suite drives 1,2,3,5,6,7,9
 const BRANCH = "e2e-drop";
@@ -45,20 +45,7 @@ const readDrop = (slot: number, path: string, headers: Record<string, string> = 
   fetch(`${BASE}/api/slots/${slot}/drop?path=${encodeURIComponent(path)}`, { headers });
 
 export async function run(): Promise<void> {
-  // --- the chat view's pictures, in a real browser against fixtures (no slot, no live drop). A
-  // browser that cannot run is the PROBE line — red, never a skip.
-  // The scratch copy carries server.ts + public/ but not src/ — the link back to the checkout is
-  // the node_modules symlink, so the real source is its realpath's parent (as in e2e/slots.ts).
-  try {
-    for (const result of await runDropChatDom(dirname(realpathSync(`${ROOT}/node_modules`)))) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
-      for (const [claim, ok] of Object.entries(result.claims))
-        check(`drop chat DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
-    }
-  } catch (error) {
-    check("drop chat DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
-      error instanceof Error ? error.message : String(error));
-  }
+  // the chat view's pictures in a real browser (runDropChatDom below) run in e2e/dom.ts
 
   // --- the perimeter, before any fixture exists: neither of these needs a slot ---------------
   check("upload is refused without a token", (await upload(SLOT, "x.txt", "x", {})).status === 401);

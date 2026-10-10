@@ -14259,9 +14259,16 @@ export async function runSessionRollover(ids: readonly [number, number, number],
     const movedAt = Date.now();
     check("session rollover: the slot record carries the continued session id by the next git tick",
       moved !== null, `slot=${A} from=${P} to=${Q} record=${recordOf(A)} after=${moved ?? `>${budget}`}ms`);
+    // the record moves before its audit line exists: server.ts sets the id, saves, THEN calls audit(),
+    // whose append waits its turn in server/persist.ts#queueEventWrite behind every earlier event — a
+    // single read right after the move raced that queue (red twice on 09./10.10. with no diff there).
+    // The line is queued in the same tick as the save, so 5 s covers only a loaded host's disk; a
+    // server that never writes it still runs the whole budget out and stays red
+    const line = `from=${P} to=${Q}`;
+    const lineAfter = moved === null ? null : await until(() => auditOf("session_rollover", A).includes(line), 5000);
     const rolled = auditOf("session_rollover", A);
     check("session rollover: an audit line names the rollover, old id and new",
-      rolled.includes(`from=${P} to=${Q}`), JSON.stringify(rolled));
+      rolled.includes(line), `${JSON.stringify(rolled)} after=${lineAfter ?? ">5000"}ms`);
     const tr = (await (await get(`/api/slots/${A}/transcript`)).json()) as
       { source: string | null; entries: { role: string; blocks: { text: string }[] }[]; queued?: { text: string }[] };
     const through = tr.entries.some((e) => e.role === "user" && e.blocks.some((b) => b.text === PROBE));

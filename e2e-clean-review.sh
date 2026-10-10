@@ -1,11 +1,10 @@
 #!/bin/sh
-# Dedicated e2e for the OPT-IN clean-path advisory reviewer (② / FLEET_CLEAN_REVIEW). It needs the
-# server booted with the flag ON, which would route EVERY clean-land in the main suite through the
-# reviewer — so it lives here, isolated (own $$ socket/port/dir), and the main suite keeps proving the
-# DEFAULT-OFF behaviour untouched. Proves: a "review" verdict downgrades a clean+green auto-land to a
-# stop-and-review; "ok" lets it land; a BROKEN reviewer fails CLOSED (stops, never lands). Then reboots
-# the same instance with FLEET_CLEAN_REVIEW=shadow and proves the powerless mode: every verdict —
-# including would_stop and a broken reviewer — still lands, and is only RECORDED on the outcome row.
+# Land-gate stage for the gate CHILD PROCESS on the clean path: one clean land, isolated (own $$
+# socket/port/dir), whose verify stand-in records the environment server.ts#runVerify hands it.
+# Proves the FLEET_* scrub (only the suite-mutex knobs survive, PATH arrives unchanged) and that the
+# chain runs inside the server's suite-mutex hold. The server boots with FLEET_CLEAN_REVIEW=off, the
+# value watchdog.sh gives production; the ② reviewer's gate and shadow scenarios this wrapper used to
+# drive were cut with docs/messungen/2026-10-10-ci-inventur.md, Karte 2.
 #   ./e2e-clean-review.sh
 set -u
 export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
@@ -36,7 +35,7 @@ mkdir -p "$DIR"
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e-clean-review.ts || exit 1
 
-# green verify stand-in (no sabotage marker → clean+green → the reviewer is what decides the land)
+# green verify stand-in (no sabotage marker → clean+green → the lane auto-lands)
 #
 # It also RECORDS THE ENVIRONMENT IT WAS HANDED, because it is the only thing in this suite that
 # stands exactly where the land gate's chain stands: server.ts#runVerify spawns FLEET_VERIFY_CMD,
@@ -75,34 +74,6 @@ printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"no agent in t
 EOF
 chmod +x "$DIR/fakemerge"
 
-# clean-review stand-in: a mode file next to the test repo steers the verdict per run.
-#   ok (default) — {"verdict":"ok"} · review — {"verdict":"review"} · garbage — non-JSON (fail-closed)
-#   flood — a non-JSON answer far longer than the persisted-answer cap (truncation)
-#   silent — no answer at all + nonzero exit (the timeout/spawn-failure shape)
-# The prose* modes are the SHAPE THE REAL MODEL PRODUCES (5 of the first 6 production shadow rows): a
-# valid verdict object wrapped in a one-sentence preamble. proseok/prosereview must be rescued;
-# prosejunk (wrapped object, verdict value not in the contract) must still fail closed.
-# It also DUMPS the prompt it received next to the mode file: the pure-function tests prove the builder
-# renders its sections, but only the received prompt proves the SERVER filled them from reality (the
-# git-computed fork fact, the lane's brief, the other lanes in flight).
-cat > "$DIR/fakecleanreview" <<'EOF'
-#!/bin/sh
-cat > "$(dirname "$(dirname "$PWD")")/lastcleanreviewprompt"
-ctl="$(dirname "$(dirname "$PWD")")/cleanreviewmode"
-mode="$(cat "$ctl" 2>/dev/null || echo ok)"
-case "$mode" in
-  review)  printf '{"result": "{\\"verdict\\": \\"review\\", \\"reason\\": \\"lane removed renderWidget which main now calls\\"}"}' ;;
-  garbage) printf 'not json at all — exercises the server fail-closed path' ;;
-  flood)   i=0; while [ $i -lt 600 ]; do printf 'XXXXXXXXXX'; i=$((i+1)); done ;;
-  silent)  exit 1 ;;
-  proseok) printf '{"result": "Confirmed: main gained no commits since this lane forked.\\n\\n{\\"verdict\\": \\"ok\\", \\"reason\\": \\"no second side to collide with\\"}"}' ;;
-  prosereview) printf '{"result": "One thing stands out on a closer read.\\n\\n{\\"verdict\\": \\"review\\", \\"reason\\": \\"lane deletes a helper main still calls\\"}\\n\\nWorth a human look."}' ;;
-  prosejunk) printf '{"result": "I could not settle this one.\\n\\n{\\"verdict\\": \\"maybe\\", \\"reason\\": \\"unsure\\"}"}' ;;
-  *)       printf '{"result": "{\\"verdict\\": \\"ok\\", \\"reason\\": \\"no cross-change collision found\\"}"}' ;;
-esac
-EOF
-chmod +x "$DIR/fakecleanreview"
-
 # Reap servers a SIGKILLed earlier run left behind — the one abort path the EXIT trap cannot
 # cover, keyed on owner-PID liveness so a concurrent run is never touched. Full rationale (and
 # the measurements for the signals the trap DOES handle) at the same block in e2e-isolated.sh.
@@ -122,9 +93,8 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate. ANY HTTP status
-# means it's listening (401 without a token still proves the port is up). A function, not an inline
-# loop: this harness boots srv TWICE (gate phase, then the shadow-phase restart) and the two waits
-# must not be able to drift. `_hc`, not `code` — `code` carries the harness's exit status.
+# means it's listening (401 without a token still proves the port is up). `_hc`, not `code` — `code`
+# carries the harness's exit status.
 # --max-time bounds each attempt: this loop runs under the suite mutex, and a port that accepts and
 # never answers would otherwise hold it until the outer timeout (e2e/verify-queue.ts §2d).
 wait_bound() {
@@ -161,36 +131,14 @@ wait_bound() {
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-wait_bound "phase 1 gate (FLEET_CLEAN_REVIEW=1)" || exit $?
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=off exec bun server.ts >> server.log 2>&1"
+wait_bound "boot (FLEET_CLEAN_REVIEW=off)" || exit $?
 
 cd "$DIR" || exit 1
-echo "--- phase: gate (FLEET_CLEAN_REVIEW=1) ---"
 # FLEET_E2E_SUITE labels this run's trail rows (e2e/trail-emit.ts), which otherwise default to
-# "isolated". BOTH phases carry the same label on purpose: they are one suite, they run as two
-# processes so they already get two distinct run ids, and every shadow-phase check name is
-# prefixed "shadow: " — so the phase is legible from the rows without a second suite name.
+# "isolated".
 FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 bun fleet-e2e-clean-review.ts
 code=$?
-
-# Phase 2: the SAME instance rebooted with FLEET_CLEAN_REVIEW=shadow. A restart (not a second server)
-# keeps one socket/port/state file, so the shadow phase reuses the same token, test repo and outcome
-# journal — and the reused journal is exactly what lets phase 2 assert that the gate-phase land it can
-# still see carries no shadow verdict.
-if [ "$code" = 0 ]; then
-  tmux -L "$SOCK" kill-session -t srv 2>/dev/null
-  # This wrapper owns the instance and just synchronously killed its only server. Remove that dead
-  # process's lock so the phase restart never depends on a process-table probe the lane sandbox may
-  # deny; the isolated suite owns the stale-lock behaviour itself.
-  rm -f "$DIR/fleet.pid"
-  stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: never spawn into a dying tmux server
-  tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-  wait_bound "phase 2 shadow (FLEET_CLEAN_REVIEW=shadow)" || exit $?
-  echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
-  FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
-  code=$?
-fi
 
 tmux -L "$SOCK" kill-server 2>/dev/null
 if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi

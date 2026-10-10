@@ -48,6 +48,9 @@
 //     refusals        — each named, never a 200 with []: hash drift, missing v<N>.md, a newest row not
 //                       the owner's (fall back to an older one), no directory, no ledger row, missing root,
 //                       the owner door (no binding), another konzept, a POST.
+//     modus fold      — serve a moded entry whole in geltendeEintraege, drop one from both lists, build
+//                       wann from anything but its modi and first clause (server.ts#korrekturFaltung), or
+//                       let GET …/leseansicht/<id> serve an entry outside the binding or take a query.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -482,7 +485,9 @@ async function ledgerDoors(): Promise<void> {
       type Lese = { konzept?: string; version?: number; sha256?: string; error?: string;
         geltendeEintraege?: { id: string; aussage: string; geltung: unknown; ersetzt: string[] }[];
         status?: { gilt: number; veraltet: { id: string; abgeloestDurch: string }[]; verworfen: { id: string; grund: string }[] };
-        bindung?: { projekt: string; rolle: string; harness: string } };
+        bindung?: { projekt: string; rolle: string; harness: string };
+        ausloeser?: { id: string; modi: string[]; wann: string }[]; volllesen?: string; nichtGefiltert?: unknown;
+        eintrag?: { id: string; aussage: string; geltung: unknown; ersetzt: string[] } };
       const lese = async (tok: string, q = "", k = OK): Promise<{ status: number; body: Lese; raw: string }> => {
         const r = await fetch(`${i.base}/api/self/konzepte/${k}/leseansicht${q}`, { headers: { "x-fleet-self-token": tok } });
         const raw = await r.text();
@@ -622,6 +627,51 @@ async function ledgerDoors(): Promise<void> {
       const after = await lese(laneTok!);
       check("konzepte leseansicht refusal: every probe restored, the lane reads v4 again unchanged",
         after.status === 200 && sameView(after) === sameView(claudeL), `${after.status} ${after.body.error ?? ""}`);
+
+      // ---- the modus fold (Owner 2026-10-09): v5 adds entries of named modes. modi "*" stays whole, a
+      // moded entry of the reader's geltung becomes one trigger line, and GET …/leseansicht/<id> reads it
+      // whole — through the same binding filter, so a moded entry of another role stays out of both. ok-lang
+      // holds both cuts of wann: its first clause ends at "; ", and that clause is cut to eight words.
+      const lang = { id: "ok-lang", aussage: "Erster Teil der synthetischen Aussage mit genau zehn Woertern hier; zweiter Teil nur im Volltext",
+        quelle: "fixture.md#abschnitt", geltung: ax({ modi: ["synthetik-ui"] }), ersetzt: [] };
+      const v5Heft = { ...v4Heft, eintraege: [...v4Heft.eintraege, eintrag("ok-modus", [], ax({ modi: ["synthetik-ui"] })),
+        eintrag("ok-zwei-modi", [], ax({ modi: ["entwurf", "umsetzung"] })), lang,
+        eintrag("ok-modus-orch", [], ax({ rollen: ["orchestrator"], modi: ["synthetik-ui"] }))] };
+      const ownerV5 = await ownerOK(version(placeOK(5, v5Heft), { erwartet: 4 }));
+      const [laneM, codexM, orchM] = [await lese(laneTok!), await lese(codexTok!), await lese(orchTok!)];
+      const trig = (a: { body: Lese }) => (a.body.ausloeser ?? []).map((t) => t.id).join(" ");
+      check("konzepte leseansicht modus fold: modi \"*\" whole, each moded entry of the binding one trigger line {id, modi, wann}, none dropped",
+        ownerV5.status === 200 && laneM.status === 200 && laneM.body.version === 5
+          && ids(laneM) === "ok-alle ok-projekt ok-drei ok-lane ok-neu"
+          && JSON.stringify(laneM.body.ausloeser) === JSON.stringify([
+            { id: "ok-modus", modi: ["synthetik-ui"], wann: "Bei synthetik-ui: synthetische Aussage ok-modus" },
+            { id: "ok-zwei-modi", modi: ["entwurf", "umsetzung"], wann: "Bei entwurf oder umsetzung: synthetische Aussage ok-zwei-modi" },
+            { id: "ok-lang", modi: ["synthetik-ui"], wann: "Bei synthetik-ui: Erster Teil der synthetischen Aussage mit genau zehn …" }])
+          && laneM.body.status?.gilt === 8 && laneM.body.volllesen === "GET /api/self/konzepte/k-owner-korrekturen/leseansicht/<id>"
+          && !("nichtGefiltert" in laneM.body) && !laneM.raw.includes("zweiter Teil nur im Volltext")
+          && !laneM.raw.includes("ok-modus-orch") && !laneM.raw.includes("fixture.md")
+          && JSON.stringify({ e: laneM.body.geltendeEintraege, t: laneM.body.ausloeser }) === JSON.stringify({ e: codexM.body.geltendeEintraege, t: codexM.body.ausloeser })
+          && orchM.status === 200 && trig(orchM) === "ok-modus ok-zwei-modi ok-lang ok-modus-orch" && orchM.body.status?.gilt === 9,
+        `${ownerV5.status} ${ownerV5.body.error ?? ""} lane=${laneM.status} [${ids(laneM)}] <${trig(laneM)}> gilt=${laneM.body.status?.gilt} orch=[${trig(orchM)}] ${JSON.stringify(laneM.body.ausloeser)}`);
+      const fullLang = await lese(laneTok!, "/ok-lang");
+      const fullCodex = await lese(codexTok!, "/ok-lang");
+      const fullAlle = await lese(laneTok!, "/ok-alle");
+      const fullForeign = await lese(laneTok!, "/ok-modus-orch");
+      const fullOrch = await lese(orchTok!, "/ok-modus-orch");
+      const fullAsked = await lese(laneTok!, "/ok-lang?rolle=orchestrator");
+      const fullPosted = await call(`/api/self/konzepte/${OK}/leseansicht/ok-lang`, "POST", { "x-fleet-self-token": laneTok! }, {});
+      const { quelle: _q, ...langServed } = lang;
+      check("konzepte leseansicht volllesen: GET …/leseansicht/<id> serves a trigger entry whole, quelle never, for every harness of the binding",
+        fullLang.status === 200 && fullLang.body.version === 5 && JSON.stringify(fullLang.body.eintrag) === JSON.stringify(langServed)
+          && fullLang.raw.includes("zweiter Teil nur im Volltext") && !fullLang.raw.includes("fixture.md")
+          && JSON.stringify(fullCodex.body.eintrag) === JSON.stringify(fullLang.body.eintrag)
+          && fullAlle.status === 200 && fullAlle.body.eintrag?.aussage === "synthetische Aussage ok-alle"
+          && fullOrch.status === 200 && fullOrch.body.eintrag?.id === "ok-modus-orch",
+        `lang=${fullLang.status} ${fullLang.raw.slice(0, 300)} codex=${fullCodex.status} alle=${fullAlle.status} orch=${fullOrch.status}`);
+      check("konzepte leseansicht volllesen: an id outside the binding is 404 without its text, a query 400, a POST 404",
+        fullForeign.status === 404 && !fullForeign.raw.includes("synthetische Aussage ok-modus-orch") && /no gilt entry of your binding/.test(fullForeign.body.error ?? "")
+          && fullAsked.status === 400 && empty(fullAsked) && fullPosted.status === 404,
+        `foreign=${fullForeign.status} ${fullForeign.raw.slice(0, 200)} asked=${fullAsked.status} posted=${fullPosted.status}`);
     }
 
     await leseansicht();

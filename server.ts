@@ -205,7 +205,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
-import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturLeser } from "./konzept-ledger";
+import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -16529,10 +16529,32 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
 // reads here although konzeptKontextFor refuses her every write; a free session (role generic) reads
 // nothing, and a session outside any git repository has no project and is refused by name.
 type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
+const KORREKTUR_DOOR = "/api/self/konzepte/k-owner-korrekturen/leseansicht";
 function ownerKorrekturenPointer(): string {
-  return `OWNER-KORREKTUREN: Lies vor deinem ersten Akt GET http://${HOST}:${PORT}/api/self/konzepte/k-owner-korrekturen/leseansicht mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN".
-Der bestehende Reader bestimmt Projekt, Rolle und Harness aus deiner aktuellen Position (korrekturLeserFor); verwende keine Scope-Parameter.
-Die geltenden Eintraege sind Owner-Korrekturen. Eine Abweisung oder fehlende Fassung ist unknown, kein leeres Heft; modi bleibt ausdruecklich ungefiltert.`;
+  return `OWNER-KORREKTUREN: Lies vor deinem ersten Akt GET http://${HOST}:${PORT}${KORREKTUR_DOOR} mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN".
+Projekt, Rolle und Harness bestimmt der Server aus deiner Position (korrekturLeserFor); verwende keine Scope-Parameter.
+Die Eintraege sind Owner-Korrekturen; eine Abweisung oder fehlende Fassung ist unknown, kein leeres Heft. Ein ausloeser gilt nur in seinem Modus; trifft er deine Arbeit: volllesen.`;
+}
+
+// THE MODE FOLD (Owner 2026-10-09: „[Zitat entfernt]“): no binding names a
+// working mode, so no entry can be dropped by `modi` — the view folds instead. An entry whose modi is "*"
+// holds in every task and is served whole in geltendeEintraege; an entry of named modes becomes one
+// trigger line in `ausloeser` — {id, modi, wann}, `wann` built from the modes and the first clause of the
+// aussage — and the reader fetches it whole at GET <KORREKTUR_DOOR>/<id> when a mode meets its work.
+// Nothing falls out: every gilt entry of the binding is in one of the two lists, status.gilt counts both.
+type KorrekturVoll = { id: string; aussage: string; geltung: KorrekturGeltung; ersetzt: string[] };
+function korrekturThema(aussage: string): string {
+  const clause = aussage.split(/;\s| — /)[0]!.replace(/[.!]$/, "").trim();
+  const words = clause.split(/\s+/);
+  return words.length <= 9 ? clause : `${words.slice(0, 8).join(" ").replace(/,$/, "")} …`;
+}
+function korrekturFaltung(body: Record<string, unknown>): Record<string, unknown> {
+  const alle = body.geltendeEintraege as KorrekturVoll[];
+  return { konzept: body.konzept, version: body.version, sha256: body.sha256,
+    geltendeEintraege: alle.filter((e) => e.geltung.modi === "*"),
+    ausloeser: alle.flatMap(({ id, aussage, geltung: { modi } }) => modi === "*" ? []
+      : [{ id, modi, wann: `Bei ${modi.join(" oder ")}: ${korrekturThema(aussage)}` }]),
+    volllesen: `GET ${KORREKTUR_DOOR}/<id>`, status: body.status, bindung: body.bindung };
 }
 
 async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
@@ -47958,7 +47980,9 @@ Bun.serve<WSData>({
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      const op = konzeptOpOf(req.method, selfKonzept[2]!);
+      // GET …/leseansicht/<id> serves ONE entry of the same view whole — the way a trigger line is read
+      const voll = /^leseansicht\/([^/]+)$/.exec(selfKonzept[2]!)?.[1] ?? null;
+      const op = voll !== null ? (req.method === "GET" ? { op: "read-leseansicht" as const } : null) : konzeptOpOf(req.method, selfKonzept[2]!);
       if (!op) return json({ error: "not found" }, 404);
       if (op.op === "read-leseansicht") {
         const leser = await korrekturLeserFor(s);
@@ -47970,7 +47994,12 @@ Bun.serve<WSData>({
         const still = resolveSelfPrincipal(req);
         if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
           return json({ error: "the slot changed occupant while this read ran — nothing is served on the old credential" }, 409);
-        return json(answer.body, answer.status);
+        if (answer.status !== 200) return json(answer.body, answer.status);
+        const body = answer.body as Record<string, unknown>;
+        if (voll === null) return json(korrekturFaltung(body));
+        const eintrag = (body.geltendeEintraege as KorrekturVoll[]).find((e) => e.id === voll);
+        if (!eintrag) return json({ error: `that id is no gilt entry of your binding in v${String(body.version)} — the leseansicht lists every one, whole or as a trigger` }, 404);
+        return json({ konzept: body.konzept, version: body.version, sha256: body.sha256, eintrag, bindung: body.bindung });
       }
       const body = req.method === "POST" ? await readJson(req) : null;
       const still = resolveSelfPrincipal(req);

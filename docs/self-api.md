@@ -1665,14 +1665,27 @@ curl -s http://<fleet-host>:<port>/api/self/konzepte/k-owner-korrekturen/leseans
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
 ```
 
-**Antwort (200):** `{konzept, version, sha256, geltendeEintraege, status, bindung, nichtGefiltert}` aus der
-LETZTEN Fassung (`konzept-ledger.ts#konzeptLeseansicht`). `geltendeEintraege` sind die `gilt`-Eintraege,
-deren `geltung` die Bindung trifft, je `{id, aussage, geltung, ersetzt}` — die private `quelle` wird nie
-ausgeliefert. `status` ist `{gilt: <Anzahl>, veraltet: [{id, abgeloestDurch}], verworfen: [{id, grund}]}`
-ueber die Eintraege derselben Geltung: abgeloeste ids bleiben nachvollziehbar, ihr Text nicht. `bindung`
-`{projekt, rolle, harness}` nennt, wonach gefiltert wurde; `nichtGefiltert: ["modi"]` — keine Bindung nennt
-einen Arbeitsmodus, darum traegt jeder Eintrag seine `geltung.modi` sichtbar. Ein 200 mit `[]` heisst NUR:
-die aktuelle Owner-Fassung hat fuer DIESE Bindung keinen geltenden Eintrag.
+**Antwort (200):** `{konzept, version, sha256, geltendeEintraege, ausloeser, volllesen, status, bindung}` aus
+der LETZTEN Fassung (`konzept-ledger.ts#konzeptLeseansicht`, gefaltet von `server.ts#korrekturFaltung`). Die
+`gilt`-Eintraege, deren `geltung` die Bindung trifft, stehen in genau EINER der beiden Listen, nach `modi`
+gefaltet (seit 2026-10-10, Owner 2026-10-09 „[Zitat entfernt]“): keine Bindung
+nennt einen Arbeitsmodus, darum faellt nach `modi` nichts weg. `geltendeEintraege` traegt die Eintraege mit
+`modi: "*"` VOLL, je `{id, aussage, geltung, ersetzt}` — sie gelten in jeder Arbeit. `ausloeser` traegt jeden
+Eintrag mit eigenem Modus als Einzeiler `{id, modi, wann}`; `wann` ist ein Satz aus den Modi und dem
+`aussage`-Teil bis zum ersten `; ` oder ` — `, ab zehn Woertern auf acht gekuerzt (`server.ts#korrekturThema`:
+`Bei entwurf oder umsetzung: Auf funktionierenden vorhandenen Mechanismen aufbauen und begründbare
+Erweiterungen …`). Trifft ein Modus die eigene Arbeit, liest die Session den Eintrag voll ueber den Weg in
+`volllesen` (unten). Die private `quelle` wird nie ausgeliefert. `status` ist `{gilt: <Anzahl>, veraltet:
+[{id, abgeloestDurch}], verworfen: [{id, grund}]}` ueber die Eintraege derselben Geltung — `gilt` zaehlt beide
+Listen; abgeloeste ids bleiben nachvollziehbar, ihr Text nicht. `bindung` `{projekt, rolle, harness}` nennt,
+wonach gefiltert wurde. Ein 200 mit zwei leeren Listen heisst NUR: die aktuelle Owner-Fassung hat fuer DIESE
+Bindung keinen geltenden Eintrag.
+
+**Volllesen — `GET /api/self/konzepte/k-owner-korrekturen/leseansicht/<id>`** liefert EINEN Eintrag derselben
+Sicht voll: `{konzept, version, sha256, eintrag: {id, aussage, geltung, ersetzt}, bindung}`. Es gilt derselbe
+Bindungsfilter — eine id, die nicht unter den geltenden Eintraegen DIESER Bindung steht, ist **404** `that id is
+no gilt entry of your binding in v<N> — …` ohne Eintragstext; ein Query-Parameter ist auch hier **400**, jedes
+andere Verb **404**, jede Abweisung der Leseansicht (unten) gilt unveraendert.
 
 **Die Bindung kommt vom Server, nie aus der Anfrage** (`server.ts#korrekturLeserFor`): `rolle` aus
 `positionRole` (`lane` · `program-main` · `orchestrator`), `projekt` der opake projectKey (16 hex ueber den
@@ -1696,7 +1709,8 @@ hashes to <x>, its ledger row names <y> — …` · **409** `…/v<N>.md: <Forma
 reads k-owner-korrekturen only — …` fuer jedes andere Konzept · **404** `not found` fuer jedes andere Verb.
 Die Owner-Tuer `GET /api/konzepte/k-owner-korrekturen/leseansicht` antwortet **409** `the leseansicht
 filters by a session's binding — …`: der Owner hat keine Bindung und liest das ganze Heft ueber `/versionen`
-und die Fassungsdateien. Beweis: `e2e/konzepte.ts` §leseansicht, synthetische Eintraege je Geltungsachse.
+und die Fassungsdateien. Beweis: `e2e/konzepte.ts` §leseansicht, synthetische Eintraege je Geltungsachse,
+dazu die Modus-Faltung (voll, Einzeiler, Volllesen) an einer Fassung v5 mit vier Modus-Eintraegen.
 
 ### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
 

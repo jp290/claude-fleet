@@ -81,7 +81,9 @@ import { GATE_MACHINERY_FILES, isGateMachinery } from "../task-land-waves";
 // S3's byte-equality rule is DRIVEN, not scanned: the renderer is pure (no clock, no git, no
 // state — wave-brief.ts's own header says so), so the pin runs it over the no-comment shapes.
 import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
-import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackSource } from "../context-packs";
+import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackCapability, type ContextPackMode, type ContextPackSource, type ContextPackTrigger } from "../context-packs";
+import { planContext } from "../context-plan";
+import { SESSION_FILE_REF, renderSessionAgents, sessionFileRefMisses, type SessionAgents } from "../session-agents";
 import { SESSION_BLOCKS, resolveSessionPlan, type SessionBlock, type SessionPlanInput, type SessionPlanMessung, type SessionRole } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
@@ -5581,6 +5583,60 @@ export default function (pi) {
     // it warns rather than reds; the size cap above is what stops the growth
     const stale = [...new Set(real.flatMap(({ r }) => r.staleOmissions))];
     pin(RULE_ROLE_STALE, stale.length === 0, stale.length ? `now carried: ${stale.join(", ")}` : "", true);
+  }
+
+  // --- A SESSION-DATEI REFERENCE LANDS INLINE (docs/messungen/2026-10-10-kontext-bestandteile.md F7).
+  // A lane fragment may hand a lane a rule its session file already carries, in the one shape
+  // session-agents.ts#SESSION_FILE_REF names, and only when a real lane render of THIS tree puts that
+  // rule in the box: "lies einmal" on a pointer was followed by 0 of 38 lanes. The render uses the
+  // dispatch seam's own plan facts, read out of server.ts, so a lane plan that stops selecting
+  // verify-e2e reds every reference into it here.
+  {
+    const RULE_REF = "every Session-Datei reference of the lane fragments names a numbered rule a real lane session file carries inline";
+    const words = (re: RegExp): string[] => [...(re.exec(server)?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!);
+    const mode = /const DISPATCH_CONTEXT_MODE: ContextPackMode = "([a-z-]+)";/.exec(server)?.[1];
+    const triggers = words(/const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger\[\] = \[([^\]]*)\]/);
+    const capabilities = words(/const DISPATCH_CONTEXT_CAPABILITIES: readonly ContextPackCapability\[\] = \[([^\]]*)\]/);
+    let laneFile: SessionAgents | null = null, fail = "";
+    try {
+      if (!mode || triggers.length === 0 || capabilities.length === 0) throw new Error("dispatch plan facts not found in server.ts");
+      const plan = planContext({ sourceTree: "fleet", harness: "claude", mode: mode as ContextPackMode, position: "lane",
+        triggers: triggers as ContextPackTrigger[], capabilities: capabilities as ContextPackCapability[] });
+      const sourceBytes = new Map<string, string>();
+      for (const pack of plan.selected) if (!("privateSourceId" in pack.sources)) for (const s of pack.sources) {
+        try { sourceBytes.set(s.path, read(s.path)); } catch { /* the renderer refuses that part itself */ }
+      }
+      laneFile = renderSessionAgents({ role: { text: "role", path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane",
+        harness: "claude", plan, sourceBytes, footer: "" });
+    } catch (e) { fail = e instanceof Error ? e.message : String(e); }
+    if (laneFile === null) {
+      pin(`${RULE_REF} — the probe`, false, `no lane render: ${fail}`);
+      skip(`${RULE_REF} — on the real fragments`, "no lane render");
+    } else {
+      // the probe must be able to fail: each mutant is one way a reference stops landing inline
+      const good = "(Session-Datei, inline: `AGENTS.md` ### Kern, Regel 3) (Session-Datei, inline: `AGENTS.md`\n  ### Lane, Regeln 7, 8)";
+      const passed = [
+        "(Session-Datei, inline: `AGENTS.md` ### More, Regel 1)",
+        "(Session-Datei, inline: `AGENTS.md` ### Lane, Regel 12)",
+        "(Session-Datei, inline: `docs/verify-tiering.md` ### Kern, Regel 3)",
+        "lies einmal deine Session-Datei",
+      ].filter((m) => sessionFileRefMisses(m, laneFile!).length === 0);
+      const goodMisses = sessionFileRefMisses(good, laneFile);
+      pin(`${RULE_REF} — the probe`, goodMisses.length === 0 && passed.length === 0,
+        `good: ${goodMisses.join("; ") || "lands"}; mutants not caught: ${passed.length}`);
+      if (unreadable.length > 0) skip(`${RULE_REF} — on the real fragments`, why);
+      else {
+        const text = FRAGMENTS_FOR.lane.map((f) => fragments.get(f)!).join("\n");
+        const misses = sessionFileRefMisses(text, laneFile);
+        // red is this tree's own once a render input differs from the source's, the source's otherwise
+        const ownInputs = ["AGENTS.md", "context-packs.ts", "context-plan.ts", "session-agents.ts"].some((f) => {
+          try { return read(f) !== readFileSync(`${SOURCE_DIR}/${f}`, "utf8"); } catch { return true; }
+        });
+        pinSource(`${RULE_REF} — on the real fragments`, misses.length === 0,
+          `${[...text.matchAll(SESSION_FILE_REF)].length} reference(s)${misses.length ? `; ${misses.slice(0, 4).join("; ")}` : ""}`,
+          IN_SOURCE || ownInputs);
+      }
+    }
   }
 
   // --- 6c. The back-reference block, and the one seam it protects. A lane no longer HOLDS four of

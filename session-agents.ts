@@ -159,3 +159,23 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
   const bytes = Buffer.byteLength(text);
   return { text, bytes, parts, ...(bytes > SESSION_AGENTS_LIMIT ? { projectDocMaxBytes: bytes } : {}) };
 }
+
+// A rulebook line that sends a lane to a rule its session file already carries says so in ONE
+// shape — "(Session-Datei, inline: `AGENTS.md` ### Lane, Regeln 7, 8)" — and only for a section
+// this renderer puts in the box: a pointer the lane would have to FOLLOW is the "lies einmal" that
+// 0 of 38 lanes followed (docs/messungen/2026-10-10-kontext-bestandteile.md F7). e2e/pins.ts holds
+// every such line of the lane fragments against a real lane render.
+export const SESSION_FILE_REF = /\(Session-Datei, inline:\s+`([^`]+)`\s+(#{2,4} [^,\n]+?),\s+Regeln?\s+(\d+(?:,\s*\d+)*)\)/g;
+
+/** Every Session-Datei reference in `text` that does not name a numbered rule `agents` carries inline. */
+export function sessionFileRefMisses(text: string, agents: SessionAgents): string[] {
+  const refs = [...text.matchAll(SESSION_FILE_REF)];
+  const mentions = (text.match(/Session-Datei/g) ?? []).length;
+  const misses = mentions === refs.length ? [] : [`${mentions - refs.length} Session-Datei mention(s) not in the reference shape`];
+  for (const [, path, anchor, rules] of refs) {
+    const part = agents.parts.find((p) => p.path === path && p.anchor === anchor && p.ort === "box" && p.content !== null);
+    if (!part || !agents.text.includes(part.content!)) { misses.push(`${path} ${anchor}: not inline`); continue; }
+    for (const n of rules!.split(/,\s*/)) if (!new RegExp(`^${n}\\. `, "m").test(part.content!)) misses.push(`${path} ${anchor}: no rule ${n}`);
+  }
+  return misses;
+}

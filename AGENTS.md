@@ -177,31 +177,12 @@ More: borrow `verify-e2e` for its section "More" and the knowledge parts `gate-v
 ### Lane
 
 6. Run `localProof.steps` in the returned order; stop at the first failure. The names are links of `verify.cmd` in the same answer: `install` `pins` `tsc` `build` `clean-review` `security` `claude-gate`. `localProof: null`: all of `verify.cmd`; no answer: the full chain in `watchdog.sh#VERIFY_CMD`. Empty `steps`: the command in `localProof.note`.
-7. `./e2e-isolated.sh` is a preview, not a gate, owed only for the `e2e/` lifecycle, a suite wrapper, the merge/land path or a statement a check asserts; a brief does not widen this rule, and docs-only lanes never owe it. Owed and `helper.online`: offer it (`POST /api/self/suite-offer`, body `localProof.offerBody` for `localProof.modules`) and go idle; run it locally only if the offer came back `null` or a withdraw answered 200.
+7. `./e2e-isolated.sh` is a preview, not a gate, owed only for the `e2e/` lifecycle, a suite wrapper, the merge/land path or a statement a check asserts (`supports.*`, `effortLevels`, a contract default); a brief does not widen this rule, docs-only lanes never owe it, and a preview not owed is neither offered nor run locally. `isolatedPreview: true` means run it; `"self-assess"` means judge the four cases yourself and name yours as `owedReason`: `e2e-lifecycle`, `suite-wrapper`, `merge-land-path`, `asserted-contract`. Owed and `helper.online`: offer it (`POST /api/self/suite-offer`, body `localProof.offerBody`, served unless `isolatedPreview` is `false`: `{}` the full run, `{"modules":[…]}` the narrowed run of `localProof.modules`, which needs `helper.takesModules`; under `"self-assess"` add `owedReason`) and go idle; run it locally only if the offer came back `null` or a withdraw answered 200.
 8. An offer whose budget runs out unclaimed sends nothing: before going idle, arm one one-shot `POST /api/self/autos` at `waitPolicy.unclaimedMs` (`waitPolicy.heldMs` while `suiteLock` is held); when it fires and `GET /api/self/suite-offer` still reads `open`, withdraw (`POST /api/self/suite-offer/withdraw`).
 
 9. Stopping your own run: never kill a PID from `/tmp/fleet-e2e.lock/pid` or `suiteLock.pid`: it can be the live server. Use only the PID you noted. Take the runner first (`pgrep -P <pid>`), kill both, then `tmux -L <SOCK><pid> kill-server`; check lock and socket.
 
-**Judge a suite by its TAIL, never by a remembered check count.** A clean run ends in `ALL PASS`.
-Anything else is a failure, including a run that ended early. Quote the tail in your report; do not
-paraphrase it.
-
-For the recommendation flag, `isolatedPreview: true` means run the preview; `"self-assess"` means
-apply the existing merge-/land-path self-assessment in the rule below.
-
-`./e2e-isolated.sh` is the slow tier and is NOT part of the above. It is owed only if you touched
-the `e2e/` lifecycle, a suite wrapper, the merge/land path, or a statement some check asserts
-(`supports.*`, `effortLevels`, a contract default) — a brief line demanding it does not widen this
-rule, and a docs-only lane never owes it.
-Eine nicht geschuldete Vorschau wird weder angeboten noch lokal gefahren; eine Karten-VERIFY-Zeile
-macht sie nicht geschuldet. Bei `"self-assess"` benennt `owedReason` einen der vier Faelle:
-`e2e-lifecycle`, `suite-wrapper`, `merge-land-path`, `asserted-contract`.
-
-**Offer before you run.** When the preview is owed and the gate's `helper.online` is `true`, a lane
-offers it (`POST /api/self/suite-offer`) instead of taking this machine's suite mutex. The body is
-served ready as `localProof.offerBody` (present unless `isolatedPreview` is `false`): `{}` is the
-full run, `{"modules":[…]}` the narrowed run of `localProof.modules`, which needs
-`helper.takesModules`. Bei `"self-assess"` wird der benannte `owedReason` zum Body hinzugefuegt.
+The offer of rule 7:
 
 ```bash
 curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \

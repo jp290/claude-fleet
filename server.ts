@@ -30399,8 +30399,17 @@ function auditCadenceOf(repo: string, q: AuditQueueEntry, now = Date.now()): Aud
   if (!lands.length) return { due: true, trigger: "no-land" };
   const youngest = Math.max(...ats), oldest = Math.min(...ats);
   if (now - youngest >= AUDIT_QUIET_MS) return { due: true, trigger: "quiet" };
-  if (now - oldest >= AUDIT_MAX_WAIT_MS) return { due: true, trigger: "max-wait" };
+  if (auditPastMaxWait(oldest, now)) return { due: true, trigger: "max-wait" };
   return { due: false, releaseAt: Math.min(youngest + AUDIT_QUIET_MS, oldest + AUDIT_MAX_WAIT_MS), lands };
+}
+// …the ceiling on its own, because it is also the one thing the helper's job list says about an
+// entry's AGE (helperJobsView, `overdue`). The cadence RELEASES an entry at the ceiling but reserves
+// it no slot: measured 2026-10-10 (Orchestratorin note 12dba626), one entry for six lands waited
+// from 06:40 with `waiting for helper` while the work-horse took five lane jobs at 08:21 — the daemon
+// ranks a lane's job before an audit (helper-daemon/daemon.ts#jobsToStart), and four lanes kept every
+// slot. Past this line the daemon ranks the audit right behind the command jobs.
+function auditPastMaxWait(oldest: number, now = Date.now()): boolean {
+  return now - oldest >= AUDIT_MAX_WAIT_MS;
 }
 // …the trigger to stamp on a run that starts NOW, `undefined` where no cadence applies (no helper on
 // this deployment). Only asked at a start, where the doors have already refused an undue entry.
@@ -32956,6 +32965,10 @@ interface HelperJobView {
   timeoutMs?: number;
   artifacts?: string[];   // the GLOBS asked for; the receipt's rows are the answer to them
   land?: true;            // a command job a LAND offered for its own candidate (runLandGate)
+  // on an AUDIT job and on nothing else, and only while true: its oldest land is past the cadence's
+  // ceiling (auditPastMaxWait) — the daemon then starts it before every lane-suite job. Absent is
+  // what an older server sends, and a daemon reads it exactly as before the field existed.
+  overdue?: true;
   // `k/n` on a SHARDED audit job and on nothing else — the exact string the daemon hands the suite as
   // FLEET_E2E_SHARD. Listed only to a device that declared AUDIT_SHARD_FEATURE.
   shard?: string;
@@ -33013,6 +33026,7 @@ function helperJobsView(forDevice?: string): {
       oldestAt: Math.min(...q.covers.map((x) => x.at)),
       claim: c ? { name: c.name, claimedAt: c.claimedAt, expiresAt: c.expiresAt } : null,
       localRunning: auditRunningRepo === repo || runningPostLandAudit?.repo === repo,
+      ...(AUDIT_HELPER_ONLY && auditPastMaxWait(Math.min(...q.covers.map((x) => x.at))) ? { overdue: true as const } : {}),
     });
   }
   // THE MODULES HANDSHAKE, the shard's twin one kind over: a NARROWED preview appears only in the
@@ -34093,6 +34107,7 @@ function auditShardJobViews(repo: string, q: { main: string; covers: AuditCover[
       oldestAt: Math.min(...covers.map((x) => x.at)),
       claim: live ? { name: live.name, claimedAt: live.claimedAt, expiresAt: live.expiresAt } : null,
       localRunning, shard: `${k}/${n}`,
+      ...(AUDIT_HELPER_ONLY && auditPastMaxWait(Math.min(...covers.map((x) => x.at)), now) ? { overdue: true as const } : {}),
     });
   }
   return out;

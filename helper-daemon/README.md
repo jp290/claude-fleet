@@ -153,9 +153,9 @@ shortening when a local branch has the same name. The configuration does not upd
   it, both took `8800 + $$ % 2000` and collided whenever their pids lay within the fixtures' port
   offsets (`+1` … `+29`) of each other: `EADDRINUSE` on 9857 in post-land audit e900ed30,
   2026-10-10. Without the variable the wrapper is unchanged. The other four wrappers (claude-gate,
-  clean-review, security, postland-audit) do not read it yet; their bands are disjoint from this
-  one's, so the same index can serve them once each splits its own band the same way. If all ten
-  are held the job is reported unrunnable (127), never run on a pid-derived port.
+  clean-review, security, postland-audit) read it the same way since d88483a5, each inside its own
+  2000-port band (`base + 200·band + $$ % 160`); the bands are disjoint, so one index serves them
+  all. If all ten are held the job is reported unrunnable (127), never run on a pid-derived port.
 
   The heartbeat carries `running` and `maxParallelSuites`, so the board shows `1/2 suite slots`,
   and the Fleet's claim door refuses a device whose own last heartbeat said it was full. That

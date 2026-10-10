@@ -43,6 +43,7 @@ interface CheckCount { ran: number; failed: number; ranIsLowerBound?: true }
 interface HelperJob {
   id: string; kind?: string; repo: string; main: string; branches: string[]; covers: number;
   claim: { name: string; claimedAt: number; expiresAt: number } | null; localRunning: boolean;
+  overdue?: true;
 }
 interface LiveView { postLandAuditLive: { running: { repo: string | null; phase: string } | null } | null }
 // the OWNER's projection of a device (server.ts#helperDevicesView), the two fields the update rail
@@ -381,6 +382,21 @@ export async function run(h: {
       && ids(roomLeft) === "e00000000004,d00000000001,d00000000002"
       && ids(shardsOnly) === "d00000000001,d00000000002,d00000000003",
     `oneSlot=[${ids(oneSlot)}] bothLane=[${ids(bothLane)}] roomLeft=[${ids(roomLeft)}] shardsOnly=[${ids(shardsOnly)}]`);
+  // AN OVERDUE AUDIT BEFORE THE LANE JOBS (2026-10-10, Orchestratorin note 12dba626): one audit entry
+  // for six lands waited from 06:40 while the work-horse took five lane jobs at 08:21, and four lanes
+  // kept every slot. The list below is that shape — five open lane-suite jobs listed first, the audit
+  // past the cadence's ceiling last, one free slot: the audit starts. A gate suite still goes first,
+  // and the same audit WITHOUT the mark still waits behind the lanes (the rank above, unchanged).
+  // MUTATION: drop the `overdue` rank in daemon.ts#jobsToStart ⇒ overdueOne starts e10000000001 ⇒ red.
+  const lanes5 = [1, 2, 3, 4, 5].map((n) => kindJob(`e1000000000${n}`, "lane-suite"));
+  const overdueAudit: JobView = { ...kindJob("f00000000001", "audit"), overdue: true };
+  const overdueOne = jobsToStart([...lanes5, overdueAudit], 1, 4, none);
+  const overdueBehindCmd = jobsToStart([...lanes5, overdueAudit, gateSuite], 2, 3, none);
+  const notMarked = jobsToStart([...lanes5, kindJob("f00000000001", "audit")], 1, 4, none);
+  check("(HD) an audit the fleet marks overdue takes the next free slot before five open lane jobs — behind a gate suite, and only with the mark",
+    ids(overdueOne) === "f00000000001" && ids(overdueBehindCmd) === "e00000000004,f00000000001"
+      && ids(notMarked) === "e10000000001",
+    `overdueOne=[${ids(overdueOne)}] behindCmd=[${ids(overdueBehindCmd)}] notMarked=[${ids(notMarked)}]`);
   // THE PRUNE AND THE RUN IN FLIGHT (C1, 2026-09-13). The oldest dir is a run still going — above cap
   // 1 the normal shape of a long suite beside short ones — and each finished run keeps a red
   // instance in its `tmp/`. keepRuns 2 must leave the running one AND the two newest finished.
@@ -1749,8 +1765,11 @@ export async function run(h: {
     // the job below is claimable without racing the local drain — the same knob e2e/helper-portal.ts
     // uses for the same fixture. The grace only arms while a device is inside the online window, so
     // the heartbeat below is a precondition of the fixture and not decoration.
+    // FLEET_AUDIT_MAX_WAIT_MS 0 puts every land past the cadence's ceiling at once: the job below must
+    // carry `overdue` (server.ts#auditPastMaxWait). It releases nothing earlier — with no land in
+    // flight the entry is due at once anyway (trigger `no-land`).
     const rUp = await startSrv({ audit: true, auditPing: true,
-      extra: { FLEET_AUDIT_HELPER_GRACE_MS: "20000" } });
+      extra: { FLEET_AUDIT_HELPER_GRACE_MS: "20000", FLEET_AUDIT_MAX_WAIT_MS: "0" } });
     check("(HD.11) fixture: a Program bound to a plain session, one lane of it, the ping armed",
       rMainOpen?.ok === true && rUp, `open=${rMainOpen?.status} up=${rUp}`);
     const rToken = remoteState().slots?.[String(rMain)]?.selfToken ?? "";
@@ -1781,6 +1800,9 @@ export async function run(h: {
     const rClaim = rJob ? await hpost("/api/helper/claim", { jobId: rJob.id, deviceId: DEVICE }) : null;
     check("(HD.11) fixture: the Program's land is offered and claimed by a helper before the local drain takes it",
       rJob !== undefined && rClaim?.status === 200, `job=${JSON.stringify(rJob)} claim=${rClaim?.status}`);
+    // MUTATION: drop the `overdue` spread in server.ts#helperJobsView ⇒ the field is absent ⇒ red.
+    check("(HD.11) the job list marks an audit past its maxWait ceiling overdue — the field the daemon ranks it by",
+      rJob?.overdue === true, `job=${JSON.stringify(rJob)}`);
     const rResult = rJob ? await hpost("/api/helper/result", { jobId: rJob.id, exitCode: 1,
       tail: "FAIL  remote program check\n1 FAILURES", fails: ["remote program check"] }) : null;
     // found by its REMOTE key, never by position: a row written by the local drain in the same

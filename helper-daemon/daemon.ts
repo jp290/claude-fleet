@@ -210,6 +210,9 @@ export interface JobView {
   claim: { name: string; claimedAt?: number } | null; localRunning: boolean;
   shard?: string;
   modules?: string[];
+  // an audit past the cadence's ceiling (server.ts#auditPastMaxWait) — read by jobsToStart only.
+  // Absent from an older server, and then nothing changes.
+  overdue?: boolean;
 }
 // WHAT THIS DAEMON'S CODE CAN RUN, sent on every heartbeat. Not a config field on purpose: the fleet
 // offers a sharded audit (`shard: "k/n"`) only to a device that declares `audit-shard`, because a
@@ -848,11 +851,19 @@ export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number |
 // last free slot is its own. NOT a slot held empty for a lane job that is not listed yet: the fleet
 // reads a machine with a free slot as unsaturated (server.ts#helperSaturation), and a shard left
 // unclaimed beside it goes local on the Mac after its grace.
+// …SAVE AN AUDIT THE FLEET MARKS OVERDUE, which goes right behind the commands. Measured 2026-10-10
+// (Orchestratorin note 12dba626): one audit entry for six lands waited from 06:40, and at 08:21 this
+// daemon took five lane jobs straight after a swap — four lanes with three shards each plus their
+// gate suites kept every slot, so the rank above starved the audit, no green audit stamped the tip,
+// and no deploy could go. The fleet marks an audit `overdue` once its oldest land is past the
+// cadence's ceiling; that one then takes the next free slot before any lane-suite job. Still nothing
+// held empty: an overdue audit is a listed job, and a slot nobody's job can use is taken as before.
 export function jobsToStart(jobs: readonly JobView[], free: number, running: number,
   busy: ReadonlySet<string>): JobView[] {
   const update = jobs.find((j) => j.kind === "daemon-update");
   if (update && (running > 0 || !update.claim)) return running === 0 ? [update] : [];
-  const rank = (j: JobView): number => j.kind === "command" ? 0 : j.kind === "lane-suite" ? 1 : 2;
+  const rank = (j: JobView): number =>
+    j.kind === "command" ? 0 : j.kind === "audit" && j.overdue === true ? 1 : j.kind === "lane-suite" ? 2 : 3;
   return jobs.filter((j) => j.kind !== "daemon-update" && !j.claim && !j.localRunning && !busy.has(j.id))
     .map((j, i) => ({ j, i })).sort((a, b) => rank(a.j) - rank(b.j) || a.i - b.i).map(({ j }) => j)
     .slice(0, Math.max(0, free));

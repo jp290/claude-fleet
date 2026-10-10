@@ -894,7 +894,12 @@ else {
     const st = live.stats ? ` (p50 ${ms(live.stats.p50)} p90 ${ms(live.stats.p90)} over ${live.stats.n})` : "";
     parts.push(`RUNNING ${run.repo} ${run.main}@${short(run.mainSha)} for ${sec(run.startedAt)} covers ${run.covers.join(", ") || "-"}${st}`);
   } else if (run?.phase === "starting") parts.push("STARTING — the drain holds its lock, the run's identity is not known yet");
-  if (wait.length) parts.push(`WAITING ${wait.length}: ${wait.map((w) => `${w.branch}@${String(w.mainAfter).slice(0, 8)}`).join(", ")}`);
+  // how long the OLDEST open entry has waited, in minutes — the one sensor for an audit starving
+  // behind lane jobs on the helper (2026-10-10, note 12dba626). A row without `at` is an older server.
+  const ats = wait.map((w) => w.at).filter((t) => typeof t === "number");
+  const oldest = !wait.length ? "" : ats.length === wait.length
+    ? ` (oldest waiting ${Math.floor((Date.now() - Math.min(...ats)) / 60000)} min)` : " (oldest waiting UNKNOWN — no `at` on the row)";
+  if (wait.length) parts.push(`WAITING ${wait.length}${oldest}: ${wait.map((w) => `${w.branch}@${String(w.mainAfter).slice(0, 8)}`).join(", ")}`);
   liveLine = "live: " + parts.join("; ");
 }
 

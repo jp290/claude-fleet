@@ -8595,7 +8595,9 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
   }
   return out;
 }
-async function workplaces(): Promise<Workplaces> {
+// the repos GET /api/worktrees lists — also the repos POST /api/worktrees may create a place in,
+// so a place it creates is never one the list cannot show
+function workplaceRepoList(): string[] {
   const allRepos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
   // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): on a test instance the server's own
   // directory is the snapshot copy — no .git, so its only possible repo row is an unreadable
@@ -8603,7 +8605,10 @@ async function workplaces(): Promise<Workplaces> {
   // INSTANCE_SOURCE, the one mark testinstanz.sh hands every instance it starts; the live fleet
   // (unset) keeps REPO_DIR exactly as before.
   const self = (() => { try { return realpathSync(REPO_DIR); } catch { return REPO_DIR; } })();
-  const repos = SNAPSHOT_MIRROR ? [SNAPSHOT_MIRROR.repo] : INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
+  return SNAPSHOT_MIRROR ? [SNAPSHOT_MIRROR.repo] : INSTANCE_SOURCE ? allRepos.filter((r) => r !== self) : allRepos;
+}
+async function workplaces(): Promise<Workplaces> {
+  const repos = workplaceRepoList();
   const key = JSON.stringify([repos, [...helperDevices.values()].map((d) => [d.id, d.name, d.daemonSha, d.instance, d.repos, d.lastSeen, helperUpdates.get(d.id)]), slots.filter((s) => s.cwd).map((s) => [s.id, s.openedAt, s.cwd, s.worktree?.base, s.worktree?.baseSha])]);
   if (!workplacesCache || workplacesCache.key !== key || Date.now() - workplacesCache.at >= WORKPLACES_CACHE_MS) {
     const entry: NonNullable<typeof workplacesCache> = { key, at: Number.POSITIVE_INFINITY, value: workplaceAuditReading().then((audits) => Promise.all(repos.map(async (repo): Promise<WorkplaceRepo> => {
@@ -50842,6 +50847,42 @@ Bun.serve<WSData>({
       } finally {
         laneSpawn.delete(free.id);
         if (attachPath) attachBusy.delete(attachPath);
+      }
+    }
+    // A PLACE WITHOUT A SESSION (Startfenster "Branch", c4639cfe): createWorktree and nothing else —
+    // no slot, no spawn, no lane letter, nothing the lane cap or the dispatcher counts. It becomes a
+    // lane only when someone seats it: POST /api/lanes {repo, attach: path}. An empty branch takes
+    // createWorktree's own name, slugged from title. `harness` names who will open it, because the
+    // private scaffold follows the harness (laneScaffoldFor); the form is always a worktree — a
+    // clone is no entry of `git worktree list`, so GET /api/worktrees could not show it.
+    if (url.pathname === "/api/worktrees" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim() || typeof body.branch !== "string"
+        || (body.title !== undefined && typeof body.title !== "string"))
+        return json({ error: "expected { repo, branch, title?, harness? }" }, 400);
+      const ho = harnessIdOf(body);
+      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
+      const h = harnessOf(ho.harness);
+      if (!h.allowsLanes) return json({ error: `harness ${h.id} is main-session only — it cannot open a lane` }, 400);
+      const fo = laneFormOf(body, h);
+      if (!fo.ok || fo.form !== "worktree")
+        return json({ error: "form must be 'worktree' — a clone is no entry of GET /api/worktrees" }, 400);
+      let root: string;
+      try { root = await repoRootOf(body.repo); } catch (e) { return json({ error: e instanceof Error ? e.message : "not a git repository" }, 400); }
+      if (!workplaceRepoList().includes(root))
+        return json({ error: `${root} is not a workplace repo — GET /api/worktrees would not show a place there` }, 400);
+      const branch = body.branch.trim();
+      if (branch && (await git(root, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).code === 0)
+        return json({ error: `branch already exists in ${root}: ${branch}` }, 409);
+      try {
+        const wt = await createWorktree(root, branch, fo.form, undefined, body.title || undefined, h);
+        workplacesCache = null; // the place is in the very next GET /api/worktrees, not after cacheMs
+        void tickGit().catch(() => {});
+        return json({ ok: true, repo: wt.repo, path: wt.path, branch: wt.branch }, 201);
+      } catch (e) {
+        const error = e instanceof Error ? e.message : "worktree failed";
+        // the path guard in createWorktree, or git refusing a branch a concurrent request just made
+        return json({ error }, /already exists/.test(error) ? 409 : 400);
       }
     }
     // orphan cleanup: drop a worktree no slot holds — same safety net as ⏏ land

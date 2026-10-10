@@ -3757,6 +3757,35 @@ Land. Unlesbarer Bereich/Notizref: lands und truncated null mit land-notes-unrea
 unlesbarer Boot-/Head-Stand nennt boot-head-unreadable/head-unreadable. Beim leeren Deploy-
 Abstand stehen lands:[], truncated:false. Land-, Verify- und Deploy-Aktionen bleiben getrennt.
 
+## Ein Arbeitsort ohne Session — `POST /api/worktrees` (Owner)
+
+Die Tür hinter der Startfenster-Wahl „Branch" (c4639cfe): ein Worktree auf neuem Branch,
+**ohne Session**. Sie ruft `server.ts#createWorktree` und sonst nichts — kein Slot, kein Spawn,
+kein Lane-Buchstabe, nichts, was Lane-Deckel oder Dispatcher zählen. Owner-Credential wie
+`POST /api/lanes`.
+
+```
+curl -s -X POST -H "authorization: Bearer $FLEET_TOKEN" -H 'content-type: application/json' \
+  -d '{"repo":"<repo>","branch":"<neuer branch>"}' http://<fleet-host>:<port>/api/worktrees
+```
+
+Body: `repo` und `branch` (Pflicht, Strings), `title?`, `harness?`. Ein leerer `branch` nimmt
+den Namen, den `createWorktree` selbst vergibt (`fleet/<stamp>-<slug aus title>-<hex>`); `title`
+wirkt nur dort. `harness` nennt, wer den Ort öffnen wird — das private Scaffold folgt ihm
+(`server.ts#laneScaffoldFor`); ohne `harness` gilt der Default-Adapter. Die Form ist immer
+`worktree` (`form:"clone"` ist 400): ein Klon steht nicht in `git worktree list` und damit in
+keiner Arbeitsorte-Antwort. Das Repo muss eines sein, das `GET /api/worktrees` listet
+(`server.ts#workplaceRepoList`), sonst 400 — die Tür legt keinen Ort an, den die Sicht nicht zeigt.
+
+Antworten: **201** `{ok, repo, path, branch}`; **409** bei schon vorhandenem Branch oder
+Worktree-Pfad; **400** bei fehlerhaftem Body, unbekanntem Harness, Main-only-Harness, fremdem Repo
+oder ungültigem Branchnamen. Der Ort steht sofort in der nächsten `GET /api/worktrees`-Antwort
+(die Tür verwirft den 3-s-Cache), mit `session:null`.
+
+Fortgesetzt wird er über die bestehende Sitz-Tür: `POST /api/lanes {repo, attach:<path>}` setzt
+eine Session auf ihn; erst dann ist er eine Lane. `POST /api/slots/:id/open-worktree` legt immer
+einen NEUEN Worktree an und setzt keinen vorhandenen fort. Weg damit: `POST /api/worktrees/discard`.
+
 ## Testinstanz — bekannte Arbeitsorte, Lesen und ausdrückliche Gesten
 
 Eine Testinstanz ist eine isolierte Vorschau, kein Verify-Signal. Haupt-Checkout und slotlose

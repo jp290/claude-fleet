@@ -332,6 +332,41 @@ export async function run(lc: LaneCtx): Promise<void> {
     lnDRec.harness === null && !("effortObserved" in lnDRec) && !("subagentCount" in lnDRec) && !("modelResolved" in lnDRec),
     JSON.stringify(lnDRec));
   if (lnD.cwd) spawnSync("git", ["worktree", "remove", "--force", lnD.cwd], { cwd: REPO });
+  // POST /api/worktrees (Startfenster "Branch", c4639cfe): a PLACE, not a lane. The mutation this
+  // guards is the door spawning after all — then a slot holds the path and the occupied count moves.
+  {
+    type Sessions = { slots: { id: number; cwd: string | null }[] };
+    type Places = { repos: { repo: string; worktrees: { path: string; branch: string; session: unknown }[] | null }[] };
+    const sessions = async (): Promise<Sessions> => (await (await get("/api/sessions")).json()) as Sessions;
+    const canon = realpathSync(REPO);
+    const placeDir = `${canon}.worktrees/e2e-place`;
+    const before = (await sessions()).slots.filter((x) => x.cwd).length;
+    const made = await post("/api/worktrees", { repo: REPO, branch: "e2e-place" });
+    const mj = (await made.json()) as { path?: string; branch?: string };
+    const after = await sessions();
+    check("POST /api/worktrees answers 201 with the new worktree's path and branch",
+      made.status === 201 && mj.path === placeDir && mj.branch === "e2e-place" && exists(`${placeDir}/.git`),
+      `${made.status} ${JSON.stringify(mj)}`);
+    check("POST /api/worktrees spawns nothing: no slot holds the place and the occupied count is unchanged",
+      !after.slots.some((x) => x.cwd === placeDir) && after.slots.filter((x) => x.cwd).length === before,
+      `${before} → ${after.slots.filter((x) => x.cwd).length} / ${JSON.stringify(after.slots.filter((x) => x.cwd === placeDir))}`);
+    const row = ((await (await get("/api/worktrees")).json()) as Places).repos
+      .find((r) => r.repo === canon)?.worktrees?.find((w) => w.path === placeDir);
+    check("the place is in the very next GET /api/worktrees, on its branch, without a session",
+      row?.branch === "e2e-place" && row.session === null, JSON.stringify(row));
+    const again = await post("/api/worktrees", { repo: REPO, branch: "e2e-place" });
+    check("POST /api/worktrees on an existing branch is 409", again.status === 409, `${again.status} ${await again.text()}`);
+    mkdirSync(`${canon}.worktrees/e2e-place-taken`, { recursive: true });
+    const taken = await post("/api/worktrees", { repo: REPO, branch: "e2e-place-taken" });
+    rmSync(`${canon}.worktrees/e2e-place-taken`, { recursive: true, force: true });
+    check("POST /api/worktrees on an existing worktree path is 409", taken.status === 409, `${taken.status} ${await taken.text()}`);
+    // the place continues through the existing seat door — attach — and only THEN is it a lane
+    const seat = (await (await post("/api/lanes", { repo: REPO, attach: placeDir })).json()) as { slot?: number; cwd?: string; branch?: string };
+    check("the place continues through POST /api/lanes {attach}: a slot now holds it on its branch",
+      typeof seat.slot === "number" && seat.cwd === placeDir && seat.branch === "e2e-place", JSON.stringify(seat));
+    if (seat.slot) await post(`/api/slots/${seat.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: placeDir, branch: "e2e-place" });
+  }
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
   // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh

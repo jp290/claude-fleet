@@ -8313,6 +8313,29 @@ export async function run(ctx: Ctx): Promise<void> {
     openedAt?: number; mainRepo?: string; targetRepo?: string }[] =>
     readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(from)
       .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
+  // THE AUDIT QUEUE HAS PASSED THE DOOR — the proof a single read right after a door's answer lacks.
+  // The doors below call audit() before they answer, but the append waits its turn in
+  // server/persist.ts#queueEventWrite behind every earlier event, so the answer can arrive before the
+  // line: a missing line then reads red, and a LATE line (a second hold row, a dispatch) reads as
+  // absent and green. That chain is one FIFO: a task_kind flip on an inert marker row (a notiz of no
+  // program, flipped by the owner's kind door), sent after the door answered, is appended after every
+  // line the door queued. Once the marker's line is in the file, a read is complete up to the door —
+  // presence waited for within 5 s, absence measured. null = the marker never landed, and every check
+  // that reads after it is red on that alone
+  const auditMarker = await makeTask({ text: "audit queue marker", kind: "notiz" });
+  let auditMarkerFlips = 0;
+  const auditSettled = async (): Promise<number | null> => {
+    const from = Date.now(), lines = auditLines();
+    const kind = auditMarkerFlips % 2 === 0 ? "richtung" : "notiz";
+    if ((await post(`/api/tasks/${auditMarker}/kind`, { kind })).status !== 200) return null;
+    auditMarkerFlips++;
+    const line = `${auditMarker}:${kind === "richtung" ? "notiz" : "richtung"}->${kind}`;
+    try {
+      await until(() => auditSince(lines).some((r) => r.event === "task_kind" && r.detail === line),
+        { timeoutMs: 5000, what: `audit marker ${line}` });
+      return Date.now() - from;
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; return null; }
+  };
 
   // (a) THE ACT ITSELF, and the trail it must leave.
   const ownId = await makeTask({ text: "acp16 own auftrag", programId: mainProgram.id });
@@ -8322,15 +8345,16 @@ export async function run(ctx: Ctx): Promise<void> {
   const releaseOkBody = await releaseOk.json() as
     { ok?: boolean; sessionIdMatch?: string; task?: TaskRow };
   const releasedRow = await taskRow(ownId);
+  const releaseSettled = await auditSettled();
   const releaseTrail = auditSince(auditBeforeRelease).filter((r) => r.event === "task_release");
   check("ACP-16 (a): a bound MAIN releases its own pending auftrag — queued, releasedBy machine, one task_release row",
     releaseOk.status === 200 && releaseOkBody.ok === true
       && releaseOkBody.task?.status === "queued" && releaseOkBody.task.releasedBy === "machine"
       && typeof releaseOkBody.sessionIdMatch === "string"
       && releasedRow?.status === "queued" && releasedRow.releasedBy === "machine"
-      && releaseTrail.length === 1 && releaseTrail[0]?.slot === successorSlot
+      && releaseSettled !== null && releaseTrail.length === 1 && releaseTrail[0]?.slot === successorSlot
       && releaseTrail[0]?.detail === `${ownId} program=${mainProgram.id}`,
-    `${releaseOk.status} ${JSON.stringify(releaseOkBody)} row=${JSON.stringify(releasedRow)} trail=${JSON.stringify(releaseTrail)}`);
+    `${releaseOk.status} ${JSON.stringify(releaseOkBody)} row=${JSON.stringify(releasedRow)} trail=${JSON.stringify(releaseTrail)} settled=${releaseSettled ?? ">5000"}ms`);
 
   // A second repo enters the tick's open-work list through an owner row. The same MAIN may file
   // there, but its release door must still refuse to carry the new row across the repo boundary.
@@ -8359,14 +8383,15 @@ export async function run(ctx: Ctx): Promise<void> {
       && crossStored.programId === mainProgram.id && crossStored.status === "pending"
       && crossStored.slot == null && crossStored.releasedBy === undefined,
     `${crossFile.status} ${JSON.stringify(crossStored)}`);
+  const crossSettled = await auditSettled();
   const crossAudit = auditSince(auditBeforeCrossFile)
     .filter((r) => r.event === "main_task" && r.detail?.startsWith(`${crossId} program=`));
   check("cross-repo filing records one main_task audit row with the filing occupant and both canonical repos",
-    crossAudit.length === 1 && crossAudit[0]?.slot === successorSlot
+    crossSettled !== null && crossAudit.length === 1 && crossAudit[0]?.slot === successorSlot
       && crossAudit[0]?.openedAt === releaseBinding?.openedAt
       && crossAudit[0]?.mainRepo === realpathSync(REPO)
       && crossAudit[0]?.targetRepo === realpathSync(REPO2),
-    JSON.stringify(crossAudit));
+    `${JSON.stringify(crossAudit)} settled=${crossSettled ?? ">5000"}ms`);
   const crossRelease = await selfRelease(successorToken, crossId);
   const crossReleaseText = await crossRelease.text();
   check("cross-repo filing leaves release in the MAIN checkout: the foreign row remains pending",
@@ -8387,20 +8412,23 @@ export async function run(ctx: Ctx): Promise<void> {
   // answer names no slot, the row keeps none, and no occupant appeared. Then a FULL dispatch tick
   // passes with the master stops engaged and the row is still exactly where the release left it.
   const stateAfterRelease = await fleetSwitches();
-  const dispatchTrail = auditSince(auditBeforeRelease).filter((r) => r.event === "task_dispatch");
   await Bun.sleep(1500); // > FLEET_DISPATCH_TICK_MS (250 ms in this suite) by a wide margin
   const rowAfterTick = await taskRow(ownId);
   const stateAfterTick = await fleetSwitches();
+  // after the tick AND the marker: an absence read before either would be green for a dispatch whose
+  // line was still queued, or whose tick had not run yet
+  const dispatchSettled = await auditSettled();
+  const dispatchTrail = auditSince(auditBeforeRelease).filter((r) => r.event === "task_dispatch");
   check("ACP-16 (f): the release DISPATCHES NOTHING — no slot in the answer, none on the row, no new occupant, and a full tick under the master stops changes nothing",
     releasedRow?.slot == null && !("slot" in (releaseOkBody.task ?? {}))
-      && dispatchTrail.length === 0
+      && dispatchSettled !== null && dispatchTrail.length === 0
       && stateAfterRelease.occupied === stateBeforeRelease.occupied
       && stateAfterRelease.lanes === stateBeforeRelease.lanes
       && rowAfterTick?.status === "queued" && rowAfterTick.slot == null
       && stateAfterTick.occupied === stateBeforeRelease.occupied
       && stateAfterTick.lanes === stateBeforeRelease.lanes
       && stateAfterTick.dispatchOn === false && stateAfterTick.autosOn === false,
-    `before=${JSON.stringify(stateBeforeRelease)} after=${JSON.stringify(stateAfterTick)} row=${JSON.stringify(rowAfterTick)} dispatchRows=${dispatchTrail.length}`);
+    `before=${JSON.stringify(stateBeforeRelease)} after=${JSON.stringify(stateAfterTick)} row=${JSON.stringify(rowAfterTick)} dispatchRows=${dispatchTrail.length} settled=${dispatchSettled ?? ">5000"}ms`);
 
   // (b) A ROW OF ANOTHER PROGRAM. The bracket is derived from the binding, so this is not the
   // caller's to release — and the refusal must leave the row byte-identical, not half-touched.
@@ -8579,6 +8607,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const hold1 = await selfHold(successorToken, holdPending);
   const hold1Body = (await hold1.json()) as { ok?: boolean; hold?: { slot: number; at: number } };
   const hold2 = (await (await selfHold(successorToken, holdPending)).json()) as { ok?: boolean; hold?: { at: number } };
+  const holdSettled = await auditSettled();
   const holdTrail = auditSince(holdAuditFrom).filter((r) => r.event === "task_hold");
   const holdForeign = await selfHold(successorToken, foreignId);
   const holdForeignText = await holdForeign.text();
@@ -8586,10 +8615,10 @@ export async function run(ctx: Ctx): Promise<void> {
     hold1.status === 200 && hold1Body.ok === true && hold1Body.hold?.slot === successorSlot
       && hold2.ok === true && hold2.hold?.at === hold1Body.hold?.at
       && (await holdRow(holdPending))?.hold?.slot === successorSlot && (await holdRow(holdPending))?.status === "pending"
-      && holdTrail.length === 1 && holdTrail[0]?.detail === `${holdPending} program=${mainProgram.id} held grund=null`
+      && holdSettled !== null && holdTrail.length === 1 && holdTrail[0]?.detail === `${holdPending} program=${mainProgram.id} held grund=null`
       && holdForeign.status === 409 && holdForeignText.includes(`holds only rows of program ${mainProgram.id}`)
       && !(await holdRow(foreignId))?.hold,
-    JSON.stringify({ hold1: hold1.status, hold1Body, hold2, trail: holdTrail, foreign: `${holdForeign.status} ${holdForeignText}` }));
+    JSON.stringify({ hold1: hold1.status, hold1Body, hold2, trail: holdTrail, foreign: `${holdForeign.status} ${holdForeignText}`, settled: holdSettled ?? ">5000" }));
   // THE HOLD CARRIES ITS REASON (2026-09-18, docs/messungen/2026-09-18-queue-durchsatz.md §e Posten 4):
   // 42 holds in 50 minutes carried none. A hold WITHOUT one is accepted and stored as grund:null — the
   // `held grund=null` line above — a hold with one stores it on the row and in the trail, a second
@@ -8606,6 +8635,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const regrundRow = await holdRow(holdPending);
   const liftQ = await selfRelease(successorToken, heldQueued);
   const liftQBody = (await liftQ.json()) as { ok?: boolean; lifted?: string };
+  const grundSettled = await auditSettled();
   const grundTrail = auditSince(grundAuditFrom).filter((r) => r.event === "task_hold").map((r) => r.detail);
   check("hold-grund: a hold stores its grund on the row and in task_hold, names one after the fact, refuses a foreign key or a blank grund (400, nothing held), and the lift's trail line carries the lifted grund",
     holdQ.status === 200 && holdQRow?.hold?.grund === "wartet auf das Land von acp16 cap filler 1"
@@ -8613,12 +8643,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && !(await holdRow(capIds[1]!))?.hold
       && regrund.status === 200 && regrundRow?.hold?.grund === "nachgetragen: Karte wird geschaerft"
       && regrundRow.hold.at === hold1Body.hold?.at
-      && JSON.stringify(grundTrail) === JSON.stringify([
+      && grundSettled !== null && JSON.stringify(grundTrail) === JSON.stringify([
         `${heldQueued} program=${mainProgram.id} held grund="wartet auf das Land von acp16 cap filler 1"`,
         `${holdPending} program=${mainProgram.id} regrund grund="nachgetragen: Karte wird geschaerft"`,
         `${heldQueued} program=${mainProgram.id} lifted grund="wartet auf das Land von acp16 cap filler 1"`]),
     JSON.stringify({ holdQ: holdQ.status, row: holdQRow?.hold, badKey: `${holdBadKey.status} ${holdBadKeyText}`,
-      blank: holdBadBlank.status, regrund: regrundRow?.hold, trail: grundTrail }));
+      blank: holdBadBlank.status, regrund: regrundRow?.hold, trail: grundTrail, settled: grundSettled ?? ">5000" }));
   check("Schnitt 3 hold: a release on a held QUEUED row lifts the hold and nothing else — still queued, the cap count unchanged",
     holdQ.status === 200 && liftQ.status === 200 && liftQBody.lifted === "hold"
       && (await holdRow(heldQueued))?.status === "queued" && !(await holdRow(heldQueued))?.hold
@@ -8889,6 +8919,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const subOf = (id: string): RvResult | undefined => sub.body.results?.find((r) => r.id === id);
   const rvAfter = await allTasks();
   const rvAfterRow = (id: string) => rvAfter.find((t) => t.id === id) as HoldRow | undefined;
+  const rvSettled = await auditSettled();
   const rvTrail = auditSince(rvAuditFrom);
   check("release-valid (3): a fresh-stamp submit releases ONLY the releasable row (queued, releasedBy owner) and answers every other id skipped with its reason",
     sub.status === 200 && sub.body.ok === true && sub.body.results?.length === rvSubmitIds.length
@@ -8907,11 +8938,11 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ status: sub.status, results: sub.body.results }));
   check("release-valid (4): the hold is never lifted, one program_release_valid audit row names the released id, and releasing starts nothing (no slot, no task_dispatch)",
     rvAfterRow(rvHeld)?.hold?.slot === successorSlot
-      && rvTrail.filter((r) => r.event === "program_release_valid").length === 1
+      && rvSettled !== null && rvTrail.filter((r) => r.event === "program_release_valid").length === 1
       && rvTrail.find((r) => r.event === "program_release_valid")?.detail === `${mainProgram.id} released=${rvValid}`
       && rvTrail.filter((r) => r.event === "task_dispatch").length === 0
       && rvAfterRow(rvValid)?.slot == null,
-    JSON.stringify({ held: rvAfterRow(rvHeld)?.hold, trail: rvTrail }));
+    JSON.stringify({ held: rvAfterRow(rvHeld)?.hold, trail: rvTrail, settled: rvSettled ?? ">5000" }));
 
   // (5) A REPEAT of the same submit reads its own answer: status is not in the stamp, so the stamp still
   // matches and rvValid now answers "already queued" — no second release, no second audit row

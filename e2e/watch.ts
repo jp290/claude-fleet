@@ -6492,18 +6492,21 @@ export async function run(): Promise<void> {
       { slot: number; cwd: string; branch: string };
     const mergeLane = await (await post("/api/lanes", { repo: REPO })).json() as
       { slot: number; cwd: string; branch: string };
+    const succLane = await (await post("/api/lanes", { repo: REPO })).json() as
+      { slot: number; cwd: string; branch: string };
     const programId = "1a".repeat(12);
     const ids = { held: "hu000001", legacy: "hu000002", invalid: "hu000003", prerequisite: "hu000004",
       terminal: "hu000005", cycle: "hu000006", merge: "hu000007", audit: "hu000008",
-      slot: "hu000009", branch: "hu000010", future: "hu000011", futureHeld: "hu000012" };
+      slot: "hu000009", branch: "hu000010", future: "hu000011", futureHeld: "hu000012",
+      succHeld: "hu000013", succPrerequisite: "hu000014" };
     const sha = "d0".repeat(20);
     const path = `${ROOT}/fleet.json`;
     type HoldFixture = { slots: Record<string, Record<string, unknown>>;
       programs?: Record<string, unknown>[]; tasks?: Record<string, unknown>[];
       mergeParked?: Record<string, unknown>; watches?: { id: string; slot: number; idleSec: number }[] };
-    check("hold-until fixture: bound MAIN and two isolated target lanes have scoped identities",
-      opened?.ok === true && token.length === 32 && lane.slot > 0 && mergeLane.slot > 0
-        && lane.slot !== mergeLane.slot);
+    check("hold-until fixture: bound MAIN and three isolated target lanes have scoped identities",
+      opened?.ok === true && token.length === 32 && lane.slot > 0 && mergeLane.slot > 0 && succLane.slot > 0
+        && new Set([lane.slot, mergeLane.slot, succLane.slot]).size === 3);
     await stopSrv();
     const image = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
     const identity = image.slots[String(main)];
@@ -6517,13 +6520,16 @@ export async function run(): Promise<void> {
     }];
     image.tasks = [...(image.tasks ?? []), ...Object.values(ids).map((id) => ({
       id, text: `hold-until fixture ${id}`, source: "owner", kind: "auftrag", repo: REPO,
-      programId, status: id === ids.prerequisite ? "sent" : id === ids.terminal ? "done" : "pending",
-      created: at, slot: id === ids.prerequisite ? lane.slot : null,
+      programId, status: id === ids.prerequisite || id === ids.succPrerequisite ? "sent"
+        : id === ids.terminal ? "done" : "pending",
+      created: at, slot: id === ids.prerequisite ? lane.slot : id === ids.succPrerequisite ? succLane.slot : null,
       ...(id === ids.cycle ? { hold: { by: "main", slot: main, at, grund: "cycle counterprobe",
         until: { kind: "land", task: ids.invalid } } } : {}),
     }))];
     image.slots[String(lane.slot)].taskId = ids.prerequisite;
     image.slots[String(lane.slot)].programId = programId;
+    image.slots[String(succLane.slot)].taskId = ids.succPrerequisite;
+    image.slots[String(succLane.slot)].programId = programId;
     image.mergeParked = { ...(image.mergeParked ?? {}), [mergeLane.branch]: {
       status: "resolved", landed: false, branch: mergeLane.branch, at, detail: "hold-until terminal fixture",
     } };
@@ -6654,6 +6660,77 @@ export async function run(): Promise<void> {
       const event = (await events()).find((e) => e.watchId === id);
       if (event) await ackEvent(token, event.id);
     }
+    // THE HOLDING MAIN SUCCEEDS (measured 2026-10-10 on c7ff6e9e): its Watch dies with it at the
+    // teardown, the hold row stays. The successor's repeated hold with the same until must re-arm it
+    // under the new occupant — the old idempotent path answered the dead watchId and the land
+    // reached nobody — and its next repeat must not mint a second Watch beside the living one.
+    const succPayload = { grund: "wait across succession", until: { kind: "land", task: ids.succPrerequisite } };
+    const succFirst = await hold(ids.succHeld, succPayload);
+    const deadWatchId = (await succFirst.json() as HoldReply).hold?.watchId;
+    const succeeded = await fetch(`${BASE}/api/self/succeed`, {
+      method: "POST", headers: { "x-fleet-self-token": token, "content-type": "application/json" }, body: "{}",
+    });
+    const succeededText = await succeeded.text();
+    const heirToken = await until(async () => {
+      const t = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN");
+      return t && t.length === 32 && t !== token ? t : null;
+    }, { timeoutMs: 20_000, what: "the holding MAIN's successor carries its own self token" })
+      .catch((e: unknown) => { if (e instanceof UntilTimeout) return ""; throw e; });
+    const heirOpenedAt = persistedOpenedAt(main);
+    const heirHold = (payload: unknown) => fetch(`${BASE}/api/self/tasks/${ids.succHeld}/hold`, {
+      method: "POST", headers: { "x-fleet-self-token": heirToken, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const rearm = await heirHold(succPayload);
+    const rearmReply = await rearm.json() as HoldReply;
+    const rearmed = rearmReply.hold?.watchId;
+    const repeat = await heirHold(succPayload);
+    const repeatReply = await repeat.json() as HoldReply;
+    const heirSelf = await (await selfGet(heirToken)).json() as { watches?: WatchRow[] };
+    check("hold-until across MAIN succession: the successor's repeated hold re-arms a NEW Watch under its occupant, and its next repeat mints none",
+      succFirst.ok && !!deadWatchId && succeeded.ok && rearm.ok && repeat.ok && !!rearmed && rearmed !== deadWatchId
+        && repeatReply.hold?.watchId === rearmed && typeof heirOpenedAt === "number" && heirOpenedAt !== identity.openedAt
+        && !(await watchRows()).some((w) => w.id === deadWatchId)
+        && (heirSelf.watches ?? []).filter((w) => w.id === rearmed && w.armed && w.kind === "merge"
+          && w.slotOpenedAt === heirOpenedAt).length === 1
+        && (await watchRows()).filter((w) => w.slot === main && w.armed && w.kind === "merge"
+          && w.slotOpenedAt === heirOpenedAt).length === 1,
+      JSON.stringify({ succeeded: `${succeeded.status} ${succeededText.slice(0, 300)}`, deadWatchId,
+        rearm: rearmReply, repeat: repeatReply, heirOpenedAt, watches: heirSelf.watches }));
+    await stopSrv();
+    const succTiming = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;
+    const succWatch = succTiming.watches?.find((w) => w.id === rearmed);
+    if (succWatch) succWatch.idleSec = 0;
+    writeFileSync(path, JSON.stringify(succTiming, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const succLand = await post(`/api/slots/${succLane.slot}/land`, {});
+    let succReceived: Event[] = [];
+    try {
+      await until(async () => {
+        succReceived = (await events()).filter((e) => e.watchId === rearmed);
+        return succReceived.length > 0;
+      }, { timeoutMs: 10_000, what: "hold-until land event reaches the successor MAIN" });
+    } catch (e) {
+      if (!(e instanceof UntilTimeout)) throw e;
+    }
+    let succPrompts: Awaited<ReturnType<typeof plogRead>> = [];
+    if (succReceived[0]) {
+      try {
+        await until(async () => {
+          succPrompts = (await plogRead()).filter((p) => p.slot === main && p.text.includes(succReceived[0]!.id));
+          return succPrompts.length > 0;
+        }, { timeoutMs: 20_000, what: "successor MAIN receives the re-armed watch transport" });
+      } catch (e) {
+        if (!(e instanceof UntilTimeout)) throw e;
+      }
+    }
+    check("hold-until across MAIN succession: the prerequisite's land reaches the successor exactly once",
+      succLand.ok && succReceived.length === 1 && succReceived[0]?.receiverSlot === main
+        && succReceived[0].receiverOpenedAt === heirOpenedAt && succReceived[0].payload.landed === true
+        && succReceived[0].subjectBranch === succLane.branch && succPrompts.length === 1
+        && (await tasksNow()).find((t) => t.id === ids.succHeld)?.hold?.watchId === rearmed,
+      JSON.stringify({ land: succLand.status, received: succReceived, prompts: succPrompts.length }));
+    if (succReceived[0]) await ackEvent(heirToken, succReceived[0].id);
     await post(`/api/slots/${main}/kill`, {});
     await stopSrv();
     const cleaned = JSON.parse(readFileSync(path, "utf8")) as HoldFixture;

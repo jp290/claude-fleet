@@ -17684,7 +17684,15 @@ async function holdTaskForMain(s: Slot, id: string, grund: string | null, until?
   if (until && t.hold?.until && JSON.stringify(t.hold.until) !== JSON.stringify(until))
     return json({ error: "until already set — release the hold before changing its condition" }, 400);
   let watchId = t.hold?.watchId;
-  if (until && !t.hold?.until) {
+  // A HOLD WATCH DIES WITH THE OCCUPANT THAT ARMED IT (dropWatchesFor deletes the receiver's rows at
+  // its teardown, a succession included), while the hold row stays. Measured 2026-10-10 on c7ff6e9e:
+  // the successor's repeated hold with the same until answered the dead watchId and the land went
+  // undelivered. The same until re-arms exactly when no living occupant still owns the Watch; a
+  // Watch this occupant already spent stays spent.
+  const standing = watchId ? watches.find((w) => w.id === watchId) : undefined;
+  const lapsed = !!until && !!t.hold?.until && !(standing && slots.some((x) => x.cwd
+    && x.id === standing.slot && (standing.slotOpenedAt === undefined || x.openedAt === standing.slotOpenedAt)));
+  if (until && (!t.hold?.until || lapsed)) {
     const watch = await holdWatchFor(s, id, mainRepo, until);
     if ("error" in watch) return json({ error: watch.error }, 400);
     if (!s.cwd || s.openedAt !== openedAt || !["pending", "queued"].includes(t.status))
@@ -17695,9 +17703,9 @@ async function holdTaskForMain(s: Slot, id: string, grund: string | null, until?
     t.hold = { by: "main", slot: s.id, at: Date.now(), grund, ...(until ? { until, watchId } : {}) };
     audit("task_hold", s.id, `${t.id} program=${program.id} held grund=${JSON.stringify(grund)}`);
     await saveStateNow();
-  } else if ((grund !== null && grund !== t.hold.grund) || (until && !t.hold.until)) {
+  } else if ((grund !== null && grund !== t.hold.grund) || (until && !t.hold.until) || lapsed) {
     t.hold = { ...t.hold, ...(grund !== null ? { grund } : {}), ...(until ? { until, watchId } : {}) };
-    audit("task_hold", s.id, `${t.id} program=${program.id} regrund grund=${JSON.stringify(grund)}`);
+    audit("task_hold", s.id, `${t.id} program=${program.id} ${lapsed ? `rearm watch=${watchId}` : "regrund"} grund=${JSON.stringify(grund)}`);
     await saveStateNow();
   }
   return json({ ok: true, sessionIdMatch, hold: t.hold,

@@ -36,6 +36,7 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `offered` | since 2026-09-17: whether a suite offer preceded this run; **omitted** when the offer door could not be asked (§2a) |
 | `check` | the check name, verbatim — the join key with the printed tail |
 | `ok` | pass/fail |
+| `quarantined` | since 2026-10-10: **only** on an `ok:false` row whose exact check name stands in `e2e/quarantine.json`, and then only ever `true`; absent everywhere else |
 | `msSincePrev` | wall-clock ms since the **previous** check returned (see §4) |
 | `ts` | epoch ms |
 | `detail` | only on `ok:false`, capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
@@ -46,6 +47,14 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 `detail` is the only unbounded input (a check may hand `check()` a whole transcript), hence the
 cap. Everything else is bounded by construction. Measured 2026-07-27: 887 rows, 220 440 bytes —
 ~250 bytes per row, ~220 KB per run.
+
+`quarantined` marks a failure the suite printed as `QUAR` instead of `FAIL` and did not count
+(`e2e/harness.ts#check`, rules in [verify-tiering §18](verify-tiering.md)). The row keeps `ok:false`
+on purpose: a flake query over the trail must go on seeing every red, quarantined or not. A reader
+that wants *this run's counted fails* must therefore skip the marked rows — `ok:false` alone is the
+wrong filter. `helper-daemon/daemon.ts#failNamesOf` does exactly that; before it did, a helper
+reported a quarantined check in `fails`, and on a red run with more trail fails than the tail's
+`N FAILURES` `server.ts#postLandAuditChecks` gave up and stored `checks: null`.
 
 `dirty` is not decoration: two runs on the same sha with different uncommitted work are different
 code, and that is exactly the distinction a flake query turns on.

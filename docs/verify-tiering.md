@@ -5839,3 +5839,41 @@ als Ursache belegt. Der einzelne backlog-nudge-Audit `1791096915234` bleibt §11
 nicht als neue Familie gezaehlt. Wrapper-Rot ausserhalb des Fensters (`a8fec55a`), Audit-Timeout
 (`0065d176`), Temp-/ENOSPC (`7b87ff1c`) und stummer Agent-Tod (`66b47e57`) sind in der Notiz
 benannte Grenzen, keine erfundenen Checknamen. Fuer diese Inventur wurde keine Suite gefahren.
+
+## 18. Die Quarantaene — `e2e/quarantine.json`
+
+Ein bekannter Flake soll weiter LAUFEN, aber kein Urteil mehr faellen. Die Liste dafuer ist
+`e2e/quarantine.json`, ein JSON-Array aus `{name, since, auditSha, reason}`; geparst wird sie in
+`e2e/harness.ts#parseQuarantine`, und diese Funktion ist die Autoritaet ueber die Regeln.
+
+**Rein.** Ein Eintrag kommt nur ueber eine committete Zeile mit Grund hinein: der Check war zweimal
+rot, ohne dass ein Diff seine Flaeche beruehrt hat, oder er wurde als Flake adjudiziert. `since`
+beginnt mit einem `YYYY-MM-DD`-Datum, `auditSha` ist 7–40 Zeichen Kleinbuchstaben-Hex (der
+Audit, der den Befund trug), `reason` ist nicht leer. Gematcht wird der EXAKTE Name, mit dem
+`check()` gerufen wird — kein Praefix, kein Muster: ein Eintrag kann keinen Nachbarn verschlucken,
+und ein umbenannter Check faellt aus der Quarantaene und zaehlt wieder. Eine kaputte Datei (kein
+Array, fehlendes Feld, falsches Datum, doppelter Name) WIRFT beim Laden, vor dem ersten Check: eine
+Liste, die niemand lesen kann, stoppt den Lauf, statt still nichts — oder alles — zu quarantaenisieren.
+
+**Raus.** Nur durch die Reparatur. Wer den Mechanismus des Flakes behebt, nimmt den Eintrag im
+selben Schnitt heraus; ab dann zaehlt der Check wieder voll. Eine Quarantaene ist kein Ablageort
+fuer Rot, das niemand reparieren will.
+
+**Was ein quarantaenisierter Fehlschlag sichtbar macht** — er ist nie stumm:
+
+| Ort | was dort steht |
+| --- | --- |
+| Ergebniszeile | `QUAR  <name>  (<detail>)`, wo sonst `FAIL` stuende; ein BESTANDENER quarantaenisierter Check druckt weiter `PASS` |
+| ueber dem Tail | `quarantined failures (not counted): ["…"]` (`e2e/harness.ts#quarantineLine`) — die einzige Kopie, die ein 4-KB-Helfer-Tail bei einem langen Lauf noch traegt |
+| Tail | `ALL PASS` bzw. `N FAILURES` zaehlen ihn NICHT (`failures()`) |
+| Trail | die Zeile bleibt `ok:false` und traegt `quarantined: true` ([e2e-trail §2](e2e-trail.md)) — die Flake-Statistik sieht jedes Rot |
+| Audit-Zeile | `checks.quarantined`: die Namen, gezaehlt in `ran`, nie in `failed` (`server.ts#postLandAuditChecks`, aus QUAR-Zeilen und der Zeile ueber dem Tail) |
+| `./ctl.sh audits` | oben die Liste mit Datum, Audit und Grund (`server.ts#quarantineView`: `read` / `absent` / `unreadable`, nie ineinander gedruckt), je Zeile `quar […]` |
+| Helfer-`fails` | KEIN Eintrag: `helper-daemon/daemon.ts#failNamesOf` ueberspringt Trail-Zeilen mit `quarantined: true`; die Log-Ausweichroute liest nur `^FAIL ` und sieht QUAR-Zeilen ohnehin nicht |
+
+Die letzte Zeile ist eine Bedingung, keine Kosmetik: wuerde ein Helfer einen QUAR-Check in `fails`
+melden, waere `fails` bei einem roten Lauf laenger als das `N FAILURES` des Tails, und
+`server.ts#postLandAuditChecks` liefert dann `null` — `checks` unbekannt. Belegt durch den
+`(HD)`-Check in `e2e/helper-daemon.ts`, der einen Trail aus einer FAIL- und einer QUAR-Zeile genau
+auf die FAIL-Zeile abbildet; ohne den Filter wird er rot.
+

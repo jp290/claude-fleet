@@ -684,8 +684,10 @@ export async function failNamesOf(logPath: string, trail: string | undefined): P
       for (const line of (await Bun.file(trailPath).text()).split("\n")) {
         if (!line) continue;
         try {
-          const row = JSON.parse(line) as { ok?: unknown; check?: unknown };
-          if (row.ok === false && typeof row.check === "string") names.push(row.check);
+          const row = JSON.parse(line) as { ok?: unknown; check?: unknown; quarantined?: unknown };
+          // a row marked `quarantined` stays ok:false for the flake statistics (e2e/trail-emit.ts),
+          // but the suite printed it as QUAR and did not count it: never a fail of this run
+          if (row.ok === false && row.quarantined !== true && typeof row.check === "string") names.push(row.check);
         } catch { /* a torn row does not erase intact observations before it */ }
       }
       if (names.length) return boundedFailNames(names);

@@ -460,6 +460,16 @@ export async function run(h: {
   check("(HD) a synthetic run with log+trail reports the exact ok:false check names from the trail",
     JSON.stringify(trailFails) === '["trail failure alpha","trail failure beta"]',
     JSON.stringify(trailFails));
+  // a quarantined row is ok:false in the trail but QUAR in the log: counting it as a fail would make
+  // fails longer than the tail's N FAILURES, and server.ts#postLandAuditChecks then answers null
+  await Bun.write(`${failFixture}/tree/e2e-trail/${TRAIL}.jsonl`, [
+    JSON.stringify({ ok: false, check: "trail failure counted" }),
+    JSON.stringify({ ok: false, check: "trail failure quarantined", quarantined: true }),
+  ].join("\n") + "\n");
+  const quarFails = await failNamesOf(failLog, TRAIL);
+  check("(HD) a trail with one FAIL and one quarantined row reports exactly the FAIL row — a QUAR is no fail",
+    JSON.stringify(quarFails) === '["trail failure counted"]',
+    JSON.stringify(quarFails));
   await Bun.write(failLog, "FAIL  fallback failure alpha  (detail)\nPASS  decoy\nFAIL  fallback failure beta\n2 FAILURES\n");
   const fallbackFails = await failNamesOf(failLog, undefined);
   check("(HD) a synthetic run WITHOUT a trail falls back to the log's ^FAIL lines",

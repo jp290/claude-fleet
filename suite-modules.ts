@@ -112,6 +112,9 @@ export const FIXTURES: readonly Fixture[] = [
       + "shares[0] for its operational auth negative control and fails its own precondition without it",
     // deliberately NOT synthesizable: measured 2026-10-06 (Lane 22, freeze 27a8b43e) — a tasks-only
     // preview died on exactly that precondition while the same tree ran green with tasks,share.
+    // Since 2026-10-10 tasks.ts plants its own Share on slot 2 when none is persisted, because the
+    // `core-tasks` shard runs without share.ts (e2e/ctx.ts#SHARD_UNITS). The edge stays declared:
+    // a module selection keeps pulling share, and only the shard relies on the plant.
   },
   {
     name: "server:srv-env-after-restart", origin: "server-state",

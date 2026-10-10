@@ -272,8 +272,9 @@ const steps: Step[] = [
   { unit: "concurrency", lane: true, module: "concurrency", run: async () => {
     await concurrency.run();
   } },
-  // in `programs` too: its lane token is the one hand-on programs.run() reads (e2e/ctx.ts#SHARD_UNITS)
-  { unit: "core", alsoIn: ["programs"], lane: true, module: "self-token", run: async () => {
+  // in `programs` and `core-tasks` too: its lane token is the one hand-on programs.run() and
+  // tasks.run() read (e2e/ctx.ts#SHARD_UNITS)
+  { unit: "core", alsoIn: ["programs", "core-tasks"], lane: true, module: "self-token", run: async () => {
     await selfToken.run(ctx);
   } },
   // the LANE-SUITE half of the remote helper portal — right after the self-token family whose
@@ -296,9 +297,9 @@ const steps: Step[] = [
   { unit: "ref-advance", lane: true, module: "ref-advance", run: async () => {
     await refAdvance.run();
   } },
-  // `core`, not a unit of its own: it leaves the Program of its restart probe CONFIRMED, and
+  // `core-tasks`, together with tasks: it leaves the Program of its restart probe CONFIRMED, and
   // tasks.run() below reuses exactly that row (the first --shard run found the edge).
-  { unit: "core", lane: true, module: "outcomes", run: async () => {
+  { unit: "core-tasks", lane: true, module: "outcomes", run: async () => {
     await outcomes.run();
   } },
   // what the merge/land path can still say after the process running it was killed. Last in the
@@ -310,7 +311,7 @@ const steps: Step[] = [
   } },
 
   // --- task queue + dispatch gates, intake, the public share host ---
-  { unit: "core", module: "tasks", run: async () => {
+  { unit: "core-tasks", module: "tasks", run: async () => {
     await tasks.run(ctx);
   } },
   { unit: "core", module: "intake", run: async () => {

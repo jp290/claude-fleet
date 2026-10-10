@@ -869,12 +869,22 @@ export async function run(ctx: Ctx): Promise<void> {
     const authorizedBody = await authorized.json() as { schema?: string; scope?: string };
     check("operational Owner/Orchestrator owner credential reads the held schema", authorized.status === 200
       && authorizedBody.schema === "fleet.operational-view/v1" && authorizedBody.scope === "owner-metadata");
-    let shareCookie = "";
-    try {
-      const persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {shares?: {id: string; secret: string}[]};
-      const share = persisted.shares?.[0];
-      if (share) shareCookie = `share_${share.id}=${share.secret}`;
-    } catch { /* the fixture precondition below names the missing source */ }
+    // Any persisted Share serves as the credential. The full run finds share.ts's; the `core-tasks`
+    // shard runs without share.ts (e2e/ctx.ts#SHARD_UNITS), so tasks plants its own on slot 2 (the
+    // shard base fixture opens it) and takes it down again after the negative controls.
+    const persistedShare = () => {
+      try {
+        const persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {shares?: {id: string; secret: string}[]};
+        return persisted.shares?.[0];
+      } catch { return undefined; /* the fixture precondition below names the missing source */ }
+    };
+    let share = persistedShare();
+    let plantedShare = false;
+    if (!share) {
+      plantedShare = (await post("/api/slots/2/share", { mode: "view", password: "opviewpass1" })).ok;
+      share = persistedShare();
+    }
+    const shareCookie = share ? `share_${share.id}=${share.secret}` : "";
     check("operational auth fixture precondition: recognized lane and Share credentials exist", !!ctx.restartSelfTok && !!shareCookie);
     for (const [name, headers] of [["missing", {}], ["wrong", {authorization: "Bearer wrong"}],
       ["lane", {"x-fleet-self-token": ctx.restartSelfTok ?? "", authorization: `Bearer ${ctx.restartSelfTok ?? ""}`}],
@@ -889,6 +899,7 @@ export async function run(ctx: Ctx): Promise<void> {
       const denied = await fetch(BASE + "/api/operational-view", {headers: {host: shareHost, cookie: shareCookie}});
       check("operational Share-host exposes no held route or cached data", denied.status === 404 && !(await denied.text()).includes('"sources"'));
     }
+    if (plantedShare) await post("/api/slots/2/unshare", {});
   }
   const taskModelStart = taskClientSource.indexOf("type QGroup =");
   const taskModelEnd = taskClientSource.indexOf("function qWaveProjection", taskModelStart);

@@ -73,56 +73,65 @@ export interface StewardCtx {
 //     summary, transport, autos, share and intake until restart.ts kills them (its "kill
 //     semantics" section), which is why `core` carries the slots family too; and outcomes.ts leaves
 //     the Program of its restart probe CONFIRMED, which tasks.ts reuses (its comment says so) — the
-//     first `--shard` run found that edge: 3 FAILs + a TypeError at tasks.ts, run 2026-09-13 21:57;
+//     first `--shard` run found that edge: 3 FAILs + a TypeError at tasks.ts, run 2026-09-13 21:57 —
+//     which is why outcomes and tasks form a unit of their own, `core-tasks`, below;
 //   · a return value handed on in the runner (stewardCore.run → stewardOutcomes/security).
 // Everything else opens and kills its own slots and lanes (each module's header says so) and is a
-// unit of its own. `seconds` is the measured SERIAL duration of the unit's modules in the reference
-// trail isolated-20260913T155454Z-52907 (4 384 checks, 2 619 s, tree before 67c36fc8). It decides
-// the BALANCE only — a wrong weight makes a shard slow, never wrong. Order here is irrelevant to
-// execution: the runner keeps its own module order and merely skips units not in the shard.
+// unit of its own. `seconds` is the Workhorse median of the `shard-unit <unit> <ms>` lines in the
+// last 60 retained helper suite logs (2026-10-09 09:53 – 2026-10-10 01:53, 14–18 lines per unit,
+// 4 333 s serial over all units). It decides the BALANCE only — a wrong weight makes a shard slow,
+// never wrong. Order here is irrelevant to execution: the runner keeps its own module order and
+// merely skips units not in the shard.
 //
-// ONE MODULE IN TWO UNITS: self-token. Its only hand-on is ctx.restartSelfTok/restartSelfSlot — a
-// lane it opens and keeps alive — and programs.ts is the one reader outside `core`'s chain. So
-// `programs` carries its own self-token run instead of dragging `core` along: a shard holding both
-// units runs it once (the runner tags that step with both), two shards run it twice, 23 s and the
-// same check names. `core` and `programs` are weighted from the serial shard 1b/1c measurements
-// (docs/messungen/2026-09-14-suite-sharding-probe.md §6: programs 613 s, self-token 23 s, core
-// 1 239 s with programs), not from the reference trail — the trail never split them.
+// ONE MODULE IN THREE UNITS: self-token. Its only hand-on is ctx.restartSelfTok/restartSelfSlot — a
+// lane it opens and keeps alive. restart.ts and trailstats.ts read it inside `core`; programs.ts and
+// tasks.ts read it from outside. So `programs` and `core-tasks` each carry their own self-token run
+// instead of dragging `core` along: a shard holding several of these units runs it once (the runner
+// tags that step with all three), separate shards run it once each, ~67 s and the same check names.
+//
+// `core-tasks` (2026-10-10): `core` measured 1 970 s against the 626 s this table carried and was
+// the long path of every run — its shard ran into the helper's 2 700 s claim window twice on
+// 2026-10-09/10. outcomes and tasks are the part of it whose fixtures can travel: outcomes plants
+// the CONFIRMED Program tasks reuses, self-token runs again for the lane token, and tasks plants its
+// own Share when share.ts did not run. The rest of `core` stays one unit: restart.ts reads share,
+// autos, intake and self-token and plants the world steward-core reads, and review.ts reads share's
+// cookies. The two weights are the Mac per-module split of the unit (trail
+// isolated-20261009T213819Z-38948) scaled to its Workhorse median, until a sharded run measures them.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
-  { unit: "pure", seconds: 0, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
-  { unit: "context-packs", seconds: 30, modules: ["context-packs"] },
-  { unit: "tmux-locale", seconds: 10, modules: ["tmux-locale"] },
-  { unit: "bytes", seconds: 3, modules: ["bytes"] },
+  { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
+  { unit: "context-packs", seconds: 14, modules: ["context-packs"] },
+  { unit: "tmux-locale", seconds: 2, modules: ["tmux-locale"] },
+  { unit: "bytes", seconds: 2, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 626, modules: ["slots", "history", "summary", "transport", "autos", "share",
-    "review", "self-token", "trailstats", "outcomes", "tasks", "intake", "restart", "steward-core",
-    "steward-outcomes", "security"] },
-  { unit: "programs", seconds: 636, modules: ["self-token", "programs"] },
-  { unit: "lanes", seconds: 375, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
-  { unit: "watch", seconds: 224, modules: ["watch", "delivery-class"] },
-  { unit: "attention", seconds: 19, modules: ["attention"] },
-  { unit: "lane-risk", seconds: 16, modules: ["lane-risk"] },
-  { unit: "explorer", seconds: 2, modules: ["explorer"] },
-  { unit: "drops", seconds: 2, modules: ["drops"] },
-  { unit: "land-provenance", seconds: 143, modules: ["land-provenance"] },
-  { unit: "ctl", seconds: 16, modules: ["ctl"] },
-  { unit: "concurrency", seconds: 13, modules: ["concurrency"] },
-  { unit: "lane-suite", seconds: 5, modules: ["lane-suite"] },
-  { unit: "verify-rules", seconds: 5, modules: ["verify-rules"] },
-  { unit: "ref-advance", seconds: 5, modules: ["ref-advance"] },
-  { unit: "land-durability", seconds: 98, modules: ["land-durability"] },
-  { unit: "sweep", seconds: 1, modules: ["sweep"] },
-  { unit: "verify-queue", seconds: 97, modules: ["verify-queue"] },
-  { unit: "deploy-facts", seconds: 88, modules: ["deploy-facts"] },
-  { unit: "errors", seconds: 6, modules: ["errors"] },
-  { unit: "host-hygiene", seconds: 40, modules: ["host-hygiene"] },
-  { unit: "state-snapshot", seconds: 12, modules: ["state-snapshot"] },
-  { unit: "trace", seconds: 5, modules: ["trace"] },
-  { unit: "timeline-ui", seconds: 160, modules: ["timeline-ui"] },
-  { unit: "konzepte", seconds: 10, modules: ["konzepte"] },
-  { unit: "role-address", seconds: 10, modules: ["role-address"] },
-  { unit: "stuck-delivery", seconds: 20, modules: ["stuck-delivery"] },
+  { unit: "core", seconds: 1349, modules: ["slots", "history", "summary", "transport", "autos", "share",
+    "review", "self-token", "trailstats", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
+  { unit: "core-tasks", seconds: 688, modules: ["self-token", "outcomes", "tasks"] },
+  { unit: "programs", seconds: 653, modules: ["self-token", "programs"] },
+  { unit: "lanes", seconds: 413, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
+  { unit: "watch", seconds: 421, modules: ["watch", "delivery-class"] },
+  { unit: "attention", seconds: 25, modules: ["attention"] },
+  { unit: "lane-risk", seconds: 1, modules: ["lane-risk"] },
+  { unit: "explorer", seconds: 1, modules: ["explorer"] },
+  { unit: "drops", seconds: 11, modules: ["drops"] },
+  { unit: "land-provenance", seconds: 268, modules: ["land-provenance"] },
+  { unit: "ctl", seconds: 54, modules: ["ctl"] },
+  { unit: "concurrency", seconds: 5, modules: ["concurrency"] },
+  { unit: "lane-suite", seconds: 43, modules: ["lane-suite"] },
+  { unit: "verify-rules", seconds: 1, modules: ["verify-rules"] },
+  { unit: "ref-advance", seconds: 1, modules: ["ref-advance"] },
+  { unit: "land-durability", seconds: 45, modules: ["land-durability"] },
+  { unit: "sweep", seconds: 0, modules: ["sweep"] },
+  { unit: "verify-queue", seconds: 47, modules: ["verify-queue"] },
+  { unit: "deploy-facts", seconds: 36, modules: ["deploy-facts"] },
+  { unit: "errors", seconds: 5, modules: ["errors"] },
+  { unit: "host-hygiene", seconds: 54, modules: ["host-hygiene"] },
+  { unit: "state-snapshot", seconds: 8, modules: ["state-snapshot"] },
+  { unit: "trace", seconds: 2, modules: ["trace"] },
+  { unit: "timeline-ui", seconds: 114, modules: ["timeline-ui"] },
+  { unit: "konzepte", seconds: 93, modules: ["konzepte"] },
+  { unit: "role-address", seconds: 3, modules: ["role-address"] },
+  { unit: "stuck-delivery", seconds: 39, modules: ["stuck-delivery"] },
 ];
 
 // `k/n`, 1 ≤ k ≤ n. Anything else is null — the caller decides whether that is "no flag" or an error.

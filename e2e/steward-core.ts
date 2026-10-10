@@ -1239,12 +1239,17 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("adjudicating did NOT launder the red into a pass — the projection still reads `red`",
     adjRow?.result === "red" && adjRow.mainSha === "freshshaaaa", JSON.stringify(adjRow));
   // an unusable anchor (a prior whose ts is not a number) → since:null + the last few rows, never a
-  // fake-empty delta. Same honesty stance as sinceLastLook's null.
+  // fake-empty delta. Same honesty stance as sinceLastLook's null. The expectation is this section's
+  // OWN two rows, never a row count: the cold window is the newest few rows of a ledger every earlier
+  // module in this instance cwd shares (an `=== 2` read 5 on 2026-10-10, preview a4297f006a38, when
+  // deploy-facts left three real rows behind). freshshaaaa is the newest row; staleshaaaa predates
+  // the last USABLE anchor, so a delta quietly falling back to that anchor would drop it.
   writeFileSync("steward-journal.jsonl",
     `${JSON.stringify({ ts: "not-a-number", kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
   const coldLed = await getLedgers();
   check("an unusable anchor yields since:null and the last few rows, never a fake-empty ledger delta",
-    coldLed?.since === null && coldLed.audits.length === 2 && coldLed.audits.some((a) => a.mainSha === "staleshaaaa"),
+    coldLed?.since === null && coldLed.audits.some((a) => a.mainSha === "freshshaaaa")
+    && coldLed.audits.some((a) => a.mainSha === "staleshaaaa"),
     JSON.stringify({ since: coldLed?.since, audits: coldLed?.audits.map((a) => a.mainSha) }));
   await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
   // the trails themselves stay owner-only — the digest projection is the steward's ONLY view of them

@@ -672,109 +672,130 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv(proofEnv);
     const card = { ziel: "code.txt gets one useful line", done: "code.txt contains useful", surface: { files: ["code.txt"], symbols: [] },
       verify: `${ctl}/fakeverify`, verboten: ["kein Deploy"], size: "gross" };
-    const header = (size: string): string => `ROLLE: ${MODEL_DEFAULTS.worker.harness}/${MODEL_DEFAULTS.worker.id}/${MODEL_DEFAULTS.worker.effort}\nGROESSE: ${size}\nFLAECHE: code.txt\nDONE: ${card.done}\nVERIFY: ${card.verify}\nVERBOTEN: kein Deploy\n\n${card.ziel}`;
-    const textRow = ((await (await oMake(header("mittel"))).json()) as { task: ORow }).task;
-    const noneRow = ((await (await oMake(header("mittel"), { review: "none" })).json()) as { task: ORow }).task;
-    const smallRow = ((await (await oMake(header("klein"), { card: { ...card, size: "klein" } })).json()) as { task: ORow }).task;
-    await Bun.write(`${ctl}/ansatz-card`, `#!/bin/sh\ncat >/dev/null\nprintf '{"result":"{}"}'\n`);
-    spawnSync("chmod", ["+x", `${ctl}/ansatz-card`]);
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000", FLEET_CARD_MS: "100", FLEET_CARD_CMD: `${ctl}/ansatz-card` });
-    await until(async () => (await oRow(textRow.id))?.review === "advisory", { timeoutMs: 15_000, what: "text card review default" });
-    check("ansatz default: text card mittel asks advisory; klein and explicit none stay absent after sweep/restart",
-      (await oRow(textRow.id))?.review === "advisory" && (await oRow(smallRow.id))?.review === undefined
-        && (await oRow(noneRow.id))?.review === undefined, "card defaults");
-    const smallText = ((await (await oMake(header("klein"))).json()) as { task: ORow }).task;
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_CARD_MS: "0" });
-    const sent = ((await (await oMake(header("mittel"))).json()) as { task: ORow }).task;
-    const sentLane = await oLane(sent.id, "sent-before-card.txt");
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_CARD_MS: "100", FLEET_CARD_CMD: `${ctl}/ansatz-card` });
-    await Bun.sleep(1500);
-    check("ansatz default: text klein unchanged; sent row is never adopted", (await oRow(smallText.id))?.review === undefined
-      && (await oRow(sent.id))?.review === undefined, "pending small / already sent");
-    if (sentLane) await post(`/api/slots/${sentLane.slot}/kill`, {});
-    const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd)!;
-    await post(`/api/slots/${free.id}/open`, { cwd: REPO, label: "approach-main" });
-    const pg = ((await (await post("/api/programs", { title: "approach review", intent: "answer approach", successCriterion: "answer visible",
-      nonGoals: [], decisions: [], evidence: [], openQuestions: [] })).json()) as { program: { id: string } }).program;
-    await post(`/api/programs/${pg.id}/confirm`, {}); await post(`/api/programs/${pg.id}/activate`, {});
-    await stopSrv();
-    const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { openedAt: number; sessionId: string | null; selfToken: string }>; programs: { id: string; main?: unknown }[] };
-    const main = state.slots[String(free.id)]!;
-    state.programs.find((x) => x.id === pg.id)!.main = { slot: free.id, openedAt: main.openedAt, sessionId: main.sessionId, boundAt: Date.now() };
-    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(state));
-    const original = readFileSync(`${ctl}/fakereview`, "utf8");
-    const at = original.lastIndexOf("printf '");
-    await Bun.write(`${ctl}/fakereview`, original.slice(0, at) + `if [ -f "${ctl}/ansatz-answer" ]; then cat "${ctl}/ansatz-answer"; else\n` + original.slice(at) + "\nfi\n");
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
-    const self = (path: string, body?: unknown): Promise<Response> => fetch(BASE + path, { method: body === undefined ? "GET" : "POST",
-      headers: { "x-fleet-self-token": main.selfToken, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const authorRes = await self("/api/self/tasks", { text: card.ziel, kind: "auftrag", card });
-    const author = ((await authorRes.json()) as { task?: ORow }).task;
-    const ownerAuthor = ((await (await oMake(card.ziel, { card })).json()) as { task?: ORow }).task;
-    check("ansatz default: author card gross asks advisory at both create doors", authorRes.ok && author?.review === "advisory"
-      && ownerAuthor?.review === "advisory", `self=${authorRes.status}`);
-    const ownerNone = ((await (await oMake(card.ziel, { card, review: "none" })).json()) as { task?: ORow }).task;
-    check("ansatz default: explicit none overrides even a gross author card", !!ownerNone && ownerNone.review === undefined, "none");
-    const answer = async (ansatz: string, anker: string | null): Promise<void> => {
-      await Bun.write(`${ctl}/ansatz-answer`, JSON.stringify({ result: JSON.stringify({ findings: [], notes: "", ansatz,
-        begruendung: ansatz === "ueberdenken" ? "Die Änderung verfehlt den genannten Anker." : "", anker }) }));
-    };
-    await answer("ok", null);
-    const lane = author ? await oLane(author.id, "approach.txt") : null;
-    const waitReview = async (count: number): Promise<OEvent[]> => {
-      let events: OEvent[] = [];
-      await until(async () => { events = await oReviews(author?.id ?? ""); return events.length >= count; }, { timeoutMs: 45_000, what: `approach verdict ${count}` });
-      return events;
-    };
-    const okEvents = await waitReview(1);
-    const prompt = lane ? lastReviewPromptFor(lane.cwd) : "";
-    check("ansatz prompt: exact ZIEL/DONE/FLAECHE and binary question reach the stand-in; ok is recorded",
-      prompt.includes(`ZIEL: ${card.ziel}`) && prompt.includes(`DONE: ${card.done}`) && prompt.includes("FLAECHE:\ncode.txt")
-        && prompt.includes('"ok|ueberdenken"') && okEvents[0]?.payload?.ansatz === "ok", "prompt and verdict");
-    const change = async (n: number): Promise<void> => { if (lane) { await Bun.write(`${lane.cwd}/approach.txt`, `revision ${n}\n${n === 2 ? "++ b/phantom.txt\n" : ""}`);
-      oGit(lane.cwd, "add", "approach.txt"); oGit(lane.cwd, "commit", "-qm", `approach revision ${n}`); } };
-    await answer("ueberdenken", "phantom.txt"); await change(2);
-    const unanchored = await waitReview(2);
-    check("ansatz parser: a fake file header in a hunk is no real diff path and becomes ok", unanchored[1]?.payload?.ansatz === "ok", "rejected phantom path");
-    await answer("invalid", null); await change(25);
-    const unknown = await waitReview(3);
-    check("ansatz parser: an invalid verdict stays unmeasured", unknown[2]?.payload?.ansatz === undefined, "no invented ok");
-    await answer("ueberdenken", `DONE: ${card.done}`); await change(3);
-    const anchored = await waitReview(4); const verdict = anchored[3]!;
-    check("ansatz parser: exact DONE anchor records ueberdenken and one reason", verdict.payload?.ansatz === "ueberdenken"
-      && verdict.payload.anker === `DONE: ${card.done}` && verdict.payload.begruendung === "Die Änderung verfehlt den genannten Anker.", "literal anchor");
-    const projection = async (): Promise<string> => (await self("/api/self/program-execution")).text();
-    check("ansatz obligation: MAIN projection exposes an open answer", (await projection()).includes(`"eventId":"${verdict.id}"`)
-      && (await projection()).includes('"answerOwed":true'), "open projection");
-    const ownerComment = await post(`/api/tasks/${author?.id}/comment`, { text: `Ansatz ${verdict.id}: Ich behalte diesen Ansatz.` });
-    check("ansatz answer: owner comment does not close MAIN obligation", ownerComment.ok && (await projection()).includes('"answerOwed":true'), "MAIN only");
-    const wrong = await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${okEvents[0]!.id}: Ich prüfe das.` });
-    check("ansatz answer: an ok event cannot close the obligation", wrong.status === 400, `status=${wrong.status}`);
-    await answer("ueberdenken", "approach.txt"); await change(4);
-    const outside = (await waitReview(5))[4]!;
-    check("ansatz parser: real diff file outside FLAECHE records ueberdenken", outside.payload?.ansatz === "ueberdenken"
-      && outside.payload.anker === "approach.txt", "outside scope");
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
-    if (lane) await settleForMerge(lane.slot);
-    await post(`/api/programs/${pg.id}/promotion`, { policy: { v: 1, selfLand: "green-only" } });
-    const land = await self(`/api/self/tasks/${author?.id}/land`, {}); const landText = await land.text();
-    if (lane) await waitMerge(lane.slot);
-    check("ansatz land: unanswered ueberdenken blocks nothing and is in MAIN land response", land.ok && landText.includes('"running":true')
-      && landText.includes(`"eventId":"${outside.id}"`) && landText.includes('"answerOwed":true') && (await oRow(author?.id ?? ""))?.status === "done", `status=${land.status}`);
-    const outcomes = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: { branch: string; ansatzReviews?: { eventId: string; changedAfterReview: boolean | null }[] }[] }).outcomes;
-    check("ansatz action sensor: outcome retains historical revised verdict", outcomes.find((o) => o.branch === lane?.branch)?.ansatzReviews
-      ?.find((e) => e.eventId === verdict.id)?.changedAfterReview === true, "durable outcome");
-    const final = await oReviews(author?.id ?? "");
-    check("ansatz action sensor: revised diff is true, final unchanged diff false", final.find((e) => e.id === verdict.id)?.payload?.changedAfterReview === true
-      && final.find((e) => e.id === outside.id)?.payload?.changedAfterReview === false, "content identities");
-    const closed = await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${verdict.id}: Ich behalte diesen Ansatz.` });
-    await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${outside.id}: Der zusätzliche Pfad ist erforderlich.` });
-    await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0" });
-    check("ansatz obligation: MAIN sentence closes and persists across restart", closed.ok && !(await projection()).includes('"answerOwed":true')
-      && (await oReviews(author?.id ?? "")).find((e) => e.id === verdict.id)?.payload?.answer !== undefined, `status=${closed.status}`);
-    await Bun.write(`${ctl}/fakereview`, original); spawnSync("rm", ["-f", `${ctl}/ansatz-answer`, `${ctl}/ansatz-card`]);
-    await post(`/api/slots/${free.id}/kill`, {});
-    for (const row of [textRow, noneRow, smallRow, smallText, sent, ownerAuthor, ownerNone]) if (row) await post(`/api/tasks/${row.id}/delete`, {});
+    try {
+      const header = (size: string): string => `ROLLE: ${MODEL_DEFAULTS.worker.harness}/${MODEL_DEFAULTS.worker.id}/${MODEL_DEFAULTS.worker.effort}\nGROESSE: ${size}\nFLAECHE: code.txt\nDONE: ${card.done}\nVERIFY: ${card.verify}\nVERBOTEN: kein Deploy\n\n${card.ziel}`;
+      const textRow = ((await (await oMake(header("mittel"))).json()) as { task: ORow }).task;
+      const noneRow = ((await (await oMake(header("mittel"), { review: "none" })).json()) as { task: ORow }).task;
+      const smallRow = ((await (await oMake(header("klein"), { card: { ...card, size: "klein" } })).json()) as { task: ORow }).task;
+      await Bun.write(`${ctl}/ansatz-card`, `#!/bin/sh\ncat >/dev/null\nprintf '{"result":"{}"}'\n`);
+      spawnSync("chmod", ["+x", `${ctl}/ansatz-card`]);
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000", FLEET_CARD_MS: "100", FLEET_CARD_CMD: `${ctl}/ansatz-card` });
+      await until(async () => (await oRow(textRow.id))?.review === "advisory", { timeoutMs: 15_000, what: "text card review default" });
+      check("ansatz default: text card mittel asks advisory; klein and explicit none stay absent after sweep/restart",
+        (await oRow(textRow.id))?.review === "advisory" && (await oRow(smallRow.id))?.review === undefined
+          && (await oRow(noneRow.id))?.review === undefined, "card defaults");
+      const smallText = ((await (await oMake(header("klein"))).json()) as { task: ORow }).task;
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_CARD_MS: "0" });
+      const sent = ((await (await oMake(header("mittel"))).json()) as { task: ORow }).task;
+      const sentLane = await oLane(sent.id, "sent-before-card.txt");
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_CARD_MS: "100", FLEET_CARD_CMD: `${ctl}/ansatz-card` });
+      await Bun.sleep(1500);
+      check("ansatz default: text klein unchanged; sent row is never adopted", (await oRow(smallText.id))?.review === undefined
+        && (await oRow(sent.id))?.review === undefined, "pending small / already sent");
+      if (sentLane) await post(`/api/slots/${sentLane.slot}/kill`, {});
+      const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd)!;
+      await post(`/api/slots/${free.id}/open`, { cwd: REPO, label: "approach-main" });
+      const pg = ((await (await post("/api/programs", { title: "approach review", intent: "answer approach", successCriterion: "answer visible",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [] })).json()) as { program: { id: string } }).program;
+      await post(`/api/programs/${pg.id}/confirm`, {}); await post(`/api/programs/${pg.id}/activate`, {});
+      await stopSrv();
+      const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots: Record<string, { openedAt: number; sessionId: string | null; selfToken: string }>; programs: { id: string; main?: unknown }[] };
+      const main = state.slots[String(free.id)]!;
+      state.programs.find((x) => x.id === pg.id)!.main = { slot: free.id, openedAt: main.openedAt, sessionId: main.sessionId, boundAt: Date.now() };
+      await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(state));
+      const original = readFileSync(`${ctl}/fakereview`, "utf8");
+      const at = original.lastIndexOf("printf '");
+      await Bun.write(`${ctl}/fakereview`, original.slice(0, at) + `if [ -f "${ctl}/ansatz-answer" ]; then cat "${ctl}/ansatz-answer"; else\n` + original.slice(at) + "\nfi\n");
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
+      const self = (path: string, body?: unknown): Promise<Response> => fetch(BASE + path, { method: body === undefined ? "GET" : "POST",
+        headers: { "x-fleet-self-token": main.selfToken, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const authorRes = await self("/api/self/tasks", { text: card.ziel, kind: "auftrag", card });
+      const author = ((await authorRes.json()) as { task?: ORow }).task;
+      const ownerAuthor = ((await (await oMake(card.ziel, { card })).json()) as { task?: ORow }).task;
+      check("ansatz default: author card gross asks advisory at both create doors", authorRes.ok && author?.review === "advisory"
+        && ownerAuthor?.review === "advisory", `self=${authorRes.status}`);
+      const ownerNone = ((await (await oMake(card.ziel, { card, review: "none" })).json()) as { task?: ORow }).task;
+      check("ansatz default: explicit none overrides even a gross author card", !!ownerNone && ownerNone.review === undefined, "none");
+      const answer = async (ansatz: string, anker: string | null): Promise<void> => {
+        await Bun.write(`${ctl}/ansatz-answer`, JSON.stringify({ result: JSON.stringify({ findings: [], notes: "", ansatz,
+          begruendung: ansatz === "ueberdenken" ? "Die Änderung verfehlt den genannten Anker." : "", anker }) }));
+      };
+      await answer("ok", null);
+      const lane = author ? await oLane(author.id, "approach.txt") : null;
+      const waitReview = async (count: number): Promise<OEvent[]> => {
+        let events: OEvent[] = [];
+        await until(async () => { events = await oReviews(author?.id ?? ""); return events.length >= count; }, { timeoutMs: 45_000, what: `approach verdict ${count}` });
+        return events;
+      };
+      const okEvents = await waitReview(1);
+      const prompt = lane ? lastReviewPromptFor(lane.cwd) : "";
+      check("ansatz prompt: exact ZIEL/DONE/FLAECHE and binary question reach the stand-in; ok is recorded",
+        prompt.includes(`ZIEL: ${card.ziel}`) && prompt.includes(`DONE: ${card.done}`) && prompt.includes("FLAECHE:\ncode.txt")
+          && prompt.includes('"ok|ueberdenken"') && okEvents[0]?.payload?.ansatz === "ok", "prompt and verdict");
+      const change = async (n: number): Promise<void> => { if (lane) { await Bun.write(`${lane.cwd}/approach.txt`, `revision ${n}\n${n === 2 ? "++ b/phantom.txt\n" : ""}`);
+        oGit(lane.cwd, "add", "approach.txt"); oGit(lane.cwd, "commit", "-qm", `approach revision ${n}`); } };
+      await answer("ueberdenken", "phantom.txt"); await change(2);
+      const unanchored = await waitReview(2);
+      check("ansatz parser: a fake file header in a hunk is no real diff path and becomes ok", unanchored[1]?.payload?.ansatz === "ok", "rejected phantom path");
+      await answer("invalid", null); await change(25);
+      const unknown = await waitReview(3);
+      check("ansatz parser: an invalid verdict stays unmeasured", unknown[2]?.payload?.ansatz === undefined, "no invented ok");
+      await answer("ueberdenken", `DONE: ${card.done}`); await change(3);
+      const anchored = await waitReview(4); const verdict = anchored[3]!;
+      check("ansatz parser: exact DONE anchor records ueberdenken and one reason", verdict.payload?.ansatz === "ueberdenken"
+        && verdict.payload.anker === `DONE: ${card.done}` && verdict.payload.begruendung === "Die Änderung verfehlt den genannten Anker.", "literal anchor");
+      const projection = async (): Promise<string> => (await self("/api/self/program-execution")).text();
+      check("ansatz obligation: MAIN projection exposes an open answer", (await projection()).includes(`"eventId":"${verdict.id}"`)
+        && (await projection()).includes('"answerOwed":true'), "open projection");
+      const ownerComment = await post(`/api/tasks/${author?.id}/comment`, { text: `Ansatz ${verdict.id}: Ich behalte diesen Ansatz.` });
+      check("ansatz answer: owner comment does not close MAIN obligation", ownerComment.ok && (await projection()).includes('"answerOwed":true'), "MAIN only");
+      const wrong = await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${okEvents[0]!.id}: Ich prüfe das.` });
+      check("ansatz answer: an ok event cannot close the obligation", wrong.status === 400, `status=${wrong.status}`);
+      await answer("ueberdenken", "approach.txt"); await change(4);
+      const outside = (await waitReview(5))[4]!;
+      check("ansatz parser: real diff file outside FLAECHE records ueberdenken", outside.payload?.ansatz === "ueberdenken"
+        && outside.payload.anker === "approach.txt", "outside scope");
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
+      if (lane) await settleForMerge(lane.slot);
+      await post(`/api/programs/${pg.id}/promotion`, { policy: { v: 1, selfLand: "green-only" } });
+      const land = await self(`/api/self/tasks/${author?.id}/land`, {}); const landText = await land.text();
+      if (lane) await waitMerge(lane.slot);
+      check("ansatz land: unanswered ueberdenken blocks nothing and is in MAIN land response", land.ok && landText.includes('"running":true')
+        && landText.includes(`"eventId":"${outside.id}"`) && landText.includes('"answerOwed":true') && (await oRow(author?.id ?? ""))?.status === "done", `status=${land.status}`);
+      const outcomes = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: { branch: string; ansatzReviews?: { eventId: string; changedAfterReview: boolean | null }[] }[] }).outcomes;
+      check("ansatz action sensor: outcome retains historical revised verdict", outcomes.find((o) => o.branch === lane?.branch)?.ansatzReviews
+        ?.find((e) => e.eventId === verdict.id)?.changedAfterReview === true, "durable outcome");
+      const final = await oReviews(author?.id ?? "");
+      check("ansatz action sensor: revised diff is true, final unchanged diff false", final.find((e) => e.id === verdict.id)?.payload?.changedAfterReview === true
+        && final.find((e) => e.id === outside.id)?.payload?.changedAfterReview === false, "content identities");
+      const closed = await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${verdict.id}: Ich behalte diesen Ansatz.` });
+      await self(`/api/self/tasks/${author?.id}/comment`, { text: `Ansatz ${outside.id}: Der zusätzliche Pfad ist erforderlich.` });
+      await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0" });
+      check("ansatz obligation: MAIN sentence closes and persists across restart", closed.ok && !(await projection()).includes('"answerOwed":true')
+        && (await oReviews(author?.id ?? "")).find((e) => e.id === verdict.id)?.payload?.answer !== undefined, `status=${closed.status}`);
+      await Bun.write(`${ctl}/fakereview`, original); spawnSync("rm", ["-f", `${ctl}/ansatz-answer`, `${ctl}/ansatz-card`]);
+      await post(`/api/slots/${free.id}/kill`, {});
+      for (const row of [textRow, noneRow, smallRow, smallText, sent, ownerAuthor, ownerNone]) if (row) await post(`/api/tasks/${row.id}/delete`, {});
+    } finally {
+      // TEARDOWN, as a check: every row this block minted around the card's ZIEL must leave it closed,
+      // even when a check or `until` above fell. The loop above runs only on the happy path and only
+      // over the rows it names; a row it missed stays open in the shared instance, where e2e/tasks.ts
+      // later reads it as its own ("backlog nudge setup: the only open row …", red 6/6 unsharded runs
+      // since 2026-10-07). A row still `sent` loses its lane first (the kill hands it back to
+      // `pending`), then every pending or queued one is deleted. Mutation: drop the delete loop and
+      // the leftover row stays open; the check falls.
+      type CardRow = ORow & { text?: string; slot?: number | null; card?: { ziel?: string } | null };
+      const cardRows = async (): Promise<CardRow[]> => ((await (await get("/api/tasks")).json()) as { tasks: CardRow[] }).tasks
+        .filter((t) => (t.text ?? "").includes(card.ziel) || t.card?.ziel === card.ziel);
+      const isOpen = (t: CardRow): boolean => t.status === "pending" || t.status === "queued";
+      const cardLeft = (await cardRows()).filter((t) => isOpen(t) || t.status === "sent");
+      for (const t of cardLeft) if (t.status === "sent" && typeof t.slot === "number") await post(`/api/slots/${t.slot}/kill`, {});
+      for (const t of (await cardRows()).filter(isOpen)) await post(`/api/tasks/${t.id}/delete`, {});
+      const cardOpen = (await cardRows()).filter(isOpen);
+      check("ansatz teardown: no row with the card's ZIEL is still pending or queued after its block",
+        cardOpen.length === 0,
+        JSON.stringify({ left: cardLeft.map((t) => ({ id: t.id, status: t.status })), open: cardOpen.map((t) => ({ id: t.id, status: t.status })) }));
+    }
 
     for (const id of [oOpted?.id, oPlain?.id, oC?.id]) if (id) await post(`/api/tasks/${id}/delete`, {});
     for (const e of [...await oReviews(oOpted?.id ?? "")]) await post(`/api/events/${e.id}/ack`, {});

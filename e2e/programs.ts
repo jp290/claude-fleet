@@ -11688,61 +11688,77 @@ export async function run(ctx: Ctx): Promise<void> {
       const stDispatch = await post(`/api/tasks/${stRowId}/dispatch`, {});
       const stSlot = (await slRow(stRowId))?.slot ?? null;
       const stCwd = stSlot === null ? "" : (await slSess()).slots.find((x) => x.id === stSlot)?.cwd ?? "";
-      const commitN = (n: number, tag: string): void => {
-        for (let i = 1; i <= n; i++) {
-          writeFileSync(`${stCwd}/stand-${tag}-${i}.txt`, `${tag} ${i}\n`);
-          spawnSync("git", ["-C", stCwd, "add", `stand-${tag}-${i}.txt`]);
-          spawnSync("git", ["-C", stCwd, "commit", "-qm", `stand ${tag} ${i}`]);
-        }
-      };
-      const stTick = Math.max(AUTOS_TICK_MS, 250);
-      let stBusyOn = false;
-      let stBusyNudges = -1, stFirst = -1, stRepeat = -1, stAfterStand = -1, stSecond = -1;
-      if (stSlot !== null && stCwd) {
-        commitN(4, "a");
-        const stReady = await waitDoneLooking(stSlot, stCwd);
-        // the fifth commit lands while the pane is printing: the tick must hold it back
-        stBusyOn = true;
-        const stBusy = (async (): Promise<void> => {
-          while (stBusyOn) {
-            try { await tmuxOut("send-keys", "-t", `s${stSlot}`, "echo stand-lane-busy", "Enter"); } catch { /* asserted below */ }
-            await Bun.sleep(150);
+      try {
+        const commitN = (n: number, tag: string): void => {
+          for (let i = 1; i <= n; i++) {
+            writeFileSync(`${stCwd}/stand-${tag}-${i}.txt`, `${tag} ${i}\n`);
+            spawnSync("git", ["-C", stCwd, "add", `stand-${tag}-${i}.txt`]);
+            spawnSync("git", ["-C", stCwd, "commit", "-qm", `stand ${tag} ${i}`]);
           }
-        })();
-        commitN(1, "b");
-        await Bun.sleep(2_500 + 8 * stTick); // past one git tick (2 s) and eight reminder ticks
-        stBusyNudges = standNudges(stSlot);
-        stBusyOn = false;
-        await stBusy;
-        try {
-          await until(() => standNudges(stSlot) >= 1, { timeoutMs: 20_000, stepMs: 100, what: "the stand reminder reaches the idle lane" });
-        } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
-        stFirst = standNudges(stSlot);
-        await Bun.sleep(2_500 + 8 * stTick);
-        stRepeat = standNudges(stSlot);
-        check("stand reminder: 5 commits since the (absent) stand fire it once into the lane — held back while the pane prints, delivered when it rests, never a second time without a new stand",
-          stDispatch.ok && stReady && stBusyNudges === 0 && stFirst === 1 && stRepeat === 1,
-          JSON.stringify({ dispatch: stDispatch.status, ready: stReady, why: stReady ? "" : doneLookingWhy,
-            busy: stBusyNudges, first: stFirst, repeat: stRepeat }));
-        const stTok = slotToken(stSlot);
-        const stWrite = await fetch(`${BASE}/api/self/handover`, { method: "POST",
-          headers: { "content-type": "application/json", "x-fleet-self-token": stTok },
-          body: JSON.stringify({ intent: "fertig: fuenf Dateien · fehlt: fuenf weitere · blockiert: nichts" }) });
-        const stStand = ((await stWrite.json()) as { standingHandover?: { ahead?: number | null } }).standingHandover;
-        await Bun.sleep(2_500 + 8 * stTick);
-        stAfterStand = standNudges(stSlot);
-        commitN(5, "c");
-        try {
-          await until(() => standNudges(stSlot) >= 2, { timeoutMs: 20_000, stepMs: 100, what: "the reminder fires again after a new stand" });
-        } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
-        stSecond = standNudges(stSlot);
-        check("stand reminder: the stand stores ahead=5 and silences it; five commits past THAT stand fire it exactly once more",
-          stWrite.ok && stStand?.ahead === 5 && stAfterStand === 1 && stSecond === 2,
-          JSON.stringify({ write: stWrite.status, ahead: stStand?.ahead, afterStand: stAfterStand, second: stSecond }));
-        await post(`/api/slots/${stSlot}/kill`, {});
-      } else {
-        check("stand reminder setup: a Program lane for the reminder fixture", false,
-          JSON.stringify({ dispatch: stDispatch.status, slot: stSlot, cwd: stCwd }));
+        };
+        const stTick = Math.max(AUTOS_TICK_MS, 250);
+        let stBusyOn = false;
+        let stBusyNudges = -1, stFirst = -1, stRepeat = -1, stAfterStand = -1, stSecond = -1;
+        if (stSlot !== null && stCwd) {
+          commitN(4, "a");
+          const stReady = await waitDoneLooking(stSlot, stCwd);
+          // the fifth commit lands while the pane is printing: the tick must hold it back
+          stBusyOn = true;
+          const stBusy = (async (): Promise<void> => {
+            while (stBusyOn) {
+              try { await tmuxOut("send-keys", "-t", `s${stSlot}`, "echo stand-lane-busy", "Enter"); } catch { /* asserted below */ }
+              await Bun.sleep(150);
+            }
+          })();
+          commitN(1, "b");
+          await Bun.sleep(2_500 + 8 * stTick); // past one git tick (2 s) and eight reminder ticks
+          stBusyNudges = standNudges(stSlot);
+          stBusyOn = false;
+          await stBusy;
+          try {
+            await until(() => standNudges(stSlot) >= 1, { timeoutMs: 20_000, stepMs: 100, what: "the stand reminder reaches the idle lane" });
+          } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+          stFirst = standNudges(stSlot);
+          await Bun.sleep(2_500 + 8 * stTick);
+          stRepeat = standNudges(stSlot);
+          check("stand reminder: 5 commits since the (absent) stand fire it once into the lane — held back while the pane prints, delivered when it rests, never a second time without a new stand",
+            stDispatch.ok && stReady && stBusyNudges === 0 && stFirst === 1 && stRepeat === 1,
+            JSON.stringify({ dispatch: stDispatch.status, ready: stReady, why: stReady ? "" : doneLookingWhy,
+              busy: stBusyNudges, first: stFirst, repeat: stRepeat }));
+          const stTok = slotToken(stSlot);
+          const stWrite = await fetch(`${BASE}/api/self/handover`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": stTok },
+            body: JSON.stringify({ intent: "fertig: fuenf Dateien · fehlt: fuenf weitere · blockiert: nichts" }) });
+          const stStand = ((await stWrite.json()) as { standingHandover?: { ahead?: number | null } }).standingHandover;
+          await Bun.sleep(2_500 + 8 * stTick);
+          stAfterStand = standNudges(stSlot);
+          commitN(5, "c");
+          try {
+            await until(() => standNudges(stSlot) >= 2, { timeoutMs: 20_000, stepMs: 100, what: "the reminder fires again after a new stand" });
+          } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+          stSecond = standNudges(stSlot);
+          check("stand reminder: the stand stores ahead=5 and silences it; five commits past THAT stand fire it exactly once more",
+            stWrite.ok && stStand?.ahead === 5 && stAfterStand === 1 && stSecond === 2,
+            JSON.stringify({ write: stWrite.status, ahead: stStand?.ahead, afterStand: stAfterStand, second: stSecond }));
+          await post(`/api/slots/${stSlot}/kill`, {});
+        } else {
+          check("stand reminder setup: a Program lane for the reminder fixture", false,
+            JSON.stringify({ dispatch: stDispatch.status, slot: stSlot, cwd: stCwd }));
+        }
+      } finally {
+        // TEARDOWN, as a check (the recycle block below says why a leftover row is not untidiness):
+        // the kill above detaches the row back to `pending`, and an early throw would leave it
+        // `sent` on a live lane — either way an open row in the shared instance that e2e/tasks.ts
+        // later reads as its own ("backlog nudge setup: the only open row …", red 6/6 unsharded
+        // runs since 2026-10-07). Kill whatever lane still holds it, then delete it. Mutation:
+        // drop the delete and the row stays `pending`; the check falls.
+        const stLeft = await slRow(stRowId);
+        if (stLeft?.status === "sent" && typeof stLeft.slot === "number") await post(`/api/slots/${stLeft.slot}/kill`, {});
+        const stDelete = await post(`/api/tasks/${stRowId}/delete`, {});
+        const stAfter = await slRow(stRowId);
+        check("stand reminder teardown: the fixture row is no longer pending or queued after its block",
+          stAfter === undefined || (stAfter.status !== "pending" && stAfter.status !== "queued"),
+          JSON.stringify({ before: stLeft?.status ?? null, delete: stDelete.status, after: stAfter?.status ?? "deleted" }));
       }
       await restartSrv();
       // the restart emptied the git cache this fixture's later steps read: wait for it again

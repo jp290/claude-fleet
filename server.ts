@@ -46968,12 +46968,16 @@ await resolveDeployMarker().catch((e: unknown) => {
 
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
 // The server computes ONE deterministic per-lane fact — {head, base, landed, repo} keyed by
-// branch, plus each lane repo's primary checkout keyed by ITS branch (owner-side lands become
-// observable) — and stamps it SERVER-side into every rundgang journal record. The steward's
+// branch, plus each lane repo's primary checkout keyed by `<repo>:<its branch>` (owner-side lands
+// become observable) — and stamps it SERVER-side into every rundgang journal record. The steward's
 // have-pointer is simply its own prior record; the LLM can never write any of this (same typed
 // choke-point stance as the journal handler). head is read FRESH per call — journal writes and
 // digests are hours apart, so correctness of the fact beats reusing the 10s cache.
 interface LaneFact { head: string | null; base: string | null; landed: boolean; repo: string }
+// The primary checkout's key carries its repo: every lane repo's primary sits on its integration
+// branch, usually `main`, so a bare branch key let whichever repo's git answered first take `main`
+// and dropped the others. A refname cannot contain ':', so this key never meets a lane's.
+const primaryLaneKey = (repo: string, branch: string): string => `${repo}:${branch}`;
 async function laneFacts(): Promise<Record<string, LaneFact>> {
   const out: Record<string, LaneFact> = {};
   const repos = new Set<string>();
@@ -46992,9 +46996,9 @@ async function laneFacts(): Promise<Record<string, LaneFact>> {
   }));
   await Promise.all([...repos].map(async (repo) => {
     const br = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
-    if (br.code !== 0 || !br.out || br.out === "HEAD" || out[br.out]) return;
+    if (br.code !== 0 || !br.out || br.out === "HEAD") return;
     const hd = await git(repo, "rev-parse", "HEAD");
-    out[br.out] = { head: hd.code === 0 && hd.out ? hd.out : null, base: null, landed: true, repo };
+    out[primaryLaneKey(repo, br.out)] = { head: hd.code === 0 && hd.out ? hd.out : null, base: null, landed: true, repo };
   }));
   return out;
 }
@@ -47013,8 +47017,15 @@ interface SinceLastLook {
 async function sinceLastLookView(prior: Record<string, unknown> | null): Promise<SinceLastLook | null> {
   const pl = prior?.lanes;
   if (typeof pl !== "object" || pl === null || Array.isArray(pl)) return null;
-  const priorLanes = pl as Record<string, { head?: unknown; base?: unknown; landed?: unknown; repo?: unknown }>;
+  type PriorLane = { head?: unknown; base?: unknown; landed?: unknown; repo?: unknown };
   const cur = await laneFacts();
+  // a record from before the repo-qualified primary key stamped a primary checkout under its bare
+  // branch: re-key it by ITS OWN repo, so it is diffed against that repo's checkout, never another's
+  const priorLanes: Record<string, PriorLane> = {};
+  for (const [b, p] of Object.entries(pl as Record<string, PriorLane>)) {
+    const q = typeof p.repo === "string" && !(b in cur) ? primaryLaneKey(p.repo, b) : null;
+    priorLanes[q && q in cur ? q : b] = p;
+  }
   const d: SinceLastLook = { new: [], advanced: [], landed: [], vanishedUnlanded: [], rewritten: [] };
   for (const b of Object.keys(cur)) if (!(b in priorLanes)) d.new.push(b);
   for (const [b, p] of Object.entries(priorLanes)) {

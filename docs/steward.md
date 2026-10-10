@@ -133,6 +133,18 @@ steward slot, both are read-only, and both end in the same place: at most one or
 | Memory | the steward journal (`POST /api/steward/journal`) | the same journal, `kind:"inspektion"` register rows (`?kind=` filter on the GET) |
 | Honest empty result | "all clear", files nothing | "nothing", files nothing |
 
+`sinceLastLook` diffs the lane map the server stamps into every rundgang record
+(`server.ts#laneFacts`): a lane is keyed by its branch, and each lane repo's primary checkout by
+`<repo>:<branch>`, e.g. `/Users/someone/claude-fleet:main`. The repo is part of that key because
+every lane repo's primary sits on `main`; a bare `main` key kept one repo and dropped the others,
+and the diff then compared HEADs of two different repos (false `rewritten`/`advanced`, audits
+`e900ed30` and `5c82734f`, 2026-10-10). An entry under such a key, in `advanced` or `landed`, is
+an owner-side move on that repo's integration branch, not a lane. A record from before the
+qualified key is re-keyed by its own `repo` when it is diffed (`server.ts#sinceLastLookView`).
+Lane branches stay keyed by branch alone: two repos can hold a lane with the same branch name
+(an explicit `branch` at spawn; a generated name carries a 4-hex random suffix, so a clash there
+is unlikely, not impossible), and then one of the two lanes is missing from the map.
+
 Filings from both pulses carry a stable `ref` slug; the server keeps **one live proposal per
 ref** and answers a repeat filing with the existing row (`dedup:true`) — a persisting condition
 survives an hourly pulse as one queue item, not a pile. A done/archived ref may re-file: the

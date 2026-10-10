@@ -685,9 +685,36 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("body-supplied lanes are IGNORED (no injected branch in the stored map)",
     !!jLanesRec?.lanes && !("evil" in jLanesRec.lanes), JSON.stringify(jLanesRec?.lanes ?? {}).slice(0, 200));
   const primaryBranch = laneGit(REPO, "rev-parse", "--abbrev-ref", "HEAD");
-  check("lane map includes the primary checkout keyed by its branch (owner-side lands observable)",
-    jLanesRec?.lanes?.[primaryBranch]?.head === laneGit(REPO, "rev-parse", "HEAD"),
-    JSON.stringify({ primaryBranch, entry: jLanesRec?.lanes?.[primaryBranch] }));
+  const repoA = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] })
+    .slots.find((x) => x.id === lnStew.slot)?.worktree?.repo ?? "";
+  check("lane map includes the primary checkout keyed by its repo and branch (owner-side lands observable)",
+    jLanesRec?.lanes?.[`${repoA}:${primaryBranch}`]?.head === laneGit(REPO, "rev-parse", "HEAD"),
+    JSON.stringify({ key: `${repoA}:${primaryBranch}`, keys: Object.keys(jLanesRec?.lanes ?? {}) }));
+
+  // two lane repos whose primaries sit on the SAME branch: a bare branch key let whichever repo's
+  // git answered first take it and dropped the other, and sinceLastLook then diffed one repo's HEAD
+  // against the other's (audits e900ed30, 5c82734f, 2026-10-10). A second repo of this module, one
+  // open lane on it, then both primaries must stand in the map, each with its own HEAD and repo.
+  const repoBDir = `${REPO}.stewardlanemap`;
+  spawnSync("git", ["init", "-q", "-b", primaryBranch, repoBDir]);
+  for (const [k, v] of [["user.email", "e2e@test"], ["user.name", "e2e"], ["commit.gpgsign", "false"]])
+    spawnSync("git", ["-C", repoBDir, "config", k, v]);
+  writeFileSync(`${repoBDir}/base.txt`, "base\n");
+  laneGit(repoBDir, "add", "base.txt");
+  laneGit(repoBDir, "commit", "-qm", "base");
+  const repoBHead0 = laneGit(repoBDir, "rev-parse", "HEAD");
+  const lnB = (await (await post("/api/lanes", { repo: repoBDir })).json()) as { slot: number };
+  const repoB = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] })
+    .slots.find((x) => x.id === lnB.slot)?.worktree?.repo ?? "";
+  const jTwo = (await (await stewPost("/api/steward/journal", { counts: { "healthy-running": 2 }, decisions_surfaced: 0, changed: false, note: `${jNote}:tworepos` })).json()) as { ts?: number };
+  await jSettled(jTwo.ts, `${jNote}:tworepos`);
+  const twoLanes = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: LaneRec[] }).records?.[0]?.lanes ?? {};
+  const pA = twoLanes[`${repoA}:${primaryBranch}`], pB = twoLanes[`${repoB}:${primaryBranch}`];
+  check("lane map keeps BOTH primary checkouts of two lane repos on the same branch, each with its own HEAD and repo",
+    !!repoA && !!repoB && repoA !== repoB
+    && pA?.head === laneGit(REPO, "rev-parse", "HEAD") && pA?.repo === repoA
+    && pB?.head === repoBHead0 && pB?.repo === repoB,
+    JSON.stringify({ repoA, repoB, keys: Object.keys(twoLanes), pA, pB }));
 
   // --- 🧭 steward digest (P3 demand-triggered bounded-wait): prior/slots are computed FRESH
   // every call; only the `digest` field is cached {digest, computedAt}. A GET triggers the
@@ -1077,7 +1104,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // --- commit-cursor fact layer (step 3): the digest serves sinceLastLook — the deterministic
   // per-lane delta vs the prior rundgang record's stamped map. Route-computed with ?wait=0, so
   // it never depends on the digest worker/cache being alive. ---
-  type SLL = { new: string[]; advanced: { branch: string; commits: number; shortstat: string }[];
+  type SLL = { new: string[]; advanced: { branch: string; commits: number; shortstat: string; from: string; to: string }[];
     landed: string[]; vanishedUnlanded: string[]; rewritten: { branch: string }[] } | null;
   const getSLL = async (): Promise<SLL> =>
     ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { sinceLastLook?: SLL }).sinceLastLook ?? null;
@@ -1091,6 +1118,25 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("sinceLastLook.advanced names the committed lane with commit count 1 + a real shortstat",
     sllAdv?.advanced.some((a) => a.branch === lnStewBranch && a.commits === 1 && a.shortstat.includes("1 file")) === true,
     JSON.stringify(sllAdv).slice(0, 300));
+  // the step from an OLD record (primary keyed by its bare branch) to the qualified key, with the
+  // second repo's lane from the lane-map checks still open: the old entry is diffed against ITS
+  // OWN repo's checkout — repo B advanced by one commit is `advanced` under B's key, and nothing
+  // is reported as new, landed, gone or rewritten for either primary.
+  laneGit(repoBDir, "commit", "-q", "--allow-empty", "-m", "owner-side advance");
+  writeFileSync("steward-journal.jsonl", `${JSON.stringify({ ts: Date.now(), kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false,
+    lanes: { [primaryBranch]: { head: repoBHead0, base: null, landed: true, repo: repoB } } })}\n`, { flag: "a" });
+  const sllOld = await getSLL();
+  const primaryKeys = [primaryBranch, `${repoA}:${primaryBranch}`, `${repoB}:${primaryBranch}`];
+  check("sinceLastLook re-keys an old record's bare-branch primary by its own repo: advanced in that repo, nothing false for the other",
+    sllOld !== null
+    && sllOld.advanced.some((a) => a.branch === `${repoB}:${primaryBranch}` && a.from === repoBHead0
+      && a.to === laneGit(repoBDir, "rev-parse", "HEAD") && a.commits === 1)
+    && !sllOld.advanced.some((a) => a.branch !== `${repoB}:${primaryBranch}` && primaryKeys.includes(a.branch))
+    && !sllOld.rewritten.some((r) => primaryKeys.includes(r.branch))
+    && ![...sllOld.landed, ...sllOld.vanishedUnlanded].some((b) => primaryKeys.includes(b))
+    && !sllOld.new.includes(`${repoB}:${primaryBranch}`),
+    JSON.stringify(sllOld).slice(0, 600));
+  await post(`/api/slots/${lnB.slot}/kill`, {});
   // a prior record WITHOUT lanes (pre-feature) → sinceLastLook null, never a fake-empty diff
   writeFileSync("steward-journal.jsonl",
     `${JSON.stringify({ ts: Date.now(), kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });

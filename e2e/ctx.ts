@@ -108,7 +108,9 @@ export interface StewardCtx {
 // every check that starts a browser, out of slots (core), lanes-lifecycle (lanes), drops and the
 // former unit timeline-ui, so a run can leave the browser out by its unit or module choice. No
 // fixture crosses its boundary: its one instance probe opens and kills its own slots and lanes.
-// The weights of dom, core, lanes and drops are their first sharded measurement on the Workhorse.
+// The weights of dom, core, lanes and drops are their first sharded measurement on the Workhorse
+// (preview a4297f006a38, three co-resident shards, 2026-10-10 08:2x–09:0x): dom 1 092 s, core 701 s
+// (1 586 s with the probes), lanes 617 s (681 s), drops 3 s (11 s); timeline-ui's 114 s are in dom.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
@@ -116,17 +118,17 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "tmux-locale", seconds: 2, modules: ["tmux-locale"] },
   { unit: "bytes", seconds: 2, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 1200, modules: ["slots", "history", "summary", "transport", "autos", "share",
+  { unit: "core", seconds: 701, modules: ["slots", "history", "summary", "transport", "autos", "share",
     "review", "self-token", "trailstats", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
   { unit: "core-tasks", seconds: 674, modules: ["self-token", "outcomes", "tasks"] },
   { unit: "programs", seconds: 653, modules: ["self-token", "programs"] },
-  { unit: "lanes", seconds: 650, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
+  { unit: "lanes", seconds: 617, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
   { unit: "watch", seconds: 421, modules: ["watch", "delivery-class"] },
   { unit: "attention", seconds: 25, modules: ["attention"] },
   { unit: "lane-risk", seconds: 1, modules: ["lane-risk"] },
   { unit: "explorer", seconds: 1, modules: ["explorer"] },
-  { unit: "drops", seconds: 4, modules: ["drops"] },
-  { unit: "dom", seconds: 500, modules: ["dom"] },
+  { unit: "drops", seconds: 3, modules: ["drops"] },
+  { unit: "dom", seconds: 1092, modules: ["dom"] },
   { unit: "ctl", seconds: 54, modules: ["ctl"] },
   { unit: "concurrency", seconds: 5, modules: ["concurrency"] },
   { unit: "lane-suite", seconds: 43, modules: ["lane-suite"] },

@@ -11799,7 +11799,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !placedRuns.has(b.key)).sort(` },
   { name: "a run line names no session", state: "land", claim: "the Prüfungen block says every run in one line",
-    needle: "    if (s?.cwd) who.append(", with: "    if (false) who.append(" },
+    needle: "    const who = s?.cwd ? runWho(", with: "    const who = false ? runWho(" },
   { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from says so in its state",
     needle: "      markHere(rows[0]);", with: "" },
   // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note

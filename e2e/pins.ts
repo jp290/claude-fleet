@@ -9862,9 +9862,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
-        && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn)
-        && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal)?\)/.test(workFn),
-      `suiteEnv=${/maxParallelSuites > 1/.test(workFn)} passedToRun=${/, suiteEnv(, ctl\.signal)?\)/.test(workFn)}`);
+        // …and the `scope` after it names which processes belong to the run, for its reap (5d56f628)
+        && /runArgv\(j\.argv!, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal(, scope)?)?\)/.test(workFn)
+        && /runCmd\(cfg\.suiteCmd, clone, logPath, timeoutMs, suiteEnv(, ctl\.signal(, scope)?)?\)/.test(workFn),
+      `suiteEnv=${/maxParallelSuites > 1/.test(workFn)} passedToRun=${/, suiteEnv(, ctl\.signal(, scope)?)?\)/.test(workFn)}`);
     pin(`${RULE_PAR} (c) the claim door reads the device's own pair, and the restore keeps the cap while forgetting the count`,
       /dev\?\.maxParallelSuites !== undefined && \(dev\.running \?\? 0\) >= dev\.maxParallelSuites/.test(claimDoor)
         && claimDoor.indexOf("maxParallelSuites") < claimDoor.indexOf("laneSuiteJobs.get(jobId)")

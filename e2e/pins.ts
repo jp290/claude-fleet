@@ -187,6 +187,14 @@ function pinSource(name: string, ok: boolean, detail: string, inSource: boolean)
 // prints PASS is vacuum-green: the same word for "measured, fine" and "never measured".
 function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${why})`); }
 
+// The universes must fail as THEMSELVES. An empty or one-sided module set makes every "and nowhere
+// else" row below trivially true — the same green, measured over nothing.
+pin("the server universe is derived and holds its entry module",
+  serverU.files.length > 0 && serverU.files[0]!.file === "server.ts" && serverU.text.length > 0,
+  `${serverU.files.length} module(s): [${serverU.files.map((f) => f.file).join(", ")}]`);
+pin("the client universe is derived and holds its bundle entry",
+  clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
+  `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
 
 {
   const sources: ContextPackSource[] = CONTEXT_PACKS.flatMap<ContextPackSource>((pack) => "sources" in pack ? [...pack.sources] : [])
@@ -265,6 +273,46 @@ function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${wh
       && /nativeCompaction\(harness\) \? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF/.test(footer)
       && /if \(ref === "handoff"\)\n\s*return nativeCompaction\(s\.harness\)\n\s*\? \{ error:/.test(steward),
     `predicate=${predicate !== ""} selector=${selector !== ""} spawn=${spawnB !== ""} succ=${succB !== ""} footer=${footer !== ""} steward=${steward !== ""}`);
+}
+
+// THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut
+// a server body with two bare indexOf calls — the shape that was correct while the universe was one
+// file. After the split those two anchors can land in DIFFERENT modules, and a raw slice between
+// them over the joined text returns everything in between: a body big enough that every `includes`
+// against it is true. That is vacuum-green with extra steps.
+//
+// Converting all ~95 during a feature freeze would be a large blind edit; converting the ones a
+// P4 slice actually moves is the right size, and this row is what tells that slice WHICH. It reads
+// the anchor pairs out of this file's own source and fails only on a pair whose two anchors are in
+// different modules — zero today, exactly the broken ones tomorrow. The plan's slice protocol asks
+// step (c) to look for vacuum-green pins by hand; this makes that half mechanical.
+{
+  const RULE_SPAN = "no pin cuts a server body ACROSS two modules (a raw slice between anchors in different modules returns everything between them, and everything contains anything)";
+  const pinsSrc = read("e2e/pins.ts");
+  // regex literals, so the patterns carry no literal `server.slice(` and this file's own scan
+  // cannot report itself. `LIT` is a double-quoted JS string with its escapes intact — JSON.parse
+  // turns it back into the anchor the pin actually searches for.
+  const STARTS = /const (\w+) = server\.indexOf\(("(?:[^"\\]|\\.)*")\)/g;
+  const CUTS = /server\.slice\(\s*(?:server\.indexOf\(("(?:[^"\\]|\\.)*")\)|(\w+))\s*,\s*server\.indexOf\(("(?:[^"\\]|\\.)*")/g;
+  const starts = new Map<string, string>();
+  for (const m of pinsSrc.matchAll(STARTS)) starts.set(m[1]!, JSON.parse(m[2]!) as string);
+  const pairs: { from: string; to: string }[] = [];
+  for (const m of pinsSrc.matchAll(CUTS)) {
+    const from = m[1] !== undefined ? JSON.parse(m[1]) as string : starts.get(m[2]!);
+    if (from === undefined) continue;   // a computed offset, not an anchor pair — not this class
+    pairs.push({ from, to: JSON.parse(m[3]!) as string });
+  }
+  const moduleOf = (needle: string): string | null =>
+    serverU.files.find((f) => f.text.includes(needle))?.file ?? null;
+  const crossing = pairs
+    .map((x) => ({ ...x, a: moduleOf(x.from), b: moduleOf(x.to) }))
+    .filter((x) => x.a !== null && x.b !== null && x.a !== x.b);
+  pin(`${RULE_SPAN} — the anchor pairs are derived from this file's own source`,
+    pairs.length > 0, `${pairs.length} anchored server body cut(s)`);
+  pin(RULE_SPAN, pairs.length > 0 && crossing.length === 0,
+    crossing.length > 0
+      ? crossing.map((x) => `${JSON.stringify(x.from)} in ${x.a} → ${JSON.stringify(x.to)} in ${x.b}`).join("; ")
+      : `${pairs.length} cut(s), each inside one module`);
 }
 
 const shellScripts = [
@@ -602,6 +650,7 @@ const server = serverU.text;
   };
   const wrappers = readdirSync(ROOT).filter((file) => /^e2e-.*\.sh$/.test(file)
     && read(file).split('\n').some((line) => !/^\s*#/.test(line) && line.includes('exec bun server.ts'))).sort();
+  pin('host-disk wrapper-start universe is not empty', wrappers.length > 0);
   for (const wrapper of wrappers) {
     const code = read(wrapper);
     pin(`host-disk ${wrapper} explicitly neutralizes every stand-in server start`, wrapperDiskWired(code));
@@ -3067,6 +3116,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // the rule vacuously true, which is how this pin failed the first time it was written.
   const dStart = server.indexOf("async function dispatchTask");
   const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
+  pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
+    dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
   // The attended route may name all three adapter choices. The tick still calls the short form
   // below, so DEFAULT_SPAWN is its entire spawn decision; pin every field to null rather than
   // relying on an optional property whose absence could acquire a meaning later. The ONE optional
@@ -3080,6 +3131,14 @@ await import(pathToFileURL(process.argv[2]).href);
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
+  // The ceiling is a ratchet against an UNBOUNDED slice, not a style budget: every rule below reads
+  // this slice, and a tickDispatch that swallowed the file would make each of them vacuously true.
+  // Raised 20_000 → 21_000 on 2026-09-17 for the variant-group reservation gate (~600 B of gate and
+  // its pointer; the rule itself is written at server.ts#variantReserveHolds, outside this body).
+  // Raised 21_000 → 21_500 on 2026-09-24 for the measured-usage-limit gate (two lines; the rule is
+  // written at server.ts#noteHarnessLimits, outside this body — the body stood at ~20.9 kB before).
+  pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
+    tStart > 0 && tBody.length > 500 && tBody.length < 21_500, `${tBody.length} bytes`);
   // THE TICK STARTS BY THE START PLAN SINCE SCHNITT 2 (docs/messungen/2026-09-13-queue-pipeline-
   // system-entwurf.md §5). Four rules over the source, none visible to tsc:
   //   · the tick walks startPlanWaves() and nothing else — no second oldest-first sweep over `tasks`
@@ -3090,7 +3149,12 @@ await import(pathToFileURL(process.argv[2]).href);
   //   · dispatchTask and releaseTaskForMain still never reach the plan — the dispatch core starts
   //     what it is handed, and a release is a decision, not a projection;
   //   · GET /api/start-plan and the wave door read the same plan (one projection for board, door, tick).
+  // The probe half fails as itself: a server that no longer imports start-plan.ts makes the rest vacuous.
   {
+    const spImport = /import \{[^}]*\bprojectStartPlan\b[^}]*\} from "\.\/start-plan";/.test(server);
+    const spRoute = server.indexOf('url.pathname === "/api/start-plan" && req.method === "GET"');
+    pin("start plan PROBE: server.ts imports start-plan.ts and serves GET /api/start-plan", spImport && spRoute > 0,
+      `import=${spImport} route=${spRoute > 0}`);
     const bodyOf = (head: string): string => {
       const at = server.indexOf(head);
       return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
@@ -3291,6 +3355,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // would only be wrong on the fleet where the two answers differ.
   const relStart = server.indexOf("async function releaseTaskForMain(");
   const relBody = relStart < 0 ? "" : server.slice(relStart, server.indexOf("\n}\n", relStart));
+  pin("releaseTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    relStart > 0 && relBody.length > 500 && relBody.length < 20_000, `${relBody.length} bytes`);
   // Both halves of "the caller cannot nominate its own work": the program comes from the binding
   // and the repo from the caller's checkout, and the handler mentions neither a request nor a body
   // at all — the strongest form of the /api/self/autos rule, which merely IGNORES a `slot` field.
@@ -3508,6 +3574,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // "this handler writes no X" — and the paragraphs around the handler name every X they are there
   // to forbid, so a rule read over the prose would fail on the explanation of itself.
   const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
   // ONE MAIN PER PROJECT (2026-10-06): a body `programId` is no longer refused outright — it is a
   // CHOICE among the caller's own bound Programs, answered by boundProgramForMain(s, choice) and
   // never by anything else; `null` is the project note (Merkzettel). The pin holds that the choice
@@ -3642,6 +3710,13 @@ await import(pathToFileURL(process.argv[2]).href);
   // own object literal rather than the file, or a `automatable: false` anywhere would satisfy it.
   const cStart = server.indexOf("const CONTAINER_HARNESS: Harness = {");
   const cBody = cStart < 0 ? "" : server.slice(cStart, server.indexOf("\n};\n", cStart));
+  // The upper bound is a VACUITY guard (an unfound terminator must not let the slice swallow the
+  // declarations after it), never a size policy on the adapter. It was 8_000 and started failing on
+  // a legitimate comment in 2026-08-21's effort cut — shrinking prose to fit a magic number is
+  // editing the thing the pin guards in order to satisfy the pin, so the number moved instead. It
+  // still guards what it was written for: server.ts is two orders of magnitude larger than this.
+  pin("the container adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
+    cStart > 0 && cBody.length > 500 && cBody.length < 12_000, `${cBody.length} bytes`);
   pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
     /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
     cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
@@ -3683,6 +3758,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // to own a composer (the claude-gate wake fixture) — see CLAUDE_READY_FRAME for each measurement.
   const clStart = server.indexOf("const CLAUDE_HARNESS: Harness = {");
   const clBody = clStart < 0 ? "" : server.slice(clStart, server.indexOf("\n};\n", clStart));
+  pin("the claude adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
+    clStart > 0 && clBody.length > 500 && clBody.length < 14_000, `${clBody.length} bytes`);
   pin("claude declares a POSITIVE ready marker for the real binary, beside the composer glyph it also reads",
     /readiness: \{ accept: IS_CLAUDE \? CLAUDE_READY_FRAME : null, blocks: \[CLAUDE_TRUST_DIALOG\] \}/.test(clBody)
       && /composer: \{ kind: "glyph" as const, re: CLAUDE_COMPOSER_GLYPH \}/.test(clBody)
@@ -3709,6 +3786,9 @@ await import(pathToFileURL(process.argv[2]).href);
 
   const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
+  pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    // 14 KB: the literal stood at 11.9 KB when the 2026-09-14 text-lane profile added its append
+    xStart > 0 && xBody.length > 500 && xBody.length < 14_000, `${xBody.length} bytes`);
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
   // only sound alongside the declared readiness seam (trust and sign-in were measured in rendered
@@ -4011,6 +4091,8 @@ await import(pathToFileURL(process.argv[2]).href);
   // re-grown fence would behave exactly like the bare spawn until a real lane's commit dies on it.
   const pStart = server.indexOf("const PI_HARNESS: Harness = {");
   const pBody = pStart < 0 ? "" : server.slice(pStart, server.indexOf("\n};\n", pStart));
+  pin("the pi adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    pStart > 0 && pBody.length > 500 && pBody.length < 12_000, `${pBody.length} bytes`);
   const pSpawn = pBody.slice(pBody.indexOf("spawnCmd: (o) => {"), pBody.indexOf("worker: () => null"));
   const pCode = pSpawn.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("the pi spawn line starts pi bare with the owner's full reach — no sandbox-exec anywhere in it",
@@ -4430,6 +4512,8 @@ export default function (pi) {
   const puStart = server.indexOf("const PI_UNFENCED_HARNESS: Harness = {");
   const puBody = puStart < 0 ? "" : server.slice(puStart, server.indexOf("\n};\n", puStart));
   const puCode = puBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("pi-unfenced is a bounded explicit adapter rather than a branch in normal Pi's fence",
+    puStart > 0 && puBody.length > 400 && puBody.length < 5_000, `${puBody.length} bytes`);
   pin("pi-unfenced really starts bare Pi and says UNFENCED before the owner picks it",
     /return `\$\{PATH_EXPORT\}\$\{cmd\}; exec \$\{SHELL\}`/.test(puCode)
     && !puCode.includes("sandbox-exec") && /note: "UNFENCED host access:/.test(puCode),
@@ -4534,6 +4618,8 @@ export default function (pi) {
   const stripComments = (s: string): string =>
     s.split("\n").filter((l) => !l.trim().startsWith("//")).map((l) => l.replace(/\s+\/\/.*$/, "")).join("\n");
   const wExec = stripComments(wBody);
+  pin("summaryViaSession's body is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    wStart > 0 && wExec.length > 800 && wExec.length < 8_000, `${wExec.length} bytes of code`);
   pin("the worker spawn names no agent binary and no spawn flags of its own — the line comes from the adapter",
     /WORKER_HARNESS\.worker\(/.test(wExec) && !/\bclaude\b/.test(wExec)
       && !/--session-id|--model|--tools/.test(wExec),
@@ -4552,6 +4638,9 @@ export default function (pi) {
   // over EVERY adapter literal, so the one added tomorrow is covered tomorrow.
   const adapters = [...server.matchAll(/const ([A-Z_]+)_HARNESS: Harness = \{/g)]
     .map((m) => ({ name: m[1], body: server.slice(m.index!, server.indexOf("\n};\n", m.index!)) }));
+  pin("server.ts yields its harness adapter literals (an unparsed set would make the rule below vacuous)",
+    adapters.length >= 4 && adapters.every((a) => a.body.length > 300),
+    adapters.map((a) => `${a.name}:${a.body.length}B`).join(" "));
   // Repository-write ownership is an adapter declaration, never an id/form guess. Match each
   // literal's executable source and require exactly one explicit boolean so an adapter added
   // tomorrow cannot inherit an answer.
@@ -4607,6 +4696,8 @@ export default function (pi) {
   const declared = (serverExec.match(/const REPO_WORKER_KEYS: RepoWorkerKey\[\] = \[([^\]]*)\]/)?.[1] ?? "")
     .split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
   const resolved = [...new Set([...serverExec.matchAll(/workerCmdFor\("([A-Za-z]+)"/g)].map((m) => m[1]))];
+  pin("server.ts yields a non-empty REPO_WORKER_KEYS (an unparsed one would make the rule below vacuous)",
+    declared.length > 0, declared.join(", ") || "none");
   pin("every per-repo-configurable worker is resolved through workerCmdFor, and vice versa",
     declared.length === resolved.length && declared.every((k) => resolved.includes(k)),
     `declared=[${declared.join(", ")}] resolved=[${resolved.join(", ")}]`);
@@ -4996,6 +5087,8 @@ export default function (pi) {
   // at spawn with the task text about to be typed into a bare shell.
   const acStart = server.indexOf("function agentCmd(");
   const acBody = server.slice(acStart, server.indexOf("\n}\n", acStart));
+  pin("agentCmd's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    acStart > 0 && acBody.length > 400 && acBody.length < 8_000, `${acBody.length} bytes`);
   const claudeBranch = acBody.slice(acBody.indexOf("if (claude) {"), acBody.indexOf("else if (HARNESS_MODEL_FLAG"));
   const effortAppends = (acBody.match(/cmd \+= ` --effort /g) ?? []).length;
   pin("agentCmd appends --effort single-quoted, exactly once, and only on the claude branch",
@@ -9891,7 +9984,9 @@ export default function (pi) {
     return "";
   };
   const body = serverU.span("async function sendText(", "// --- scheduled prompts ---");
-  if (body) {
+  if (!body) {
+    pin(`${RULE_SEND_LEDGER} — sendText's body is findable`, false, "anchor not found");
+  } else {
     // ONE writer, and it sits in the transport. A second `audit("send"` anywhere means a caller
     // has started writing its own row — the arrangement this pin exists to keep.
     const writers = serverU.text.split('audit("send"').length - 1;

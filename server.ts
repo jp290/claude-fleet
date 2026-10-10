@@ -333,21 +333,84 @@ const RULEBOOK_CUT_MODE: RulebookCutMode = (() => {
   console.error(`FLEET_RULEBOOK_ROLE_CUT=${JSON.stringify(raw)} is invalid; the role cut stays on`);
   return "rolle";
 })();
+// THE SESSION LIST CUT (card 3eddb803). Owner 09.10.: „[Zitat entfernt]“,
+// bound by: a session that needs a cut entry must be able to load it. Every claude session Fleet
+// spawns saw the whole skill listing (~22 KB) and agent listing (~6.8 KB) of this machine, Office,
+// video and job-application entries included (docs/messungen/2026-10-09-rollen-kontext-inventar.md
+// §5 Z9). THIS LIST is the one choice: an entry is cut for every role not in `keep`. It is applied
+// PER LAUNCH on the claude line only — `--settings` skillOverrides, `--disallowedTools Agent(...)` —
+// and never by writing under ~/.claude or into a plugin; a session Fleet does not spawn is untouched.
+// Measured on claude 2.1.296 (scratch probe, transcript attachments skill_listing/agent_listing_delta):
+// skillOverrides "off" drops a user command, a bundled skill and a synced plugin skill; "name-only"
+// keeps the bare name; a deny rule Agent(<name>) drops the agent type. `from` decides how the entry is
+// cut and how it comes back (sessionListCut): a skill with a file is "off" and is re-read from that
+// file; a bundled skill has no file, so it is "name-only" and the Skill tool still loads it by name;
+// an agent is denied and comes back as a general-purpose agent prompted with its own file. Only
+// entries whose `from` is a reloadable path belong here — never an entry that could not come back.
+type SessionListRole = "lane" | "main" | "orchestrator";
+type SessionListFrom = "user-command" | "fleet-command" | "synced-skill" | "bundled" | "user-agent";
+const SESSION_LIST_CUT: readonly { readonly name: string; readonly from: SessionListFrom; readonly keep?: readonly SessionListRole[] }[] = [
+  // ~/.claude/commands: generic or foreign to Fleet (OpenClaw, GitHub issues/PRs, video); the
+  // first-generation prompt compilers gave way to sharpen3/gosharp3, which stay
+  ...["audit", "fix-issue", "review-pr", "video-tools", "sharpen1", "sharpen2", "gosharp1", "gosharp2", "formal", "spec"]
+    .map((name) => ({ name, from: "user-command" as const })),
+  // HANDOFF.md and a codebase-wide debt scan are a MAIN's or the orchestrator's, not a lane's
+  ...["handoff", "techdebt", "explore"].map((name) => ({ name, from: "user-command" as const, keep: ["main", "orchestrator"] as const })),
+  // the steward's pulses (.claude/commands in this repo): never a lane's
+  ...["foreman", "inspektion", "projekt-blick", "rundgang", "steward"]
+    .map((name) => ({ name, from: "fleet-command" as const, keep: ["main", "orchestrator"] as const })),
+  // the account's synced skills: Office formats, Google, desktop-app browsers and computer use (no
+  // tmux pane has those tools), a morning brief, memory import, skill authoring
+  ...["docx", "pptx", "xlsx", "pdf", "docs", "google-workspace", "built-in-browser", "chrome-browser", "computer-use",
+    "morning", "import-memory", "skill-creator"].map((name) => ({ name: `anthropic-skills:${name}`, from: "synced-skill" as const })),
+  ...["deep-research"].map((name) => ({ name: `anthropic-skills:${name}`, from: "synced-skill" as const, keep: ["main", "orchestrator"] as const })),
+  // bundled with claude: keyboard, settings and plugin authoring, cloud routines, charts and artifact
+  // pages — kept by name, so a session that needs one still loads it through the Skill tool
+  ...["keybindings-help", "update-config", "fewer-permission-prompts", "plugin-authoring", "schedule", "init", "dataviz",
+    "artifact-design", "artifact-diagramming", "artifact-capabilities"].map((name) => ({ name, from: "bundled" as const })),
+  ...["claude-api", "workflow-authoring"].map((name) => ({ name, from: "bundled" as const, keep: ["main", "orchestrator"] as const })),
+  // ~/.claude/agents: support requests, PostgreSQL and Playwright — Fleet has its own e2e suites
+  ...["example-reviewer", "database-reviewer", "e2e-runner"].map((name) => ({ name, from: "user-agent" as const })),
+];
+const SESSION_LIST_RELOAD: Readonly<Record<SessionListFrom, string>> = {
+  "user-command": "Datei ~/.claude/commands/<name>.md lesen und befolgen",
+  "fleet-command": "Datei .claude/commands/<name>.md im Fleet-Checkout lesen und befolgen",
+  "synced-skill": "anthropic-skills:<name>, Datei ~/.claude/plugins/synced/*/<name>/SKILL.md lesen und befolgen",
+  bundled: "Name steht in der Liste: Skill-Tool mit dem Namen",
+  "user-agent": "Agent-Tool mit subagent_type general-purpose, Prompt = Text von ~/.claude/agents/<name>.md plus Auftrag",
+};
+/** The cut for one role: the skillOverrides map, the denied agent rules, and the ONE start-context line
+ *  that names every cut entry with its way back. null when nothing is cut. Pure. */
+function sessionListCut(role: SessionListRole): { skillOverrides: Record<string, "off" | "name-only">; disallowed: string; line: string } | null {
+  const cut = SESSION_LIST_CUT.filter((entry) => !entry.keep?.includes(role));
+  if (!cut.length) return null;
+  const skillOverrides = Object.fromEntries(cut.filter((entry) => entry.from !== "user-agent")
+    .map((entry) => [entry.name, entry.from === "bundled" ? "name-only" as const : "off" as const]));
+  const disallowed = cut.filter((entry) => entry.from === "user-agent").map((entry) => `Agent(${entry.name})`).join(",");
+  const groups = (Object.keys(SESSION_LIST_RELOAD) as SessionListFrom[]).flatMap((from) => {
+    const names = cut.filter((entry) => entry.from === from).map((entry) => entry.name.replace(/^anthropic-skills:/, ""));
+    return names.length ? [`${SESSION_LIST_RELOAD[from]}: ${names.join(", ")}`] : [];
+  });
+  return { skillOverrides, disallowed,
+    line: `FLEET-LISTENSCHNITT (${role}, server.ts#SESSION_LIST_CUT): Fleet hat diese Skills und Agenten fuer deine Rolle aus der Liste genommen; `
+      + `brauchst du einen, lade ihn so nach — ${groups.join(" · ")}.` };
+}
+
 // model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
 // baked into a shell line, so nothing unvalidated may ever reach it. This is ALSO the claude
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  packMcp: readonly ContextPackMcpServer[] = [], remoteName: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, remoteName)}; exec ${SHELL}`;
+  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionListRole | null = null, remoteName: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  packMcp: readonly ContextPackMcpServer[] = [], remoteName: string | null = null): string {
+  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionListRole | null = null, remoteName: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -384,13 +447,20 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // THE CALLER is ensureSlot alone, with the slot's persisted founding selection (Slot.packMcp), on
     // every spawn cause; [] adds nothing, so a slot without an MCP Zusatz spawns byte for byte as before.
     if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;
+    // THE ROLE'S LIST CUT (SESSION_LIST_CUT): agents as deny rules, skills in the one --settings below,
+    // and the way back as one appended system-prompt line. null role (the container adapter, a
+    // worker) = nothing added, the line of before.
+    const cut = listRole ? sessionListCut(listRole) : null;
+    if (cut?.disallowed) cmd += ` --disallowedTools ${shellSingleQuote(cut.disallowed)}`;
+    if (cut) cmd += ` --append-system-prompt ${shellSingleQuote(cut.line)}`;
+    const cutSettings = cut ? { skillOverrides: cut.skillOverrides } : {};
     const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
     if (rulebook) {
       const render = rulebook.render;
       const root = `${import.meta.dir}/CLAUDE.md`;
-      const settings = JSON.stringify({ claudeMdExcludes: [root] });
+      const settings = JSON.stringify({ claudeMdExcludes: [root], ...cutSettings });
       cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
-    }
+    } else if (cut) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
   }
   // A declared foreign harness: same quoting rule (HARNESS_MODEL_RE admits `*`, so the quotes carry
   // more weight here). No DEFAULT_MODEL fallback on purpose — that constant is a claude model id.
@@ -524,7 +594,9 @@ interface Harness {
     laneBranch?: string | null;
     // the MCP servers the founding plan's Zusaetze bring (context-plan.ts#planMcpServers). Only an
     // adapter whose CONTEXT_PACK_MCP_ANSCHLUSS row is `apply` reads it — today claude alone.
-    packMcp?: readonly ContextPackMcpServer[] }): string;
+    packMcp?: readonly ContextPackMcpServer[];
+    // the role whose SESSION_LIST_CUT the line carries; claude alone reads it, null = no cut
+    listRole?: SessionListRole | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -761,7 +833,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.remoteName),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.remoteName),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -9712,6 +9784,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null, projectDocMaxBytes,
           // THE FOUNDING'S MCP SERVERS, the same persisted list on open, heal, restart and wake (Slot.packMcp)
           packMcp: s.packMcp,
+          // the role's skill/agent list cut (SESSION_LIST_CUT), read at every spawn like the label
+          listRole: h.id !== "claude" ? null : s.worktree ? "lane" : positionRole(s) === "orchestrator" ? "orchestrator" : "main",
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);

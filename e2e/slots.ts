@@ -14365,6 +14365,18 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     check("pack mcp spawn: ↻ restart — the respawned claude carries the same --mcp-config",
       rs.ok && restartArgv.includes(seen), `${rs.status} ${restartArgv.slice(-260) || "no claude argv"}`);
 
+    // THE SESSION LIST CUT (card 3eddb803, server.ts#SESSION_LIST_CUT), read off the same resident argv:
+    // a lane drops the agents and lane-foreign skills per launch and names the way back
+    check("session list cut: a lane's claude denies the cut agents and hides lane-foreign skills on its own line",
+      restartArgv.includes("--disallowedTools Agent(example-reviewer),Agent(database-reviewer),Agent(e2e-runner)")
+        && restartArgv.includes('"skillOverrides":{') && restartArgv.includes('"handoff":"off"') && restartArgv.includes('"rundgang":"off"')
+        && restartArgv.includes('"anthropic-skills:docx":"off"') && restartArgv.includes('"dataviz":"name-only"'),
+      restartArgv.slice(-400) || "no claude argv");
+    check("session list cut: the lane's start context names the cut and how to load an entry back",
+      restartArgv.includes("FLEET-LISTENSCHNITT (lane, server.ts#SESSION_LIST_CUT)")
+        && restartArgv.includes("Datei ~/.claude/commands/<name>.md lesen und befolgen: audit")
+        && restartArgv.includes("Agent-Tool mit subagent_type general-purpose, Prompt = Text von ~/.claude/agents/<name>.md plus Auftrag: example-reviewer"),
+      restartArgv.slice(-400) || "no claude argv");
     check("pack mcp spawn: the persisted selection is unchanged after heal and restart",
       JSON.stringify(rowOf(L)?.packMcp) === JSON.stringify([server]), JSON.stringify(rowOf(L)?.packMcp));
 
@@ -14379,6 +14391,10 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
       !!mo?.ok && mainArgv.includes(flag) && !mainArgv.includes("--strict-mcp-config")
         && JSON.stringify(rowOf(free)?.packMcp) === JSON.stringify([server]),
       `slot=${free} ${mo?.status ?? "-"} ${mainArgv.slice(-260) || "no claude argv"} row=${JSON.stringify(rowOf(free)?.packMcp)}`);
+    check("session list cut: a MAIN keeps its role's entries (handoff, the steward pulses) and still drops the foreign ones",
+      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && mainArgv.includes('"anthropic-skills:docx":"off"')
+        && !mainArgv.includes('"handoff":') && !mainArgv.includes('"rundgang":') && mainArgv.includes("Agent(example-reviewer)"),
+      mainArgv.slice(-400) || "no claude argv");
     // the pin is read off the live argv (fleet.json is written on a debounce); sleep wants its
     // transcript on disk, and the fake claude writes none
     const pin = /--session-id ([0-9a-f-]{36})/.exec(mainArgv)?.[1] ?? null;

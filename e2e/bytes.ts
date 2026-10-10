@@ -4,11 +4,13 @@ import { CONVERSATION_ID, CONVERSATION_LINES, scratchInstance } from "../perf-pr
 import { perfRebuild, perfRebuilds, REBUILD_SURFACES } from "../src/perfmarks";
 
 // Captured on 2026-10-05 at 256c7e5c; sessions recaptured on 2026-10-06 after path normalization,
-// with unchanged server source. These literals are reviewed budgets, never re-derived from the
-// tree under test. Bun.gzipSync is the compression used by server/transport.ts.
+// with unchanged server source. The two client rows were recaptured on 2026-10-10 at fd62bab1,
+// after the lands of 15e946f3 (live lane view in src/board.ts) and b60f83c2 (composer drafts)
+// outgrew the 2026-10-05 ceilings on main itself. These literals are reviewed budgets, never
+// re-derived from the tree under test. Bun.gzipSync is the compression used by server/transport.ts.
 export const BYTE_BUDGETS = [
-  { scenario: "app.js gzip", baseline: 360303, ceiling: 396334 },
-  { scenario: "index.html raw", baseline: 342178, ceiling: 376396 },
+  { scenario: "app.js gzip", baseline: 396941, ceiling: 436636 },
+  { scenario: "index.html raw", baseline: 376719, ceiling: 414391 },
   { scenario: "/api/sessions 16 slots, no events", baseline: 6190, ceiling: 6809 },
   { scenario: "transcript after=0, 24 fixed turns", baseline: 5921, ceiling: 6514 },
 ] as const;

@@ -1794,9 +1794,16 @@ export async function run(ctx: Ctx): Promise<void> {
           JSON.stringify({ messageId, unread: stagedInbox.unread, ids: unreadIds(stagedInbox) }));
         const nudgeText = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — "
           + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+        // The pane is the zsh stand-in, and zsh draws the em dash by the PANE's locale: "—" under UTF-8,
+        // "�<0080><0094>" under C — a Claude lane's suite on the Mac runs with LANG unset, so the exact
+        // string never matched there (red since 0969d46b, green only from UTF-8 shells). Every ASCII
+        // byte stays exact; only the dash's rendering is free, and it never holds a space.
+        const reEsc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const dash = nudgeText.indexOf(" — ");
+        const nudgeSeen = new RegExp(`${reEsc(nudgeText.slice(0, dash))} \\S{1,24} ${reEsc(nudgeText.slice(dash + 3))}`, "g");
         const paneNudges = async (slot: number): Promise<{ code: number; count: number }> => {
           const pane = await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `=s${slot}:`);
-          return { code: pane.code, count: pane.out.split(nudgeText).length - 1 };
+          return { code: pane.code, count: pane.out.match(nudgeSeen)?.length ?? 0 };
         };
         const roleBefore = await paneNudges(roleA);
         const laneBefore = await paneNudges(ln.slot);

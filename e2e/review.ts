@@ -781,9 +781,11 @@ export async function run(ctx: Ctx): Promise<void> {
       // even when a check or `until` above fell. The loop above runs only on the happy path and only
       // over the rows it names; a row it missed stays open in the shared instance, where e2e/tasks.ts
       // later reads it as its own ("backlog nudge setup: the only open row …", red 6/6 unsharded runs
-      // since 2026-10-07). A row still `sent` loses its lane first (the kill hands it back to
-      // `pending`), then every pending or queued one is deleted. Mutation: drop the delete loop and
-      // the leftover row stays open; the check falls.
+      // since 2026-10-07). The row it found was the MAIN's own `author` row: when "ansatz land" was
+      // refused (409) it stayed `sent` on a live lane and fell back to `pending` when a later kill
+      // detached it. So `sent` counts as open here: a row still `sent` loses its lane first (the
+      // kill hands it back to `pending`), then every pending or queued one is deleted. Mutation:
+      // drop the kill and delete loops on that path and the row stays open; the check falls.
       type CardRow = ORow & { text?: string; slot?: number | null; card?: { ziel?: string } | null };
       const cardRows = async (): Promise<CardRow[]> => ((await (await get("/api/tasks")).json()) as { tasks: CardRow[] }).tasks
         .filter((t) => (t.text ?? "").includes(card.ziel) || t.card?.ziel === card.ziel);
@@ -791,8 +793,8 @@ export async function run(ctx: Ctx): Promise<void> {
       const cardLeft = (await cardRows()).filter((t) => isOpen(t) || t.status === "sent");
       for (const t of cardLeft) if (t.status === "sent" && typeof t.slot === "number") await post(`/api/slots/${t.slot}/kill`, {});
       for (const t of (await cardRows()).filter(isOpen)) await post(`/api/tasks/${t.id}/delete`, {});
-      const cardOpen = (await cardRows()).filter(isOpen);
-      check("ansatz teardown: no row with the card's ZIEL is still pending or queued after its block",
+      const cardOpen = (await cardRows()).filter((t) => isOpen(t) || t.status === "sent");
+      check("ansatz teardown: no row with the card's ZIEL is still pending, queued or sent after its block",
         cardOpen.length === 0,
         JSON.stringify({ left: cardLeft.map((t) => ({ id: t.id, status: t.status })), open: cardOpen.map((t) => ({ id: t.id, status: t.status })) }));
     }

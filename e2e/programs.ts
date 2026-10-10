@@ -11756,8 +11756,8 @@ export async function run(ctx: Ctx): Promise<void> {
         if (stLeft?.status === "sent" && typeof stLeft.slot === "number") await post(`/api/slots/${stLeft.slot}/kill`, {});
         const stDelete = await post(`/api/tasks/${stRowId}/delete`, {});
         const stAfter = await slRow(stRowId);
-        check("stand reminder teardown: the fixture row is no longer pending or queued after its block",
-          stAfter === undefined || (stAfter.status !== "pending" && stAfter.status !== "queued"),
+        check("stand reminder teardown: the fixture row is no longer pending, queued or sent after its block",
+          stAfter === undefined || (stAfter.status !== "pending" && stAfter.status !== "queued" && stAfter.status !== "sent"),
           JSON.stringify({ before: stLeft?.status ?? null, delete: stDelete.status, after: stAfter?.status ?? "deleted" }));
       }
       await restartSrv();

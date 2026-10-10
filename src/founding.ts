@@ -145,6 +145,7 @@ interface State {
   task: { text: string; busy: boolean; receipt: TaskReceipt | null; error: string | null };
   error: string | null;
   busy: boolean;
+  goFocus: boolean;                     // desktop: Starten takes the focus once it can, until the focus went elsewhere
   proof: StartProof | null;
   pop: Pop | null;
   restore: HTMLElement | null;
@@ -237,7 +238,7 @@ function open(entry: Entry) {
     switches: new Map(), last: null, note: null, moved: null, details: false,
     progs: null, progOther: 0, progErr: null, progSeq: 0, program: null,
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
-    findTimer: null, paintFolders: null, task: { text: "", busy: false, receipt: null, error: null },
+    findTimer: null, paintFolders: null, task: { text: "", busy: false, receipt: null, error: null }, goFocus: !isMobile(),
     error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
   };
   // the popovers own Escape, the arrows and Enter while one is open. WINDOW capture runs before
@@ -298,6 +299,9 @@ function open(entry: Entry) {
   };
   window.addEventListener("keydown", onKey, true);
   shell.root.addEventListener("pointerdown", onDown, true);
+  // Starten is disabled while the plan is read, so it cannot take the focus at open; it takes it when
+  // it is enabled — unless the owner (or a field) moved the focus somewhere else first
+  shell.root.addEventListener("focusin", (e) => { if (S && !(e.target instanceof HTMLElement && e.target.classList.contains("fdgo"))) S.goFocus = false; });
   // capture: the app's own keyboard (the composer, the panes) must not see an Enter this window took
   window.addEventListener("keydown", onWinKey, true);
   // on a phone a field's popover stands fixed above the foot, and the foot grows with its sentence:
@@ -1672,7 +1676,7 @@ function renderFoot() {
   go.onclick = () => { void start(); };
   acts.append(go);
   foot.append(text, acts);
-  if (hadGo) go.focus({ preventScroll: true });
+  if (hadGo || (s.goFocus && !go.disabled && s.kind === "session" && s.layer === "rolle")) go.focus({ preventScroll: true });
 }
 
 // --- starting ----------------------------------------------------------------------------------------

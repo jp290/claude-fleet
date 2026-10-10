@@ -4435,7 +4435,7 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const add = el("button", "rk-btn quiet ib") as HTMLButtonElement;
   add.type = "button";
   add.appendChild(icon("plus"));
-  add.title = "Neue Lane in diesem Repo — Name, Profil und Kontext im Gründungsfenster";
+  add.title = "Neu in diesem Repo — eine Session, ein Branch oder ein Task im Startfenster";
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openLaneFounding(R.repo); };
   // THE LIVE SESSION (src/board.ts#startLiveSession): a sentence under the head, a lane from it

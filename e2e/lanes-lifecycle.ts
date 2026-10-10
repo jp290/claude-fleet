@@ -1761,15 +1761,15 @@ export async function run(lc: LaneCtx): Promise<void> {
   {
     const lane = await (await post("/api/lanes", { repo: ROOT, harness: "claude" })).json() as
       { ok?: boolean; slot?: number; cwd?: string };
-    check("native attach fixture: a Claude lane has an existing projection without the portable contract",
+    check("native attach fixture: a Claude lane has an existing projection",
       lane.ok === true && typeof lane.slot === "number" && typeof lane.cwd === "string");
     if (typeof lane.slot === "number" && typeof lane.cwd === "string") {
       const rulesPath = `${lane.cwd}/AGENTS.override.md`;
       const claudeRules = readFileSync(rulesPath, "utf8");
       const portable = readFileSync(`${ROOT}/AGENTS.md`, "utf8").split("## Portable operating contract\n")[1]?.split("\n## Verify")[0]?.trim() ?? "";
       const hasPortable = (text: string): boolean => portable.length > 0 && text.includes(portable);
-      check("native attach fixture: the actual Claude file rejects the portable-contract predicate",
-        !hasPortable(claudeRules) && claudeRules.includes("then POST /api/self/succeed"));
+      check("native attach fixture: the actual Claude file carries the exact portable contract",
+        hasPortable(claudeRules) && claudeRules.includes("then POST /api/self/succeed"));
       try {
         const refused = await post("/api/lanes", { repo: ROOT, attach: lane.cwd, harness: "codex" });
         check("native attach: a held lane refuses another executor and keeps its running rules byte for byte",
@@ -1787,8 +1787,8 @@ export async function run(lc: LaneCtx): Promise<void> {
           if (typeof body.slot !== "number") break;
           slot = body.slot;
           const rules = readFileSync(rulesPath, "utf8");
-          check(`native attach ${harness}: its rules replace the old projection and carry the exact portable contract where required`,
-            hasPortable(rules) === (harness !== "claude") && (harness !== "codex" || rules !== claudeRules));
+          check(`native attach ${harness}: its rules replace the old projection and carry the exact portable contract`,
+            hasPortable(rules) && (harness !== "codex" || rules !== claudeRules));
           check(`native attach ${harness}: the exit follows the starting harness`,
             harness === "codex" ? rules.includes("and no baton door follows it") && !rules.includes("then POST /api/self/succeed")
               : rules.includes("then POST /api/self/succeed"));

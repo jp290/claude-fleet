@@ -208,6 +208,10 @@ export type ContextPack = PublicContextPack | PrivateContextPack;
 const ALL_HARNESSES = CONTEXT_PACK_HARNESSES;
 const ALL_MODES = CONTEXT_PACK_MODES;
 const AUSLEIHE = { lane: "ausleihe", main: "ausleihe", orchestratorin: "ausleihe" } as const;
+// THE CONTRACT TRAVELS WHOLE (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md): since
+// f91136eb no Claude role loads the repo AGENTS.md natively, and a pointer to the section was read in
+// 0 of 38 lane transcripts — so every position carries it inline, as Codex and Pi already do.
+const CONTRACT_BOX = { lane: "box", main: "box", orchestratorin: "box" } as const;
 const VERIFY_BOX = { lane: "box", main: "box", orchestratorin: "ausleihe" } as const;
 const VERIFY_KERN = { id: "verify-e2e.kern", path: "AGENTS.md", anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX } as const;
 const VERIFY_LANE = { id: "verify-e2e.lane", path: "AGENTS.md", anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } } as const;
@@ -231,7 +235,7 @@ export const CONTEXT_PACKS = [
     audience: "agent",
     triggers: ["always"],
     hardness: "hard",
-    sources: [{ id: "portable-core.contract", path: "AGENTS.md", anchor: "## Portable operating contract", sorte: "anleitung", positions: AUSLEIHE }],
+    sources: [{ id: "portable-core.contract", path: "AGENTS.md", anchor: "## Portable operating contract", sorte: "anleitung", positions: CONTRACT_BOX }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,

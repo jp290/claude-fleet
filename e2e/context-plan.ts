@@ -1518,6 +1518,25 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
       contractSection !== null && contract?.content === contractSection && contract.bytes === Buffer.byteLength(contractSection)
       && empty.text.split("## Portable operating contract").length === 2 && empty.bytes < SESSION_AGENTS_LIMIT);
   }
+  // A CLAUDE SESSION BOXES THE CONTRACT BY POSITION (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md):
+  // no Claude role loads AGENTS.md natively since f91136eb, so the seed's positions are what carries it.
+  // The control renders the same plan with the contract back on ausleihe — the predicate must reject it.
+  const claudePlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
+  const borrowedPlan = { ...claudePlan, selected: claudePlan.selected.map((pack) => pack.id !== "portable-core" || "privateSourceId" in pack.sources ? pack
+    : { ...pack, sources: pack.sources.map((source) => ({ ...source, positions: { lane: "ausleihe", main: "ausleihe", orchestratorin: "ausleihe" } as const })) }) };
+  for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
+    const footer = position === "lane" ? templates.laneExitFooter("claude", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
+    const input = { role: { text: templates.roles[index]!, path: "server.ts", anchor: `${position}-role` }, position, harness: "claude", sourceBytes, footer };
+    const boxed = (rendered: ReturnType<typeof renderSessionAgents>): boolean => {
+      const contract = rendered.parts.find((part) => part.id === "portable-core.contract");
+      return contractSection !== null && contract?.ort === "box" && contract.content === contractSection
+        && rendered.text.includes(contractSection) && !rendered.text.includes("AGENTS.md | ## Portable operating contract");
+    };
+    const rendered = renderSessionAgents({ ...input, plan: claudePlan });
+    check(`session agents: a claude ${position} carries the portable contract verbatim in its box, and the borrow control is rejected`,
+      contractSource?.positions?.[position] === "box" && boxed(rendered) && !boxed(renderSessionAgents({ ...input, plan: borrowedPlan })),
+      `${rendered.bytes} bytes; contract=${rendered.parts.find((part) => part.id === "portable-core.contract")?.bytes ?? "none"}`);
+  }
   const privateBytes = "Private knowledge supplied at the boundary.\n";
   const privateBox = renderSessionAgents({ ...base, selection: { "konzept-claude-fleet.private": "box" },
     privateSources: new Map([["k-claude-fleet", { path: "/fixture/k-claude-fleet/v1.md", content: privateBytes }]]) });

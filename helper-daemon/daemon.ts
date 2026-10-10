@@ -42,7 +42,7 @@
 // `RestartForceExitStatus=75`, so systemd starts the next daemon from the link. The old tree is
 // left in place: pointing the link back at it by hand is the whole rollback. A tree that fails the
 // parse never becomes the link's target — check first, swap second, and the daemon keeps running.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync,
   statSync, symlinkSync } from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -342,44 +342,112 @@ function childEnv(): Record<string, string> {
 // is the suite itself and the timeout below can actually kill it. With a redirection in the string
 // sh must stay alive to own the pipe, and the kill would land on sh while the suite ran on.
 async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: number,
-  extraEnv: Record<string, string> = {}, signal?: AbortSignal): Promise<{ code: number | null; timedOut: boolean }> {
-  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs, extraEnv, signal);
+  extraEnv: Record<string, string> = {}, signal?: AbortSignal, scope: RunScope = {}): Promise<{ code: number | null; timedOut: boolean }> {
+  return await runArgv(["sh", "-c", cmd], cwd, logPath, timeoutMs, extraEnv, signal, scope);
 }
-// THE WITHDRAWN RUN'S TREE, not only its head. A real ./e2e-isolated.sh is a wrapper around a bun
-// runner and a tmux server of its own, and killing the wrapper alone leaves the runner alive under
-// init — the fleet's own rulebook measured that on the other side. So the descendants are listed
-// ONCE, before the first signal (a later walk finds nothing: they have reparented), and both stages
-// signal that list: TERM first, so the wrapper's EXIT trap tears its tmux socket down, then KILL.
-const ABORT_KILL_GRACE_MS = 5_000;
-async function descendantsOf(root: number): Promise<number[]> {
-  const found: number[] = [];
-  let level = [root];
-  for (let depth = 0; depth < 8 && level.length; depth++) {
-    const next: number[] = [];
-    for (const pid of level) {
+// THE RUN'S PROCESSES, not only its head's tree (2026-10-10 02:2x, work-horse: three runs still had
+// 4–11 processes each, hours after they ended, one with its cwd already deleted). The earlier
+// killTree listed the head's descendants once, at the abort, and so missed exactly the two that
+// matter: a bun runner already reparented to init when its wrapper died, and a tmux server, which
+// detaches itself with setsid. A timeout signalled the head alone, and after a normal end nobody
+// looked at all. So every step now runs in a process group of its own, and every ending — abort,
+// timeout, normal exit — goes through ONE reap that asks who belongs to this run and signals those:
+// TERM first, so a wrapper's EXIT trap can tear its tmux socket down, KILL after the grace.
+// MEMBERSHIP IS PROVEN, never guessed from a name (AGENTS.md §Verify): the head's own group, a
+// TMPDIR at or under this run's scratch, or a cwd at or under this run's clone. The daemon itself
+// matches none of the three — its group is not the head's, and it never sets either directory.
+export const ABORT_KILL_GRACE_MS = 5_000;
+// the named slack past the grace by which the last KILL round has run: the scans themselves
+// (/proc on linux, ps + lsof elsewhere) and the KILL rounds that follow them
+export const RUN_REAP_MARGIN_MS = 5_000;
+// `tree` is the clone a suite runs in, `tmp` the TMPDIR it was handed; a step without them (the
+// self-update's clone and parse) is reaped by its process group alone
+export interface RunScope { tree?: string; tmp?: string }
+interface ProcRow { pid: number; pgid: number; cwd?: string; tmpdirs: string[] }
+const under = (path: string | undefined, dir: string | undefined): boolean =>
+  !!path && !!dir && (path === dir || path.startsWith(`${dir}/`));
+// the clone's resolved path, because lsof and /proc report resolved paths (/tmp is /private/tmp on
+// macOS); the clone may not exist yet while it is being cloned, so its parent resolves instead
+const resolved = (p: string): string => {
+  try { return realpathSync(p); } catch { /* not there yet */ }
+  try { return join(realpathSync(dirname(p)), p.slice(dirname(p).length + 1)); } catch { return p; }
+};
+async function readOut(argv: string[]): Promise<string> {
+  try {
+    const p = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    const out = await new Response(p.stdout).text();
+    await p.exited;
+    return out;
+  } catch { return ""; }
+}
+// THE PROCESS TABLE, read for these three facts and nothing else. Nothing here is printed: the
+// environment of a process in this fleet carries credentials, and only TMPDIR is kept from it.
+async function processTable(): Promise<ProcRow[]> {
+  const rows: ProcRow[] = [];
+  if (process.platform === "linux") {
+    let pids: string[] = [];
+    try { pids = readdirSync("/proc").filter((n) => /^\d+$/.test(n)); } catch { return rows; }
+    for (const name of pids) {
       try {
-        const g = Bun.spawn(["pgrep", "-P", String(pid)], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
-        const out = await new Response(g.stdout).text();
-        await g.exited;
-        for (const line of out.split("\n")) {
-          const kid = Number(line.trim());
-          if (kid > 0 && !found.includes(kid)) { found.push(kid); next.push(kid); }
-        }
-      } catch { /* no pgrep, or the pid is gone — the head still gets its signal */ }
+        const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+        const pgid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
+        const row: ProcRow = { pid: Number(name), pgid, tmpdirs: [] };
+        // another user's process answers EACCES here, and is no member of this run
+        try { row.cwd = readlinkSync(`/proc/${name}/cwd`).replace(/ \(deleted\)$/, ""); } catch { /* idem */ }
+        try {
+          const env = readFileSync(`/proc/${name}/environ`, "utf8").split("\0").find((e) => e.startsWith("TMPDIR="));
+          if (env) row.tmpdirs.push(env.slice(7));
+        } catch { /* idem */ }
+        rows.push(row);
+      } catch { /* gone between the listing and the read */ }
     }
-    level = next;
+    return rows;
   }
-  return found;
+  const uid = String(process.getuid?.() ?? "");
+  const byPid = new Map<number, ProcRow>();
+  for (const line of (await readOut(["ps", "-E", "-ww", "-o", "pid=,pgid=,command=", "-U", uid])).split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
+    if (!m) continue;
+    // ps prints the environment after the arguments, so an argument can read like it: every
+    // occurrence is kept, and a false one can only ever name a directory, never widen past one
+    const tmpdirs = [...m[3]!.matchAll(/ TMPDIR=(\S+)/g)].map((t) => t[1]!);
+    byPid.set(Number(m[1]), { pid: Number(m[1]), pgid: Number(m[2]), tmpdirs });
+  }
+  let pid = 0;
+  for (const line of (await readOut(["lsof", "-a", "-d", "cwd", "-u", uid, "-Fpn"])).split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith("n") && byPid.has(pid)) byPid.get(pid)!.cwd = line.slice(1);
+  }
+  rows.push(...byPid.values());
+  return rows;
 }
-async function killTree(proc: { pid: number; kill(sig?: number): void }): Promise<void> {
-  const kids = await descendantsOf(proc.pid);
-  const signal = (sig: number): void => {
-    try { proc.kill(sig); } catch { /* already gone */ }
-    for (const kid of kids) { try { process.kill(kid, sig); } catch { /* already gone */ } }
+export async function runMembers(head: number, scope: RunScope): Promise<number[]> {
+  const tree = scope.tree ? resolved(scope.tree) : undefined;
+  return (await processTable()).filter((r) => r.pid !== process.pid && (r.pgid === head
+    || r.tmpdirs.some((t) => under(t, scope.tmp)) || under(r.cwd, tree) || under(r.cwd, scope.tree))).map((r) => r.pid);
+}
+async function reapRun(head: { pid: number; kill(sig?: number): void }, scope: RunScope): Promise<void> {
+  const pass = async (sig: number): Promise<number> => {
+    const members = await runMembers(head.pid, scope);
+    try { head.kill(sig); } catch { /* already gone */ }
+    for (const pid of members) { try { process.kill(pid, sig); } catch { /* already gone */ } }
+    return members.length;
   };
-  signal(15);
-  setTimeout(() => signal(9), ABORT_KILL_GRACE_MS);
+  if (await pass(15) === 0) return;
+  const killAt = Date.now() + ABORT_KILL_GRACE_MS;
+  while (Date.now() < killAt) {
+    await Bun.sleep(Math.min(500, Math.max(0, killAt - Date.now())));
+    if ((await runMembers(head.pid, scope)).length === 0) return;
+  }
+  // more than one round: a member may fork between a scan and its signal
+  for (let round = 0; round < 3; round++) {
+    if (await pass(9) === 0) return;
+    await Bun.sleep(100);
+  }
 }
+// the groups of the runs alive right now, for the one ending no reap sees: this daemon's own death
+// by a signal. Its children no longer share its group, so a Ctrl-C would not reach them otherwise.
+const liveGroups = new Set<number>();
 // THE SAME RUNNER WITHOUT A SHELL, and it is the whole of "no shell interpolation" on this machine.
 // `runCmd` above keeps `sh -c` because its command comes out of THIS machine's own config file
 // (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
@@ -390,21 +458,28 @@ async function killTree(proc: { pid: number; kill(sig?: number): void }): Promis
 // preview's FLEET_E2E_MODULES (see `suiteEnv` in `work`). It is applied AFTER
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
-async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
-  extraEnv: Record<string, string> = {}, signal?: AbortSignal): Promise<{ code: number | null; timedOut: boolean }> {
+export async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
+  extraEnv: Record<string, string> = {}, signal?: AbortSignal, scope: RunScope = {}): Promise<{ code: number | null; timedOut: boolean }> {
   if (signal?.aborted) return { code: null, timedOut: false };
   const fd = openSync(logPath, "a");
   try {
+    // `detached` is setsid: the head leads a group of its own, and whatever it forks without a
+    // setsid of its own stays in that group after it reparents to init
     const proc = Bun.spawn(argv, {
-      cwd, env: { ...childEnv(), ...extraEnv }, stdin: "ignore", stdout: fd, stderr: fd,
+      cwd, env: { ...childEnv(), ...extraEnv }, stdin: "ignore", stdout: fd, stderr: fd, detached: true,
     });
+    liveGroups.add(proc.pid);
     let timedOut = false;
-    const t = setTimeout(() => { timedOut = true; proc.kill("SIGKILL"); }, timeoutMs);
-    const onAbort = (): void => { void killTree(proc); };
+    let reaping: Promise<void> | undefined;
+    const reap = (): Promise<void> => (reaping ??= reapRun(proc, scope));
+    const t = setTimeout(() => { timedOut = true; void reap(); }, timeoutMs);
+    const onAbort = (): void => { void reap(); };
     signal?.addEventListener("abort", onAbort, { once: true });
     const code = await proc.exited;
     clearTimeout(t);
     signal?.removeEventListener("abort", onAbort);
+    // the NORMAL end goes through the same reap: an exit code says the head is done, not its run
+    await reap().finally(() => liveGroups.delete(proc.pid));
     return { code: timedOut || signal?.aborted ? null : code, timedOut };
   } finally { closeSync(fd); }
 }
@@ -837,6 +912,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   // that selection's fixture closure. Absent on every other job. The fleet never sends both cuts on
   // one job, and the runner refuses them together by name.
   const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...shardVars, ...modulesVars };
+  // what proves a process belongs to THIS run when its reap comes (reapRun)
+  const scope: RunScope = { tree: clone, tmp: scratch };
   // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn
   // run REPORTS NOTHING: the fleet has already refused the verdict, and every step below that would
   // report a failure caused by the kill itself returns on `withdrawn` first.
@@ -868,7 +945,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       return;
     }
     const cloneCmd = `git clone -q -b ${sh(ref)} ${sh(bundlePath)} ${sh(clone)}`;
-    const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000, {}, ctl.signal);
+    const cloned = await runCmd(cloneCmd, runDir, logPath, 300_000, {}, ctl.signal, scope);
     if (withdrawn()) return;
     if (cloned.code !== 0) { await report(cfg, j, 127, `the clone failed (exit ${cloned.code})`, logPath); return; }
     // Measured HERE — before the belt below and before anything is installed or run — so that every
@@ -890,7 +967,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       return;
     }
 
-    const installed = await runCmd(cfg.installCmd, clone, logPath, 900_000, {}, ctl.signal);
+    const installed = await runCmd(cfg.installCmd, clone, logPath, 900_000, {}, ctl.signal, scope);
     if (withdrawn()) return;
     // A TREE THAT COULD NOT BE PREPARED MEASURED NOTHING, and `unknown` is the only honest verdict
     // for it. Exit 127 is the code the server's shared classifier reads as "could not be started"
@@ -914,8 +991,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
       ? j.timeoutMs : cfg.suiteTimeoutSec * 1000;
     const started = Date.now();
     const ran = isCommand
-      ? await runArgv(j.argv!, clone, logPath, timeoutMs, suiteEnv, ctl.signal)
-      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs, suiteEnv, ctl.signal);
+      ? await runArgv(j.argv!, clone, logPath, timeoutMs, suiteEnv, ctl.signal, scope)
+      : await runCmd(cfg.suiteCmd, clone, logPath, timeoutMs, suiteEnv, ctl.signal, scope);
     if (withdrawn()) {
       log(`${isCommand ? "command" : "suite"} for ${j.id} ended by withdrawal after ${Math.round((Date.now() - started) / 1000)}s — nothing reported`);
       return;
@@ -1305,6 +1382,15 @@ async function main(): Promise<never> {
   daemonSha = await clonedHeadOf(import.meta.dir);
   log(`helper-daemon up: ${cfg.name} (${cfg.deviceId}) → ${cfg.fleetUrl}, poll ${cfg.pollSec}s, work ${cfg.workDir}`
     + `, running ${daemonSha ? daemonSha.slice(0, 8) : "an unversioned copy (no git checkout around this file)"} from ${import.meta.dir}`);
+  // dying by a signal, the daemon passes it on to its runs' groups first, then dies by it itself, so
+  // the unit's restart policy reads the same ending as before the groups existed
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      for (const g of liveGroups) { try { process.kill(-g, sig); } catch { /* group gone */ } }
+      process.removeAllListeners(sig);
+      process.kill(process.pid, sig);
+    });
+  }
   const st: LoopState = { offUntil: 0, lastMode: "" };
   for (;;) {
     try {

@@ -13,9 +13,10 @@
 // here first asserts its own precondition — that the counter was moving, that the daemon was alive
 // and had read the wish — so a probe that could not measure fails as ITSELF rather than as the
 // property it was aiming at.
-import { chmodSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
   statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { BASE, ROOT, check, get, post } from "./harness";
 import { driveMerge, openLane, seedRepo, type Lane } from "./lane-helpers";
@@ -25,7 +26,7 @@ import { HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk } from "../src/protocol"
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { artifactsOf, downloadBundle, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
+import { artifactsOf, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
   pointsAt, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
   EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
@@ -69,6 +70,69 @@ const TRAIL = "isolated-20260828T2200Z-7777";
 const REMOTE_PRE_TRAIL_CHECKS = 3476;
 const REMOTE_TOTAL_CHECKS = REMOTE_PRE_TRAIL_CHECKS + 9;
 
+// ===== (HD) A RUN LEAVES NO PROCESS BEHIND (2026-10-10 02:2x, work-horse: three runs with 4–11
+// live processes each, hours after they ended). The fixture is the shape that leaked: its head starts
+// a tmux server — which detaches itself with setsid — and a `sleep` it does not wait for, which init
+// adopts the moment the head is gone (the bun runner of a killed ./e2e-isolated.sh). Each of the
+// three endings — abort, timeout, normal exit — must leave none of the three pids alive by the time
+// runArgv returns, and must return within ABORT_KILL_GRACE_MS + RUN_REAP_MARGIN_MS of its trigger.
+// A probe that could not start its grandchildren fails as ITSELF, before the reap is judged.
+// MUTATION: signal only `head` in daemon.ts#reapRun (drop the members loop) ⇒ the orphan and the
+// tmux server survive every ending ⇒ all three red.
+export async function reapChecks(check: (name: string, ok: boolean, detail?: string) => void): Promise<void> {
+  const base = mkdtempSync(`${tmpdir()}/hd-reap-`);
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    for (const ending of ["abort", "timeout", "exit"] as const) {
+      const runDir = `${base}/run-${ending}`, tree = `${runDir}/tree`, tmp = `${runDir}/tmp`;
+      mkdirSync(tree, { recursive: true }); mkdirSync(tmp, { recursive: true });
+      const sock = `hdreap${process.pid}${ending}`;
+      const script = [
+        "unset TMUX",
+        `tmux -L ${sock} -f /dev/null new-session -d -s reap 'sleep 600'`,
+        `tmux -L ${sock} display-message -p -t reap '#{pid} #{pane_pid}' > tmux.pids`,
+        "sleep 600 & echo $! > orphan.pid",
+        "touch ready",
+        ending === "exit" ? "exit 0" : "sleep 600",
+      ].join("; ");
+      const ctl = new AbortController();
+      const timeoutMs = ending === "timeout" ? 4_000 : 120_000;
+      const called = Date.now();
+      const running = runArgv(["sh", "-c", script], tree, `${runDir}/run.log`, timeoutMs, { TMPDIR: tmp }, ctl.signal, { tree, tmp });
+      while (!existsSync(`${tree}/ready`) && Date.now() - called < 3_500) await Bun.sleep(25);
+      const ready = Date.now();
+      const pids = existsSync(`${tree}/ready`)
+        ? [...readFileSync(`${tree}/tmux.pids`, "utf8").trim().split(" "), readFileSync(`${tree}/orphan.pid`, "utf8").trim()].map(Number)
+        : [];
+      const started = pids.length === 3 && pids.every((p) => p > 0 && alive(p));
+      if (ending === "abort") ctl.abort();
+      const trigger = ending === "abort" ? Date.now() : ending === "timeout" ? called + timeoutMs : ready;
+      const ran = await running;
+      const took = Date.now() - trigger;
+      const survivors = pids.filter(alive);
+      const tmuxUp = spawnSync("tmux", ["-L", sock, "has-session"], { stdio: "ignore" }).status === 0;
+      check(`(HD) setup: the ${ending} fixture started a tmux server and an orphan-to-be beside its head`, started,
+        `pids=${JSON.stringify(pids)} log=${existsSync(`${runDir}/run.log`) ? readFileSync(`${runDir}/run.log`, "utf8").slice(-300) : "none"}`);
+      if (!started) continue;
+      check(`(HD) ${ending}: no process of the run outlives it — not the reparented orphan, not the setsid'd tmux server`
+        + ` — within ABORT_KILL_GRACE_MS + RUN_REAP_MARGIN_MS`,
+        survivors.length === 0 && !tmuxUp && took <= ABORT_KILL_GRACE_MS + RUN_REAP_MARGIN_MS
+          && (ending === "exit" ? ran.code === 0 : ran.code === null) && ran.timedOut === (ending === "timeout"),
+        `survivors=${JSON.stringify(survivors)} tmuxUp=${tmuxUp} took=${took}ms bound=${ABORT_KILL_GRACE_MS + RUN_REAP_MARGIN_MS}ms`
+        + ` code=${ran.code} timedOut=${ran.timedOut}`);
+    }
+  } finally {
+    // a red leaves its fixture behind: only what this probe itself started, by its own socket and pids
+    for (const ending of ["abort", "timeout", "exit"]) {
+      spawnSync("tmux", ["-L", `hdreap${process.pid}${ending}`, "kill-server"], { stdio: "ignore" });
+      // a tmux server ended by a signal leaves its socket FILE: this probe's own, by its own name
+      rmSync(`${process.env.TMUX_TMPDIR ?? "/tmp"}/tmux-${process.getuid?.()}/hdreap${process.pid}${ending}`, { force: true });
+      try { process.kill(Number(readFileSync(`${base}/run-${ending}/tree/orphan.pid`, "utf8")), 9); } catch { /* gone */ }
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 export async function run(h: {
   REPO: string;
   setAuditMode: (m: string) => Promise<number>;
@@ -79,6 +143,7 @@ export async function run(h: {
 }): Promise<void> {
   const { REPO, setAuditMode, killSrv, startSrv, auditRows, headOf } = h;
   await checkResultRetry(check);
+  await reapChecks(check);
 
   // ===== (HD.1) THE MODE ARITHMETIC, as pure functions ==========================================
   // These are the only checks in this module that need no server, and they are here rather than

@@ -2943,7 +2943,8 @@ ausdrücklich unter der Schnittlinie von §5.
 ## inbox — `GET /api/self/inbox`, `POST /api/self/inbox/:id/read`
 
 Der **dauerhafte Rückkanal des PROGRAMS**, nicht der einer Session. Ein Eintrag ist ein ZEIGER auf
-eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit, fremd gelandetes Commit); er kopiert keinen Text
+eine Zeile, die es schon gibt (Attention-Antwort, Fleet-Report, rotes Audit, fremd gelandetes Commit,
+Owner-Eingabe in eine Lane); er kopiert keinen Text
 und nennt **keinen Empfänger**. Wer beim Lesen die gebundene MAIN des Programs ist, liest ihn —
 darum überlebt ein Eintrag eine Succession, während ein Watch, ein FleetEvent und eine offene
 Attention eines **aktiven** Programs ebenfalls an die Nachfolgerin übergeht. Ein Owner-Kill
@@ -2976,7 +2977,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
   `fleet-report` · `audit-red` · `ambient-land` · `card-verdict` · `text-proposal` (der Owner hat einen
   Textvorschlag DIESES Programs bestätigt oder abgelehnt; `subject` ist der Vorschlag mit `status` und
-  `decisionReason`, §program-text). `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
+  `decisionReason`, §program-text) · `owner-input` (eigener Absatz unten). `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
   Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
   (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
   beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"
@@ -3026,6 +3027,29 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   verschiedene `unknown`-Sätze statt eines: `… which is no longer on the trail (retention)` (die
   Zeile ist weg) und `… whose ledger line is not readable as an audit row` (die Zeile steht da und
   ist unlesbar). Ein `ref`, der gar kein Zeilenschlüssel ist, sagt genau das.
+- **`owner-input` — was der Owner DIREKT in die Pane einer Lane dieses Programs getippt hat** (Notiz
+  e31dd0ed: 13 solche Eingaben in Pane 26 erreichten weder MAIN noch Nachfolge). Quelle ist der
+  Prompt-Harvester (`server.ts#tickHarvest`), der das Transcript der Lane liest; er übergibt jede
+  Zeile an `server.ts#recordOwnerLaneInput`, die die Worte des Owners sind: **kein** vom Harness
+  eingespielter Turn (`TEntry.meta`: Task-Notification, Esc-Marke), **keine** Claude-Code-Hülle
+  (`<bash-stdout>` u. ä.) und **kein** Fleet-Text — jede Fleet-Zustellung und jeder Fleet-Composer-Rest,
+  den `sendText` abschickt, beginnt mit `[fleet` (`[fleet-zustellung · …`, ältere `[fleet …]`-Köpfe),
+  derselbe Test, mit dem die Slot-Historie `fleet` von `owner` trennt. Auch eine Board-Sendung des
+  Owners zählt darum nicht: `POST /send` setzt den Kopf `[fleet-zustellung · Owner-Credential …]`, mit
+  dem auch jede MAIN sendet. Der Harvester läuft nur für Claude-Panes mit gepinnter Session
+  (`FLEET_CMD` = claude). Der **Text** steht in einem eigenen Ledger (`streams/owner-inputs.jsonl`,
+  0600), `ref` ist dessen Zeilen-id; Zugangsdaten und Tokens werden VOR dem Schreiben geschwärzt
+  (`[redacted]`, `server.ts#exportRedactor` ohne Pfad-Umschreibung — Host und Home bleiben, wie der
+  Owner sie schrieb). `subject` ist `{slot, openedAt, sessionId, at, branch, text}`: wer es bekam,
+  wann es getippt wurde, auf welchem Lane-Branch, wörtlich. Ein Zeiger auf eine Zeile, die die
+  Rotation des Ledgers verdrängt hat, steht in `unknown` (`… names an owner input no longer on the
+  ledger (retention)`). Geschrieben wird nur für eine Lane mit Program; der Inbox-Zeiger nur, solange
+  das Program `active` ist (dieselbe Bedingung wie beim Fleet-Report). Eine Lane ohne Program schreibt
+  nichts. **Dieselben Zeilen trägt der Nachfolge-Brief der Lane** (`server.ts#succeedLane`, Block
+  „WAS DER OWNER DIREKT IN DIE PANE DIESER LANE GETIPPT HAT"): alle Eingaben dieses Worktrees und
+  Branches über alle Vorgängerinnen, wörtlich, älteste zuerst; über 8000 Zeichen bleiben die ÄLTESTEN
+  ganzen Einträge draußen, und eine Zeile nennt ihre Zahl. Ohne Eingaben fehlt der Block, der Brief
+  bleibt bytegleich. Der allgemeine Inbox-Hinweis (60-s-Tick) zählt `owner-input` mit.
 - **Und `audit-red` tippt NIE in eine Pane** (`server.ts#nudgeableUnread`). Das ist der Zweck des
   Kinds: ein rotes Audit hört auf, ein Paste zu sein, und die gebundene MAIN findet es beim nächsten
   `GET /api/self/inbox`. Der Inbox-Nudge zählt darum nur die übrigen Kinds und **sagt es in seinem

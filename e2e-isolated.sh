@@ -61,7 +61,10 @@ SOCK="fleettest$$"
 # hit every time. 160 + the largest offset (29) stays under 200 — e2e/helper-daemon.ts#bandChecks
 # runs this block and holds both facts. Without the variable (a hand-started run, a lane, the
 # Mac's own audit) PORT is what it always was. An index that is not one digit is refused, never
-# replaced by $$: that would be the collision again, silently.
+# replaced by $$: that would be the collision again, silently. The four gate wrappers (claude-gate,
+# clean-review, postland-audit, security) split their own bands the same way and bind PORT alone.
+# Still open without the variable: at $$ % 2000 >= 1971 this wrapper's PORT+29 reaches 10800 … 10828,
+# the first 29 ports of claude-gate's band — two hand-started runs, never two runs of one helper.
 # >>> port band (e2e/helper-daemon.ts#bandChecks runs these lines)
 if [ -n "${FLEET_E2E_BAND:-}" ]; then
   case "$FLEET_E2E_BAND" in

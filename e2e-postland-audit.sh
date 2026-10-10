@@ -11,7 +11,19 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 # PORT BAND TABLE in e2e-isolated.sh — never pick one here.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-postland-instance-$$"
 SOCK="fleetplatest$$"
-PORT=$((15000 + $$ % 2000))
+# A helper daemon hands each of its parallel runs a distinct FLEET_E2E_BAND (0-9,
+# helper-daemon/daemon.ts#portBand); it picks a 200-wide sub-band of this band, as in e2e-isolated.sh.
+# This suite binds PORT alone (no fixture at PORT+N), so 160 + 0 < 200. Without it, unchanged.
+# >>> port band (e2e/helper-daemon.ts#bandChecks runs these lines)
+if [ -n "${FLEET_E2E_BAND:-}" ]; then
+  case "$FLEET_E2E_BAND" in
+    [0-9]) PORT=$((15000 + 200 * FLEET_E2E_BAND + $$ % 160)) ;;
+    *) echo "e2e-postland-audit: FLEET_E2E_BAND=$FLEET_E2E_BAND is not a port band (0-9)" >&2; exit 2 ;;
+  esac
+else
+  PORT=$((15000 + $$ % 2000))
+fi
+# <<< port band
 
 rm -rf "$DIR"
 mkdir -p "$DIR"

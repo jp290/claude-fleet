@@ -354,8 +354,9 @@ async function runCmd(cmd: string, cwd: string, logPath: string, timeoutMs: numb
 // timeout, normal exit — goes through ONE reap that asks who belongs to this run and signals those:
 // TERM first, so a wrapper's EXIT trap can tear its tmux socket down, KILL after the grace.
 // MEMBERSHIP IS PROVEN, never guessed from a name (AGENTS.md §Verify): the head's own group, a
-// TMPDIR at or under this run's scratch, or a cwd at or under this run's clone. The daemon itself
-// matches none of the three — its group is not the head's, and it never sets either directory.
+// TMPDIR at or under this run's scratch, or a cwd at or under this run's clone or scratch (a staged
+// suite instance lives in the scratch). The daemon itself matches none of them — its group is not
+// the head's, and it neither sets nor stands in either directory.
 export const ABORT_KILL_GRACE_MS = 5_000;
 // the named slack past the grace by which the last KILL round has run: the scans themselves
 // (/proc on linux, ps + lsof elsewhere) and the KILL rounds that follow them
@@ -422,9 +423,10 @@ async function processTable(): Promise<ProcRow[]> {
   return rows;
 }
 export async function runMembers(head: number, scope: RunScope): Promise<number[]> {
-  const tree = scope.tree ? resolved(scope.tree) : undefined;
+  const dirs = [scope.tree, scope.tmp].filter((d): d is string => !!d);
+  const cwds = [...dirs, ...dirs.map(resolved)];
   return (await processTable()).filter((r) => r.pid !== process.pid && (r.pgid === head
-    || r.tmpdirs.some((t) => under(t, scope.tmp)) || under(r.cwd, tree) || under(r.cwd, scope.tree))).map((r) => r.pid);
+    || r.tmpdirs.some((t) => under(t, scope.tmp)) || cwds.some((d) => under(r.cwd, d)))).map((r) => r.pid);
 }
 async function reapRun(head: { pid: number; kill(sig?: number): void }, scope: RunScope): Promise<void> {
   const pass = async (sig: number): Promise<number> => {

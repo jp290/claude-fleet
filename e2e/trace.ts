@@ -478,6 +478,9 @@ export async function run(): Promise<void> {
       if (!up) await Bun.sleep(100);
     }
     check("trace: the fixture instance boots on its own port", up, out.slice(-400));
+    // a fixture that never came up fails as itself: every probe below reads a body it cannot have,
+    // and the first one to throw would take the rest of the shard with it (audit-red 8afd11ed)
+    if (!up) return;
     const get = async (task: string): Promise<{ status: number; body: Trace }> => {
       const r = await fetch(`${base}/api/trace?task=${encodeURIComponent(task)}`, { headers: H });
       return { status: r.status, body: (await r.json().catch(() => ({}))) as Trace };

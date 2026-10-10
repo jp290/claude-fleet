@@ -354,6 +354,16 @@ ti_serve() {
     set -- "FLEET_SUITE_LOCK=$FLEET_TI_SUITE_LOCK"
     echo FLEET_SUITE_LOCK >> "$DIR/env-names"
   fi
+  # THE CODEX PAUSE, LIFTED FOR MIXED ONLY: since 95709148 the register pauses codex
+  # (model-register.ts#HARNESS_AVAILABILITY) and the open door answers the fixture slots 5 and 8
+  # 409 "harness codex is unavailable". Here `codex` is the stand-in above (ti_shims), never the
+  # real CLI, so FLEET_HARNESS_RESUME=codex starts nothing that could reach a model — the same
+  # reasoning as e2e-isolated.sh's SRV_ENV. Snapshot keeps the pause: it plants no codex fixture
+  # and mirrors what the live fleet answers, the pause included.
+  if [ "${TI_KIND:-}" != snapshot ]; then
+    set -- "$@" FLEET_HARNESS_RESUME=codex
+    echo FLEET_HARNESS_RESUME >> "$DIR/env-names"
+  fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT; do
     echo "$TI_V" >> "$DIR/env-names"

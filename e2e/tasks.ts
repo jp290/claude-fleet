@@ -6117,8 +6117,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // asserting presence) is what catches a renderer that repeats useWhen once per source line, which
     // is the shape a two-source pack like verify-e2e would otherwise take. A pack whose every part a
     // lane boxes has no pointer and so no purpose line; its sections stand verbatim, once. The
-    // contract is such a pack (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md).
-    const useWhenLines = fAgents.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
+    // contract is such a pack (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md). Purpose
+    // lines are counted under "## Packs auf Abruf" only: a boxed section brings its own "- … — " bullets.
+    const pointerSection = fAgents.includes("\n## Packs auf Abruf\n") ? fAgents.split("\n## Packs auf Abruf\n")[1]!.split("\n## ")[0]! : "";
+    const useWhenLines = pointerSection.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
     const laneSources = (id: string) => { const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
       return seed && "sources" in seed ? seed.sources : []; };
     const boxedWhole = (id: string): boolean => laneSources(id).length > 0 && laneSources(id).every((source) => source.positions?.lane === "box");

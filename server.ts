@@ -2501,6 +2501,7 @@ function boxOf(body: Record<string, unknown> | null, h: Harness):
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
+const PROGRAM_KURZNAME_MAX = 24; // Program.kurzname, the head of a founded MAIN's default label
 const MAX_MISSION = 300; // one sentence of standing intent, not a brief — see Slot.mission
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
@@ -42132,6 +42133,21 @@ async function hintMainOfAttach(program: Program, receiver: Slot): Promise<void>
   }
 }
 
+// THE DEFAULT LABEL OF A FOUNDED MAIN (owner 2026-10-08: „[Zitat entfernt]“, the topic
+// first, so the MAINs of one repo tell apart in the sidebar): `<Kurzname>-MAIN: <repo> · <model>`.
+// The Kurzname is the Program's own, else the title's first word without edge punctuation; one
+// that IS the repo's name drops the repo part ("example-app-MAIN · Opus 5.5"). No model chosen
+// names none — the adapter's pick is not this server's to guess. Read once, at the open: a live
+// MAIN keeps the label it was opened with.
+function programMainLabel(program: Program, repoRoot: string, model: string | null): string {
+  const titleWord = program.title.split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).find(Boolean) ?? "Program";
+  const kurz = program.kurzname ?? titleWord.slice(0, PROGRAM_KURZNAME_MAX);
+  const repo = basename(repoRoot);
+  const head = kurz.toLowerCase() === repo.toLowerCase() ? `${kurz}-MAIN` : `${kurz}-MAIN: ${repo}`;
+  return (model ? `${head} · ${modelLabel(model).split(" · ")[0]}` : head).slice(0, MAX_LABEL);
+}
+
 async function bootstrapProgramMain(program: Program, req: Request): Promise<Response> {
   // Reserve before body parsing: the action route's status check and this function used to be
   // separated by `await readJson(req)`, where complete could win and the founding would continue
@@ -42169,6 +42185,9 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
   if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
+  if (body.kurzname !== undefined && (typeof body.kurzname !== "string" || !body.kurzname.trim()
+    || body.kurzname.trim().length > PROGRAM_KURZNAME_MAX))
+    return json({ error: `kurzname must be a string of 1–${PROGRAM_KURZNAME_MAX} chars` }, 400);
   if (program.status !== "active")
     return json({ error: `cannot bootstrap Program-MAIN for a ${program.status} program` }, 409);
 
@@ -42218,6 +42237,9 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
     if (!free) return json({ error: sessionLimitError() ?? (SEPARATE_LANE_SLOTS ? "no free MAIN band" : "no free slot") }, 409);
     laneSpawn.add(free.id);
     try {
+      // THE OWNER'S KURZNAME rides this founding's first save: it names the Program, not this
+      // attempt, so a rollback below keeps it — and a live MAIN (`existing` above) is never renamed
+      if (typeof body.kurzname === "string") program.kurzname = body.kurzname.trim();
       let founding: ProgramFounding;
       try {
         founding = await persistProgramFounding(program, treeLease, "bootstrap", free.id);
@@ -42227,7 +42249,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
       }
       const label = typeof body.label === "string"
         ? body.label.trim() || null
-        : `Program-MAIN: ${program.title}`.slice(0, MAX_LABEL);
+        : programMainLabel(program, preflight.value.repoRoot, mo.model);
       try {
         const opened = await openSlot(free, isGameMaker(program) ? preflight.value.repoRoot : body.cwd,
           null, mo.model, label, ho.harness, eo.effort, NO_BOX, treeLease, false, null, false, pe.permissions, false, null, undefined,
@@ -43591,6 +43613,10 @@ if (existsSync(STATE_FILE)) {
         const programDispatch = loadProgramDispatch(x.dispatch);
         // the RELEASE POLICY, with the same discipline: unreadable degrades to ABSENT, i.e. `manual`
         const programRelease = loadProgramRelease(x.release);
+        // the owner's Kurzname, by shape: anything else loads as ABSENT, and the founding label
+        // falls back to the title's first word
+        const kurzname = typeof x.kurzname === "string" && x.kurzname.length > 0
+          && x.kurzname.trim() === x.kurzname && x.kurzname.length <= PROGRAM_KURZNAME_MAX ? x.kurzname : undefined;
         // the lineage: a row that never had the key is a legacy row and gets its one honest
         // backfill entry from `main`; a row that HAS the key but cannot be read loads as ABSENT and
         // is reported — never backfilled over, because that would make an unreadable record look
@@ -43710,6 +43736,7 @@ if (existsSync(STATE_FILE)) {
           ...(studioBinding ? { studio: studioBinding } : {}),
           ...(programDispatch ? { dispatch: programDispatch } : {}),
           ...(programRelease ? { release: programRelease } : {}),
+          ...(kurzname ? { kurzname } : {}),
           ...(founding ? { founding } : {}),
           ...(lineage ? { lineage } : {}),
           ...(inbox ? { inbox } : {}),

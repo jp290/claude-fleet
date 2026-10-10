@@ -927,6 +927,13 @@ ein Founding in Flug oder ausstehend lehnt ab, ein Game-Maker-Program bindet und
 Lineage-Eintrag `via:"attach"`, Trail-Zeile `program_main_attach`, ein Hinweis in die Pane der MAIN
 nach dem Speichern. Ohne `slot` gründet die Route wie bisher eine neue Session.
 
+**Label einer neu gegründeten MAIN:** ohne `label` im Body `<Kurzname>-MAIN: <repo> · <Modell>`
+(`server.ts#programMainLabel`), z. B. `Kontext-MAIN: claude-fleet · Opus 5.5`. `kurzname` (1–24
+Zeichen, getrimmt, sonst 400) setzt der Owner im selben Body; er bleibt am Program
+(`GET /api/programs`). Ohne Kurzname führt das erste Titelwort, gleicht er dem Repo-Namen, entfällt
+der Repo-Teil, ohne `model` der Modellteil. Eine lebende MAIN wird nie umbenannt: `existing:true`
+schreibt auch den Kurznamen nicht.
+
 **Merkzettel:** `POST /api/self/tasks` mit `"programId": null` filed eine `notiz` am PROJEKT —
 Zeile mit `repo`, ohne Program — für einen Fehler, den kein laufendes Vorhaben verursacht hat. Sie
 startet nichts (release 409), zählt gegen den Advisory-Deckel des Projekts, nur `kind:"notiz"` ist

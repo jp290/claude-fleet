@@ -2314,6 +2314,10 @@ interface Program {
   // released without a per-row act. Written by exactly one route (POST /api/programs/:id/release),
   // cleared by the same one with {"release": null}, never backfilled and never written by a self route.
   release?: ProgramRelease;
+  // THE OWNER'S SHORT NAME for this Program — the head of its founded MAIN's default label
+  // (server.ts#programMainLabel). Written only by bootstrap-main's `kurzname` (1–24 chars, trimmed);
+  // absent = the title's first word leads. A live MAIN's label never follows a change to it.
+  kurzname?: string;
   // A Game-Maker founding crosses pane creation, prompt delivery and a durable authority move.
   // This intent is the crash boundary between those acts: it names exactly the candidate Fleet
   // may roll back after a restart, without overloading Slot.programId (task/lane provenance).

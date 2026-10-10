@@ -181,7 +181,20 @@ export type FragmentCut = "ganz" | "aus" | { readonly ohne: readonly string[] };
 export type RoleAudience = "main" | "orchestrator";
 /** A section cut is a role's, or a position VARIANT's: the variant name is the pack model's own
  *  (context-packs.ts#CONTEXT_POSITION_VARIANTEN), never a further rulebook audience. */
-export type SectionCutKey = RoleAudience | ContextPositionVariante;
+export type SectionCutKey = RoleAudience | "lane" | ContextPositionVariante;
+
+/**
+ * Every lane-discipline section the LANE cut leaves to an anchor, with the inline rules that carry
+ * it, in session-agents.ts#SESSION_FILE_REF's shape: the anchor line shows it, so the lane knows the
+ * rule is already in its session file and needs no `cat`.
+ */
+const LANE_CUT_INLINE_DEF = {
+  "proportionale-lokale-verifikation": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regeln 1, 2) (Session-Datei, inline: `AGENTS.md` ### Lane, Regeln 6, 7)",
+  "verify-kette": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regel 1) (Session-Datei, inline: `AGENTS.md` ### Lane, Regel 6)",
+  "e2e-isolated-sh-ist-tier": "(Session-Datei, inline: `AGENTS.md` ### Lane, Regel 7)",
+  "nie-einen-prozess-ueber-ein": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regel 5) (Session-Datei, inline: `AGENTS.md` ### Lane, Regel 9)",
+} as const;
+export const LANE_CUT_INLINE: Readonly<Record<string, string>> = LANE_CUT_INLINE_DEF;
 
 /**
  * The role cut, by OMISSION LIST and never by keep-list, on purpose: a section whose lead words
@@ -255,6 +268,20 @@ export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, Fr
       "der-worker-eines-repos-wird", "harness-adapter-fleet-cmd-muss", "get-api-sessions-traegt-pro",
       "modellnamen-mit-suffix-die-1m", "launchd-kontext-hat-weder-local",
     ] },
+    graphify: "aus",
+  },
+  // lane: the three fragments of FRAGMENTS_FOR.lane minus the verify sections whose every rule the
+  // lane's session file already carries inline — the Anleitung box, AGENTS.md ### Kern and ### Lane
+  // (LANE_CUT_INLINE names the rules; e2e/pins.ts holds each against a real lane render). A MAIN
+  // has no session file, so its own render keeps them. What a cut section says that no box rule
+  // carries (host suites, pkill examples) rides along in `suite-offer`, which a MAIN omits.
+  lane: {
+    loader: "ganz",
+    einstieg: "aus",
+    "lane-discipline": { ohne: Object.keys(LANE_CUT_INLINE_DEF) },
+    supervisor: "aus",
+    "self-scheduling": "ganz",
+    deploy: "aus",
     graphify: "aus",
   },
   // live-bau (card 1f9834a9, docs/design/live-bau-profil-2026-10.md §2.1): the LANE render — its
@@ -344,7 +371,7 @@ export function renderRoleRulebook(
     ...wholeOut.map((f) => `- \`${f}\` — ${FRAGMENT_TITLES[f]}, ${ROLE_POINTER_TRIGGERS[f]}`),
     "",
     "Einzelne Abschnitte:",
-    ...partOut.map((s) => `- \`${s.anchor}\` — ${s.title}`),
+    ...partOut.map((s) => `- \`${s.anchor}\` — ${s.title}${audience === "lane" && LANE_CUT_INLINE[s.slug] ? ` ${LANE_CUT_INLINE[s.slug]}` : ""}`),
     "",
     `Erzeugt aus ${RULEBOOK_DIR}/, Quell-Hash ${o.sourceHash} (über alle ${RULEBOOK_FRAGMENTS.length} Fragmente).`,
     "",
@@ -354,8 +381,8 @@ export function renderRoleRulebook(
 
 /**
  * The heading that separates the rendered rules from the back-reference block. It is the SPLIT
- * POINT, not decoration: the block carries a timestamp, so a byte comparison that included it
- * would report drift on every single gate call. Everything before it is the rulebook proper and
+ * POINT, not decoration: the block carries the source hash, so a byte comparison that included it
+ * would report drift on every move of a fragment the render does not even carry. Everything before it is the rulebook proper and
  * is compared byte for byte; everything after is provenance.
  */
 export const RULEBOOK_BACKREF_HEADING = "## Was in dieser Fassung NICHT steht";
@@ -367,41 +394,3 @@ export function rulebookBody(text: string): string {
   return i < 0 ? text : text.slice(0, i);
 }
 
-/**
- * The back-reference block. Pure: the absolute read path is handed in by the caller (the server
- * knows `s.worktree.repo`), never guessed — and `git show main:rulebook/…` is NOT an alternative,
- * the fragments are untracked and a worktree never materialises them.
- */
-export function renderBackref(
-  audience: RulebookAudience,
-  o: { repoRoot: string; at: string; sourceHash: string },
-): string {
-  const have = FRAGMENTS_FOR[audience];
-  const missing = RULEBOOK_FRAGMENTS.filter((f) => !have.includes(f));
-  const lines = [
-    "",
-    RULEBOOK_BACKREF_HEADING,
-    "",
-    `Du hast die ${audience.toUpperCase()}-Fassung des Regelbuchs — ${have.length} von ${RULEBOOK_FRAGMENTS.length} Teilen.`,
-    missing.length === 0
-      ? "Nicht enthalten ist nichts: diese Fassung ist vollständig."
-      : `Nicht enthalten: ${missing.map((f) => FRAGMENT_TITLES[f]).join(" · ")}.`,
-  ];
-  if (missing.length > 0) {
-    lines.push(
-      "",
-      "Brauchst du einen davon, lies ihn im Quell-Checkout — die Fragmente sind untracked,",
-      "`git show main:rulebook/…` findet sie NIE:",
-      "",
-      ...missing.map((f) => `    cat ${o.repoRoot}/${RULEBOOK_DIR}/${fragmentFileName(f)}`),
-    );
-  }
-  lines.push(
-    "",
-    `Erzeugt aus ${RULEBOOK_DIR}/ am ${o.at}, Quell-Hash ${o.sourceHash} (über alle ${RULEBOOK_FRAGMENTS.length} Fragmente).`,
-    "Diese Fassung ist ein SNAPSHOT wie die Kopie vor ihr: bewegt sich die Quelle, meldet",
-    "`GET /api/self/gate` dir `rulebookDrifted: true` — und dann gilt die Quelle, nicht dein Baum.",
-    "",
-  );
-  return lines.join("\n");
-}

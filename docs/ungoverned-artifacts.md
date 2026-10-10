@@ -33,6 +33,10 @@ are, respectively, the file that governs every lane and the data that will decid
   survives as the fallback for a repo with no readable `rulebook/` (a foreign `task.repo`), so the
   paragraph above still describes that case exactly. Everything else about the layer is unchanged:
   still untracked, still git-ignored on purpose, still dies with the worktree.*
+  *Correction 2026-10-11: a plain lane is now cut by section as well (`rulebook.ts#ROLE_SECTION_CUT`
+  key `lane`, rendered by `renderRoleRulebook`): the verify sections its session file carries inline
+  are anchors, and the closing block reads them from `rulebook/render/<hash>/abschnitte/` in the source
+  checkout instead of naming the fragment files.*
 - `OWNER.md` (15 KB, the safety-critical owner-model) is untracked *and* not in the copy list —
   so no lane has ever seen it. Probably intended; recorded because nothing states it.
 

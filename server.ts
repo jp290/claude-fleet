@@ -44,7 +44,7 @@ import { LOCAL_PROOF_STEPS, gateChainFor, localProofFor,
   type GateClass, type LocalProof, type LocalProofStep } from "./verify-proportion";
 import { GATE_SUITES, moduleListFrom, type GateSuiteStep } from "./suite-modules";
 import {
-  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, renderRoleRulebook, rulebookBody,
+  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderRoleRulebook, rulebookBody,
   type RulebookFragment,
 } from "./rulebook";
 import { cardVariante, claudeMcpConfigFlag, planContext, planMcpServers, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
@@ -7675,38 +7675,37 @@ function rulebookRenderForSession(sessionId: string, role: "main" | "orchestrato
 }
 
 // The bytes a lane's CLAUDE.md is SUPPOSED to hold, given this source checkout: the three lane
-// fragments plus the back-reference block naming the four it does not get. `null` = this repo has
+// fragments cut by rulebook.ts#ROLE_SECTION_CUT.lane, plus the closing block naming every fragment
+// and section it does not get, each with the anchor file that holds it. `null` = this repo has
 // no readable `rulebook/` at all, which a foreign task.repo legitimately has not — the two callers
 // (the spawn seam, the /api/self/gate drift probe) then both fall back to the pre-split behaviour,
 // and they MUST fall back the same way or the probe judges bytes the spawn never wrote.
 // The source hash is taken over the MAIN render, i.e. over all seven fragments: a lane should be
 // able to tell that the rulebook moved even when the part that moved is one it does not hold.
 //
-// A lane of a VARIANT (card 1f9834a9) gets the variant's section cut (rulebook.ts#ROLE_SECTION_CUT,
-// keyed by the pack model's variant name): the same three fragments minus the sections the variant
-// borrows later, each named in the closing block with the file that holds it. The anchor files are
+// A lane of a VARIANT (card 1f9834a9) gets the variant's section cut instead (keyed by the pack
+// model's variant name): the same three fragments minus the sections the variant borrows later.
+// The anchor files are
 // the role renders' own — same directory, same bytes — and only the spawn seam writes them (`write`);
 // the drift probe and the plan compare bytes and touch nothing.
-function laneRulebookFor(repo: string, at: string, variante: ContextPositionVariante | null = null, write = false): string | null {
+function laneRulebookFor(repo: string, variante: ContextPositionVariante | null = null, write = false): string | null {
   const frag = readRulebookFragments(repo);
   if (!frag) return null;
-  let body: string, whole: string;
-  try { body = renderRulebook("lane", frag); whole = renderRulebook("voll", frag); } catch { return null; }
-  if (variante) {
-    const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 16);
-    const anchorDir = `${repo}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`;
-    let cut: ReturnType<typeof renderRoleRulebook>;
-    try { cut = renderRoleRulebook(variante, frag, { repoRoot: repo, anchorDir, sourceHash }); } catch { return null; }
-    if (write) {
-      try {
-        mkdirSync(anchorDir, { recursive: true });
-        for (const [name, text] of cut.files) writeRenderFile(`${anchorDir}/${name}`, text);
-      } catch { return null; } // a render naming anchors nobody wrote would be a rulebook with holes
-    }
-    return cut.text;
+  let whole: string;
+  try { whole = renderRulebook("voll", frag); } catch { return null; }
+  // a plain lane is cut too (rulebook.ts#ROLE_SECTION_CUT.lane): the verify sections its session
+  // file carries inline are anchors here, exactly as a variant's omitted sections are
+  const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 16);
+  const anchorDir = `${repo}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`;
+  let cut: ReturnType<typeof renderRoleRulebook>;
+  try { cut = renderRoleRulebook(variante ?? "lane", frag, { repoRoot: repo, anchorDir, sourceHash }); } catch { return null; }
+  if (write) {
+    try {
+      mkdirSync(anchorDir, { recursive: true });
+      for (const [name, text] of cut.files) writeRenderFile(`${anchorDir}/${name}`, text);
+    } catch { return null; } // a render naming anchors nobody wrote would be a rulebook with holes
   }
-  const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 8);
-  return body + renderBackref("lane", { repoRoot: repo, at, sourceHash });
+  return cut.text;
 }
 
 // Tool scratch thrown into a lane's cwd by its own harness — Playwright-MCP writes
@@ -7949,7 +7948,7 @@ async function laneScaffoldFor(root: string, path: string, harness: Harness,
   // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
   // copying the monolith below rather than leaving the lane with no rulebook at all. Failing the
   // spawn over it would be worse still — the rulebook is scaffolding, not the lane's work.
-  const laneRulebook = laneRulebookFor(root, new Date().toISOString(), variante, true);
+  const laneRulebook = laneRulebookFor(root, variante, true);
   if (laneRulebook !== null && !existsSync(`${path}/CLAUDE.md`)
       && (await git(root, "check-ignore", "-q", "CLAUDE.md")).code === 0) {
     writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
@@ -40215,7 +40214,7 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     schalter[`pack:${pack.id}`] ??= o.packs.includes(pack.id) ? "an" : "aus";
   const memory = harnessFamilie(harness) === "claude" ? await autoMemoryBytes(fp.repoRoot) : null;
   const native = o.rolle === "nur-ordner" && o.ort === "ordner" ? nativeLoaderBytes(fp.repoRoot, harness) : null;
-  const laneRulebook = o.rolle === "lane" ? laneRulebookFor(fp.repoRoot, new Date(0).toISOString()) : null;
+  const laneRulebook = o.rolle === "lane" ? laneRulebookFor(fp.repoRoot) : null;
   const ownRulebook = resolve(fp.repoRoot) === import.meta.dir && RULEBOOK_CUT_MODE !== "voll" && readRulebookFragments(import.meta.dir) !== null;
   let rendered: SessionAgents | null = null;
   const result = resolveSessionPlan({
@@ -40488,7 +40487,7 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
     case "commit-expectation": return ctx.laneFooterOn ? { immer: "Session-Datei" } : { nie: "es steht im lane-footer, und der ist nicht an" };
     // the copy lands in every lane's worktree, but only Claude loads CLAUDE.md — the same claude && as /open
     case "private-rulebook": return !claude ? { nie: "nur Claude laedt CLAUDE.md; die Kopie im Worktree liest dieser Harness nicht" }
-      : laneRulebookFor(ctx.repoRoot, new Date(0).toISOString()) !== null ? { immer: "native Datei" }
+      : laneRulebookFor(ctx.repoRoot) !== null ? { immer: "native Datei" }
       : { nie: "der Quell-Checkout hat kein lesbares rulebook/" };
     default: return { nie: "die Lane-Tuer liefert das nicht" };
   }
@@ -48923,7 +48922,7 @@ Bun.serve<WSData>({
       let rulebookDrifted: boolean | null = null;
       try {
         const copy = await Bun.file(`${s.cwd!}/CLAUDE.md`).text();
-        const rendered = laneRulebookFor(s.worktree.repo, "", laneVarianteOf(waveRowsOf(s.id)));
+        const rendered = laneRulebookFor(s.worktree.repo, laneVarianteOf(waveRowsOf(s.id)));
         const expected = rendered === null
           ? await Bun.file(`${s.worktree.repo}/CLAUDE.md`).text()
           : rendered;

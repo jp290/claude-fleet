@@ -1010,11 +1010,15 @@ export async function run(ctx: Ctx): Promise<void> {
         && omitted.every((f) => !rulebookBody(written).includes(`rule text of ${f}`))
         && FRAGMENTS_FOR.lane.every((f) => rulebookBody(written).includes(`rule text of ${f}`)),
       `written=${written === null ? "absent" : Buffer.byteLength(written)} B (body ${written === null ? "-" : Buffer.byteLength(rulebookBody(written))} B), lane body=${Buffer.byteLength(expectBody)} B, main=${Buffer.byteLength(renderRulebook("voll", frag))} B`);
-    check("rulebook split: its back-reference block names every omitted fragment and an absolute path into the SOURCE checkout",
-      written !== null && written.includes(RULEBOOK_BACKREF_HEADING)
+    // the block's read path is an anchor directory inside the SOURCE checkout's rulebook/, and the
+    // spawn wrote a file there for every fragment the lane does not hold
+    const anchorDir = written === null ? null : /cat (\S+)\/<anker>\.md/.exec(written)?.[1] ?? null;
+    check("rulebook split: its closing block names every omitted fragment and an anchor file in the SOURCE checkout that holds it",
+      written !== null && written.includes(RULEBOOK_BACKREF_HEADING) && anchorDir !== null
+        && anchorDir.startsWith(`${rbRepo}/${RULEBOOK_DIR}/render/`)
         && omitted.every((f) => written.includes(FRAGMENT_TITLES[f]))
-        && omitted.every((f) => written.includes(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`)),
-      `omitted=${omitted.join(",")}`);
+        && omitted.every((f) => existsSync(`${anchorDir}/${f}.md`) && readFileSync(`${anchorDir}/${f}.md`, "utf8") === frag.get(f)),
+      `omitted=${omitted.join(",")} anchorDir=${anchorDir}`);
     // the lane must still be landable: a copy that git sees would block it
     const rbStatus = spawnSync("git", ["-C", rbLane.cwd ?? rbRepo, "status", "--porcelain"]).stdout.toString().trim();
     check("rulebook split: the written rulebook leaves the lane clean (gitignored, so `land` is not blocked)",

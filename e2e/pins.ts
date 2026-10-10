@@ -29,7 +29,7 @@ import { basename, join, resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
-  FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderBackref, renderRoleRulebook,
+  FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderRoleRulebook, LANE_CUT_INLINE,
   rulebookBody, type RoleAudience, type RoleRulebook, type RulebookFragment,
 } from "../rulebook";
 import {
@@ -5323,14 +5323,14 @@ export default function (pi) {
       && RULEBOOK_FRAGMENTS.every((f, i) => FRAGMENTS_FOR.voll[i] === f);
     // a role's FRAGMENTS_FOR is exactly the fragments its section cut draws from — two tables that
     // must not tell different stories about the same render
-    const drawsFrom = (a: RoleAudience): string => RULEBOOK_FRAGMENTS.filter((f) => ROLE_SECTION_CUT[a][f] !== "aus").join(",");
+    const drawsFrom = (a: RoleAudience | "lane"): string => RULEBOOK_FRAGMENTS.filter((f) => ROLE_SECTION_CUT[a][f] !== "aus").join(",");
     const mainOk = FRAGMENTS_FOR.main.join(",") === "loader,einstieg,lane-discipline,self-scheduling,deploy"
       && FRAGMENTS_FOR.main.join(",") === drawsFrom("main");
     const orchestratorOk = FRAGMENTS_FOR.orchestrator.join(",") === "loader,einstieg,self-scheduling,deploy"
       && FRAGMENTS_FOR.orchestrator.join(",") === drawsFrom("orchestrator");
     const lane = FRAGMENTS_FOR.lane;
     const laneOk = lane.length > 0 && lane.length < RULEBOOK_FRAGMENTS.length
-      && new Set(lane).size === lane.length
+      && lane.join(",") === drawsFrom("lane") && new Set(lane).size === lane.length
       && lane.every((f) => (RULEBOOK_FRAGMENTS as readonly string[]).includes(f));
     // the prefix map must be total and injective, or the Fragment column below is not derivable
     const mapped = Object.values(FRAGMENT_BY_RULE_PREFIX);
@@ -5380,15 +5380,15 @@ export default function (pi) {
   };
   {
     const fixture = new Map<RulebookFragment, string>(RULEBOOK_FRAGMENTS.map((f) => {
-      const cut = ROLE_SECTION_CUT.orchestrator[f], other = ROLE_SECTION_CUT.main[f];
-      const slugs = [...new Set([...(typeof cut === "object" ? cut.ohne : []), ...(typeof other === "object" ? other.ohne : [])])];
+      const cuts = [ROLE_SECTION_CUT.orchestrator[f], ROLE_SECTION_CUT.main[f], ROLE_SECTION_CUT.lane[f]];
+      const slugs = [...new Set(cuts.flatMap((c) => typeof c === "object" ? c.ohne : []))];
       return [f, [`## ${f}\n\nprose before the first bullet of ${f}\n`, ...slugs.map((sl) => `- **${sl.split("-").join(" ")}** rule text of ${f}/${sl}\n  wrapped line\n`),
         `- **kept rule of ${f}**\n`].join("")];
     }));
     const dir = "/fixture/repo/rulebook/render/0123456789abcdef/abschnitte";
     const detail: string[] = [];
     let ok = true;
-    for (const a of ["orchestrator", "main"] as const) {
+    for (const a of ["orchestrator", "main", "lane"] as const) {
       const r = renderRoleRulebook(a, fixture, { repoRoot: "/fixture/repo", anchorDir: dir, sourceHash: "0123456789abcdef" });
       const bad = roleCutHolds(r, fixture, dir);
       const omitted = r.sections.filter((x) => !x.carried).length;
@@ -5540,7 +5540,7 @@ export default function (pi) {
   // the cut this tree ships still fits the rulebook as it stands. Inputs: the source's fragments
   // and this tree's ROLE_SECTION_CUT — so red is this tree's own once its
   // rulebook.ts differs from the source's, and the source's own otherwise (pinSource).
-  const RULE_ROLE_REAL = `on the real fragments both role renders anchor every section they omit, and the orchestrator's is at most ${ORCHESTRATOR_RENDER_MAX_B} B`;
+  const RULE_ROLE_REAL = `on the real fragments the orchestrator, MAIN and lane renders anchor every section they omit, and the orchestrator's is at most ${ORCHESTRATOR_RENDER_MAX_B} B`;
   const RULE_ROLE_STALE = "every ROLE_SECTION_CUT omission names a section of the real fragments";
   const RULE_ROLE_CODEX = "neither role render carries a Codex/GPT/pi worker section of the real einstieg";
   if (unreadable.length > 0) {
@@ -5556,7 +5556,7 @@ export default function (pi) {
     })();
     // the anchor directory the server would name, at its real length — the block's bytes count
     const dir = `${SOURCE_DIR}/${RULEBOOK_DIR}/render/0123456789abcdef/abschnitte`;
-    const real = (["orchestrator", "main"] as const).map((a) => ({ a, r: renderRoleRulebook(a, fragments,
+    const real = (["orchestrator", "main", "lane"] as const).map((a) => ({ a, r: renderRoleRulebook(a, fragments,
       { repoRoot: SOURCE_DIR ?? "", anchorDir: dir, sourceHash: "0123456789abcdef" }) }));
     const bad = real.flatMap(({ a, r }) => roleCutHolds(r, fragments, dir).map((x) => `${a}: ${x}`));
     const orchB = Buffer.byteLength(real[0]!.r.text);
@@ -5624,6 +5624,15 @@ export default function (pi) {
       const goodMisses = sessionFileRefMisses(good, laneFile);
       pin(`${RULE_REF} — the probe`, goodMisses.length === 0 && passed.length === 0,
         `good: ${goodMisses.join("; ") || "lands"}; mutants not caught: ${passed.length}`);
+      // the LANE CUT is held the same way: every lane-discipline section it leaves to an anchor names
+      // the inline rules that carry it, and each of them lands in the box
+      const cutOhne = ROLE_SECTION_CUT.lane["lane-discipline"];
+      const cutSlugs = typeof cutOhne === "object" ? [...cutOhne.ohne].sort() : [];
+      const cutMisses = Object.entries(LANE_CUT_INLINE).flatMap(([slug, refs]) =>
+        [...(refs.match(SESSION_FILE_REF) ? [] : [`${slug}: no reference`]), ...sessionFileRefMisses(refs, laneFile!).map((m) => `${slug}: ${m}`)]);
+      pin(`${RULE_REF} — the lane cut omits only sections whose rules it names inline`,
+        cutSlugs.length > 0 && cutSlugs.join(",") === Object.keys(LANE_CUT_INLINE).sort().join(",") && cutMisses.length === 0,
+        `${cutSlugs.length} cut section(s)${cutMisses.length ? `; ${cutMisses.slice(0, 4).join("; ")}` : ""}`);
       if (unreadable.length > 0) skip(`${RULE_REF} — on the real fragments`, why);
       else {
         const text = FRAGMENTS_FOR.lane.map((f) => fragments.get(f)!).join("\n");
@@ -5639,30 +5648,33 @@ export default function (pi) {
     }
   }
 
-  // --- 6c. The back-reference block, and the one seam it protects. A lane no longer HOLDS four of
-  // the seven fragments; the block is the only thing that tells it they exist. Needs no checkout:
-  // the renderer is pure, so the block can be produced here and read back.
+  // --- 6c. The closing block of the LANE render, and the one seam it protects. A lane holds three
+  // of the seven fragments and, of lane-discipline, only what its session file does not carry
+  // inline; the block is the only thing that tells it the rest exists. Needs no checkout: the
+  // renderer is pure, so the block can be produced here and read back.
   {
-    const RULE_BACKREF = "the lane rulebook's back-reference block names every omitted fragment and an absolute read path for it";
-    const RULE_SPLIT = "rulebookBody strips the back-reference block and nothing else — the timestamp cannot read as drift";
-    const block = renderBackref("lane", { repoRoot: "/src/repo", at: "2026-01-01T00:00:00.000Z", sourceHash: "deadbeef" });
+    const RULE_BACKREF = "the lane rulebook's closing block anchors every omitted fragment and section, and names each cut section's inline rules";
+    const RULE_SPLIT = "rulebookBody strips the closing block and nothing else — a moved fragment the lane does not carry cannot read as drift";
+    const frag = new Map<RulebookFragment, string>(RULEBOOK_FRAGMENTS.map((f) => [f, `## ${f}\n\nprose of ${f}\n`
+      + (f === "lane-discipline" ? Object.keys(LANE_CUT_INLINE).map((s) => `- **${s.split("-").join(" ")}** rule of ${s}\n`).join("") : "")
+      + `- **kept rule of ${f}**\n`]));
+    const dir = "/src/repo/rulebook/render/0123456789abcdef/abschnitte";
+    const r = renderRoleRulebook("lane", frag, { repoRoot: "/src/repo", anchorDir: dir, sourceHash: "0123456789abcdef" });
+    const block = r.text.slice(rulebookBody(r.text).length);
     const omitted = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR.lane.includes(f));
-    const named = omitted.filter((f) => block.includes(FRAGMENT_TITLES[f]));
-    const pathed = omitted.filter((f) => block.includes(`/src/repo/${RULEBOOK_DIR}/${fragmentFileName(f)}`));
+    const bad = roleCutHolds(r, frag, dir);
+    const unnamed = omitted.filter((f) => !block.includes(`\`${f}\` — ${FRAGMENT_TITLES[f]}`));
+    const noInline = Object.entries(LANE_CUT_INLINE).filter(([slug, refs]) => !block.includes(`\`lane-discipline--${slug}\` — `) || !block.includes(refs));
     pin(RULE_BACKREF,
-      omitted.length > 0 && named.length === omitted.length && pathed.length === omitted.length
-        && block.includes(RULEBOOK_BACKREF_HEADING) && block.includes("deadbeef")
-        && block.includes("2026-01-01T00:00:00.000Z")
-        // `git show main:` is the wrong reflex here and the block says so — the fragments are untracked
-        && /git show main:/.test(block),
-      `${named.length}/${omitted.length} named, ${pathed.length}/${omitted.length} with a path`);
+      omitted.length > 0 && bad.length === 0 && unnamed.length === 0 && noInline.length === 0 && r.staleOmissions.length === 0,
+      `${omitted.length - unnamed.length}/${omitted.length} fragments named, ${Object.keys(LANE_CUT_INLINE).length - noInline.length}/${Object.keys(LANE_CUT_INLINE).length} cut sections with their inline rules${bad.length ? `; ${bad.slice(0, 3).join("; ")}` : ""}`);
 
-    const body = renderRulebook("lane", new Map(RULEBOOK_FRAGMENTS.map((f) => [f, `# ${f}\nbody of ${f}\n`])));
-    const later = renderBackref("lane", { repoRoot: "/src/repo", at: "2026-06-06T06:06:06.000Z", sourceHash: "deadbeef" });
+    const moved = new Map(frag).set("deploy", "## deploy\n\nmoved\n");
+    const r2 = renderRoleRulebook("lane", moved, { repoRoot: "/src/repo", anchorDir: dir.replace("0123456789abcdef", "fedcba9876543210"), sourceHash: "fedcba9876543210" });
     pin(RULE_SPLIT,
-      rulebookBody(body + block) === body && rulebookBody(body + later) === body && rulebookBody(body) === body
-        && block !== later,
-      `body ${Buffer.byteLength(body)} B, block ${Buffer.byteLength(block)} B`);
+      block.startsWith(`\n${RULEBOOK_BACKREF_HEADING}\n`) && rulebookBody(r2.text) === rulebookBody(r.text) && r2.text !== r.text
+        && rulebookBody(rulebookBody(r.text)) === rulebookBody(r.text),
+      `body ${Buffer.byteLength(rulebookBody(r.text))} B, block ${Buffer.byteLength(block)} B`);
   }
   {
     // The seam and the probe must agree on the expected bytes BY CONSTRUCTION: one function, two

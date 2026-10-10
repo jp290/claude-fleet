@@ -272,6 +272,9 @@ const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
 const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
+// the suite's QUARANTINE list (e2e/harness.ts#parseQuarantine owns its rules), tracked in this tree.
+// Read fresh per request, only to SHOW it: the suite applies it, this server never decides with it.
+const QUARANTINE_FILE = `${import.meta.dir}/e2e/quarantine.json`;
 // the ADJUDICATION rail for that trail — one append-only judgement per audit row somebody ruled on
 // (see the ADJUDICATION region below). A SIDE rail, exactly like DISPOSITION_FILE, and for the same
 // reason plus one: it makes "a judgement can never rewrite `result`" structural rather than a rule
@@ -25069,16 +25072,39 @@ function backlogNudgeMessage(open: Task[], repo: string): string {
   ].join("\n");
 }
 
+// THE QUARANTINE AS THIS TREE HOLDS IT — three answers, never folded: `read` with its entries (an
+// empty list is the measured "nothing is quarantined"), `absent` (no file: a tree older than the
+// quarantine), `unreadable` (the suite itself would refuse to start on it). Fields are passed as
+// printable strings and judged nowhere; the suite's parser is the authority on the rules.
+type QuarantineView =
+  | { state: "read"; entries: { name: string; since: string; auditSha: string; reason: string }[] }
+  | { state: "absent" } | { state: "unreadable"; why: string };
+async function quarantineView(): Promise<QuarantineView> {
+  let text: string;
+  try { text = await Bun.file(QUARANTINE_FILE).text(); }
+  catch (e) { return (e as { code?: string }).code === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: "read failed" }; }
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return { state: "unreadable", why: "not JSON" }; }
+  if (!Array.isArray(raw)) return { state: "unreadable", why: "not a JSON array" };
+  const field = (o: Record<string, unknown>, k: string): string =>
+    typeof o[k] === "string" ? printableShort(o[k] as string, 300) : "";
+  const entries = raw.filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && !Array.isArray(e))
+    .map((o) => ({ name: field(o, "name"), since: field(o, "since"), auditSha: field(o, "auditSha"), reason: field(o, "reason") }));
+  return entries.length === raw.length ? { state: "read", entries } : { state: "unreadable", why: "an entry is not an object" };
+}
+
 function auditChecksOn(row: Record<string, unknown>): PostLandAuditChecks | null {
   const c = row.checks;
   if (!c || typeof c !== "object") return null; // old row / explicitly unparseable output: UNKNOWN, never zero
   const ran = (c as { ran?: unknown }).ran;
   const failed = (c as { failed?: unknown }).failed;
   const ranIsLowerBound = (c as { ranIsLowerBound?: unknown }).ranIsLowerBound;
+  const quarantined = helperFailNames((c as { quarantined?: unknown }).quarantined);
   return Number.isInteger(ran) && Number.isInteger(failed) && (ran as number) >= 0
     && (failed as number) >= 0 && (failed as number) <= (ran as number)
     && (ranIsLowerBound === undefined || ranIsLowerBound === true)
-    ? { ran: ran as number, failed: failed as number, ...(ranIsLowerBound ? { ranIsLowerBound: true } : {}) }
+    ? { ran: ran as number, failed: failed as number, ...(ranIsLowerBound ? { ranIsLowerBound: true } : {}),
+      ...(quarantined?.length ? { quarantined } : {}) }
     : null;
 }
 
@@ -29873,7 +29899,10 @@ const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
 // an audit that
 // timed out, could not be started, or declined to run is `unknown` — never green, and never red
 // either (a failed measurement is not evidence of a defect).
-interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true }
+// `quarantined`: the checks that FAILED under e2e/quarantine.json — counted in `ran`, never in
+// `failed`, and named here so a green row cannot hide them. Absent when none did (and on every row
+// written before the quarantine existed).
+interface PostLandAuditChecks { ran: number; failed: number; ranIsLowerBound?: true; quarantined?: string[] }
 // the shape of PostLandAuditShard.coResident, where the whole argument for it is written down
 interface ShardCoResidence { with: number[]; ms: number; unknownWindows: number }
 interface PostLandAuditShard {
@@ -31570,7 +31599,7 @@ function postLandAuditTrailCount(text: string): number | null {
     if (!Number.isSafeInteger(beforeTrailChecks)) return null;
     // trail.run() snapshots `results` before its first check; this summary is its second check.
     // Every later result line is retained beside it at the end of the suite.
-    const afterSummary = lines.slice(i + 1).filter((line) => /^(?:PASS|FAIL)  /.test(line)).length;
+    const afterSummary = lines.slice(i + 1).filter((line) => /^(?:PASS|FAIL|QUAR)  /.test(line)).length;
     return beforeTrailChecks + 2 + afterSummary;
   }
   return null;
@@ -31598,6 +31627,28 @@ function localFailNames(text: string): string[] {
   return names;
 }
 
+// THE QUARANTINED NAMES a suite printed (e2e/harness.ts#check): one per `QUAR  ` result line, the
+// detail suffix cut as localFailNames cuts it, plus the runner's JSON line above its tail
+// (e2e/harness.ts#quarantineLine) — the only copy a helper's 4 KB tail still holds on a long run.
+// Deduplicated, and through helperFailNames like every other foreign name a row stores.
+const QUARANTINE_LINE_PREFIX = "quarantined failures (not counted): ";
+function localQuarNames(text: string): string[] {
+  const names: string[] = [];
+  for (const line of text.replaceAll("\r", "").split("\n")) {
+    const m = /^QUAR  (.*)$/.exec(line);
+    if (m) {
+      const cut = m[1]!.indexOf("  (");
+      names.push(cut >= 0 ? m[1]!.slice(0, cut) : m[1]!);
+    } else if (line.startsWith(QUARANTINE_LINE_PREFIX)) {
+      try {
+        const listed: unknown = JSON.parse(line.slice(QUARANTINE_LINE_PREFIX.length));
+        if (Array.isArray(listed)) names.push(...listed.filter((n): n is string => typeof n === "string"));
+      } catch { /* a cut line names nothing; the QUAR result lines above still do */ }
+    }
+  }
+  return helperFailNames([...new Set(names)]) ?? [];
+}
+
 function postLandAuditChecks(text: string, exitCode: number, fails?: string[], completeOutput = false): PostLandAuditChecks | null {
   const lines = text.replaceAll("\r", "").split("\n");
   let ran = 0;
@@ -31606,7 +31657,8 @@ function postLandAuditChecks(text: string, exitCode: number, fails?: string[], c
   let summarizedFailures = 0;
   let failureSummaries = 0;
   for (const line of lines) {
-    if (line.startsWith("PASS ")) ran++;
+    // a QUAR line RAN: it is a check that failed under quarantine, never part of `failed`
+    if (line.startsWith("PASS ") || line.startsWith("QUAR ")) ran++;
     else if (line.startsWith("FAIL ")) { ran++; failed++; }
     if (line.trim() === "ALL PASS") allPass++;
     const m = /^(\d+) FAILURES?$/.exec(line.trim());
@@ -31624,7 +31676,9 @@ function postLandAuditChecks(text: string, exitCode: number, fails?: string[], c
     if (trailCount < failed) return null;
     ran = trailCount;
   }
-  return { ran, failed, ...(!completeOutput && trailCount === null ? { ranIsLowerBound: true as const } : {}) };
+  const quarantined = localQuarNames(text);
+  return { ran, failed, ...(!completeOutput && trailCount === null ? { ranIsLowerBound: true as const } : {}),
+    ...(quarantined.length ? { quarantined } : {}) };
 }
 
 // A COVER IS A CLAIM THAT THE AUDITED TREE CONTAINS THE LAND — and the row is where that claim is
@@ -32328,6 +32382,8 @@ function laneSuiteShardMerge(j: LaneSuiteJob, run: LaneSuiteShardRun, now: numbe
     ran: counted.reduce((a, x) => a + (x.r.checks?.ran ?? 0), 0),
     failed: counted.reduce((a, x) => a + (x.r.checks?.failed ?? 0), 0),
     ...(counted.length < n || counted.some((x) => x.r.checks?.ranIsLowerBound) ? { ranIsLowerBound: true as const } : {}),
+    ...(counted.some((x) => x.r.checks?.quarantined?.length)
+      ? { quarantined: [...new Set(counted.flatMap((x) => x.r.checks?.quarantined ?? []))].slice(0, HELPER_FAILS_KEEP) } : {}),
   };
   const claimTimes = run.shards.flatMap((s) => (s.result ? [s.result.remote.claimedAt]
     : s.closed?.claimedAt !== undefined ? [s.closed.claimedAt] : []));
@@ -34140,6 +34196,8 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
     ran: counted.reduce((a, x) => a + (x.r.checks?.ran ?? 0), 0),
     failed: counted.reduce((a, x) => a + (x.r.checks?.failed ?? 0), 0),
     ...(counted.length < n || counted.some((x) => x.r.checks?.ranIsLowerBound) ? { ranIsLowerBound: true as const } : {}),
+    ...(counted.some((x) => x.r.checks?.quarantined?.length)
+      ? { quarantined: [...new Set(counted.flatMap((x) => x.r.checks?.quarantined ?? []))].slice(0, HELPER_FAILS_KEEP) } : {}),
   };
   // the clone sha: a DIVERGENT one wins, because the divergence is the fact a reader must not miss;
   // otherwise the one every reporting shard agreed on
@@ -49845,7 +49903,8 @@ Bun.serve<WSData>({
           hold: h?.hold ?? null, ...(h?.hold === "quiet" ? { releaseAt: h.releaseAt } : {}) };
       });
       return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere(), pending,
-        cadence: AUDIT_HELPER_ONLY ? { quietMs: AUDIT_QUIET_MS, maxWaitMs: AUDIT_MAX_WAIT_MS } : null });
+        cadence: AUDIT_HELPER_ONLY ? { quietMs: AUDIT_QUIET_MS, maxWaitMs: AUDIT_MAX_WAIT_MS } : null,
+        quarantine: await quarantineView() });
     }
     // ...and the write that puts a judgement there. Owner-only by POSITION (below tokenGate), the
     // same access model as the trail above. It appends to a SEPARATE file and never opens

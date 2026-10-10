@@ -837,6 +837,9 @@ audits)
 # it judges, and /api/sessions already carries the live half (postLandAuditLive).
 # READ ONLY, and it judges nothing: the adjudication shown is the rail's, verbatim, and a red row
 # without one is printed as `adj none` — never as a flake this verb decided it looks like.
+# THE QUARANTINE rides on the same route (server.ts#quarantineView): each entry with its date and
+# reason above the rows, and per row the checks that failed under it (`quar [...]`) — a
+# quarantined failure decides no verdict, so this is the place it must stay visible.
   last=""; fail=""; sha=""; want=""
   for a in "$@"; do
     if [ -n "$want" ]; then
@@ -929,12 +932,22 @@ const rowLine = (p) => {
   const c = p.checks === null ? "checks unmeasured"
     : `checks ${p.checks.ranIsLowerBound ? "≥" : ""}${p.checks.ran} ran/${p.checks.failed} failed`;
   const f = p.fails === null ? "fails -" : p.fails.length ? `fails [${p.fails.join(", ")}]` : "fails none";
+  const q = p.checks?.quarantined?.length ? `  quar [${p.checks.quarantined.join(", ")}]` : "";
   const a = p.adjudication
     ? `adj ${p.adjudication.verdict} (${typeof p.adjudication.by === "string" ? p.adjudication.by : JSON.stringify(p.adjudication.by)})${p.adjudication.note ? ` "${String(p.adjudication.note).slice(0, 80)}"` : ""}`
     : "adj none";
   return `${p.time ?? "?"}  ${String(p.result).padEnd(7)}  ${short(p.mainSha) || "-"}  covers ${p.covers.join(", ") || "-"}`
-    + `${p.proportional ? "  proportional" : ""}  ${c}  ${f}  ${a}${p.reason ? `  reason: ${String(p.reason).slice(0, 120)}` : ""}`;
+    + `${p.proportional ? "  proportional" : ""}  ${c}  ${f}${q}  ${a}${p.reason ? `  reason: ${String(p.reason).slice(0, 120)}` : ""}`;
 };
+
+// the quarantine, three states never printed as each other: an absent field is an older server
+const quar = r.body.quarantine;
+const quarLines = !quar ? ["quarantine: UNKNOWN — the route carried no quarantine field"]
+  : quar.state === "absent" ? ["quarantine: no e2e/quarantine.json in the server's tree"]
+  : quar.state === "unreadable" ? [`quarantine: UNREADABLE — ${quar.why} (the suite refuses to start on it)`]
+  : quar.entries.length === 0 ? ["quarantine: empty — every failing check counts"]
+  : [`quarantine: ${quar.entries.length} check(s) run but do not decide a verdict`,
+    ...quar.entries.map((e) => `  QUAR  ${e.name}  since ${e.since}  audit ${short(e.auditSha)}  reason: ${e.reason}`)];
 
 const lines = [liveLine];
 const more = total > all.length ? `; ${total - all.length} older row(s) not delivered — raise --last` : "";
@@ -949,9 +962,10 @@ else if (shaInfo) lines.push(`sha ${shaQ}: ${shaInfo.matched} row(s) ran on it o
 if (failInfo)
   lines.push(`fail "${failQ}": in ${failInfo.count} of ${failInfo.of} row(s)${shaQ ? " matching the sha" : " delivered"}`
     + ` — ${failInfo.withFails} of them carry a fails list; ${failInfo.of - failInfo.withFails} carry none (an unknown row, or one older than the field) and sit in the denominator unmeasured`);
+lines.push(...quarLines);
 for (const p of shown) lines.push(rowLine(p));
 out({ live: liveKnown ? live : "unknown", total, delivered: all.length, limit, malformed: r.body.malformed ?? 0,
-  configured: r.body.configured ?? null, sha: shaInfo, fail: failInfo, audits: shown }, lines);
+  configured: r.body.configured ?? null, quarantine: quar ?? "unknown", sha: shaInfo, fail: failInfo, audits: shown }, lines);
 process.exit(shaInfo && shaInfo.matched === 0 ? 1 : 0);
 EOF
   js_run

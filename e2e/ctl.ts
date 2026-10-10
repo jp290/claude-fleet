@@ -30,7 +30,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { BASE, REPO, ROOT, TOKEN, check, get, post, restartSrv, stopSrv, tmuxOut, results } from "./harness";
+import { BASE, QUARANTINE_LINE_PREFIX, REPO, ROOT, TOKEN, check, get, post, restartSrv, stopSrv, tmuxOut, results } from "./harness";
 import { openLane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { gitWorkTreeVerdict, probeSourceTree, type SourceTreeProbe } from "./trail-emit";
 
@@ -1373,6 +1373,121 @@ await import(pathToFileURL(process.argv[2]).href);
       unknownSha.code === 1 && unknownSha.out.includes("sha 0123abcd: UNKNOWN to the trail")
         && unknownSha.out.includes("among 4 delivered") && badSha.code === 2 && badSha.err.includes("--sha wants"),
       `unknown exit ${unknownSha.code} out=${JSON.stringify(unknownSha.out.slice(0, 300))} bad exit ${badSha.code}`);
+
+    // (Q) THE QUARANTINE (e2e/quarantine.json), at its three seams: the choke point that prints and
+    // counts (e2e/harness.ts#check), the reader that turns a suite's output into an audit row's
+    // `checks` (server.ts#postLandAuditChecks), and this verb, which must show both the list and
+    // the names a row carries. A quarantined failure decides no verdict, so each seam is held to
+    // keeping it VISIBLE.
+    // (Q1) the REAL harness.ts in a child, against a fixture list — never against this run's own
+    // list, which a check must not edit under itself. Its own root: harness.ts reads fleet.json one
+    // level up, and the JSON import beside it is the list under test. The trail goes to a scratch
+    // dir so the marked row can be read back.
+    // MUTATIONS: count a QUAR in `failed` ⇒ failures=2 ⇒ red; match by prefix instead of exact name
+    // ⇒ the neighbour prints QUAR ⇒ red; drop the trail mark ⇒ red.
+    const qRoot = `${ROOT}/ctl-quarantine-probe`;
+    rmSync(qRoot, { recursive: true, force: true });
+    mkdirSync(`${qRoot}/e2e/trail`, { recursive: true });
+    try {
+      writeFileSync(`${qRoot}/fleet.json`, "{}\n");
+      for (const f of ["harness.ts", "trail-emit.ts"]) writeFileSync(`${qRoot}/e2e/${f}`, readFileSync(`${import.meta.dir}/${f}`, "utf8"));
+      const entry = (name: string) => ({ name, since: "2001-09-09", auditSha: "abcdef0", reason: "ctl fixture" });
+      writeFileSync(`${qRoot}/e2e/quarantine.json`, JSON.stringify([entry("quarfixture flaky"), entry("quarfixture passing")]));
+      writeFileSync(`${qRoot}/e2e/drive.ts`, [
+        'import { check, failures, quarantineFailures, quarantineLine, results } from "./harness";',
+        'check("quarfixture flaky", false, "boom");',
+        'check("quarfixture passing", true);',
+        'check("quarfixture flaky neighbour", false);',
+        'console.log(JSON.stringify({ results, failures: failures(), quar: quarantineFailures(), line: quarantineLine() }));',
+      ].join("\n"));
+      const child = spawnSync(process.execPath, [`${qRoot}/e2e/drive.ts`], { encoding: "utf8", timeout: 30_000,
+        env: { ...process.env, FLEET_E2E_TRAIL_DIR: `${qRoot}/e2e/trail`, FLEET_E2E_PHASES: "0" } });
+      const got = ((): { results: string[]; failures: number; quar: string[]; line: string } | null => {
+        try { return JSON.parse((child.stdout ?? "").trim().split("\n").at(-1) ?? ""); } catch { return null; }
+      })();
+      check("quarantine: a listed check that fails prints QUAR and is not counted; a listed pass prints PASS; an unlisted neighbour stays FAIL",
+        child.status === 0 && got !== null
+          && JSON.stringify(got.results) === JSON.stringify(["QUAR  quarfixture flaky  (boom)", "PASS  quarfixture passing", "FAIL  quarfixture flaky neighbour"])
+          && got.failures === 1 && JSON.stringify(got.quar) === '["quarfixture flaky"]'
+          && got.line === `${QUARANTINE_LINE_PREFIX}["quarfixture flaky"]`,
+        `exit ${child.status} out=${(child.stdout ?? "").slice(-400)} err=${(child.stderr ?? "").slice(0, 300)}`);
+      const trailRows = ((): { check?: string; ok?: boolean; quarantined?: boolean }[] => {
+        try {
+          return spawnSync("sh", ["-c", `cat "${qRoot}/e2e/trail/"*.jsonl`], { encoding: "utf8" }).stdout
+            .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+        } catch { return []; }
+      })();
+      const rowOf = (name: string) => trailRows.find((r) => r.check === name);
+      check("quarantine: the trail keeps the quarantined failure as ok:false, marked quarantined — and marks nothing else",
+        trailRows.length === 3 && rowOf("quarfixture flaky")?.ok === false && rowOf("quarfixture flaky")?.quarantined === true
+          && rowOf("quarfixture passing")?.ok === true && rowOf("quarfixture passing")?.quarantined === undefined
+          && rowOf("quarfixture flaky neighbour")?.ok === false && rowOf("quarfixture flaky neighbour")?.quarantined === undefined,
+        JSON.stringify(trailRows).slice(0, 600));
+      // a list nobody can read stops the run before any check — it never quarantines nothing, or everything
+      writeFileSync(`${qRoot}/e2e/quarantine.json`, JSON.stringify([{ name: "quarfixture flaky", since: "2001-09-09", reason: "no sha" }]));
+      const broken = spawnSync(process.execPath, [`${qRoot}/e2e/drive.ts`], { encoding: "utf8", timeout: 30_000,
+        env: { ...process.env, FLEET_E2E_TRAIL_DIR: "" } });
+      check("quarantine: a malformed list throws before any check runs",
+        broken.status !== 0 && (broken.stderr ?? "").includes("e2e/quarantine.json: entry 0: auditSha") && !(broken.stdout ?? "").includes("results"),
+        `exit ${broken.status} err=${(broken.stderr ?? "").slice(0, 300)}`);
+    } finally {
+      rmSync(qRoot, { recursive: true, force: true });
+    }
+
+    // (Q2) the server's reader, lifted out of THIS tree's server.ts (the e2e/api-stall.ts pattern) and
+    // fed the harness's own line shapes — the prefix comes from harness.ts, so a server copy that
+    // drifted from it fails here. MUTATIONS: stop counting QUAR in `ran` ⇒ ran 2 ⇒ red; count it in
+    // `failed` ⇒ null on an exit-0 run ⇒ red; drop the JSON-line reader ⇒ the tail case names nobody ⇒ red.
+    const serverSrc = readFileSync(`${ROOT}/server.ts`, "utf8");
+    const srvFn = (name: string): string => {
+      const m = new RegExp(`^function ${name}\\b`, "m").exec(serverSrc);
+      const end = m ? serverSrc.indexOf("\n}", m.index) : -1;
+      return m && end >= 0 ? serverSrc.slice(m.index, end + 2) : `function ${name}() { throw new Error("${name} not found in server.ts"); }`;
+    };
+    const srvConst = (name: string): string => new RegExp(`^const ${name} = [^\\n]+$`, "m").exec(serverSrc)?.[0] ?? "";
+    type Counted = { ran: number; failed: number; ranIsLowerBound?: true; quarantined?: string[] } | null;
+    type ParseFn = (text: string, exitCode: number, fails?: string[], complete?: boolean) => Counted;
+    let parse = null as ParseFn | null;
+    let parseErr = "";
+    try {
+      parse = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync([
+        srvConst("HELPER_FAILS_KEEP"), srvConst("HELPER_FAIL_NAME_MAX"), srvConst("QUARANTINE_LINE_PREFIX"),
+        srvFn("printableShort"), srvFn("helperFailNames"), srvFn("postLandAuditTrailCount"),
+        srvFn("localQuarNames"), srvFn("postLandAuditChecks"), "return postLandAuditChecks;",
+      ].join("\n")))() as ParseFn;
+    } catch (e) { parseErr = e instanceof Error ? e.message : String(e); }
+    const fullOut = ["PASS  quarparse one", "QUAR  quarparse flaky  (boom)", "PASS  quarparse two",
+      `${QUARANTINE_LINE_PREFIX}["quarparse flaky"]`, "", "ALL PASS"].join("\n");
+    const full = parse?.(fullOut, 0, undefined, true) ?? null;
+    check("quarantine: an audit row counts a QUAR line as ran, never as failed, and names it",
+      JSON.stringify(full) === JSON.stringify({ ran: 3, failed: 0, quarantined: ["quarparse flaky"] }),
+      `got=${JSON.stringify(full)}${parseErr ? ` lift failed: ${parseErr}` : ""}`);
+    const tailOnly = parse?.(["PASS  quarparse two", `${QUARANTINE_LINE_PREFIX}["quarparse flaky"]`, "", "ALL PASS"].join("\n"), 0) ?? null;
+    check("quarantine: a helper's tail that lost the QUAR line still names it from the runner's line above the tail",
+      JSON.stringify(tailOnly) === JSON.stringify({ ran: 1, failed: 0, ranIsLowerBound: true, quarantined: ["quarparse flaky"] }),
+      `got=${JSON.stringify(tailOnly)}`);
+
+    // (Q3) the verb: the list from the route with reason and date, and a row's quarantined names.
+    // The instance's own e2e/quarantine.json is what the route reads (server.ts#QUARANTINE_FILE); it
+    // is swapped for a fixture and put back byte-for-byte.
+    const qFile = `${ROOT}/e2e/quarantine.json`;
+    const qBefore = existsSync(qFile) ? readFileSync(qFile, "utf8") : null;
+    try {
+      writeFileSync(qFile, JSON.stringify([{ name: "ctlfixture quar", since: "2001-09-09", auditSha: "abcdef0123", reason: "ctl fixture: red twice, untouched surface" }]));
+      writeFileSync(`${ROOT}/post-land-audits.jsonl`, JSON.stringify(
+        row(T + 5, "green", "f6", "fleet/ctl-fix-q", { checks: { ran: 100, failed: 0, quarantined: ["ctlfixture quar"] }, fails: [] })) + "\n");
+      const qPlain = await ctl(["audits"]);
+      const qJs = (await ctl(["audits", "--json"])).json as { quarantine?: { state?: string; entries?: { name: string }[] } } | null;
+      const qRow = qPlain.out.split("\n").find((l) => l.startsWith("2001-")) ?? "";
+      check("ctl audits: the quarantine is listed with its date, audit sha and reason, and a row names the checks it held",
+        qPlain.code === 0 && qPlain.out.includes("quarantine: 1 check(s) run but do not decide a verdict")
+          && qPlain.out.includes("  QUAR  ctlfixture quar  since 2001-09-09  audit abcdef0123  reason: ctl fixture: red twice, untouched surface")
+          && qRow.includes("checks 100 ran/0 failed") && qRow.includes("quar [ctlfixture quar]")
+          && qJs?.quarantine?.state === "read" && qJs.quarantine.entries?.[0]?.name === "ctlfixture quar",
+        `exit ${qPlain.code} out=${JSON.stringify(qPlain.out.slice(0, 600))}`);
+    } finally {
+      if (qBefore === null) rmSync(qFile, { force: true }); else writeFileSync(qFile, qBefore);
+    }
 
     // (4) an EMPTY ledger is its own sentence, not a blank screen and not an error
     for (const p of ledgers) rmSync(p, { force: true });

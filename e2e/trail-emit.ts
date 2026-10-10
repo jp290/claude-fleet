@@ -352,6 +352,10 @@ export interface TrailRow {
   offered?: boolean;
   check: string;
   ok: boolean;
+  // present (and only ever `true`) on a FAILING check whose exact name stands in e2e/quarantine.json:
+  // the suite printed it as QUAR and did not count it, but the observation is kept as what it was —
+  // `ok:false` — so a flake query over the trail still sees every red (e2e/harness.ts#check)
+  quarantined?: true;
   // NOT the check's own runtime: check() is handed an already-computed boolean, so the only
   // truthful measurement available at the choke point is the wall clock since the previous check
   // returned — the cost of getting from there to here. Named for what it is; a field called "ms"
@@ -389,7 +393,8 @@ export const actorFields = (
   ...(offered === null ? {} : { offered }),
 });
 
-export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): TrailRow => ({
+export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev: number, ts: number,
+  quarantined = false): TrailRow => ({
   v: TRAIL_SCHEMA,
   run: TRAIL_RUN,
   suite: TRAIL_SUITE,
@@ -399,6 +404,7 @@ export const trailRow = (check: string, ok: boolean, detail: string, msSincePrev
   ...actorFields(TRAIL_SLOT, TRAIL_BRANCH, TRAIL_OFFERED),
   check,
   ok,
+  ...(!ok && quarantined ? { quarantined: true as const } : {}),
   msSincePrev,
   ts,
   ...(!ok && detail
@@ -412,7 +418,8 @@ let stopped = false;
 // The trail is an observation sink hanging off the suite's choke point: it must never change a
 // run's outcome. A write that fails stops the trail for the rest of the run instead of throwing
 // — the loss is visible as the missing/short file, which e2e/trail.ts asserts on.
-export function writeTrailRow(check: string, ok: boolean, detail: string, msSincePrev: number, ts: number): void {
+export function writeTrailRow(check: string, ok: boolean, detail: string, msSincePrev: number, ts: number,
+  quarantined = false): void {
   // cut BEFORE the early return: a disabled trail must not carry one run's phases into nothing
   const cut = PHASES_ON ? phaseClock.cut(ts) : null;
   if (stopped || !trailFile) return;
@@ -421,7 +428,7 @@ export function writeTrailRow(check: string, ok: boolean, detail: string, msSinc
       mkdirSync(dirname(trailFile), { recursive: true });
       fd = openSync(trailFile, "a");
     }
-    const row = trailRow(check, ok, detail, msSincePrev, ts);
+    const row = trailRow(check, ok, detail, msSincePrev, ts, quarantined);
     writeSync(fd, `${JSON.stringify(cut ? withPhases(row, cut) : row)}\n`);
   } catch {
     stopped = true;

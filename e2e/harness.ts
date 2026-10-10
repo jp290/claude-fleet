@@ -4,6 +4,9 @@ import { resolve } from "node:path";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { installPhaseProbes, timed, writeTrailRow } from "./trail-emit";
+// IMPORTED, not read by path: e2e-stage.sh copies an instance's files by following relative imports
+// (e2e-stage.sh#_stage_closure), so this import is what carries the list into every suite instance
+import QUARANTINE_RAW from "./quarantine.json";
 
 export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
@@ -69,17 +72,60 @@ export const results: string[] = [];
 let failed = 0;
 export const failures = (): number => failed;
 
+// THE QUARANTINE — known flakes that still RUN but no longer decide a verdict. One entry per check,
+// matched on the EXACT name check() is called with: no prefix, no pattern, so an entry can never
+// swallow a neighbour, and a renamed check falls out of quarantine and counts again. An entry goes in
+// only by a committed line with its reason (the check was red twice without a diff touching its
+// surface, or it was adjudicated flake) and comes out only by the repair. A quarantined failure is
+// never silent: it prints as `QUAR  <name>` where a FAIL would stand, the runner names it above its
+// tail, the post-land audit row counts it as ran and lists it (server.ts#postLandAuditChecks), and
+// `./ctl.sh audits` prints the list with reason and date. The trail keeps its row `ok:false`, marked
+// `quarantined` (e2e/trail-emit.ts), so the flake statistics go on seeing every red.
+// A malformed file THROWS here, before any check: a list nobody can read must stop the run rather
+// than quietly quarantine nothing — or everything.
+export interface QuarantineEntry { name: string; since: string; auditSha: string; reason: string }
+export function parseQuarantine(raw: unknown): QuarantineEntry[] {
+  const bad = (why: string): never => { throw new Error(`e2e/quarantine.json: ${why}`); };
+  if (!Array.isArray(raw)) bad("must be a JSON array of {name, since, auditSha, reason}");
+  const seen = new Set<string>();
+  return (raw as unknown[]).map((e, i) => {
+    const o = (e && typeof e === "object" && !Array.isArray(e) ? e : bad(`entry ${i} is not an object`)) as Record<string, unknown>;
+    const str = (k: string): string => typeof o[k] === "string" && (o[k] as string).trim() ? o[k] as string : bad(`entry ${i}: ${k} must be a non-empty string`);
+    const entry = { name: str("name"), since: str("since"), auditSha: str("auditSha"), reason: str("reason") };
+    if (!/^\d{4}-\d{2}-\d{2}/.test(entry.since)) bad(`entry ${i}: since must start with a YYYY-MM-DD date`);
+    if (!/^[0-9a-f]{7,40}$/.test(entry.auditSha)) bad(`entry ${i}: auditSha must be 7..40 lowercase hex`);
+    if (seen.has(entry.name)) bad(`entry ${i}: ${JSON.stringify(entry.name)} is listed twice`);
+    seen.add(entry.name);
+    return entry;
+  });
+}
+export const QUARANTINE: readonly QuarantineEntry[] = parseQuarantine(QUARANTINE_RAW);
+const quarantined = new Set(QUARANTINE.map((e) => e.name));
+const quarFailed: string[] = [];
+// the names that failed under quarantine in this run, in order — never part of failures()
+export const quarantineFailures = (): readonly string[] => quarFailed;
+// the runner's line just above its tail (fleet-e2e.ts): the QUAR result lines sit far up in a long
+// result list, and a helper reports only the last 4 KB, so this is the line that carries the names
+// into a remote audit row. JSON, so a name with any character survives the round trip. Empty when
+// nothing failed under quarantine — the tail then reads exactly as it always has.
+export const QUARANTINE_LINE_PREFIX = "quarantined failures (not counted): ";
+export const quarantineLine = (): string =>
+  quarFailed.length ? `${QUARANTINE_LINE_PREFIX}${JSON.stringify(quarFailed)}` : "";
+
 // wall clock at the previous check's return — module init is suite start, so the first row
 // measures from there (see trail-emit.ts on why this is msSincePrev and not a duration)
 let prevCheck = Date.now();
 
 export function check(name: string, ok: boolean, detail = ""): void {
   const ts = Date.now();
-  results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
+  // a PASSING quarantined check prints PASS: quarantine changes what a failure counts, never a pass
+  const quar = !ok && quarantined.has(name);
+  results.push(`${ok ? "PASS" : quar ? "QUAR" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+  if (quar) quarFailed.push(name);
+  else if (!ok) failed++;
   // the choke point is also the trail's only emit site: every check, exactly one durable row,
   // no call site able to opt out (docs/e2e-trail.md). It never throws — see writeTrailRow.
-  writeTrailRow(name, ok, detail, ts - prevCheck, ts);
+  writeTrailRow(name, ok, detail, ts - prevCheck, ts, quar);
   prevCheck = ts;
 }
 

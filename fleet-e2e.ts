@@ -24,7 +24,7 @@
 // passed, so the land gate and the post-land audit never set it (pinned), and a filtered RED alone
 // does not distinguish a product failure from missing setup. Both filters at once is refused —
 // nobody has measured that. Contract and the fixture record: docs/verify-tiering.md §16.
-import { REPO, SOCK, check, failures, post, results } from "./e2e/harness";
+import { REPO, SOCK, check, failures, post, quarantineLine, results } from "./e2e/harness";
 import { newCtx, parseShard, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
 import * as contextPacks from "./e2e/context-packs";
@@ -488,5 +488,8 @@ if (shard) {
   for (const u of ran) console.log(`shard-unit ${u} ${unitMs.get(u) ?? 0} ms`);
 }
 console.log(results.join("\n"));
+// a quarantined failure is named right above the tail, never only far up in the list: it does not
+// decide the verdict below, and a reader of the tail must still meet it (e2e/harness.ts#check)
+if (quarantineLine()) console.log(quarantineLine());
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);

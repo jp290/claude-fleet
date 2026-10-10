@@ -1,6 +1,6 @@
 import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
-import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, SESSION_AGENTS_LIMIT } from "./session-agents";
+import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
@@ -20372,22 +20372,50 @@ function availableContextPlan(plan: ContextPlan): ContextPlan {
 // (context-plan.ts#renderPrivatePackLines) — the one part of the block a receipt row does not carry
 // byte for byte: the private root is the server's local fact and stays out of the ledger on purpose,
 // the verdict and the version are on the row.
-function renderContextAnchorBlock(input: ContextPlan): string {
+// `boxed` (startBoxParts) is what a MAIN's or the Orchestratorin's plan puts on box: those parts leave
+// the pointer list and follow it verbatim, a pack whose every part is boxed states no pointer (as in
+// the lane file, session-agents.ts#renderSessionAgents). Without it the block is byte for byte the old one.
+const START_BOX_HEAD = "Im Start mitgeliefert (box, woertlich aus dem Baum am Plan-HEAD; bindend wie die Quelle):";
+function renderContextAnchorBlock(input: ContextPlan, boxed: readonly SessionAgentsPart[] = []): string {
   const plan = availableContextPlan(input);
   if (plan.selected.length === 0) return "";
-  const lines = ["ContextPlan v2 anchors (fresh pointers; no source content is copied):"];
+  const carried = new Map(boxed.filter((part) => part.content !== null && plan.selected.some((pack) => pack.id === part.packId))
+    .map((part) => [part.id, part]));
+  const lent = (pack: ContextPlanSelection, source: { readonly id?: string }, index: number): boolean =>
+    !carried.size || !carried.has(contextPartId(pack.id, source, index));
+  const lines = [carried.size ? "ContextPlan v2 anchors (fresh pointers; the box parts after them are copied verbatim):"
+    : "ContextPlan v2 anchors (fresh pointers; no source content is copied):"];
   for (const hardness of ["hard", "guidance"] as const) {
-    const packs = plan.selected.filter((pack) => pack.hardness === hardness);
+    const packs = plan.selected.filter((pack) => pack.hardness === hardness
+      && ("privateSourceId" in pack.sources || pack.sources.some((source, index) => lent(pack, source, index))));
     if (packs.length === 0) continue;
     lines.push(hardness === "hard" ? "Bindend (hard):" : "Hinweise (guidance):");
     for (const pack of packs) {
       const label = `- ${pack.id} [${pack.hardness}]`;
       lines.push(pack.useWhen ? `${label} — ${pack.useWhen}` : label);
       if ("privateSourceId" in pack.sources) lines.push(...renderPrivatePackLines(privatePackResolutionOf(pack, pack.sources.privateSourceId)));
-      else for (const source of pack.sources) lines.push(`  ${source.path} | ${source.anchor}`);
+      else for (const [index, source] of pack.sources.entries()) if (lent(pack, source, index)) lines.push(`  ${source.path} | ${source.anchor}`);
     }
   }
-  return `\n\n${lines.join("\n")}`;
+  if (!carried.size) return `\n\n${lines.join("\n")}`;
+  const box = [...carried.values()].map((part) => `--- ${part.packId} · ${part.path} | ${part.anchor} ---\n${part.content}`);
+  return `\n\n${lines.join("\n")}\n\n${START_BOX_HEAD}\n\n${box.join("\n")}`;
+}
+
+// THE BOX OF A START WITHOUT A SESSION FILE (Befund F3/F4, docs/messungen/2026-10-10-kontext-bestandteile.md):
+// a Claude MAIN or Orchestratorin starts over /open, the Program-MAIN brief or the Orchestratorin card,
+// and since f91136eb loads no AGENTS.md natively. The parts its plan puts on box ride in that brief,
+// taken from the renderer and the head the founding window measures (foundingSessionInput +
+// renderSessionAgents), so the window's box parts are the delivered bytes. Codex and Pi keep their
+// path (contract native, the rest a pointer): for them the box is empty and the block unchanged.
+function startBoxParts(input: SessionAgentsInput): SessionAgentsPart[] {
+  if (harnessFamilie(resolveContextHarness(input.harness)) !== "claude") return [];
+  return renderSessionAgents(input).parts.filter((part) => part.packId !== null && part.ort === "box" && part.content !== null);
+}
+async function startBoxPartsAt(at: { readonly repoRoot: string; readonly head: string }, plan: ContextPlan, harness: string | null,
+  position: "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>): Promise<SessionAgentsPart[]> {
+  if (harnessFamilie(resolveContextHarness(harness)) !== "claude") return [];
+  return startBoxParts(await foundingSessionInput({ ...at, plan }, harness, position, selection, ""));
 }
 
 function contextReceiptSelections(selected: readonly ContextPlanSelection[], agents?: SessionAgents): ContextReceiptSelection[] {
@@ -40088,6 +40116,9 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     Object.assign(bytes, measured.bytes);
     Object.assign(details, measured.details);
     if (forced.size) enthaltenIn["portable-contract"] = "context-anchors";
+    // a Claude MAIN or Orchestratorin gets the contract as its pack's box part in the brief (startBoxParts)
+    const contract = o.rolle === "lane" ? undefined : startBoxParts(input).find((part) => part.id === "portable-core.contract");
+    if (contract?.bytes != null) { bytes["portable-contract"] = contract.bytes; enthaltenIn["portable-contract"] = "pack:portable-core"; }
     for (const pack of packs) enthaltenIn[`pack:${pack.packId}`] = "context-anchors";
     return { bytes, enthaltenIn, details };
   });
@@ -40290,7 +40321,7 @@ type AcceptedFoundingPlan = {
 const PLAN_NUR_DISPATCH = "nur die Dispatch-Gruendung einer Karte liefert das";
 function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly harness: string; readonly repoRoot: string;
   readonly orchestratorCard: boolean; readonly packsOn: boolean; readonly laneFooterOn: boolean;
-  readonly selected: ReadonlySet<string> }): PlanDoorRow {
+  readonly contractPackOn: boolean; readonly selected: ReadonlySet<string> }): PlanDoorRow {
   const familie = harnessFamilie(ctx.harness);
   const claude = familie === "claude";
   if (row.id.startsWith("pack:")) {
@@ -40301,7 +40332,11 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
   }
   switch (row.id) {
     case "spawn-profile": case "self-credential": return { immer: "plan" };
-    case "portable-contract": return door === "lane" && familie !== "claude" ? { immer: "Session-Datei" } : { immer: "native Datei" };
+    case "portable-contract":
+      // carried as pack:portable-core's box part (foundingSessionPlan): it crosses with that pack, or not at all
+      if (door === "open" && row.enthaltenIn === "pack:portable-core")
+        return ctx.contractPackOn ? { immer: "Prompt" } : { nie: "das Pack portable-core ist aus, und Claude laedt AGENTS.md hier nicht nativ (server.ts#agentCmd)" };
+      return door === "lane" && familie !== "claude" ? { immer: "Session-Datei" } : { immer: "native Datei" };
     case "native-agents": return { immer: "native Datei" };
     case "auto-memory": return claude && door !== "lane" && row.bedingung?.erfuellt !== false ? { immer: "native Datei" }
       : { nie: !claude ? "nur Claude laedt ein Auto-Memory" : door === "lane" ? "eine Claude-Lane startet ohne Auto-Memory (server.ts#agentCmd)"
@@ -40392,6 +40427,7 @@ function planDoorVerdict(plan: SessionPlan, fp: FoundingPlan, door: PlanDoor, or
   const ctx = { harness: plan.harness, repoRoot: fp.repoRoot, orchestratorCard,
     packsOn: plan.bausteine.some((row) => row.id.startsWith("pack:") && row.zustand === "an"),
     laneFooterOn: zustand.get("lane-footer") === "an",
+    contractPackOn: zustand.get("pack:portable-core") === "an",
     selected: new Set(fp.plan.selected.map((pack) => pack.id)) };
   const geliefert: { id: string; weg: PlanWeg }[] = [];
   const ausgelassen: { id: string; grund: string }[] = [];
@@ -40448,7 +40484,7 @@ const sha256Of = (text: string): string => createHash("sha256").update(text).dig
 // `sent.plan` is the plan the block was rendered from AFTER availability (availableContextPlan): a
 // pack the plan chose but the block could not carry (a private source gone missing) is left out with
 // that reason, never listed as delivered.
-type PlanSent = { readonly anchorBlock: string; readonly plan: ContextPlan; readonly fehlt?: string };
+type PlanSent = { readonly anchorBlock: string; readonly plan: ContextPlan; readonly boxed?: readonly SessionAgentsPart[]; readonly fehlt?: string };
 function planReceiptBlock(acc: AcceptedFoundingPlan, sent: PlanSent | { failed: string } | null): Record<string, unknown> {
   const { answer } = acc;
   const geliefert: Record<string, unknown>[] = [];
@@ -40486,7 +40522,8 @@ function planReceiptBlock(acc: AcceptedFoundingPlan, sent: PlanSent | { failed: 
           ausgelassen.push({ id: row.id, grund: `Zustellung: nicht im gesendeten Block${dropped ? ` (${dropped.why}${reason})` : sent.fehlt ? ` (${sent.fehlt})` : ""}` });
           continue;
         }
-        const without = renderContextAnchorBlock({ selected: sent.plan.selected.filter((pack) => pack.id !== packId), omitted: [] });
+        const without = renderContextAnchorBlock({ selected: sent.plan.selected.filter((pack) => pack.id !== packId), omitted: [] },
+          (sent.boxed ?? []).filter((part) => part.packId !== packId));
         bytes = Buffer.byteLength(sent.anchorBlock) - Buffer.byteLength(without);
         fassung = packFassung(row.id);
       } else if (row.id === "context-anchors" && sent.anchorBlock === "") {
@@ -41420,6 +41457,8 @@ type OrchestratorFoundingContext = {
   readonly omitted: ContextPlan["omitted"];
   /** the plan the anchor block was rendered from, after availability — what a plan receipt measures against */
   readonly deliveryPlan: ContextPlan;
+  /** the plan's box parts the block carries verbatim (startBoxPartsAt) */
+  readonly boxed: readonly SessionAgentsPart[];
 };
 async function orchestratorFoundingContext(cwd: string, harness: string | null): Promise<
   { readonly ok: true; readonly value: OrchestratorFoundingContext }
@@ -41430,8 +41469,9 @@ async function orchestratorFoundingContext(cwd: string, harness: string | null):
   const facts = programMainContextFacts(preflight.value.frame, harness, "orchestratorin");
   const plan = await programMainContextPlan(preflight.value, facts);
   const deliveryPlan = availableContextPlan(plan);
-  return { ok: true, value: { anchorBlock: renderContextAnchorBlock(deliveryPlan), preflight: preflight.value,
-    facts, selected: contextReceiptSelections(deliveryPlan.selected), omitted: deliveryPlan.omitted.map((entry) => ({ ...entry })), deliveryPlan } };
+  const boxed = await startBoxPartsAt(preflight.value, deliveryPlan, harness, "orchestratorin");
+  return { ok: true, value: { anchorBlock: renderContextAnchorBlock(deliveryPlan, boxed), preflight: preflight.value,
+    facts, selected: contextReceiptSelections(deliveryPlan.selected), omitted: deliveryPlan.omitted.map((entry) => ({ ...entry })), deliveryPlan, boxed } };
 }
 
 async function appendOrchestratorReceipt(s: Slot, ctx: OrchestratorFoundingContext,
@@ -41481,7 +41521,7 @@ async function deliverOrchestratorSpawnCard(s: Slot, acc?: AcceptedFoundingPlan)
   logPrompt(s, brief, "auto", at);
   // the card crossed either way; without a context plan it crossed with no anchors, and the plan's
   // receipt row still says so — the planned start is receipted even where the old row is not
-  const planBlock = acc ? planReceiptBlock(acc, ctx.ok ? { anchorBlock: ctx.value.anchorBlock, plan: ctx.value.deliveryPlan }
+  const planBlock = acc ? planReceiptBlock(acc, ctx.ok ? { anchorBlock: ctx.value.anchorBlock, plan: ctx.value.deliveryPlan, boxed: ctx.value.boxed }
     : { anchorBlock: "", plan: { selected: [], omitted: [] }, fehlt: `context plan unknown: ${ctx.error}` }) : null;
   if (ctx.ok) await appendOrchestratorReceipt(s, ctx.value, brief, at, planBlock);
   else if (acc && planBlock) await writePlanReceipt(s, acc, planBlock, brief);
@@ -41511,9 +41551,12 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { packsDelivered: false, reason: readiness.reason };
   const deliveryPlan = availableContextPlan({ selected: chosen, omitted: founding.plan.omitted });
-  const anchorBlock = renderContextAnchorBlock(deliveryPlan);
+  // a lane's packs keep the pointer block; a session without a worktree carries its box parts (startBoxPartsAt)
+  const boxed = s.worktree ? [] : await startBoxPartsAt(founding, deliveryPlan, s.harness,
+    acc?.answer.rolle === "orchestratorin" ? "orchestratorin" : "main", acc?.answer.selection);
+  const anchorBlock = renderContextAnchorBlock(deliveryPlan, boxed);
   const deliveredBrief = "[fleet] Diese Gruendung traegt die beim Spawn gewaehlten Kontext-Packs — Owner-Wahl,"
-    + " beratende Anker, kein Quelltext:\n" + anchorBlock;
+    + (boxed.length ? " die box-Teile woertlich, der Rest als Anker:\n" : " beratende Anker, kein Quelltext:\n") + anchorBlock;
   if (!stillCurrent()) return { packsDelivered: false, reason: "the slot changed before the packs were sent" };
   try {
     await sendText(s, deliveredBrief, true, { path: "founding" });
@@ -41533,7 +41576,7 @@ async function deliverFoundingPacks(s: Slot, founding: FoundingPlan,
   })).digest("hex");
   // A lane's own branch is the one the session sits on; a plain session names its checkout's.
   const branch = s.worktree?.branch ?? founding.branch;
-  const planBlock = acc ? planReceiptBlock(acc, { anchorBlock, plan: deliveryPlan }) : null;
+  const planBlock = acc ? planReceiptBlock(acc, { anchorBlock, plan: deliveryPlan, boxed }) : null;
   await appendEvent(CONTEXT_RECEIPT_FILE, {
     id: randomBytes(16).toString("hex"), hash, at, repo: founding.repoRoot, head: founding.head,
     taskId: s.taskId, originId: s.originId, programId: s.programId,
@@ -41735,9 +41778,10 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     const harness = s.harness;
     const planFacts = programMainContextFacts(preflight.value.frame, harness);
     const plan = availableContextPlan(await programMainContextPlan(preflight.value, planFacts));
+    const boxed = await startBoxPartsAt(preflight.value, plan, harness, "main");
     if (!predecessorCurrent())
       return await refuse(409, "Program-MAIN predecessor authority changed during context planning", "predecessor-revoked-before-open");
-    const anchorBlock = renderContextAnchorBlock(plan);
+    const anchorBlock = renderContextAnchorBlock(plan, boxed);
     const successorAt = { slot: s.id, openedAt: founding.target.openedAt };
     // THE OBLIGATIONS ARE CAPTURED HERE, before the brief that previews them and before the
     // state cut that persists them — one read, two consumers, so the preview can never name a
@@ -42221,7 +42265,7 @@ async function bootstrapProgramMainReserved(program: Program, body: Record<strin
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
       const plan = foundingPlan;
-      const anchorBlock = renderContextAnchorBlock(plan);
+      const anchorBlock = renderContextAnchorBlock(plan, await startBoxPartsAt(preflight.value, plan, free.harness, "main"));
       const deliveredBrief = buildProgramMainBrief(program, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);
       const omitted = plan.omitted.map((entry) => ({ ...entry }));

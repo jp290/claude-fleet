@@ -1,4 +1,4 @@
-import { laneExitLiveBauAct, renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT } from "../session-agents";
+import { contextPartId, laneExitLiveBauAct, renderSessionAgents, sessionExitFooter, SESSION_AGENTS_LIMIT, type SessionAgentsPart } from "../session-agents";
 import { sectionAt, sourceSection } from "../context-sections";
 // Pure ContextPlan v1 family. Direct entry point: bun e2e/context-plan.ts
 import {
@@ -13,7 +13,7 @@ import {
   type ContextPackCapability,
 } from "../context-packs";
 import { CONTEXT_PLAN_OMISSION_REASONS, PRIVATE_PACK_VERDICTS, PROGRAM_CONTEXT_PACKS_MAX, cardVariante, claudeMcpConfigFlag, packMcpAnschluss, planContext,
-  planMcpServers, planProgramContext, resolvePackAnatomy, resolveVariante, type ContextPlan,
+  planMcpServers, planProgramContext, resolveContextHarness, resolvePackAnatomy, resolveVariante, type ContextPlan,
   programContextPacksFrom, renderPrivatePackLines, resolvePrivatePack, validateProgramContextPacks } from "../context-plan";
 import { run as contextBorrowChecks } from "./context-borrow";
 import { KONZEPT_ID_RE } from "../konzept-ledger";
@@ -1536,6 +1536,58 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     check(`session agents: a claude ${position} carries the portable contract verbatim in its box, and the borrow control is rejected`,
       contractSource?.positions?.[position] === "box" && boxed(rendered) && !boxed(renderSessionAgents({ ...input, plan: borrowedPlan })),
       `${rendered.bytes} bytes; contract=${rendered.parts.find((part) => part.id === "portable-core.contract")?.bytes ?? "none"}`);
+  }
+  // THE START BRIEF CARRIES THE BOX (Befund F3/F4): a Claude MAIN or Orchestratorin gets no session file,
+  // so its brief's anchor block (server.ts#renderContextAnchorBlock, fed by server.ts#startBoxParts) must
+  // carry every part its plan puts on box verbatim — the same parts the founding window shows — and
+  // state no pointer for them. Both server functions are compiled out of the tree; the control renders
+  // the block without the box (the old pointer-only block) and must be rejected. Codex keeps its path.
+  const startStr = (name: string): string => {
+    const match = new RegExp(`const ${name} = "(?:\\\\.|[^"])*";`).exec(server);
+    if (!match) throw new Error(`session agents probe: missing ${name}`);
+    return match[0];
+  };
+  const startCompiled = new Bun.Transpiler({ loader: "ts" }).transformSync([startStr("START_BOX_HEAD"),
+    fn("renderContextAnchorBlock"), fn("startBoxParts"), "return { renderContextAnchorBlock, startBoxParts };"].join("\n"));
+  // the register's family word, compiled from its own source: server.ts stays session-blocks.ts's only importer (pins.ts S3)
+  const blocks = readFileSync(join(tree.root, "session-blocks.ts"), "utf8");
+  const familieAt = blocks.indexOf("export function harnessFamilie(");
+  const harnessFamilie = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
+    `${blocks.slice(familieAt + "export ".length, blocks.indexOf("\n}", familieAt) + 2)}\nreturn harnessFamilie;`))() as (harness: string) => string;
+  const startDeps = { renderSessionAgents, contextPartId, renderPrivatePackLines, resolveContextHarness, harnessFamilie,
+    // the server drops a private pack whose source is missing (availableContextPlan); here none is resolved
+    availableContextPlan: (plan: ContextPlan): ContextPlan => ({ selected: plan.selected.filter((pack) => !("privateSourceId" in pack.sources)), omitted: plan.omitted }),
+    privatePackResolutionOf: (): never => { throw new Error("no private pack in the start probe"); } };
+  const start = new Function(...Object.keys(startDeps), startCompiled)(...Object.values(startDeps)) as {
+    renderContextAnchorBlock: (plan: ContextPlan, boxed?: readonly SessionAgentsPart[]) => string;
+    startBoxParts: (input: Parameters<typeof renderSessionAgents>[0]) => SessionAgentsPart[];
+  };
+  const startCarries = (block: string, plan: ContextPlan, boxParts: readonly SessionAgentsPart[]): boolean => boxParts.length > 0
+    && boxParts.every((part) => part.content !== null && block.includes(`---\n${part.content}`) && !block.includes(`  ${part.path} | ${part.anchor}\n`)
+      && !block.endsWith(`  ${part.path} | ${part.anchor}`))
+    && plan.selected.every((pack) => "privateSourceId" in pack.sources || pack.sources.every((source, i) =>
+      boxParts.some((part) => part.id === contextPartId(pack.id, source, i)) || block.includes(`  ${source.path} | ${source.anchor}`)));
+  for (const [index, position] of (["main", "orchestratorin"] as const).entries()) {
+    const plan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["always", "verification", "orchestration"],
+      // server.ts#FLEET_CONTROL_CONTEXT_CAPABILITIES, the Program-MAIN and Orchestratorin facts of this tree
+      capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect", "task-queue-read",
+        "harness-adapter-read", "private-overlay-read", "deploy-observe"], position });
+    const input = { role: { text: templates.roles[index + 1]!, path: "server.ts", anchor: `${position}-role` }, position, harness: "claude",
+      plan, sourceBytes, footer: "" };
+    const windowBox = renderSessionAgents(input).parts.filter((part) => part.packId !== null && part.ort === "box");
+    const boxParts = start.startBoxParts(input);
+    const delivered = start.renderContextAnchorBlock(plan, boxParts);
+    const pointerOnly = start.renderContextAnchorBlock(plan);
+    check(`start brief: a claude ${position} carries every box part of its plan verbatim (contract included), exactly the window's, and the pointer-only control is rejected`,
+      boxParts.some((part) => part.id === "portable-core.contract" && part.content === contractSection)
+        && JSON.stringify(boxParts.map((part) => [part.id, part.sha256])) === JSON.stringify(windowBox.map((part) => [part.id, part.sha256]))
+        && startCarries(delivered, plan, boxParts) && !startCarries(pointerOnly, plan, boxParts),
+      `${position}: block ${Buffer.byteLength(pointerOnly)} -> ${Buffer.byteLength(delivered)} B; box ${boxParts.map((part) => `${part.id}=${part.bytes}`).join(",")}`);
+    const codexInput = { ...input, harness: "codex" };
+    check(`start brief: a codex ${position} keeps today's pointer block (no box in the brief)`,
+      start.startBoxParts(codexInput).length === 0
+        && start.renderContextAnchorBlock(plan, start.startBoxParts(codexInput)) === pointerOnly
+        && pointerOnly.startsWith("\n\nContextPlan v2 anchors (fresh pointers; no source content is copied):"));
   }
   const privateBytes = "Private knowledge supplied at the boundary.\n";
   const privateBox = renderSessionAgents({ ...base, selection: { "konzept-claude-fleet.private": "box" },

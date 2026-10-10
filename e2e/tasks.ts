@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
-import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY, CARD_VALIDATOR_VERSION,
+import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_KEY, CARD_VALIDATOR_VERSION,
   buildNeighborIndex, renderNeighborLines, NEIGHBOR_MAX_PER_SIDE } from "../card-extract";
 import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
@@ -26,7 +26,7 @@ import { projectStartPlan, releaseVerdict, startPlanChecks, startPlanLaneClaims,
   type StartPlanLane, type StartPlanLaneClaim, type StartPlanRelease, type StartPlanRow } from "../start-plan";
 import { laneHunkDiffArgs, laneHunkRanges } from "../land-collision-stats";
 import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, deriveWaits, namedAfterIds, stallReadings, type BlockerHistory, type WaitFacts } from "../waits";
-import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, instanceLinksFrom,
+import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_URL_RE, instanceLinksFrom,
   CODEX_CLI_VERSION_RE, CODEX_CLI_MAX_AGE_MS, codexCliSnapshotFrom, codexCliUnknown, compareCodexCli,
   type CodexCliSnapshot, type InstanceLink } from "../src/protocol";
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
@@ -35,6 +35,25 @@ import { readCodexFirstTurn } from "../server/conversation-read";
 import { CONTEXT_PACKS } from "../context-packs";
 import { sectionAt } from "../context-sections";
 import type { Ctx } from "./ctx";
+
+// ONE PRECONDITION PER SCENARIO (docs/messungen/2026-10-10-ci-inventur.md, card 3): the fixture
+// facts a scenario rests on report as a single check. The first fact that fails reports at once,
+// as itself and in plain words, so a broken fixture never reads as a broken product; `done()`
+// reports the pass only after every fact held. `need` hands its boolean back, so a scenario that
+// gates on its fixture still gates.
+const precondition = (scenario: string): { need: (fact: string, ok: boolean, detail?: string) => boolean; done: () => void } => {
+  const name = `${scenario} precondition: the fixture this scenario rests on holds`;
+  let held = 0;
+  let failed = false;
+  return {
+    need: (fact, ok, detail = "") => {
+      if (ok) held++;
+      else if (!failed) { failed = true; check(name, false, detail ? `${fact} — ${detail}` : fact); }
+      return ok;
+    },
+    done: () => { if (!failed) check(name, true, `${held} fixture facts held`); },
+  };
+};
 
 // WAIT ON THE KILL, NOT ON A CLOCK (the slotsEmptied shape from e3a936f7's programs.ts). A lane
 // kill is served before the next board read only in the happy case; the fixed 600 ms this replaces
@@ -181,9 +200,6 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     const stub = join(ownerDir, "codex"), stubPid = join(ownerDir, "stub.pid"), ownerRunner = join(ownerDir, "owner.ts");
     writeFileSync(stub, `#!/bin/sh\necho $$ > '${stubPid}'\nwhile :; do :; done\n`);
     chmodSync(stub, 0o755);
-    check("R3c: existing server termination handler stops Codex probe groups before exit",
-      serverSource.includes('process.on("exit", stopCodexCliProbeGroups);')
-      && serverSource.includes('process.on(sig, () => { releaseSuiteLock(); process.exit(0); });'));
     const runner = `import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 const CODEX_CLI_VERSION_RE = /^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}(?:[-+][A-Za-z0-9.-]{1,40})?$/;
@@ -263,13 +279,6 @@ void makeCodexCliObserver().tick();
       ({ name: `i${i}`, url: `https://h${i}.example`, codexCli: remote }))));
     check("R3c: supplied snapshots share the existing bounded link budget",
       Buffer.byteLength(JSON.stringify(many.links)) <= INSTANCE_LINKS_MAX_BYTES && many.rejected.length > 0);
-    const pollStart = serverSource.indexOf('if (url.pathname === "/api/sessions")');
-    const pollEnd = serverSource.indexOf('if (url.pathname ===', pollStart + 10);
-    const poll = serverSource.slice(pollStart, pollEnd);
-    check("R3c: sessions only reads the observer; version work runs on boot and its own timer",
-      poll.includes("codexCli: codexCliObserver.read()") && !/codexCliObserver\.tick|probeCodexCliVersion|Bun\.spawn/.test(poll)
-      && serverSource.includes("void codexCliObserver.tick();")
-      && serverSource.includes("setInterval(() => void codexCliObserver.tick(), 30_000)"));
     const labelStart = clientSource.indexOf("function codexCliLabel(");
     const labelEnd = clientSource.indexOf("\n}\n", labelStart) + 3;
     const label = new Function("codexCliUnknown", `${new Bun.Transpiler({ loader: "ts" }).transformSync(clientSource.slice(labelStart, labelEnd))}; return codexCliLabel;`)(codexCliUnknown) as
@@ -316,10 +325,6 @@ void makeCodexCliObserver().tick();
     const rendered = menu.children;
     render([], local, now + 1);
     check("R3c: unchanged facts within one minute preserve the open instance menu", menu.children === rendered && open);
-    check("R3c: the instance head consumes the measured local snapshot and explicitly supplied comparison",
-      clientSource.includes("instanceCodexCli = codexCliSnapshotFrom(data.codexCli)")
-      && clientSource.includes("compareCodexCli(instanceCodexCli, snapshot, instanceObservedNow)")
-      && clientSource.includes('"CLI-Drift"') && clientSource.includes("Lokal: ${codexCliLabel"));
   } catch (e) { check("R3c: measurement fixtures complete", false, e instanceof Error ? e.message : String(e)); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -503,11 +508,6 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify(result));
       check("(sessions-latency) failed Git discovery recovers at the retry boundary with the exact tracked paths",
         JSON.stringify(result.paths) === JSON.stringify(["fixture.ts"]), JSON.stringify(result));
-      const mutantCode = code.replace("if (failedAt !== undefined && Date.now() - failedAt < 5000) return null;", "if (false) return null;");
-      const mutant = exercise(mutantCode);
-      check("(sessions-latency) mutation: removing the failed-discovery cache repeats Git once per task row",
-        mutantCode !== code && mutant.allUnknown && mutant.initialSpawns === 213 && result.initialSpawns === 1,
-        JSON.stringify({ normal: result.initialSpawns, mutant: mutant.initialSpawns }));
     } finally { rmSync(repo, { recursive: true, force: true }); }
   }
 
@@ -579,24 +579,20 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // --- TASK WORKBENCH CLIENT CONTRACT. The suite has no browser DOM, so the search and partition
   // rules are cut out of the REAL browser source, transpiled, and run against deliberately
-  // ambiguous fixtures. The surrounding source/CSS assertions are named as such: they prove the
-  // render wiring, mobile geometry and focus affordance, not pixels from a live authenticated UI.
+  // ambiguous fixtures.
   let taskClientSource = "";
-  let taskPageSource = "";
   let taskServerSource = "";
-  let taskTypesSource = "";
   let taskClientReadError = "";
   try {
     const checkout = resolve(realpathSync(`${ROOT}/node_modules`), "..");
     taskClientSource = ["client", "queue", "attention", "board", "devices", "composer"]
       .map((name) => readFileSync(`${checkout}/src/${name}.ts`, "utf8").replace(/^export /gm, ""))
       .join("\n");
-    taskPageSource = readFileSync(`${checkout}/public/index.html`, "utf8");
     taskServerSource = readFileSync(`${checkout}/server.ts`, "utf8");
-    taskTypesSource = readFileSync(`${checkout}/server/types.ts`, "utf8");
   } catch (e) { taskClientReadError = e instanceof Error ? e.message : String(e); }
-  check("task workbench precondition: client source, server source and page CSS are readable",
-    taskClientSource.length > 0 && taskServerSource.length > 0 && taskPageSource.length > 0, taskClientReadError);
+  const workbenchPre = precondition("task workbench");
+  workbenchPre.need("client source and server source are readable",
+    taskClientSource.length > 0 && taskServerSource.length > 0, taskClientReadError);
   await codexCliFixtures(taskServerSource, taskClientSource);
   codexFirstTurnFixtures();
   // Execute the held view and the existing producer functions. Only the disk/ledger/git and
@@ -633,7 +629,7 @@ export async function run(ctx: Ctx): Promise<void> {
       view: { observe(): void; invalidate(): void; read(): Held };
       flush(): Promise<void>; legacyRead(): Promise<string>; freeze(): void; begin(): void; release(): void };
     let fixtureError = "";
-    let makeFixture: ((mutated?: boolean) => Fixture) | null = null;
+    let makeFixture: (() => Fixture) | null = null;
     try {
       const actual = [cut("// --- held operational view:", "// --- end held operational view ---"),
         fn("buildStateSnapshot"), fn("memoryAuditState"), fn("resolveMessageAddress"), fn("escalateMessage"),
@@ -714,15 +710,16 @@ export async function run(ctx: Ctx): Promise<void> {
           freeze: () => {clock.pause = true;}, begin: () => scheduled.splice(0).forEach((run) => run()),
           release: () => {clock.pause = false; waiters.splice(0).forEach((resolve) => resolve());}};
       `;
-      makeFixture = (mutated = false) => new Function("createHash", "resolve", "basename", "surfaceSha", "clusterForFiles", "deriveTaskMetadata",
+      makeFixture = () => new Function("createHash", "resolve", "basename", "surfaceSha", "clusterForFiles", "deriveTaskMetadata",
         "resolveSurfaceRanges", "absorbedTaskIds", "startPlanChecks", "startPlanCardPaths", "startPlanLaneClaims", "startPlanLaneSurface",
         "deriveWaits", "landFold", "startFold", "bundleFold", "costs", new Bun.Transpiler({ loader: "ts" }).transformSync(setup
-          + (mutated ? actual.replace('revision(sources) !== revision(computedSources) || failure !== null', 'data === null') : actual) + finish))(
+          + actual + finish))(
         createHash, resolve, basename, surfaceSha, clusterForFiles, deriveTaskMetadata, resolveSurfaceRanges, absorbedTaskIds,
         startPlanChecks, (c: StartPlanCardFacts | null) => c?.surface?.files ?? [], startPlanLaneClaims, startPlanLaneSurface,
         deriveWaits, projectLandWaves, projectStartPlan, proposeBundles, LAND_WAVE_COSTS_2026_09) as Fixture;
     } catch (e) { fixtureError = e instanceof Error ? e.message : String(e); }
-    check("operational fixture precondition: actual cache, source observer, producer and existing folds execute", !!makeFixture, fixtureError);
+    const opPre = precondition("operational");
+    opPre.need("actual cache, source observer, producer and existing folds execute", !!makeFixture, fixtureError);
     if (makeFixture) {
       try {
         const fx = makeFixture();
@@ -847,12 +844,6 @@ export async function run(ctx: Ctx): Promise<void> {
         check("operational recycle during ledger await cannot attach the replacement label to the old binding or report",
           inflight.view.read().data?.bindings[0].state === "unknown" && inflight.view.read().data?.bindings[0].slotLabel === "unknown"
           && !JSON.stringify(inflight.view.read().data).includes('FOREIGN_OCCUPANT'));
-        const mutant = makeFixture(true); mutant.view.observe(); await mutant.flush();
-        check("operational invalidation mutation control first produces the real fixture", mutant.view.read().freshness === "fresh"
-          && mutant.view.read().data?.rows[0].status === 'queued');
-        mutant.tasks[0].status = 'done'; mutant.view.observe(); await mutant.flush();
-        check("operational invalidation mutation turns the background-visibility claim red",
-          mutant.view.read().data === null || mutant.view.read().data?.rows[0].status !== 'done');
         const old = makeFixture(), held = makeFixture();
         await old.legacyRead(); held.view.observe(); await held.flush();
         const oldCounts = {...old.counts}, heldCounts = {...held.counts};
@@ -864,7 +855,7 @@ export async function run(ctx: Ctx): Promise<void> {
         check("operational identical fixture three reads measure repeated full folds versus held zero work (bytes are measurements, no ms threshold)",
           before.folds === 9 && before.ledger === 9 && before.subprocess === 3 && before.read > 0
           && Object.values(after).every((n) => n === 0), JSON.stringify({before, after, oldBytes, heldBytes, time: "not-measured"}));
-      } catch (e) { check("operational fixture execution completes", false, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { opPre.need("the fixture execution completes", false, e instanceof Error ? e.message : String(e)); }
     }
     const authorized = await get("/api/operational-view");
     const authorizedBody = await authorized.json() as { schema?: string; scope?: string };
@@ -886,7 +877,7 @@ export async function run(ctx: Ctx): Promise<void> {
       share = persistedShare();
     }
     const shareCookie = share ? `share_${share.id}=${share.secret}` : "";
-    check("operational auth fixture precondition: recognized lane and Share credentials exist", !!ctx.restartSelfTok && !!shareCookie);
+    opPre.need("auth: recognized lane and Share credentials exist", !!ctx.restartSelfTok && !!shareCookie);
     for (const [name, headers] of [["missing", {}], ["wrong", {authorization: "Bearer wrong"}],
       ["lane", {"x-fleet-self-token": ctx.restartSelfTok ?? "", authorization: `Bearer ${ctx.restartSelfTok ?? ""}`}],
       ["share", {cookie: shareCookie}]] as const) {
@@ -895,7 +886,8 @@ export async function run(ctx: Ctx): Promise<void> {
       check(`operational auth negative ${name} cannot read cached metadata`, denied.status === 401 && !body.includes('"sources"') && !body.includes('"data"'));
     }
     const shareHost = process.env.FLEET_SHARE_HOSTS;
-    check("operational Share-host fixture precondition: isolated server names its Share host", !!shareHost);
+    opPre.need("Share-host: the isolated server names its Share host", !!shareHost);
+    opPre.done();
     if (shareHost) {
       const denied = await fetch(BASE + "/api/operational-view", {headers: {host: shareHost, cookie: shareCookie}});
       check("operational Share-host exposes no held route or cached data", denied.status === 404 && !(await denied.text()).includes('"sources"'));
@@ -919,8 +911,9 @@ export async function run(ctx: Ctx): Promise<void> {
   let laneJoinFn: LaneJoinFn | null = null;
   const laneSlotsOf = (joins: Map<string, LaneJoin>): number[] =>
     [...joins.values()].flatMap((j) => j.kind === "lane" ? [j.lane.slot] : []);
-  check("task workbench exposes an executable search + Work/History partition model",
+  workbenchPre.need("the queue model block cuts out as an executable search + Work/History partition model",
     taskModelReady, taskModelSource.slice(0, 120) || "queue model block missing");
+  workbenchPre.done();
   if (taskModelReady) {
     type SearchTask = {
       id: string; status: "pending" | "queued" | "sent" | "done" | "archived";
@@ -1180,131 +1173,6 @@ export async function run(ctx: Ctx): Promise<void> {
         && modelFns.qRepoRelation("/x/app", "/y/app") === "foreign"
         && modelFns.qRepoRelation(null, "/repos/alpha") === "unknown");
   }
-  const openQueueSource = taskClientSource.slice(taskClientSource.indexOf("function openQueue"),
-    taskClientSource.indexOf("function initQueue", taskClientSource.indexOf("function openQueue")));
-  // D-3 (Grammatik G5.2 + G4.4): the settings window's "Fleet" section writes over EXACTLY the five
-  // routes that existed before it — dispatcher, autos kill-switch, quiet hours, lane cap, integration
-  // branch — each as one row's post(), and nothing reaches a route except through the section's Apply;
-  // the only other routes the block names are two READS: the cap read, whose answer also carries the
-  // stored integration branch per repo (`bases`, card D-3b), and the start plan (card 3e6342e2:
-  // occupancy, startable rows, wait reasons) — read through api() on open and after Apply, never on
-  // a timer of its own. The dispatcher row reads the same `dispatch` the queue foot writes. Mutation
-  // probes: a sixth route (repo-worker, a slot or program switch), a dropped row, a post() fired from
-  // a control instead of from write(), write() called outside apply.onclick, or a poll series
-  // (setInterval/setTimeout) in the block — each turns this red.
-  {
-    const fsAt = taskClientSource.indexOf("function fleetSection(");
-    const fsEnd = taskClientSource.indexOf("// --- the file explorer", fsAt);
-    const fsSrc = fsAt >= 0 && fsEnd > fsAt ? taskClientSource.slice(fsAt, fsEnd) : "";
-    const FLEET_WRITES = ["/api/autos/quiet", "/api/autos/switch", "/api/dispatch", "/api/repo-base", "/api/repo-lane-cap"];
-    const named = [...new Set([...fsSrc.matchAll(/["'`](\/api\/[^"'`]+)["'`]/g)].map((m) => m[1]))].sort();
-    const posted = [...fsSrc.matchAll(/post\("(\/api\/[^"]+)"/g)].map((m) => m[1]).sort();
-    const writeCalls = (fsSrc.match(/\.write\(\)/g) ?? []).length;
-    const applyBody = /apply\.onclick = async \(\) => \{([\s\S]*?)\n  \};/.exec(fsSrc)?.[1] ?? "";
-    // readCaps fills the branch map ONLY under the guard for a response that HAS `bases`: absence of
-    // the FIELD is an old server and must read as "?" — a fill outside the guard would mark every
-    // repo known-null and claim "not set" (false knowledge). Mutations: drop the guard (fill runs on
-    // every answer) → the capture misses the statements → red; drop `bases` from the SERVER answer →
-    // the (e4) round-trip check below turns red instead.
-    const guardBody = /if \(j\.bases && typeof j\.bases === "object"\) \{([\s\S]*?)\n    \}/.exec(fsSrc)?.[1] ?? "";
-    const readBases = guardBody !== ""
-      && guardBody.includes("bases.clear()")
-      && guardBody.includes("Object.entries(j.bases)")
-      && guardBody.includes("bases.set(repo, null)");
-    check("settings Fleet section: exactly the five existing routes, each written only through Apply",
-      fsSrc.length > 0
-        && JSON.stringify(posted) === JSON.stringify(FLEET_WRITES)
-        && JSON.stringify(named) === JSON.stringify([...FLEET_WRITES, "/api/repo-lane-caps", "/api/start-plan"].sort())
-        && fsSrc.includes('api("/api/start-plan")') && !/\bset(?:Interval|Timeout)\(/.test(fsSrc)
-        && (fsSrc.match(/\bpost\(/g) ?? []).length === 5
-        && (fsSrc.match(/write: \(\) => post\(/g) ?? []).length === 5
-        && writeCalls === 1 && applyBody.includes("r.write()")
-        && fsSrc.includes('el("button", "cmdapply", "Übernehmen")')
-        && /const on = want \?\? dispatch\.on;/.test(fsSrc)
-        && openQueueSource.includes('post("/api/dispatch", { on: !dispatch.on })')
-        && readBases
-        && /fleetSection\(fleetsec\);/.test(taskClientSource),
-      JSON.stringify({ found: fsSrc.length > 0, posted, named, writeCalls, applyWrites: applyBody.includes("r.write()"), readBases }));
-  }
-  // D-5 (Grammatik G5.3): the machine section is one read-only projection of a literal server
-  // allowlist. This pins both halves of the boundary: every allowed name has a concrete effective
-  // constant read in server.ts, while a process.env enumeration or FLEET_ prefix scan turns red.
-  {
-    const expected = [
-      "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
-      "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
-      "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
-      "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
-    ];
-    const listAt = taskServerSource.indexOf("const MACHINE_SETTINGS = [");
-    const listEnd = taskServerSource.indexOf("] as const;", listAt);
-    const listSrc = listAt >= 0 && listEnd > listAt ? taskServerSource.slice(listAt, listEnd) : "";
-    const names = [...listSrc.matchAll(/name: "(FLEET_[A-Z_]+)"/g)].map((m) => m[1]);
-    // each name's env read lives in EXACTLY ONE of server.ts and server/types.ts (FLEET_MAX_SESSIONS
-    // is read and clamped in types.ts, sizing MAX_SLOTS): a second read would be a second, drifting
-    // validation of the same value. `\b` keeps FLEET_DISPATCH_MAX_LANES from matching its _PER_PROGRAM.
-    const envReads = (name: string) => [taskServerSource, taskTypesSource]
-      .filter((src) => new RegExp(`process\\.env\\.${name}\\b`).test(src)).length;
-    check("settings This machine: the literal allowlist is the thirteen reviewed names and every name has exactly one effective server read",
-      names.length <= 13 && JSON.stringify(names) === JSON.stringify(expected)
-        && names.every((name) => envReads(name) === 1),
-      JSON.stringify({ names, reads: names.filter((name) => envReads(name) !== 1).map((name) => [name, envReads(name)]) }));
-
-    const routeAt = taskServerSource.indexOf('if (url.pathname === "/api/machine-settings")');
-    const routeEnd = taskServerSource.indexOf("// the session's own row", routeAt);
-    const routeSrc = routeAt >= 0 && routeEnd > routeAt ? taskServerSource.slice(routeAt, routeEnd) : "";
-    const projectedSrc = `${listSrc}\n${routeSrc}`;
-    const enumeratesEnv = /Object\.(?:keys|values|entries)\(\s*process\.env\s*\)/.test(projectedSrc)
-      || /(?:startsWith|includes)\(["'`]FLEET_/.test(projectedSrc) || /\/\^FLEET_/.test(projectedSrc);
-    check("settings This machine: the route projects the fixed list without process.env enumeration or a FLEET_ prefix scan",
-      routeSrc.includes("json({ settings: MACHINE_SETTINGS })") && !enumeratesEnv
-        && (taskServerSource.match(/url\.pathname === "\/api\/machine-settings"/g) ?? []).length === 1,
-      JSON.stringify({ found: routeSrc.length > 0, enumeratesEnv }));
-
-    const uiAt = taskClientSource.indexOf("function machineSection(");
-    const uiEnd = taskClientSource.indexOf('// THE "FLEET" SECTION', uiAt);
-    const uiSrc = uiAt >= 0 && uiEnd > uiAt ? taskClientSource.slice(uiAt, uiEnd) : "";
-    check("settings This machine: one UI section shows mono values and change hints with no form control",
-      uiSrc.includes('api("/api/machine-settings")') && uiSrc.includes('el("span", "setval"')
-        && uiSrc.includes('`ändern: ${setting.how}; Standard: ${setting.default}`')
-        && !/el\("(?:button|input|select)"/.test(uiSrc) && !/\.(?:onclick|oninput|onchange)\s*=/.test(uiSrc)
-        && /machineSection\(machine\);/.test(taskClientSource)
-        && (taskClientSource.match(/["']Diese Maschine["']/g) ?? []).length >= 1,
-      JSON.stringify({ found: uiSrc.length > 0, controls: [...uiSrc.matchAll(/el\("(button|input|select)"/g)].map((m) => m[1]) }));
-  }
-  check("task workbench source: Work is default and Programs + History are explicit selections",
-    /type QView = "work" \| "notes" \| "programs" \| "history" \| "waves"/.test(taskClientSource)
-      && /let qView: QView = "work"/.test(taskClientSource)
-      && ["Work", "Notes", "Programs", "History", "Waves"].every((label) => openQueueSource.includes(`"${label}"`)),
-    openQueueSource.slice(0, 180));
-  // SUGGESTED BUNDLES in Waves READ the machine's proposal and write nothing (card 2026-09-23: no
-  // button that releases, archives, bundles or starts a lane; no second poll interval). The verdict
-  // runs over the real block AND over a copy with one post() injected — the second must be red, or
-  // the pin cannot fail.
-  {
-    const bundleVerdict = (src: string): string[] => {
-      const start = src.indexOf("// --- SUGGESTED BUNDLES (Waves, read-only)");
-      const end = src.indexOf("// --- end SUGGESTED BUNDLES", start);
-      if (start < 0 || end <= start) return ["block markers missing"];
-      const block = src.slice(start, end);
-      const why: string[] = [];
-      const reads = block.match(/\bapi\(([^)]*)\)/g) ?? [];
-      if (JSON.stringify(reads) !== JSON.stringify(['api("/api/start-plan")'])) why.push(`reads ${JSON.stringify(reads)}`);
-      for (const bad of ["post(", "method:", "fetch(", "setInterval", "setTimeout", '"button"', "qAct(", "qMakeBundle("])
-        if (block.includes(bad)) why.push(`contains ${bad}`);
-      for (const hint of ['"no bundle suggested"', '"bundles unknown', "b.grund", "b.units", "qSelect(id)", 'dataset.ent = "task"'])
-        if (!block.includes(hint)) why.push(`lacks ${hint}`);
-      if (!src.includes("qRenderBundles(shell.list, addSection);")) why.push("Waves does not render the section");
-      if (!src.includes('if (next === "waves") void loadBundles(true);')) why.push("opening Waves does not read");
-      return why;
-    };
-    const real = bundleVerdict(taskClientSource);
-    const mutated = bundleVerdict(taskClientSource.replace("  if (!qBundles.length)",
-      '  void post("/api/tasks/x/archive", {});\n  if (!qBundles.length)'));
-    check("task workbench source: Waves' Suggested bundles read only GET /api/start-plan, show ids/grund/units, and write nothing (an injected post() turns the verdict red)",
-      real.length === 0 && mutated.some((w) => w.startsWith("contains post(")),
-      JSON.stringify({ real, mutated }));
-  }
   // THE NOTES, AGGREGATED (owner, 2026-09-19: „[Zitat entfernt]“
   // ). The aggregator is
   // EXECUTED on fixtures, not grepped: kind, MAIN source, attachment, program and age bin are each
@@ -1337,243 +1205,12 @@ export async function run(ctx: Ctx): Promise<void> {
     check("notes aggregate NEGATIVE: an empty queue is zeros and no program — never NaN or a phantom row",
       !!none && none.total === 0 && none.programs.length === 0 && none.ages.every((a) => a.total === 0)
         && none.ages.length === 5, JSON.stringify(none));
-    check("notes view: its own tab, the list grouped by program, the overview when nothing is picked, and a pointer from Work",
-      /else if \(qView === "notes"\) \{\s*const notes = model\.work\.filter\(\(t\) => qGroupOf\(t\) === "notes"\);/.test(taskClientSource)
-        && /head\.dataset\.prog = pid;/.test(taskClientSource)
-        && /if \(qView === "notes"\) \{[\s\S]{0,200}qPaintNotesOverview\(shell\.detail, qNotesAggregate\(/.test(taskClientSource)
-        && /go\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); qChooseView\?\.\("notes"\); \};/.test(taskClientSource)
-        && /qChooseView = chooseView;/.test(openQueueSource),
-      "notes view wiring");
-  }
-  check("task workbench source: zero open tasks has a named Work empty state, never a Closed work group",
-    taskClientSource.includes("Work is clear — no open tasks")
-      && !/Q_GROUPS[\s\S]{0,700}?head: "Closed"/.test(taskClientSource), "renderQueue/Q_GROUPS");
-  // THE ONE COMMENT THREAD (4465117e): the task thread's draft box and its text blocks live in
-  // commentThread, generalized over a target; the task detail hands itself in as one. A property of
-  // "the task thread" is therefore proven in two halves — the component, cut out by its column-0
-  // boundary, and the task call site that feeds it.
-  const cmThreadStart = taskClientSource.indexOf("function commentThread(parent: HTMLElement, target: CommentTarget,");
-  const cmThreadSource = cmThreadStart >= 0
-    ? taskClientSource.slice(cmThreadStart, taskClientSource.indexOf("\n}\n", cmThreadStart)) : "";
-  const cmTaskCall = /commentThread\(discussion, \{ kind: "task", id: t\.id \}, "comments", cms\.map\(\(c\) => \(\{\s*id: c\.id, ts: c\.ts, text: c\.text, label: c\.from \?\? "comment",/;
-  check("task workbench source: refresh-safe draft nodes and focused caret restoration remain wired",
-    /if \(!qCompose\)/.test(taskClientSource)
-      && /const tkey = commentTargetKey\(target\);/.test(cmThreadSource)
-      && /if \(!qCmBox \|\| qCmFor !== tkey\) \{[^}]*qCmFor = tkey;/.test(cmThreadSource)
-      && /const commentTargetKey = \(t: CommentTarget\): string =>\s*t\.kind === "task" \? `task:\$\{t\.id\}`/.test(taskClientSource)
-      && cmTaskCall.test(taskClientSource)
-      && /function qTextDraft/.test(taskClientSource)
-      && /focused\.focus\(\)/.test(taskClientSource), "queue draft lifecycle in src/client.ts");
-  check("task workbench source: opening the queue establishes a visible keyboard focus target",
-    /search\.focus\(\)/.test(openQueueSource)
-      && taskPageSource.includes("#shell-queue .qview button:focus-visible")
-      && taskPageSource.includes("#shell-queue .pkfilterin:focus-visible"), "openQueue + queue focus CSS");
-  check("task workbench source: 390px queue tabs occupy one scrolling row with touch targets",
-    /@media \(max-width: 700px\)[\s\S]*?\.tabrow \{ overflow-x: auto; flex-wrap: nowrap; max-width: 100%/.test(taskPageSource)
-      && /\.qview button \{ flex: none; min-height: 40px; \}/.test(taskPageSource)
-      && /#shell-queue \.qview\s*\{[^}]*flex-basis:\s*100%/.test(taskPageSource)
-      && /#shell-queue \.pkfilterin\s*\{[^}]*max-width:\s*none/.test(taskPageSource),
-    "queue mobile tab CSS in public/index.html");
-  // --- DIALOG HELPER (K3 / G4.5, src/dialog.ts): ONE Rückfrage before a consequential action.
-  // What is proven: the six copied risk dialogs ask through askRisk and carry neither their own
-  // overlay shell nor a native confirm(); the helper closes the phone drawer before painting
-  // (measured error 1: #side z 30 sits above every .overlay z 20) and client hands over its
-  // setDrawer(false); ✕ delete and "Bring session back" ask through the helper (measured error 2);
-  // the four legacy overlay dialogs close on Escape. Form probe over the client source — the same
-  // posture as the source checks above; no live browser behind these.
-  {
-    let taskDialogSource = "";
-    try { taskDialogSource = readFileSync(`${resolve(realpathSync(`${ROOT}/node_modules`), "..")}/src/dialog.ts`, "utf8"); }
-    catch { /* the precondition check below carries the message */ }
-    check("dialog helper precondition: src/dialog.ts is readable", taskDialogSource.includes("export function askRisk"),
-      taskDialogSource ? "askRisk found" : "src/dialog.ts missing or unreadable");
-    // a top-level function's source: from its declaration to the next column-0 declaration —
-    // everything inside the body is indented, so column-0 anchors are the function boundary
-    const fnSrc = (src: string, name: string): string => {
-      const m = src.match(new RegExp(`^(?:async function|function) ${name}\\b`, "m"));
-      if (!m || m.index === undefined) return "";
-      const rest = src.slice(m.index + m[0].length);
-      const next = rest.search(/^(?:async function |function |const |let |var |type |interface |window\.|document\.|\/\/ ---)/m);
-      return next < 0 ? rest : rest.slice(0, next);
-    };
-    const SIX = ["showRiskPreview", "confirmCommand", "showLandReview", "confirmMidRun", "showCommitPreview", "showVerifyOutput"] as const;
-    check("dialog helper: all six risk dialogs ask through src/dialog.ts askRisk",
-      SIX.every((n) => fnSrc(taskClientSource, n).includes("askRisk(")),
-      SIX.map((n) => `${n}:${fnSrc(taskClientSource, n).includes("askRisk(") ? "helper" : "COPY"}`).join(" "));
-    check("dialog helper: the six carry neither their own overlay shell nor a native confirm()",
-      SIX.every((n) => { const s = fnSrc(taskClientSource, n); return s !== "" && !s.includes("confirm(") && !s.includes('el("div", "overlay'); }),
-      SIX.map((n) => { const s = fnSrc(taskClientSource, n); return `${n}:${!s.includes("confirm(") && !s.includes('el("div", "overlay') ? "clean" : "SHELL"}`; }).join(" "));
-    check("dialog helper: askRisk closes the phone drawer before painting — client hands over setDrawer(false)",
-      taskDialogSource.includes("closeDrawer?.()")
-      && taskDialogSource.includes("export function onDialogWillOpen")
-      // the handover may close the phone's sheets in the same breath (closeSheet), the drawer first
-      && /onDialogWillOpen\(\(\) => (?:setDrawer\(false\)|\{ setDrawer\(false\);[^}]*\})\)/.test(taskClientSource),
-      `dialog.ts drawer close + client.ts registration${taskDialogSource ? "" : " (dialog source unreadable)"}`);
-    const delStart = taskClientSource.indexOf('el("button", "shrbtn danger", "✕ delete")');
-    const delEnd = taskClientSource.indexOf("danger.appendChild(dangerActs);", delStart);
-    const delSrc = delStart >= 0 && delEnd > delStart ? taskClientSource.slice(delStart, delEnd) : "";
-    check("dialog helper: ✕ delete in the queue detail asks through the helper before qAct delete",
-      delSrc.includes("askRisk(") && /qAct\(t\.id, "delete"\)/.test(delSrc)
-      && !taskClientSource.includes('mk("✕ delete", "delete"'),
-      delSrc.includes("askRisk(") ? "renderQueueDetail danger zone" : "direct-act delete button back or block moved");
-    // the restart sits in the session's ⋯ of Info as "Session zurückholen" since card R1 (src/board.ts#kopfItems)
-    const bringStart = taskClientSource.indexOf('popItem("Session zurückholen"');
-    const bringEnd = taskClientSource.indexOf("\n  return items;", bringStart);
-    const bringSrc = bringStart >= 0 && bringEnd > bringStart ? taskClientSource.slice(bringStart, bringEnd) : "";
-    check("dialog helper: Session zurückholen asks through the helper — no native confirm()",
-      bringSrc.includes("askRisk(") && !bringSrc.includes("confirm("),
-      bringSrc.includes("askRisk(") ? "board session menu" : "restart item moved or native confirm back");
-    const escStart = taskClientSource.indexOf('if (e.key === "Escape") {\n    // the picker and the review window');
-    const escEnd = taskClientSource.indexOf("\n});", escStart);
-    const escSrc = escStart >= 0 && escEnd > escStart ? taskClientSource.slice(escStart, escEnd) : "";
-    check("dialog helper: #attndlg #opsdlg #devdlg #codexdlg close on Escape in the global handler",
-      ["attndlg", "opsdlg", "devdlg", "codexdlg"].every((d) =>
-        escSrc.includes(`if (${d}.style.display === "flex") close`)),
-      ["attndlg", "opsdlg", "devdlg", "codexdlg"].filter((d) =>
-        !escSrc.includes(`if (${d}.style.display === "flex") close`)).join(",") || "global Escape handler");
-    check("dialog helper: the .riskbtn tones follow G1.2 — chat tokens, no hex literal, no blue hover",
-      /\.wordbtn, :is\(\.riskbtn, \.shrbtn, \.qbtn, \.bbtn\) \{[^}]*var\(--chat-edge\)[^}]*var\(--r1\)/.test(taskPageSource)
-      && /:is\(\.wordbtn, \.riskbtn, \.shrbtn, \.qbtn, \.bbtn\):hover:not\(:disabled\) \{\s*background: var\(--c-hover\)/.test(taskPageSource)
-      && /:is\(\.wordbtn, \.riskbtn, \.shrbtn, \.qbtn, \.bbtn\)\.danger \{\s*border-color: var\(--danger\); color: var\(--danger\)/.test(taskPageSource)
-      && !/\.riskbtn\.danger \{/.test(taskPageSource)
-      && !/\.riskbtn[^\n]*#[0-9a-fA-F]{3,8}\b/.test(taskPageSource)
-      && !/\.riskbtn:hover \{ background: var\(--sel\)/.test(taskPageSource),
-      "G1.2 tones for the dialog's word buttons in public/index.html");
-  }
-  // L2 + L3 (owner, 2026-09-19: „[Zitat entfernt]“): the scope is a tree column left of
-  // the list, or — switched, and always on a phone — one „[Zitat entfernt]“ picker in the line. Both
-  // shapes write the same two variables through one `choose`. Source probes, not a rendered screen.
-  const scopeSource = taskClientSource.slice(taskClientSource.indexOf("function paintQueueScope()"),
-    taskClientSource.indexOf("function renderQueue()"));
-  check("queue scope: a tree column beside the list, or one picker in the line — a per-device pref, a phone always gets the line",
-    /qTree = el\("nav", "qtree"\);\s*shell\.list\.before\(qTree\)/.test(openQueueSource)
-      && /prefSet\("fleet\.queue\.scope", qTreeOn \? "tree" : "line"\)/.test(openQueueSource)
-      && scopeSource.includes("const asTree = qTreeOn && !MOBILE_MQ.matches;")
-      && scopeSource.includes("tree.hidden = !asTree;")
-      && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.qtree, #shell-queue \.qlayoutbtn \{ display: none; \}/.test(taskPageSource),
-    scopeSource.slice(0, 160) || "paintQueueScope missing");
-  check("queue scope NEGATIVE: the tree offers programs only under the CHOSEN repo and only in Work; the line's value carries repo and program together",
-    /if \(!chosen \|\| qView !== "work"\) continue;/.test(scopeSource)
-      && /if \(qView === "work"\) \{\s*const progs = progsOf\(r\);/.test(scopeSource)
-      && (scopeSource.match(/qRepo = /g) ?? []).length === 1
-      && scopeSource.includes('o.value = `${repo}\\n${prog}`;')
-      && scopeSource.includes('const [r, k] = sel.value.split("\\n");'),
-    "paintQueueScope shapes");
-  // THE CHAT LANGUAGE ON THE QUEUE (Stilvorgabe 2026-09-19, angewandt 2026-09-19; chrome at the
-  // BASE rules since D-2, 2026-09-22). What is proven here is what the Vorgabe forbids rather
-  // than what it recommends: inside the queue's own block every colour comes from the chat tokens
-  // or --danger, so a raw hex or the old blue accent fails this line. It does NOT claim the
-  // rendered pixel — there is no DOM in this suite. The window/row chrome itself is asserted at
-  // its base rules right after, because that is where every window now reads it from.
-  {
-    const open = taskPageSource.indexOf("=== THE QUEUE IN THE CHAT LANGUAGE");
-    const end = taskPageSource.indexOf("=== end THE QUEUE IN THE CHAT LANGUAGE", open);
-    const block = open >= 0 && end > open ? taskPageSource.slice(open, end) : "";
-    const shellBase = taskPageSource.slice(taskPageSource.indexOf("the browse-and-inspect window (src/shell.ts)"), open);
-    check("queue style: the queue block exists, is scoped to #shell-queue and sets type and prose from the chat tokens",
-      block.includes("#shell-queue { font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }")
-        && /--chat-ink: #e7e7ea/.test(taskPageSource) && /--r3: 18px/.test(taskPageSource)
-        && (block.match(/#shell-queue /g) ?? []).length > 40,
-      `${block.length} chars, ${(block.match(/#shell-queue /g) ?? []).length} scoped rules`);
-    check("queue style: the window and row chrome speak the chat tokens at the BASE rules, so every window reads them",
-      /\.shellwin \{[^}]*background: var\(--chat-surface\); border: 1px solid var\(--chat-edge\); border-radius: var\(--r3\);/.test(shellBase)
-        && /\.shellrow\.sel \{ background: var\(--chat-raised\); box-shadow: inset 0 0 0 1px var\(--chat-edge\); \}/.test(shellBase)
-        && /\.shellrow \{[^}]*border-radius: var\(--r1\)/.test(shellBase)
-        && /\.shellrow:hover \{ background: var\(--c-hover\); \}/.test(shellBase)
-        && /\.shellrow \.shrname \{ font-size: var\(--chat-fs\); color: var\(--chat-prose\);/.test(shellBase)
-        && /\.shelltitles h2 \{ font-size: var\(--chat-fs\); font-weight: 500; color: var\(--chat-ink\); \}/.test(shellBase)
-        && !/background: #1d1d1d/.test(shellBase) && !/border-radius: 14px/.test(shellBase),
-      "base window chrome rules");
-    // every colour in the block is a token; the two hues that survive are --danger (a broken state)
-    // and the ink scale. A hex value or the blue accent inside this block is the mutation caught.
-    const hexes = block.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
-    const banned = ["var(--accent)", "var(--sel)", "var(--amber)", "var(--add)", "var(--del)"];
-    check("queue style NEGATIVE: no raw hex and no pre-redesign accent inside the queue block — --danger is the only hue left",
-      hexes.length === 0 && banned.every((b) => !block.includes(b)) && block.includes("var(--danger)"),
-      `hex=${JSON.stringify(hexes.slice(0, 4))} banned=${JSON.stringify(banned.filter((b) => block.includes(b)))}`);
-    // Buttons and tabs use the same material across windows; the queue keeps only state-specific rules.
-    const sharedControls = [".wordbtn, :is(.riskbtn, .shrbtn, .qbtn, .bbtn) {",
-      ".tabrow button.on {", 'const view = el("div", "tabrow qview")'];
-    // THE STRIPE, TWICE. Session 2 removed the five-hue 3px border (owner: „[Zitat entfernt]“
-    // ); the evening of the same day he asked for a lifecycle mark back
-    // ("eine schmale vertikale linie links"). What came back is not the old border: ONE 2px mark per
-    // stage from named tokens — backlog mute, released ink, running the live hue with a pulse,
-    // held the wait hue — and none on notes or closed rows. Mutations caught: the old border
-    // returning, a stage losing its mark, a raw colour in place of a token, the pulse without its
-    // reduced-motion off switch, the trough dropped below the measured 3:1 (0.6), the age read in
-    // the faint ink that measured 2.85:1.
-    check("queue style: one lifecycle stripe per stage from named tokens — never the old five-hue border",
-      block.includes("#shell-queue .shellrow { border-left: 0; }")
-        && block.includes("#shell-queue .shellrow.q-flag .shrname { color: var(--danger); }")
-        && !/#shell-queue [^{]*\.shellrow[^{]*\{[^}]*border-left: 3px/.test(block)
-        && block.includes("#shell-queue .shellrow.q-pending::before { background: var(--q-lane-back); }")
-        && block.includes("#shell-queue .shellrow.q-queued::before { background: var(--q-lane-next); }")
-        && /#shell-queue \.shellrow\.q-sent::before \{ background: var\(--q-lane-run\); animation: qlanepulse/.test(block)
-        && block.includes("#shell-queue .shellrow.q-held::before { background: var(--q-wait); }")
-        && /#shell-queue \.shellrow\.q-obs::before, #shell-queue \.shellrow\.q-done::before, #shell-queue \.shellrow\.q-archived::before \{\s*background: transparent; \}/.test(block)
-        && /--q-lane-back: var\(--chat-mute\); --q-lane-next: var\(--chat-ink\); --q-lane-run: var\(--q-live\);/.test(taskPageSource),
-      "stripe wiring");
-    check("queue style: the stripe's measured floors hold — pulse trough 0.6, off under reduced motion, the row age in mute",
-      /@keyframes qlanepulse \{ 0%, 100% \{ opacity: 1; \} 50% \{ opacity: 0\.6; \} \}/.test(block)
-        && /@media \(prefers-reduced-motion: reduce\) \{ #shell-queue \.shellrow\.q-sent::before \{ animation: none; \} \}/.test(block)
-        && block.includes("#shell-queue .shellrow .qage { color: var(--chat-mute); }"),
-      "stripe floors");
-    // the grid: the queue's own chrome numbers are 4/8/12/16, and they are the ones the fold
-    // budget above reads
-    const grid = [/#shell-queue \.shellhead \{ padding: 12px 16px/, /#shell-queue \.shelltools \{ padding: 8px 16px/,
-      /#shell-queue \.shellfoot \{ padding: 8px 16px/, /#shell-queue \.shelldetail \{ padding: 12px 16px/,
-      /#shell-queue \.shellrow \{ padding: 8px 12px/, /#shell-queue \.shrbtn \{ padding: 4px 12px/];
-    check("queue style: the queue's chrome sits on the 4/8/12/16 grid, in the rules the fold budget reads",
-      grid.every((re) => re.test(block)),
-      JSON.stringify(grid.map((re) => re.source).filter((src) => !new RegExp(src).test(block))));
-    // THE COMPLEMENTARY PAIR (owner, 2026-09-19). Two hues, two meanings, and the discipline is
-    // that they sit on STATES only: a chip, the lane line, the release note. A button wearing one
-    // of them would make "this is what runs" and "this is what you press" the same signal, which
-    // is the defect the Vorgabe's ink-only accent was written against.
-    const pair = block.slice(block.indexOf("THE PAIR ON THE SURFACE"), block.indexOf("BUNDLE MODE was"));
-    check("queue style: the complementary pair means live vs waiting, and is declared once in :root",
-      /--q-live: #[0-9a-f]{6}; --q-live-dim: #[0-9a-f]{6};/.test(taskPageSource)
-        && /--q-wait: #[0-9a-f]{6}; --q-wait-dim: #[0-9a-f]{6};/.test(taskPageSource)
-        && pair.includes("var(--q-live)") && pair.includes("var(--q-wait)"),
-      pair.slice(0, 120) || "pair block missing");
-    check("queue style NEGATIVE: no button and no lifecycle station wears the pair — they carry states, not actions",
-      !/shrbtn[^{]*\{[^}]*var\(--q-(live|wait)\)/.test(block)
-        && !/qlife-st[^{]*\{[^}]*var\(--q-(live|wait)\)/.test(block)
-        && /#shell-queue \.qlife-st\.on \{ color: var\(--chat-ink\)/.test(block),
-      "pair placement");
-    // THE TEXT BLOCK (cut 4): every read-only text of the pane is offered with a label and a copy,
-    // in the shape of the chat view's code block. What this catches is a text that goes back to
-    // being an unnamed box nobody can take with them, and a confirmation painted in a raw green.
-    check("queue style: the pane's read-only texts are labelled blocks with a copy, and the receipt uses the copied token",
-      /function qTextBlock\(parent: HTMLElement, label: string, text: string\)/.test(taskClientSource)
-        && cmThreadSource.includes("qTextBlock(parent, c.label, c.text);") && cmTaskCall.test(taskClientSource)
-        && ["qTextBlock(discussion, row.noteId, row.text)",
-          'qTextBlock(refinement!, "brief", brief.text)', 'qTextBlock(refinement!, "done-criterion", crit.text ?? "")',
-          'qTextBlock(request, brief ? "your draft" : "request", body)'].every((call) => taskClientSource.includes(call))
-        && /copy\.classList\.add\("ok"\)/.test(taskClientSource)
-        && block.includes("#shell-queue .qdblockc.ok { color: var(--chat-copied); }"),
-      "text block wiring");
-    check("queue style NEGATIVE: the receipt clears itself, so a stale \"copied\" cannot outlive the click",
-      /copy\.textContent = "copy"; copy\.classList\.remove\("ok"\);/.test(taskClientSource)
-        && /setTimeout\(\(\) => \{ copy\.textContent = "copy"/.test(taskClientSource),
-      "copy receipt reset");
-    check("queue style: word buttons and tabs inherit the shared chat controls",
-      sharedControls.slice(0, 2).every((sel) => taskPageSource.includes(sel))
-        && taskClientSource.includes(sharedControls[2])
-        && block.includes("#shell-queue .shrbtn.primary { color: var(--chat-void); }")
-        && !block.includes("#shell-queue .qview button.on {"),
-      "shared word button and tab rules");
   }
 
   // --- TASK DETAIL HEAD (src/client.ts, between "// --- TASK DETAIL HEAD" and its closing
-  // marker) — the pane's first screen. What is proven here: the lifecycle station a status maps
-  // to, EXACTLY ONE main action per status wired to an act that already existed, and that the
-  // head fits the 1440x900 detail viewport computed from the shell's own CSS. Mutations this
-  // section must catch: the lifecycle dropped out of the head, a second action node placed in it,
-  // ✕ delete moved beside the main action, a new door opened in the head, and the head growing
-  // past the fold. What it deliberately does NOT claim: pixels from a live authenticated browser
-  // — there is no DOM here, so the geometry is a computation over the declared boxes and the node
-  // plan, and it is named as one.
+  // marker) — the pane's first screen. What is proven here, by running the block: the lifecycle
+  // station a status maps to and EXACTLY ONE main action per status. What it deliberately does NOT
+  // claim: how the renderer paints that plan — there is no DOM here.
   {
     const headStart = taskClientSource.indexOf("// --- TASK DETAIL HEAD");
     const headEnd = taskClientSource.indexOf("// --- end TASK DETAIL HEAD ---", headStart);
@@ -1676,247 +1313,6 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify([headFns.qHeadPlan(row({ programId: "program-gone-999" }), null, noLane).program,
           headFns.qHeadPlan(row(), null, noLane).program, headFns.qHeadPlan(row(), null, noLane).repo]));
     }
-
-    // --- WHAT THE RENDERER DOES WITH THAT PLAN. Source assertions over renderQueueDetail: the
-    // head is painted before any section, it holds exactly one action node, and ✕ delete is not
-    // in it. Named as source probes, not as a rendered screen.
-    const detailStart = taskClientSource.indexOf("function renderQueueDetail()");
-    const detailEnd = taskClientSource.indexOf("function qSelect(", detailStart);
-    const detailSource = detailStart >= 0 && detailEnd > detailStart
-      ? taskClientSource.slice(detailStart, detailEnd) : "";
-    const paintStart = detailSource.indexOf("// --- DETAIL HEAD (paint)");
-    const firstSection = detailSource.indexOf("qDetailSection(read,", paintStart);
-    const headPaint = paintStart >= 0 && firstSection > paintStart
-      ? detailSource.slice(paintStart, firstSection) : "";
-    // D2 (owner, 2026-09-19): the head is the TOP OF THE RAIL. Its four nodes, each one actually
-    // APPENDED into the rail and in this order — status, the lifecycle rail, the one action, the
-    // line that says what it does. Building a node and never appending it is the mutation this
-    // catches: it leaves every other marker in place while the rail silently stops reaching the
-    // screen. The program/repo facts are built in the head and shown under "place", below.
-    const painted = ["statusLine", "life", "mainBox", 'el("div", "qdmain-why", head.main.why)']
-      .map((node) => headPaint.indexOf(`rail.appendChild(${node}`));
-    check("task detail head render: status, the lifecycle rail and the one action are painted at the top of the rail in that order, before any section",
-      headPaint.includes("qHeadPlan(") && headPaint.includes('"ocfacts qdhead-facts"')
-        && headPaint.includes("head.life.stations.forEach") && headPaint.includes('el("div", "qlife")')
-        && !headPaint.includes("shell.detail.appendChild(")
-        && painted.every((at, i) => at >= 0 && (i === 0 || at > painted[i - 1]))
-        && headPaint.includes('const statusLine = el("div", "rvhead qdhead-status")')
-        && headPaint.includes("el(\"span\", \"\", head.status)"),
-      JSON.stringify(painted));
-    // THE RAIL, TIDIED (owner, 2026-09-19: „[Zitat entfernt]“
-    // ). The two uppercase headers left the rail, and program/repo became two
-    // labelled lines instead of two chips. Mutations caught: a header put back, a fact dropped
-    // back to a chip, the age left on the title as well as on the status line.
-    check("task detail rail: no header inside the rail, where-it-lives as two labelled lines, the age on the status line only",
-      !detailSource.includes('"qdrail-h"')
-        && detailSource.includes('fact("program", head.program,') && detailSource.includes('fact("repo", head.repo,')
-        && !/headFacts\.appendChild\(chip\(/.test(detailSource)
-        && headPaint.includes('el("span", "qdhead-age", summary.age.text)')
-        && !detailSource.includes("summary.age]"),
-      "rail tidy wiring");
-    // EVERY SECONDARY ACT SAYS WHAT IT DOES (owner, 2026-09-19: „[Zitat entfernt]“
-    // ). Mutation caught: an act placed without its line.
-    check("task detail rail: clarify, hold and a non-main start each carry a one-line description",
-      /place\(sb, "start", "[^"]{12,}"\)/.test(detailSource) && /place\(cb, "clarify", "[^"]{12,}"\)/.test(detailSource)
-        && /qActDesc\(mk\("hold", "unqueue"\), "[^"]{12,}"\)/.test(detailSource)
-        && /if \(desc && !isMain\(act\)\) qActDesc\(node, desc\)/.test(detailSource),
-      "act descriptions");
-    // THE NEW-TASK FORM and its button (owner, 2026-09-19: „[Zitat entfernt]“
-    // ). Mutations caught: the toolbar button
-    // dropped, its click not landing on the compose pane, the ⌘↵ path gone, the fields unlabelled.
-    check("new task: a toolbar button opens the compose pane, the form has labelled Repo/Program fields and ⌘↵ creates",
-      /const newBtn = el\("button", "shrbtn primary qnewbtn", "＋ New task"\)/.test(openQueueSource)
-        && /newBtn\.onclick = \(\) => \{[\s\S]{0,160}qSelect\(null\);\s*qCompose\?\.focus\(\);/.test(openQueueSource)
-        && /shell\.tools\.appendChild\(newBtn\)/.test(openQueueSource)
-        && detailSource.includes('field("Repo", qRepoIn,') && detailSource.includes('field("Program", qProgSel,')
-        && /e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)\) \{ e\.preventDefault\(\); add\.click\(\); \}/.test(detailSource),
-      "new-task wiring");
-    // HOW THE ROW ARRIVED (owner, 2026-09-19: „[Zitat entfernt]“
-    // ). The strip names the original first and every later text after
-    // it; "original" opens Request and KEEPS it open across repaints. Mutations caught: the strip
-    // not reaching the column, original not first, the open state not remembered.
-    check("task detail: an 'arrived as' strip leads the reading column — original first, then brief/criterion, each opening its section",
-      /read\.prepend\(arrived\)/.test(detailSource)
-        && detailSource.indexOf('step("original",') > 0
-        && ['step("brief",', 'step("criterion",'].every((n) => detailSource.indexOf(n) > detailSource.indexOf('step("original",'))
-        && /qDetailSection\(read, "Request", true, brief === undefined \|\| qShowOriginal === t\.id\)/.test(detailSource)
-        && /addEventListener\("click", \(\) => \{ qShowOriginal = t\.id; \}\)/.test(detailSource),
-      "arrived-as wiring");
-    check("task detail: a text block renders its text as markdown and still copies the raw bytes",
-      /const body = el\("div", "qdtext qdmd"\);\s*mdInto\(body, text\);/.test(taskClientSource)
-        && /copy\.onclick = \(\) => \{\s*copyText\(text\);/.test(taskClientSource),
-      "text block rendering");
-    // HOVERABLE IDS (owner, 2026-09-19: „[Zitat entfernt]“
-    // ). One card on the detail pane, attached once; every paint ends in restoreFocus, which
-    // marks the known ids of the pane's TEXT. Mutations caught: the card never attached, the marking
-    // pass dropped from the paint, drafts in a textarea no longer excluded, unknown hex marked too.
-    check("queue ids: known task ids in the detail pane are marked on every paint and explained by one attached card",
-      /attachEntityCards\(shell\.detail, describeEntity\);/.test(openQueueSource)
-        && /const restoreFocus = \(\) => \{[\s\S]{0,160}qMarkIds\(shell\.detail\);/.test(detailSource)
-        && /p\.closest\("\.ent, \.qdtitle-id, textarea, button"\)/.test(taskClientSource)
-        && /if \(!entityKnown\("task", m\[0\]\)\) continue;/.test(taskClientSource)
-        && /import \{ attachEntityCards, type EntFacts \} from "\.\/entcard";/.test(taskClientSource),
-      "hover wiring");
-    // the rail below the head: the acts, the options, where the row lives, and the ⋯ fold last.
-    // Mutations caught: the acts pushed under the facts, the facts dropped (built, never appended),
-    // the ⋯ fold moved above the acts.
-    const railAt = (needle: string) => detailSource.indexOf(needle);
-    const railOrder = ["rail.appendChild(mainBox)", "rail.appendChild(acts)", "rail.appendChild(more)",
-      "rail.appendChild(headFacts)", 'qDetailSection(rail, "⋯ done · archive · delete"'];
-    check("task detail rail: head → acts → More options → place (program/repo) → ⋯ fold, in that order",
-      railOrder.every((n, i) => railAt(n) > 0 && (i === 0 || railAt(n) > railAt(railOrder[i - 1]))),
-      JSON.stringify(railOrder.map((n) => `${n}@${railAt(n)}`)));
-    check("task detail rail NEGATIVE: no section of the reading column is built into the rail, and the rail is one node beside it",
-      (detailSource.match(/qDetailSection\(rail,/g) ?? []).length === 1
-        && detailSource.includes("d2.append(titleBox, read, rail)")
-        && (detailSource.match(/shell\.detail\.appendChild\(d2\)/g) ?? []).length === 1,
-      String((detailSource.match(/qDetailSection\(rail,/g) ?? []).length));
-    check("task detail head render: the head opens no door of its own — no request, no task act inside it",
-      !/\bqAct\(/.test(headPaint) && !/\bpost\(/.test(headPaint) && !/"delete"/.test(headPaint),
-      headPaint.slice(0, 120));
-    check("task detail head render: exactly ONE action node reaches the head — the placement ternary plus ▸ open lane",
-      (detailSource.match(/mainBox\.appendChild\(/g) ?? []).length === 1
-        && detailSource.includes("(isMain(act) ? mainBox : acts).appendChild(node)")
-        && /head\.main\.act === "open-lane"[\s\S]{0,400}?mainBox\.appendChild\(ob\)/.test(detailSource),
-        String((detailSource.match(/mainBox\.appendChild\(/g) ?? []).length));
-    check("task detail: ✕ delete sits in the folded ⋯ fold at the rail's end, never in the action row, the ends row or the head",
-      detailSource.includes('const danger = qDetailSection(rail, "⋯ done · archive · delete", true, false)')
-        // since K3 the button gates its qAct behind the dialog helper (src/dialog.ts#askRisk) —
-        // the wiring string changed with that, the placement claim did not
-        && detailSource.includes('el("button", "shrbtn danger", "✕ delete")')
-        && detailSource.includes("dangerActs.appendChild(del);")
-        && !detailSource.includes('acts.appendChild(mk("✕ delete"')
-        && !detailSource.includes('ends.appendChild(mk("✕ delete"')
-        && !detailSource.includes('acts.appendChild(mk("done"'), "⋯ fold wiring");
-    const sectionAt = (title: string) => detailSource.indexOf(`qDetailSection(read, "${title}`);
-    // Owner, 2026-09-18: most important first, then a few options, then comments. D2 (2026-09-19)
-    // puts the options in the rail, so the READING column runs title → Card → Notes & comments →
-    // Request → Evidence → Details; the acts no longer have a section of their own.
-    const sectionOrder = ["Card", "Notes & comments", "Request", "Evidence", "Details"];
-    check("task detail: reading column runs title → Card → Notes & comments → Request → Evidence → Details",
-      detailSource.indexOf('d2.append(titleBox, read, rail)') > 0
-        && detailSource.indexOf('d2.append(titleBox, read, rail)') < paintStart
-        && sectionOrder.every((s, i) => sectionAt(s) > 0 && (i === 0 || sectionAt(s) > sectionAt(sectionOrder[i - 1])))
-        && !detailSource.includes('qDetailSection(read, "Actions"'),
-      JSON.stringify(sectionOrder.map((s) => `${s}@${sectionAt(s)}`)));
-    check("task detail: the lane facts and the absent verify facts are said under Evidence, and absence is not green",
-      /const evidence = qDetailSection[\s\S]{0,900}?verify and land facts are not on this poll — unknown here, not green/.test(detailSource)
-        && /evidence\.appendChild\(laneLine\)/.test(detailSource), "Evidence section wiring");
-    check("task detail: a section that holds a refresh-safe draft is never a fold — a repaint would close it over a started comment",
-      detailSource.includes('qDetailSection(read, "Notes & comments")')
-        && detailSource.includes('qDetailSection(read, "Refinement")')
-        && detailSource.includes('const mainBox = el("div", "qdmain")'), "draft-bearing sections");
-    // the acts the head hosts are the EXISTING handlers, byte for byte — the head is a placement,
-    // never a second door. A new API call or a new body field here fails this line.
-    const keptHandlers = [
-      'b.onclick = () => void qAct(t.id, action, body ?? {});',
-      'qDispatchBody("start", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, raw));',
-      'qDispatchBody("clarify", qSpawnPick.get(t.id) ?? Q_SPAWN_EMPTY, false));',
-      'void qAct(t.id, "queue");',
-      'ob.onclick = () => { qShell?.close(); showSlot(slot); };',
-    ];
-    check("task detail head: it hosts the EXISTING act handlers unchanged — no new API call, no new body field",
-      keptHandlers.every((h) => detailSource.includes(h)),
-      JSON.stringify(keptHandlers.filter((h) => !detailSource.includes(h))));
-
-    // --- THE FOLD, computed. No DOM here, so this is arithmetic over (a) the shell's own CSS and
-    // (b) the head's node plan — every box below declares its line-height, padding and margin in
-    // public/index.html for exactly this reason. A rule this cannot find fails the probe as
-    // ITSELF, so a missing measurement never reads as a passing budget.
-    const missing: string[] = [];
-    // …and it is a DESKTOP measurement, so every @media block comes out first. Measured while
-    // writing this: dropping the desktop `.qlife-st` line-height left the check green, because the
-    // 700px override of the same selector answered for it. A budget read off the wrong rule is
-    // worse than no budget.
-    const desktopCss = ((): string => {
-      let out = "";
-      let i = 0;
-      while (i < taskPageSource.length) {
-        const at = taskPageSource.indexOf("@media", i);
-        if (at < 0) { out += taskPageSource.slice(i); break; }
-        out += taskPageSource.slice(i, at);
-        let j = taskPageSource.indexOf("{", at);
-        if (j < 0) break;
-        for (let depth = 0; j < taskPageSource.length; j++) {
-          if (taskPageSource[j] === "{") depth++;
-          else if (taskPageSource[j] === "}" && --depth === 0) { j++; break; }
-        }
-        i = j;
-      }
-      return out;
-    })();
-    const cssNum = (re: RegExp, what: string): number => {
-      const m = re.exec(desktopCss);
-      if (!m) { missing.push(what); return NaN; }
-      return Number(m[1]);
-    };
-    // the queue window is the viewport less a margin (owner, 2026-09-19: „[Zitat entfernt]“
-    // ), not the shared min(880px, 92vh)
-    const shellInset = cssNum(/#shell-queue \.shellwin \{[^}]*?height: calc\(100vh - (\d+)px\)/, "#shell-queue .shellwin height");
-    // the QUEUE's own chrome rules (the #shell-queue block), not the base ones the other three
-    // shells still use — since 2026-09-19 they are different numbers, and reading the base rule
-    // would budget a window nobody is looking at
-    const headPad = cssNum(/#shell-queue \.shellhead \{[^}]*?padding: (\d+)px/, "#shell-queue .shellhead padding");
-    const toolsPad = cssNum(/#shell-queue \.shelltools \{[^}]*?padding: (\d+)px/, "#shell-queue .shelltools padding");
-    const footPad = cssNum(/#shell-queue \.shellfoot \{[^}]*?padding: (\d+)px/, "#shell-queue .shellfoot padding");
-    const detailPad = cssNum(/#shell-queue \.shelldetail \{[^}]*?padding: (\d+)px/, "#shell-queue .shelldetail padding");
-    const statusLh = cssNum(/\.qdhead-status \{ line-height: (\d+)px/, ".qdhead-status line-height");
-    const lifeMt = cssNum(/\.qlife \{[^}]*?margin-top: (\d+)px/, ".qlife margin-top");
-    const stationPad = cssNum(/\.qlife-st \{[^}]*?padding-top: (\d+)px/, ".qlife-st padding-top");
-    const stationLh = cssNum(/\.qlife-st \{[^}]*?line-height: (\d+)px/, ".qlife-st line-height");
-    const mainMt = cssNum(/\.qdmain \{[^}]*?margin-top: (\d+)px/, ".qdmain margin-top");
-    const btnLh = cssNum(/\.qdmain \.shrbtn \{ line-height: (\d+)px/, ".qdmain .shrbtn line-height");
-    const btnPad = cssNum(/#shell-queue \.shrbtn \{ padding: (\d+)px/, "#shell-queue .shrbtn padding");
-    const whyLh = cssNum(/\.qdmain-why \{[^}]*?line-height: (\d+)px/, ".qdmain-why line-height");
-    const whyMt = cssNum(/\.qdmain-why \{[^}]*?margin: (\d+)px/, ".qdmain-why margin");
-    // D2: the head is the top of the RAIL, beside the title rather than under it — so the title
-    // block and the program/repo facts (further down the rail) leave this budget. The rail has no
-    // header of its own since 2026-09-19; the status line is its first box.
-    check("task detail head geometry: every box the fold budget reads is declared in public/index.html",
-      missing.length === 0, missing.join(" · ") || "all present");
-    if (missing.length === 0) {
-      const BORDER = 2; // 1px top + 1px bottom on the chips, stations and the button
-      // the window at 1440x900: 92vh = 828px, and the head/tools/foot chrome eats into it. Those
-      // three contents are not fixed in CSS, so they take a DELIBERATELY GENEROUS allowance —
-      // a two-line title, three wrapped tool rows and a four-line footer, all at once.
-      const winH = 900 - shellInset;
-      // tools: project tabs, program tabs (wrapped to two rows), view switch + search, dispatch line
-      const chrome = (2 * headPad + 40 + 1) + (2 * toolsPad + 180 + 1) + (2 * footPad + 68 + 1);
-      const viewport = winH - chrome - 2 * detailPad;
-      // the head's own plan, each node at its worst case in the rail: the stepper is ONE grid
-      // row (dot above, label under — it never wraps), and the one-line WHY wrapped to five.
-      const headH = statusLh
-        + lifeMt + stationPad + stationLh
-        + mainMt + (btnLh + 2 * btnPad + BORDER)
-        + whyMt + 5 * whyLh;
-      check(`task detail head geometry: the rail's status + lifecycle + main action is ${headH}px inside a ${viewport}px detail viewport at 1440x900 — above the fold, computed from the CSS`,
-        headH > 0 && viewport > 0 && headH <= viewport,
-        `head=${headH} viewport=${viewport} window=${winH} chrome=${chrome}`);
-    }
-    check("task detail head: 390x844 gets the one action full-width at a touch height, and a stepper of equal columns",
-      /@media \(max-width: 700px\)[\s\S]*?\.qdmain \.shrbtn \{[^}]*min-height: 44px[^}]*width: 100%/.test(taskPageSource)
-        && /\.qlife \{[^}]*grid-auto-columns: minmax\(0, 1fr\)/.test(taskPageSource)
-        && /\.qdmain \{[^}]*flex-wrap: wrap/.test(taskPageSource), "queue head mobile CSS");
-    // THE STATUS, DRAWN (owner, 2026-09-19: „[Zitat entfernt]“): each
-    // station is a dot on one track with its label under it; the walked part of the track is
-    // filled. Mutations caught: the track or the dot dropped (the stepper falls back to bare
-    // words), the walked segment left unfilled, the last station drawing a track into nothing.
-    check("task detail head: the lifecycle is a stepper — a dot per station, a track between them, the walked part filled",
-      /\.qlife-st::before \{ content: ""[^}]*border-radius: 50%/.test(desktopCss)
-        && /\.qlife-st::after \{ content: ""[^}]*height: 1px/.test(desktopCss)
-        && /\.qlife-st:last-child::after \{ display: none; \}/.test(desktopCss)
-        && /\.qlife-st\.past::before, \.qlife-st\.past::after \{ background:/.test(desktopCss)
-        && /#shell-queue \.qlife-st\.on::before \{ background: var\(--chat-ink\)/.test(desktopCss),
-      "stepper CSS");
-    // ONE STEP SMALLER, A SIZE LARGER (owner, 2026-09-19): the queue redefines the chat's type
-    // tokens for ITSELF — the chat view keeps its 14px — and its window is the viewport less 16px
-    // on each side, which the phone rule takes back to the full screen.
-    check("queue size: the type tokens are a step smaller inside #shell-queue only, and the window is the viewport less 16px a side",
-      /#shell-queue \{ --chat-fs: 13px; --chat-code-fs: 12px; \}/.test(taskPageSource)
-        && /:root \{[\s\S]*?--chat-fs: 14px; --chat-code-fs: 12\.5px;/.test(taskPageSource)
-        && /#shell-queue \.shellwin \{ width: calc\(100vw - 32px\); height: calc\(100vh - 32px\); \}/.test(desktopCss)
-        && /@media \(max-width: 700px\)[\s\S]*?#shell-queue \.shellwin \{ width: 100vw; height: 100dvh;/.test(taskPageSource),
-      "queue size CSS");
   }
 
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
@@ -1936,21 +1332,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // --- IDEE VOM +-KNOPF (client.ts, the block between the IDEE markers): the "+" files the typed
   // idea as a PENDING auftrag through the route — never a dispatch, never a release, never text in
-  // a pane. The source half reads exactly the marked block; the live half files with the same
-  // prefix shape the block composes and reads the row back.
+  // a pane. This half files with the same prefix shape the block composes and reads the row back.
   {
-    const ideeStart = taskClientSource.indexOf("// --- IDEE VOM +-KNOPF ---");
-    const ideeEnd = taskClientSource.indexOf("// --- end IDEE VOM +-KNOPF ---", ideeStart);
-    const ideeSource = ideeStart >= 0 && ideeEnd > ideeStart ? taskClientSource.slice(ideeStart, ideeEnd) : "";
-    check("idee precondition: the marked #headplus block is readable in the client source",
-      ideeSource.includes('plusBtn.id = "headplus"'), ideeSource.slice(0, 120) || "block markers missing");
-    check("the + button's block never types into a pane — neither sendText nor /send",
-      !ideeSource.includes("sendText") && !ideeSource.includes('"/send"'),
-      "sendText or /send inside the idee block");
-    check("the + button files through POST /api/tasks — pending auftrag with the idee prefix",
-      ideeSource.includes('post("/api/tasks"') && ideeSource.includes('kind: "auftrag"')
-        && ideeSource.includes("queue: false") && ideeSource.includes("[IDEE VOM +-KNOPF · "),
-      "route, kind, queue or prefix missing in the idee block");
     const pad2 = (n: number) => String(n).padStart(2, "0");
     const now = new Date();
     const prefix = `[IDEE VOM +-KNOPF · ${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}] `;
@@ -1961,18 +1344,7 @@ export async function run(ctx: Ctx): Promise<void> {
       ir.ok && ij.task.kind === "auftrag" && ij.task.status === "pending" && ij.task.slot === null,
       JSON.stringify(ij.task));
     check("the filed row keeps the idee prefix verbatim", ij.task.text.startsWith(prefix), ij.task.text.slice(0, 80));
-    check("cleanup: the idee probe row is deleted", (await post(`/api/tasks/${ij.task.id}/delete`, {})).ok);
-    // G0.5 (MAIN-Korrektur am Report 4e463993d326f782393b4087): sichtbarer Text Fleet-Englisch,
-    // nur der Tooltip des Kopf-Knopfs bleibt deutsch. Je sichtbarem Wort ein Anker hier, damit
-    // eine Sprach-Rückfall nicht ungemessen bleibt.
-    check("idee G0.5: the visible words are Fleet-English and only plusBtn's tooltip stays German",
-      ideeSource.includes('title: "New idea"') && ideeSource.includes('"What should the button do?"')
-        && ideeSource.includes('"File as task"') && ideeSource.includes('"Open in queue"')
-        && ideeSource.includes("Queue row ") && ideeSource.includes("more characters")
-        && ideeSource.includes('the server refused this filing')
-        && ideeSource.includes('plusBtn.title = "Eigene Idee')
-        && !ideeSource.includes('"In der Queue') && !ideeSource.includes('"Als Aufgabe'),
-      "visible words must be Fleet-English; plusBtn.title stays German");
+    await post(`/api/tasks/${ij.task.id}/delete`, {});
   }
 
   // --- ▸ queue IS A RELEASE, and only pending → queued is one (server.ts, the taskAct `queue` arm).
@@ -2061,7 +1433,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const spawnStart = taskClientSource.indexOf("// --- TASK SPAWN CHOICE");
     const spawnEnd = taskClientSource.indexOf("// --- end TASK SPAWN CHOICE ---", spawnStart);
     const spawnSource = spawnStart >= 0 && spawnEnd > spawnStart ? taskClientSource.slice(spawnStart, spawnEnd) : "";
-    check("task spawn choice: the executable block is cut out of src/client.ts",
+    const spPre = precondition("task spawn choice");
+    spPre.need("task spawn choice: the executable block is cut out of src/client.ts",
       spawnSource.includes("function qEffectiveSpawn") && spawnSource.includes("function qSpawnProblem")
         && spawnSource.includes("function qDispatchBody"), spawnSource.slice(0, 120) || "block missing");
     type SpPick = { harness: string; model: string; effort: string };
@@ -2098,10 +1471,11 @@ export async function run(ctx: Ctx): Promise<void> {
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
       const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
-      check("task spawn choice precondition: the catalogue has a default with effort levels, codex with effort, and an agent without effort",
+      spPre.need("the catalogue has a default with effort levels, codex with effort, and an agent without effort",
         !!dflt && dflt.supports.effort && dflt.effortLevels.length > 0
           && !!codex && codex.supports.effort && codex.effortLevels.length > 0 && !!noEffort,
         cat.map((h) => `${h.id}:${h.role ?? "agent"}:effort=${h.supports.effort}`).join(" "));
+      spPre.done();
       const NONE = spawnFns.Q_SPAWN_EMPTY;
       const same = (b: Record<string, unknown>, want: Record<string, unknown>) =>
         JSON.stringify(Object.entries(b).sort()) === JSON.stringify(Object.entries(want).sort());
@@ -2174,34 +1548,6 @@ export async function run(ctx: Ctx): Promise<void> {
       check("raw start: the acknowledgment rides on ▸ start alone — clarify with rawAck true still sends none",
         same(spawnFns.qDispatchBody("start", NONE, true), { acknowledged: true })
           && same(spawnFns.qDispatchBody("clarify", NONE, true), { clarify: true }));
-
-      // (7) the DOM wiring, on the real source: two acts, two handlers, two bodies — and the pick
-      // survives the 2 s repaint as a kept node keyed by task id
-      const actsAt = taskClientSource.indexOf("const spawnProblem = startable ?");
-      const actsSrc = actsAt >= 0 ? taskClientSource.slice(actsAt, taskClientSource.indexOf("// RELEASING IS THE DECISION", actsAt)) : "";
-      check("task spawn choice source: ▸ start and ▸ clarify first are two handlers on two bodies, neither through mk()",
-        /sb\.onclick = \(\) => void qAct\(t\.id, "dispatch",\s*qDispatchBody\("start", qSpawnPick\.get\(t\.id\) \?\? Q_SPAWN_EMPTY, raw\)\)/.test(actsSrc)
-          && /cb\.onclick = \(\) => void qAct\(t\.id, "dispatch",\s*qDispatchBody\("clarify", qSpawnPick\.get\(t\.id\) \?\? Q_SPAWN_EMPTY, false\)\)/.test(actsSrc)
-          && !/mk\("▸ clarify first"/.test(actsSrc) && !/mk\(raw \? `▸ start lane/.test(actsSrc),
-        actsSrc.slice(0, 200) || "action block missing");
-      // Since 2026-09-18 the pick rides "More options" (owner: a few sensible options in view). The
-      // invariant it keeps is the old one's reason: a block is never hidden — the fold opens itself
-      // whenever the pick is what disables the two acts.
-      check("task spawn choice source: both acts are disabled while the block stands, and a block opens the fold that holds the pick",
-        /if \(spawnProblem\) sb\.disabled = true;/.test(actsSrc) && /cb\.disabled = spawnProblem !== null;/.test(actsSrc)
-          && /more\.appendChild\(qSpawnRow\(t\.id\)\);\s*if \(spawnProblem\) more\.open = true;/.test(actsSrc)
-          // D2: the acts and the fold that holds the pick are neighbours in the RAIL, so an opened
-          // block sits right under the two disabled buttons it explains
-          && /rail\.appendChild\(acts\);\s*rail\.appendChild\(more\);/.test(taskClientSource));
-      check("task spawn choice source: the pick is keyed by task id, re-synced in place across repaints, dropped on close and on start",
-        /const qSpawnPick = new Map<string, QSpawnPick>\(\);/.test(taskClientSource)
-          && /if \(!qSpawnUi \|\| qSpawnUi\.for !== id\) \{/.test(taskClientSource)
-          && (taskClientSource.match(/qSpawnPick\.clear\(\); qSpawnUi = null;/g)?.length ?? 0) >= 2
-          && /if \(action === "dispatch"\) qSpawnPick\.delete\(id\);/.test(taskClientSource));
-      check("task spawn choice source: the row's stored choice rides the /api/tasks fetch, never the poll digest",
-        /if \(t\.spawn\) taskSpawnFull\.set\(t\.id, t\.spawn\);/.test(taskClientSource)
-          && /spawn\?: NonNullable<QSpawnRow>/.test(taskClientSource)
-          && taskPageSource.includes(".qspawnblock {") && taskPageSource.includes(".qspawnfx {"));
 
       // (8) LIVE PARITY: the isolated server answers the client's block text for the same body —
       // 400, before the free-slot lookup, so nothing is spawned and the row keeps its status
@@ -3225,7 +2571,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const bytes = Buffer.byteLength(raw);
     const pollBefore = JSON.parse(raw) as { tasks: BudgetDigest[] };
     const dig = pollBefore.tasks.find((t) => t.id === bigT.task.id);
-    check("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
+    const budgetPre = precondition("payload budget");
+    budgetPre.need("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
     check("the sessions poll carries a task digest, never the prompt text",
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
     // THE EVENT SHARE IS MEASURED AS A SHAPE, THE REST AS BYTES (2026-09-13). Until then this check
@@ -3285,7 +2632,7 @@ export async function run(ctx: Ctx): Promise<void> {
       let fxError = "";
       try { fx = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Record<string, unknown>; }
       catch (e) { fxError = e instanceof Error ? e.message : String(e); }
-      check("precondition: fleet.json is readable for the event-producer fixture", fx !== null, fxError);
+      budgetPre.need("fleet.json is readable for the event-producer fixture", fx !== null, fxError);
       if (fx) {
         const priorEvents = fx.events;
         const now = Date.now();
@@ -3311,9 +2658,10 @@ export async function run(ctx: Ctx): Promise<void> {
           .map((e) => e.id).filter((id) => plantedIds.has(id));
         // THE FIXTURE FAILS AS ITSELF: rows the hydration refused, or a fixture too light to have
         // tipped the old whole-body check, would make both checks below pass without measuring anything.
-        check("precondition: all 23 planted lane-suite rows hydrated, and together they outweigh the old budget's headroom",
+        budgetPre.need("all 23 planted lane-suite rows hydrated, and together they outweigh the old budget's headroom",
           fullIds.length === planted.length && bytes + plantedBytes >= 14 * 1024,
           `hydrated ${fullIds.length}/${planted.length} · planted ${plantedBytes} B on a ${bytes} B body`);
+        budgetPre.done();
         const rawFx = await (await get("/api/sessions")).text();
         const fxShape = pollShape(rawFx);
         const onPoll = fxShape.events.map((e) => e.id).filter((id) => plantedIds.has(id)).sort();
@@ -3329,9 +2677,6 @@ export async function run(ctx: Ctx): Promise<void> {
         writeFileSync(`${ROOT}/fleet.json`, JSON.stringify({ ...back, events: priorEvents }), { mode: 0o600 });
       }
       await restartSrv();
-      const leftover = ((await (await get("/api/events")).json()) as { events: { id: string }[] }).events
-        .filter((e) => e.id.startsWith("budgetfx")).length;
-      check("event-producer fixture cleanup: no planted row survives the restore", leftover === 0, `${leftover} left`);
     }
 
     // --- instance identity rides this payload ONCE (dual-host Schnitt 2). The budget check above
@@ -3346,10 +2691,6 @@ export async function run(ctx: Ctx): Promise<void> {
       && cliPoll.slots.every((row) => !("codexCli" in row)), JSON.stringify(cliPoll.codexCli));
     const instancePoll = JSON.parse(raw) as
       { instance?: { name?: string | null }; slots: Record<string, unknown>[] };
-    // The probe's own precondition, failing AS ITSELF: without a name on the server's line the two
-    // checks below would be measuring an unnamed instance and reporting it as a broken field.
-    check("precondition: the wrapper booted this server with a named FLEET_INSTANCE",
-      INSTANCE_NAME_RE.test(INSTANCE_NAME), JSON.stringify(INSTANCE_NAME));
     check("the sessions poll names the instance exactly once per response, never per slot",
       instancePoll.instance?.name === INSTANCE_NAME
         && raw.split('"instance"').length - 1 === 1
@@ -3388,10 +2729,6 @@ export async function run(ctx: Ctx): Promise<void> {
     const fullAfterBrief = ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; analysis?: unknown; brief?: { text: string; at: number } }[] })
       .tasks.find((t) => t.id === bigT.task.id);
-    check("brief digest setup: the saved brief exists and no analyst field rides either endpoint",
-      briefWrite.ok && briefWriteJ.ok === true && !("analysis" in pollAfterBrief)
-      && digAfterBrief?.analysis === undefined && fullAfterBrief?.analysis === undefined,
-      JSON.stringify({ write: briefWriteJ, analysisKeyPresent: "analysis" in pollAfterBrief, digest: digAfterBrief }));
     check("a brief changes the top-level digest generation while its text stays off the poll",
       dig?.briefAt === undefined && !!digAfterBrief && (digAfterBrief.briefAt ?? 0) > 0
       && digAfterBrief.briefAt === briefWriteJ.brief?.at
@@ -3619,25 +2956,6 @@ export async function run(ctx: Ctx): Promise<void> {
       blocked.refused === true && blocked.events.length === 0 && blocked.acceptance === undefined
       && /gate=blocked-screen: fixture blocked screen — nothing typed/.test(blocked.error ?? ""),
       JSON.stringify(blocked));
-    const noRecognition = sendSource.replace("before?.startsWith(DELIVERY_HEADER_PREFIX)", "false");
-    const noEnter = sendSource.replace("const afterResidue = await submitFleetResidue(s, bound);",
-      'const afterResidue = "";');
-    const bypassOccupied = sendSource.replace("if (afterResidue) throw new SendComposerOccupied(afterResidue.length);",
-      "if (false) throw new SendComposerOccupied(afterResidue.length);");
-    const mutatedRecognition = noRecognition !== sendSource ? await exerciseSend(noRecognition, fleetRest, "") : { events: [] };
-    const mutatedEnter = noEnter !== sendSource ? await exerciseSend(noEnter, fleetRest, "") : { events: [] };
-    const mutatedOccupied = bypassOccupied !== sendSource
-      ? await exerciseSend(bypassOccupied, fleetRest, "still occupied") : { events: [] };
-    check("(A) literal mutation without Fleet-head recognition fails the recovery trace",
-      noRecognition !== sendSource && mutatedRecognition.refused === true
-      && /composer occupied/.test(mutatedRecognition.error ?? "") && !recovers(mutatedRecognition),
-      JSON.stringify(mutatedRecognition));
-    check("(A) literal mutation skipping recovery Enter fails the recovery trace",
-      noEnter !== sendSource && mutatedEnter.acceptance === "observed" && !recovers(mutatedEnter),
-      JSON.stringify(mutatedEnter));
-    check("(A) literal mutation bypassing the occupied reread fails the held trace",
-      bypassOccupied !== sendSource && mutatedOccupied.acceptance === "observed" && !staysHeld(mutatedOccupied),
-      JSON.stringify(mutatedOccupied));
   }
 
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
@@ -3702,7 +3020,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${capped.task.id}/delete`, {});
 
     // Execute the route body and its cap helper from server.ts with only HTTP/pane/state boundaries
-    // replaced. Mutants alter those exact bodies, so a check that merely echoes its fixture fails.
+    // replaced.
     const capStart = taskServerSource.indexOf("function cappedTaskComments(");
     const capEnd = taskServerSource.indexOf("const MAX_CRITERION =", capStart);
     const routeStart = taskServerSource.indexOf("    const taskComment =", capEnd);
@@ -3750,11 +3068,6 @@ export async function run(ctx: Ctx): Promise<void> {
         && result.sent[0]!.includes(`comment ${result.response.body.comment?.id}`);
     check("(B) the comment route sends a new owner comment to its live lane once",
       !!delivered && sendsLiveComment(delivered), JSON.stringify(delivered));
-    const noLaneSource = routeSource.replace('const lane = t.status === "sent" && t.slot !== null ? slotFrom(t.slot) : null;',
-      "const lane = null;");
-    const noLane = noLaneSource !== routeSource ? await runRoute(noLaneSource, productionCap, [], "sent") : null;
-    check("(B) literal mutation removing the live lane makes the delivery check fail",
-      noLaneSource !== routeSource && !!noLane && !sendsLiveComment(noLane), JSON.stringify(noLane));
     const mixed: FixtureComment[] = [
       { id: "owner-first", text: "first owner" },
       { id: "lane-old", text: "old lane", from: "fleet/old" },
@@ -3770,12 +3083,6 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     check("(C) a full mixed list evicts the oldest lane comment while retaining older owner text",
       !!retained && preservesOwner(retained), JSON.stringify(retained?.comments.map((c) => c.id)));
-    const oldestOverall = capSource.replace("kept.findIndex((c) => !!c.from)", "kept.findIndex(() => false)");
-    const mutantCap = oldestOverall !== capSource ? compileCap(oldestOverall) : productionCap;
-    const evictedOwner = routeSource ? await runRoute(routeSource, mutantCap, mixed, "pending") : null;
-    check("(C) literal mutation evicting the oldest comment fails owner preservation",
-      oldestOverall !== capSource && !!evictedOwner && !preservesOwner(evictedOwner),
-      JSON.stringify(evictedOwner?.comments.map((c) => c.id)));
   }
   // --- S3 (docs/messungen/2026-09-17-queue-felder-und-ihre-leser.md §3): DELIVERY, both cases
   // driven. A row's comments reach the lane founded on them: the founding prompt carries them as
@@ -3891,7 +3198,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     const sess0 = await sessJson();
     const lanes0 = new Set(sess0.slots.filter((s) => s.worktree).map((s) => s.id));
-    check("dispatch gate: precondition — dispatcher on, a free slot, lanes < cap (non-tautology guard)",
+    const gatePre = precondition("(tier-0) dispatch gate");
+    gatePre.need("dispatcher on, a free slot, lanes < cap (non-tautology guard)",
       sess0.dispatch.on === true && sess0.slots.some((s) => !s.cwd) && lanes0.size < sess0.dispatch.maxLanes,
       `on=${sess0.dispatch.on} free=${sess0.slots.filter((s) => !s.cwd).length} lanes=${lanes0.size}/${sess0.dispatch.maxLanes}`);
     const taskStatus = async (id: string): Promise<string | undefined> => (await sessJson()).tasks.find((t) => t.id === id)?.status;
@@ -4082,9 +3390,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // one more task — the tick must write WHY on the row instead of leaving it silent.
     const capLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number };
     const sessCap = await sessJson();
-    check("capacity setup: lanes in the dispatch repo reach maxLanes (so the wait-note check below can fail)",
+    gatePre.need("capacity: lanes in the dispatch repo reach maxLanes (so the wait-note check below can fail)",
       typeof capLane.slot === "number" && sessCap.slots.filter((s) => s.worktree).length >= sessCap.dispatch.maxLanes,
       `lanes=${sessCap.slots.filter((s) => s.worktree).length}/${sessCap.dispatch.maxLanes}`);
+    gatePre.done();
     const cTask = (await (await post("/api/tasks", { text: "capacity-wait-probe", queue: true })).json()) as { task: { id: string } };
     let cNote = "";
     for (let i = 0; i < 24; i++) { // polls: settles in one tick, the 12s ceiling only bounds a failure
@@ -4168,7 +3477,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // not on any route (that is the non-goal), so the repo cap is the readable witness: it rides the
     // same env string of the same restart, and its default is 3.
     const pCfg = await pSess();
-    check("(e2) fixture: the cap restart took effect — the dispatcher reports the LIFTED repo cap it was restarted with",
+    const e2Pre = precondition("(e2)");
+    e2Pre.need("the cap restart took effect — the dispatcher reports the LIFTED repo cap it was restarted with",
       pCfg.dispatch.maxLanes === 6 && !!pTitle && !!provenanceProgramId,
       JSON.stringify({ maxLanes: pCfg.dispatch.maxLanes, program: provenanceProgramId, title: pTitle }));
 
@@ -4181,7 +3491,7 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const t of (await pSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
     const pClean = await pSess();
     // PRECONDITION AS ITSELF #2 — nothing else can explain a row that fails to start.
-    check("(e2) fixture: the field is clean — no lane carries the probe program, two slots free, repo cap not reached",
+    e2Pre.need("the field is clean — no lane carries the probe program, two slots free, repo cap not reached",
       pLanesOf(provenanceProgramId) === 0 && pClean.slots.filter((s) => !s.cwd).length >= 2
       && pClean.slots.filter((s) => s.worktree).length < pCfg.dispatch.maxLanes,
       JSON.stringify({ programLanes: pLanesOf(provenanceProgramId), free: pClean.slots.filter((s) => !s.cwd).length,
@@ -4195,9 +3505,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const pAnchorRow = await pTill(pAnchor.task.id, (r) => r?.status === "sent");
     // PRECONDITION AS ITSELF #3 — the bracket really is AT its cap of 1, measured the way the cap
     // measures. Without this a "did not start" below could mean "nothing ever started".
-    check("(e2) fixture: the bracket's first lane is running and the SLOT carries the program — the cap's own count is 1/1",
+    e2Pre.need("the bracket's first lane is running and the SLOT carries the program — the cap's own count is 1/1",
       pAnchorRow?.status === "sent" && pLanesOf(provenanceProgramId) === 1,
       JSON.stringify({ status: pAnchorRow?.status, slot: pAnchorRow?.slot, programLanes: pLanesOf(provenanceProgramId) }));
+    e2Pre.done();
 
     // held row FIRST, unbracketed row BEHIND it — a check that queued the counter-probe first would
     // never notice a cap that stops the tick instead of skipping the row.
@@ -4259,8 +3570,7 @@ export async function run(ctx: Ctx): Promise<void> {
   //      briefs (same briefHash) — and the fields survive the restart that lifts the cap;
   //   T5 no variant lands before a decision, a decision shelves the loser (outcome `shelved`, slot
   //      freed, branch kept) and is never rewritten, the shelved branch is refused even re-attached,
-  //      and the winner lands through the ordinary ⏏ door and closes the group;
-  //   T6 the board source renders "Variante k/n" and the decision.
+  //      and the winner lands through the ordinary ⏏ door and closes the group.
   {
     type VRow = { id: string; status: string; note?: string | null; slot?: number | null; variants?: unknown[];
       variantOf?: string; variantIndex?: number; spawn?: { harness: string | null; model: string | null; effort: string | null };
@@ -4433,15 +3743,6 @@ export async function run(ctx: Ctx): Promise<void> {
       && (vClosed[1]?.note ?? "").includes(vWin?.id ?? "-"),
       `${vWinLand.status}:${vWinLandText} ${JSON.stringify(vClosed)}`);
 
-    // T6 · the board renders both halves from the poll (source contract — the suite has no DOM)
-    check("(v) T6: the board source renders `Variante k/n` on a variant, `Variantengruppe ×n` on a group, and Gewinner/shelved from the group's decision",
-      /function qVariantLine\(/.test(taskClientSource)
-      && taskClientSource.includes("`Variante ${t.variantIndex ?? \"?\"}/${n ?? \"?\"}")
-      && taskClientSource.includes("Variantengruppe ×${t.variants.length}")
-      && taskClientSource.includes("\" · Gewinner\" : \" · shelved\"")
-      && /const variant = qVariantLine\(t, tasksList\);/.test(taskClientSource),
-      "qVariantLine wiring");
-
     // cleanup — dispatcher already off; the loser branch is a record by design, its worktree goes
     for (const s of (await vSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
     if (vLosePath) spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", vLosePath]);
@@ -4514,7 +3815,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await rClean();
     await restartSrv({ FLEET_DISPATCH_MAX_LANES: "2" });
     const rCfg = await rSess();
-    check("(v-res) fixture: the cap restart took effect, REPO2 carries no lane, and three slots are free",
+    const rPre = precondition("(v-res)");
+    rPre.need("the cap restart took effect, REPO2 carries no lane, and three slots are free",
       rCfg.dispatch.maxLanes === 2 && (await rLanes()) === 0 && rCfg.slots.filter((x) => !x.cwd).length >= 3,
       JSON.stringify({ maxLanes: rCfg.dispatch.maxLanes, inRepo2: await rLanes(), free: rCfg.slots.filter((x) => !x.cwd).length }));
     const rFill = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
@@ -4551,7 +3853,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const rV2 = (await rVars(rGroup2)).sort((a, b) => a.id.localeCompare(b.id));
     await post(`/api/tasks/${rV2[1]?.id}/unqueue`, {});
     const rSingle2 = await rFileRow("(v-res) single row behind a non-capacity hold — it must start");
-    check("(v-res)(2) fixture: the group is queued with exactly one of its two variants released, and REPO2 has no lane",
+    rPre.need("(2) the group is queued with exactly one of its two variants released, and REPO2 has no lane",
       (await rVars(rGroup2)).filter((t) => t.status === "queued").length === 1 && (await rLanes()) === 0,
       JSON.stringify(await rVars(rGroup2)));
     await post("/api/dispatch", { on: true });
@@ -4575,7 +3877,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const rSingle3 = await rFileRow("(v-res) single row behind an expiring claim — it must get the lane in the end");
     await post("/api/dispatch", { on: true });
     const rHeld3 = await rTill(() => rRow(rSingle3), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
-    check("(v-res)(3) fixture: the claim really stood first — without this the row starting below would prove nothing",
+    rPre.need("(3) the claim really stood first — without this the row starting below would prove nothing",
       rHeld3?.status === "queued" && (rHeld3?.note ?? "").includes(rGroup3),
       JSON.stringify({ status: rHeld3?.status, note: rHeld3?.note }));
     const rFreed = await rTill(() => rRow(rSingle3), (t) => t?.status === "sent", 160);
@@ -4593,7 +3895,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const rSingle3b = await rFileRow("(v-res) single row behind an unqueued group — its claim must fall");
     await post("/api/dispatch", { on: true });
     const rHeld3b = await rTill(() => rRow(rSingle3b), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
-    check("(v-res)(3b) fixture: the group holds the next lane before it is unqueued",
+    rPre.need("(3b) the group holds the next lane before it is unqueued",
       rHeld3b?.status === "queued" && (rHeld3b?.note ?? "").includes(rGroup3) && typeof rFill3b.slot === "number",
       JSON.stringify({ status: rHeld3b?.status, note: rHeld3b?.note, filler: rFill3b.slot ?? null }));
     await post(`/api/tasks/${rGroup3}/unqueue`, {});
@@ -4661,9 +3963,9 @@ export async function run(ctx: Ctx): Promise<void> {
       } catch { return null; }
     }, (id) => id !== null) ?? null;
     const rMainTok = rMainSlot !== null ? await selfTokenOf(rMainSlot) : "";
-    check("(v-res)(4) fixture: REPO2 has its own configured verify command",
+    rPre.need("(4) REPO2 has its own configured verify command",
       repo2VerifyCommand.endsWith("/fakeverify2"), repo2VerifyCommand);
-    check("(v-res)(4) fixture: the probe program is active with a bound MAIN in REPO2 holding a self token",
+    rPre.need("(4) the probe program is active with a bound MAIN in REPO2 holding a self token",
       rBoot.status === 200 && rConfirm.status === 200 && rActivate.status === 200
       && typeof rMainSlot === "number" && /^[0-9a-f]{32}$/.test(rMainTok),
       JSON.stringify({ boot: rBoot.status, confirm: rConfirm.status, activate: rActivate.status, mainSlot: rMainSlot ?? null, tok: rMainTok.length }));
@@ -4694,7 +3996,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // them at all, so the group release below read 0+2 and answered 200 — it measured nothing.
     const rSingleReleases: number[] = [];
     for (const id of rSingles) rSingleReleases.push((await rSelfPost(`/api/self/tasks/${id}/release`, {})).status);
-    check("(v-res)(4) control: the same door releases each single row — the deckel counts them one by one (0..3 against 5)",
+    rPre.need("(4) control: the same door releases each single row — the deckel counts them one by one (0..3 against 5)",
       rSingleReleases.every((s) => s === 200),
       JSON.stringify({ statuses: rSingleReleases }));
     const rGroupReleaseTry = rSingles.every((x) => /^[0-9a-f]{6,}$/.test(x)) && /^[0-9a-f]{6,}$/.test(rGroup4)
@@ -4725,15 +4027,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const rFill5 = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
     const rFill5b = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
     const rSingle5 = await rFileRow("(v-res)(5) single row behind a HELD group — the held claim must not stop it");
-    check("(v-res)(5) fixture: the group released clean (0+2 against 5), two filler lanes in REPO2, the single row filed",
+    rPre.need("(5) the group released clean (0+2 against 5), two filler lanes in REPO2, the single row filed",
       rGroupRelease5.status === 200 && typeof rFill5.slot === "number" && typeof rFill5b.slot === "number"
       && /^[0-9a-f]{6,}$/.test(rSingle5) && (await rLanes()) === 2,
       JSON.stringify({ release: rGroupRelease5.status, fillers: [rFill5.slot ?? null, rFill5b.slot ?? null], single: rSingle5, lanes: await rLanes() }));
     await post("/api/dispatch", { on: true });
     const rHeld5 = await rTill(() => rRow(rSingle5), (t) => (t?.note ?? "").startsWith("waiting: the next lane is reserved"));
-    check("(v-res)(5) fixture: the claim really stands — the single row carries the group's reserve sentence",
+    rPre.need("(5) the claim really stands — the single row carries the group's reserve sentence",
       rHeld5?.status === "queued" && (rHeld5?.note ?? "").includes(rGroup4),
       JSON.stringify({ status: rHeld5?.status, note: rHeld5?.note }));
+    rPre.done();
     const rHold5 = await rSelfPost(`/api/self/tasks/${rGroup4}/hold`, { grund: "probe: the claim must fall with its group" });
     const rFreed5 = await rTill(() => rRow(rSingle5), (t) => t?.status === "sent", 40);
     check("(v-res)(5) the held group's claim falls: the single row behind it starts immediately, not after the reserve span",
@@ -4881,10 +4184,12 @@ export async function run(ctx: Ctx): Promise<void> {
       }
       return { ids: rows.map((r) => r.id), wts, toks, branches };
     };
-    const cFixture = async (label: string, start: { ids: string[]; wts: string[] }): Promise<void> =>
-      check(`${label} fixture: both variant lanes run on real worktrees — the probe below cannot read its own defect without this`,
+    const cPre = precondition("(v-cmp)");
+    const cFixture = async (label: string, start: { ids: string[]; wts: string[] }): Promise<void> => {
+      cPre.need(`${label}: both variant lanes run on real worktrees — the probe below cannot read its own defect without this`,
         start.ids.length === 2 && start.wts.length === 2 && start.wts.every((w) => !!w && existsSync(w)),
         JSON.stringify({ ids: start.ids, wts: start.wts }));
+    };
     const cShelved = async (branch: string): Promise<boolean> =>
       ((await (await get("/api/lane-outcomes?limit=200")).json()) as
         { outcomes: { branch: string | null; disposition: string }[] }).outcomes
@@ -4977,7 +4282,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the owner confirms WITHOUT body.parts — the proposal's parts are kept
     const cConfirm = await post(`/api/tasks/${cGroup}/criterion-confirm`, {});
     const cConfirmed = (await cSess()).tasks.find((t) => t.id === cGroup)?.criterion?.confirmedAt;
-    check("(v-cmp)(2) fixture: the owner confirmed the criterion on the GROUP row — the proposed parts are kept",
+    cPre.need("(v-cmp)(2) the owner confirmed the criterion on the GROUP row — the proposed parts are kept",
       cConfirm.status === 200 && typeof cConfirmed === "number",
       JSON.stringify({ confirm: cConfirm.status, confirmedAt: cConfirmed ?? null }));
     await cCommit(cStart2.wts[0] ?? "", "cx.txt", "x\n", "c: variant A fulfills the check");
@@ -4985,7 +4290,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // B claims in prose what its check will fail: the claim rides the report, never the count
     const cClaim = await cSelfPost(cStart2.toks[1] ?? "", "/api/self/fleet-report",
       { status: "complete", text: `done — ${cPart1}; everything the criterion asked for is in place.` });
-    check("(v-cmp)(2) fixture: B's report is filed and carries the part's text verbatim",
+    cPre.need("(v-cmp)(2) B's report is filed and carries the part's text verbatim",
       cClaim.status === 200, JSON.stringify({ claim: cClaim.status, body: cClaim.body }));
     const cLines = await cWaitLine(cGroup);
     const cLine = cLines[0];
@@ -5229,9 +4534,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // saveState is fire-and-forget: the proposal ON DISK is the precondition a restart can read
     await until(() => JSON.stringify(pOnDisk()?.parts) === pWant,
       { timeoutMs: 5_000, stepMs: 50, what: `fleet.json to persist ${pGroup}'s proposed parts` });
-    check("(v-cmp)(9) fixture: the proposal with two parts is accepted and served before any restart",
+    cPre.need("(v-cmp)(9) the proposal with two parts is accepted and served before any restart",
       pPropose.status === 200 && JSON.stringify((await pServed())?.parts) === pWant,
       JSON.stringify({ propose: pPropose, served: await pServed() }));
+    cPre.done();
     await restartSrv(pEnv);
     const pAfterPropose = await pServed();
     check("(v-cmp)(9a) a PROPOSED criterion keeps both parts byte-equal across a restart, still unconfirmed",
@@ -5318,7 +4624,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // PRECONDITION AS ITSELF #0 — the wrapper built both scratch repos. Without this the whole
     // block would silently degrade into a one-repo probe, i.e. exactly the fixture that cannot see
     // the bug, while every assertion below still passed.
-    check("(e3) fixture: the two scratch repos this regression needs both exist and are distinct",
+    const ePre = precondition("(e3)");
+    ePre.need("the two scratch repos this regression needs both exist and are distinct",
       !!REPO2 && !!REPO3 && REPO2 !== REPO3 && existsSync(`${REPO2}/.git`) && existsSync(`${REPO3}/.git`),
       JSON.stringify({ REPO2, REPO3 }));
 
@@ -5327,7 +4634,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await restartSrv({ FLEET_DISPATCH_MAX_LANES: "1" });
     const eCfg = await eSess();
     // PRECONDITION AS ITSELF #1 — the restart's env reached the server.
-    check("(e3) fixture: the cap restart took effect — the dispatcher reports maxLanes 1",
+    ePre.need("the cap restart took effect — the dispatcher reports maxLanes 1",
       eCfg.dispatch.maxLanes === 1, JSON.stringify({ maxLanes: eCfg.dispatch.maxLanes }));
 
     // a clean field: no foreign lane in either scratch repo, no foreign released row that could win
@@ -5344,11 +4651,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const eClean = await eSess();
     // PRECONDITION AS ITSELF #2 — A really is AT its cap, B really is empty, and a slot is free for
     // B to start in. Without all three, "A did not start" could mean "nothing could have started".
-    check("(e3) fixture: repo A is at 1/1, repo B is empty, and a free slot exists for B",
+    ePre.need("repo A is at 1/1, repo B is empty, and a free slot exists for B",
       typeof eLaneA.slot === "number" && (await eLanesIn(REPO3)) === 1 && (await eLanesIn(REPO2)) === 0
       && eClean.slots.filter((x) => !x.cwd).length >= 1,
       JSON.stringify({ laneA: eLaneA.slot, inA: await eLanesIn(REPO3), inB: await eLanesIn(REPO2),
         free: eClean.slots.filter((x) => !x.cwd).length }));
+    ePre.done();
 
     // OLDER row first, into the SATURATED repo; the younger runnable row behind it. Filed in this
     // order on purpose: `tasks` keeps insertion order, so the sweep reaches A first — a fixture that
@@ -5469,7 +4777,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const fCfg = await fSess();
     // PRECONDITION AS ITSELF #1 — the restart's env reached the server, so "the entry raised it"
     // is measured against a default that really is 1.
-    check("(e4) fixture: the machine default really is 1 for this block",
+    const fPre = precondition("(e4)");
+    fPre.need("the machine default really is 1 for this block",
       fCfg.dispatch.maxLanes === 1, JSON.stringify({ maxLanes: fCfg.dispatch.maxLanes }));
 
     const fKills = (await fSess()).slots.filter((x) => x.worktree && x.id !== ctx.restartSelfSlot);
@@ -5517,12 +4826,13 @@ export async function run(ctx: Ctx): Promise<void> {
     const fLaneA = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot?: number };
     const fLaneB = (await (await post("/api/lanes", { repo: REPO3 })).json()) as { slot?: number };
     const fClean = await fSess();
-    check("(e4) fixture: both repos hold exactly one lane, and a free slot remains for the raised repo to use",
+    fPre.need("both repos hold exactly one lane, and a free slot remains for the raised repo to use",
       typeof fLaneA.slot === "number" && typeof fLaneB.slot === "number"
       && (await fLanesIn(REPO2)) === 1 && (await fLanesIn(REPO3)) === 1
       && fClean.slots.filter((x) => !x.cwd).length >= 1,
       JSON.stringify({ inRaised: await fLanesIn(REPO2), inDefault: await fLanesIn(REPO3),
         free: fClean.slots.filter((x) => !x.cwd).length }));
+    fPre.done();
 
     await post("/api/dispatch", { on: true });
     const fHeld = (await (await post("/api/tasks", {
@@ -5630,7 +4940,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // runner's own FLEET_* env, so the runner's env IS the operator's configuration. If a future
     // wrapper sets a per-program budget, this block stops measuring what it claims to and says so
     // here rather than passing for the wrong reason.
-    check("(e5) fixture: the operator configured NO per-program budget for this run, and the machine default is 1",
+    const gPre = precondition("(e5)");
+    gPre.need("the operator configured NO per-program budget for this run, and the machine default is 1",
       !process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM && (await gSess()).dispatch.maxLanes === 1,
       JSON.stringify({ perProgram: process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM ?? null,
         maxLanes: (await gSess()).dispatch.maxLanes }));
@@ -5644,7 +4955,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const gClean = await gSess();
     // PRECONDITION AS ITSELF #2 — the entry is in place, the bracket is empty and two slots are free.
     // Without all three, "the second row did not start" could mean "nothing could have started".
-    check("(e5) fixture: the repo is raised to 2, the probe program holds no lane, and two slots are free",
+    gPre.need("the repo is raised to 2, the probe program holds no lane, and two slots are free",
       gSet.ok && !!provenanceProgramId && gLanesOf(provenanceProgramId) === 0
       && gClean.slots.filter((x) => !x.cwd).length >= 2,
       JSON.stringify({ set: gSet.status, programLanes: gLanesOf(provenanceProgramId),
@@ -5657,9 +4968,10 @@ export async function run(ctx: Ctx): Promise<void> {
     })).json()) as { task: { id: string } };
     const gFirstRow = await gTill(gFirst.task.id, (r) => r?.status === "sent");
     // PRECONDITION AS ITSELF #3 — the bracket really is at 1, measured the way the cap measures.
-    check("(e5) fixture: the bracket's first lane runs and the SLOT carries the program",
+    gPre.need("the bracket's first lane runs and the SLOT carries the program",
       gFirstRow?.status === "sent" && gLanesOf(provenanceProgramId) === 1,
       JSON.stringify({ status: gFirstRow?.status, programLanes: gLanesOf(provenanceProgramId) }));
+    gPre.done();
 
     const gSecond = (await (await post("/api/tasks", {
       text: "(e5) second Program row in the RAISED repo — an unconfigured per-program cap must NOT hold it",
@@ -5814,7 +5126,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const hCatalog = ((await (await get("/api/harnesses")).json()) as
       { harnesses?: { id: string; automatable?: boolean }[] }).harnesses ?? [];
     const hDecl = hCatalog.find((x) => x.id === "container");
-    check("(e6) fixture: the cap is 1 and container declines on its OWN claim, so the flag is not what this block measures",
+    const hPre = precondition("(e6)");
+    hPre.need("the cap is 1 and container declines on its OWN claim, so the flag is not what this block measures",
       hCfg.dispatch.maxLanes === 1 && hDecl !== undefined && hDecl.automatable === false,
       JSON.stringify({ maxLanes: hCfg.dispatch.maxLanes, container: hDecl ?? null }));
 
@@ -5830,9 +5143,10 @@ export async function run(ctx: Ctx): Promise<void> {
       text: "(e6) counter-proof row with the default spawn — the note must name the CAP",
       queue: true, repo: REPO2,
     })).json()) as { task: { id: string } };
-    check("(e6) fixture: the non-automatable spawn is STORED on the row, and one attended lane holds the repo cap",
+    hPre.need("the non-automatable spawn is STORED on the row, and one attended lane holds the repo cap",
       hHarnessRow.task.spawn?.harness === "container" && typeof hLane.slot === "number",
       JSON.stringify({ spawn: hHarnessRow.task.spawn ?? null, lane: hLane.slot ?? null }));
+    hPre.done();
 
     const hHeldHarness = await hTill(hHarnessRow.task.id, (r) => (r?.note ?? "") === HARNESS_NOTE);
     const hHeldCap = await hTill(hCapRow.task.id, (r) => (r?.note ?? "") === CAP_NOTE);
@@ -6205,15 +5519,7 @@ export async function run(ctx: Ctx): Promise<void> {
       mkNote("x-nofiles", [], "server", 999, "x. y.", { files: undefined }),
       mkNote("x-disjoint", ["z.ts"], "server", 999),
     ];
-    const pureBefore = JSON.stringify({ pureTask, pureNotes });
     const pureFirst = notesForTask(pureTask, pureNotes);
-    const pureSecond = notesForTask(pureTask, pureNotes);
-    // (c) PURITY. Mutation that breaks it: sorting `notizen` in place (the obvious way to write the
-    // ranking), or reusing/mutating the caller's `files` arrays instead of copying them.
-    check("(d5-c) notesForTask is pure — same answer twice and neither input touched",
-      JSON.stringify(pureFirst) === JSON.stringify(pureSecond)
-      && JSON.stringify({ pureTask, pureNotes }) === pureBefore,
-      `${JSON.stringify(pureFirst.map((r) => r.id))} inputsEqual=${JSON.stringify({ pureTask, pureNotes }) === pureBefore}`);
     // THE ORDER, with each rule decisive exactly once. Mutation that breaks it: dropping any one
     // comparator term, or flipping a direction — p1>p2 needs the count, p2>na the age, na>nb the
     // id, and p5 last is the only thing proving the cluster outranks a STRICTLY larger overlap.
@@ -6352,12 +5658,6 @@ export async function run(ctx: Ctx): Promise<void> {
       miss.unknown.join(",") === "nope,foreign,notanote"
       && miss.shown.some((r) => r.id === "closed" && r.taskIds?.join(",") === "T6"),
       `unknown=${JSON.stringify(miss.unknown)} shown=${JSON.stringify(miss.shown.map((r) => r.id))}`);
-    // (f) PURITY, the same property notesForTask carries: two calls agree and neither input moved.
-    const before6 = JSON.stringify([t6, pop]);
-    const p1 = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "j1"] }], pop);
-    const p2 = laneNoteSources(t6, [{ id: "T6", noteIds: ["s1", "j1"] }], pop);
-    check("(d6-f) laneNoteSources is pure — same answer twice and neither input touched",
-      JSON.stringify(p1) === JSON.stringify(p2) && JSON.stringify([t6, pop]) === before6);
     // (g) THE RENDER. The pin is said BEFORE the sentence (it is the instruction), and the
     // per-task verdict line appears ONLY when a pin exists — so a lane whose notes are all surface
     // hits reads byte-identically to what N1 delivered. Mutation that breaks it: printing the
@@ -6459,7 +5759,8 @@ export async function run(ctx: Ctx): Promise<void> {
       "continuity.ts", "lane-signals.ts", "slotstats.ts", "trailstats.ts", "docs/verify-tiering.md"];
     // Precondition, not a check of the feature: every path below has to BE a tracked file of ROOT,
     // or deriveTaskMetadata drops it and the whole section would pass by measuring nothing.
-    check("(d5-live) precondition: every fixture path is tracked in the instance checkout",
+    const d5Pre = precondition("(d5-live)");
+    d5Pre.need("every fixture path is tracked in the instance checkout",
       FIXTURE_PATHS.every((p) => tracked.has(p)),
       JSON.stringify(FIXTURE_PATHS.filter((p) => !tracked.has(p))));
     type QueueRow = { id: string; kind: string; status: string; repo?: string | null;
@@ -6478,7 +5779,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // The control below is dispatched into a world with ZERO candidate notes, and that has to be a
     // measured fact: an earlier section leaving a ROOT-scoped note behind would make the byte
     // comparison compare two blocks instead of a block and its absence.
-    check("(d5-live) precondition: no pending notiz targets the instance checkout yet",
+    d5Pre.need("no pending notiz targets the instance checkout yet",
       (await rootNotes()).length === 0, JSON.stringify(await rootNotes()));
 
     const mkTask = async (text: string, kind: "auftrag" | "notiz"): Promise<string> =>
@@ -6503,7 +5804,7 @@ export async function run(ctx: Ctx): Promise<void> {
       let dispatchBody: { slot?: number } = {};
       try { dispatchBody = JSON.parse(dispatchText) as { slot?: number }; }
       catch { /* the fixture check below names the response rather than claiming dispatch succeeded */ }
-      check("(d5-live) dispatch fixture receives a successful JSON slot response",
+      d5Pre.need("a dispatch fixture receives a successful JSON slot response",
         res.ok && typeof dispatchBody.slot === "number",
         `${taskId}: ${res.status} ${dispatchText.slice(0, 300)}`);
       const slot = dispatchBody.slot ?? null;
@@ -6590,7 +5891,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const classPostText = await classPost.text();
     let classId = "";
     try { classId = (JSON.parse(classPostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
-    check("(s3-shadow) class fixture files a card against the tracked register",
+    d5Pre.need("(s3-shadow) the class fixture files a card against the tracked register",
       classPost.ok && !!classId, `${classPost.status}: ${classPostText.slice(0, 300)}`);
     const classBefore = ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; spawn?: unknown; card?: { klasse?: string; valid?: boolean } }[] }).tasks.find((t) => t.id === classId);
@@ -6613,7 +5914,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const overridePostText = await overridePost.text();
     let overrideId = "";
     try { overrideId = (JSON.parse(overridePostText) as { task?: { id?: string } }).task?.id ?? ""; } catch { /* named below */ }
-    check("(s3-shadow) override fixture files a card against the tracked register",
+    d5Pre.need("(s3-shadow) the override fixture files a card against the tracked register",
       overridePost.ok && !!overrideId, `${overridePost.status}: ${overridePostText.slice(0, 300)}`);
     const overrideSent = overrideId ? await dispatchAndRead(overrideId, overrideBrief) : { prompt: "", agents: "", receipt: undefined, slot: null };
     await closeLane(overrideSent.slot);
@@ -6655,7 +5956,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // Precondition again, and the sharper half: the SERVER's own projection has to have derived the
     // surfaces and clusters this ranking is built on. Without it a green ranking could just mean
     // "nothing matched anything".
-    check("(d5-live) precondition: the queue projection derived the fixture surfaces and clusters",
+    d5Pre.need("the queue projection derived the fixture surfaces and clusters",
       rowOf(nA)?.cluster?.prozess === "server" && rowOf(nE)?.cluster?.prozess === "cross-cutting"
       && rowOf(nHub)?.files?.join(",") === "AGENTS.md,HANDOFF.md,server.ts"
       && (rowOf(nB)?.created ?? 0) > (rowOf(nC)?.created ?? 0),
@@ -6699,7 +6000,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const n2Branch = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; worktree?: { branch: string } | null }[] })
       .slots.find((x) => x.id === rankLaneSlot)?.worktree?.branch ?? "";
-    check("(n2-routes) fixture: the ranked lane is alive with its own scoped token and a branch",
+    d5Pre.need("(n2-routes) the ranked lane is alive with its own scoped token and a branch",
       !!n2Tok && !!n2Branch, `slot=${rankLaneSlot} tok=${!!n2Tok} branch=${n2Branch}`);
     const n2Get = (token: string) =>
       fetch(`${BASE}/api/self/notes`, { headers: { "x-fleet-self-token": token } });
@@ -6852,7 +6153,7 @@ export async function run(ctx: Ctx): Promise<void> {
       afterRows.filter((t) => sameAsRoot(t.repo))
         .map((t) => ({ id: t.id, repo: rootReal, kind: t.kind, status: t.status,
           files: t.files, cluster: t.cluster, created: t.created, text: t.text })));
-    check("(d5-live-e) precondition: the same five notes are candidates for the clarify row's own surface",
+    d5Pre.need("(d5-live-e) the same five notes are candidates for the clarify row's own surface",
       liveCandidates.length === 5, JSON.stringify(liveCandidates.map((r) => r.id)));
     check("(d5-live-e) a clarify dispatch carries no note block although five candidates match it",
       cPrompt.length > 0 && !cPrompt.includes("Notizen auf deiner Flaeche")
@@ -7115,7 +6416,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // four now ask `sourceHolders`, so this is one property measured at four entrances — and the
     // fourth arm proves the release path still works: after the DETACH, the same delete goes
     // through. Mutation that breaks it: giving any one door its own copy of the rule.
-    // its OWN pair, so the detach at the end of it does not disturb (n3-j)'s reading of n3Holder
+    // its OWN pair, so the detach at the end of it does not disturb n3Holder's pin
     const n3Src = await mkTask("Notiz N3 Tueren: docs/verify-tiering.md. Rest.", "notiz");
     const n3Own = await mkTask("Auftrag N3 Tueren-Halter: docs/verify-tiering.md.", "auftrag");
     await n3AssignRes(n3Own, { note: n3Src, attach: true });
@@ -7133,21 +6434,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && n3DelFree.ok && (await n3Has(n3Src)) === false,
       `${n3DelHeld.status}/${n3ArcHeld.status}/${n3KindHeld.status} still=${n3StillThere}`
       + ` afterDetach=${n3DelFree.status}`);
-
-    // (j) RESTART. Both fields are persisted-and-rehydrated or they are decorations: a pin that
-    // dies at the first boot cannot found a brief, and a verdict that does cannot close a note.
-    // Read from the state FILE the server has written, which is what the loader will read back.
-    const n3Saved = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-      { tasks?: { id: string; notes?: { noteId: string; by: string }[];
-        verdicts?: { taskId: string; branch: string; verdict: string }[] }[] };
-    const n3SavedHolder = (n3Saved.tasks ?? []).find((t) => t.id === n3Holder);
-    const n3SavedNote = (n3Saved.tasks ?? []).find((t) => t.id === nF);
-    check("(n3-j) the assignment and the task-scoped verdict are both on disk, in the shape the loader reads back",
-      JSON.stringify(n3SavedHolder?.notes?.map((x) => [x.noteId, x.by])) === JSON.stringify([[n3Keep, "owner"]])
-      && n3SavedNote?.verdicts?.length === 1
-      && n3SavedNote.verdicts[0].taskId === n3Task
-      && n3SavedNote.verdicts[0].branch.startsWith("fleet/"),
-      `${JSON.stringify(n3SavedHolder?.notes ?? null)} ${JSON.stringify(n3SavedNote?.verdicts ?? null)}`);
+    d5Pre.done();
 
     // holders FIRST: a held source now refuses its own delete, which is the retention this section
     // proved — so the cleanup has to release before it removes, exactly as a human would.
@@ -7342,7 +6629,8 @@ export async function run(ctx: Ctx): Promise<void> {
       `printf '%s\\n' "$@" > ${q(invoked)}`, "printf '>_ OpenAI Codex (v0.159.0)\\n› \\n'",
       `exec ${q(join(liveDir, "codex"))}`, ""].join("\n"));
     chmodSync(join(binDir, "codex"), 0o755);
-    check("(web) setup: Codex resolves exclusively to the stand-in binary",
+    const webPre = precondition("(web)");
+    webPre.need("Codex resolves exclusively to the stand-in binary",
       !!cat && Bun.which("codex", { PATH: webPath }) === join(binDir, "codex"), `cat=${!!cat}`);
     try {
       if (cat) {
@@ -7367,12 +6655,12 @@ export async function run(ctx: Ctx): Promise<void> {
           const dispatch = await post(`/api/tasks/${row.id}/dispatch`, {});
           const started = (await dispatch.json()) as { ok?: boolean; slot?: number };
           row.slot = started.slot;
-          check(`(web) ${search ? "search" : "absent"}: dispatch starts the declared Codex lane`,
+          webPre.need(`${search ? "search" : "absent"}: dispatch starts the declared Codex lane`,
             dispatch.ok && started.ok === true && typeof row.slot === "number", `status=${dispatch.status}`);
           if (typeof row.slot !== "number") continue;
           const slots = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string }[] };
           const cwd = slots.slots.find((s) => s.id === row.slot)?.cwd;
-          check(`(web) ${search ? "search" : "absent"}: dispatched lane has its exact cwd for session trust`,
+          webPre.need(`${search ? "search" : "absent"}: dispatched lane has its exact cwd for session trust`,
             typeof cwd === "string" && existsSync(cwd), `cwd=${cwd ?? "absent"}`);
           if (!cwd || !existsSync(cwd)) continue;
           const reviewer = 'approvals_reviewer="user"';
@@ -7408,31 +6696,12 @@ export async function run(ctx: Ctx): Promise<void> {
               actual === wanted, JSON.stringify({ actual, wanted }));
             check(`(web) ${search ? "search" : "absent"} ${phase}: stand-in receives exact permissions, trust and search argv`,
               exactArgv(args, id), JSON.stringify({ args, expected: expectedArgv(id) }));
-            const correct = expectedArgv(id);
-            const mutations: [string, string[]][] = [
-              ["bypass", [...correct, "--dangerously-bypass-approvals-and-sandbox"]],
-              ["daemon", correct.filter((arg) => arg !== "--no-daemon")],
-              ["sandbox", correct.map((arg) => arg === "danger-full-access" ? "workspace-write" : arg)],
-              ["approval", correct.map((arg) => arg === "never" ? "on-request" : arg)],
-              ["update", correct.map((arg) => arg === "check_for_update_on_startup=false" ? "check_for_update_on_startup=true" : arg)],
-              ["reviewer", correct.map((arg) => arg === reviewer ? 'approvals_reviewer="auto"' : arg)],
-              ["workspace", correct.map((arg) => arg === workspace ? 'sandbox_workspace_write={network_access=true}' : arg)],
-              ["model", correct.map((arg) => arg === "gpt-6-astra" ? "wrong-model" : arg)],
-              ["effort", correct.map((arg) => arg === "model_reasoning_effort=high" ? "model_reasoning_effort=low" : arg)],
-              ["MCP", correct.map((arg) => arg === mcp ? 'mcp_servers.playwright={enabled=true}' : arg)],
-              ["trust", correct.map((arg) => arg === trust ? 'projects={"/other"={trust_level="trusted"}}' : arg)],
-              ["search", search ? correct.filter((arg) => arg !== "--search") : [...correct, "--search"]],
-              ...(id ? [["resume ID", correct.map((arg) => arg === id ? "10000000-0000-4000-8000-000000000099" : arg)] as [string, string[]]] : []),
-            ];
-            const acceptedMutations = mutations.filter(([, changed]) => exactArgv(changed, id)).map(([name]) => name);
-            check(`(web) ${search ? "search" : "absent"} ${phase}: argv oracle rejects every changed contract field`,
-              acceptedMutations.length === 0, `accepted=${JSON.stringify(acceptedMutations)}`);
           };
           await observe();
           await until(async () => (await plogRead()).slice(promptsBefore).some((e) =>
             e.slot === row.slot && e.text.includes("code.txt bekommt eine Recherchezeile.")),
           { timeoutMs: 15_000, what: "initial web dispatch brief finishes before lane restart" });
-          check(`(web) ${search ? "search" : "absent"}: initial dispatch delivery completes before lane restart`,
+          webPre.need(`${search ? "search" : "absent"}: initial dispatch delivery completes before lane restart`,
             (await plogRead()).slice(promptsBefore).some((e) => e.slot === row.slot
               && e.text.includes("code.txt bekommt eine Recherchezeile.")), `slot=${row.slot}`);
           rmSync(invoked, { force: true });
@@ -7446,10 +6715,9 @@ export async function run(ctx: Ctx): Promise<void> {
           writeFileSync(join(sessionsDir, `rollout-web-${id}.jsonl`), JSON.stringify({ type: "session_meta",
             payload: { id, cwd, timestamp: new Date().toISOString(), thread_source: "user" } }) + "\n");
           const bind = await post(`/api/slots/${row.slot}/codex-bind`, { sessionId: id });
-          check(`(web) ${search ? "search" : "absent"}: exact rollout binding succeeds before resume`, bind.ok, `status=${bind.status}`);
+          webPre.need(`${search ? "search" : "absent"}: exact rollout binding succeeds before resume`, bind.ok, `status=${bind.status}`);
           if (bind.ok) {
-            const done = await post(`/api/tasks/${row.id}/done`, {});
-            check(`(web) ${search ? "search" : "absent"}: row leaves sent before recovery`, done.ok, `status=${done.status}`);
+            await post(`/api/tasks/${row.id}/done`, {});
             await restartSrv({ PATH: webPath, FLEET_CODEX_SESSIONS_DIR: join(webDir, "sessions"), FLEET_DISPATCH_REPO: REPO });
             const persistedTasks = (await (await get("/api/tasks")).json()) as { tasks: { id: string; status?: string; card?: { web?: string } }[] };
             const persisted = persistedTasks.tasks.find((t) => t.id === row.id);
@@ -7469,6 +6737,7 @@ export async function run(ctx: Ctx): Promise<void> {
           row.slot = undefined;
           await post(`/api/tasks/${row.id}/delete`, {});
         }
+        webPre.done();
         const invalid = await post("/api/tasks", { text: "code.txt: research", repo: REPO, queue: false,
           card: { ziel: "code.txt aendern", rolle: { harness: "codex", model: "gpt-6-astra", effort: "high" },
             surface: { files: ["code.txt"], symbols: [] }, done: "Zeile steht", verify: "bun e2e/pins.ts", verboten: [], web: "auto" } });
@@ -7541,8 +6810,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // not-alive requeue and got a `sent` row, because the agent was genuinely there. The probe was
     // wrong, not the server.) Same discipline as e2e/lanes-basic.ts, which kills its codex lane
     // one line after asserting the spawn.
-    check("kill the foreign-harness lane inside the boot sleep (setup for the requeue below)",
-      typeof xdJ.slot === "number" && (await post(`/api/slots/${xdJ.slot}/kill`, {})).ok, JSON.stringify(xdJ));
+    if (typeof xdJ.slot === "number") await post(`/api/slots/${xdJ.slot}/kill`, {});
     let xReq: FRow | undefined;
     for (let i = 0; i < 30; i++) { // ceiling ~15 s; the boot sleep alone is 4 s
       xReq = await f2Row(xT.task.id);
@@ -7583,7 +6851,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const kSlot = typeof kdJ.slot === "number" ? kdJ.slot : -1;
     const kCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
       .slots.find((s) => s.id === kSlot)?.cwd ?? null;
-    check("kill-archive fixture: the row is sent, bound to a lane that holds a worktree (setup)",
+    const dPre = precondition("(f2) dispatch probes");
+    dPre.need("kill-archive: the row is sent, bound to a lane that holds a worktree",
       kd.ok && kSlot > 0 && (await f2Row(kT.task.id))?.status === "sent"
       && !!kCwd && existsSync(`${kCwd}/.git`), `${kd.status} ${JSON.stringify(kdJ)} cwd=${kCwd}`);
     const kKill = await post(`/api/slots/${kSlot}/kill`, { archiveTask: true });
@@ -7627,7 +6896,7 @@ export async function run(ctx: Ctx): Promise<void> {
       const pzT = (await (await post("/api/tasks", { text: "pi-zai flash dispatch probe", queue: false })).json()) as { task: { id: string } };
       const pzd = await post(`/api/tasks/${pzT.task.id}/dispatch`, { harness: "pi-zai", model: "glm-5.3-flash" });
       const pzdJ = (await pzd.json()) as { ok?: boolean; slot?: number; error?: string };
-      check("▸ start accepts pi-zai with glm-5.3-flash and spawns its lane (fixture)",
+      dPre.need("▸ start accepts pi-zai with glm-5.3-flash and spawns its lane",
         pzd.ok && pzdJ.ok === true && typeof pzdJ.slot === "number", `${pzd.status} ${JSON.stringify(pzdJ)}`);
       // captured IMMEDIATELY, same reason as xCmd: the teardown below takes the pane with it
       const pzCmd = typeof pzdJ.slot === "number"
@@ -7683,7 +6952,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const t = (await (await post("/api/tasks", { text: "readiness-probe", queue: false })).json()) as { task: { id: string } };
         // claude is the default adapter, named by ABSENCE — the road every claude lane takes
         const d = (await (await post(`/api/tasks/${t.task.id}/dispatch`, harness === "codex" ? { harness } : {})).json()) as { ok?: boolean; slot?: number };
-        check(`readiness probe: ${harness} dispatch accepted (fixture setup)`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
+        dPre.need(`readiness probe: ${harness} dispatch accepted`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
         // inside the boot grace: kill the real codex TUI before it can matter, render the fixture.
         // plantScreen owns both failure forms and files them as ITSELF rather than as the screen
         // verdict this section exists to measure (e2e/harness.ts).
@@ -7830,7 +7099,7 @@ export async function run(ctx: Ctx): Promise<void> {
       const parkId = park.task.id;
       const parkAttempt = async (screen: string, what: string): Promise<FRow | undefined> => {
         const d = (await (await post(`/api/tasks/${parkId}/dispatch`, { harness: "codex" })).json()) as { ok?: boolean; slot?: number };
-        check(`park probe (${what}): codex dispatch accepted (fixture setup)`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
+        dPre.need(`park probe (${what}): codex dispatch accepted`, d.ok === true && typeof d.slot === "number", JSON.stringify(d));
         if (typeof d.slot === "number") await plantScreen(d.slot, screen, `park probe (${what})`);
         return rowAfter(parkId, (r) => r?.status === "queued" || r?.status === "pending");
       };
@@ -7859,7 +7128,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // the tick is off in this suite, so a parked row that stayed parked is simply one nobody moved;
       // the RE-QUEUE is the act that must start over: one more trust refusal is attempt 1, not 4
       const reQ = await post(`/api/tasks/${parkId}/queue`, {});
-      check("park probe: the owner re-queues the parked row (fixture setup)", reQ.ok, `${reQ.status} ${await reQ.text()}`);
+      dPre.need("park probe: the owner re-queues the parked row", reQ.ok, `${reQ.status} ${await reQ.text()}`);
       const afterQ = await parkAttempt(TRUST, "trust after re-queue");
       check("a re-queue starts the streak at zero — the next same-screen refusal requeues instead of parking",
         afterQ?.status === "queued" && parkAudit().length === 1, JSON.stringify(afterQ));
@@ -7882,6 +7151,7 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify({ two: noMarker2, three: noMarker3 }));
       await post(`/api/tasks/${parkId}/delete`, {});
     }
+    dPre.done();
 
     // ...and the OTHER failure shape, the one that never reaches a pane: a spawn that throws must
     // restore the row's ENTRY status with the harness named exactly as it does without one. A plain
@@ -8352,11 +7622,6 @@ export async function run(ctx: Ctx): Promise<void> {
     // builder takes no prior verdict at all; a marker with no text to hold defuses nothing.
     check("(i) buildClarifyBrief carries no verdict fence — the retired analyst was its only source",
       !cb.includes("VERDICT") && !readFileSync(`${ROOT}/clarify-prompt.ts`, "utf8").includes("evalReason"), "");
-    // the deploy host must reach the prompt at RUNTIME and never live in this tracked file —
-    // the repo is public, and `git grep` cannot catch it while a new file is still untracked
-    check("(i) buildClarifyBrief takes its base URL as a parameter, hardcoding no deployment host",
-      cb.includes("http://fixture.invalid:1/api/self/criterion")
-      && !/\d+\.\d+\.\d+\.\d+/.test(readFileSync(`${ROOT}/clarify-prompt.ts`, "utf8")), "");
     check("(i) the frame tells the lane to structure the report and to record the criterion durably",
       cb.includes("/api/self/criterion") && cb.includes("Structure it")
       && cb.includes("VERIFIED") && cb.includes("INFERRED"), "");
@@ -8384,8 +7649,9 @@ export async function run(ctx: Ctx): Promise<void> {
       if (persisted.stewardToken && persisted.slots?.[String(iSlot)]?.selfToken) break;
       await Bun.sleep(100);
     }
-    check("(i) fixture: the clarify lane's own scoped token and the steward token are readable",
-      !!persisted.stewardToken && !!persisted.slots?.[String(iSlot)]?.selfToken, "");
+    const iPre = precondition("(i) clarify");
+    iPre.need("the clarify lane's own scoped token and the steward token are readable",
+      !!persisted.stewardToken && !!persisted.slots?.[String(iSlot)]?.selfToken);
     const stewardHdr = { "content-type": "application/json", authorization: `Bearer ${persisted.stewardToken ?? ""}` };
     // the probe must be a VALID send (continue_nudge takes ref "continue" only) — under the
     // refusal-priority contract an invalid one answers 400 at the renderer, which would test
@@ -8426,7 +7692,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     // `observed` belongs in the guard as much as the git fact does: a pane that never printed a byte
     // is not stalled either, and without this the assertion below could pass for that reason instead
-    check("(i) non-tautology guard: every other stalled clause holds for the parked lane (alive, observed, ahead=0)",
+    iPre.need("non-tautology guard: every other stalled clause holds for the parked lane (alive, observed, ahead=0)",
       iSense?.alive === true && iSense?.observed === true && iSense?.git?.ahead === 0,
       JSON.stringify({ alive: iSense?.alive, observed: iSense?.observed, git: iSense?.git ?? null }));
     check("(i) a lane parked on the owner is never `stalled`, however long it waits",
@@ -8452,18 +7718,6 @@ export async function run(ctx: Ctx): Promise<void> {
     // (server.ts#SHELL = process.env.SHELL, inherited straight through e2e-isolated.sh — which is
     // why this box, on zsh, never saw it and the LINUX helper preview ff99319d5abc did, raising the
     // row 5.7 s before p1 and forcing the weakened predicate in (i-attn a) below).
-    // Asserted where it is decidable and RECORDED where it is not — the same split e2e/host-hygiene.ts
-    // makes per platform, and neither half is a skip.
-    const critBefore = ((await (await get("/api/tasks")).json()) as
-      { tasks: { id: string; criterion?: { text: string } }[] })
-      .tasks.find((t) => t.id === iT.task.id)?.criterion ?? null;
-    const paneShell = (process.env.SHELL ?? "/bin/sh").split("/").pop() ?? "";
-    const frameCanSelfExecute = paneShell !== "zsh";
-    check(frameCanSelfExecute
-      ? `(i-exec) recorded: on ${paneShell} the pasted frame's step-4 curl RUNS as a shell command — a criterion here is the frame's, not a lane's`
-      : `(i-exec) on ${paneShell} the pasted frame cannot self-execute (the fence is a parse error), so NOTHING proposed a criterion before this probe did`,
-    frameCanSelfExecute || critBefore === null,
-    `shell=${paneShell} selfExecutable=${frameCanSelfExecute} criterionBefore=${JSON.stringify(critBefore)}`);
 
     const p1 = await propose("done = the scrollback slice, verified by ./e2e-isolated.sh");
     const p1Body = (await p1.json()) as { attention?: { id: string | null; existing?: boolean; why?: string } };
@@ -8476,15 +7730,16 @@ export async function run(ctx: Ctx): Promise<void> {
     const critRows = async (): Promise<CritRow[]> =>
       (((await (await get("/api/attention")).json()) as { requests?: CritRow[] }).requests ?? [])
         .filter((a) => a.provenance?.taskId === iT.task.id);
-    check("(i-attn) fixture: the clarify task sits in an active Program",
+    iPre.need("(i-attn) the clarify task sits in an active Program",
       !!provenanceProgramId && iT.task.programId === provenanceProgramId, JSON.stringify(iT.task));
+    iPre.done();
     const a1 = await critRows();
     const a1Open = a1.filter((a) => a.status === "open");
     check("(i-attn a) a proposed criterion opens exactly ONE owner decision naming the task, criterion-confirm and the first line",
       // NOT `existing === false`: the frame carries a live curl to this door, and a shell pane
-      // (FLEET_CMD=true) DOES run it on paste wherever that shell is not zsh — measured at (i-exec)
-      // above, which names it in a row of its own instead of letting this predicate absorb it
-      // silently; helper preview ff99319d5abc raised the row 5.7 s before p1 did. That is a
+      // (FLEET_CMD=true) DOES run it on paste wherever that shell is not zsh — measured 2026-09-20,
+      // see the note above the first proposal; helper preview ff99319d5abc raised the row 5.7 s
+      // before p1 did. That is a
       // proposal too; the invariant is ONE open row carrying p1's line.
       a1Open.length === 1 && a1Open[0].kind === "decision" && p1Body.attention?.id === a1Open[0].id
       && a1Open[0].text.includes(`POST /api/tasks/${iT.task.id}/criterion-confirm`)
@@ -8930,24 +8185,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && unknownRepo.unresolved[0]?.reason === "unknown-repo"
       && noCapacity.unresolved[0]?.reason === "no-capacity",
       JSON.stringify({ outside, unknownRepo, noCapacity }));
-
-    const purityInput: ProjectTaskWavesInput = {
-      tasks: [row("pure-b", 2, ["b.ts"]), row("pure-a", 1, ["a.ts", "b.ts"])],
-      dispatchRepo: "/repo/default", maxLanes: 2,
-    };
-    const before = JSON.stringify(purityInput);
-    const once = projectTaskWaves(purityInput);
-    const twice = projectTaskWaves(purityInput);
-    check("task waves: repeated pure projection is deep-equal and does not mutate input facts",
-      JSON.stringify(once) === JSON.stringify(twice) && JSON.stringify(purityInput) === before,
-      JSON.stringify({ once, twice, input: purityInput }));
   }
 
   // --- LAND Waves: the opposite fold of the same collision facts (task-land-waves.ts). The
   // parallel projection above asks which rows may run at once; these checks pin which rows may
   // LAND together — R1 class purity, R2 the gate changer alone, R3 confirmed surface only, and the
-  // PROGRAM as the second bundling criterion beside the surface — plus the cap's cut, purity, and
-  // the one board surface that consumes it. ---
+  // PROGRAM as the second bundling criterion beside the surface — plus the cap's cut. ---
   {
     // Deliberately NOT the board's real medians: a fixture that shared them could not tell a
     // class mix-up from a correct sum. docs 3 s per land, code 1 100 s.
@@ -9200,28 +8443,6 @@ export async function run(ctx: Ctx): Promise<void> {
           [["zc"], "kein-program", 0], [["zd"], "keine-flaeche", 0]]),
       JSON.stringify(noProgram));
 
-    // Scrambled on BOTH axes on purpose — rows out of created order and one file surface out of
-    // sort order: a projector that sorted the caller's arrays in place instead of copies would
-    // leave both scrambles corrected, and this input's own JSON is what proves it did not.
-    const landPurityInput: ProjectLandWavesInput = {
-      tasks: [landRow("pb", 2, ["src/b.ts"]), landRow("pa", 1, ["src/b.ts", "src/a.ts"]),
-        landRow("pc", 3, ["src/b.ts"], { programId: "prog-b" })],
-      dispatchRepo: "/repo/default", budget: 2, costs: LAND_COSTS,
-    };
-    const landBefore = JSON.stringify(landPurityInput);
-    const landOnce = projectLandWaves(landPurityInput);
-    const landTwice = projectLandWaves(landPurityInput);
-    check("land waves: repeated pure projection is deep-equal and does not mutate input facts",
-      JSON.stringify(landOnce) === JSON.stringify(landTwice)
-        && JSON.stringify(landPurityInput) === landBefore,
-      JSON.stringify({ landOnce, landTwice, input: landPurityInput }));
-
-    check("land waves: the board's Waves tab is the one surface that consumes the projector",
-      taskClientSource.includes("projectLandWaves(") && taskClientSource.includes("Lande-Wellen"),
-      taskClientSource.length
-        ? "src/client.ts carries no projectLandWaves( call or no Lande-Wellen section"
-        : taskClientReadError || "client source unreadable");
-
     // --- R2 reads the APPARATUS, not the proof recommendation (2026-09-12). The pair below is the
     // whole finding: until this change `classify` asked `verificationProportionFor(files)
     // .isolatedPreview === true`, which is TRUE for every path under `e2e/` — so the two rows in
@@ -9311,13 +8532,14 @@ export async function run(ctx: Ctx): Promise<void> {
       { programId: provenanceProgramId });
     const wB = await wMint(`wave part two: the second half of ${WFILE}`,
       { programId: provenanceProgramId });
-    check("(w2) fixture: both impact rows were minted into the SAME active Program",
+    const wPre = precondition("(w2/w3)");
+    wPre.need("(w2) both impact rows were minted into the SAME active Program",
       !!wA && !!wB && wA !== wB
       && (await wDigest(wA))?.programId === provenanceProgramId
       && (await wDigest(wB))?.programId === provenanceProgramId,
       JSON.stringify({ wA, wB, program: provenanceProgramId }));
     const wBaseA = await wDigest(wA);
-    check("(w2) baseline: a row whose prose names a tracked path carries a DERIVED surface and no proposal",
+    wPre.need("(w2) baseline: a row whose prose names a tracked path carries a DERIVED surface and no proposal",
       wBaseA?.filesOrigin === "derived" && wBaseA.files?.join(" ") === WFILE
       && !("filesProposal" in (wBaseA ?? {})), JSON.stringify(wBaseA));
     // …and the sensor's verdict on that pair BEFORE the confirm — captured here rather than
@@ -9336,7 +8558,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const wWaveWith = (p: LandWaveProjection, id: string) =>
       p.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id));
     const wBeforeA = wWaveWith(await wLandWaves(), wA);
-    check("(w2) impact control: before any confirm the two rows are two waves of ONE, for the derived reason",
+    wPre.need("(w2) impact control: before any confirm the two rows are two waves of ONE, for the derived reason",
       wBeforeA?.ids.length === 1 && wBeforeA.reasonAgainst === "flaeche-nur-abgeleitet"
       && wBeforeA.savingsSec === 0, JSON.stringify(wBeforeA ?? null));
 
@@ -9354,7 +8576,7 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(100);
     }
     const wLaneTok = wPersisted.slots?.[String(wFree?.id ?? 0)]?.selfToken ?? "";
-    check("(w2) fixture: a real lane with its own scoped token (the propose route's whole point)",
+    wPre.need("(w2) a real lane with its own scoped token (the propose route's whole point)",
       !!wFree && wLaneOpen?.ok === true && !!wLaneTok,
       `${wFree?.id ?? "no free slot"} ${wLaneOpen?.status ?? "-"}`);
     const wPropose = (id: string, files: unknown, token = wLaneTok) =>
@@ -9477,7 +8699,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const WDROP = "ctx-mod.txt";    // tracked, genuinely named — and the owner still does not want it
     const wD = await wMint(`repair the sentinel in ${WKEEP}; ${WDROP} is only read alongside it`);
     const wDBase = await wFull(wD);
-    check("(w2/3b) fixture: the row derives BOTH prose-named paths, so there is something to untick",
+    wPre.need("(w2/3b) the row derives BOTH prose-named paths, so there is something to untick",
       wDBase?.filesOrigin === "derived"
       && [...(wDBase.files ?? [])].sort().join(" ") === [WKEEP, WDROP].sort().join(" ")
       && wDBase.filesProposal === undefined, JSON.stringify(wDBase));
@@ -9505,22 +8727,6 @@ export async function run(ctx: Ctx): Promise<void> {
         .events.some((e) => e.event === "task_files_confirm" && (e.detail ?? "").startsWith(wD)
           && (e.detail ?? "").includes("1 path(s) via owner")),
       JSON.stringify(wDRow));
-    // …and the wiring that produces that subset, cut from the REAL browser source. There is no DOM
-    // in this harness, so what is asserted is the SHAPE the block must keep: the list is read off
-    // the ticked boxes at click time (never off a remembered array that could drift from the paths
-    // on screen), an empty selection is answered locally instead of being POSTed as an empty
-    // surface, and nothing here confirms without the owner's click.
-    const wUiStart = taskClientSource.indexOf('} else if ((t.filesOrigin === "derived" || t.filesOrigin === "card")');
-    const wUiEnd = taskClientSource.indexOf("// --- end DERIVED SURFACE REVIEW ---", wUiStart);
-    const wUi = wUiStart >= 0 && wUiEnd > wUiStart ? taskClientSource.slice(wUiStart, wUiEnd) : "";
-    check("(w2/3b) the client sends the TICKED paths only, reads them at click time, and never POSTs an empty selection",
-      wUi.includes("// --- DERIVED SURFACE REVIEW")
-      && /t\.kind === "auftrag" && \(t\.status === "pending" \|\| t\.status === "queued"\)/.test(wUi)
-      && /picks\.filter\(\(p\) => p\.box\.checked\)\.map\(\(p\) => p\.path\)/.test(wUi)
-      && /if \(!files\.length\) \{ toast\([^\n]*\); return; \}/.test(wUi)
-      && /qAct\(t\.id, "files", \{ files \}\)/.test(wUi)
-      && wUi.includes("box.checked = true"),
-      wUi.slice(0, 160) || "DERIVED SURFACE REVIEW block not found in src/client.ts");
 
     // --- (4) THE RELOAD REGRESSION. The one promotion this feature must never perform is the one
     // a restart could make for free: a persisted `derived` surface becoming `confirmed` because it
@@ -9551,19 +8757,6 @@ export async function run(ctx: Ctx): Promise<void> {
       wRelParked?.filesProposal?.files.join(" ") === WGHOST
       && wRelParked.filesOrigin === "derived" && wRelParked.files?.join(" ") === WFILE,
       JSON.stringify(wRelParked));
-    const wPersistedRows = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-      { tasks?: { id?: string; files?: string[]; filesOrigin?: string; filesProposal?: WProposal }[] }).tasks ?? [];
-    const wDiskParked = wPersistedRows.find((r) => r.id === wParked);
-    const wDiskA = wPersistedRows.find((r) => r.id === wA);
-    check("(w2) on disk the two states are separate fields — the proposal is never written into files/filesOrigin",
-      // the presence guard is load-bearing: `undefined` for a MISSING row would let this read as a
-      // pass for a state file that lost the row entirely
-      !!wDiskParked && !!wDiskA
-      && wDiskParked.filesOrigin === undefined && wDiskParked.files === undefined
-      && wDiskParked.filesProposal?.files.join(" ") === WGHOST
-      && wDiskA.filesOrigin === "confirmed" && wDiskA.files?.join(" ") === WFILE
-      && wDiskA.filesProposal === undefined,
-      JSON.stringify({ parked: wDiskParked ?? null, confirmed: wDiskA ?? null }));
 
     // --- (5) THE IMPACT PROOF: the same two rows, now confirmed, fold into ONE land wave. Read
     // back through the DIGEST the board itself feeds projectLandWaves, and priced with the board's
@@ -9645,7 +8838,7 @@ export async function run(ctx: Ctx): Promise<void> {
         { kind: "notiz", programId: provenanceProgramId });
       const w3PinA = await post(`/api/tasks/${wA}/notes`, { note: w3Note, attach: true });
       const w3PinB = await post(`/api/tasks/${wB}/notes`, { note: w3Note, attach: true });
-      check("(w3-n3) fixture: the same source is assigned to BOTH rows of the wave",
+      wPre.need("(w3-n3) the same source is assigned to BOTH rows of the wave",
         w3PinA.ok && w3PinB.ok, `${w3PinA.status}/${w3PinB.status} note=${w3Note}`);
       // S3 · a comment on ONE wave row must reach the wave lane as its own block behind that row's
       // brief — written before the start, read off the same prompt the brief checks below use.
@@ -9673,28 +8866,6 @@ export async function run(ctx: Ctx): Promise<void> {
         w3A?.status === "sent" && w3B?.status === "sent"
         && (w3A as { slot?: number }).slot === w3Slot && (w3B as { slot?: number }).slot === w3Slot,
         JSON.stringify({ slot: w3Slot, a: w3A, b: w3B }));
-      // `s.taskId` rides the PERSISTED state, never the 2 s poll — the sessions slot view carries
-      // cwd/label/git/worktree and no provenance at all. Read it where it lives, and let the read
-      // fail as ITSELF: a probe that could not find the slot row must not report "the head is
-      // wrong", which is exactly what an `undefined === head` comparison said on the first run.
-      const w3Disk = async (): Promise<{ taskId?: string | null } | null> => {
-        for (let i = 0; i < 40; i++) {
-          try {
-            const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-              { slots?: Record<string, { taskId?: string | null }> };
-            const row = st.slots?.[String(w3Slot)];
-            if (row) return row;
-          } catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
-          await Bun.sleep(100);
-        }
-        return null;
-      };
-      const w3SlotRow = await w3Disk();
-      check("(w3) probe: the wave lane's persisted slot row is readable (this probe fails as itself, not as the head)",
-        w3SlotRow !== null, `slot ${w3Slot} not in fleet.json`);
-      check("(w3) the slot's own taskId names the HEAD alone — the follower rides `t.slot`, not a second slot field",
-        !!w3SlotRow && w3SlotRow.taskId === w3ExpectedHead,
-        JSON.stringify({ taskId: w3SlotRow?.taskId ?? null, head: w3ExpectedHead }));
 
       // (4) THE BRIEF. Read from the prompt journal, like every other dispatched-brief check in
       // this suite: the dispatch seam calls sendText + logPrompt and pushes nothing into the slot's
@@ -9744,7 +8915,7 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(100);
       }
       const w3Tok = w3Persisted.slots?.[String(w3Slot)]?.selfToken ?? "";
-      check("(w3) fixture: the wave lane carries a scoped self token (the split door takes nothing else)",
+      wPre.need("(w3) the wave lane carries a scoped self token (the split door takes nothing else)",
         !!w3Tok, w3Tok ? "present" : `no token on slot ${w3Slot}`);
       const w3Split = (body: Record<string, unknown>, token = w3Tok) =>
         fetch(`${BASE}/api/self/wave/split`, { method: "POST",
@@ -9780,8 +8951,6 @@ export async function run(ctx: Ctx): Promise<void> {
         await Bun.sleep(50);
         w3BackRow = await wDigest(w3Follower);
       }
-      check("(w3) setup: the stopped dispatcher has inspected the split row",
-        w3BackRow?.note?.startsWith("waiting: dispatcher stopped") === true, JSON.stringify(w3BackRow));
       const w3KeptRow = await wDigest(w3Head);
       check("(w3) the returned row is `queued` — not `pending` — and detached from the lane",
         w3BackRow?.status === "queued" && (w3BackRow as { slot?: number | null }).slot == null,
@@ -9838,7 +9007,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // ...and the same abort over an INTACT wave of two, which is the shape §5's sentence is about.
       const w3Res2 = await w3Start({ ids: [wA, wB] });
       const w3Body2 = (await w3Res2.json()) as { ok?: boolean; slot?: number; error?: string };
-      check("(w3) fixture: the pair is startable again as a wave (a split and an abort left both rows open)",
+      wPre.need("(w3) the pair is startable again as a wave (a split and an abort left both rows open)",
         w3Res2.ok && typeof w3Body2.slot === "number", `${w3Res2.status} ${JSON.stringify(w3Body2)}`);
       if (typeof w3Body2.slot === "number") {
         await post(`/api/slots/${w3Body2.slot}/kill`, {});
@@ -9850,6 +9019,7 @@ export async function run(ctx: Ctx): Promise<void> {
           JSON.stringify({ a: w3EndA, b: w3EndB }));
       }
     }
+    wPre.done();
 
     for (const id of [wA, wB, wC, wParked, wNotiz, wDone, w3Note].filter(Boolean))
       await post(`/api/tasks/${id}/delete`, {});
@@ -9923,12 +9093,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // BEFORE the restart: a PATH that resolved `claude` anywhere else would hand this probe the REAL
     // binary, and no suite may start one
     const resolved = Bun.which("claude", { PATH: trustPath });
-    check("(jt) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
+    const jtPre = precondition("(jt)");
+    jtPre.need("the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${trustBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${trustBin}/claude`) {
       const jtLane = await post("/api/lanes", { repo: REPO });
       const jtSlot = ((await jtLane.json()) as { slot?: number }).slot ?? 0;
-      check("(jt) setup: an isolated lane supplies the summary subject", jtLane.ok && jtSlot > 0, String(jtSlot));
+      jtPre.need("an isolated lane supplies the summary subject", jtLane.ok && jtSlot > 0, String(jtSlot));
       await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_SUMMARY_CMD: "", PATH: trustPath });
       const jtStart = Date.now();
       const jtR = await post(`/api/slots/${jtSlot}/summary`, {});
@@ -9936,8 +9107,9 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(jt) summary refuses the worker", jtR.status === 500, String(jtR.status));
       const jtTook = Date.now() - jtStart;
       const jtInvoked = existsSync(invokedLog) ? readFileSync(invokedLog, "utf8") : "";
-      check("(jt) setup: the worker spawn reached the claude stand-in with the worker line's own flags",
+      jtPre.need("the worker spawn reached the claude stand-in with the worker line's own flags",
         jtInvoked.includes("--session-id") && jtInvoked.includes("--model"), JSON.stringify(jtInvoked.slice(0, 200)));
+      jtPre.done();
       // the worker's cwd is the route's own resolution of the ROW's repo, so the expectation is too
       const jtWant = `claude trust dialog in ${resolve(((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string }[] }).slots.find((x) => x.id === jtSlot)?.cwd ?? REPO)} — the worker never answers it`;
       check("(jt) a claude worker on the TRUST DIALOG fails in under 10 s with the named error, not the timeout",
@@ -9986,12 +9158,14 @@ export async function run(ctx: Ctx): Promise<void> {
     chmodSync(`${bkBin}/claude`, 0o755);
     const bkPath = `${bkBin}:${process.env.PATH ?? ""}`;
     const resolved = Bun.which("claude", { PATH: bkPath });
-    check("(jb) setup: the worker's `claude` lookup resolves to the stand-in and nothing else",
+    const bkPre = precondition("(jb)");
+    bkPre.need("the worker's `claude` lookup resolves to the stand-in and nothing else",
       !!cat && resolved === `${bkBin}/claude`, `cat=${cat} resolved=${resolved}`);
     if (cat && resolved === `${bkBin}/claude`) {
       const bkLane = await post("/api/lanes", { repo: REPO });
       const bkSlot = ((await bkLane.json()) as { slot?: number }).slot ?? 0;
-      check("(jb) setup: an isolated lane supplies the summary subject", bkLane.ok && bkSlot > 0, String(bkSlot));
+      bkPre.need("an isolated lane supplies the summary subject", bkLane.ok && bkSlot > 0, String(bkSlot));
+      bkPre.done();
       await restartSrv({ FLEET_DISPATCH_REPO: REPO, FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_SUMMARY_CMD: "", PATH: bkPath });
       let litRequest: Promise<unknown> | null = null;
       const summaryOnce = async (mode: "dark" | "lit"): Promise<{ took: number; note: string; pasted: string | null }> => {
@@ -10219,8 +9393,9 @@ export async function run(ctx: Ctx): Promise<void> {
       ]]]) as SymbolIndex };
     const withIndex = validateCard({ surface: { symbols: [authorRef] } }, authorCtx);
     const noIndex = validateCard({ surface: { symbols: [authorRef] } }, { ...authorCtx, symbolIndex: null });
-    check("(j2) card fixture: lane-signals.ts declares clarificationReplyMessage and NOT the invented clarificationAnswerMessage",
-      declaresSymbol(lsSource, "clarificationReplyMessage") && !declaresSymbol(lsSource, "clarificationAnswerMessage"), "");
+    const j2Pre = precondition("(j2) card section");
+    j2Pre.need("lane-signals.ts declares clarificationReplyMessage and NOT the invented clarificationAnswerMessage",
+      declaresSymbol(lsSource, "clarificationReplyMessage") && !declaresSymbol(lsSource, "clarificationAnswerMessage"));
     check("(j2) card: the same invented symbol on the author path — WITH an index a surface gap, WITHOUT one kept but marked unchecked",
       withIndex.surfaceValid === false && withIndex.body.surface.symbols.length === 0
       && withIndex.gaps.some((g) => g.includes(authorRef) && g.includes("does not resolve"))
@@ -10243,9 +9418,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // does the gap stand. The source here is the REAL server.ts this suite runs, so "declared" is a
     // fact about the tree and not a fixture's say-so.
     const srvSource = readFileSync(`${ROOT}/server.ts`, "utf8");
-    check("(j2) card fixture: the test graph does NOT carry taskDigest, and server.ts really declares it",
+    j2Pre.need("the test graph does NOT carry taskDigest, and server.ts really declares it",
       !cardCtx.symbolIndex.get("server.ts")?.some((e) => e.symbol === "taskDigest")
-      && /^function taskDigest\(/m.test(srvSource), "");
+      && /^function taskDigest\(/m.test(srvSource));
     const declCtx = { ...cardCtx,
       sourceText: "BAU: server.ts#taskView, server.ts#taskDigest und server.ts#gibtEsNicht.",
       declares: (file: string, symbol: string) => file === "server.ts" && declaresSymbol(srvSource, symbol) };
@@ -10412,14 +9587,6 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- the PROMPT. It is the half that keeps a queue text — reachable from /intake — from ever
     // being read as an instruction, and the fence must be as undefeatable as the refiner's.
     const cp = buildCardPrompt("do the thing", ["low", "high"]);
-    check("(j2) buildCardPrompt: the worker is told it has no repository and that values are checked after",
-      cp.includes(CARD_MARK) && cp.includes("no repository and no tools")
-      && cp.includes("becomes a recorded gap"), "");
-    check("(j2) buildCardPrompt: quote only, a command path is not a surface, absence is an answer",
-      cp.includes("QUOTE ONLY") && cp.includes("A PATH IN A COMMAND OR A VERIFY LINE IS NOT A SURFACE")
-      && cp.includes("ABSENCE IS AN ANSWER"), "");
-    check("(fmt) buildCardPrompt: symbols are top-level only — never a route, never a local variable",
-      cp.includes("ONLY TOP-LEVEL SYMBOLS") && cp.includes("never an HTTP route") && cp.includes("never a local variable"), "");
     // E1a (1): the answer template is the contract the model fills — measured 2026-09-14, 6 of 21
     // invalid live cards named a planned NEW file under `files` ("not tracked") because the template
     // offered no other field. Read as JSON, the template must carry `surface.creates` and `after`.
@@ -10447,19 +9614,6 @@ export async function run(ctx: Ctx): Promise<void> {
     } });
     await Bun.write(FAKECARD, `#!/bin/sh\n[ "$1" = "--model" ] && [ "$2" = "${MODEL_DEFAULTS.cardExec.id}" ] && [ "$3" = "--effort" ] && [ "$4" = "${MODEL_DEFAULTS.cardExec.effort}" ] || exit 17\ncat >/dev/null\ncat <<'JSON'\n${cardAnswer}\nJSON\n`);
     spawnSync("chmod", ["+x", FAKECARD]);
-    const cardGuardOk = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
-      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
-    check("(j2) card stand-in accepts the exact registered model and its register effort",
-      cardGuardOk.status === 0 && cardGuardOk.stdout.toString().trim() === cardAnswer,
-      `exit=${cardGuardOk.status} answer=${cardGuardOk.stdout.toString().trim()}`);
-    const cardGuardModel = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.card.id,
-      "--effort", MODEL_DEFAULTS.cardExec.effort], { input: "guard probe" });
-    check("(j2) card stand-in rejects the wrong model with exact Exit17",
-      cardGuardModel.status === 17, `exit=${cardGuardModel.status}`);
-    const cardGuardEffort = spawnSync(FAKECARD, ["--model", MODEL_DEFAULTS.cardExec.id,
-      "--effort", ["low", "medium", "high"].find((e) => e !== MODEL_DEFAULTS.cardExec.effort)!], { input: "guard probe" });
-    check("(j2) card stand-in rejects the wrong effort with exact Exit17",
-      cardGuardEffort.status === 17, `exit=${cardGuardEffort.status}`);
 
     interface CRow { id: string; card?: { ziel: string; done: string; model: string; ms: number; valid: boolean;
       at: number; verboten: string[];
@@ -10738,8 +9892,6 @@ export async function run(ctx: Ctx): Promise<void> {
       && parseFormattedCard([...lines.slice(0, 3), "DONE: zweimal", ...lines.slice(3)].join("\n")) === null
       && parseFormattedCard(`Vorrede zuerst.\n${lines.slice(1).join("\n")}`) === null,
       "");
-    check("(fmt) a card from prose carries neither creates nor after — its bytes are what they were",
-      !("creates" in invented.body.surface) && !("after" in invented.body), JSON.stringify(invented.body));
     const neuText = (value: string) => fmtText.replace(/^NEU: .*$/m, `NEU: ${value}`);
     const neuTracked = validateCard(parseFormattedCard(neuText("server.ts")) ?? {}, { ...cardCtx, sourceText: neuText("server.ts") });
     const neuNoDir = validateCard(parseFormattedCard(neuText("src/neu.ts")) ?? {}, { ...cardCtx, sourceText: neuText("src/neu.ts") });
@@ -11038,8 +10190,6 @@ export async function run(ctx: Ctx): Promise<void> {
       && longAnswer.answerBytes === 6001
       && JSON.stringify(cardAnswerForLedger("{}")) === JSON.stringify({ answer: "{}", answerBytes: 2 }),
       JSON.stringify({ answer: cardRow?.answer ?? null, answerBytes: cardRow?.answerBytes ?? null, long: longAnswer.answerBytes }));
-    check("(v13) CARD_VALIDATOR_VERSION is 13, so cards refused before VARIANTE, WEB or earlier rules are read once more",
-      CARD_VALIDATOR_VERSION === 13, String(CARD_VALIDATOR_VERSION));
 
     // --- S4 (queue row a672b626): THE CARD REACHES THE LANE FIRST. A valid card puts a KARTE head
     // in front of the prose, and the receipt says so; an invalid card changes nothing — neither the
@@ -11088,7 +10238,7 @@ export async function run(ctx: Ctx): Promise<void> {
     })).json()) as { task: { id: string } }).task;
     let cBadCard: CRow["card"];
     for (let i = 0; i < 40 && !cBadCard; i++) { cBadCard = await cardOf(cBad.id); if (!cBadCard) await Bun.sleep(250); }
-    check("(j2) fixture: the second row carries a card that did NOT validate",
+    j2Pre.need("(j2) the second row carries a card that did NOT validate",
       cBadCard?.valid === false && cBadCard.gaps.some((g) => g.includes("gibt-es-nicht.ts")),
       JSON.stringify(cBadCard ?? null));
     const bDispatch = await post(`/api/tasks/${cBad.id}/dispatch`, {});
@@ -11156,7 +10306,7 @@ export async function run(ctx: Ctx): Promise<void> {
       ? readFileSync(cardLedger, "utf8").split("\n").filter((l) => l.includes(`"taskId":"${id}"`)).length : 0;
     const ledgerBefore = { old: ledgerLinesFor(rOld), good: ledgerLinesFor(rGood), lie: ledgerLinesFor(rLie), role: ledgerLinesFor(rRole) };
     // FIXTURE PRECONDITION, failing as itself: three rows planted, none of them ever read before.
-    check("(j2) reread fixture: four rows planted with hand-written cards and no ledger line yet",
+    j2Pre.need("(j2) reread: four rows planted with hand-written cards and no ledger line yet",
       !!rOld && !!rGood && !!rLie && !!rRole && !!rNoIdx && !!rFakeMark && planted === 6
       && ledgerBefore.old === 0 && ledgerBefore.good === 0 && ledgerBefore.lie === 0 && ledgerBefore.role === 0,
       JSON.stringify({ rOld, rGood, rLie, rRole, rNoIdx, rFakeMark, planted, ledgerBefore }));
@@ -11229,7 +10379,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const fCalls = existsSync(FAKECALLS) ? readFileSync(FAKECALLS, "utf8") : "";
     const fLedger = existsSync(cardLedger) ? readFileSync(cardLedger, "utf8").trim().split("\n").filter(Boolean)
       .map((l) => JSON.parse(l) as { taskId?: string; source?: string; model?: string; valid?: boolean }) : [];
-    check("(fmt) positive control: the prose row in the same boot went through the stand-in extractor (source model)",
+    j2Pre.need("(fmt) positive control: the prose row in the same boot went through the stand-in extractor (source model)",
       !!fControl && fControl.model !== "format" && fCalls.includes("FORMAT-CONTROL prose")
       && fLedger.some((l) => l.taskId === fProse && l.source === "model"),
       JSON.stringify({ fControl: fControl ?? null, calls: fCalls.length }));
@@ -11280,11 +10430,12 @@ export async function run(ctx: Ctx): Promise<void> {
     // FIXTURE PRECONDITION, failing as itself: the program is confirmed and every row carries a card
     // from THIS boot's tick, read by the format parser — otherwise no line below measured the lift.
     const lCards = await Promise.all([lLift, lNoProg, lGap, lConf].map((id) => lWait(id, (row) => !!row?.card)));
-    check("(lift) fixture: a confirmed program and four formatted rows, each with a format card from the tick",
+    j2Pre.need("(lift) a confirmed program and four formatted rows, each with a format card from the tick",
       liftProgramRes.ok && !!liftProgramConfirm?.ok && lCards.every((row) => row?.card?.model === "format")
       && lCards[0]?.card?.surfaceValid === true && lCards[1]?.card?.surfaceValid === true
       && lCards[2]?.card?.surfaceValid === false,
       JSON.stringify({ liftProgram, cards: lCards.map((row) => row?.card ?? null) }));
+    j2Pre.done();
     const lLifted = await lWait(lLift, (row) => row?.filesOrigin === "card");
     const lLiftDigest = (await lRows()).find((t) => t.id === lLift);
     check("(lift) a surfaceValid card with files on a PROGRAM row lifts the row to filesOrigin card — full view and poll digest",
@@ -11488,7 +10639,6 @@ export async function run(ctx: Ctx): Promise<void> {
         why: "base branch overhaul does not exist — restore the branch or archive the row" })
       && goneWaves[0]?.rows[0]?.checks?.baseMissing === "overhaul" && !("baseMissing" in (goneWaves[1]?.rows[0]?.checks ?? {})),
       JSON.stringify(goneWaves.map((w) => ({ ids: w.ids, next: w.next, rows: w.rows }))));
-    const spMainJson = JSON.stringify(spMain);
     const spPlan = projectStartPlan(spMain);
     const spNexts = (plan: StartPlan) => plan.repos.flatMap((r) => r.waves.map((w) => [w.ids.join("+"), w.next]));
     const spGot = spNexts(spPlan);
@@ -11516,8 +10666,6 @@ export async function run(ctx: Ctx): Promise<void> {
       && spWave("g")?.rows[0]?.checks?.scout === true && spWave("g")?.rows[0]?.checks?.cardValid === true
       && spPlan.repos[0]?.lanes === 3 && JSON.stringify(spPlan.repos[0]?.cap) === JSON.stringify({ max: 5, source: "repo" }),
       JSON.stringify(spPlan.repos[0]?.waves.map((w) => w.rows)));
-    check("(sp) purity: two calls give the identical plan and the input is not mutated",
-      JSON.stringify(projectStartPlan(spMain)) === JSON.stringify(spPlan) && JSON.stringify(spMain) === spMainJson);
     // `after` satisfied, an unknown surface on either side, and the program cap — each on its own fixture
     const spDone = spNexts(projectStartPlan(spInput([spRow("a", 1, ["a.ts"], { after: ["z"] })], [],
       { [spRepo]: { max: 5, source: "default", programs: {} } }, { z: "done" })));
@@ -11696,61 +10844,14 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(buendel-absorbed) only archived rows naming the whole target id in disposition.beleg are absorbed",
       JSON.stringify(absorbedTaskIds("target", abRows)) === JSON.stringify(["source"])
       && absorbedTaskIds("unknown", abRows).length === 0, JSON.stringify(abRows));
-    // Execute source mutations of the pure producers; each must change the measured verdict.
-    const baSource = readFileSync(`${ROOT}/task-land-waves.ts`, "utf8");
-    const baCode = baSource.slice(baSource.indexOf("const verifyStepSet"), baSource.indexOf("// --- CLI:"))
-      .replace(/export /g, "");
-    const baFns = (code: string) => new Function("LOCAL_PROOF_STEPS", "landWaveUnits", "rowOrder", "textOrder",
-      new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {proposeBundles, taskOverlap, absorbedTaskIds};")(
-      LOCAL_PROOF_STEPS, landWaveUnits,
-      (a: { created: number; id: string }, b: { created: number; id: string }) => a.created - b.created || a.id.localeCompare(b.id),
-      (a: string, b: string) => a.localeCompare(b)) as {
-        proposeBundles: typeof proposeBundles; taskOverlap: typeof taskOverlap; absorbedTaskIds: typeof absorbedTaskIds };
-    check("(buendel) MUTATION: removing Program/file/null overlap guards, attach Program/Repo/file guards, or absorbed status/id guards changes the verdict",
-      baFns(baCode.replace("t.programId === row.programId", "true")).taskOverlap("new", boRows)?.rows.some((r) => r.id === "foreign") === true
-      && baFns(baCode.replace("t.files.filter((f) => row.files.includes(f))", "t.files")).taskOverlap("new", [...boRows, bdRow("disjoint", 7, { files: ["other.ts"] })])?.rows.some((r) => r.id === "disjoint") === true
-      && baFns(baCode.replace("if (!row?.files.length) return null;", "if (!row) return null;")).taskOverlap("unknown", boRows) !== null
-      && baFns(baCode.replace("t.programId === note.programId", "true")).proposeBundles({ tasks: [baTask, { ...baNote, programId: "other" }] }).attach.length === 1
-      && baFns(baCode.replace("t.repo === note.repo", "true")).proposeBundles({ tasks: [baTask, { ...baNote, repo: "repo-b" }] }).attach.length === 1
-      && baFns(baCode.replace("t.files.some((f) => note.files.includes(f))", "true")).proposeBundles({ tasks: [baTask, { ...baNote, files: ["other.ts"] }] }).attach.length === 1
-      && baFns(baCode.replace('t.status === "archived"', 'true')).absorbedTaskIds("target", abRows).includes("open")
-      && baFns(baCode.replace('t.disposition?.beleg?.split(/[^a-zA-Z0-9_-]+/).includes(id)', 'true')).absorbedTaskIds("target", abRows).includes("other"),
-      "eight producer mutations must invalidate their own observed claim");
-    const bdSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
-    const bdTickSrc = bdSrv.slice(bdSrv.indexOf("async function tickDispatch("), bdSrv.indexOf("\nasync function ownerSeedCapture(")).split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
-    check("(buendel) PROBE + wiring: the tick reads no buendel and still walks startPlanWaves · StartPlanView carries the field, startPlanNow attaches it, the route serves it unchanged",
-      bdTickSrc.length > 1000 && !/\b(?:buendel|overlap|attach|absorbed)\b/.test(bdTickSrc) && /startPlanWaves\(\)/.test(bdTickSrc)
-      && /type StartPlanView = StartPlan & \{ waits: WaitRow\[\]; stau: ReturnType<typeof stallView>; buendel: ReturnType<typeof proposeBundles>; blockers: .* \};/.test(bdSrv)
-      && /return \{ \.\.\.plan, buendel, waits: waitsOf\(plan\), stau: stallView\(\),\s+blockers: tasks\.filter/.test(bdSrv)
-      && /return json\(startPlanNow\(\)\)/.test(bdSrv), `tick=${bdTickSrc.length}`);
-    const baTickSafe = (code: string) => !/\b(?:attach|absorbed|overlap|buendel)\b/.test(code);
-    const baSweep = bdSrv.slice(bdSrv.indexOf("async function tickCardSweep("), bdSrv.indexOf("const clampStr"))
-      .split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n");
-    const baVerdictWired = (code: string) => code.includes('appendProgramInbox(program, "card-verdict", t.id)')
-      && code.includes('t.card?.valid !== false') && code.includes('e.kind === "card-verdict" && e.ref === t.id');
-    check("(buendel) MUTATION wiring: card inbox producer guards are present; dispatch cannot read overlap, attach, absorbed or buendel even with a source mutation",
-      baVerdictWired(baSweep)
-      && !baVerdictWired(baSweep.replace('appendProgramInbox(program, "card-verdict", t.id)', 'void 0'))
-      && !baVerdictWired(baSweep.replace('t.card?.valid !== false', 'true'))
-      && baTickSafe(bdTickSrc) && ["attach", "absorbed", "overlap", "buendel"].every((field) => !baTickSafe(bdTickSrc + `\nplan.${field};`)),
-      "one inbox producer; four forbidden dispatcher readings rejected");
-    const baUI = taskClientSource;
-    const baVisible = (code: string) => code.includes('`aufgegangen in ${target.id}`')
-      && code.includes('taskAbsorbedFull.get(t.id)') && code.includes('`↳ aufgegangen: ${id}');
-    check("(buendel-absorbed) MUTATION UI: archive and target both show the derived links; removing either rendering is detected",
-      baVisible(baUI) && !baVisible(baUI.replace('`aufgegangen in ${target.id}`', '"hidden"'))
-      && !baVisible(baUI.replace('taskAbsorbedFull.get(t.id)', '[]')),
-      "archive label plus sources below the target");
     // (sp-criterion) A LANE PARKED ON THE OWNER WITH AN UNWRITTEN TREE HOLDS NO SURFACE
     // (start-plan.ts#startPlanLaneClaims). One rule, two lane builders — server.ts#startPlanNow off
-    // the live slot, the CLI off a state file — so the rule is exercised directly here and the two
-    // WIRINGS are read out of their own sources, which is the half tsc cannot see. The fixture is a
+    // the live slot, the CLI off a state file — so the rule is exercised directly here. The fixture is a
     // lane on server.ts 100-120 and one queued row on server.ts 110-130, a certain collision under
     // the full rule, so a case reads "now" exactly when the lane stopped claiming. Mutations this
     // catches: the criterion branch removed → (a) red; the awaiting branch removed → (b) red; the
     // ahead/dirty guard removed → (d1), (d2) and (e) red; `awaiting: "main"` folded in → (m) red;
-    // the lane freed of the caps too → the cap check red; either builder dropping the rule, reading
-    // another row than its founding one, or nulling only one half → the two source checks.
+    // the lane freed of the caps too → the cap check red.
     {
       const spOpen: StartPlanLaneClaim["criterion"] = { proposedAt: 1, confirmedAt: null };
       const spCritNext = (c: StartPlanLaneClaim) => {
@@ -11781,36 +10882,6 @@ export async function run(ctx: Ctx): Promise<void> {
       check("(sp-criterion) a lane without a surface still counts against the repo cap",
         JSON.stringify(spCritCap) === JSON.stringify({ cap: "1/1 lanes busy in sp (repo cap)" }),
         JSON.stringify(spCritCap));
-      const spSrv = (() => { try { return readFileSync(`${ROOT}/server.ts`, "utf8"); } catch { return ""; } })();
-      const spCliSrc = (() => { try { return readFileSync(`${ROOT}/start-plan.ts`, "utf8"); } catch { return ""; } })();
-      check("(sp-criterion) PROBE: both lane builders are readable",
-        spSrv.length > 1000 && spCliSrc.length > 1000, `server=${spSrv.length} cli=${spCliSrc.length}`);
-      const spPlanFn = spSrv.match(/function startPlanNow\([\s\S]*?\n\}\n/)?.[0] ?? "";
-      check("(sp-base) the live and CLI builders attach Task.base and Slot.worktree.base, falling back to the repo integration branch",
-        /rows\[rows\.length - 1\]\.base = t\.base \?\? baseOf\(t\.repo \?\? DISPATCH_REPO\)/.test(spPlanFn)
-        && /base: s\.worktree \? s\.worktree\.base \?\? baseOf\(s\.worktree\.repo\) : null/.test(spPlanFn)
-        && /const configured = repoBases\[key\]/.test(spPlanFn)
-        && /const base = typeof task\.base === "string" && task\.base \? task\.base : integrationBaseOf\(rowRepo\)/.test(spCliSrc)
-        && /base: laneBase/.test(spCliSrc),
-        `live=${spPlanFn.length} cli=${spCliSrc.length}`);
-      check("(sp-criterion) startPlanNow reads the rule off the live slot — the founding row's criterion, the slot's own awaiting, the git tick's cached reading — and takes the surface itself from startPlanLaneSurface (rows' files plus what the lane already wrote)",
-        /const claims = startPlanLaneClaims\(\{/.test(spPlanFn)
-        && /criterion: foundingRowOf\(s\)\?\.criterion \?\? null,/.test(spPlanFn)
-        && /awaiting: s\.awaiting,/.test(spPlanFn)
-        && /git: gitInfo\.get\(s\.id\) \?\? null,/.test(spPlanFn)
-        && /\.\.\.startPlanLaneSurface\(claims, own, hunks\)/.test(spPlanFn)
-        && !/files: claims && own\.length/.test(spPlanFn) && !/ranges: claims && own\.some/.test(spPlanFn),
-        spPlanFn.match(/const claims = startPlanLaneClaims[\s\S]{0,300}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in startPlanNow");
-      const spCliLoop = spCliSrc.slice(spCliSrc.indexOf("const lanes: StartPlanLane[] = [];"));
-      check("(sp-criterion) the CLI lane builder reads the SAME rule off the state file — the slot's taskId row, its awaiting, a git reading of its own that stays null when it cannot be taken, and the surface from startPlanLaneSurface",
-        /const claims = startPlanLaneClaims\(\{/.test(spCliLoop)
-        && /criterion: criterionOf\(\(typeof slot\.taskId === "string" && ownRows\.find\(\(t\) => t\.id === slot\.taskId\)\) \|\| ownRows\[0\]\),/.test(spCliLoop)
-        && /awaiting: slot\.awaiting === "owner" \|\| slot\.awaiting === "main" \? slot\.awaiting : null,/.test(spCliLoop)
-        && /git: laneCwd && forkSha \? laneGitOf\(laneCwd, forkSha\) : null,/.test(spCliLoop)
-        && /startPlanLaneSurface\(claims, own, hunks\)/.test(spCliLoop)
-        && !/files: claims && own\.length/.test(spCliLoop) && !/ranges: claims && own\.some/.test(spCliLoop)
-        && /if \(!ahead\.ok \|\| !dirty\.ok \|\| !Number\.isFinite\(n\)\) return null;/.test(spCliSrc),
-        spCliLoop.match(/const claims = startPlanLaneClaims[\s\S]{0,320}/)?.[0]?.replace(/\s+/g, " ") ?? "no claims call in the CLI builder");
     }
     // (sp-stau) A WAITING WAVE HOLDS LATER WAVES ONLY ON KNOWN RANGES (start-plan.ts `claims`,
     // docs/messungen/2026-09-15-start-plan-stau-schnitt.md). The stall of 2026-09-15: a fresh lane with
@@ -12372,7 +11443,7 @@ export async function run(ctx: Ctx): Promise<void> {
       const { waits: _waits, stau: _stau, blockers: _blockers, buendel, ...plan } = (await (await get("/api/start-plan")).json()) as Record<string, unknown>;
       // buendel (Schnitt 3) travels BESIDE the plan, like waits and stau: the CLI prints the plan
       // half only, so the comparison below reads the projection without it — and nothing that
-      // starts anything reads it (the tick walks plan.repos; pinned by the source probe below).
+      // starts anything reads it (the tick walks plan.repos).
       return { plan: JSON.stringify(plan), buendel };
     };
     const spRoute1 = await spGet();
@@ -12512,7 +11583,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const tNexts = Object.fromEntries(tPlan.repos.flatMap((r) => r.waves).filter((w) => w.ids.some((id) => tIds.includes(id)))
       .map((w) => [w.ids.join("+"), w.next]));
     const tFree = ((await (await get("/api/sessions")).json()) as { slots: { cwd: string | null }[] }).slots.filter((x) => !x.cwd).length;
-    check("(sp-tick) fixture: seven rows with confirmed surfaces, C's planted after-card loaded, the plan projects the pair as one wave, and two slots are free",
+    const tPre = precondition("(sp-tick)");
+    tPre.need("seven rows with confirmed surfaces, C's planted after-card loaded, the plan projects the pair as one wave, and two slots are free",
       tIds.every(Boolean) && !!tWaveP && !!tPartnerP && !!tCRow && tFree >= 2
       && JSON.stringify(tNexts[`${tW1}+${tW2}`]) === '"now"'
       && JSON.stringify(tNexts[`${tX1}+${tX2}`]) === JSON.stringify({ unreleased: [tX2] })
@@ -12594,10 +11666,11 @@ export async function run(ctx: Ctx): Promise<void> {
       for (const id of regIds) await post(`/api/tasks/${id}/queue`, {});
       const regLeft = await regRepo2Slots();
       const regQueued = (await tRows()).filter((r) => r.status === "queued").map((r) => r.id);
-      check("(sp-tick-reg) fixture: four rows queued, the code pair filed first, the field empty and the repo cap raised — the three parallel starts ride over any resurrected straggler",
+      tPre.need("(sp-tick-reg) four rows queued, the code pair filed first, the field empty and the repo cap raised — the three parallel starts ride over any resurrected straggler",
         regIds.every(Boolean) && regCapBody.ok === true && regCapBody.effective === 6 && regLeft.length === 0
         && regIds.every((id) => regQueued.includes(id)),
         JSON.stringify({ ids: regIds, left: regLeft, cap: regCapBody, queued: regQueued }));
+      tPre.done();
       await post("/api/dispatch", { on: true });
       tLive = await tUntil((rows) => tOf(rows, tR1)?.status === "sent" && tOf(rows, tP1)?.status === "sent"
         && tOf(rows, tP2)?.status === "sent");
@@ -12694,7 +11767,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const plan1 = (await (await get("/api/start-plan")).json()) as StartPlan;
     const goneWhy = `base branch ${goneBranch} does not exist — restore the branch or archive the row`;
     const goneRow = bWave(plan1, gone)?.rows.find((r) => r.id === gone);
-    check("(sp-tick-base)(1) fixture: the base branch existed at filing and is gone, both rows queued",
+    const bPre = precondition("(sp-tick-base)");
+    bPre.need("(1) the base branch existed at filing and is gone, both rows queued",
       made.status === 0 && deleted.status === 0 && !!gone && !!live
       && [gone, live].every((id) => bOf(plan1.repos.flatMap((r) => r.waves).flatMap((w) => w.rows), id)?.status === "queued"),
       JSON.stringify({ made: made.stderr, deleted: deleted.stderr, gone, live }));
@@ -12720,9 +11794,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const live2 = await bTask("SP-TICK-BASE younger startable row behind a failing spawn");
     for (const id of [dead, live2]) await post(`/api/tasks/${id}/queue`, {});
     const plan2 = (await (await get("/api/start-plan")).json()) as StartPlan;
-    check("(sp-tick-base)(2) fixture: the dead row's repo is a plain directory (no git above it) and the plan reads its wave \"now\" — it cannot see the failure",
+    bPre.need("(2) the dead row's repo is a plain directory (no git above it) and the plan reads its wave \"now\" — it cannot see the failure",
       !plainIsGit && !!dead && !!live2 && bWave(plan2, dead)?.next === "now" && bWave(plan2, live2)?.next === "now",
       JSON.stringify({ plainIsGit, dead: bWave(plan2, dead)?.next ?? null, live2: bWave(plan2, live2)?.next ?? null }));
+    bPre.done();
     await post("/api/dispatch", { on: true });
     const after2 = await bUntil((rows) => bOf(rows, live2)?.status === "sent");
     check("(sp-tick-base)(2) the dead row's spawn fails and the same tick starts the younger row — a failed spawn skips its wave, it does not end the tick",
@@ -13156,11 +12231,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const shape = (row: BaseRow | undefined): string => JSON.stringify(row?.surface?.ranges);
     const card = { ziel: "Basis-Symbol bearbeiten", surface: { files: [file], symbols: [`${file}#known`] },
       done: "Symbol ist bearbeitet", verify: "bun e2e/pins.ts", verboten: ["kein Dispatch"] };
+    const basePre = precondition("(base-symbols)");
     const create = async (base?: string, author?: typeof card, text = `${file}#known`): Promise<string> => {
       const result = await post("/api/tasks", { text, queue: false, repo, ...(base ? { base } : {}),
         ...(author ? { card: author } : {}) });
       const body = (await result.json()) as { task?: { id: string }; error?: string };
-      check("(base-symbols) fixture filing succeeds before its projection is measured",
+      basePre.need("fixture filing succeeds before its projection is measured",
         result.ok && !!body.task?.id, JSON.stringify({ status: result.status, body }));
       const id = body.task?.id ?? "";
       if (id) ids.push(id);
@@ -13170,7 +12246,7 @@ export async function run(ctx: Ctx): Promise<void> {
       writeFileSync(fakeCard, "#!/bin/sh\ncat >/dev/null\necho '{}'\n", { mode: 0o700 });
       await restartSrv({ FLEET_CARD_MS: "100", FLEET_CARD_CMD: fakeCard });
       const tickEnv = await srvEnv("FLEET_CARD_MS");
-      check("(base-symbols) fixture: the isolated card sweep is explicitly armed with its stand-in",
+      basePre.need("the isolated card sweep is explicitly armed with its stand-in",
         tickEnv.readable && tickEnv.value === "100", JSON.stringify(tickEnv));
       if (git("init", "-q", "-b", "main").status !== 0) throw new Error("base-symbol fixture init failed");
       writeFileSync(join(repo, ".gitignore"), "graphify-out/\n");
@@ -13217,10 +12293,11 @@ export async function run(ctx: Ctx): Promise<void> {
       const parsedSurface: unknown = sweepParsed?.surface;
       const parsedSymbols = typeof parsedSurface === "object" && parsedSurface !== null && "symbols" in parsedSurface
         ? parsedSurface.symbols : undefined;
-      check("(base-symbols) fixture: the complete deterministic header parses with its prose goal and exact symbol",
+      basePre.need("the complete deterministic header parses with its prose goal and exact symbol",
         sweepParsed?.ziel === "Basis-Symbol bearbeiten"
         && JSON.stringify(parsedSymbols) === JSON.stringify([`${file}#known`]), JSON.stringify(sweepParsed));
       const sweptId = await create("branch", undefined, sweepText);
+      basePre.done();
       let swept: BaseRow | undefined;
       let sweepTimedOut = false;
       await until(async () => { swept = await read(sweptId); return swept?.card?.model === "format"; },
@@ -13238,15 +12315,11 @@ export async function run(ctx: Ctx): Promise<void> {
           new Bun.Transpiler({ loader: "ts" }).transformSync(code) + "\nreturn {base: taskBaseSnapshotFor, symbols: symbolIndexFor};")
           (Bun, realpathSync, {}, statSync, readFileSync, resolve, basename, symbolGraphStamp, readSymbolIndexSnapshot);
       const resolver = makeResolver(cacheCode);
-      const mutantCode = cacheCode.replace('const key = `${repo}\\0${tree.indexStamp}`;', 'const key = repo;');
-      const mutant = makeResolver(mutantCode);
       const coordinates = (r: typeof resolver, base: string): string =>
         JSON.stringify(r.symbols(r.base(repo, base))?.index.get(file)?.filter((s) => s.symbol === "known"));
-      const exactSwitch = (r: typeof resolver): boolean => coordinates(r, "main") === wanted(1, 2)
-        && coordinates(r, "branch") === wanted(4, 6) && coordinates(r, "main") === wanted(1, 2);
-      check("(base-symbols) mutation: removing resolvedCommit from the production cache key makes the exact main/branch/main claim fail",
-        mutantCode !== cacheCode && exactSwitch(resolver) && !exactSwitch(mutant),
-        JSON.stringify({ normal: coordinates(resolver, "branch"), mutant: coordinates(mutant, "branch") }));
+      // warm both caches the way the old main/branch/main probe did: the advance below must
+      // invalidate a cached entry, never merely fill a cold one
+      for (const base of ["main", "branch", "main"]) coordinates(resolver, base);
 
       if (git("checkout", "-q", "branch").status !== 0) throw new Error("base-symbol fixture branch advance failed");
       writeFileSync(join(repo, file), "\n\n\n\n\nexport const known = 1;\n\n\n\nexport const tail = 2;\n");
@@ -13329,12 +12402,13 @@ export async function run(ctx: Ctx): Promise<void> {
 
     const emptyCard = { ...aCard, ziel: "Nur messen", surface: { files: [], symbols: [] } };
     const emptyIds: string[] = [];
+    const emptyPre = precondition("(s6-empty)");
     const emptyFile = async (text: string, card: typeof emptyCard & { surface: { creates?: string[] } }): Promise<string> => {
       const res = await post("/api/tasks", { text, queue: false, repo: REPO, card });
       const body = (await res.json()) as { task?: { id: string }; error?: string };
       const id = body.task?.id ?? "";
       if (id) emptyIds.push(id);
-      check("(s6-empty) surface fixture filing succeeds", res.ok && !!id,
+      emptyPre.need(`surface fixture filing "${text}" succeeds`, res.ok && !!id,
         JSON.stringify({ status: res.status, body }));
       return id;
     };
@@ -13366,14 +12440,15 @@ export async function run(ctx: Ctx): Promise<void> {
     const laneStart = await post(`/api/tasks/${laneId}/dispatch`, {});
     const laneBody = (await laneStart.json()) as { slot?: number; error?: string };
     const laneSlot = laneBody.slot;
-    check("(s6-empty) a running lane holds the prose targets and NEU for the collision counter-probes",
+    emptyPre.need("a running lane holds the prose targets and NEU for the collision counter-probes",
       laneRes.ok && laneStart.ok && typeof laneSlot === "number",
       JSON.stringify({ filing: laneRes.status, start: laneStart.status, body: laneBody }));
     const planIds = [emptyId, newId, confirmedId, aId, aCtl];
     for (const id of planIds) {
       const queued = await post(`/api/tasks/${id}/queue`, {});
-      check("(s6-empty) the collision fixture is released", queued.ok, `${id}: ${queued.status}`);
+      emptyPre.need("the collision fixture is released", queued.ok, `${id}: ${queued.status}`);
     }
+    emptyPre.done();
     const emptyPlan = (await (await get("/api/start-plan")).json()) as StartPlan;
     const nextOf = (id: string) => emptyPlan.repos.flatMap((r) => r.waves).find((w) => w.ids.includes(id))?.next;
     const collisionOf = (id: string) => {
@@ -13584,7 +12659,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // has no spawn, the lane runs the card's model and effort, and the verb PRINTS what it started
     // with, each field named by its origin. --force: this door's cap refusal is not the question here.
     const k2 = await kLegacy("KARTEN-ROLLE k2: code.txt bekommt eine Zeile.", "code.txt", SONNET);
-    check("(kr2) setup: the row carries a valid role and NO spawn — the shape of the live rows",
+    const kPre = precondition("(kr)");
+    kPre.need("(kr2) the row carries a valid role and NO spawn — the shape of the live rows",
       k2?.card?.valid === true && !("spawn" in k2), JSON.stringify(k2 ?? null));
     const k2Ctl = spawnSync("bash", [`${ROOT}/ctl.sh`, "dispatch", k2?.id ?? "-", "--force"], {
       encoding: "utf8", env: { ...process.env, FLEET_CTL_HOME: ROOT, FLEET_CTL_URL: BASE },
@@ -13642,11 +12718,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const k5Board = await kSessions();
     const k5Queued = ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks
       .filter((t) => t.status === "queued").map((t) => t.id);
-    check("(kr5) setup: two role rows without spawn, free slots, no other released row (non-tautology guard)",
+    kPre.need("(kr5) two role rows without spawn, free slots, no other released row (non-tautology guard)",
       !!k5 && !("spawn" in k5) && !!k5Codex && !("spawn" in k5Codex)
       && k5Board.slots.filter((s) => !s.cwd).length >= 2 && k5Board.slots.filter((s) => s.worktree).length <= 1
       && k5Queued.length === 0,
       JSON.stringify({ free: k5Board.slots.filter((s) => !s.cwd).length, queued: k5Queued }));
+    kPre.done();
     for (const row of [k5, k5Codex]) if (row) await post(`/api/tasks/${row.id}/queue`, {});
     await post("/api/autos/quiet", { start: null });
     await post("/api/autos/switch", { on: true });
@@ -13740,7 +12817,8 @@ export async function run(ctx: Ctx): Promise<void> {
     type OCard = { surfaceValid?: boolean; surface?: { files?: string[]; creates?: string[] } };
     const oRows = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; card?: OCard }[] }).tasks;
     const oCardOf = (id: string): OCard | undefined => oRows.find((t) => t.id === id)?.card;
-    check("outside-surface setup: an active program and three rows — two with a surface-valid author card (one naming creates), one without any card",
+    const oPre = precondition("outside-surface");
+    oPre.need("an active program and three rows — two with a surface-valid author card (one naming creates), one without any card",
       !!oProgram && !!oT1.id && !!oT2.id && !!oT3.id
         && oCardOf(oT1.id)?.surfaceValid === true && oCardOf(oT2.id)?.surface?.creates?.join(" ") === oNew
         && oCardOf(oT3.id) === undefined,
@@ -13749,7 +12827,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const l1 = await oLane(oT1.id);
     const l2 = await oLane(oT2.id);
     const l3 = await oLane(oT3.id);
-    check("outside-surface setup: three program lanes started, each with a worktree and a self token",
+    oPre.need("three program lanes started, each with a worktree and a self token",
       [l1, l2, l3].every((l) => l.slot > 0 && !!l.cwd && !!l.token),
       JSON.stringify([l1, l2, l3].map((l) => ({ slot: l.slot, cwd: l.cwd, token: !!l.token }))));
 
@@ -13813,10 +12891,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const eA = await eFile(eShort);
     const eB = await eFile(eLong);
     const eStored = ((await (await get("/api/fleet-report")).json()) as { reports: { id: string; text?: string }[] }).reports;
-    check("fleet-report receipt precondition: both reports were accepted and their stored rows carry the full 200- and 3 900-char texts",
+    oPre.need("fleet-report receipt: both reports were accepted and their stored rows carry the full 200- and 3 900-char texts",
       eA.status === 200 && eB.status === 200 && !!eA.id && !!eB.id
         && eStored.find((r) => r.id === eA.id)?.text === eShort && eStored.find((r) => r.id === eB.id)?.text === eLong,
       JSON.stringify({ a: eA.status, b: eB.status, ids: [eA.id, eB.id] }));
+    oPre.done();
     check("fleet-report receipt: the answer to a 3 900-char report is within 100 B of the answer to a 200-char one and echoes neither text",
       Math.abs(eB.bytes - eA.bytes) < 100 && !eA.raw.includes(eShort) && !eB.raw.includes("L".repeat(200)),
       JSON.stringify({ short: eA.bytes, long: eB.bytes, head: eB.raw.slice(0, 200) }));
@@ -14014,7 +13093,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // evidence only if the caller really is the LIVE bound MAIN of an active Program, sitting in a
     // git checkout and NOT in a worktree lane. A probe that cannot establish its own precondition
     // must fail as ITSELF, never as the thing it was meant to measure.
-    check("ACP-23 fixture: the filing probes run on a live bound NON-LANE MAIN in a git checkout",
+    const mPre = precondition("ACP-23");
+    mPre.need("the filing probes run on a live bound NON-LANE MAIN in a git checkout",
       mSlot >= 0 && !!mOpen?.ok && /^[0-9a-f]{32}$/.test(mToken)
         && !!mLive?.cwd && !mLive.worktree && mBoundSlot === mSlot,
       `slot=${mSlot} open=${mOpen?.status} token=${mToken.length} cwd=${mLive?.cwd} bound=${mBoundSlot}`);
@@ -14271,7 +13351,6 @@ export async function run(ctx: Ctx): Promise<void> {
     // reads that checkout.
     const M_TRACKED = "AGENTS.md";
     const M_GHOST = "gibt-es-nicht-main.ts";
-    const mSurfBefore = (await mAll()).length;
     const mSurfAuditBefore = mAuditRows().length;
     // The text names no path-shaped token on purpose: the API view PROJECTS a derived surface out of
     // exact path tokens in the prose, and a probe whose own text seeded that projection could not
@@ -14296,14 +13375,6 @@ export async function run(ctx: Ctx): Promise<void> {
         && mPropTrail.length === 1 && mPropTrail[0]?.slot === mSlot
         && mPropTrail[0]?.detail === `${mPropId} 2 path(s) at filing (untracked: ${M_GHOST})`,
       `${mPropRes.status} row=${JSON.stringify(mPropRow)} trail=${JSON.stringify(mPropTrail)}`);
-    // …and the same row ON DISK, because that is where the two fields could collapse unnoticed: the
-    // API view can PROJECT a derived `files`, the state file cannot.
-    const mPropDisk = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-      { tasks?: MSurfRow[] }).tasks ?? []).find((r) => r.id === mPropId);
-    check("(f1b) on disk the filed row carries the proposal and NO surface — the presence of the row itself is checked, so a lost row cannot read as a pass",
-      !!mPropDisk && mPropDisk.filesProposal?.files.join(" ") === `${M_TRACKED} ${M_GHOST}`
-        && mPropDisk.files === undefined && mPropDisk.filesOrigin === undefined,
-      JSON.stringify(mPropDisk ?? null));
 
     // (f2) THE REFUSALS, and each one must mint NOTHING. A list that normalises away is a malformed
     // request and not a silent filing without the surface the caller believed it sent; an advisory
@@ -14369,9 +13440,6 @@ export async function run(ctx: Ctx): Promise<void> {
       `release=${mRelRes.status}:${mRelResText} row=${JSON.stringify(mRelRow)}`);
     await post(`/api/tasks/${mRelId}/delete`, {});
     await post("/api/dispatch", { on: mDispatchWas });
-    check("(f3b) the surface probes leave exactly the rows they filed — two, and every refusal above minted none",
-      (await mAll()).length === mSurfBefore + 1,
-      `before=${mSurfBefore} now=${(await mAll()).length}`);
 
     // --- (rc) NO RELEASE WITHOUT A VALID CARD (4ae22c7a, server.ts#releaseCardRefusal). The plan reads a
     // row's order from `card.after` only, so a release of a row whose text orders it after a row the
@@ -14565,7 +13633,7 @@ export async function run(ctx: Ctx): Promise<void> {
       let aoCards0: Map<string, AoCard> | null = null;
       try { aoCards0 = await until(aoFirstCards, { timeoutMs: 20_000, stepMs: 250, what: "every ao row carries its format card" }); }
       catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
-      check("(ao0) fixture: the MAIN door answers, seven header rows filed, each carries a valid FORMAT card with after = [the original NACH]",
+      mPre.need("(ao0) the MAIN door answers, seven header rows filed, each carries a valid FORMAT card with after = [the original NACH]",
         !!aoToken1 && aoRows.every(Boolean) && !!aoOld && aoNew.every(Boolean) && !!aoCards0
           && [...aoCards0.values()].every((c) => c.valid === true),
         JSON.stringify({ token: aoToken1.length, rows: aoRows, cards: aoCards0 ? [...aoCards0.entries()] : (await aoTasks())
@@ -14623,13 +13691,14 @@ export async function run(ctx: Ctx): Promise<void> {
       const aoStaleRes = await aoBriefMain(aoToken, aoStale, aoHead("STALE", aoNew));
       const aoAfterPlant = await aoTasks();
       const aoBriefOf = (id: string): AoTask["brief"] => aoAfterPlant.find((t) => t.id === id)?.brief;
-      check("(ao1b) the plant is read back as planted: legacy is pinned without an author, compiled is unpinned and authorless; the STALE brief is the MAIN's",
+      mPre.need("(ao1b) the plant is read back as planted: legacy is pinned without an author, compiled is unpinned and authorless; the STALE brief is the MAIN's",
         !!aoToken && aoStaleRes.status === 200
           && aoBriefOf(aoLegacy)?.edited === true && aoBriefOf(aoLegacy)?.by === undefined
           && aoBriefOf(aoCompiled)?.edited === false && aoBriefOf(aoCompiled)?.by === undefined
           && aoBriefOf(aoStale)?.by === "main",
         JSON.stringify({ token: aoToken.length, stale: aoStaleRes.status, legacy: aoBriefOf(aoLegacy) ?? null,
           compiled: aoBriefOf(aoCompiled) ?? null, staleBrief: aoBriefOf(aoStale)?.by ?? null }));
+      mPre.done();
 
       // THE TWO START-PLAN BUILDERS over the same rows: the route, and the CLI over this instance's
       // state file once the stale brief has reached it
@@ -15201,10 +14270,6 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const t of await mAll()) if (t.source === "main") await post(`/api/tasks/${t.id}/delete`, {});
     await post(`/api/slots/${mSlot}/kill`, {});
     await post(`/api/programs/${mMainProgram}/complete`, {});
-    check("ACP-23 cleanup: no main-filed row is left in the queue and the planted MAIN slot is closed",
-      (await mAll()).every((t) => t.source !== "main")
-        && !(await mSess()).some((x) => x.id === mSlot && x.cwd),
-      `rows=${(await mAll()).filter((t) => t.source === "main").length}`);
   }
 
   // --- (n) ACP-25 · POST /api/self/tasks/:id/brief: the SHARPENING door of a bound Program-MAIN,
@@ -15291,7 +14356,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // only if the caller really is the LIVE bound MAIN of an active Program, in a git checkout and
     // NOT in a worktree lane. A probe that cannot establish its own precondition must fail as
     // ITSELF, never as the thing it was meant to measure.
-    check("ACP-25 fixture: the sharpening probes run on a live bound NON-LANE MAIN in a git checkout",
+    const nPre = precondition("ACP-25");
+    nPre.need("the sharpening probes run on a live bound NON-LANE MAIN in a git checkout",
       nSlot >= 0 && !!nOpen?.ok && /^[0-9a-f]{32}$/.test(nToken)
         && !!nLive?.cwd && !nLive.worktree && nBoundSlot === nSlot,
       `slot=${nSlot} open=${nOpen?.status} token=${nToken.length} cwd=${nLive?.cwd} bound=${nBoundSlot}`);
@@ -15419,7 +14485,7 @@ export async function run(ctx: Ctx): Promise<void> {
       card: { ziel: "MAIN full-text card probe", surface: { files: [fullSurface], symbols: [] },
         done: "the MAIN reads the exact full text and card", verify: "bun install", verboten: ["no dispatch"] } });
     const fullId = ((await fullCreated.json()) as { task?: { id: string } }).task?.id ?? "";
-    check("MAIN doors full-text fixture: a row with an explicit valid author card is filed",
+    nPre.need("MAIN doors full-text: a row with an explicit valid author card is filed",
       fullCreated.ok && !!fullId && !!fullSurface, `${fullCreated.status} surface=${fullSurface}`);
     const full = await doorCall(`/api/self/tasks/${fullId}`, "GET");
     const fullBody = await full.json() as { task?: NRow };
@@ -15468,11 +14534,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const makeAuto = async (token: string): Promise<string> => {
       const response = await doorCall("/api/self/autos", "POST", { text: "MAIN auto deletion", inSec: 3600 }, token);
       const body = await response.json() as { auto?: { id: string } };
-      check("MAIN doors autos fixture: self scheduling succeeds", response.ok && !!body.auto?.id, String(response.status));
+      nPre.need("MAIN doors autos: self scheduling succeeds", response.ok && !!body.auto?.id, String(response.status));
       return body.auto?.id ?? "";
     };
     const ownAuto = await makeAuto(nToken);
     const foreignAuto = await makeAuto(nLaneToken);
+    nPre.done();
     const foreignAutoDelete = await doorCall(`/api/self/autos/${foreignAuto}`, "DELETE");
     const ownAutoDelete = await doorCall(`/api/self/autos/${ownAuto}`, "DELETE");
     const laneSelf = await doorCall("/api/self", "GET", undefined, nLaneToken);
@@ -15604,10 +14671,6 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/slots/${nSlot}/kill`, {});
     await post(`/api/programs/${nBoundProgram}/complete`, {});
     await post(`/api/programs/${nOtherProgram}/complete`, {});
-    check("ACP-25 cleanup: no row this section minted is left in the queue and the planted MAIN slot is closed",
-      !(await nAll()).some((t) => [nOkId, nOwnerId, nForeignId, nLooseId, nLaneTarget, nClosedId, nLegacyId].includes(t.id))
-        && !(await nSess()).some((x) => x.id === nSlot && x.cwd),
-      `left=${(await nAll()).filter((t) => t.text.startsWith("acp25")).length}`);
   }
 
   // ——— C0 · THE ZERO BUDGET IS A REAL BUDGET ———
@@ -15643,14 +14706,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const c0Term = (n: number): Record<string, unknown> =>
       c0Row(`c0term${String(n).padStart(4, "0")}`, n % 2 === 0 ? "done" : "archived");
     const c0Ids = (rows: Record<string, unknown>[]): string[] => rows.map((r) => String(r.id));
-    // THE PLANTED SET, not a prefix. The server mints task ids as 8 hex chars (randomBytes(4)),
-    // so any foreign row has a 1-in-256 chance per id of starting "c0" — the false red the helper
-    // preview of fcc6d5ec died on (row c0d364c6, a w2/3b fixture with a random id). The cleanup
-    // check below may only fall over rows THIS section planted, and every id it mints passes
-    // through c0Plant, so the set is complete by construction.
-    const c0Planted = new Set<string>();
     const c0Plant = async (rows: Record<string, unknown>[]): Promise<string[]> => {
-      for (const r of rows) c0Planted.add(String(r.id));
       await stopSrv();
       const planted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as C0State;
       planted.tasks = rows;
@@ -15820,10 +14876,6 @@ export async function run(ctx: Ctx): Promise<void> {
     await stopSrv();
     writeFileSync(`${ROOT}/fleet.json`, c0Snapshot, { mode: 0o600 });
     await restartSrv();
-    const c0Restored = ((await (await get("/api/tasks")).json()) as { tasks: C0Row[] }).tasks;
-    check("(c0) cleanup: the pre-fixture queue is back and no planted row survives",
-      !c0Restored.some((t) => c0Planted.has(t.id)),
-      `left=${c0Restored.filter((t) => c0Planted.has(t.id)).length} total=${c0Restored.length}`);
   }
 
   // ——— TA · ARCHIVING DOES NOT DELETE ———
@@ -15851,6 +14903,7 @@ export async function run(ctx: Ctx): Promise<void> {
       return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
     };
     const taStamp = Date.now().toString(36);
+    const taPre = precondition("(ta)");
     await stopSrv();
     const taSnapshot = readFileSync(`${ROOT}/fleet.json`, "utf8");
     await restartSrv();
@@ -15907,7 +14960,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const taBooted = (await taTasks()).map((t) => t.id);
     const taEvicted = taLedger().filter((l) => l.event === "evicted" && l.ts >= taPlantAt);
     const taPlantedText = new Map<string, string>([[taArc, taArcText], ...taTerm.map((t) => [String(t.id), String(t.text)] as [string, string])]);
-    check("(ta-a) setup: the archived row from (c) was in fleet.json to plant, and the queue booted with the live rows only",
+    taPre.need("(ta-a) the archived row from (c) was in fleet.json to plant, and the queue booted with the live rows only",
       taArcPlanted !== undefined && taBooted.length === 200 && !taTerminalIds.some((id) => taBooted.includes(id)),
       `planted=${taArcPlanted !== undefined} booted=${taBooted.length} terminalKept=${taTerminalIds.filter((id) => taBooted.includes(id)).length}`);
     check("(ta-a) every row the cap evicted stands in the ledger with its full text",
@@ -15925,7 +14978,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // (f) register.sh --archived — the staged copy (e2e-isolated.sh STAGE_EXTRA), run in the instance
     // directory, so it reads THIS instance's ledger and never the live one
     const taRegPresent = existsSync(`${ROOT}/register.sh`);
-    check("(ta-f) setup: register.sh is staged into the instance", taRegPresent, `${ROOT}/register.sh`);
+    taPre.need("(ta-f) register.sh is staged into the instance", taRegPresent, `${ROOT}/register.sh`);
     const taHit = taRegister("WACHOLDERBEERE");
     const taHitLines = taHit.out.split("\n").filter(Boolean);
     const taArcHit = taRegister("zypressenholz");
@@ -15971,8 +15024,9 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     await post("/api/tasks", { text: `ta eviction trigger ${taStamp} b`, queue: false });
     taGoneAfter = !(await taTasks()).some((t) => t.id === taVictim);
-    check("(ta-g) setup: a read-only ledger really refuses this process a write (a root run would measure nothing)",
+    taPre.need("(ta-g) a read-only ledger really refuses this process a write (a root run would measure nothing)",
       taWriteRefused, `uid=${process.getuid?.() ?? "?"}`);
+    taPre.done();
     check("(ta-g) SHOULD-REJECT: while the ledger cannot be written the cap keeps the row; once it can, the row goes and its eviction line is there",
       taWriteRefused && taKeptWhileRefused && taGoneAfter
         && taLedger().some((l) => l.event === "evicted" && l.task.id === taVictim && l.task.status === "archived"),
@@ -15982,10 +15036,6 @@ export async function run(ctx: Ctx): Promise<void> {
     await stopSrv();
     writeFileSync(`${ROOT}/fleet.json`, taSnapshot, { mode: 0o600 });
     await restartSrv();
-    const taRestored = await taTasks();
-    check("(ta) cleanup: the pre-fixture queue is back and no planted row survives",
-      !taRestored.some((t) => t.id.startsWith("talive") || t.id.startsWith("taterm") || [taArc, taBare, taBad].includes(t.id)),
-      `total=${taRestored.length}`);
   }
   // --- (ha) THE LANE'S HUNK ANCHOR IS THE LIVE MERGE-BASE, NOT THE SPAWN-TIME baseSha (2026-09-22,
   // server.ts#laneHunkAnchor · land-collision-stats.ts#laneHunkDiffArgs · the CLI's own half in

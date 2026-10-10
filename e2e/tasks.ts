@@ -3153,6 +3153,58 @@ export async function run(ctx: Ctx): Promise<void> {
       if (row && row.status !== "sent") await post(`/api/tasks/${id}/delete`, {});
     }
   }
+  // --- ce3894a9 (2026-10-10): an owner remark the store keeps whole (MAX_COMMENT_TEXT, 2000) reached
+  // the lane cut after 500 B with a bare "…" — a silent change of the order. Now one remark up to
+  // 2000 B arrives WHOLE, and what the shared budget (ROW_COMMENTS_MAX_BYTES = 2400 B) still cuts names
+  // in the brief itself that it is cut, the missing bytes and the door that serves it whole — and
+  // that door answers the LANE with the full text. Driven through the manual dispatch door, the
+  // bytes off the prompt ledger, the door with the lane's own self-token.
+  // BREAKS IF: the per-remark cap falls back below 1 900 B, a cut goes silent again, or the lane's
+  // memory row stops carrying its comments.
+  {
+    const rcMarker = "RC-PROBE — Brief einer Zeile mit langer Owner-Bemerkung";
+    const rcWhole = `${"Owner-Korrektur in ganzer Laenge. ".repeat(60).slice(0, 1892)} RC-ENDE`; // 1 900 B
+    const rcLong = `${"ä".repeat(1500)} RC-ZWEI-ENDE`; // 3 013 B: the shared budget holds only its start
+    const rcBytes = (text: string): number => new TextEncoder().encode(text).byteLength;
+    const rcRow = (await (await post("/api/tasks", { text: `${rcMarker} · Auftrag`, queue: false })).json()) as { task: { id: string } };
+    await post(`/api/tasks/${rcRow.task.id}/brief`, { text: rcMarker });
+    await post(`/api/tasks/${rcRow.task.id}/comment`, { text: rcWhole });
+    await post(`/api/tasks/${rcRow.task.id}/comment`, { text: rcLong });
+    const rcDisp = (await (await post(`/api/tasks/${rcRow.task.id}/dispatch`, {})).json()) as { slot?: number };
+    let rcText = "";
+    for (let i = 0; i < 40 && rcDisp.slot; i++) { // polls: the boot grace lands the prompt in ~4-5 s
+      const hit = ((await (await get("/api/prompts?limit=100")).json()) as
+        { prompts: { slot?: number; source?: string; text?: string }[] }).prompts
+        .find((p) => p.slot === rcDisp.slot && p.source === "auto" && (p.text ?? "").startsWith(rcMarker));
+      if (hit) { rcText = hit.text ?? ""; break; }
+      await Bun.sleep(500);
+    }
+    const rcCut = /ä… \[gekuerzt: (\d+) B fehlen — den vollen Text liest du ueber (GET \/api\/self\/memory\?view=work)[^\]]*\]/.exec(rcText);
+    const rcKept = rcText.slice(rcText.indexOf(rcWhole) + rcWhole.length).match(/ä/g)?.length ?? 0;
+    check("(rc) a 1 900-B owner remark reaches the founding prompt WHOLE; the remark the 2 400-B budget cuts says so, with its missing bytes and the lane door",
+      rcBytes(rcWhole) === 1900 && rcText.includes(`--- KOMMENTARE AUF DIESER ZEILE ---\n\n${rcWhole}\n\n`)
+        && !!rcCut && Number(rcCut[1]) === rcBytes(rcLong) - rcKept * 2 && rcKept > 0
+        && !rcText.includes("RC-ZWEI-ENDE") && ROW_COMMENTS_MAX_BYTES === 2400,
+      JSON.stringify({ slot: rcDisp.slot ?? null, whole: rcText.includes(rcWhole), cut: rcCut?.[0]?.slice(0, 160) ?? null, kept: rcKept,
+        tail: rcText.slice(rcText.indexOf("KOMMENTARE"), rcText.indexOf("KOMMENTARE") + 120) }));
+    let rcTok = "";
+    for (let i = 0; i < 20 && rcDisp.slot && !rcTok; i++) {
+      rcTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+        .slots?.[String(rcDisp.slot)]?.selfToken ?? "";
+      if (!rcTok) await Bun.sleep(250);
+    }
+    const rcDoor = rcTok ? await fetch(`${BASE}/api/self/memory?view=work`, { headers: { "x-fleet-self-token": rcTok } }) : null;
+    const rcRead = rcDoor ? (await rcDoor.json()) as { tasks?: { rows?: { id: string; comments?: { text: string }[] }[] } } : null;
+    const rcComments = rcRead?.tasks?.rows?.find((r) => r.id === rcRow.task.id)?.comments?.map((c) => c.text) ?? [];
+    check("(rc) the door the cut remark names answers the lane with every comment of its row WHOLE",
+      rcDoor?.status === 200 && rcComments.length === 2 && rcComments[0] === rcWhole && rcComments[1] === rcLong,
+      JSON.stringify({ token: !!rcTok, status: rcDoor?.status ?? null, bytes: rcComments.map(rcBytes) }));
+    if (rcDisp.slot) { await post(`/api/slots/${rcDisp.slot}/kill`, {}); await slotsEmptied([rcDisp.slot]); }
+    const rcLeft = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] }).tasks
+      .find((t) => t.id === rcRow.task.id);
+    if (rcLeft?.status === "queued") await post(`/api/tasks/${rcRow.task.id}/unqueue`, {});
+    if (rcLeft && rcLeft.status !== "sent") await post(`/api/tasks/${rcRow.task.id}/delete`, {});
+  }
   // the dispatch switch carries the same contract as /api/autos/switch: the dangerous direction is
   // OFF, because a stop that lives only in memory is silently re-armed by the next srv respawn
   // (boot reloads `dispatch` from fleet.json and the dispatcher spawns lanes again).

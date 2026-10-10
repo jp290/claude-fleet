@@ -51,12 +51,21 @@ const clipBytes = (value: string, max: number): string => {
 // leak it. Capped because the block exists to add the owner's correction, not a second brief; when
 // remarks are left out, the COUNT is named in the block — a silent cap would read as "that is all
 // the owner wrote„[Zitat entfernt]“
+// 
+// …"). What a budget still cuts
+// — a multi-byte remark over 2000 B, or a later remark the shared budget only half holds — says so
+// IN the remark: that it is cut, how many bytes are missing, and the lane door that serves it whole.
 export interface RowCommentInput {
   readonly text: string;
 }
 export const ROW_COMMENTS_MARK = "KOMMENTARE AUF DIESER ZEILE";
-const ROW_COMMENT_MAX_BYTES = 500; // one remark, clipped with the renderer's own "…"
-export const ROW_COMMENTS_MAX_BYTES = 1200; // the remarks' shared budget, header and count line excluded
+const ROW_COMMENT_MAX_BYTES = 2000; // one remark, MAX_COMMENT_TEXT counted in bytes
+export const ROW_COMMENTS_MAX_BYTES = 2400; // the remarks' shared budget, header and count line excluded
+// the lane door that serves every comment of the lane's own row whole (server.ts#memoryTaskRow)
+export const ROW_COMMENT_FULL_DOOR = "GET /api/self/memory?view=work, Feld tasks.rows[].comments";
+const ROW_COMMENT_MIN_CLIP = 120; // less text than this before the note is no start of a remark: omit it, counted
+const clipNote = (missing: number): string =>
+  ` [gekuerzt: ${missing} B fehlen — den vollen Text liest du ueber ${ROW_COMMENT_FULL_DOOR}]`;
 
 /** The exact bytes of a row's comment block, "" for a row without comments (never a header alone). */
 export function renderRowComments(comments?: readonly RowCommentInput[]): string {
@@ -64,14 +73,22 @@ export function renderRowComments(comments?: readonly RowCommentInput[]): string
   const remarks: string[] = [];
   let used = 0;
   for (const c of comments) {
-    const remark = clipBytes(c.text.trim(), ROW_COMMENT_MAX_BYTES);
-    const size = utf8.encode(remark).byteLength + 2; // the blank line between remarks
-    if (used + size > ROW_COMMENTS_MAX_BYTES) break;
+    const text = c.text.trim();
+    const room = Math.min(ROW_COMMENT_MAX_BYTES, ROW_COMMENTS_MAX_BYTES - used - 2); // 2: the blank line between remarks
+    const full = utf8.encode(text).byteLength;
+    let remark = text;
+    if (full > room) {
+      // the note is sized for the WHOLE byte count, so the shorter real count always fits behind it
+      const textRoom = room - utf8.encode(clipNote(full)).byteLength;
+      if (textRoom < ROW_COMMENT_MIN_CLIP) break;
+      const head = clipBytes(text, textRoom);
+      remark = `${head}${clipNote(full - (utf8.encode(head).byteLength - utf8.encode("…").byteLength))}`;
+    }
     remarks.push(remark);
-    used += size;
+    used += utf8.encode(remark).byteLength + 2;
   }
   const omitted = comments.length - remarks.length;
-  // a clip at 500 B cannot fill 1200 B without fitting one remark, so `remarks` is never empty here
+  // the first remark has 2000 B of room, far above note + minimum, so `remarks` is never empty here
   return `\n\n--- ${ROW_COMMENTS_MARK} ---\n\n${remarks.join("\n\n")}${omitted > 0
     ? `\n\n(+${omitted} von ${comments.length} Kommentaren ausgelassen — der Platz war alle; deine MAIN kann den Rest nachreichen)`
     : ""}`;

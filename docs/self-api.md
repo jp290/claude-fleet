@@ -1376,7 +1376,9 @@ Ein Owner-Token ist hier 401 wie überall in der Self-Familie — es gibt keinen
 stateRevision, sources:{persisted[], volatile[]}, program, tasks:{rows, total, omitted}, occupants,
 coverage, unknown[]}`. Je Zeile: `status`, `kind`, `slot`, **`hold:{grund,at,by,slot}|null`**
 (`grund:null` = Hold ohne Grund, sichtbar), `land` (neueste Outcome-Zeile), `audit`, `report`
-(neuester Report im Live-Tail), `basis`. Der Auditstatus ist explizit und hat eine feste Rangfolge:
+(neuester Report im Live-Tail), `basis`; nur für eine LANE zusätzlich `comments:[{id,ts,text,from?,verdict?}]`
+— die Kommentare der eigenen Zeile ungekürzt, die Tür, die eine im Brief gekürzte Anmerkung nennt
+(`server.ts#memoryTaskRow`). Der Auditstatus ist explizit und hat eine feste Rangfolge:
 `running`/`starting` (flüchtig, Prozessspeicher) → `queued` (persistierte Queue, nur bei
 konfiguriertem Audit) → `terminal` (Ledger, mit `result`, `adjudication`) → `not-configured` →
 `unknown` (mit `why`); ohne Land `not-landed`. **Eine fehlende Auditzeile ist nie `running`.**
@@ -2693,9 +2695,12 @@ davon `pending`). Jetzt trägt der Gründungsprompt sie als **eigenen, gekappten
 Brief** (`wave-brief.ts#renderRowComments`): hinter, nicht in ihm, weil der Brief freigegebene
 Bytes ist und als solche genehmigt wurde — dieselbe Trennung, die `Task.comments` in
 `server/types.ts` begründet. Der Block heißt `--- KOMMENTARE AUF DIESER ZEILE ---`, listet die
-Anmerkungen in ihrer Reihenfolge (je max. 500 Bytes, gesamt 1200 BytesBudget) und NENNT die Zahl
+Anmerkungen in ihrer Reihenfolge (je max. 2000 Bytes, gesamt 2400 Bytes Budget) und NENNT die Zahl
 der ausgelassenen Kommentare, wenn die Kappung greift — ein stiller Stutz wäre eine Behauptung
-darüber, was der Owner noch geschrieben hat. Kein Autor-Feld in diesem Schnitt (unter der
+darüber, was der Owner noch geschrieben hat. Eine Anmerkung bis 2000 B (der Speicher hält
+`MAX_COMMENT_TEXT` = 2000) kommt ganz an; was ein Budget dennoch kürzt, endet im Brief mit
+`[gekuerzt: <n> B fehlen — den vollen Text liest du ueber GET /api/self/memory?view=work, Feld
+tasks.rows[].comments]` (seit 2026-10-10; vorher endete eine Anmerkung nach 500 B mit bloßem „…"). Kein Autor-Feld in diesem Schnitt (unter der
 Schnittlinie der Messung, Nachsatz erst wenn ein Leser dafür existiert). **Ohne Kommentar ist der
 Gründungsprompt byte-gleich zur Zustellung davor** — das ist Pin, nicht Absicht
 (`e2e/pins.ts`, S3-Regeln). Eine Welle trägt die Kommentare je Zeile in deren ZEILE-Abschnitt;

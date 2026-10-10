@@ -3715,8 +3715,11 @@ function memoryAuditState(land: Record<string, unknown> | null, auditRows: reado
 // its newest land from the outcome ledger, that land's audit state, and the newest report the
 // live tail still holds. `basis` names the carrier of every half, which is the whole point: a
 // reader must be able to tell a persisted row from a volatile run from a capped tail.
+// A LANE's row also carries its comments WHOLE: the founding brief caps them (wave-brief.ts#renderRowComments)
+// and a cut remark names this door as the place its full text is read — a MAIN reads its rows elsewhere.
 async function memoryTaskRow(id: string, outcomes: readonly Record<string, unknown>[],
-  auditRows: readonly Record<string, unknown>[], judged: ReadonlyMap<number, AuditAdjudication>): Promise<Record<string, unknown>> {
+  auditRows: readonly Record<string, unknown>[], judged: ReadonlyMap<number, AuditAdjudication>,
+  withComments = false): Promise<Record<string, unknown>> {
   const live = tasks.find((t) => t.id === id) ?? null;
   const t = live ?? await youngestArchivedTask(id);
   let land: Record<string, unknown> | null = null;
@@ -3736,6 +3739,8 @@ async function memoryTaskRow(id: string, outcomes: readonly Record<string, unkno
     audit: memoryAuditState(land, auditRows, judged),
     report: report ? { id: report.id, status: report.status, reportedAt: report.reportedAt,
       disposition: report.decision?.disposition ?? null } : null,
+    ...(withComments ? { comments: (t?.comments ?? []).map((c) => ({ id: c.id, ts: c.ts, text: c.text,
+      ...(c.from ? { from: c.from } : {}), ...(c.verdict ? { verdict: c.verdict } : {}) })) } : {}),
     basis: { row: live ? "state (fleet.json, in-memory copy)" : t ? "ledger tasks-archive.jsonl" : "none",
       land: "ledger lane-outcomes.jsonl (.1 + active)", report: `live tail (at most ${FLEET_REPORT_KEEP} terminal rows)` },
   };
@@ -3763,7 +3768,7 @@ async function memoryWorkView(s: Slot, scope: Extract<MemoryScope, { ok: true }>
   const ids = scope.taskIds ?? tasks.filter((t) => t.programId === program?.id)
     .sort((a, b) => Number(taskTerminal(a)) - Number(taskTerminal(b)) || b.created - a.created).map((t) => t.id);
   const rows: Record<string, unknown>[] = [];
-  for (const id of ids.slice(0, MEMORY_WORK_MAX_ROWS)) rows.push(await memoryTaskRow(id, outcomeLedger.rows, auditLedger.rows, judged));
+  for (const id of ids.slice(0, MEMORY_WORK_MAX_ROWS)) rows.push(await memoryTaskRow(id, outcomeLedger.rows, auditLedger.rows, judged, scope.principal === "lane"));
   const occupants = (scope.principal === "lane" ? [s] : [s, ...slots.filter((x) => x.cwd && x.worktree && x.programId === program?.id)])
     .map((x) => ({ slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId ?? null,
       role: x.worktree ? "lane" : "program-main", taskId: x.taskId ?? null,

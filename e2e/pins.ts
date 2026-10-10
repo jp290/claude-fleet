@@ -11677,7 +11677,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // lane, MAIN, orchestrator — loads ~/.claude/CLAUDE.md, so no project exclude may match it: the
   // `**/.claude/CLAUDE.md` glob of 0ceacbca did, and the role sessions fell back to ~/AGENTS.md, the
   // Codex version. The role line (agentCmd) excludes ~/AGENTS.md by name and the checkout's own
-  // gitignored .claude/CLAUDE.md by absolute path instead. Glob test: a pattern matching
+  // gitignored .claude/CLAUDE.md by absolute path instead — and the checkout's AGENTS.md too: the
+  // user file never closes the AGENTS.md fallback, so without that path MAIN and the orchestrator
+  // load the repo's 21 kB natively beside their render. Glob test: a pattern matching
   // `<home>/.claude/CLAUDE.md` for any home — `**`, `*` and `?` widened, the rest literal.
   const userRules = "/Users/someone/.claude/CLAUDE.md";
   const globHits = (pat: string): boolean => new RegExp(`^${pat.split(/(\*\*\/|\*\*|\*|\?)/).map((part) =>
@@ -11685,9 +11687,9 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       : part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("")}$`).test(userRules);
   const hiding = (settings?.claudeMdExcludes ?? []).filter(globHits);
   const agentLine = read("server.ts").slice(read("server.ts").indexOf("function agentCmd("));
-  pin(`${RULE_HOOK} — no project claudeMdExcludes hides ~/.claude/CLAUDE.md, and the role line excludes ~/AGENTS.md and the checkout's .claude/CLAUDE.md instead`,
+  pin(`${RULE_HOOK} — no project claudeMdExcludes hides ~/.claude/CLAUDE.md, and the role line excludes ~/AGENTS.md, the checkout's .claude/CLAUDE.md and its AGENTS.md instead`,
     hiding.length === 0
-      && agentLine.slice(0, agentLine.indexOf("\n}\n")).includes("claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`]"),
+      && agentLine.slice(0, agentLine.indexOf("\n}\n")).includes("claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`]"),
     `hiding=[${hiding.join(",")}]`);
 
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served

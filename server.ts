@@ -467,12 +467,15 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
       const render = rulebook.render;
       const root = `${import.meta.dir}/CLAUDE.md`;
       // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09): ~/.claude/CLAUDE.md loads
-      // (.claude/settings.json no longer excludes it), and while it counts claude takes no AGENTS.md
-      // fallback at all. ~/AGENTS.md — the Codex version of the global rules — is excluded by name
-      // anyway, so a missing ~/.claude/CLAUDE.md cannot reopen that fallback to it. The checkout's
-      // own gitignored .claude/CLAUDE.md stays out as it was under the old glob. Probe of all three
-      // roles: the commit body; mechanism: docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md (A2/A5).
-      const settings = JSON.stringify({ claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`], ...cutSettings });
+      // (.claude/settings.json no longer excludes it). It does NOT close the AGENTS.md fallback: the
+      // config dir's own CLAUDE.md never counts for it, and with the monolith excluded nothing else
+      // on the path does, so claude would load every AGENTS.md above the cwd. Both are excluded by
+      // absolute path: ~/AGENTS.md (the Codex version of the global rules) and the checkout's own
+      // AGENTS.md, whose "Portable operating contract" the render's loader block has the session read
+      // as a section. The checkout's gitignored .claude/CLAUDE.md stays out as under the old glob.
+      // Probe of both roles with and without the user file: the commit body; mechanism:
+      // docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md (A2/A5).
+      const settings = JSON.stringify({ claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
       cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
     } else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
   }
@@ -39926,8 +39929,9 @@ type NativeLoaderBytes = { bytes: number; dateien: { pfad: string; bytes: number
   | { bytes: "unknown"; grund: string };
 // WHAT A PLAIN FOLDER SESSION LOADS BY ITSELF (role Nur Ordner, no Fleet cut), counted in the working
 // tree as the harness opens it. Claude: the config dir's CLAUDE.md, CLAUDE.md / CLAUDE.local.md /
-// .claude/CLAUDE.md of the folder and each ancestor below `/`, whole-line `@path` imports up to five
-// deep, and every `.claude/rules/**.md` without `paths:` frontmatter — a path-scoped rule loads on
+// .claude/CLAUDE.md of the folder and each ancestor below `/` — or, when none of those counts, each
+// one's AGENTS.md and .claude/AGENTS.md (never AGENTS.override.md) — whole-line `@path` imports up to
+// five deep, and every `.claude/rules/**.md` without `paths:` frontmatter — a path-scoped rule loads on
 // demand and is named in `nachgeladen`, not counted. Codex: the
 // CODEX_HOME file and the folder's, AGENTS.override.md before AGENTS.md. Any other harness: unknown.
 function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
@@ -39955,7 +39959,18 @@ function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
       }
       return null;
     };
+    // THE AGENTS.md FALLBACK: claude reads AGENTS.md only while no CLAUDE.md counts — a non-empty
+    // CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md of the folder or an ancestor. The config dir's
+    // CLAUDE.md, rules and imports never count; a config dir that IS an ancestor's .claude is visited
+    // first and so stays the config file (`seen`).
+    let zaehlt = false;
     for (const pfad of [`${configDir}/CLAUDE.md`, ...roots.flatMap((root) => [`${root}/CLAUDE.md`, `${root}/CLAUDE.local.md`, `${root}/.claude/CLAUDE.md`])]) {
+      const vorher = dateien.length;
+      const failed = visit(pfad, 0);
+      if (failed) return failed;
+      if (pfad !== `${configDir}/CLAUDE.md` && (dateien[vorher]?.bytes ?? 0) > 0) zaehlt = true;
+    }
+    if (!zaehlt) for (const pfad of roots.flatMap((root) => [`${root}/AGENTS.md`, `${root}/.claude/AGENTS.md`])) {
       const failed = visit(pfad, 0);
       if (failed) return failed;
     }
@@ -39975,7 +39990,7 @@ function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
       }
     }
     return { bytes: dateien.reduce((sum, d) => sum + d.bytes, 0), dateien, nachgeladen,
-      regel: "Claude: Config-CLAUDE.md, je Ordner bis unter / CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md, @-Importe bis Tiefe 5, rules/**.md ohne paths:" };
+      regel: "Claude: Config-CLAUDE.md, je Ordner bis unter / CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md, ohne zaehlende davon je Ordner AGENTS.md und .claude/AGENTS.md, @-Importe bis Tiefe 5, rules/**.md ohne paths:" };
   }
   if (familie === "codex") {
     for (const base of [process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), resolve(dir)]) {

@@ -259,7 +259,9 @@ const steps: Step[] = [
   { unit: "drops", lane: true, module: "drops", run: async () => {
     await drops.run();
   } },
-  { unit: "land-provenance", lane: true, module: "land-provenance", run: async () => {
+  // in `lanes`: its tier-2-OFF checks read the post-land-audit ledger as EMPTY, and watch.ts and
+  // delivery-class.ts plant rows there that only merge.ts deletes (e2e/ctx.ts#SHARD_UNITS)
+  { unit: "lanes", lane: true, module: "land-provenance", run: async () => {
     await landProvenance.run();
   } },
   // the controller's own verb layer, measured against the routes it wraps. Here because it LANDS

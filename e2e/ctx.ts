@@ -75,7 +75,12 @@ export interface StewardCtx {
 //     the Program of its restart probe CONFIRMED, which tasks.ts reuses (its comment says so) — the
 //     first `--shard` run found that edge: 3 FAILs + a TypeError at tasks.ts, run 2026-09-13 21:57 —
 //     which is why outcomes and tasks form a unit of their own, `core-tasks`, below;
-//   · a return value handed on in the runner (stewardCore.run → stewardOutcomes/security).
+//   · a return value handed on in the runner (stewardCore.run → stewardOutcomes/security);
+//   · server state a module must find ABSENT, restored by a module between it and the one that
+//     planted it: land-provenance.ts's "tier 2 default OFF" checks read the post-land-audit ledger
+//     as empty, watch.ts and delivery-class.ts append rows to it, and merge.ts deletes it. So
+//     land-provenance rides in `lanes`, behind merge — the first plan that put it behind watch
+//     without merge (shard 3/3, preview 5f0f615ff53c, 2026-10-10) failed exactly those two checks.
 // Everything else opens and kills its own slots and lanes (each module's header says so) and is a
 // unit of its own. `seconds` is the Workhorse median of the `shard-unit <unit> <ms>` lines in the
 // last 60 retained helper suite logs (2026-10-09 09:53 – 2026-10-10 01:53, 14–18 lines per unit,
@@ -95,8 +100,9 @@ export interface StewardCtx {
 // the CONFIRMED Program tasks reuses, self-token runs again for the lane token, and tasks plants its
 // own Share when share.ts did not run. The rest of `core` stays one unit: restart.ts reads share,
 // autos, intake and self-token and plants the world steward-core reads, and review.ts reads share's
-// cookies. The two weights are the Mac per-module split of the unit (trail
-// isolated-20261009T213819Z-38948) scaled to its Workhorse median, until a sharded run measures them.
+// cookies. The two weights are their first sharded measurement (preview 5f0f615ff53c, shards 1/3
+// and 2/3, 2026-10-10 03:0x): core 1 586 s, core-tasks 674 s; `lanes` is its median plus
+// land-provenance's.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
@@ -104,17 +110,16 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "tmux-locale", seconds: 2, modules: ["tmux-locale"] },
   { unit: "bytes", seconds: 2, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
-  { unit: "core", seconds: 1349, modules: ["slots", "history", "summary", "transport", "autos", "share",
+  { unit: "core", seconds: 1586, modules: ["slots", "history", "summary", "transport", "autos", "share",
     "review", "self-token", "trailstats", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
-  { unit: "core-tasks", seconds: 688, modules: ["self-token", "outcomes", "tasks"] },
+  { unit: "core-tasks", seconds: 674, modules: ["self-token", "outcomes", "tasks"] },
   { unit: "programs", seconds: 653, modules: ["self-token", "programs"] },
-  { unit: "lanes", seconds: 413, modules: ["lanes-basic", "lanes-lifecycle", "merge"] },
+  { unit: "lanes", seconds: 681, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
   { unit: "watch", seconds: 421, modules: ["watch", "delivery-class"] },
   { unit: "attention", seconds: 25, modules: ["attention"] },
   { unit: "lane-risk", seconds: 1, modules: ["lane-risk"] },
   { unit: "explorer", seconds: 1, modules: ["explorer"] },
   { unit: "drops", seconds: 11, modules: ["drops"] },
-  { unit: "land-provenance", seconds: 268, modules: ["land-provenance"] },
   { unit: "ctl", seconds: 54, modules: ["ctl"] },
   { unit: "concurrency", seconds: 5, modules: ["concurrency"] },
   { unit: "lane-suite", seconds: 43, modules: ["lane-suite"] },

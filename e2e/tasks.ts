@@ -2752,8 +2752,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // `awaiting` is deliberately NOT on SRow: GET /api/sessions does not carry it. Claiming it in
     // this cast makes `undefined === "owner"` compile and turns a broken probe into a product FAIL.
     type SRow = { id: number; cwd: string | null; label: string | null; worktree: unknown | null };
-    type Persisted = { slots?: Record<string, { awaiting?: "owner" | null }> };
+    type Persisted = { slots?: Record<string, { awaiting?: "owner" | null }>; tasks?: { id: string; status: string }[] };
     type AwaitingSnapshot = { id: number; cwd: string; had: boolean; value: "owner" | null | undefined };
+    type OpenRowSnapshot = { id: string; status: string };
     const sessions = async (): Promise<SRow[]> =>
       ((await (await get("/api/sessions")).json()) as { slots: SRow[] }).slots;
     const readPersisted = (): { state: Persisted | null; error: string } => {
@@ -2767,6 +2768,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // reversible persisted flag makes them ineligible without destroying state we do not own.
     const inherited = (await sessions()).filter((s): s is SRow & { cwd: string } => !!s.cwd && !s.worktree);
     const inheritedAwaiting: AwaitingSnapshot[] = [];
+    // The same holds for open ROWS: "the only open row is the probe's notiz" below is a statement
+    // about this block's own queue, and earlier modules in the same process leave theirs open
+    // (review.ts "code.txt gets one useful line", programs.ts "stand reminder fixture row" — red in
+    // every unsharded run since at least 2026-10-07, hidden by shard plans that kept them apart).
+    // Parked as `done` in this same srv-down window and handed back in the finally's window, so the
+    // rows stay their owners' fixtures, with no restart of their own.
+    const inheritedOpen: OpenRowSnapshot[] = [];
     await tmuxOut("kill-session", "-t", "srv");
     const quarantined = readPersisted();
     check("backlog nudge setup precondition: fleet.json is readable before inherited-slot quarantine",
@@ -2778,6 +2786,11 @@ export async function run(ctx: Ctx): Promise<void> {
         inheritedAwaiting.push({ id: s.id, cwd: s.cwd,
           had: Object.prototype.hasOwnProperty.call(row, "awaiting"), value: row.awaiting });
         row.awaiting = "owner";
+      }
+      for (const row of quarantined.state.tasks ?? []) {
+        if (row.status !== "pending" && row.status !== "queued") continue;
+        inheritedOpen.push({ id: row.id, status: row.status });
+        row.status = "done";
       }
       await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(quarantined.state)}\n`);
     }
@@ -3170,6 +3183,10 @@ export async function run(ctx: Ctx): Promise<void> {
           if (prior.had) row.awaiting = prior.value;
           else delete row.awaiting;
         }
+        for (const prior of inheritedOpen) {
+          const row = restoredState.state.tasks?.find((t) => t.id === prior.id);
+          if (row) row.status = prior.status;
+        }
         await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(restoredState.state)}\n`);
       }
       await restartSrv();
@@ -3184,6 +3201,10 @@ export async function run(ctx: Ctx): Promise<void> {
             : !!persistedRow && !Object.prototype.hasOwnProperty.call(persistedRow, "awaiting");
           return awaitingRestored && liveRow?.cwd === prior.cwd && liveRow.worktree === null;
         }), JSON.stringify({ ids: inherited.map((s) => s.id), error: restoredReload.error }));
+      const restoredRows = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; status: string }[] }).tasks;
+      check("backlog nudge cleanup: inherited open rows are back at exactly their original status",
+        inheritedOpen.every((prior) => restoredRows.find((t) => t.id === prior.id)?.status === prior.status),
+        JSON.stringify({ parked: inheritedOpen, now: inheritedOpen.map((p) => restoredRows.find((t) => t.id === p.id)?.status ?? null) }));
     }
   }
 

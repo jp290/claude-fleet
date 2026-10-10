@@ -3,7 +3,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
 import { DONE_LOOKING_RULES, fleetReportDecisionMessage, laneDoneLooking, laneWatchSignal, type LaneSignalView } from "../lane-signals";
@@ -100,6 +100,9 @@ interface Program extends ProgramContent {
   // the owner's EXECUTION ENVIRONMENT for this program's MAIN — absent on every Program until the
   // owner grants it, and absent is the exact legacy Standard MAIN every assertion here reads as.
   profile?: { v: number; kind: string; confirmedAt: number };
+  // the owner's short name for the Program (bootstrap-main `kurzname`) — the head of its founded
+  // MAIN's default label; absent until a founding carries one
+  kurzname?: string;
   // the owner's WORKFLOW pointer — a fifth record beside promotion/profile/founding/lineage, and a
   // POINTER never a copy: `rev` is the studio's revision at BINDING time, so a later change to a
   // shared studio is a visible difference instead of a silent one.
@@ -803,6 +806,65 @@ export async function run(ctx: Ctx): Promise<void> {
     `${decoyResponse.status} ${decoyPrompt.slice(0, 400)}`);
   if (decoyBody.slot) await post(`/api/slots/${decoyBody.slot}/kill`, {});
   await programPost(decoyProgram.id, "complete");
+
+  // --- THE DEFAULT MAIN LABEL (owner 2026-10-08: „[Zitat entfernt]“ and not the other way
+  // round). A founding without `label` names its MAIN `<Kurzname>-MAIN: <repo> · <model>`: the
+  // Kurzname the owner gave the Program through bootstrap-main, else the title's first word; a
+  // Kurzname that IS the repo's name drops the repo part. Each founding is found by the slot it
+  // OPENED, never by the label under test — red before the cut: `Program-MAIN: <title>` every time. ---
+  const repoName = basename(realpathSync(REPO));
+  const foundUnlabelled = async (title: string, extra: Record<string, unknown>) => {
+    const program = await activateNewProgram(title);
+    const before = new Set((await sessions()).slots.filter((s) => s.cwd).map((s) => s.id));
+    const pending = beginBootstrap(program.id, { cwd: REPO, harness: "codex", model: "gpt-5.5", effort: "high", ...extra });
+    let opened: number | null = null;
+    for (let i = 0; i < 60 && opened === null; i++) {
+      const id = (await sessions()).slots.find((s) => s.cwd && !before.has(s.id))?.id;
+      if (id !== undefined && (await tmuxOut("has-session", "-t", `s${id}`)).code === 0) opened = id;
+      else await Bun.sleep(50);
+    }
+    if (opened !== null) await respawnScreen(opened, ">_ OpenAI Codex (v0.147.0)");
+    const response = await pending;
+    const body = await response.json() as { slot?: number; label?: string };
+    return { program, status: response.status, slot: body.slot ?? null, answered: body.label ?? null,
+      label: (await sessions()).slots.find((s) => s.id === body.slot)?.label ?? null };
+  };
+  const named = await foundUnlabelled("Overhaul: Kern und Fundament", { kurzname: " Kern " });
+  check("Program-MAIN default label: a founding without label opens <Kurzname>-MAIN: <repo> · <model>, and the Program keeps the trimmed Kurzname",
+    named.status === 200 && named.label === `Kern-MAIN: ${repoName} · GPT-5.5` && named.answered === named.label
+      && storedProgram(named.program.id)?.kurzname === "Kern"
+      && (await ownerPrograms()).find((p) => p.id === named.program.id)?.kurzname === "Kern",
+    `${named.status} label=${named.label} answered=${named.answered} kurzname=${storedProgram(named.program.id)?.kurzname}`);
+  // validated BEFORE the live-MAIN answer: the old door read `existing:true` here and dropped the field
+  const badKurz = await Promise.all(["x".repeat(25), "   ", 7].map((kurzname) =>
+    beginBootstrap(named.program.id, { cwd: REPO, kurzname })));
+  const badKurzTexts = await Promise.all(badKurz.map((r) => r.text()));
+  check("Program-MAIN Kurzname: 1-24 chars after trim, else a loud 400 that renames nothing",
+    badKurz.every((r) => r.status === 400) && badKurzTexts.every((t) => t.includes("kurzname must be"))
+      && storedProgram(named.program.id)?.kurzname === "Kern",
+    badKurz.map((r, i) => `${r.status} ${badKurzTexts[i].slice(0, 120)}`).join(" | "));
+  const liveAgain = await beginBootstrap(named.program.id, { cwd: REPO, kurzname: "Anders" });
+  const liveAgainBody = await liveAgain.json() as { existing?: boolean };
+  check("Program-MAIN default label: a bootstrap against the live MAIN renames nothing — its label and the Kurzname stay",
+    liveAgain.ok && liveAgainBody.existing === true
+      && (await sessions()).slots.find((s) => s.id === named.slot)?.label === `Kern-MAIN: ${repoName} · GPT-5.5`
+      && storedProgram(named.program.id)?.kurzname === "Kern",
+    `${liveAgain.status} existing=${liveAgainBody.existing} kurzname=${storedProgram(named.program.id)?.kurzname}`);
+  const titled = await foundUnlabelled("Kontext: Gedaechtnis stimmig — Bestandsaufnahme 2026-10", {});
+  check("Program-MAIN default label: without a Kurzname the title's first word leads, edge punctuation dropped, nothing stored",
+    titled.status === 200 && titled.label === `Kontext-MAIN: ${repoName} · GPT-5.5`
+      && storedProgram(titled.program.id)?.kurzname === undefined,
+    `${titled.status} label=${titled.label}`);
+  const sameAsRepo = await foundUnlabelled("Repo-named MAIN", { kurzname: repoName.toUpperCase() });
+  check("Program-MAIN default label: a Kurzname that is the repo's name drops the repo part",
+    sameAsRepo.status === 200 && sameAsRepo.label === `${repoName.toUpperCase()}-MAIN · GPT-5.5`,
+    `${sameAsRepo.status} label=${sameAsRepo.label}`);
+  for (const founded of [named, titled, sameAsRepo]) if (founded.slot !== null) await post(`/api/slots/${founded.slot}/kill`, {});
+  await restartSrv();
+  check("Program-MAIN Kurzname survives a restart: the loader keeps the field",
+    (await ownerPrograms()).find((p) => p.id === named.program.id)?.kurzname === "Kern",
+    JSON.stringify((await ownerPrograms()).find((p) => p.id === named.program.id)?.kurzname ?? null));
+  for (const founded of [named, titled, sameAsRepo]) await programPost(founded.program.id, "complete", { force: true });
 
   // --- the repo-declared context carrier. A target repository may track its own pack manifest;
   // Fleet reads it AT THE COMMIT THE RECEIPT ASSERTS and carries the pointers, nothing else. The

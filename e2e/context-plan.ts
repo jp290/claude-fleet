@@ -1431,21 +1431,26 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
   const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
   const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
-  const expected = [808, 4029, 403, 321, 3959, 12645];
-  const expectedHashes = [
-    "57ed82f7c9fe990c4f58245f148357423d5847d0ae6cf33c0b069401c93bac46",
-    "d29f493a7a8a1c82151af873fb03b546b11260b87e22c2769bbf907df773fd15",
-    "21c8f4b8b45f9d496f81d6ca46a362e79740463801af03a425e3dd8ba04fa5a0",
-    "7c2fa80e6536a552cb555ae86fd38c8bcecd92b576d7384b8a0814ca01cab3e1",
-    "704a7016daf73017b58e8d7450976c82f32af229a53982cd92bac154f9801fc0",
-    "aedb682eb3853e54b1884138accceba8a191262b385bf77ead1694354731b6dd",
-  ];
-  const measured = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.bytes);
-  check("session agents: six verify parts carry the approved tree bytes (fixture 808/4029/403/321/3959/12645)",
-    JSON.stringify(measured) === JSON.stringify(expected), JSON.stringify(measured));
-  const hashes = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)?.sha256);
-  check("session agents: six verify parts carry the exact approved source hashes",
-    JSON.stringify(hashes) === JSON.stringify(expectedHashes), JSON.stringify(hashes));
+  // The six verify parts are judged by their sentences, never by a byte count or a hash literal:
+  // a prose edit at AGENTS.md §Verify or docs/verify-tiering.md §6.0/§6.0b is no defect, and a
+  // pinned fixture turned five post-land audits red on 2026-10-08 alone (Z4,
+  // docs/messungen/2026-10-10-verifikation-neu-zugeschnitten.md). Each part is named, opens on
+  // its own heading and carries at least one sentence under it.
+  const verifyParts = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => {
+    const section = sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor);
+    const [heading = "", ...body] = (section?.content ?? "").split("\n");
+    return { id: source.id, heading, anchor: source.anchor, sentences: body.join("\n").match(/\S[^\n]*?[.:!?](?=\s|$)/g)?.length ?? 0 };
+  });
+  check("session agents: six verify parts are named, open on their heading and carry sentences",
+    JSON.stringify(verifyParts.map((part) => part.id)) === JSON.stringify(["verify-e2e.kern", "verify-e2e.lane", "verify-e2e.main",
+      "verify-e2e.more", "verify-e2e.gate-vs-audit", "verify-e2e.proportion"])
+      && verifyParts.every((part) => /^ {0,3}#{1,6} /.test(part.heading) && part.heading.trimStart().startsWith(part.anchor) && part.sentences > 0),
+    JSON.stringify(verifyParts.map((part) => `${part.id}:${part.sentences}`)));
+  // The box carries exactly the source section: bytes and hash measured from the source at test time.
+  const laneSource = "privateSourceId" in verify.sources ? undefined : verify.sources.find((source) => source.id === "verify-e2e.lane");
+  const laneSection = laneSource ? sectionAt(sourceBytes.get(laneSource.path)!, laneSource.path, laneSource.anchor) : null;
+  const laneMeasured = laneSection === null ? null
+    : { bytes: Buffer.byteLength(laneSection), sha256: createHash("sha256").update(laneSection).digest("hex") };
   const sums: string[] = [];
   for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
     const footer = position === "lane" ? templates.laneExitFooter("codex", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
@@ -1485,10 +1490,11 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
       `${rendered.bytes} bytes`);
     const lanePart = rendered.parts.find((part) => part.id === "verify-e2e.lane");
     check(`native lane render: ${harness} carries the restored jobs and local-withdraw contract in the exact Lane part`,
-      lanePart?.ort === "box" && lanePart.bytes === expected[1] && lanePart.sha256 === expectedHashes[1]
+      laneMeasured !== null && lanePart?.ort === "box" && lanePart.content === laneSection
+        && lanePart.bytes === laneMeasured.bytes && lanePart.sha256 === laneMeasured.sha256
         && lanePart.content !== null && lanePart.content.includes("**Gate suites, and a MAIN's preview, go through the jobs door.**")
         && lanePart.content.includes("only the 200 with `mayRunLocally: true` permits the local run."),
-      JSON.stringify({ ort: lanePart?.ort, bytes: lanePart?.bytes, sha256: lanePart?.sha256 }));
+      JSON.stringify({ ort: lanePart?.ort, bytes: lanePart?.bytes, sha256: lanePart?.sha256, source: laneMeasured }));
   }
   const missingBytes = new Map(sourceBytes);
   missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");

@@ -2841,8 +2841,10 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
 // than in a FleetEvent: a succession retires the events, and this must outlive it.
 // `text-proposal` points at a ProgramTextProposal of the SAME Program by its id: the owner confirmed
 // or rejected what the MAIN proposed, and the reason (if any) rides on the proposal itself.
+// `owner-input` points at a row of the owner-input ledger by its id: words the owner typed straight
+// into the pane of one of this Program's lanes, harvested from that lane's transcript.
 type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict"
-  | "text-proposal";
+  | "text-proposal" | "owner-input";
 interface ProgramInboxEntry {
   id: string;                       // 24 hex, minted by appendProgramInbox
   kind: ProgramInboxKind;
@@ -2856,7 +2858,7 @@ interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
 // history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
 const PROGRAM_INBOX_MAX = 100;
 const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict",
-  "text-proposal"];
+  "text-proposal", "owner-input"];
 const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
 const PROGRAM_INBOX_REF_MAX = 200;
 type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };

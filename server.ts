@@ -13172,6 +13172,7 @@ async function gameMakerCheckpointError(program: Program, s: Slot): Promise<stri
 const LANE_SUCCESSION_LOG_LINES = 80;   // enough to read a multi-cut lane's own history…
 const LANE_SUCCESSION_LOG_CHARS = 6000; // …bounded, because this is a founding prompt, not a journal
 const LANE_SUCCESSION_STATUS_SHOWN = 20; // how many porcelain lines the refusal quotes back
+const LANE_SUCCESSION_OWNER_CHARS = 8000; // the owner's own words, newest kept whole first
 
 // The predecessor's own handover text: the LAST `handoff` report THIS occupant filed. Keyed on the
 // occupant (slot + openedAt), never on the slot alone — after one succession the same slot carries
@@ -13254,9 +13255,30 @@ function laneBatonFooter(variante: ContextPositionVariante | null, footer: strin
   return variante ? "\n\nSession-Regeln: ./AGENTS.override.md" : footer;
 }
 
+// WHAT THE OWNER SAID TO THIS LANE, VERBATIM — every owner-input ledger row of this worktree and
+// branch, so a successor knows what each predecessor was told (recordOwnerLaneInput). Oldest first,
+// as they were said; past LANE_SUCCESSION_OWNER_CHARS the OLDEST whole entries stay out and the
+// count says so — an entry is never cut inside. No rows, no block: the brief is byte-identical to
+// the one before this block existed, which is every programless lane's brief.
+function laneOwnerInputBlock(rows: readonly OwnerInputRow[]): string {
+  if (!rows.length) return "";
+  const lines = rows.map((r) => `[${new Date(r.at).toISOString()} · Slot ${r.slot}]\n${r.text}`);
+  let kept = 0;
+  let chars = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (kept > 0 && chars + lines[i]!.length > LANE_SUCCESSION_OWNER_CHARS) break;
+    chars += lines[i]!.length;
+    kept++;
+  }
+  const left = lines.length - kept;
+  return ["", "", "--- WAS DER OWNER DIREKT IN DIE PANE DIESER LANE GETIPPT HAT (wörtlich, älteste zuerst; ihre MAIN hat es im Program-Inbox)",
+    ...(left ? [`(${left} ältere Eingabe(n) nicht abgedruckt — sie stehen in streams/owner-inputs.jsonl)`] : []),
+    lines.slice(left).join("\n\n")].join("\n");
+}
+
 function buildLaneSuccessionBrief(facts: { branch: string; base: string; session: number;
   rows: readonly Task[]; log: string; handoff: FleetReport | null; reason: string;
-  decision: string | null; footer: string; contextBlock: string }): string {
+  decision: string | null; footer: string; contextBlock: string; ownerInputs: readonly OwnerInputRow[] }): string {
   const handoff = facts.handoff
     ? `Behauptung deiner Vorgängerin — fleet-report ${facts.handoff.id} (am Baum und Verify prüfen):\n${facts.handoff.text}`
     : "(kein handoff-Report — deine Vorgängerin hat keinen gefiled. Was offen ist, steht nur im Baum: lies die Commits oben und den Auftrag.)";
@@ -13283,7 +13305,7 @@ function buildLaneSuccessionBrief(facts: { branch: string; base: string; session
     "",
     "--- DIE ÜBERGABE DEINER VORGÄNGERIN",
     handoff,
-  ].join("\n") + facts.contextBlock + facts.footer;
+  ].join("\n") + laneOwnerInputBlock(facts.ownerInputs) + facts.contextBlock + facts.footer;
 }
 
 // the queue rows this lane holds, captured before openSlot's detachSlotTasks answers them, and
@@ -13378,6 +13400,7 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const logRead = await gitRead(cwd, "log", "--oneline", `${base}..HEAD`);
   const log = (logRead.code === 0 ? logRead.out : "(git log konnte nicht gelesen werden)")
     .split("\n").slice(0, LANE_SUCCESSION_LOG_LINES).join("\n").slice(0, LANE_SUCCESSION_LOG_CHARS);
+  const ownerInputs = (await ownerInputRows()).filter((r) => r.cwd === cwd && r.branch === ref.branch);
   const hold: LaneRowHold[] = waveRowsOf(s.id).map((task) => ({ task, note: task.note }));
   const rows = hold.map((h) => h.task);
   const sourceRows = rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows;
@@ -13389,7 +13412,8 @@ async function succeedLane(s: Slot, label: string | null, spawn: SuccessionSpawn
   const brief = buildLaneSuccessionBrief({ branch: ref.branch, base, session,
     rows: hold.map((h) => h.task), log, handoff: laneHandoffReportFor(s),
     reason: successionReasonFor(s), decision: latestRowDecisionLine(hold.map((h) => h.task)),
-    footer: laneBatonFooter(context.variante, laneExitFooter(s.harness, selfPosition(s).receiver)), contextBlock: context.block });
+    footer: laneBatonFooter(context.variante, laneExitFooter(s.harness, selfPosition(s).receiver)), contextBlock: context.block,
+    ownerInputs });
   // git and the report read are awaits; the owner may have killed or recycled this slot inside them.
   if (!sameSuccessionOccupant(s, expected))
     return json({ error: "predecessor session changed during succession preflight — retry from the current occupant" }, 409);
@@ -16669,11 +16693,17 @@ async function auditRedSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx):
 interface InboxJoinCtx {
   auditRow: (at: number) => Promise<Record<string, unknown> | null>;
   adjudication: (at: number) => Promise<AuditAdjudication | undefined>;
+  ownerInput: (id: string) => Promise<OwnerInputRow | null>;
 }
 function inboxJoinCtx(): InboxJoinCtx {
   let rows: Map<number, Record<string, unknown>> | null = null;
   let judged: Map<number, AuditAdjudication> | null = null;
+  let typed: Map<string, OwnerInputRow> | null = null;
   return {
+    ownerInput: async (id) => {
+      if (!typed) typed = new Map((await ownerInputRows()).map((r) => [r.id, r]));
+      return typed.get(id) ?? null;
+    },
     auditRow: async (at) => {
       if (!rows) {
         const { rows: read } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
@@ -16705,6 +16735,15 @@ async function inboxSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx, program: Pr
       : { subject: null, unknown: `entry ${e.id} names a card verdict no longer present (retention)` };
   }
   if (e.kind === "audit-red") return await auditRedSubject(e, ctx);
+  // the owner's own words, joined from the ledger row the entry names: who received them (slot and
+  // occupant), when they were typed, on which lane branch, and the text itself
+  if (e.kind === "owner-input") {
+    const row = await ctx.ownerInput(e.ref);
+    return row
+      ? { subject: { slot: row.slot, openedAt: row.openedAt, sessionId: row.sessionId, at: row.at,
+        branch: row.branch, text: row.text }, unknown: null }
+      : { subject: null, unknown: `entry ${e.id} names an owner input no longer on the ledger (retention)` };
+  }
   if (e.kind === "ambient-land") return await ambientLandSubject(e);
   const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
     ? attentionRequests.find((a) => a.id === e.ref)
@@ -23424,13 +23463,15 @@ function conversationSource(s: Slot): { file: string | null; why: string | null 
 }
 // the redactor: exact values first (longest first, so a token that contains another is taken
 // whole), then key-shaped patterns. Counts what it replaced — the export says how much it hid.
-function exportRedactor(): { clean(t: string): string; hits(): number } {
+// `paths` false keeps host and home as written: the owner-input ledger cuts SECRETS only, because its
+// text must stay the owner's words (recordOwnerLaneInput).
+function exportRedactor(paths = true): { clean(t: string): string; hits(): number } {
   const exact: [string, string][] = [];
   const secret = (v: string | undefined | null) => { if (v && v.length >= 12) exact.push([v, "[redacted]"]); };
   secret(TOKEN);
   for (const o of slots) secret(o.selfToken);
   for (const [k, v] of Object.entries(process.env)) if (/TOKEN|SECRET|PASSWORD|API_KEY/.test(k)) secret(v);
-  if (HOST !== "127.0.0.1" && HOST !== "0.0.0.0" && HOST !== "localhost") exact.push([HOST, "<host>"]);
+  if (paths && HOST !== "127.0.0.1" && HOST !== "0.0.0.0" && HOST !== "localhost") exact.push([HOST, "<host>"]);
   exact.sort((a, b) => b[0].length - a[0].length);
   const patterns: RegExp[] = [
     /\bsk-ant-[A-Za-z0-9_-]{16,}/g, /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/g,
@@ -23442,7 +23483,7 @@ function exportRedactor(): { clean(t: string): string; hits(): number } {
       let out = t;
       for (const [v, r] of exact) if (out.includes(v)) { n += out.split(v).length - 1; out = out.split(v).join(r); }
       for (const re of patterns) out = out.replace(re, (_m: string, keep?: string) => { n++; return `${typeof keep === "string" ? keep : ""}[redacted]`; });
-      if (HOME && out.includes(HOME)) { n += out.split(HOME).length - 1; out = out.split(HOME).join("~"); }
+      if (paths && HOME && out.includes(HOME)) { n += out.split(HOME).length - 1; out = out.split(HOME).join("~"); }
       return out;
     },
     hits: () => n,
@@ -23540,6 +23581,45 @@ ${body}
 // error channel, never silently (server/transcript-read.ts#harvestStep).
 const harvest = new Map<number, HarvestCursor>();
 let harvestBusy = false;
+
+// --- WHAT THE OWNER TYPES INTO A PROGRAM LANE'S PANE (note e31dd0ed: 13 direct inputs into pane 26 on
+// 2026-10-08 reached neither the lane's MAIN nor its next session, findable only by grep in
+// prompts.jsonl). The harvester below is the one place that sees them, and it hands every harvested
+// line here that is the owner's own: not a harness-injected turn (TEntry.meta: task notifications,
+// the Esc marker), not a Claude Code envelope (`<bash-stdout>` and kin), and not Fleet text — every
+// Fleet delivery, and a Fleet composer residue that sendText submits, opens with the `[fleet` prefix
+// (DELIVERY_HEADER_PREFIX and the older `[fleet …]` heads), the same test the slot history already
+// uses to tell `fleet` from `owner`. The owner's own board sends are on that side too: POST /send
+// heads them `[fleet-zustellung · Owner-Credential …]`, the credential every MAIN sends with as well.
+// The TEXT goes to its own ledger, because an inbox entry is a pointer and copies none
+// (server/types.ts#ProgramInboxEntry); secrets are cut first, host and home are not, so the words
+// stay the owner's. The pointer goes to the lane's Program when it is active, the same condition the
+// fleet-report rail writes under. A lane without a Program writes nothing, as before.
+const OWNER_INPUT_FILE = `${STREAM_DIR}/owner-inputs.jsonl`;
+interface OwnerInputRow {
+  id: string; at: number; slot: number; openedAt: number; sessionId: string | null;
+  programId: string; cwd: string; branch: string; text: string;
+}
+const isOwnerWords = (e: TEntry, text: string): boolean =>
+  !e.meta && !text.startsWith("[fleet") && !/^<[a-z][a-z-]*>/.test(text);
+async function recordOwnerLaneInput(s: Slot, text: string, at: number): Promise<void> {
+  if (!s.programId || !s.worktree || !s.cwd) return;
+  const row: OwnerInputRow = { id: randomBytes(12).toString("hex"), at, slot: s.id, openedAt: s.openedAt,
+    sessionId: s.sessionId, programId: s.programId, cwd: s.cwd, branch: s.worktree.branch,
+    text: exportRedactor(false).clean(text) };
+  await appendEventStrict(OWNER_INPUT_FILE, { ...row });
+  const program = programs.find((p) => p.id === row.programId);
+  if (program?.status !== "active") return;
+  appendProgramInbox(program, "owner-input", row.id);
+  await saveStateNow();
+}
+// every row of the ledger that has the row's shape, oldest first (both generations, readLedger)
+async function ownerInputRows(): Promise<OwnerInputRow[]> {
+  const { rows } = await readLedger<Record<string, unknown>>(OWNER_INPUT_FILE);
+  return rows.filter((r) => typeof r.id === "string" && typeof r.at === "number" && typeof r.slot === "number"
+    && typeof r.openedAt === "number" && typeof r.cwd === "string" && typeof r.branch === "string"
+    && typeof r.text === "string") as unknown as OwnerInputRow[];
+}
 async function tickHarvest(): Promise<void> {
   if (harvestBusy || !/^claude(\s|$)/.test(BASE_CMD)) return;
   harvestBusy = true;
@@ -23594,6 +23674,7 @@ async function tickHarvest(): Promise<void> {
           const ts = (e.ts && Date.parse(e.ts)) || Date.now();
           s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
           logPrompt(s, t, "terminal", ts);
+          if (isOwnerWords(e, t)) void recordOwnerLaneInput(s, t, ts).catch((err: unknown) => logError("recordOwnerLaneInput", err));
           dirty = true;
         }
       }

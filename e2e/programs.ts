@@ -1,8 +1,9 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { AUTOS_TICK_MS, BASE, H, IP, PORT, REPO, REPO2, REPO3, REPO4, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, typeScreen, until, UntilTimeout } from "./harness";
 import { phaseOf, phaseOutcomeFor, phaseOutcomeIndex, PHASE_RULES, type Phase, type PhaseInput } from "../program-phase";
@@ -16111,5 +16112,145 @@ exit 0
 
     for (const slot of [ltProbeSlot, ltSlot]) if (typeof slot === "number") await post(`/api/slots/${slot}/kill`, {});
     await programPost(ltProgram.id, "complete", { force: true });
+  }
+
+  await ownerLaneInput();
+}
+
+// WHAT THE OWNER TYPES INTO A PROGRAM LANE'S PANE (server.ts#recordOwnerLaneInput, note e31dd0ed: 13
+// direct inputs into pane 26 reached neither its MAIN nor its next session). The harvester that sees
+// them only runs when the server's command is claude, so this fixture restarts the scratch server on
+// a claude STAND-IN: `claude` on PATH is a script that execs `sleep` through a symlink named claude
+// (comm `claude`, which is what IS_CLAUDE's liveness probe asks for), and FLEET_CLAUDE_PROJECTS_DIR
+// points the transcript reader at a scratch directory. The lane's transcript is then WRITTEN here in
+// Claude Code's own line shape — the harvester cannot tell it from a pane the owner typed into, which
+// is the seam under test. One chunk carries three lines: the owner's words, a Fleet delivery with the
+// fleet-zustellung head, and an owner line holding the lane's own self token. Because the harvester
+// reads a chunk whole, the moment the first shows up the second has been read too, so its absence
+// from the inbox is a measured exclusion and not a race. Then the lane hands its baton on, and the
+// successor's brief must carry the owner's words verbatim and nothing else of the three.
+async function ownerLaneInput(): Promise<void> {
+  // outside ROOT, like harness.ts#standInBin: ROOT is a git repo the server reads head facts out of
+  const dir = `${tmpdir()}/fleet-e2e-owner-input-${process.pid}`;
+  const bin = `${dir}/bin`;
+  mkdirSync(bin, { recursive: true });
+  const sleepBin = Bun.which("sleep");
+  check("owner input SETUP: a `sleep` for the claude stand-in", !!sleepBin);
+  if (!sleepBin) return;
+  symlinkSync(sleepBin, `${bin}/claude`);
+  writeFileSync(`${dir}/claude`, `#!/bin/sh\nexec '${bin}/claude' 100000\n`, { mode: 0o755 });
+  const projects = `${dir}/projects`;
+  const program = await activateNewProgram("Owner input: the lane's words reach its MAIN and its successor");
+  const mainOpen = await post(`/api/slots/${(await sessions()).slots.find((s) => !s.cwd)?.id ?? 0}/open`,
+    { cwd: REPO, label: "owner-input-main" });
+  const mainSlot = (await sessions()).slots.find((s) => s.label === "owner-input-main")?.id ?? null;
+  const laneOpen = await post("/api/lanes", { repo: REPO });
+  const laneSlot = (await laneOpen.json() as { slot?: number }).slot ?? null;
+  const sessionId = crypto.randomUUID();
+  await stopSrv();
+  const state = readState();
+  const mainRow = mainSlot === null ? undefined : state.slots?.[String(mainSlot)];
+  const laneRow = laneSlot === null ? undefined : state.slots?.[String(laneSlot)];
+  const programRow = state.programs?.find((p) => p.id === program.id);
+  const ready = mainOpen.ok && laneOpen.ok && mainSlot !== null && laneSlot !== null && !!mainRow?.openedAt
+    && !!laneRow?.cwd && !!laneRow.worktree?.branch && !!programRow;
+  check("owner input SETUP: an active Program, a slot to bind as its MAIN and a lane are observable",
+    ready, JSON.stringify({ main: mainSlot, lane: laneSlot, program: program.id }));
+  if (!ready || mainSlot === null || laneSlot === null || !mainRow?.openedAt || !laneRow?.cwd || !programRow) {
+    await restartSrv();
+    for (const slot of [laneSlot, mainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  }
+  // the binding and the lane's Program are PLANTED, as the inbox fixture plants its MAIN: the founding
+  // and dispatch rails are proved elsewhere, and this fixture is about what happens after them
+  programRow.main = { slot: mainSlot, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId ?? null, boundAt: Date.now() };
+  Object.assign(laneRow, { programId: program.id, sessionId });
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
+  const transcript = `${projects}/${laneRow.cwd.replace(/[^a-zA-Z0-9]/g, "-")}/${sessionId}.jsonl`;
+  mkdirSync(dirname(transcript), { recursive: true });
+  writeFileSync(transcript, "");
+  const laneCwd = laneRow.cwd;
+  const user = (text: string, at: number): string => `${JSON.stringify({ type: "user", isSidechain: false,
+    uuid: crypto.randomUUID(), timestamp: new Date(at).toISOString(), sessionId, cwd: laneCwd,
+    message: { role: "user", content: text } })}\n`;
+  const history = async (): Promise<{ text: string; source?: string }[]> =>
+    ((await (await get(`/api/slots/${laneSlot}/history`)).json()) as { history?: { text: string; source?: string }[] }).history ?? [];
+  try {
+    await restartSrv({ FLEET_CMD: "claude", PATH: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      FLEET_CLAUDE_PROJECTS_DIR: projects });
+    // The harvester's FIRST sight of a file skips what it already holds, so the probe lines may only
+    // be written once it has seen this one: a canary line is appended until the lane's history shows
+    // one — a fact, not a guess at the 5 s tick.
+    let canaries = 0;
+    try {
+      await until(async () => {
+        if ((await history()).some((h) => h.text.startsWith("owner input canary"))) return true;
+        appendFileSync(transcript, user(`owner input canary ${++canaries}`, Date.now()));
+        return false;
+      }, { timeoutMs: 30_000, stepMs: 2_000, what: "the harvester reads the lane's transcript" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const harvesting = (await history()).some((h) => h.text.startsWith("owner input canary"));
+    check("owner input SETUP: the harvester reads the stand-in lane's transcript", harvesting, `canaries=${canaries}`);
+    if (!harvesting) return;
+
+    const laneToken = slotToken(laneSlot);
+    const mainToken = slotToken(mainSlot);
+    const ownerText = `Owner input probe ${process.pid}: die Kachel bitte rot statt orange, und den Rand weglassen.`;
+    const deliveryText = `delivery probe ${process.pid}: this came through Fleet, not from the owner's keyboard`;
+    const tokenText = `token probe ${process.pid}: FLEET_SELF_TOKEN=${laneToken} gehoert nicht in einen Eintrag`;
+    const typedAt = Date.now() - 3_000;
+    appendFileSync(transcript, user(ownerText, typedAt)
+      + user(`[fleet-zustellung · Owner-Credential · Slot ${laneSlot}] ${deliveryText}`, typedAt + 1_000)
+      + user(tokenText, typedAt + 2_000));
+    type Entry = ProgramInboxView["entries"][number];
+    const ownerEntries = async (): Promise<Entry[]> =>
+      ((await selfInbox(mainToken)).view?.entries ?? []).filter((e) => e.kind === "owner-input");
+    try {
+      await until(async () => (await ownerEntries()).some((e) => e.subject?.text === ownerText),
+        { timeoutMs: 20_000, what: "the owner's line reaches the MAIN's inbox" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const entries = await ownerEntries();
+    const typed = entries.find((e) => e.subject?.text === ownerText);
+    check("owner input: what the owner typed into a Program lane's pane is an owner-input entry in its MAIN's inbox — verbatim, with the lane's slot and the time it was typed",
+      !!typed && typed.readBy === null && typed.subject?.slot === laneSlot && typed.subject?.at === typedAt
+        && typed.subject?.branch === laneRow.worktree?.branch,
+      JSON.stringify(typed ?? entries));
+    const laneHistory = await history();
+    check("owner input: a Fleet delivery with the fleet-zustellung head in the same pane was harvested but is no entry",
+      laneHistory.some((h) => h.text.includes(deliveryText) && h.source === "fleet")
+        && !entries.some((e) => String(e.subject?.text ?? "").includes(deliveryText)),
+      JSON.stringify(entries.map((e) => e.subject?.text)));
+    const tokened = entries.find((e) => String(e.subject?.text ?? "").startsWith(`token probe ${process.pid}`));
+    check("owner input: a token in the owner's line is cut before the entry is written",
+      !!laneToken && !!tokened && String(tokened.subject?.text).includes("FLEET_SELF_TOKEN=[redacted]")
+        && !String(tokened.subject?.text).includes(laneToken),
+      JSON.stringify(tokened?.subject?.text ?? null));
+
+    // the baton: the successor's brief carries the owner's words verbatim, oldest first
+    const predecessorAt = readState().slots?.[String(laneSlot)]?.openedAt;
+    const report = await selfPost("/api/self/fleet-report", laneToken,
+      { status: "handoff", text: "owner input fixture: the next session continues on this branch." });
+    const pending = selfSucceed(laneToken);
+    let opened = false;
+    for (let i = 0; i < 60 && !opened; i++) {
+      await Bun.sleep(150);
+      opened = readState().slots?.[String(laneSlot)]?.openedAt !== predecessorAt;
+    }
+    if (opened) await tmuxOut("respawn-pane", "-k", "-t", `s${laneSlot}`, `printf '%s\\n' '❯'; exec '${bin}/claude' 100000`);
+    const succeeded = await pending;
+    const brief = (await history()).findLast((h) => h.text.includes("[fleet staffelstab]"))?.text ?? "";
+    const blockAt = brief.indexOf("--- WAS DER OWNER DIREKT IN DIE PANE DIESER LANE GETIPPT HAT");
+    const block = blockAt < 0 ? "" : brief.slice(blockAt);
+    check("owner input: the successor's brief of the same lane carries the owner's words verbatim and neither the Fleet delivery nor the token",
+      report.ok && succeeded.ok && block.includes(`\n${ownerText}\n`)
+        && block.indexOf(ownerText) < block.indexOf(`token probe ${process.pid}`)
+        && !brief.includes(deliveryText) && !!laneToken && !brief.includes(laneToken),
+      `report=${report.status} succeed=${succeeded.status} ${succeeded.ok ? "" : await succeeded.text()} block=${JSON.stringify(block.slice(0, 600))}`);
+  } finally {
+    for (const slot of [laneSlot, mainSlot]) await post(`/api/slots/${slot}/kill`, {});
+    await programPost(program.id, "complete", { force: true });
+    await restartSrv();
+    rmSync(dir, { recursive: true, force: true });
   }
 }

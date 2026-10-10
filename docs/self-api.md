@@ -966,7 +966,11 @@ MAIN-Brief `JSON.stringify(programContent(program), null, 2)` und dasselbe je Be
 Brief wuchs mit jeder angehängten Entscheidung und jedem gebundenen Program (live 23 127 B bei zwei
 Programs). Dieselbe Form trägt die Attach-Nachricht, die ein weiteres Program an eine laufende MAIN
 bindet (`server.ts#hintMainOfAttach`). Gemessen an echten Briefen: `e2e/programs.ts`, Checks
-„Program-MAIN brief diet (1)–(4)“.
+„Program-MAIN brief diet (1)–(5)“. Gehalten wird Nicht-Wachstum: zwölf weitere decisions ändern
+den Nachfolge-Brief nur in den Zählerziffern, ein Begleit-Program kostet höchstens 1 000 B; dazu
+benannte Obergrenzen (Gründung 14 000 B, Nachfolge 15 500 B mit einem, 17 500 B mit drei Programs).
+Rund 12 KB davon sind fester Text (Rail, Rollenkarte, Anker, Korrekturen-Zeiger, Kopf, Handover);
+12 000 B gingen nur über eine kürzere Rail.
 
 **Was er sagt** (Reihenfolge ist die Schiene, nicht eine Empfehlung):
 

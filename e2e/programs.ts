@@ -15705,23 +15705,24 @@ exit 0
   // === THE MAIN START BRIEF DOES NOT GROW WITH THE PROGRAM RECORD (Z8, docs/messungen/
   // 2026-10-09-rollen-kontext-inventar.md §3: 23 127 B live for two Programs, the printed JSON 4 811 B
   // for one to 13 035 B for four). Measured on REAL briefs out of the pane history, for Programs sized
-  // like the live ones (intent ~1.6 KB, eight decisions): the founding brief, the succession of a MAIN
-  // of one Program, the two attach briefs that bind a second and third Program, and the succession of
-  // a MAIN of three. The property is NON-GROWTH: no row of the record reaches any brief, and each
-  // companion costs at most BRIEF_COMPANION_MAX bytes where its JSON used to cost ~4.5 KB. The named
-  // ceilings sit ~1 KB above the first measurement (13 579 / 15 109 / 16 885 / 3 251 B on e81ccfe7):
-  // a brief that crosses one has grown, and the growth is the finding. They are not the 12 000 B of
-  // the card — that number was estimated without the ~12 KB of fixed text (rail 7 118, role card
-  // 2 364, owner corrections 474, plus head and handover), which this cut does not touch; whether
-  // the rail shrinks is decided elsewhere (MAIN decision on report e11a6ee0). The own Program's
-  // intent, successCriterion and nonGoals stand verbatim; decisions, evidence and openQuestions are
-  // a counted pointer at GET /api/self/programs; role card, handover previews and the owner
-  // corrections pointer stay. ===
+  // like the live ones (intent ~1.6 KB, eight decisions). The property is NON-GROWTH, held three ways:
+  // the same Program with twelve more decisions delivers the same succession brief except for the
+  // counter digits; each companion Program costs at most BRIEF_COMPANION_MAX bytes (its JSON was
+  // ~4.5 KB); no row of any record reaches any brief. Beside that, one named ceiling per brief, just
+  // above the first measurement on e81ccfe7 (13 579 / 15 109 / 16 885 / 3 251 B): a brief that
+  // crosses one has grown, and the growth is the finding. The ceilings carry ~12 KB of FIXED text
+  // this cut does not touch (rail 7 118, role card 2 364, anchors, owner corrections 474, head and
+  // handover); the 12 000 B the card first named are reachable only by shortening the rail, which is
+  // decided in ce3894a9, not here. The own Program's intent, successCriterion and nonGoals stand
+  // verbatim; decisions, evidence and openQuestions are a counted pointer at GET /api/self/programs;
+  // role card, handover previews and the owner corrections pointer stay. ===
   {
-    const BRIEF_FOUNDING_MAX = 14_500;
-    const BRIEF_SUCCESSION_MAX = 16_000;
-    const BRIEF_COMPANION_MAX = 1_200;
+    const BRIEF_FOUNDING_MAX = 14_000;
+    const BRIEF_SUCCESSION_ONE_MAX = 15_500;
+    const BRIEF_SUCCESSION_THREE_MAX = 17_500;
+    const BRIEF_COMPANION_MAX = 1_000;
     const BRIEF_ATTACH_MAX = 4_000;
+    const BRIEF_GROWTH_DECISIONS = 12;
     const bdDispatchBefore = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
     await post("/api/dispatch", { on: false });
     const bdFill = (tag: string, chars: number): string =>
@@ -15755,10 +15756,10 @@ exit 0
     };
     const bdBytes = (brief: string): number => Buffer.byteLength(brief);
     // verbatim mandate + counted pointer, and no byte of the record that became a pointer
-    const bdMandate = (brief: string, c: ProgramContent): boolean =>
+    const bdMandate = (brief: string, c: ProgramContent, decisions = c.decisions.length): boolean =>
       brief.includes(`Intent:\n${c.intent}\n`) && brief.includes(`Success criterion:\n${c.successCriterion}\n`)
       && c.nonGoals.every((goal) => brief.includes(`\n- ${goal}\n`))
-      && brief.includes(`${c.decisions.length} decisions, ${c.evidence.length} evidence entries, ${c.openQuestions.length} open questions`)
+      && brief.includes(`${decisions} decisions, ${c.evidence.length} evidence entries, ${c.openQuestions.length} open questions`)
       && brief.includes("GET /api/self/programs returns the whole Program row");
     const bdNoRecord = (brief: string, c: ProgramContent): boolean =>
       [...c.decisions, ...c.evidence, ...c.openQuestions].every((row) => !brief.includes(row));
@@ -15789,34 +15790,60 @@ exit 0
       return { status: response.status, slot, brief: await bdBriefOf(slot, "[fleet Program-MAIN succession]") };
     };
     const bdSucc1 = await bdSucceedAs(slotToken(bdSlot), "brief-diet-successor-1");
-    check(`Program-MAIN brief diet (2): the succession brief of a MAIN of one Program is at most ${BRIEF_SUCCESSION_MAX} B, with the handover previews kept`,
-      bdSucc1.status === 200 && bdBytes(bdSucc1.brief) > 0 && bdBytes(bdSucc1.brief) <= BRIEF_SUCCESSION_MAX
+    check(`Program-MAIN brief diet (2): the succession brief of a MAIN of one Program is at most ${BRIEF_SUCCESSION_ONE_MAX} B, with the handover previews kept`,
+      bdSucc1.status === 200 && bdBytes(bdSucc1.brief) > 0 && bdBytes(bdSucc1.brief) <= BRIEF_SUCCESSION_ONE_MAX
         && bdMandate(bdSucc1.brief, bdA.content) && bdNoRecord(bdSucc1.brief, bdA.content) && bdKept(bdSucc1.brief)
         && bdSucc1.brief.includes("YOUR HANDOVER IS THIS PROGRAM'S OWN RECORD"),
       JSON.stringify({ status: bdSucc1.status, bytes: bdBytes(bdSucc1.brief), programJsonWas: bdJsonWas(bdA.content) }));
 
+    // THE RECORD GROWS, THE BRIEF DOES NOT: the bound MAIN appends twelve decisions through its own
+    // door (what a living Program does all its life), and the next succession of the same one-Program
+    // MAIN is the same brief except the pointer line's counter — at most the extra digits. Red the day
+    // the record is printed again: twelve decisions of 150 characters are ~2 KB of JSON.
+    const bdGrowTok = slotToken(bdSucc1.slot);
+    const bdGrown = [...Array(BRIEF_GROWTH_DECISIONS).keys()].map((i) => bdFill(`BDA-GROWN-DECISION-${i + 1}`, 150));
+    const bdDecided: number[] = [];
+    for (const text of bdGrown) bdDecided.push((await selfPost("/api/self/program-decisions", bdGrowTok, { text })).status);
+    const bdDecisionsNow = bdA.content.decisions.length + BRIEF_GROWTH_DECISIONS;
+    const bdSucc1b = await bdSucceedAs(bdGrowTok, "brief-diet-successor-1b");
+    const bdPointerLine = (line: string): boolean => line.startsWith("The rest of this Program's record is not copied here");
+    const bdOtherLinesEqual = (a: string, b: string): boolean => {
+      const la = a.split("\n"), lb = b.split("\n");
+      return la.length === lb.length && la.every((line, i) => line === lb[i] || (bdPointerLine(line) && bdPointerLine(lb[i]!)));
+    };
+    const bdDigits = String(bdDecisionsNow).length - String(bdA.content.decisions.length).length;
+    check(`Program-MAIN brief diet (3): ${BRIEF_GROWTH_DECISIONS} more decisions leave the succession brief byte-equal except the counter (difference <= ${bdDigits} B)`,
+      bdDecided.every((status) => status === 200) && bdSucc1b.status === 200 && bdBytes(bdSucc1b.brief) > 0
+        && Math.abs(bdBytes(bdSucc1b.brief) - bdBytes(bdSucc1.brief)) <= bdDigits
+        && bdOtherLinesEqual(bdSucc1.brief, bdSucc1b.brief)
+        && bdMandate(bdSucc1b.brief, bdA.content, bdDecisionsNow)
+        && bdGrown.every((text) => !bdSucc1b.brief.includes(text)),
+      JSON.stringify({ decided: bdDecided, status: bdSucc1b.status, before: bdBytes(bdSucc1.brief), after: bdBytes(bdSucc1b.brief),
+        allowed: bdDigits, otherLinesEqual: bdOtherLinesEqual(bdSucc1.brief, bdSucc1b.brief),
+        grownJson: bdBytes(JSON.stringify(bdGrown, null, 2)) }));
+
     // the second and third Program join the live MAIN: each attach brief is a bind brief of its own
-    const bdAttachB = await programPost(bdB.program.id, "bootstrap-main", { slot: bdSucc1.slot });
-    const bdHintB = await bdBriefOf(bdSucc1.slot, `[fleet Program-MAIN] Der Owner hat dir ein weiteres Program gebunden: ${bdB.program.id}`);
-    const bdAttachC = await programPost(bdC.program.id, "bootstrap-main", { slot: bdSucc1.slot });
-    const bdHintC = await bdBriefOf(bdSucc1.slot, `[fleet Program-MAIN] Der Owner hat dir ein weiteres Program gebunden: ${bdC.program.id}`);
-    check(`Program-MAIN brief diet (3): the attach briefs that bind a second and a third Program are each at most ${BRIEF_ATTACH_MAX} B, mandate verbatim and record a pointer`,
+    const bdAttachB = await programPost(bdB.program.id, "bootstrap-main", { slot: bdSucc1b.slot });
+    const bdHintB = await bdBriefOf(bdSucc1b.slot, `[fleet Program-MAIN] Der Owner hat dir ein weiteres Program gebunden: ${bdB.program.id}`);
+    const bdAttachC = await programPost(bdC.program.id, "bootstrap-main", { slot: bdSucc1b.slot });
+    const bdHintC = await bdBriefOf(bdSucc1b.slot, `[fleet Program-MAIN] Der Owner hat dir ein weiteres Program gebunden: ${bdC.program.id}`);
+    check(`Program-MAIN brief diet (4): the attach briefs that bind a second and a third Program are each at most ${BRIEF_ATTACH_MAX} B, mandate verbatim and record a pointer`,
       bdAttachB.ok && bdAttachC.ok
         && [{ hint: bdHintB, c: bdB.content }, { hint: bdHintC, c: bdC.content }].every(({ hint, c }) =>
           bdBytes(hint) > 0 && bdBytes(hint) <= BRIEF_ATTACH_MAX && bdMandate(hint, c) && bdNoRecord(hint, c)),
       JSON.stringify({ attachB: bdAttachB.status, attachC: bdAttachC.status, bytesB: bdBytes(bdHintB), bytesC: bdBytes(bdHintC) }));
 
-    const bdSucc3 = await bdSucceedAs(slotToken(bdSucc1.slot), "brief-diet-successor-3");
-    check(`Program-MAIN brief diet (4): the succession brief of a MAIN of three Programs grows over the one-Program brief by at most ${BRIEF_COMPANION_MAX} B per companion (its JSON would add ~4.5 KB) — the first Program's mandate verbatim, each companion one pointer line and none of its content`,
-      bdSucc3.status === 200 && bdBytes(bdSucc3.brief) > 0 && bdBytes(bdSucc1.brief) > 0
-        && bdBytes(bdSucc3.brief) - bdBytes(bdSucc1.brief) <= 2 * BRIEF_COMPANION_MAX
-        && bdBytes(bdSucc3.brief) <= BRIEF_SUCCESSION_MAX + 2 * BRIEF_COMPANION_MAX
-        && bdMandate(bdSucc3.brief, bdA.content) && bdNoRecord(bdSucc3.brief, bdA.content) && bdKept(bdSucc3.brief)
+    const bdSucc3 = await bdSucceedAs(slotToken(bdSucc1b.slot), "brief-diet-successor-3");
+    const bdCompanionCost = bdBytes(bdSucc3.brief) - bdBytes(bdSucc1b.brief);
+    check(`Program-MAIN brief diet (5): the succession brief of a MAIN of three Programs is at most ${BRIEF_SUCCESSION_THREE_MAX} B and each companion costs at most ${BRIEF_COMPANION_MAX} B (its JSON was ~4.5 KB) — the first Program's mandate verbatim, each companion one pointer line and none of its content`,
+      bdSucc3.status === 200 && bdBytes(bdSucc3.brief) > 0 && bdBytes(bdSucc1b.brief) > 0
+        && bdCompanionCost <= 2 * BRIEF_COMPANION_MAX && bdBytes(bdSucc3.brief) <= BRIEF_SUCCESSION_THREE_MAX
+        && bdMandate(bdSucc3.brief, bdA.content, bdDecisionsNow) && bdNoRecord(bdSucc3.brief, bdA.content) && bdKept(bdSucc3.brief)
         && [bdB, bdC].every(({ program, content: c }) => bdSucc3.brief.includes(`MAIN of Program ${program.id}`)
           && !bdSucc3.brief.includes(c.intent) && !bdSucc3.brief.includes(c.successCriterion) && bdNoRecord(bdSucc3.brief, c))
         && bdSucc3.brief.split("GET /api/self/programs returns them verbatim").length - 1 === 2,
-      JSON.stringify({ status: bdSucc3.status, bytes: bdBytes(bdSucc3.brief), one: bdBytes(bdSucc1.brief),
-        programJsonWas: [bdA, bdB, bdC].reduce((sum, { content: c }) => sum + bdJsonWas(c), 0) }));
+      JSON.stringify({ status: bdSucc3.status, bytes: bdBytes(bdSucc3.brief), one: bdBytes(bdSucc1b.brief), companionCost: bdCompanionCost,
+        companionJsonWas: bdJsonWas(bdB.content) + bdJsonWas(bdC.content) }));
 
     if (bdSlot !== null) await post(`/api/slots/${bdSlot}/kill`, {});
     for (const { program } of [bdA, bdB, bdC]) await programPost(program.id, "complete", { force: true });

@@ -461,7 +461,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     if (rulebook) {
       const render = rulebook.render;
       const root = `${import.meta.dir}/CLAUDE.md`;
-      const settings = JSON.stringify({ claudeMdExcludes: [root], ...cutSettings });
+      // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09): ~/.claude/CLAUDE.md loads
+      // (.claude/settings.json no longer excludes it), and while it counts claude takes no AGENTS.md
+      // fallback at all. ~/AGENTS.md — the Codex version of the global rules — is excluded by name
+      // anyway, so a missing ~/.claude/CLAUDE.md cannot reopen that fallback to it. The checkout's
+      // own gitignored .claude/CLAUDE.md stays out as it was under the old glob. Probe of all three
+      // roles: the commit body; mechanism: docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md (A2/A5).
+      const settings = JSON.stringify({ claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`], ...cutSettings });
       cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
     } else if (cut) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
   }

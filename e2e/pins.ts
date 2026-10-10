@@ -6526,7 +6526,7 @@ export default function (pi) {
         && /console\.error\(`FLEET_RULEBOOK_ROLE_CUT=\$\{JSON\.stringify\(raw\)\} is invalid; the role cut stays on`\);\n  return "rolle";/.test(server)
         && agent.indexOf("rulebookRenderForSession(sessionId, rulebookRole)") > agent.indexOf('resume ? "--resume" : "--session-id"')
         && agent.includes("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
-        && agent.includes("claudeMdExcludes: [root]") && agent.includes("--add-dir")
+        && agent.includes("claudeMdExcludes: [root, ") && agent.includes("--add-dir")
         && spawnFn !== "" && !spawnFn.includes("throw ") && spawnFn.includes("catch (e)")
         && !server.includes("prepareRulebookAbRenders")
         && server.includes('rulebookRole: "main" | "orchestrator" | null')
@@ -11620,10 +11620,25 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     !graphifyHook && !exists(".claude/hooks/graphify-once.ts") && !read(".claude/settings.json").includes("/Users/"),
     `hook=${graphifyHook}`);
   const plugins = Object.values(settings?.enabledPlugins ?? {});
-  pin(`${RULE_HOOK} — project settings disable the measured user plugins and exclude global Claude rules`,
-    plugins.length > 0 && plugins.every((enabled) => enabled === false)
-      && settings?.claudeMdExcludes?.includes("**/.claude/CLAUDE.md") === true,
+  pin(`${RULE_HOOK} — project settings disable the measured user plugins`,
+    plugins.length > 0 && plugins.every((enabled) => enabled === false),
     `disabled=${plugins.filter((enabled) => enabled === false).length} total=${plugins.length}`);
+  // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09). Every Claude session here —
+  // lane, MAIN, orchestrator — loads ~/.claude/CLAUDE.md, so no project exclude may match it: the
+  // `**/.claude/CLAUDE.md` glob of 0ceacbca did, and the role sessions fell back to ~/AGENTS.md, the
+  // Codex version. The role line (agentCmd) excludes ~/AGENTS.md by name and the checkout's own
+  // gitignored .claude/CLAUDE.md by absolute path instead. Glob test: a pattern matching
+  // `<home>/.claude/CLAUDE.md` for any home — `**`, `*` and `?` widened, the rest literal.
+  const userRules = "/Users/someone/.claude/CLAUDE.md";
+  const globHits = (pat: string): boolean => new RegExp(`^${pat.split(/(\*\*\/|\*\*|\*|\?)/).map((part) =>
+    part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "[^/]"
+      : part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("")}$`).test(userRules);
+  const hiding = (settings?.claudeMdExcludes ?? []).filter(globHits);
+  const agentLine = read("server.ts").slice(read("server.ts").indexOf("function agentCmd("));
+  pin(`${RULE_HOOK} — no project claudeMdExcludes hides ~/.claude/CLAUDE.md, and the role line excludes ~/AGENTS.md and the checkout's .claude/CLAUDE.md instead`,
+    hiding.length === 0
+      && agentLine.slice(0, agentLine.indexOf("\n}\n")).includes("claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`]"),
+    `hiding=[${hiding.join(",")}]`);
 
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
   const srvHook = read("server.ts");

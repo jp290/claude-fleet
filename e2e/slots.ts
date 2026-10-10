@@ -14173,6 +14173,11 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
         && restartArgv.includes('"skillOverrides":{') && restartArgv.includes('"handoff":"off"') && restartArgv.includes('"rundgang":"off"')
         && restartArgv.includes('"anthropic-skills:docx":"off"') && restartArgv.includes('"dataviz":"name-only"'),
       restartArgv.slice(-400) || "no claude argv");
+    // THE LANE'S AUTO-MEMORY (Z3, server.ts#agentCmd): off in the lane's own --settings; its memory is the pointer
+    check("auto-memory: a lane's claude starts with autoMemoryEnabled false in its --settings, once",
+      restartArgv.split('"autoMemoryEnabled":false').length === 2 && openArgv.includes('"autoMemoryEnabled":false')
+        && healArgv.includes('"autoMemoryEnabled":false'),
+      restartArgv.slice(-400) || "no claude argv");
     check("session list cut: the lane's start context names the cut and how to load an entry back",
       restartArgv.includes("FLEET-LISTENSCHNITT (lane, server.ts#SESSION_LIST_CUT)")
         && restartArgv.includes("Datei ~/.claude/commands/<name>.md lesen und befolgen: audit")
@@ -14195,6 +14200,9 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     check("session list cut: a MAIN keeps its role's entries (handoff, the steward pulses) and still drops the foreign ones",
       mainArgv.includes("FLEET-LISTENSCHNITT (main,") && mainArgv.includes('"anthropic-skills:docx":"off"')
         && !mainArgv.includes('"handoff":') && !mainArgv.includes('"rundgang":') && mainArgv.includes("Agent(example-reviewer)"),
+      mainArgv.slice(-400) || "no claude argv");
+    check("auto-memory: a MAIN's claude keeps its auto-memory — no autoMemoryEnabled on its line",
+      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && !mainArgv.includes("autoMemoryEnabled"),
       mainArgv.slice(-400) || "no claude argv");
     // the pin is read off the live argv (fleet.json is written on a debounce); sleep wants its
     // transcript on disk, and the fake claude writes none
@@ -14227,6 +14235,18 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     check("pack mcp spawn: a lane whose plan chooses no MCP Zusatz spawns without --mcp-config and persists no packMcp",
       pl.ok && plainArgv.includes("--strict-mcp-config") && !plainArgv.includes("--mcp-config") && rowOf(P) !== undefined && !("packMcp" in (rowOf(P) ?? {})),
       `${pl.status} ${JSON.stringify(plJ)} ${plainArgv.slice(-200) || "no claude argv"}`);
+    check("auto-memory: a lane without a pack Zusatz starts without auto-memory as well",
+      plainArgv.includes('"autoMemoryEnabled":false'), plainArgv.slice(-400) || "no claude argv");
+
+    // the Orchestratorin (a role label on a plain checkout) keeps it, like the MAIN
+    const orch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots
+      .filter((x) => !x.cwd && x.id <= 16).map((x) => x.id).reverse()[0] ?? 0;
+    const oo = orch ? await post(`/api/slots/${orch}/open`, { cwd: without, label: "🎛 Orchestratorin · auto-memory" }) : null;
+    if (oo?.ok) opened.push(orch);
+    const orchArgv = oo?.ok ? await argvNow(orch) : "";
+    check("auto-memory: the Orchestratorin's claude keeps its auto-memory — no autoMemoryEnabled on its line",
+      orchArgv.includes("FLEET-LISTENSCHNITT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled"),
+      `slot=${orch} ${oo?.status ?? "-"} ${orchArgv.slice(-400) || "no claude argv"}`);
   } finally {
     for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
     for (const tr of trFiles) {

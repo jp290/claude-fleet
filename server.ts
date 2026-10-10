@@ -456,7 +456,12 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const cut = listRole ? sessionListCut(listRole) : null;
     if (cut?.disallowed) cmd += ` --disallowedTools ${shellSingleQuote(cut.disallowed)}`;
     if (cut) cmd += ` --append-system-prompt ${shellSingleQuote(cut.line)}`;
-    const cutSettings = cut ? { skillOverrides: cut.skillOverrides } : {};
+    // A LANE STARTS WITHOUT AUTO-MEMORY (Z3, docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md
+    // M1): the shared project index stays MAIN's and the Orchestratorin's; a lane reads its state through
+    // memoryPointer("lane"). Per launch in the same --settings, never settings.local.json — the lane
+    // scaffold copies that file, and a switch there would reach MAIN and Orchestratorin too.
+    const cutSettings = { ...(cut ? { skillOverrides: cut.skillOverrides } : {}),
+      ...(listRole === "lane" ? { autoMemoryEnabled: false } : {}) };
     const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
     if (rulebook) {
       const render = rulebook.render;
@@ -469,7 +474,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
       // roles: the commit body; mechanism: docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md (A2/A5).
       const settings = JSON.stringify({ claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`], ...cutSettings });
       cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
-    } else if (cut) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
+    } else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
   }
   // A declared foreign harness: same quoting rule (HARNESS_MODEL_RE admits `*`, so the quotes carry
   // more weight here). No DEFAULT_MODEL fallback on purpose — that constant is a claude model id.
@@ -40044,7 +40049,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
       "private-rulebook": o.rolle === "lane" ? laneRulebook !== null : ownRulebook,
       "commit-expectation": o.ort === "worktree",
       "delivery-header": harnessFamilie(harness) === "claude",
-      ...(memory ? { "auto-memory": memory.erfuellt } : {}),
+      // a Claude lane starts with autoMemoryEnabled:false (agentCmd): the index may exist, it never loads
+      ...(memory ? { "auto-memory": o.rolle === "lane" ? false : memory.erfuellt } : {}),
     },
     schalter,
   }, (zustand) => {
@@ -40282,8 +40288,9 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
     case "spawn-profile": case "self-credential": return { immer: "plan" };
     case "portable-contract": return door === "lane" && familie !== "claude" ? { immer: "Session-Datei" } : { immer: "native Datei" };
     case "native-agents": return { immer: "native Datei" };
-    case "auto-memory": return claude && row.bedingung?.erfuellt !== false ? { immer: "native Datei" }
-      : { nie: claude ? "kein Claude-Auto-Memory unter diesem Checkout" : "nur Claude laedt ein Auto-Memory" };
+    case "auto-memory": return claude && door !== "lane" && row.bedingung?.erfuellt !== false ? { immer: "native Datei" }
+      : { nie: !claude ? "nur Claude laedt ein Auto-Memory" : door === "lane" ? "eine Claude-Lane startet ohne Auto-Memory (server.ts#agentCmd)"
+        : "kein Claude-Auto-Memory unter diesem Checkout" };
     case "delivery-header": return claude ? { immer: "Zustellung" } : { nie: "nur der Claude-Adapter traegt den Zustellkopf" };
     case "task-brief": case "source-pointers": case "source-code": case "lane-notes": return { nie: PLAN_NUR_DISPATCH };
     case "studio-block": return { nie: "nur eine Studio-Bindung liefert das" };

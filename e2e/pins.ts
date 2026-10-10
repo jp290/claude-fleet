@@ -5540,9 +5540,11 @@ export default function (pi) {
   // rulebook.ts differs from the source's, and the source's own otherwise (pinSource).
   const RULE_ROLE_REAL = `on the real fragments both role renders anchor every section they omit, and the orchestrator's is at most ${ORCHESTRATOR_RENDER_MAX_B} B`;
   const RULE_ROLE_STALE = "every ROLE_SECTION_CUT omission names a section of the real fragments";
+  const RULE_ROLE_CODEX = "neither role render carries a Codex/GPT/pi worker section of the real einstieg";
   if (unreadable.length > 0) {
     skip(RULE_ROLE_REAL, why);
     skip(RULE_ROLE_STALE, why);
+    skip(RULE_ROLE_CODEX, why);
   } else {
     const rendered = renderRulebook("voll", fragments);
     // a lane that changed rulebook.ts owns the mismatch it produced (pinSource)
@@ -5559,6 +5561,21 @@ export default function (pi) {
     pinSource(RULE_ROLE_REAL, bad.length === 0 && orchB <= ORCHESTRATOR_RENDER_MAX_B,
       real.map(({ a, r }) => `${a} ${Buffer.byteLength(r.text)} B, ${r.sections.filter((x) => x.carried).length}/${r.sections.length} carried`).join(" | ")
         + ` of voll ${Buffer.byteLength(rendered)} B${bad.length ? `; ${bad.slice(0, 4).join("; ")}` : ""}`,
+      IN_SOURCE || !sameRenderer);
+    // F6 (docs/messungen/2026-10-10-kontext-bestandteile.md): no Codex/GPT/pi worker section starts
+    // a MAIN or the orchestrator. Named here, not read off the cut, so dropping one from
+    // ROLE_SECTION_CUT is red — and a renamed section, which the cut would silently carry, is too.
+    const CODEX_SECTIONS = [
+      "kontingent-umstellung-teilweise-aufgehoben-owner", "codex-kontingent-sinnvoll-verbrauchen-astra",
+      "wenn-du-eine-gpt-lane", "eine-lane-muss-nicht-claude", "codex-dispatch-wartet-auf-readiness",
+      "codex-tui-sub-agent-ansicht",
+    ];
+    const codexBad = CODEX_SECTIONS.flatMap((slug) => real.flatMap(({ a, r }) => {
+      const sec = r.sections.find((x) => x.anchor === `einstieg--${slug}`);
+      return sec === undefined ? [`${a}: no section ${slug}`] : sec.carried ? [`${a}: carries ${slug}`] : [];
+    }));
+    pinSource(RULE_ROLE_CODEX, codexBad.length === 0,
+      codexBad.length ? [...new Set(codexBad)].join("; ") : `${CODEX_SECTIONS.length} sections anchored in both`,
       IN_SOURCE || !sameRenderer);
     // a stale omission is the SAFE failure (the renamed section is carried, the render grows), so
     // it warns rather than reds; the size cap above is what stops the growth

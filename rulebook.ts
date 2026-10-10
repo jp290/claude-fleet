@@ -196,6 +196,8 @@ export type SectionCutKey = RoleAudience | ContextPositionVariante;
  *   minus the lane-only doors it answers 409 on and the orchestrator-only Astra rule, plus the
  *   three audit/verify sections of `deploy` that note 4a33d84a requires before the cut goes live
  *   (docs/messungen/2026-09-27-regelbuch-je-rolle.md §2: 1 395 tokens a MAIN reads in deploy).
+ * Both: the Codex/GPT/pi worker sections are anchors, read when a non-Claude lane is briefed —
+ *   Codex is paused since 95709148 (docs/messungen/2026-10-10-kontext-bestandteile.md F6, A.2).
  */
 export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, FragmentCut>> = {
   orchestrator: {
@@ -205,6 +207,7 @@ export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, Fr
       "git-checkout-datei-im-lane", "und-ein-schmutziger-haupt-checkout", "pruefe-das-trotzdem-vor-einem",
       "wenn-du-eine-gpt-lane", "eine-lane-muss-nicht-claude", "codex-dispatch-wartet-auf-readiness",
       "codex-tui-sub-agent-ansicht", "steward-konvention-der-slot-mit",
+      "kontingent-umstellung-teilweise-aufgehoben-owner", "codex-kontingent-sinnvoll-verbrauchen-astra",
       "post-api-self-tasks-id", "zwei-scope-regeln-entgegengesetzt-und", "nicht-lane-only",
       "doc-kollision-lane-haupt-checkout",
     ] },
@@ -227,7 +230,11 @@ export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, Fr
   },
   main: {
     loader: "ganz",
-    einstieg: { ohne: ["codex-kontingent-sinnvoll-verbrauchen-astra", "steward-konvention-der-slot-mit"] },
+    einstieg: { ohne: [
+      "codex-kontingent-sinnvoll-verbrauchen-astra", "steward-konvention-der-slot-mit",
+      "kontingent-umstellung-teilweise-aufgehoben-owner", "wenn-du-eine-gpt-lane", "eine-lane-muss-nicht-claude",
+      "codex-dispatch-wartet-auf-readiness", "codex-tui-sub-agent-ansicht",
+    ] },
     "lane-discipline": { ohne: [
       "suite-offer", "vor-dem-done-report-drift", "was-dich-wirklich-gated-ist", "bist-du-eine-clarify-lane",
       "report-only-the-slice-summary", "claude-md-ist-gitignored-und", "dein-docs-regal-ist-ein",

@@ -730,7 +730,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const mixedProof = localProofFor(["e2e/tasks.ts", "server.ts"]);
   const plumbingProof = localProofFor(["e2e/harness.ts"]);
   check("local proof: an all-check-module footprint names its modules, and one unplaceable file names none",
-    JSON.stringify(modProof.modules) === JSON.stringify(["slots", "tasks"])
+    // e2e/slots.ts hosts browser probes e2e/dom.ts runs, so it names `dom` too (suite-modules.ts#PROBE_HOSTS)
+    JSON.stringify(modProof.modules) === JSON.stringify(["slots", "dom", "tasks"])
       && mixedProof.modules === undefined && plumbingProof.modules === undefined
       && localProofFor(["docs/guide.md"]).modules === undefined,
     JSON.stringify({ e2eOnly: modProof.modules, mixed: mixedProof.modules, plumbing: plumbingProof.modules }));

@@ -537,6 +537,13 @@ export async function run(): Promise<void> {
       interface AuditJob { id: string; kind?: string; repo: string; claim: unknown; covers: number; branches: string[] }
       interface LedgerRow { at: number; mainSha: string; result: string; remote?: unknown }
       interface DeployRowX extends Row { audit?: { at: number; result: string; adjudication?: string }; unaudited?: string }
+      // THE LEDGERS THIS SECTION WRITES INTO, snapshotted: its audits are REAL rows (one per measured
+      // tip, plus an adjudication), and later modules count those files — e2e/steward-core.ts asserts
+      // an exact `audits.length`. A row left behind is this section rewriting another module's
+      // fixture (the same rule as e2e/verify-queue.ts §7). Found 2026-10-10 when the `dom` cut put
+      // deploy-facts and core in one shard: steward-core read three §7g rows. Restored below.
+      const LEDGERS = ["post-land-audits.jsonl", "audit-adjudications.jsonl"].map((f) => `${ROOT}/${f}`);
+      const ledgersBefore = LEDGERS.map((f) => existsSync(f) ? readFileSync(f, "utf8") : null);
       await restartSrv(AUD);
       const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
       const HH = { "x-fleet-helper-token": helperToken, "content-type": "application/json" };
@@ -753,6 +760,11 @@ export async function run(): Promise<void> {
         drainedG4 === 1 && m5.status === 409 && m5.b.reason === TODAY_UNSEEN && m5.b.audit?.mainAfter === g5
           && drainedG5 === 1 && (await auditJobs()).length === 0 && (await waitingFor(g5)).length === 0,
         `drained=${drainedG4}/${drainedG5} ${m5.status} ${JSON.stringify(m5.b).slice(0, 300)}`);
+      for (const [i, f] of LEDGERS.entries()) {
+        const before = ledgersBefore[i];
+        if (before === null || before === undefined) rmSync(f, { force: true });
+        else writeFileSync(f, before);
+      }
       await restartSrv({ FLEET_REPO_DIR: FIX });
     }
 

@@ -33,6 +33,7 @@ import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../sr
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import { readCodexFirstTurn } from "../server/conversation-read";
 import { CONTEXT_PACKS } from "../context-packs";
+import { sectionAt } from "../context-sections";
 import type { Ctx } from "./ctx";
 
 // WAIT ON THE KILL, NOT ON A CLOCK (the slotsEmptied shape from e3a936f7's programs.ts). A lane
@@ -6111,16 +6112,29 @@ export async function run(ctx: Ctx): Promise<void> {
         ? pack.anchors.every((anchor) => fAgents.includes(anchor.path) && fAgents.includes(anchor.anchor))
         : fAgents.includes(pack.anchors.privateSourceId)),
       `${fHead} ${JSON.stringify(fReceipt ?? null)}`);
-    // WHY, not just WHERE — the whole point of v2. Each selected pack contributes EXACTLY ONE
-    // purpose line to the delivered block: counting occurrences (rather than asserting presence)
-    // is what catches a renderer that repeats useWhen once per source line, which is the shape a
-    // two-source pack like verify-e2e would otherwise take.
+    // WHY, not just WHERE — the whole point of v2. Each selected pack that still LENDS a part
+    // contributes EXACTLY ONE purpose line to the delivered block: counting occurrences (rather than
+    // asserting presence) is what catches a renderer that repeats useWhen once per source line, which
+    // is the shape a two-source pack like verify-e2e would otherwise take. A pack whose every part a
+    // lane boxes has no pointer and so no purpose line; its sections stand verbatim, once. The
+    // contract is such a pack (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md).
     const useWhenLines = fAgents.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
-    check("native rule pointers state each selected pack's purpose exactly once",
+    const laneSources = (id: string) => { const seed = CONTEXT_PACKS.find((pack) => pack.id === id);
+      return seed && "sources" in seed ? seed.sources : []; };
+    const boxedWhole = (id: string): boolean => laneSources(id).length > 0 && laneSources(id).every((source) => source.positions?.lane === "box");
+    const statesItsPart = (pack: { id: string; hardness: string; useWhen?: string }): boolean => {
+      const lines = useWhenLines.filter((line) => line === `- ${pack.id} [${pack.hardness}] — ${pack.useWhen}`).length;
+      if (!boxedWhole(pack.id)) return lines === 1;
+      return lines === 0 && laneSources(pack.id).every((source) => {
+        const section = sectionAt(readFileSync(join(ROOT, source.path), "utf8"), source.path, source.anchor);
+        return section !== null && fAgents.split(section).length === 2;
+      });
+    };
+    check("native rule pointers state each lending pack's purpose exactly once; the wholly boxed contract stands verbatim, once",
       !!fReceipt && fReceipt.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
-      && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
-        && useWhenLines.filter((line) => line === `- ${pack.id} [${pack.hardness}] — ${pack.useWhen}`).length === 1)
-      && useWhenLines.length === 2,
+      && boxedWhole("portable-core")
+      && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0 && statesItsPart(pack))
+      && useWhenLines.length === fReceipt.selected.filter((pack) => !boxedWhole(pack.id)).length,
       `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
     const konzeptRow = fReceipt?.selected.find((pack) => pack.id === "konzept-claude-fleet");
     const konzeptOmissions = fReceipt?.omitted.filter((pack) => pack.id === "konzept-claude-fleet") ?? [];

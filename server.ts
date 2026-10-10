@@ -29527,8 +29527,9 @@ interface LandProvenance {
 }
 // a9629daa · THE ONE RECORD OF A SQUASH LAND, on the note, the intent and the outcome's facts alike.
 interface LandSquash { from: string; commits: number; ref: string }
-// The switches of the MAIN's land call (POST /api/self/tasks/:id/land, server.ts#landSwitchesFrom).
-// Both off is the land as it always was; nothing but that door ever sets one. `keep` (bc9d0a79):
+// The switches of the MAIN's land call (POST /api/self/tasks/:id/land, server.ts#landSwitchesFrom)
+// and of the owner's ⏫ (POST /api/slots/:id/merge, same type check on its two fields). Both off is
+// the land as it always was; nothing but those two doors ever sets one. `keep` (bc9d0a79):
 // the lane lands and goes on — worktree, slot, branch and row stay, the next land is the same row's.
 interface LandSwitches { squash: boolean; keep: boolean }
 const NO_LAND_SWITCHES: LandSwitches = { squash: false, keep: false };
@@ -51303,10 +51304,15 @@ Bun.serve<WSData>({
       try {
         if (commitInflight.has(s.id)) return json({ status: "blocked", detail: "a commit is in progress on this lane — try again in a moment" });
         const body = await readJson(req);
-        // bc9d0a79 · the land switches belong to the Program-MAIN's land call; ⏫ lands and closes the
-        // lane, and says so rather than dropping a switch it would not honour
-        if (body?.keep !== undefined || body?.squash !== undefined)
-          return json({ error: "keep and squash are switches of the Program-MAIN's land call (POST /api/self/tasks/:id/land) — ⏫ lands the lane and closes it" }, 409);
+        // the board's land switch (owner 09.10.): ⏫ reads squash and keep with the land call's type
+        // check (landSwitchesFrom) — but only those two fields, because this body also carries confirm,
+        // reverify and overrideRejectedReport. They reach mergeJob below; the confirm and reverify arms
+        // never reach it, so a switch asked of them is refused rather than dropped.
+        if (body?.squash !== undefined && typeof body.squash !== "boolean") return json({ error: "squash must be a boolean" }, 400);
+        if (body?.keep !== undefined && typeof body.keep !== "boolean") return json({ error: "keep must be a boolean" }, 400);
+        const switches: LandSwitches = { squash: body?.squash === true, keep: body?.keep === true };
+        if ((switches.squash || switches.keep) && (body?.confirm === true || body?.reverify === true))
+          return json({ error: "confirm lands the reviewed candidate as it is and reverify only measures — squash and keep apply to the gated land only; call again without them" }, 409);
         const { repo, branch } = s.worktree;
         const cwd = s.cwd;
         // DOOR 1'S ACCEPTANCE PRECONDITION (rejectedReportForLand, 2026-09-07). Asked HERE — after
@@ -51385,6 +51391,10 @@ Bun.serve<WSData>({
         // Against the integration branch, not the primary's HEAD (which may be parked off it).
         const done = await git(repo, "branch", "--merged", main, "--list", branch);
         if (done.out.trim()) {
+          // no series is left to squash (planSquashLand's `null`: the land is the one without the
+          // switch), but keep is ⏏'s case — main need not be the lane HEAD — so it is refused as there
+          if (switches.keep)
+            return json({ error: "this lane is already merged — main need not be the lane HEAD here, so it lands and closes; call again without keep" }, 409);
           const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
             detail: "already merged — landed without the agent" };
           const land = await landLane(s, { ...OWNER_LAND_FACTS, landedBy: ownerActor },
@@ -51409,10 +51419,10 @@ Bun.serve<WSData>({
         // …and the job itself, started at the route the way it always was. Deliberately NOT behind
         // a helper: `mergeJob(` having exactly TWO textual call sites, both of them routes, is the
         // property e2e/pins.ts holds — a wrapper would hide a third caller (a tick) behind one name.
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, carry.carriedRuns, ownerActor)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, carry.carriedRuns, ownerActor, switches)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
-        return json({ running: true });
+        return json({ running: true, ...(switches.squash ? { squash: true } : {}), ...(switches.keep ? { keep: true } : {}) });
       } finally {
         mergeStart.delete(s.id);
       }

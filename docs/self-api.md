@@ -5685,8 +5685,12 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
 Owner (08.10.): „[Zitat entfernt]“. Mit `{„[Zitat entfernt]“:true}` landet
 eine Lane mit mehr als einem Commit über `mainBefore` als **ein** Commit S
 (`server.ts#planSquashLand`, `#moveSquashLand`, Entwurf `docs/design/live-bau-profil-2026-10.md` §3).
-Nur mit dem Schalter, gesetzt von der MAIN für Live-Bau-Lanes: jede andere Lane landet ihre
-Commits wie bisher, und deren Bodies bleiben das Befund-Register auf main.
+Nur mit dem Schalter: jede andere Lane landet ihre Commits wie bisher, und deren Bodies bleiben das
+Befund-Register auf main. Zwei Türen setzen ihn: die MAIN mit `POST /api/self/tasks/:id/land` für
+Live-Bau-Lanes, und der Owner mit ⏫ (`POST /api/slots/:id/merge`), dessen Body das Zahnrad im Board
+füllt (Owner 09.10.). ⏫ liest nur `squash` und `keep` mit derselben Typprüfung wie
+`server.ts#landSwitchesFrom` (Nicht-Boolean = 400), weil sein Body auch `confirm`, `reverify` und
+`overrideRejectedReport` trägt.
 
 - **S** = `git commit-tree H^{tree} -p mainBefore`. H ist die Spitze, die das Gate gemessen hat, und
   weil S^{tree} = H^{tree} ist, gilt das Gate-Verdikt für S unverändert. Es gibt also keinen zweiten
@@ -5705,8 +5709,10 @@ Commits wie bisher, und deren Bodies bleiben das Befund-Register auf main.
 - **Die `fleet/land`-Note** trägt `squash {from: H, commits: N, ref}`. In `lane-outcomes.jsonl`
   zählt `commitCount` die N Lane-Commits vor der Zusammenfassung; `headSha` und `mainAfter` sind S.
 - **Hat die Lane höchstens einen Commit**, ist der Land byte-gleich zu einem ohne Schalter.
-- **Ein Confirm** einer geprüften Konfliktlösung (`guarded`-Sprosse) landet den geprüften Kandidaten
-  so, wie er geprüft wurde, und verweigert den Schalter mit 409, statt ihn still fallen zu lassen.
+- **Ein Confirm** einer geprüften Konfliktlösung (`guarded`-Sprosse an der Self-Tür, `confirm` an ⏫)
+  landet den geprüften Kandidaten so, wie er geprüft wurde, und verweigert den Schalter mit 409,
+  statt ihn still fallen zu lassen. ⏫ mit `reverify` misst nur und verweigert ihn ebenso.
+- **Eine bereits gemergte Lane an ⏫** hat keine Serie mehr: `squash` ändert dort nichts.
 
 ```
 {"status":"error","landed":false,"errorReason":"lane-moved","verify":{"ok":true,…},
@@ -5746,10 +5752,12 @@ Danach (`server.ts#landLane`, Parameter `keep`):
   verbraucht, und sie wartet auf ihre nächste Tranche (`server.ts#laneAutoCloseRefusal`).
 - **Erst ein Land ohne `keep`** (oder ein Kill) schließt die Lane und setzt die Zeile auf `done`, so
   wie jeder Land bisher.
-- **Die Owner-Türen behalten nichts:** ⏏ (`POST /api/slots/:id/land`) landet bereits gemergte oder
-  gepushte Arbeit, und dort muss main nicht der Lane-HEAD sein. ⏏ und ⏫ verweigern `keep` und
-  `squash` mit 409, statt die Schalter still fallen zu lassen. Auch der Confirm-Arm (`guarded`)
-  verweigert beide.
+- **Zwei Türen setzen `keep`:** die Self-Tür der MAIN und ⏫ (`POST /api/slots/:id/merge`, gleiche
+  Typprüfung, siehe §squash). ⏏ (`POST /api/slots/:id/land`) landet bereits gemergte oder gepushte
+  Arbeit, und dort muss main nicht der Lane-HEAD sein: ⏏ verweigert `keep` und `squash` mit 409,
+  statt die Schalter still fallen zu lassen. Aus demselben Grund verweigert ⏫ `keep` bei einer
+  bereits gemergten Lane. Die Confirm-Arme (`guarded` an der Self-Tür, `confirm` an ⏫) und ⏫ mit
+  `reverify` verweigern beide Schalter.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 

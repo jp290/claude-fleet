@@ -2887,12 +2887,54 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 
+  // THE OWNER'S ⏫ READS THE SWITCHES (owner 09.10., the board's gear). A plain lane with two
+  // commits: ⏏ still refuses keep and moves nothing, ⏫ refuses a non-boolean squash with 400, and
+  // ⏫ {"squash":true} lands the two commits as ONE commit on main with the gated tree, the series
+  // under refs/fleet/lane-history/<branch>/1.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const mainBefore = git2("rev-parse", "main");
+    const ln = (await (await post("/api/lanes", { repo: REPO2 })).json()) as { slot: number; cwd: string; branch: string };
+    const commits: [string, string][] = [["owsq1.txt", "feat(owner-squash): erste Stufe"], ["owsq2.txt", "fix(owner-squash): zweite Stufe"]];
+    for (const [file, msg] of commits) {
+      writeFileSync(`${ln.cwd}/${file}`, `${file}\n`);
+      spawnSync("git", ["-C", ln.cwd, "add", file]);
+      spawnSync("git", ["-C", ln.cwd, "commit", "-qm", msg]);
+    }
+    await settleForMerge(ln.slot);
+    const ejectKeep = await post(`/api/slots/${ln.slot}/land`, { keep: true });
+    const notBool = await post(`/api/slots/${ln.slot}/merge`, { squash: "yes" });
+    const refused = { eject: ejectKeep.status, notBool: notBool.status, lane: exists(ln.cwd),
+      main: git2("rev-parse", "main") === mainBefore };
+    const mergeR = await post(`/api/slots/${ln.slot}/merge`, { squash: true });
+    const started = (await mergeR.json()) as { running?: boolean; squash?: boolean; status?: string; detail?: string };
+    const v = await waitMerge(ln.slot);
+    const mainAfter = git2("rev-parse", "main");
+    const historyRef = `refs/fleet/lane-history/${ln.branch}/1`;
+    const series = git2("rev-parse", "--verify", "--quiet", historyRef);
+    type OwnerSquashNote = { squash?: { from?: string; commits?: number; ref?: string } };
+    let note: OwnerSquashNote | null = null;
+    try { note = JSON.parse(git2("notes", "--ref=fleet/land", "show", mainAfter)) as OwnerSquashNote; }
+    catch { /* checked below */ }
+    const facts = { refused, merge: mergeR.status, started, v,
+      oneCommit: git2("rev-list", "--count", `${mainBefore}..${mainAfter}`),
+      parent: git2("rev-parse", `${mainAfter}^`) === mainBefore,
+      sameTree: series !== "" && git2("rev-parse", `${mainAfter}^{tree}`) === git2("rev-parse", `${series}^{tree}`),
+      seriesCount: series ? git2("rev-list", "--count", `${mainBefore}..${series}`) : "", note: note?.squash ?? null };
+    check("owner land switches: ⏏ refuses keep (409), ⏫ refuses a non-boolean squash (400), ⏫ {squash:true} lands ONE commit on main with the series under refs/fleet/lane-history",
+      refused.eject === 409 && refused.notBool === 400 && refused.lane && refused.main
+        && mergeR.ok && started.running === true && started.squash === true && v.gone
+        && facts.oneCommit === "1" && facts.parent && facts.sameTree && facts.seriesCount === "2"
+        && facts.note?.from === series && facts.note.commits === 2 && facts.note.ref === historyRef,
+      JSON.stringify(facts));
+  }
+
   // bc9d0a79 · THE KEPT LAND. One live lane lands three times through the SAME row: first with
   // {"squash":true,"keep":true} (two commits → one S1, the lane and its row stay, its fork moves to
   // S1, no verdict is left on it, and the row projects RUNNING), then after two more commits and a
   // fresh complete report with {"keep":true} alone (both commits land as they are — no squash
   // without the switch), and last with no switch at all, which closes the lane and the row as every
-  // land always has. ⏏ and ⏫ refuse `keep` instead of dropping it.
+  // land always has. The owner doors' switches are the block above.
   {
     const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
     const mainBefore = git2("rev-parse", "main");
@@ -2971,13 +3013,6 @@ export async function run(lc: LaneCtx): Promise<void> {
         && report1.ok && ready1,
       JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error,
         promotion: promotionR?.status, dispatch: dispatchR?.status, cwd, branch, report: report1.status, ready1 }));
-    // the owner doors never keep: ⏏ lands already-merged work, where main need not be the lane HEAD
-    const ejectKeep = await post(`/api/slots/${laneSlot}/land`, { keep: true });
-    const mergeKeep = await post(`/api/slots/${laneSlot}/merge`, { keep: true });
-    check("kept land: ⏏ and ⏫ refuse keep (409) and leave the lane and main where they were",
-      ejectKeep.status === 409 && mergeKeep.status === 409 && exists(cwd)
-        && (await laneNow()).slot?.cwd === cwd && git2("rev-parse", "main") === mainBefore,
-      JSON.stringify({ eject: ejectKeep.status, merge: mergeKeep.status, eText: await ejectKeep.text() }));
     // LAND 1 — squash + keep
     const land1 = await land('{"squash":true,"keep":true}');
     const started1 = (await land1.json()) as { running?: boolean; keep?: boolean; squash?: boolean };

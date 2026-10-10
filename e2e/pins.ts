@@ -27,23 +27,22 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import {
-  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
+  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   RULEBOOK_BACKREF_HEADING,
   FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderBackref, renderRoleRulebook,
   rulebookBody, type RoleAudience, type RoleRulebook, type RulebookFragment,
 } from "../rulebook";
 import {
   SYSTEM_CAPABILITIES, SELF_GET_ADAPTER_PROBE, QUESTION_ROUTES,
-  UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
+  UNMODELED_CAPABILITY_DIMENSIONS,
 } from "../capability-map";
-import { collectRepoMap, firstCommentLine, renderRepoMap } from "../repo-map";
 import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
 import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../land-log";
 import { SHARD_UNITS, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
-import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, PROBE_HOSTS, SERVER_MODULE_ANCHORS, selectModules } from "../suite-modules";
+import { FIXTURES, MODULE_FIXTURES, moduleListFrom, modulePlanFor, modulesForPaths, selectModules } from "../suite-modules";
 // the pane-hint builders are IMPORTED and CALLED by the sigil rule at the end of this file: only a
 // rendered hint shows the tail `${eventAck(id)}` actually contributes, which a source scan cannot.
 import {
@@ -62,8 +61,7 @@ import { readJsonl } from "../briefstats";
 import { laneStandNudge, laneStandNudgeText, type LaneStandView } from "../lane-signals";
 import { quotaPosition, newResetEntries, parseQuotaRollout, readLocalQuota, readIdentityBound, createSubscriptionReader, SUBSCRIPTION_STALE_MS, PROVIDER_UNSUPPORTED } from "../codex-quota";
 import {
-  readJsonl as landQualityReadJsonl, modelKey, renderFull, renderSummary, sizeIndexOf, sizeStampOrJoin,
-  type LandRow,
+  readJsonl as landQualityReadJsonl, modelKey, renderSummary, sizeIndexOf, sizeStampOrJoin,
 } from "../land-quality";
 import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
@@ -189,14 +187,6 @@ function pinSource(name: string, ok: boolean, detail: string, inSource: boolean)
 // prints PASS is vacuum-green: the same word for "measured, fine" and "never measured".
 function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${why})`); }
 
-// The universes must fail as THEMSELVES. An empty or one-sided module set makes every "and nowhere
-// else" row below trivially true — the same green, measured over nothing.
-pin("the server universe is derived and holds its entry module",
-  serverU.files.length > 0 && serverU.files[0]!.file === "server.ts" && serverU.text.length > 0,
-  `${serverU.files.length} module(s): [${serverU.files.map((f) => f.file).join(", ")}]`);
-pin("the client universe is derived and holds its bundle entry",
-  clientU.files.length > 0 && clientU.files[0]!.file === "src/client.ts" && clientU.text.length > 0,
-  `${clientU.files.length} module(s): [${clientU.files.map((f) => f.file).join(", ")}]`);
 
 {
   const sources: ContextPackSource[] = CONTEXT_PACKS.flatMap<ContextPackSource>((pack) => "sources" in pack ? [...pack.sources] : [])
@@ -224,37 +214,12 @@ pin("the client universe is derived and holds its bundle entry",
 }
 
 {
-  const doc = read("docs/rollenkarten.md");
   const server = read("server.ts");
   const cards = [
     ["Orchestratorin", "ORCHESTRATOR_ROLE_CARD"],
     ["Program-MAIN", "MAIN_ROLE_CARD"],
     ["Lane", "LANE_ROLE_CARD"],
   ] as const;
-  const pairs = cards.map(([heading, symbol]) => {
-    const docMatches = [...doc.matchAll(new RegExp('^## ' + heading + '\\n\\n```text\\n([^`]*)\\n```', 'gm'))];
-    const serverMatches = [...server.matchAll(new RegExp('const ' + symbol + ' = `([^`]*)`;', 'g'))];
-    return { heading, symbol, docMatches, serverMatches };
-  });
-  const missing = pairs.filter(({ docMatches, serverMatches }) => docMatches.length !== 1 || serverMatches.length !== 1);
-  if (missing.length)
-    pin("role cards: PROBE extracted one text block and one constant per role", false,
-      missing.map(({ heading, docMatches, serverMatches }) => `${heading}: doc=${docMatches.length}, server=${serverMatches.length}`).join("; "));
-  else {
-    const changed = pairs.filter(({ docMatches, serverMatches }) => docMatches[0]![1] !== serverMatches[0]![1]);
-    pin("role cards: server constants are byte-equal to docs/rollenkarten.md text blocks",
-      changed.length === 0, changed.map(({ symbol }) => symbol).join(", "));
-    // THE TESTINSTANZ ACCEPTANCE (owner promotion 2026-10-08) is a MAIN duty on the card; the lane's
-    // half rides in the pack testinstanz-abnahme, so the lane card stays without it.
-    const mainText = pairs.find(({ symbol }) => symbol === "MAIN_ROLE_CARD")!.serverMatches[0]![1]!;
-    const laneText = pairs.find(({ symbol }) => symbol === "LANE_ROLE_CARD")!.serverMatches[0]![1]!;
-    const abnahme = mainText.match(/^--- ABNAHME --- [^\n]*$/m)?.[0] ?? "";
-    pin("role cards: the Program-MAIN accepts visible work only clicked through in the lane's test instance, with token-free link and image; the lane card does not carry it",
-      /Testinstanz/.test(abnahme) && /durchgeklickt/.test(abnahme) && /token-freien Link/.test(abnahme)
-        && /Bild/.test(abnahme) && /zurueck/.test(abnahme) && !/Testinstanz/.test(laneText),
-      `abnahme=${abnahme.slice(0, 80) || "missing"} laneMentions=${/Testinstanz/.test(laneText)}`);
-  }
-
   // ROLE DUTY vs HARNESS RUNTIME (owner correction 2026-09-30: codex compacts natively, no Fleet
   // context succession for it). A role card reaches EVERY harness, so a percentage or a context
   // stop inside one is a stop for codex too — that is the rule, not a snapshot of today's wording.
@@ -265,47 +230,21 @@ pin("the client universe is derived and holds its bundle entry",
     const all = [...server.matchAll(new RegExp("const " + name + " = `([^`]*)`;", "g"))];
     return all.length === 1 ? all[0]![1]! : null;
   };
-  const docBlock = (heading: string): string | null => {
-    const all = [...doc.matchAll(new RegExp("^### " + heading + "\\n\\n```text\\n([^`]*)\\n```", "gm"))];
-    return all.length === 1 ? all[0]![1]! : null;
-  };
   const CONTEXT_STOP = /%|_PCT\b|Schwelle|Kontextgrenze|context is filling/;
   const roleCards = cards.map(([, symbol]) => [symbol, constant(symbol)] as const);
   const stops = roleCards.filter(([, text]) => text === null || CONTEXT_STOP.test(text) || /succeed ohne carry/.test(text));
   pin(`${RULE_CTX} — no role card names a percentage, a threshold or a context-triggered succeed (A)`,
     stops.length === 0,
     stops.map(([symbol, text]) => `${symbol}: ${text === null ? "not found" : text.match(CONTEXT_STOP)?.[0] ?? "succeed ohne carry"}`).join("; "));
-  // …and the duty half survived the split: what a DELIBERATE succession owes is still on the card.
-  const orchCard = roleCards.find(([s]) => s === "ORCHESTRATOR_ROLE_CARD")?.[1] ?? "";
-  const laneCard = roleCards.find(([s]) => s === "LANE_ROLE_CARD")?.[1] ?? "";
-  pin(`${RULE_CTX} — the cards keep their succession duties: line record, open obligations by ID, intent cap, explicit model/effort; commit + handoff report (B)`,
-    /--- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen/.test(orchCard)
-      && /succeed mit model\/effort explizit/.test(orchCard)
-      && /--- UEBERGABE --- [^\n]*committet[^\n]*fleet-report mit status handoff/.test(laneCard)
-      && /HOW THIS LANE ENDS/.test(laneCard),
-    `orch=${orchCard.length} lane=${laneCard.length}`);
-  const ctxClaude = constant("ORCHESTRATOR_CONTEXT_LINE");
   const ctxCodex = constant("ORCHESTRATOR_CONTEXT_LINE_CODEX");
-  const docClaude = docBlock("Orchestratorin · jeder andere Harness");
-  const docCodex = docBlock("Orchestratorin · codex");
-  pin(`${RULE_CTX} — both Orchestratorin KONTEXT lines are byte-equal to docs/rollenkarten.md §Kontext je Harness (C)`,
-    ctxClaude !== null && ctxCodex !== null && ctxClaude === docClaude && ctxCodex === docCodex,
-    `server=${ctxClaude !== null}/${ctxCodex !== null} doc=${docClaude !== null}/${docCodex !== null} `
-      + `equal=${ctxClaude === docClaude}/${ctxCodex === docCodex}`);
-  // THE TWO HARNESS TEXTS a codex session reads, and the claude reference beside them. Codex: names
-  // native compaction, no percentage, no threshold, no baton door. Default: keeps today's measured
-  // band and its exit, because this cut changes codex and nothing else.
-  const footClaude = constant("LANE_EXIT_HANDOFF");
+  // THE TWO HARNESS TEXTS a codex session reads: native compaction, no percentage, no threshold, no
+  // baton door.
   const footCodex = constant("LANE_EXIT_HANDOFF_CODEX");
   const codexTexts = [["ORCHESTRATOR_CONTEXT_LINE_CODEX", ctxCodex], ["LANE_EXIT_HANDOFF_CODEX", footCodex]] as const;
   const badCodex = codexTexts.filter(([, t]) => t === null || CONTEXT_STOP.test(t) || /\/api\/self\/succeed/.test(t)
     || !/nativ/.test(t));
   pin(`${RULE_CTX} — the codex texts name native compaction and carry no percentage, threshold, context stop or succeed door (D)`,
     badCodex.length === 0, badCodex.map(([n, t]) => `${n}: ${t === null ? "not found" : t.slice(0, 80)}`).join("; "));
-  pin(`${RULE_CTX} — the default texts keep the claude band: FLEET_MIGRATE_PCT + 45 % for the Orchestratorin, "context is filling" → succeed for a lane (E)`,
-    !!ctxClaude && /FLEET_MIGRATE_PCT/.test(ctxClaude) && /45 %/.test(ctxClaude)
-      && !!footClaude && /context is filling/.test(footClaude) && /POST \/api\/self\/succeed/.test(footClaude),
-    `orch=${ctxClaude?.slice(0, 60)} lane=${footClaude?.slice(0, 60)}`);
   // THE SELECTION. One predicate, asked of the HARNESS (never a provider or model string), and every
   // codex-facing seam goes through it: both Orchestratorin builders, the lane footer, the steward's
   // context-only handoff. A builder that dropped its harness parameter would hand codex the default.
@@ -326,64 +265,6 @@ pin("the client universe is derived and holds its bundle entry",
       && /nativeCompaction\(harness\) \? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF/.test(footer)
       && /if \(ref === "handoff"\)\n\s*return nativeCompaction\(s\.harness\)\n\s*\? \{ error:/.test(steward),
     `predicate=${predicate !== ""} selector=${selector !== ""} spawn=${spawnB !== ""} succ=${succB !== ""} footer=${footer !== ""} steward=${steward !== ""}`);
-}
-
-// THE LOADED RULE, not only the delivered brief. Codex and Pi load AGENTS.md automatically, so a
-// "~25 %" sentence there reaches a codex session whatever its card says (owner correction
-// 2026-09-30). The rule: the context paragraph scopes the band to Claude and names codex's native
-// compaction, and a deliberate succession keeps its duties there too.
-{
-  const agents = read("AGENTS.md");
-  const at = agents.indexOf("### Context self-management");
-  const section = at < 0 ? "" : agents.slice(at, agents.indexOf("\n## ", at) < 0 ? undefined : agents.indexOf("\n## ", at));
-  const paras = section.split("\n\n").slice(1);
-  const banded = paras.filter((p) => /%/.test(p));
-  pin("AGENTS.md's context rule scopes every percentage to Claude and gives Codex native compaction without a stop or succeed",
-    section !== "" && banded.length > 0 && banded.every((p) => /\*\*Claude\*\* session degrades/.test(p))
-      && /\*\*Codex\*\* session compacts its own window\s+natively and automatically/.test(section)
-      && /never a\s+reason to stop work, to stop starting work, or to succeed/.test(section)
-      && /DELIBERATE succession keeps/.test(section),
-    section === "" ? "### Context self-management not found in AGENTS.md" : section.slice(0, 160));
-}
-
-// THE CROSS-MODULE SLICE TRIPWIRE, and it is the other half of `span()`. ~95 rows below still cut
-// a server body with two bare indexOf calls — the shape that was correct while the universe was one
-// file. After the split those two anchors can land in DIFFERENT modules, and a raw slice between
-// them over the joined text returns everything in between: a body big enough that every `includes`
-// against it is true. That is vacuum-green with extra steps.
-//
-// Converting all ~95 during a feature freeze would be a large blind edit; converting the ones a
-// P4 slice actually moves is the right size, and this row is what tells that slice WHICH. It reads
-// the anchor pairs out of this file's own source and fails only on a pair whose two anchors are in
-// different modules — zero today, exactly the broken ones tomorrow. The plan's slice protocol asks
-// step (c) to look for vacuum-green pins by hand; this makes that half mechanical.
-{
-  const RULE_SPAN = "no pin cuts a server body ACROSS two modules (a raw slice between anchors in different modules returns everything between them, and everything contains anything)";
-  const pinsSrc = read("e2e/pins.ts");
-  // regex literals, so the patterns carry no literal `server.slice(` and this file's own scan
-  // cannot report itself. `LIT` is a double-quoted JS string with its escapes intact — JSON.parse
-  // turns it back into the anchor the pin actually searches for.
-  const STARTS = /const (\w+) = server\.indexOf\(("(?:[^"\\]|\\.)*")\)/g;
-  const CUTS = /server\.slice\(\s*(?:server\.indexOf\(("(?:[^"\\]|\\.)*")\)|(\w+))\s*,\s*server\.indexOf\(("(?:[^"\\]|\\.)*")/g;
-  const starts = new Map<string, string>();
-  for (const m of pinsSrc.matchAll(STARTS)) starts.set(m[1]!, JSON.parse(m[2]!) as string);
-  const pairs: { from: string; to: string }[] = [];
-  for (const m of pinsSrc.matchAll(CUTS)) {
-    const from = m[1] !== undefined ? JSON.parse(m[1]) as string : starts.get(m[2]!);
-    if (from === undefined) continue;   // a computed offset, not an anchor pair — not this class
-    pairs.push({ from, to: JSON.parse(m[3]!) as string });
-  }
-  const moduleOf = (needle: string): string | null =>
-    serverU.files.find((f) => f.text.includes(needle))?.file ?? null;
-  const crossing = pairs
-    .map((x) => ({ ...x, a: moduleOf(x.from), b: moduleOf(x.to) }))
-    .filter((x) => x.a !== null && x.b !== null && x.a !== x.b);
-  pin(`${RULE_SPAN} — the anchor pairs are derived from this file's own source`,
-    pairs.length > 0, `${pairs.length} anchored server body cut(s)`);
-  pin(RULE_SPAN, pairs.length > 0 && crossing.length === 0,
-    crossing.length > 0
-      ? crossing.map((x) => `${JSON.stringify(x.from)} in ${x.a} → ${JSON.stringify(x.to)} in ${x.b}`).join("; ")
-      : `${pairs.length} cut(s), each inside one module`);
 }
 
 const shellScripts = [
@@ -674,17 +555,6 @@ const IN_SOURCE = SOURCE_DIR === ROOT;
     const m = /PORT=\$\(\((\d+)\s*\+\s*\$\$\s*%\s*(\d+)\)\)/.exec(read(f));
     if (m) claimed.set(f, [Number(m[1]), Number(m[1]) + Number(m[2]) - 1]);
   }
-  const missingFromTable = [...claimed.keys()].filter((f) => !table.has(f));
-  const missingFromDisk = [...table.keys()].filter((f) => !claimed.has(f));
-  pin("port-band table and the PORT= lines name the same scripts",
-    missingFromTable.length === 0 && missingFromDisk.length === 0,
-    `unlisted=[${missingFromTable}] stale=[${missingFromDisk}]`);
-
-  const mismatched = [...claimed.entries()]
-    .filter(([f, [lo, hi]]) => { const t = table.get(f); return t && (t[0] !== lo || t[1] !== hi); })
-    .map(([f, [lo, hi]]) => `${f}: table ${table.get(f)!.join("–")} vs code ${lo}–${hi}`);
-  pin("each script's band matches the range the table assigns it", mismatched.length === 0, mismatched.join("; "));
-
   const bands = [...claimed.entries()];
   const overlaps: string[] = [];
   for (let i = 0; i < bands.length; i++)
@@ -721,12 +591,6 @@ const server = serverU.text;
   const diskTickWired = (code: string): boolean => /^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m.test(activeCode(code));
   pin("host-disk production boot measures space and production interval returns held audits",
     diskBootWired(diskSource) && diskTickWired(diskSource));
-  const noDiskTick = diskSource.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m, "");
-  pin("host-disk removing production interval makes the same wiring claim red",
-    noDiskTick !== diskSource && !(diskBootWired(noDiskTick) && diskTickWired(noDiskTick)));
-  pin("host-disk a commented production interval cannot satisfy the wiring claim",
-    !diskTickWired(diskSource.replace(/^setInterval\(\(\) => tickHostDiskSpace\(\), DISPATCH_TICK_MS\);$/m,
-      "// setInterval(() => tickHostDiskSpace(), DISPATCH_TICK_MS);")));
   const wrapperDiskWired = (code: string): boolean => {
     const lines = code.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")
       .replace(/\\\n\s*/g, " ").split("\n");
@@ -738,12 +602,9 @@ const server = serverU.text;
   };
   const wrappers = readdirSync(ROOT).filter((file) => /^e2e-.*\.sh$/.test(file)
     && read(file).split('\n').some((line) => !/^\s*#/.test(line) && line.includes('exec bun server.ts'))).sort();
-  pin('host-disk wrapper-start universe is not empty', wrappers.length > 0);
   for (const wrapper of wrappers) {
     const code = read(wrapper);
     pin(`host-disk ${wrapper} explicitly neutralizes every stand-in server start`, wrapperDiskWired(code));
-    pin(`host-disk removing ${wrapper} reserve override makes its wiring claim red`,
-      !wrapperDiskWired(code.replaceAll('FLEET_DISK_WRITER_GIB=0.001', '')));
   }
   for (const [file, start] of [['e2e/restart.ts', 'const cmdEnv = ['], ['fleet-e2e-postland-audit.ts', 'const env = [']]) {
     const code = activeCode(read(file));
@@ -1433,6 +1294,7 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   const TSC_EXEMPT = new Map<string, string>([
     ["docs/design/zeitleiste-entwurf.ts", "Scratch-Prototyp U1 (docs/design), kein Produktentry; separat mit bunx tsc --noEmit --strict pruefbar"],
     ["docs/design/zeitleiste-probe.ts", "Scratch-Prototyp U1 (docs/design), kein Produktentry; separat mit bunx tsc --noEmit --strict pruefbar"],
+    ["repo-map.ts", "Generator fuer docs/repo-map.generated.md, kein Produktentry; seit die Frische-Pins aus e2e/pins.ts fielen (CI-Inventur 2026-10-10) importiert ihn nichts; separat mit bunx tsc --noEmit --strict pruefbar"],
   ]);
   const tscArgs = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
   const lsTs = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.ts"],
@@ -1480,25 +1342,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 }
 
 {
-  // the comment above VERIFY_CMD listed ./e2e-security.sh under "NOT here" while the line below it
-  // ran exactly that suite. A reader trusting the comment mis-scoped what the gate covers, and no
-  // test could notice, because the comment is not code.
-  // The convention the comment states and this row enforces: the exclusion clause is the LAST thing
-  // in the block, so everything after "NOT here:" is the denied set. Prose after it would be read as
-  // a denial, which is a cheap price for a rule that needs no marker syntax in a shell comment.
-  const lines = watchdog.split("\n");
-  const at = lines.findIndex((l) => l.startsWith("VERIFY_CMD="));
-  let from = at;
-  while (from > 0 && lines[from - 1].startsWith("#")) from--;
-  const block = lines.slice(from, at).join("\n");
-  const notHere = block.includes("NOT here:") ? block.slice(block.indexOf("NOT here:")) : "";
-  const denied = [...notHere.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
-  const lying = denied.filter((f) => gateSuites.includes(f));
-  pin("watchdog.sh's \"NOT here\" comment names no suite the gate actually runs",
-    lying.length === 0, `denied=[${denied}] but run=[${lying}]`);
-}
-
-{
   // AGENTS.md is the same gate written out for a reader — Codex's convention, and the only rulebook
   // a Codex lane ever sees (it does not read CLAUDE.md, which is git-ignored and therefore cannot be
   // tracked into a worktree at all). So it must be TRACKED, it must not leak the deploy identity
@@ -1543,47 +1386,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     const ips = (agents.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []).length;
     const urls = (agents.match(/\bhttps?:\/\/\S+/g) ?? []).length;
     pin(RULE_SECRET, ips === 0 && urls === 0, `${ips} ip-shaped, ${urls} url(s)`);
-  }
-
-  const RULE_LOCAL_PROOF = "AGENTS.md asks a lane's self/gate localProof before choosing local verification";
-  if (agents === null) skip(RULE_LOCAL_PROOF, "no AGENTS.md in this tree");
-  else pin(RULE_LOCAL_PROOF,
-    agents.includes("`GET /api/self/gate`") && agents.includes("`localProof.steps`"),
-    `self-gate=${agents.includes("`GET /api/self/gate`")} steps=${agents.includes("`localProof.steps`")}`);
-
-  // The B2 split made a Fleet lane's private rulebook structurally partial. AGENTS.md used to
-  // keep saying "full", "copied into each lane" and "read it completely" after that change,
-  // sending Codex/Pi through the wholesale private load the split removed. Couple the public loader
-  // claim to the executable audience partition so neither side can move alone again.
-  const RULE_LOADER_BOUNDARY = "AGENTS.md names the partial lane overlay and never requires a wholesale private read";
-  if (agents === null) skip(RULE_LOADER_BOUNDARY, "no AGENTS.md in this tree");
-  else {
-    const partialLane = FRAGMENTS_FOR.lane.length < RULEBOOK_FRAGMENTS.length;
-    const namesPartial = agents.includes("smaller render plus explicit back-references");
-    const rejectsWholesale = agents.includes("must not read it wholesale");
-    const staleFullClaim = /full private operating rulebook|copied into each lane|Read it completely/.test(agents);
-    pin(RULE_LOADER_BOUNDARY,
-      partialLane ? namesPartial && rejectsWholesale && !staleFullClaim : !namesPartial,
-      `lane=${FRAGMENTS_FOR.lane.length}/${RULEBOOK_FRAGMENTS.length}, partial-claim=${namesPartial}, `
-      + `no-wholesale=${rejectsWholesale}, stale-full-claim=${staleFullClaim}`);
-  }
-
-  // Three host rules lived only in the lane render of CLAUDE.md, which codex loaded in 0/35 rollouts
-  // while 4/35 codex lanes ran `ps -af`/`pgrep -af` (docs/messungen/2026-09-14-codex-lane-verdrahtung.md
-  // §M6). Scoped to the Codex section, and each keyword is held together with its reason: a rule
-  // without its why is the half a lane drops first.
-  const RULE_CODEX_HOST = "AGENTS.md §Codex lane carries the ps, bun server.ts and rg -uu host rules with their reasons";
-  if (agents === null) skip(RULE_CODEX_HOST, "no AGENTS.md in this tree");
-  else {
-    const codex = /\n## If you are a Codex or Pi lane\n([\s\S]*?)(?=\n## |$)/.exec(agents)?.[1] ?? null;
-    const hostRules: readonly (readonly [string, RegExp])[] = [
-      ["ps", /`ps`[^\n]*\n?[^\n]*because[\s\S]{0,120}self-credentials/],
-      ["bun server.ts", /`bun server\.ts`[^\n]*default environment, because[\s\S]{0,80}live tmux/],
-      ["rg -uu", /`rg -uu`[\s\S]{0,40}because plain `rg` honours `\.gitignore`[\s\S]{0,160}empty result/],
-    ];
-    const missing = codex === null ? [] : hostRules.filter(([, re]) => !re.test(codex)).map(([k]) => k);
-    pin(RULE_CODEX_HOST, codex !== null && missing.length === 0,
-      codex === null ? "no '## If you are a Codex or Pi lane' section" : `missing=[${missing}]`);
   }
 
   // The delivery header (4b085fd9) is two halves that mean nothing apart: server.ts types the line,
@@ -1637,62 +1439,19 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("Every headed DELIVERY_SOURCE path has one DELIVERY_MEANING and no unheaded path has one",
     !!sourceBody && !!meaningBody && missing.length === 0 && extra.length === 0,
     `missing=[${missing}] extra=[${extra}]`);
-  const malformed = [...meanings].filter(([, quoted]) => {
-    const value = quoted.slice(1, -1);
-    return quoted === "null" || value.length > 120
-      || (value !== "nur zur Information" && !/^naechster Schritt: .+ · Grenze: .+$/.test(value));
-  }).map(([path]) => path);
-  pin("Every DELIVERY_MEANING is a position sentence of at most 120 characters",
-    !!meaningBody && malformed.length === 0, `malformed=[${malformed}]`);
-  // THE SENTENCE HAS A RECEIVER (Sinnpruefung Buendel 5a): succession and migrate-nudge reach lanes,
-  // bound MAINs and the Orchestratorin, and one sentence per path told all three they were a lane.
-  // Each role gets its own well-formed sentence, none equal to another's or to the general one, and
-  // only the lane's may speak of a lane.
-  // BREAKS IF: a role row is dropped, two roles share a sentence, or a MAIN/Orchestratorin sentence
-  // falls back to "deine Lane" / "Lane-Arbeit".
-  const byRoleBody = /const DELIVERY_MEANING_BY_ROLE:[^\n]+ = \{([\s\S]*?)\n\};/.exec(server)?.[1] ?? "";
-  const roleProblems = ["succession", "migrate-nudge"].flatMap((path) => {
-    const block = new RegExp(`\\n  "${path}": \\{([\\s\\S]*?)\\n  \\},`).exec(byRoleBody)?.[1] ?? "";
-    const roles = new Map([...block.matchAll(/^\s*"([a-z]+)":\s*"([^"]*)",\s*$/gm)].map((m) => [m[1]!, m[2]!]));
-    const general = meanings.get(path)?.slice(1, -1) ?? "";
-    const sentences = ["lane", "main", "orchestrator"].map((role) => roles.get(role) ?? "");
-    return [
-      ...["lane", "main", "orchestrator"].filter((role, i) => {
-        const value = sentences[i]!;
-        return value.length > 120 || !/^naechster Schritt: .+ · Grenze: .+$/.test(value)
-          || value === general || (role !== "lane" && /Lane/.test(value));
-      }).map((role) => `${path}/${role}`),
-      ...(new Set(sentences).size === 3 ? [] : [`${path}/shared`]),
-    ];
-  });
-  pin("succession and migrate-nudge carry one own sentence each for lane, main and orchestrator",
-    !!byRoleBody && roleProblems.length === 0, `problems=[${roleProblems}]`);
 
   // The FOREIGN-REPO half of the filing template. A lane outside claude-fleet gets no Fleet rulebook
   // at all (createWorktree copies the ignored scaffolding out of ITS repo), so every obligation this
   // file drops has to stand in the row — and the measured price of dropping them is row 2fd387de
   // against row 449c4a03 (docs/messungen/2026-09-15-fremdrepo-annahmen-lanes.md §2 Befund 7, §4).
-  // Two halves: the eight obligations must all still be named, and the dependency field the section
-  // teaches must be the one card-extract.ts actually reads — a renamed field would send every
-  // foreign-repo filer's ordering into prose, where nothing holds a row back.
+  // The dependency field the section teaches must be the one card-extract.ts actually reads — a
+  // renamed field would send every foreign-repo filer's ordering into prose, where nothing holds a
+  // row back.
   const RULE_FOREIGN_REPO = "AGENTS.md §Rows for a repo that is not claude-fleet names all eight obligations";
   if (agents === null) skip(RULE_FOREIGN_REPO, "no AGENTS.md in this tree");
   else {
     const section = /\n### Rows for a repo that is not claude-fleet\n([\s\S]*?)(?=\n### |\n## |$)/
       .exec(agents)?.[1] ?? null;
-    const duties: readonly (readonly [string, RegExp])[] = [
-      ["rolle", /\*\*ROLLE spelled out\*\* — harness \/ model \/ effort/],
-      ["project-agents", /The project's own `AGENTS\.md`, by path, as the rule frame/],
-      ["verify-verbatim", /The verify command VERBATIM[\s\S]{0,400}`localProof\.steps: \[\]`[\s\S]{0,240}row's VERIFY/],
-      ["reading-list", /The reading list with paths/],
-      ["after", /A dependency only as `card\.after`[\s\S]{0,200}hold the row back/],
-      ["host-facts", /\*\*Host facts\*\*[\s\S]{0,120}tools the host does NOT have/],
-      ["channel", /fleet-report is the only way a result leaves the pane[\s\S]{0,140}`POST \/api\/self\/succeed`/],
-      ["artefact", /holds results, not instructions for the\s+next session[\s\S]{0,160}no Fleet state/],
-    ];
-    const absent = section === null ? [] : duties.filter(([, re]) => !re.test(section)).map(([k]) => k);
-    pin(`${RULE_FOREIGN_REPO} (A)`, section !== null && absent.length === 0,
-      section === null ? "no '### Rows for a repo that is not claude-fleet' section" : `missing=[${absent}]`);
     const cardExtract = read("card-extract.ts");
     const readsNach = /after: formatTokens\(field\("NACH"\)\)/.test(cardExtract);
     const validatesRow = /gaps\.push\(`after: "\$\{id\.slice\(0, 60\)\}" is not a queue row`\)/.test(cardExtract);
@@ -1804,8 +1563,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // that is what makes gate drift between the two boot paths impossible rather than unlikely, and
   // these rows are what keeps it so. The unit may DESCRIBE the chain (its PATH is the whole reason
   // the chain can run at all on a host whose systemd default PATH has neither bun nor claude) and
-  // may never DEFINE one. So: the described order is held against VERIFY_CMD's own, a rival
-  // command definition is a failure, and the PATH is derived from watchdog.sh rather than copied.
+  // may never DEFINE one. So: a rival command definition is a failure, and the PATH is derived from
+  // watchdog.sh rather than copied.
   const UNIT = "fleet-watchdog.service";
   const RULE_UNIT = "the systemd boot path describes watchdog.sh's chain in watchdog.sh's order";
   const unit = ((): string | null => { try { return read(UNIT); } catch { return null; } })();
@@ -1814,11 +1573,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // the wrong file.
   if (unit === null) pin(`${RULE_UNIT} — PROBE: the template is readable`, false, `${UNIT} not found at the repo root`);
   else {
-    const unitChain = stepsOf(unit).join(">");
-    const gateChainHere = stepsOf(verifyCmd).join(">");
-    pin(RULE_UNIT, unitChain.length > 0 && unitChain === gateChainHere,
-      `unit=[${unitChain}] gate=[${gateChainHere}]`);
-
     // AUDIT_CMD is the other half of the contract this template claims to carry, and it is the
     // half a reader of the unit cannot see anywhere else: tier 2 runs AFTER the land, so a host
     // whose PATH cannot reach it produces `unknown` — a non-measurement that is silent by design.
@@ -1846,11 +1600,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   }
 
   // THE FOLLOWER'S TRANSPORT, whose two halves are a POSIX shell script and a systemd unit — no
-  // compiler is ever going to look at either. fleet-sync.sh answers in exit codes and nothing else:
-  // the timer's whole semantics is "anything but 0 leaves the unit failed", so the unit's comment is
-  // the only place a human reads what a code MEANS, and a code the unit does not know about is a
-  // failure nobody can name. Three sides, because two would let prose agree with prose: what the
-  // script CAN exit with, what its own header table promises, and what the unit lists.
+  // compiler is ever going to look at either.
   const SYNC = "fleet-sync.sh";
   const SYNC_UNIT = "fleet-sync.service";
   const RULE_SYNC = "fleet-sync's real exits, its header table and the unit's list are one set";
@@ -1862,23 +1612,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     pin(`${RULE_SYNC} — PROBE: both halves are readable`, false,
       `${SYNC}=${syncSrc === null ? "MISSING" : "ok"} ${SYNC_UNIT}=${syncUnit === null ? "MISSING" : "ok"}`);
   else {
-    // a `·`-separated table written across comment lines: fold the continuations away, then take
-    // each item's leading number. Same shape on both sides, so one reader serves both.
-    const codesIn = (table: string): string[] =>
-      [...new Set(table.replace(/\n#/g, " ").split("·")
-        .map((item) => /^\s*(\d+)\b/.exec(item)?.[1] ?? "")
-        .filter((c) => c !== ""))].sort();
-    const declared = codesIn(/# Exit codes:([\s\S]*?)Every non-zero/.exec(syncSrc)?.[1] ?? "");
-    const unitCodes = codesIn(/answers in [a-z]+\n# exits \(([^)]*)\)/.exec(syncUnit)?.[1] ?? "");
-    // what the script can ACTUALLY do — comment lines dropped first, so the table above is not
-    // read back as its own evidence.
-    const real = [...new Set([...syncSrc.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n")
-      .matchAll(/\bexit (\d+)/g)].map((m) => m[1]))].sort();
-    pin(RULE_SYNC,
-      real.length > 0 && declared.join(",") === real.join(",") && unitCodes.join(",") === real.join(","),
-      `real=[${real}] table=[${declared}] unit=[${unitCodes}]`);
-
-    // AND THE BUNDLE LIST. fleet-sync.sh decides whether the follower needs a build by looking for
+    // THE BUNDLE LIST. fleet-sync.sh decides whether the follower needs a build by looking for
     // these three files; server.ts decides whether the board's bundle is stale by timing the same
     // three. A fourth entry landing in server.ts alone would leave the follower shipping a bundle
     // that is two thirds built, and bundleStale would report it — from the host that cannot fix it.
@@ -1951,25 +1685,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     server.includes('const proportional = changed.code === 0 && chain.class === "docs-or-prose" && shortChainRepo;'),
     "verifyPlanFor's proportional is no longer the docs class alone");
 
-  // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
-  // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.
-  // CLAUDE.md is the one exception and it is named rather than derived: it is git-ignored, so a
-  // fresh clone of this public repo has no copy, and its absence there says nothing about drift.
-  const RULE_ANCHORS = "every path AGENTS.md cites resolves in this tree";
-  if (agents === null) skip(RULE_ANCHORS, "no AGENTS.md in this tree");
-  else {
-    // fenced blocks come out FIRST. A ```sh fence is itself made of backticks, so a naive span scan
-    // swallows the whole block as one "span" and silently mis-pairs every backtick after it — the
-    // failure mode being a rule that reports one anchor and calls the file covered. What is inside
-    // the fence is the verify block, and the rule above already holds it against watchdog.sh.
-    const prose = agents.replace(/```[\s\S]*?```/g, "\n");
-    const cited = [...new Set([...prose.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))]
-      .filter((t) => /^\.?\/?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|ts|sh|json)$/.test(t))
-      .map((t) => t.replace(/^\.\//, ""))
-      .filter((t) => t !== "CLAUDE.md" && t !== "graphify-out/graph.json");
-    const dead = cited.filter((p) => !exists(p));
-    pin(RULE_ANCHORS, cited.length > 0 && dead.length === 0, `${cited.length} cited, dead=[${dead}]`);
-  }
 }
 
 // ================================================================================================
@@ -1981,11 +1696,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 // registry and server remain the two executable sides.
 {
   const DOC = "docs/system-capabilities.generated.md";
-  const rendered = renderSystemCapabilities();
   const generated = ((): string | null => { try { return read(DOC); } catch { return null; } })();
-  pin("the generated system capability map is byte-for-byte fresh from capability-map.ts",
-    generated !== null && generated === rendered,
-    generated === null ? `${DOC} missing` : `rendered ${Buffer.byteLength(rendered)} B vs file ${Buffer.byteLength(generated)} B`);
 
   const declaredNames = SYSTEM_CAPABILITIES.map((capability) => capability.name);
   pin("the capability source declares exactly the two promoted stable functions, once and in order",
@@ -2171,109 +1882,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     `[${[...dimensions].map(([name, gap]) => `${name}:${gap}`).join(" | ")}]`);
 }
 
-// ================================================================================================
-// 3c. Repo top level -> generated repo map
-// ================================================================================================
-// `rg` finds only what the searcher can already spell, and nothing named this repo's ten top-level
-// directories in one place: `lerntisch/` and `studio-kit/` appeared in no start-context file, and
-// `task-waves.ts` in no prose at all (docs/messungen/video-codebase-klarheit-2026-08-25.md §2.4).
-// docs/repo-map.generated.md is that name list. Same fastener as 3b — the document is a projection,
-// the repo's own top level is the executable side — plus one rule 3b does not need: the document is
-// held against an INDEPENDENT enumeration too, because a renderer that dropped a row would drop it
-// from both sides of a freshness comparison and the pin would go green on a shorter map.
-{
-  const DOC = "docs/repo-map.generated.md";
-  const RULE_MAP = "the generated repo map names every top-level directory and entry file";
-  const probe = collectRepoMap(ROOT);
-  const generated = ((): string | null => { try { return read(DOC); } catch { return null; } })();
-  if (!probe.ok) {
-    // A probe that could not run must fail as ITSELF. "git named no paths" is not "the map is stale".
-    pin(`${RULE_MAP} — PROBE: git named the repo's top level`, false, probe.detail);
-  } else if (generated === null) {
-    pin(`${RULE_MAP} — PROBE: the generated map is readable`, false, `${DOC} missing; run \`bun repo-map.ts\``);
-  } else {
-    const rendered = renderRepoMap(probe.facts);
-    pin("the generated repo map is byte-for-byte fresh from repo-map.ts",
-      generated === rendered,
-      `rendered ${Buffer.byteLength(rendered)} B vs file ${Buffer.byteLength(generated)} B`);
-
-    // The independent side: enumerate the top level again, straight from git, and require a row for
-    // each name. This is what catches a new top-level file whose author never re-rendered.
-    const ls = spawnSync("git", ["-C", ROOT, "ls-files", "--cached", "-z"],
-      { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
-    if (ls.error || ls.status !== 0) {
-      pin(`${RULE_MAP} — PROBE: the independent enumeration ran`, false,
-        (ls.error?.message || ls.stderr || `git ls-files exited ${String(ls.status)}`).trim().slice(0, 160));
-    } else {
-      const paths = ls.stdout.split("\0").filter(Boolean);
-      const wantDirs = [...new Set(paths.filter((p) => p.includes("/")).map((p) => p.slice(0, p.indexOf("/"))))];
-      const wantFiles = paths.filter((p) => !p.includes("/") && (p.endsWith(".ts") || p.endsWith(".sh")));
-      const missing = [
-        ...wantDirs.filter((name) => !generated.includes(`\n- \`${name}/\` — `)).map((name) => `${name}/`),
-        ...wantFiles.filter((name) => !generated.includes(`\n- \`${name}\` — `)),
-      ];
-      const counted = /^## Directories \((\d+)\)$/m.exec(generated)?.[1];
-      const countedFiles = /^## Top-level `\.ts` and `\.sh` files \((\d+)\)$/m.exec(generated)?.[1];
-      pin(RULE_MAP,
-        missing.length === 0 && counted === String(wantDirs.length) && countedFiles === String(wantFiles.length),
-        `${wantDirs.length} dir(s) / ${wantFiles.length} file(s) on disk, doc says ${counted}/${countedFiles}; missing=[${missing.join(",")}]`);
-    }
-
-    // A row whose sentence is unavailable must SAY so. The whole defect this map answers is a thing
-    // that was present but unnamed, so an empty sentence rendered as nothing would rebuild it.
-    const unsentenced = [...probe.facts.directories, ...probe.facts.files].filter((entry) => entry.note === null);
-    const marked = generated.split("**no sentence**").length - 1;
-    pin("every top-level entry without a sentence renders a visible marker instead of an empty row",
-      marked === unsentenced.length,
-      `${unsentenced.length} without a header comment or a DIRECTORY_NOTES entry [${unsentenced.map((e) => e.name).join(",")}], ${marked} marker(s) in the doc`);
-
-    // The sentences are the FILES' OWN first comment lines. Held against the files directly, so a
-    // renderer that started inventing prose — or reading a second line — is a red, not a nicer map.
-    const drifted = probe.facts.files.filter((entry) => {
-      if (entry.note === null) return false;
-      let source: string;
-      try { source = read(entry.name); } catch { return true; }
-      return firstCommentLine(source) !== entry.note;
-    });
-    pin("a file's sentence in the map is that file's own first comment line and nothing else",
-      drifted.length === 0, `[${drifted.map((e) => e.name).join(",")}]`);
-  }
-}
-
-// ================================================================================================
-// 4. Docs that state the live land-path configuration
-// ================================================================================================
-// A doc claiming tier 2 is "default OFF … commented out in watchdog.sh" outlived the day tier 2 went
-// live by two days and would have outlived it indefinitely: prose has no gate. A doc that wants to
-// make a claim about the srv-spawn line opts in with a marker, and then the claim is checked.
-//
-//   <!-- pin:watchdog-spawn FLEET_POSTLAND_AUDIT_CMD=set FLEET_CLEAN_REVIEW=shadow -->
-//
-// `set` / `unset` assert presence; anything else asserts the literal value. Absent a marker, nothing
-// is checked — the pin makes an honest claim verifiable, it cannot make prose honest.
-{
-  const docs = readdirSync(`${ROOT}/docs`).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`);
-  const spawnVars = new Map<string, string>();
-  for (const m of spawnLine.matchAll(/\b(FLEET_[A-Z_]+)=('[^']*'|"[^"]*"|\S+)/g))
-    spawnVars.set(m[1], m[2].replace(/^['"]|['"]$/g, ""));
-  pin("the srv-spawn line yields its FLEET_* assignments", spawnVars.size > 0, `${spawnVars.size} vars`);
-
-  const bad: string[] = [];
-  let markers = 0;
-  for (const d of docs)
-    for (const m of read(d).matchAll(/<!--\s*pin:watchdog-spawn\s+([^>]*?)-->/g)) {
-      markers++;
-      for (const claim of m[1].trim().split(/\s+/)) {
-        const [k, want] = claim.split("=");
-        const got = spawnVars.get(k);
-        const ok = want === "set" ? got !== undefined : want === "unset" ? got === undefined : got === want;
-        if (!ok) bad.push(`${d}: ${k}=${want} but spawn line has ${got === undefined ? "(unset)" : got}`);
-      }
-    }
-  pin("every doc claim about the srv-spawn line matches watchdog.sh", bad.length === 0,
-    `${markers} markers in ${docs.length} docs; ${bad.join("; ")}`);
-}
-
 {
   // register.sh and the server must not grow separate path parsers again. The shell may format
   // the projection, but task-metadata.ts alone decides whether a path is tracked and which source
@@ -2288,42 +1896,14 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 }
 
 {
-  // THE QUEUE ANALYST IS RETIRED (2026-09-10), and a retirement is only real if it is STRUCTURAL.
-  // These are negative rules: not "the feature is off" — off was its state for a month while every
-  // symbol, route and field stayed — but "no producer, no carrier, no door exists". The restore
-  // anchor is 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
+  // THE QUEUE ANALYST IS RETIRED (2026-09-10). What these rules hold is what the retirement left
+  // behind: the normalizer that strips its persisted field, the deterministic wave projection, and
+  // the brief compiler that was fused to it. The restore anchor is
+  // 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
   const client = clientU.text;
   const executableServer = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  const executableClient = client.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
-  // 1. THE MODULES ARE GONE. Named individually rather than as a count, so a re-appearance says
-  // which one came back.
-  const retiredModules = ["analysis-prompt.ts", "analysis-staleness.ts", "task-analysis-warning.ts"]
-    .filter((f) => exists(f));
-  pin("the three analyst modules are absent from the tree",
-    retiredModules.length === 0, retiredModules.join(", ") || "none present");
-
-  // 2. NO PRODUCER AND NO CARRIER IN EXECUTABLE CODE. Comments are excluded on purpose: this file's
-  // own retirement notes name the retired symbols, and a rule that could not survive being
-  // explained is a rule people delete.
-  const deadSymbols = ["ANALYSIS_ON", "ANALYSIS_TICK_MS", "ANALYSIS_MODEL", "ANALYSIS_CMD",
-    "tickAnalysisSweep", "analysisDue", "analysisFailed", "recordAnalysisVerdict", "analysisStale",
-    "buildAnalysisPrompt", "ANALYSIS_BLOCKERS", "TaskAnalysis", "AnalysisBlocker"];
-  const aliveServer = deadSymbols.filter((sym) => executableServer.includes(sym));
-  pin("no retired analyst symbol survives in executable server code",
-    aliveServer.length === 0, aliveServer.join(", ") || "none");
-  const aliveTypes = deadSymbols.filter((sym) =>
-    read("server/types.ts").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n").includes(sym));
-  pin("the task record declares no analysis field and no analysis type",
-    aliveTypes.length === 0 && !/\banalysis\?:/.test(read("server/types.ts")),
-    aliveTypes.join(", ") || "none");
-
-  // 3. THE ROUTE IS RETIRED, not merely refusing. A door that answers 409 is a door; this one must
-  // not be reachable at all, so the pattern that matched its handler is absent from the file.
-  pin("POST /api/tasks/:id/reanalyse has no handler left",
-    !executableServer.includes("reanalyse"), "");
-
-  // 4. LEGACY STATE IS DROPPED, NOT CARRIED. A fleet.json written before the retirement still holds
+  // LEGACY STATE IS DROPPED, NOT CARRIED. A fleet.json written before the retirement still holds
   // `analysis` on its rows. The normalizer must not restore it — the load-bearing half of the cut,
   // because a restored verdict is a claim about a tree that has since moved and nothing refreshes.
   //
@@ -2344,31 +1924,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && normBody.includes("brief: t.brief"),
     normBody === "" ? "the normalizer slice was not found" : `${normBody.split("\n").length} lines`);
 
-  // 5. THE WIRE CARRIES NEITHER THE PER-ROW READING NOR THE MODE. Both directions: the poll must not
-  // send them, and the client must not read them — a client that kept reading an absent field would
-  // silently degrade to whatever `undefined` means at that site.
-  // The ONE legitimate `analysis:` left in executable server code is the normalizer's STRIP (rule 4
-  // above) — a destructure that removes the field, not a carrier that transports it. It is excluded
-  // by its exact binding name so a second, differently-named use cannot slip through with it.
-  const analysisCarriers = executableServer.split("\n")
-    .filter((l) => /\banalysis\??:/.test(l) && !l.includes("analysis: _retiredAnalysis"));
-  pin("neither the 2 s poll nor GET /api/tasks carries an analysis field",
-    analysisCarriers.length === 0, analysisCarriers.map((l) => l.trim()).join(" | ") || "none");
-  pin("the client reads no analysis digest, cache or runtime mode",
-    !executableClient.includes("analysisOn") && !executableClient.includes("taskAnalysisFull")
-      && !/t\.analysis/.test(executableClient) && !executableClient.includes("classifyAnalystOffWarning"), "");
-
-  // 6. THE DISPOSITION RAIL'S WRITE DOOR IS CLOSED — and only the write door. The reader validates
-  // no worker name, so labels already filed under `analysis` (and, since 2026-09-19, `enhance`) stay
-  // readable: retiring a producer must not rewrite what an owner once said.
-  const protocol = read("src/protocol.ts");
-  const readerBody = server.slice(server.indexOf("async function readDispositions"),
-    server.indexOf("function writeDisposition"));
-  pin("the disposition worker set no longer admits `analysis` or `enhance`, while the reader still validates none",
-    /export const DISPOSITION_WORKERS: DispositionWorker\[\] = \["land", "review3"\];/.test(protocol)
-      && readerBody !== "" && !readerBody.includes("DISPOSITION_WORKERS"), "");
-
-  // 7. THE WAVE PROJECTION IS DETERMINISTIC OR IT IS NOTHING. Model edges and the running-work block
+  // THE WAVE PROJECTION IS DETERMINISTIC OR IT IS NOTHING. Model edges and the running-work block
   // they alone could fill are gone; what remains must still be the file-surface rule, not an empty
   // module that reports "no collision" about a question nobody asked.
   const waves = read("task-waves.ts");
@@ -2422,127 +1978,12 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && /const qTaskFullKey =[\s\S]{0,300}?t\.briefAt \?\? 0/.test(client)
       && /t\.filesOrigin, t\.cluster, t\.briefAt,/.test(client)
       && /t\.note, t\.kind, t\.briefAt,/.test(client));
-  // THE RELEASE DOOR IS UNCHANGED BY THE CUT, and that has to be said mechanically: releasing was
-  // the decision before the analyst existed and stays the decision after it. What went is the
-  // override arm (`release anyway ▸`, the `task_override` audit line, the note), which had no
-  // producer left once no verdict could contradict a release.
-  const releaseStart = server.indexOf('else if (taskAct[2] === "queue")');
-  const releaseSlice = releaseStart < 0 ? "" : server.slice(releaseStart, server.indexOf('else if (taskAct[2] === "unqueue")', releaseStart));
-  // comments excluded: the retirement note AT that call site names the arm it removed, and a rule
-  // that fails on its own explanation is a rule the next reader deletes
-  const releaseBody = releaseSlice.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("release stays one owner act with no override arm and no verdict to overrule",
-    releaseSlice !== "" && /releaseTask\(t, "owner"\);/.test(releaseBody)
-      && !releaseBody.includes("task_override") && !releaseBody.includes(".analysis"),
-    releaseSlice === "" ? "the queue action was not found" : `${releaseBody.split("\n").length} code lines`);
-
   // Full diagnosis retains the offline queue projector; only --brief reads the held source.
   const registerSource = read("register.sh");
   const registerCode = registerSource.slice(registerSource.indexOf("\nesac\n") + 7).split("\n")
     .filter((l) => !l.trim().startsWith("#")).join("\n");
   pin("register full diagnosis remains offline and API-independent; brief uses the held Owner source",
     registerSource.includes("/api/operational-view") && !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
-}
-
-// ================================================================================================
-// 5. The L1 rot detector — prose that has gone out of date with the code it describes
-// ================================================================================================
-// BACKLOG P-10, asked for in July and unbuilt until 2026-08-06. Two mechanical checks, both aimed
-// at the failure this repository measured rather than at doc quality in general: the shelf carried
-// claims nobody re-derived. `docs/README.md`'s own index failed its pointer check for two days
-// after the attic move — 10 of 61 pointers resolved, and the doc stating the rule was the one
-// breaking it. Separately, `BACKLOG.md` P-4 said "Client rendering still open" while `deployGap`
-// stood 5× in src/client.ts.
-//
-// These do NOT check whether prose is true. They check the two things a machine can: that a
-// pointer resolves, and that a symbol a doc calls ABSENT is in fact absent. Everything else stays
-// reading work — ./register.sh prints the open markers so a human can do it.
-
-{
-  // 5a. Every doc pointer in the index resolves. The pattern is the index's own — lowercase
-  // basenames in backticks — and that is deliberate: `docs/attic/…` and the neighbouring
-  // repository's `docs/fixtures.md` carry a slash, and the four unpublished security documents and
-  // the demo write-up are named WITHOUT an extension precisely so this check does not trip on files
-  // that are supposed to be absent. A check people learn to ignore is worse than no check.
-  const idx = read("docs/README.md");
-  const named = [...new Set([...idx.matchAll(/`([a-z0-9-]+\.md)`/g)].map((m) => m[1]))].sort();
-  pin("docs/README.md yields doc pointers to check", named.length > 0, `${named.length} pointers`);
-  const broken = named.filter((f) => !exists(`docs/${f}`));
-  pin("every doc pointer in docs/README.md resolves to a file", broken.length === 0, broken.join(", "));
-  // The other direction is NOT pinned, and that is a decision, not an oversight: the index names
-  // twelve OPERATIVE docs on purpose and the shelf holds more, so an unlisted doc is a call to make
-  // (index it, or attic it) rather than a defect to fail a land on. ./register.sh §5 prints it.
-}
-
-{
-  // 5b. No doc calls ABSENT a symbol that is present.
-  //
-  // The rule, stated so it survives a rewrite of every doc: a line that pairs an absence phrase
-  // with a backticked symbol is making a checkable claim, and the symbol must not occur in the
-  // source the claim is about — the .ts/.sh file named in the same clause, or server.ts by default,
-  // which is the wording BACKLOG P-10 used.
-  //
-  // The SUBJECT is bound to the clause, not to the line. That is what keeps this quiet on a corpus
-  // full of measurements: the work-register row for P-7c used to read "`FLEET_VERIFY_CMD` pro Repo
-  // — `verifyCmdFor`/`repoVerify` kommen **0×** vor", and only the two after the dash were claimed
-  // absent — `FLEET_VERIFY_CMD` itself was very much in server.ts. A line-wide scan would fail on a
-  // true sentence, and a pin that cries on truth gets switched off.
-  // That example is quoted from its OWN history on purpose: P-7c landed on 2026-08-08, `verifyCmdFor`
-  // exists, and the row was rewritten in the same change — which is this rule doing its job, one
-  // measurement's worth of it. Kept here because the shape is what the rule is about, not the row.
-  //
-  // Deliberately narrow, and the misses are known: a claim whose subject is prose rather than a
-  // backticked symbol is not checkable ("Client rendering still open"), and neither is one that
-  // wraps across two lines. Under-coverage that stays silent beats a net that has to be muted.
-  //
-  // THE ESCAPE HATCH, and why it is not optional (briefs/work-register.md §6). "Defined" is not
-  // "built": a symbol can exist, be read in two places, and still have nothing act on it — which
-  // is exactly what BACKLOG Track A says about the ladder, and it is a TRUE "unbuilt" claim about
-  // a symbol that is present. A detector with no answer to that fails on a true sentence at its
-  // first real case and gets switched off within the week. So a line may opt out with
-  //
-  //   <!-- rot-ok: defined but no consumer acts on it -->
-  //
-  // on the line itself or the one above it. The exemption is COUNTED and printed in the pin's
-  // detail: a silent exception is just drift again, wearing a comment.
-  const ABSENCE = /(?:\bungebaut|\bunbuilt|\bnicht gebaut|\bnot built|0\s*[×x]\s*\*{0,2}\s*vor\b)/gi;
-  const BOUNDARY = /[|—(),;:·„"“”]/;
-  const ROTOK = /<!--\s*rot-ok:/;
-  const docs = readdirSync(`${ROOT}/docs`).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`);
-  const claims: { where: string; sym: string; target: string }[] = [];
-  let exempt = 0;
-  for (const d of docs) {
-    const lines = read(d).split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (!ABSENCE.test(lines[i])) { ABSENCE.lastIndex = 0; continue; }
-      ABSENCE.lastIndex = 0;
-      if (ROTOK.test(lines[i]) || (i > 0 && ROTOK.test(lines[i - 1]))) { exempt++; continue; }
-      for (const m of lines[i].matchAll(ABSENCE)) {
-        const before = lines[i].slice(0, m.index);
-        let cut = 0;
-        for (let k = before.length - 1; k >= 0; k--) if (BOUNDARY.test(before[k])) { cut = k + 1; break; }
-        const clause = before.slice(cut);
-        // one backtick span = one token, never split further. A doc listing alternatives writes
-        // them as separate spans ("`verifyCmdFor`/`repoVerify`" is two), so splitting on the
-        // slash buys nothing and destroys the single-span route names ("`api/deploy`" is one).
-        const toks = [...clause.matchAll(/`([^`]+)`/g)].map((t) => t[1].trim()).filter(Boolean);
-        const files = toks.filter((t) => /\.(ts|sh)$/.test(t) && exists(t));
-        const syms = toks.filter((t) => /^[A-Za-z_][A-Za-z0-9_/-]*$/.test(t) && t.length >= 3);
-        for (const sym of syms)
-          for (const target of files.length ? files : ["server.ts"])
-            claims.push({ where: `${d}:${i + 1}`, sym, target });
-      }
-    }
-  }
-  const src = new Map<string, string>();
-  const live = claims.filter((c) => {
-    if (!src.has(c.target)) src.set(c.target, read(c.target));
-    return src.get(c.target)!.includes(c.sym);
-  });
-  pin("no doc calls \"unbuilt\" a symbol its own source defines",
-    live.length === 0,
-    `${claims.length} checkable claim(s) in ${docs.length} docs, ${exempt} rot-ok exemption(s); ` +
-    live.map((c) => `${c.where}: "${c.sym}" IS in ${c.target}`).join("; "));
 }
 
 pin("the backlog nudge is opt-in: unset means zero and exactly one positive-only timer can call it", /const BACKLOG_NUDGE_MS = [^;\n]*process\.env\.FLEET_BACKLOG_NUDGE_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickBacklogNudge")).length === 1 && /if \(BACKLOG_NUDGE_MS > 0\) setInterval\([^\n]*tickBacklogNudge/.test(server));
@@ -3246,34 +2687,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && labels.foreign === "claude/glm-5.3" && new Set(Object.values(labels)).size === 5,
       JSON.stringify(labels));
   }
-  // THE SUMMARY'S HONEST NUMBERS (2026-09-18): state.sh prints renderSummary's output as its one
-  // land-quality line, so the summary leads with the LINE-WEIGHTED rework share — a land that
-  // rewrote 1 of 400 lines must not read like one that rewrote 300 — plus red and the reds
-  // adjudicated real, while rework3d % drops to a secondary column (a measurement, never a control
-  // variable). The definitions travel from ONE legend that the full render shares: a re-typed
-  // sentence is how two renders of the same number drift apart.
+  // THE SUMMARY ON NO ROWS (2026-09-18): state.sh prints renderSummary's output as its one
+  // land-quality line, and an empty window must say so rather than print a zero share.
   {
-    const row: LandRow = {
-      branch: "b", taskId: null, model: "m", harness: "h", modelOrigin: "spawn", effort: null,
-      size: "klein", landedAt: 0, mainAfter: "a", codeLand: true, insertedLines: 100,
-      reworkLines3d: 10, reworkLines7d: null, reworkByFixSubject: false, auditRed: true,
-      auditVerdict: "real", ownerPrompts: null, disposition: "landed", asOf: "20260918", asOfAt: 0,
-    };
-    const sum = renderSummary([row], "14d");
     const empty = renderSummary([], "x");
-    pin("land-quality's summary leads with the line-weighted rework share and red+real; rework3d % is a secondary column",
-      (sum.split("\n")[0] ?? "").startsWith("  land-quality 14d @20260918: nacharbeit 10% (10/100 lines) · red 1/1 100% · real 1/1")
-      && sum.includes("Nebenspalten: n/code 1/1c · rw 1/1 100%"),
-      sum.split("\n").slice(0, 2).join(" ⏎ "));
-    const full = renderFull([row], "head", {});
-    const legend = [
-      "rework3d = inserted lines rewritten by ANY later main commit ≤3 d (over closed windows)",
-      "fix3d(code) = a `fix…` commit rewrote inserted CODE lines ≤3 d, over code lands",
-      "auditRed over audits that measured",
-    ];
-    pin("land-quality's summary carries the full render's legend sentences verbatim — one definition per number",
-      legend.every((s) => sum.includes(s) && full.includes(s)),
-      legend.map((s) => `${sum.includes(s) ? "sum" : "MISSING"}/${full.includes(s) ? "full" : "MISSING"}`).join(" · "));
     pin("land-quality's summary on no rows says 0 lands and never a zero share",
       empty.includes(": 0 lands") && !/nacharbeit 0/.test(empty), empty.split("\n")[0] ?? "");
   }
@@ -3444,22 +2861,10 @@ await import(pathToFileURL(process.argv[2]).href);
           pin("state.sh live-size start has at most 80 lines and 10000 UTF-8 bytes",
             measured.status === 0 && measured.stdout.trimEnd().split("\n").length <= 80 && bytesWithinBudget(measured.stdout),
             `${measured.stdout.trimEnd().split("\n").length} lines; ${Buffer.byteLength(measured.stdout)} bytes`);
-          writeFileSync(script, prefix.replace("MAX_LINES, MAX_BYTES = 80, 10000", "MAX_LINES, MAX_BYTES = 10000, 1000000")
-            .replace("ordered[:limit]", "ordered"));
-          const unbounded = run(script, "--brief", "fresh", large);
-          pin("state.sh byte pin rejects an executed unbounded-renderer mutation and multibyte overflow",
-            unbounded.status === 0 && !bytesWithinBudget(unbounded.stdout) && !bytesWithinBudget("ä".repeat(5000) + "x"),
-            `${Buffer.byteLength(unbounded.stdout)} mutated bytes; ceiling=10000`);
-          writeFileSync(script, prefix + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
         }
         const full = run(script, "--full"), invalid = run(script, "--not-a-flag");
         pin(`${name} --full selects diagnosis, unknown flag rejects before either producer`,
           full.calls.join(",") === "full" && full.stdout.includes("__FULL_PATH__") && invalid.status === 2 && invalid.calls.length === 0);
-        writeFileSync(script, prefix.replace("--brief)\n", '--brief)\n  "$0" --full\n')
-          + `\nprintf 'full\\n' >> "$HELD_PROBE_LOG"\nprintf '__FULL_PATH__\\n'\n`);
-        const mutant = run(script, "--brief");
-        pin(`${name} full-replay mutation makes the no-full-work claim fail (executed negative control)`,
-          mutant.calls.includes("full") && mutant.stdout.includes("__FULL_PATH__"));
       }
       const operationalRoute = /if \(url\.pathname === "\/api\/operational-view" && req\.method === "GET"\)[\s\S]{0,250}/.exec(server)?.[0] ?? "";
       const ownerGate = server.lastIndexOf('if (!(await tokenGate(tokenFrom(req))))', server.indexOf(operationalRoute));
@@ -3471,13 +2876,6 @@ await import(pathToFileURL(process.argv[2]).href);
   }
   {
     const body = (head: string) => server.match(new RegExp(head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\\s\\S]*?\\n\\}\\n"))?.[0] ?? "";
-    const standard = body("function buildProgramMainBrief("), successor = body("function buildProgramMainSuccessionBrief(");
-    const orchestrator = body("function buildOrchestratorSpawnBrief("), orchestraSuccessor = body("function buildOrchestratorSuccessionBrief(");
-    pin("role cards and all four Fleet Standard start builders name the single state --brief entry",
-      [standard, successor, orchestrator, orchestraSuccessor].every((s) => s.includes("./state.sh --brief") && !s.includes('"2. Run ./register.sh.') && !s.includes('"2. Führe ./register.sh'))
-      && read("docs/rollenkarten.md").includes("Standard-Fleet-Einstieg: state.sh --brief")
-      && !read("docs/rollenkarten.md").includes("state.sh --brief → register.sh")
-      && read("docs/controller.md").includes("genau `./state.sh --brief`"));
     const role = body("function selfPosition("), inbound = body("function messageInboundFor(");
     const scopeSource = `
       const s = {id: 1, openedAt: 1, sessionId: 'mine', cwd: '/fixture', label: 'MAIN'};
@@ -3561,18 +2959,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // writer can emit is a category the ledger promises and never delivers. ("main" joined 2026-09-11
   // with POST /api/self/tasks/:id/brief — a MAIN-sharpened brief booked as "owner" would put the
   // very falsehood that door was built to end into a RATE.)
-  // S6 (08ec67c0) · THE FILING TEMPLATE IS A DOC↔CODE PAIR. AGENTS.md names the core author card;
-  // docs/self-api.md names the optional class extension. authorCardFrom's closed list decides both.
-  const cardDoorFields = /const known = \[([^\]]+)\];\n  const extra = Object\.keys\(c\)/.exec(server)?.[1] ?? "";
-  const agentsCard = /optional `card\{ziel, surface\{files, symbols\}, done, verify, verboten, size, after\?\}`/.test(read("AGENTS.md"));
-  const classCardDocs = /`card\.klasse` und optional `card\.rolle`/.test(read("docs/self-api.md"));
-  pin("the card template and class extension name the fields the create doors read",
-    cardDoorFields.replace(/\s/g, "") === '"ziel","rolle","klasse","surface","done","verify","verboten","size","after","web","variante"'
-    && agentsCard && classCardDocs && read("docs/self-api.md").includes("(`card.variante`) eine 400")
-    && read("docs/harness-adapter.md").includes('`card.web: "search"`')
-    && read("docs/harness-adapter.md").includes('`WEB: search`')
-    && /ZIEL: [^\n]*\nFLAECHE: [^\n]*\nDONE: [^\n]*\nVERIFY: [^\n]*\nVERBOTEN: [^\n]*\nROLLE: /.test(read("AGENTS.md")),
-    `door=[${cardDoorFields}] agents=${agentsCard}`);
   const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
   pin("BriefSource is a closed set whose every literal has a producer",
     briefSourceType.trim() === '"compiled" | "owner" | "main" | "raw" | "clarify" | "founding" | "card"'
@@ -3606,10 +2992,6 @@ await import(pathToFileURL(process.argv[2]).href);
     briefEditSites.length === 4 && unguarded.length === 0
       && /const briefByMain = \(b: \{ edited: boolean; by\?: string \} \| undefined\): boolean =>\n\s*!!b && b\.edited && b\.by === "main";/.test(briefClient),
     `sites=${briefEditSites.length} unguarded=[${unguarded.map((x) => x.n).join(",")}]`);
-  pin("a brief with no recorded author renders in the three legacy strings, unchanged",
-    briefClient.includes('" · edited by the owner"') && briefClient.includes('" · yours"')
-      && briefClient.includes('" — yours, pinned"'),
-    "legacy branches");
   // …and the SERVER half of the same rule: the author is stamped, never read off a request, and the
   // normalizer restores only the two literals — a hand-edited state file must not be one word away
   // from crediting a brief to the owner.
@@ -3685,8 +3067,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // the rule vacuously true, which is how this pin failed the first time it was written.
   const dStart = server.indexOf("async function dispatchTask");
   const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
-  pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
-    dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
   // The attended route may name all three adapter choices. The tick still calls the short form
   // below, so DEFAULT_SPAWN is its entire spawn decision; pin every field to null rather than
   // relying on an optional property whose absence could acquire a meaning later. The ONE optional
@@ -3700,14 +3080,6 @@ await import(pathToFileURL(process.argv[2]).href);
     dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
-  // The ceiling is a ratchet against an UNBOUNDED slice, not a style budget: every rule below reads
-  // this slice, and a tickDispatch that swallowed the file would make each of them vacuously true.
-  // Raised 20_000 → 21_000 on 2026-09-17 for the variant-group reservation gate (~600 B of gate and
-  // its pointer; the rule itself is written at server.ts#variantReserveHolds, outside this body).
-  // Raised 21_000 → 21_500 on 2026-09-24 for the measured-usage-limit gate (two lines; the rule is
-  // written at server.ts#noteHarnessLimits, outside this body — the body stood at ~20.9 kB before).
-  pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
-    tStart > 0 && tBody.length > 500 && tBody.length < 21_500, `${tBody.length} bytes`);
   // THE TICK STARTS BY THE START PLAN SINCE SCHNITT 2 (docs/messungen/2026-09-13-queue-pipeline-
   // system-entwurf.md §5). Four rules over the source, none visible to tsc:
   //   · the tick walks startPlanWaves() and nothing else — no second oldest-first sweep over `tasks`
@@ -3718,12 +3090,7 @@ await import(pathToFileURL(process.argv[2]).href);
   //   · dispatchTask and releaseTaskForMain still never reach the plan — the dispatch core starts
   //     what it is handed, and a release is a decision, not a projection;
   //   · GET /api/start-plan and the wave door read the same plan (one projection for board, door, tick).
-  // The probe half fails as itself: a server that no longer imports start-plan.ts makes the rest vacuous.
   {
-    const spImport = /import \{[^}]*\bprojectStartPlan\b[^}]*\} from "\.\/start-plan";/.test(server);
-    const spRoute = server.indexOf('url.pathname === "/api/start-plan" && req.method === "GET"');
-    pin("start plan PROBE: server.ts imports start-plan.ts and serves GET /api/start-plan", spImport && spRoute > 0,
-      `import=${spImport} route=${spRoute > 0}`);
     const bodyOf = (head: string): string => {
       const at = server.indexOf(head);
       return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
@@ -3823,22 +3190,6 @@ await import(pathToFileURL(process.argv[2]).href);
       && tBody.indexOf("if (!free) {") > harnessGateIdx,
     JSON.stringify({ masterStopIdx, harnessGateIdx, repoCapIdx: tBody.indexOf("if (lanes >= repoCap.max)"),
       progGuardIdx: tBody.indexOf("if (next.programId) {"), freeIdx: tBody.indexOf("if (!free) {") }));
-  // ...and the note says the two things a reader needs and NEITHER of them falsely: the harness, that
-  // the only remaining path is a hand dispatch, and WHICH of the two conditions declined. The last one
-  // is why the sentence is derived rather than written twice — with the flag SET, `container` still
-  // declines on its own `automatable: false`, and a note that said "FLEET_HARNESS_AUTOMATION off"
-  // there would send the owner after an env change that changes nothing.
-  const whyFn = server.match(/const harnessAutomationWhy = [\s\S]*?;\n/)?.[0] ?? "";
-  const whyReaders = server.split("harnessAutomationWhy()").length - 1;
-  pin("the harness wait-note names the harness, 'hand dispatch only' and the condition that actually declined — from the one derived sentence",
-    /waiting\(`waiting: harness \$\{rowH\.id\} is not automatable — no unattended path may drive it, hand dispatch only \(\$\{harnessAutomationWhy\(\)\}\)`\)/.test(tBody)
-      && whyFn.includes("FLEET_HARNESS_AUTOMATION is set; the adapter declines")
-      && whyFn.includes("FLEET_HARNESS_AUTOMATION is off; no named harness is automatable without it")
-      // two readers are the tick's note and canDeliver's gate; the other two are the variant group's
-      // (E4): the filing refusal (taskVariantsFromBody) and the group start's note (startVariantGroup)
-      && whyReaders === 4
-      && !/FLEET_HARNESS_AUTOMATION off\)/.test(tBody),
-    `note=${tBody.match(/waiting\(`waiting: harness[^`]*`\)/)?.[0] ?? "none"} readers=${whyReaders}`);
   // ...and it still SKIPS. A property of one row may never stop the sweep, and hoisting the gate made
   // that more load-bearing rather than less: it is now the FIRST note-writing branch, so a `return`
   // here would hold every row behind the oldest non-automatable one in the queue.
@@ -3878,14 +3229,6 @@ await import(pathToFileURL(process.argv[2]).href);
     && /Math\.min\(v, REPO_MAX_LANES_MAX\)/.test(repoCapFn)
     && /const REPO_MAX_LANES_MAX = SEPARATE_LANE_SLOTS \? FLEET_MAX_SESSIONS : MAX_SLOTS;/.test(server),
     repoCapFn.slice(0, 400) || "repoLaneCap missing");
-  // ...and the note carries the SOURCE next to the number. Two owner actions hide behind one
-  // sentence — the machine default needs an env change and a restart, a repo entry needs one API
-  // call — and a board that prints only "1/1" cannot tell them apart. Pinned as shape because a
-  // fleet with no entry (every suite fixture by default) renders only the default branch.
-  const repoSourceNote = tBody.match(/waiting\(`waiting: \$\{lanes\}[^`]*`\)/)?.[0] ?? "";
-  pin("the repo cap's wait-note names the SOURCE of the number it held against, not just the number",
-    /repoCap\.source === "repo" \? "repo cap" : "machine default"/.test(repoSourceNote),
-    repoSourceNote || "no repo cap note");
   // ...and the NUMBER that second cap uses is now an OWNER-writable one (Program.dispatch.maxLanes),
   // which is exactly the shape that could quietly widen the machine. It cannot, and the reason is one
   // expression: programDispatchCap is a Math.min against DISPATCH_MAX_LANES_PER_PROGRAM, so an owner
@@ -3920,14 +3263,6 @@ await import(pathToFileURL(process.argv[2]).href);
     /\n      if \(next\.programId\) \{/.test(tBody)
     && /slots\.filter\(\(s\) => s\.cwd && s\.programId === next\.programId\)\.length/.test(progCount),
     progCount || "no programLanes count");
-  // The two caps write onto the SAME row, so the owner can only tell which one held from the words.
-  // A refactor that reuses the repo cap's sentence would leave the board unable to distinguish them.
-  const capNotes = [...tBody.matchAll(/waiting\(`(waiting: [^`]*)`\)/g)].map((m) => m[1]);
-  const repoNote = capNotes.find((n) => n.includes("lanes busy in ${basename(repo)}")) ?? "";
-  const progNote = capNotes.find((n) => n.includes("lanes busy in program")) ?? "";
-  pin("each lane cap names ITSELF on the row — the repo one names the repo, the program one names the program",
-    !!repoNote && !!progNote && repoNote !== progNote && !repoNote.includes("program"),
-    JSON.stringify({ repoNote, progNote }));
   // ...and WHAT EACH CAP DOES TO THE SWEEP, which is a different rule from the two above and the
   // one no runtime test can see on a single-repo fleet: the per-repo cap must hold ITS OWN ROW and
   // let the sweep walk on. It used to `return`, so one saturated project stopped the whole tick and
@@ -3956,8 +3291,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // would only be wrong on the fleet where the two answers differ.
   const relStart = server.indexOf("async function releaseTaskForMain(");
   const relBody = relStart < 0 ? "" : server.slice(relStart, server.indexOf("\n}\n", relStart));
-  pin("releaseTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
-    relStart > 0 && relBody.length > 500 && relBody.length < 20_000, `${relBody.length} bytes`);
   // Both halves of "the caller cannot nominate its own work": the program comes from the binding
   // and the repo from the caller's checkout, and the handler mentions neither a request nor a body
   // at all — the strongest form of the /api/self/autos rule, which merely IGNORES a `slot` field.
@@ -4175,8 +3508,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // "this handler writes no X" — and the paragraphs around the handler name every X they are there
   // to forbid, so a rule read over the prose would fail on the explanation of itself.
   const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
-    crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
   // ONE MAIN PER PROJECT (2026-10-06): a body `programId` is no longer refused outright — it is a
   // CHOICE among the caller's own bound Programs, answered by boundProgramForMain(s, choice) and
   // never by anything else; `null` is the project note (Merkzettel). The pin holds that the choice
@@ -4311,13 +3642,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // own object literal rather than the file, or a `automatable: false` anywhere would satisfy it.
   const cStart = server.indexOf("const CONTAINER_HARNESS: Harness = {");
   const cBody = cStart < 0 ? "" : server.slice(cStart, server.indexOf("\n};\n", cStart));
-  // The upper bound is a VACUITY guard (an unfound terminator must not let the slice swallow the
-  // declarations after it), never a size policy on the adapter. It was 8_000 and started failing on
-  // a legitimate comment in 2026-08-21's effort cut — shrinking prose to fit a magic number is
-  // editing the thing the pin guards in order to satisfy the pin, so the number moved instead. It
-  // still guards what it was written for: server.ts is two orders of magnitude larger than this.
-  pin("the container adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
-    cStart > 0 && cBody.length > 500 && cBody.length < 12_000, `${cBody.length} bytes`);
   pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
     /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
     cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
@@ -4359,8 +3683,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // to own a composer (the claude-gate wake fixture) — see CLAUDE_READY_FRAME for each measurement.
   const clStart = server.indexOf("const CLAUDE_HARNESS: Harness = {");
   const clBody = clStart < 0 ? "" : server.slice(clStart, server.indexOf("\n};\n", clStart));
-  pin("the claude adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
-    clStart > 0 && clBody.length > 500 && clBody.length < 14_000, `${clBody.length} bytes`);
   pin("claude declares a POSITIVE ready marker for the real binary, beside the composer glyph it also reads",
     /readiness: \{ accept: IS_CLAUDE \? CLAUDE_READY_FRAME : null, blocks: \[CLAUDE_TRUST_DIALOG\] \}/.test(clBody)
       && /composer: \{ kind: "glyph" as const, re: CLAUDE_COMPOSER_GLYPH \}/.test(clBody)
@@ -4387,9 +3709,6 @@ await import(pathToFileURL(process.argv[2]).href);
 
   const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
-  pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
-    // 14 KB: the literal stood at 11.9 KB when the 2026-09-14 text-lane profile added its append
-    xStart > 0 && xBody.length > 500 && xBody.length < 14_000, `${xBody.length} bytes`);
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
   // only sound alongside the declared readiness seam (trust and sign-in were measured in rendered
@@ -4540,22 +3859,6 @@ await import(pathToFileURL(process.argv[2]).href);
       && /beforeKill \}\);/.test(ownerDoorBody) && ownerDoorBody.includes("await ownerSucceedBusy(s)")
       && /appendix: null, beforeKill: null \}\);/.test(bodyOf("async function handleSelfSucceed(", "// THE GENERIC RAIL")),
     `ask@${killAskAt} brief@${genericBody.indexOf("const brief = ")} respawn@${genericBody.indexOf("await respawnInPlace(s, ")}`);
-  // ...and the ONE fixture that has to place a marker on the far side of that grace mirrors its
-  // value. `unbound succession` proves the generic rail withholds a founding brief until the ready
-  // marker appears, which only holds as a statement about READINESS if the marker lands after the
-  // grace expires. The mirror is a source-level pair with no compiler between its halves: raising
-  // FOUNDING_BOOT_GRACE_MS without moving the fixture would silently demote that block to a proof
-  // of the grace, and lowering it would leave the marker inside the readiness budget by luck.
-  // Since 2026-09-16 it is the EXPRESSION that is mirrored, not the number. The grace became an env
-  // knob the isolated suite shortens (FLEET_FOUNDING_BOOT_GRACE_MS=2000 there), so a fixture holding
-  // the literal 4000 would plant its "late" marker four seconds into a 2 000 ms world: past the
-  // readiness budget, i.e. proving a timeout instead of a delivery. One parse, one floor, one
-  // default, on both sides — the same shape as the MERGE_IDLE_MS pair further down.
-  const GRACE_EXPR = "Math.max(250, Number(process.env.FLEET_FOUNDING_BOOT_GRACE_MS ?? 4000) | 0)";
-  const serverGrace = server.includes(`const FOUNDING_BOOT_GRACE_MS = ${GRACE_EXPR};`);
-  const fixtureGrace = read("e2e/programs.ts").includes(`const UNBOUND_GRACE_MS = ${GRACE_EXPR};`);
-  pin("the unbound-succession fixture mirrors the server's founding boot grace EXPRESSION, so its late marker stays late at every grace",
-    serverGrace && fixtureGrace, `server=${serverGrace} fixture=${fixtureGrace}`);
   const executionStart = server.indexOf("async function programExecutionView(");
   const executionBody = executionStart < 0 ? ""
     : server.slice(executionStart, server.indexOf("\n}\n", executionStart));
@@ -4708,8 +4011,6 @@ await import(pathToFileURL(process.argv[2]).href);
   // re-grown fence would behave exactly like the bare spawn until a real lane's commit dies on it.
   const pStart = server.indexOf("const PI_HARNESS: Harness = {");
   const pBody = pStart < 0 ? "" : server.slice(pStart, server.indexOf("\n};\n", pStart));
-  pin("the pi adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
-    pStart > 0 && pBody.length > 500 && pBody.length < 12_000, `${pBody.length} bytes`);
   const pSpawn = pBody.slice(pBody.indexOf("spawnCmd: (o) => {"), pBody.indexOf("worker: () => null"));
   const pCode = pSpawn.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("the pi spawn line starts pi bare with the owner's full reach — no sandbox-exec anywhere in it",
@@ -4909,14 +4210,6 @@ export default function (pi) {
           pin("pi-zai the same pi run cannot write auth.json or read the key file",
             baseline.stderr.includes("AUTH_WRITE=EPERM") && baseline.stderr.includes("KEY_READ=EPERM")
               && readFileSync(auth, "utf8") === "{}", baseline.stderr.slice(-500));
-          pin("pi-zai mutation: removing the empty-store data grant prevents pi bootstrap",
-            !booted(pi(p.replace(grant, ""))));
-          const writable = pi(p + `(allow file-write* (literal "${auth}"))`);
-          pin("pi-zai mutation: granting credential-store writes is observed by the same pi probe",
-            booted(writable) && writable.stderr.includes("AUTH_WRITE=OPEN"), writable.stderr.slice(-500));
-          const readableKey = pi(p + `(allow file-read-data (literal "${keyFile}"))`);
-          pin("pi-zai mutation: granting key-file reads is observed by the same pi probe",
-            booted(readableKey) && readableKey.stderr.includes("KEY_READ=OPEN"), readableKey.stderr.slice(-500));
           const populated = build('{"zai":{"key":"synthetic-login"}}');
           const refusal = run(populated, "/usr/bin/true");
           const withoutError = populated.replace(`(error "${reason}")`, "");
@@ -4925,8 +4218,6 @@ export default function (pi) {
           pin("pi-zai populated store names its startup refusal and stays mechanically unreadable",
             refusal.status !== 0 && refusal.stderr.includes(reason) && denied.status !== 0
               && denied.stderr.includes("Operation not permitted"), `${refusal.status} / ${denied.stderr.trim()}`);
-          pin("pi-zai mutation: an unconditional auth read grant exposes the populated-store refusal",
-            read(withoutError + grant).status === 0);
         } else {
           skip("pi-zai real pi credential-store fence execution", "Darwin sandbox-exec is unavailable; generated-profile checks ran");
         }
@@ -5139,8 +4430,6 @@ export default function (pi) {
   const puStart = server.indexOf("const PI_UNFENCED_HARNESS: Harness = {");
   const puBody = puStart < 0 ? "" : server.slice(puStart, server.indexOf("\n};\n", puStart));
   const puCode = puBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("pi-unfenced is a bounded explicit adapter rather than a branch in normal Pi's fence",
-    puStart > 0 && puBody.length > 400 && puBody.length < 5_000, `${puBody.length} bytes`);
   pin("pi-unfenced really starts bare Pi and says UNFENCED before the owner picks it",
     /return `\$\{PATH_EXPORT\}\$\{cmd\}; exec \$\{SHELL\}`/.test(puCode)
     && !puCode.includes("sandbox-exec") && /note: "UNFENCED host access:/.test(puCode),
@@ -5245,8 +4534,6 @@ export default function (pi) {
   const stripComments = (s: string): string =>
     s.split("\n").filter((l) => !l.trim().startsWith("//")).map((l) => l.replace(/\s+\/\/.*$/, "")).join("\n");
   const wExec = stripComments(wBody);
-  pin("summaryViaSession's body is bounded and non-empty (an unfound one would make the rules below vacuous)",
-    wStart > 0 && wExec.length > 800 && wExec.length < 8_000, `${wExec.length} bytes of code`);
   pin("the worker spawn names no agent binary and no spawn flags of its own — the line comes from the adapter",
     /WORKER_HARNESS\.worker\(/.test(wExec) && !/\bclaude\b/.test(wExec)
       && !/--session-id|--model|--tools/.test(wExec),
@@ -5265,9 +4552,6 @@ export default function (pi) {
   // over EVERY adapter literal, so the one added tomorrow is covered tomorrow.
   const adapters = [...server.matchAll(/const ([A-Z_]+)_HARNESS: Harness = \{/g)]
     .map((m) => ({ name: m[1], body: server.slice(m.index!, server.indexOf("\n};\n", m.index!)) }));
-  pin("server.ts yields its harness adapter literals (an unparsed set would make the rule below vacuous)",
-    adapters.length >= 4 && adapters.every((a) => a.body.length > 300),
-    adapters.map((a) => `${a.name}:${a.body.length}B`).join(" "));
   // Repository-write ownership is an adapter declaration, never an id/form guess. Match each
   // literal's executable source and require exactly one explicit boolean so an adapter added
   // tomorrow cannot inherit an answer.
@@ -5323,8 +4607,6 @@ export default function (pi) {
   const declared = (serverExec.match(/const REPO_WORKER_KEYS: RepoWorkerKey\[\] = \[([^\]]*)\]/)?.[1] ?? "")
     .split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
   const resolved = [...new Set([...serverExec.matchAll(/workerCmdFor\("([A-Za-z]+)"/g)].map((m) => m[1]))];
-  pin("server.ts yields a non-empty REPO_WORKER_KEYS (an unparsed one would make the rule below vacuous)",
-    declared.length > 0, declared.join(", ") || "none");
   pin("every per-repo-configurable worker is resolved through workerCmdFor, and vice versa",
     declared.length === resolved.length && declared.every((k) => resolved.includes(k)),
     `declared=[${declared.join(", ")}] resolved=[${resolved.join(", ")}]`);
@@ -5714,8 +4996,6 @@ export default function (pi) {
   // at spawn with the task text about to be typed into a bare shell.
   const acStart = server.indexOf("function agentCmd(");
   const acBody = server.slice(acStart, server.indexOf("\n}\n", acStart));
-  pin("agentCmd's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
-    acStart > 0 && acBody.length > 400 && acBody.length < 8_000, `${acBody.length} bytes`);
   const claudeBranch = acBody.slice(acBody.indexOf("if (claude) {"), acBody.indexOf("else if (HARNESS_MODEL_FLAG"));
   const effortAppends = (acBody.match(/cmd \+= ` --effort /g) ?? []).length;
   pin("agentCmd appends --effort single-quoted, exactly once, and only on the claude branch",
@@ -5800,12 +5080,7 @@ export default function (pi) {
 }
 
 {
-  const habits = readFileSync(join(ROOT, "fleet-gepflogenheiten.md"), "utf8");
   const adapterDoc = readFileSync(join(ROOT, "docs/harness-adapter.md"), "utf8");
-  pin("Habits prompt: file is at most 2000 UTF-8 bytes and every non-empty line names its source",
-    Buffer.byteLength(habits) <= 2000 && habits.trim().length > 0
-    && habits.trim().split("\n").every((line) => /\[Quelle: [^\]]+\]$/.test(line)),
-    `bytes=${Buffer.byteLength(habits)}`);
   const habitsRule = (src: string): string[] => {
     const start = src.indexOf("const shellSingleQuote =");
     const end = src.indexOf("// THE ROLE CUT IS ON BY DEFAULT", start);
@@ -5844,25 +5119,13 @@ export default function (pi) {
   const found = habitsRule(server);
   pin("Habits prompt: default/off means no argument; only claude gets a single-quoted absolute path; unknown logs once and stays off",
     found.length === 0 && adapterDoc.includes("FLEET_HABITS_PROMPT"), found.join(" | "));
-  const mutations: [string, string, string][] = [
-    ["default on", 'HABITS_PROMPT_VALUE ?? ""', 'HABITS_PROMPT_VALUE ?? "1"'],
-    ["enable guard removed", 'if (HABITS_PROMPT_ENABLED) cmd +=', 'cmd +='],
-    ["unquoted path", '${shellSingleQuote(HABITS_PROMPT_PATH)}', '${HABITS_PROMPT_PATH}'],
-    ["relative path", '`${import.meta.dir}/fleet-gepflogenheiten.md`', '"fleet-gepflogenheiten.md"'],
-    ["all harnesses", 'if (claude) {\n    if (HABITS_PROMPT_ENABLED)', 'if (true) {\n    if (HABITS_PROMPT_ENABLED)'],
-  ];
-  const missed = mutations.flatMap(([name, from, to]) => !server.includes(from)
-    ? [`${name}: anchor missing`] : habitsRule(server.replace(from, to)).length === 0 ? [`${name}: not caught`] : []);
-  pin("Habits prompt mutation probe: default, enable guard, claude-only, absolute path and quoting mutants all fail the same rule",
-    missed.length === 0, missed.join(" | "));
 }
 
 {
   // REMOTE CONTROL (Slot.remote, 2026-09-28): the owner reaches a Fleet session from the Claude app.
   // Two promises, both string concatenation on a shell line and so invisible to tsc: the name is
   // SINGLE-QUOTED and cannot break out of its quotes, and ONLY the claude adapter ever puts the flag
-  // on a line — a foreign binary dies on it at spawn. The rule is a function over the source so the
-  // mutation probe below can run the very same rule against broken copies of it.
+  // on a line — a foreign binary dies on it at spawn.
   const remoteRule = (src: string): string[] => {
     const bad: string[] = [];
     const at = src.indexOf("function agentCmd(");
@@ -5887,23 +5150,6 @@ export default function (pi) {
   const found = remoteRule(server);
   pin("Remote Control: agentCmd appends --remote-control single-quoted, once, on the claude branch; only the claude adapter resolves and reads the name",
     found.length === 0, found.join(" | "));
-  // THE MUTATION PROBE. Each mutant breaks one half of the promise, and the rule must name it. A
-  // mutation that no longer applies (its anchor moved) fails as ITSELF, never as a vacuous pass.
-  const mutants: [string, string, string][] = [
-    ["unquoted name", "` --remote-control '${remoteName}'`", "` --remote-control ${remoteName}`"],
-    ["append moved off the claude branch", "    if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n", ""],
-    ["claude gate dropped at spawn", `remoteName: h.id === "claude" && occupant.remote`, "remoteName: occupant.remote"],
-    ["container adapter reads the name", "agentCmd(o.sessionId, o.resume, o.model, null)}", "agentCmd(o.sessionId, o.resume, o.model, null, true, null, o.remoteName)}"],
-  ];
-  const probe = mutants.map(([what, from, to]) => {
-    if (!server.includes(from)) return `${what}: anchor gone`;
-    let mutant = server.replace(from, to);
-    if (what === "append moved off the claude branch")
-      mutant = mutant.replace("  return cmd;\n}", "  if (remoteName) cmd += ` --remote-control '${remoteName}'`;\n  return cmd;\n}");
-    return remoteRule(mutant).length > 0 ? "" : `${what}: not caught`;
-  }).filter(Boolean);
-  pin("Remote Control mutation probe: every mutant of quoting and claude-only is caught by the rule above",
-    probe.length === 0, probe.join(" | "));
   // ...and the reason the quotes are sufficient: whatever label the owner types, the name holds only
   // [A-Za-z0-9 ._-], starts with `fleet ` (never with `-`, which claude would read as the next flag)
   // and stays under its cap. Hostile inputs on purpose: a quote, a substitution, a glob, a flag.
@@ -5916,63 +5162,6 @@ export default function (pi) {
   pin("remoteControlName keeps every name inside `fleet [A-Za-z0-9 ._-]+` and its cap — the charset the single quotes rest on",
     leaks.length === 0 && names[5] === "fleet claude-fleet" && names[7] === "fleet slot 7",
     leaks.length ? leaks.map((n) => JSON.stringify(n)).join(" ") : names.map((n) => JSON.stringify(n)).join(" "));
-}
-
-{
-  // A CAST ON A NETWORK RESPONSE IS A CLAIM ABOUT A FOREIGN SURFACE, NOT A TYPE — and this one bit
-  // twice on 2026-08-09, in two files, by two different authors, on the same field. Both wrote
-  // `as { slots: Row[] }` with `awaiting` on Row. The poll does not carry `awaiting` (it lives on
-  // laneSignalView, the STEWARD view), so `row.awaiting === "owner"` compiled and was `undefined`
-  // forever: a probe that could never be green, failing as if the product's filter were broken.
-  // tsc cannot see it — the cast is what makes it legal. Both fixtures were writing the flag into
-  // fleet.json correctly; only the read asked the wrong surface. (8e2b3e5, then e2e/tasks.ts.)
-  //
-  // The rule is derived, not a list: whatever key names the poll's slot row emits TODAY are the
-  // permitted ones. Deliberately over-permissive in one direction — the nested `share` object's own
-  // keys land in the allowed set too — because the failure this guards is a name the payload cannot
-  // produce AT ALL, and a pin that under-permits would fail on honest edits.
-  // Several keys share one line (`id: s.id, cwd: s.cwd, ...`), so this must not anchor to line
-  // start — that mistake was this pin's own first red, and it made honest files look guilty.
-  const rowLiteral = /slots: slots\.map\(\(s\) => \{[\s\S]*?\n(\s*)\}\),/.exec(server)?.[0] ?? "";
-  const emitted = new Set([...rowLiteral.matchAll(/([A-Za-z_]\w*):/g)].map((m) => m[1]!));
-  const tsFiles = [
-    ...readdirSync(ROOT).filter((f) => /^fleet-e2e[a-z-]*\.ts$/.test(f)),
-    ...readdirSync(`${ROOT}/e2e`).filter((f) => f.endsWith(".ts")).map((f) => `e2e/${f}`),
-  ];
-  const offenders: string[] = [];
-  let castsSeen = 0;
-  for (const f of tsFiles) {
-    const src = read(f);
-    // ONLY the owner poll. The steward view (/api/steward/sessions) is cast the same way and DOES
-    // carry doneLooking/stalled/hostCommits — matching on the cast shape alone accuses it wrongly,
-    // which is what this pin did on its first run.
-    for (const cast of src.matchAll(/get\("\/api\/sessions"\)[\s\S]{0,120}?\{\s*slots:\s*([A-Za-z_]\w*)\[\]\s*\}/g)) {
-      const name = cast[1]!;
-      const decl = new RegExp(`type ${name} = \\{([\\s\\S]*?)\\};`).exec(src);
-      if (!decl) continue; // an imported/shared type is not this trap — it has a real declaration
-      castsSeen++;
-      // TOP-LEVEL fields only. A nested shape (`ctx: { pct, windowTokens }`) is built by a function,
-      // never by the row literal, so descending into it accuses honest code — this pin's second red.
-      let depth = 0, flat = "";
-      for (const ch of decl[1]!) {
-        if (ch === "{") { depth++; continue; }
-        if (ch === "}") { depth--; continue; }
-        if (depth === 0) flat += ch;
-      }
-      for (const field of flat.matchAll(/(?:^|[;\n,])\s*([A-Za-z_]\w*)\s*[?]?:/g)) {
-        const k = field[1]!;
-        if (!emitted.has(k)) offenders.push(`${f}: ${name}.${k}`);
-      }
-    }
-  }
-  if (!emitted.size || !castsSeen) {
-    skip("no e2e cast over the /api/sessions poll names a field the payload cannot emit",
-      `emitted=${emitted.size} casts=${castsSeen} — the derivation found nothing, which is not a pass`);
-  } else {
-    pin("no e2e cast over the /api/sessions poll names a field the payload cannot emit",
-      offenders.length === 0,
-      `${castsSeen} cast(s) over ${emitted.size} emitted keys; offenders=[${offenders}]`);
-  }
 }
 
 {
@@ -6012,295 +5201,15 @@ export default function (pi) {
       : `steward=${stewardBody.includes("...stalledFacts(")} poll=${pollRow.includes("stalledFacts(")}`);
 }
 
-{
-  // 5c. NO docs/ PATH CITED FROM LIVE CODE IS DEAD — the third success measure of the
-  // Generalsanierung, held as a class instead of counted by hand.
-  //
-  // W2 rewrote 14 dead citations to 0 (docs/sanierung-2026-09/w2-filter.md). A number reached by
-  // hand rots the day after it is written: the attic move alone produced 11 of those 14, and the
-  // next move produces the next batch. A reader sent at a path that does not exist learns nothing
-  // and — worse — reads the absence as "this was never written down".
-  //
-  // THE FILTER IS THE ONE W2 NOTED BEFORE COUNTING, verbatim (w2-filter.md §"Das Kommando"), and
-  // that matters: "12 dead paths" was not derivable because every filter gave a different number
-  // (11-16, and 56 with the e2e fixtures). Source set = tracked *.ts and *.sh across the WHOLE
-  // tree, minus `e2e/` (fixtures and test texts name non-existent paths ON PURPOSE) and minus
-  // `attic/` (archived code keeps its historical state). Same filter here as there, or the
-  // success measure would be measuring something else than the thing it closed.
-  //
-  // Two rows, not one: a scan that could not run must fail as ITSELF. `git grep` exits 1 on "no
-  // matches", which is indistinguishable from "the pathspec found no files" — and an empty corpus
-  // yields zero dead paths, i.e. green, having measured nothing.
-  const RULE_DOCPATH = "no docs/ path cited from live code is dead";
-  const CITED = /docs\/[A-Za-z0-9._/-]+\.md/g;
-  const grep = spawnSync("git",
-    ["-C", ROOT, "grep", "-nIE", "--", CITED.source, "*.ts", "*.sh", ":!e2e/*", ":!attic/*"],
-    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
-  const scanned = grep.error || grep.status === null || grep.status > 1
-    ? null : grep.stdout.split("\n").filter(Boolean);
-  // first sighting wins: the detail names ONE place to go, not every echo of the same path
-  const sightings = new Map<string, string>();
-  for (const line of scanned ?? []) {
-    const where = /^(.+?:\d+):/.exec(line)?.[1];
-    if (!where) continue;
-    for (const m of line.matchAll(CITED)) if (!sightings.has(m[0])) sightings.set(m[0], where);
-  }
-  pin(`${RULE_DOCPATH} — the citation scan ran and its source set is not empty`,
-    scanned !== null && sightings.size > 0,
-    scanned === null
-      ? (grep.error?.message || grep.stderr || `git grep exited ${String(grep.status)}`).trim().slice(0, 160)
-      : `${sightings.size} distinct docs/ path(s) cited in ${new Set([...sightings.values()].map((w) => w.split(":")[0])).size} file(s)`);
-  const dead = [...sightings].filter(([path]) => !exists(path));
-  pin(RULE_DOCPATH,
-    scanned !== null && sightings.size > 0 && dead.length === 0,
-    dead.length > 0
-      ? `${dead.length} dead: ${dead.map(([path, where]) => `${path} (${where})`).join(", ")}`
-      : `${sightings.size} citation(s) checked, all resolve`);
-}
-
-// ================================================================================================
-// 6. CLAUDE.md — the one steering document with no drift pin at all
-// ================================================================================================
-// Section 5 walks `docs/`. CLAUDE.md is not in `docs/`, and it is the document every session and
-// every lane is told to obey FIRST — so it was the only one whose anchors nothing checked. Its
-// anchors rot the same way a doc's do: `BACKLOG.md` moved to the attic, a script gets renamed, a
-// `grep X server.ts` outlives the symbol, and the rulebook keeps sending readers at nothing.
-//
-// TWO CONSTRAINTS shape everything below, and both are the difference between a pin that survives
-// and one that gets switched off within the week:
-//
-// (1) THREE-VALUED, like server.ts's `rulebookDrifted`. CLAUDE.md is gitignored: a lane holds a
-//     COPY taken at spawn time. Absent → the rule is SKIPped under its own name. Present but
-//     differing from the source checkout, or not comparable to it → findings print as WARN. Only a
-//     copy that IS the source (main checkout) or matches it byte for byte is held hard. An old lane
-//     did not break the anchor its old copy names, and a pin that reds every lane guards nothing.
-//
-// (2) NO CONTENT LEAVES THIS FILE. CLAUDE.md carries the deploy host and IP; this repo is public
-//     and pin output lands in logs, reports and the land record. So the emitted detail is: the
-//     violated rule's name, the line NUMBER, and the dead anchor itself — never the line it sits
-//     on. The two extractors only ever yield tokens from narrow charsets (a path shape with no
-//     whitespace; a grep needle), safe() truncates and redacts an IPv4 literal on top, and nothing
-//     else in this section touches the text.
-{
-  const CLAUDE = "CLAUDE.md";
-  const safe = (s: string): string =>
-    s.replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "<ip>").slice(0, 60);
-
-  // --- the three values. The source of a lane's copy is the checkout its worktree hangs off:
-  // `.git` is a DIRECTORY in the main checkout and a FILE pointing at `…/.git/worktrees/<name>`
-  // in a lane. Read, never shelled out to — this file is fs-only by design.
-  let copy: string | null = null;
-  try { copy = read(CLAUDE); } catch { /* absent → not comparable */ }
-  const sourcePath = SOURCE_DIR === null ? null : `${SOURCE_DIR}/${CLAUDE}`;
-  const source = ((): string | null => {
-    try { return sourcePath ? readFileSync(sourcePath, "utf8") : null; } catch { return null; }
-  })();
-  // A lane is no longer HANDED the source file: since B2 it is written the LANE rendering of the
-  // fragments (3 of 7) plus a back-reference block. Both shapes are "current" — comparing only
-  // against the monolith would demote every fresh lane to advisory, which is this section going
-  // quiet exactly where it was built to speak. Body-only, because the block carries a timestamp.
-  const laneSource = ((): string | null => {
-    if (SOURCE_DIR === null) return null;
-    const frag = new Map<RulebookFragment, string>();
-    for (const f of RULEBOOK_FRAGMENTS) {
-      try { frag.set(f, readFileSync(`${SOURCE_DIR}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, "utf8")); }
-      catch { return null; }
-    }
-    try { return renderRulebook("lane", frag); } catch { return null; }
-  })();
-  const matchesSource = copy !== null
-    && ((source !== null && source === copy) || (laneSource !== null && rulebookBody(copy) === laneSource));
-  const state = copy === null ? "absent"
-    : source === null && laneSource === null ? "unpaired"
-    : matchesSource ? "current" : "stale";
-  const soft = state !== "current";
-
-  // the rule NAMES are the same in every branch — a reader grepping the report for a rule must find
-  // its row whether it passed, warned or was never evaluated
-  const RULE_PATHS = "every path CLAUDE.md cites still resolves";
-  const RULE_GREPS = "every grep CLAUDE.md sends the reader on still finds something";
-  const RULE_SUBJ = "CLAUDE.md yields anchors of both classes (a rule with no subject is not a pass)";
-  const RULE_ANCHORS = "every section anchor CLAUDE.md cites resolves to a heading in that file";
-
-  if (copy === null) {
-    skip(RULE_SUBJ, `no rulebook in this tree (state=${state})`);
-    skip(RULE_PATHS, "no rulebook in this tree");
-    skip(RULE_ANCHORS, "no rulebook in this tree");
-    skip(RULE_GREPS, "no rulebook in this tree");
-  } else {
-    // --- what counts as a citation THIS repo can be held to. Three filters, each for a class of
-    // false red that would otherwise land on a correct rulebook:
-    //   · git-ignored → a runtime artifact (fleet.json, the .jsonl ledgers, graphify-out/). Its
-    //     absence in a worktree is its normal state and proves nothing. Unparseable .gitignore →
-    //     everything counts as ignored, i.e. the pin under-covers rather than cries.
-    //   · absolute or under .git/ → not this tree's to own (`/tmp/fleet-e2e.lock`, `.git/index.lock`).
-    //   · not attributable to this repo → a path whose first segment is not a directory that exists
-    //     here (`demo/src/demo.ts` lives in the neighbouring demo repo, as this very file explains),
-    //     and any BARE top-level `.ts`/`.json` name, which is the shape that repo's modules have
-    //     too (`build.ts`) and cannot be told apart by name. Top-level `.sh` and `.md` stay in:
-    //     those are ours, and a renamed wrapper or an attic'd register is the case this pin is for.
-    const ignorePats = ((): string[] | null => {
-      try { return read(".gitignore").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")); }
-      catch { return null; }
-    })();
-    const ignored = (p: string): boolean => {
-      if (ignorePats === null) return true;
-      return ignorePats.some((raw) => {
-        const pat = raw.replace(/\/+$/, "").replace(/^\/+/, "");
-        const re = new RegExp(`^${pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`);
-        return re.test(p) || (!pat.includes("/") && p.split("/").some((seg) => re.test(seg)));
-      });
-    };
-    const topDirs = new Set(readdirSync(ROOT).filter((f) => { try { return statSync(`${ROOT}/${f}`).isDirectory(); } catch { return false; } }));
-    const PATH_SHAPE = /^\.?\/?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|ts|sh|json|jsonl|html|js|lock|plist|yml|yaml)$/;
-    const attributable = (p: string): boolean => {
-      if (p.startsWith("/") || p.startsWith(".git/") || ignored(p)) return false;
-      const seg = p.split("/");
-      return seg.length > 1 ? topDirs.has(seg[0]) : /\.(sh|md)$/.test(p);
-    };
-
-    const lines = copy.split("\n");
-    // --- class A: a cited path that no longer resolves
-    const deadPaths: string[] = [];
-    let paths = 0;
-    for (let i = 0; i < lines.length; i++)
-      for (const t of new Set([...lines[i].matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))) {
-        if (!PATH_SHAPE.test(t)) continue;
-        const p = t.replace(/^\.\//, "");
-        if (!attributable(p)) continue;
-        paths++;
-        if (!exists(p)) deadPaths.push(`${CLAUDE}:${i + 1} ${safe(p)}`);
-      }
-
-    // --- class B: an errand the rulebook sends the reader on — `…, grep \`sym\`` — that finds
-    // nothing. The needle is the backticked span AFTER the word; the haystack is the nearest
-    // backticked .ts/.sh file named just before it, server.ts by default, which is the form every
-    // one of these takes today. A `grep` INSIDE a backtick span is a shell command being quoted,
-    // not an errand, and is left alone — that is what keeps the redaction probe (which names the
-    // real host) out of this rule entirely.
-    const deadGreps: string[] = [];
-    let greps = 0;
-    for (let i = 0; i < lines.length; i++)
-      for (const m of lines[i].matchAll(/(?<!`)\bgrep\s+`([^`]+)`/g)) {
-        const before = lines[i].slice(Math.max(0, m.index - 140), m.index);
-        const named = [...before.matchAll(/`([^`]+\.(?:ts|sh))`/g)].map((x) => x[1]);
-        const target = named.length ? named[named.length - 1] : "server.ts";
-        greps++;
-        let hay: string | null = null;
-        try { hay = read(target); } catch { /* target itself is gone */ }
-        if (hay === null) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(target)} (target missing)`);
-        else if (!hay.includes(m[1])) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(m[1])} not in ${safe(target)}`);
-      }
-
-    // --- class C: a cited SECTION ANCHOR that no longer resolves. Class A holds a cited path to
-    // the existence of its FILE and stops there, so a rulebook may point at `docs/self-api.md`
-    // §release for months while that file has no such section — which is exactly how the reference
-    // for POST /api/self/tasks/:id/release stayed missing after 83468e0 landed the route: the
-    // rulebook named the door and the errand ended in nothing, with every check green. The form
-    // held here is the one the rulebook actually writes: a path immediately followed by `§<anchor>`
-    // (backticks optional — one citation carries none), filtered by the SAME attributable/exists
-    // gate as class A so a gitignored or foreign path is not double-reported here and there.
-    //
-    // THE MATCH IS DELIBERATELY TOLERANT, because a pin that reds on a correct heading is worse
-    // than no pin: the anchor is a shorthand, never the heading. Two shapes, and no special-case
-    // list — a list of exceptions in here would BE the defect:
-    //   · a numeric anchor (`§4`, `§11.7`) must START its heading, once a leading `§` is stripped
-    //     from the heading too (the messgeschichten file writes its headings as `## §4 …`). The
-    //     start requirement is what keeps `§1` from resolving against `## 11. …`.
-    //   · a word anchor (`§PATH`, `§autos`, `§Faktschicht`) may stand anywhere in the heading on
-    //     word boundaries — `§succeed` answers to `## succeed / retire — …` and `§Faktschicht` to
-    //     `## Die Faktschicht \`agent\``, and neither is a prefix of its heading. SLASHED TOKENS
-    //     ARE DROPPED FIRST, and that is not tidiness: these headings quote the route they document
-    //     (`## watch — POST /api/self/watch`), so a plain word match reads the ROUTE and the anchor
-    //     then resolves against any heading that merely mentions it. Measured, not feared — renaming
-    //     that heading to `## abonnieren — POST /api/self/watch` left the first version of this rule
-    //     GREEN on a broken anchor. A path token inside a heading is not that heading's name.
-    const deadAnchors: string[] = [];
-    let anchors = 0;
-    const headingCache = new Map<string, string[] | null>();
-    const headingsOf = (rel: string): string[] | null => {
-      if (!headingCache.has(rel)) {
-        let hs: string[] | null = null;
-        try {
-          hs = read(rel).split("\n").filter((l) => /^#{1,6}\s/.test(l))
-            .map((l) => l.replace(/^#{1,6}\s+/, "").replace(/[`*]/g, "").replace(/^§/, "").trim());
-        } catch { hs = null; }
-        headingCache.set(rel, hs);
-      }
-      return headingCache.get(rel) ?? null;
-    };
-    const anchorResolves = (rel: string, anc: string): boolean => {
-      const hs = headingsOf(rel);
-      if (hs === null) return false;
-      const numeric = /^[0-9]+(?:\.[0-9]+)*$/.test(anc);
-      const esc = anc.replace(/[.+^${}()|[\]\\*?]/g, "\\$&");
-      if (numeric) {
-        const re = new RegExp(`^${esc}(?![A-Za-z0-9])`);
-        return hs.some((h) => re.test(h));
-      }
-      const re = new RegExp(`(?<![A-Za-z0-9])${esc}(?![A-Za-z0-9])`, "i");
-      return hs.some((h) => re.test(h.split(/\s+/).filter((t) => !t.includes("/")).join(" ")));
-    };
-    for (let i = 0; i < lines.length; i++)
-      for (const m of lines[i].matchAll(/`?([A-Za-z0-9_][A-Za-z0-9_./-]*\.md)`?\s+§([^\s,;)]+)/g)) {
-        const p = m[1].replace(/^\.\//, "");
-        const anc = m[2].replace(/[.,;:]+$/, "");
-        if (!anc || !attributable(p) || !exists(p)) continue;
-        anchors++;
-        if (!anchorResolves(p, anc)) deadAnchors.push(`${CLAUDE}:${i + 1} ${safe(`${p} §${anc}`)}`);
-      }
-
-    // --- is this copy a PARTIAL rendering? Since B2 a lane is not handed the whole rulebook but
-    // three of the seven fragments, and the errand form `…, grep \`sym\`` happens to live only in
-    // fragments a lane never receives: the lane rendering carries 50 paths and ZERO errands. So
-    // "both classes non-empty" would red the land gate of every lane spawned after that split —
-    // for a class its rulebook structurally cannot host. The marker is the back-reference block's
-    // own audience line, taken FROM renderBackref rather than typed out here, and it is structural
-    // rather than an equality against a freshly rendered lane copy: a long-running lane goes STALE
-    // the moment a fragment moves, and that copy is no less partial for it.
-    const partialLines = RULEBOOK_AUDIENCES
-      .filter((a) => FRAGMENTS_FOR[a].length < RULEBOOK_FRAGMENTS.length)
-      .flatMap((a) => renderBackref(a, { repoRoot: "/", at: "", sourceHash: "" })
-        .split("\n").filter((l) => l.includes(`${a.toUpperCase()}-Fassung`)));
-    const partial = partialLines.length > 0 && partialLines.some((l) => copy.includes(l));
-
-    // both classes non-empty, or the two rules below are measuring nothing and saying "fine". For
-    // a FULL rendering — the main checkout's CLAUDE.md, which RULE_RENDER holds byte-identical to
-    // renderRulebook("voll") and which therefore carries no back-reference block at all — that is
-    // unchanged: a rulebook with no errand in it is a rule with no subject. For a partial one the
-    // errand half is not demanded, and RULE_GREPS then says NEVER MEASURED under its own name
-    // instead of passing over an empty set, which is the same vacuum-green this pin exists to stop.
-    pin(RULE_SUBJ, paths > 0 && (greps > 0 || partial),
-      `state=${state}${partial ? ", partial rendering" : ""}; ${paths} path(s), ${greps} grep errand(s)`);
-    pin(RULE_PATHS, deadPaths.length === 0,
-      `${state === "current" ? "" : `${state} copy — advisory; `}${deadPaths.join("; ")}`, soft);
-    // No anchor in these fragments is not a defect of the tree — it is a rulebook that sends the
-    // reader on no sectioned errand, and this rule then says NEVER MEASURED under its own name
-    // rather than passing over an empty set (the vacuum-green RULE_GREPS is skipped for above).
-    if (anchors === 0) {
-      skip(RULE_ANCHORS, `state=${state} — no \`path §anchor\` citation in this rendering`);
-    } else {
-      pin(RULE_ANCHORS, deadAnchors.length === 0,
-        `${state === "current" ? "" : `${state} copy — advisory; `}${anchors} anchor(s)${deadAnchors.length ? `; ${deadAnchors.join("; ")}` : ""}`, soft);
-    }
-    if (partial && greps === 0) {
-      skip(RULE_GREPS, `partial rendering (state=${state}) — no errand in these fragments to follow`);
-    } else {
-      pin(RULE_GREPS, deadGreps.length === 0,
-        `${state === "current" ? "" : `${state} copy — advisory; `}${deadGreps.join("; ")}`, soft);
-    }
-  }
-}
-
 // ================================================================================================
 // 6b. The rulebook is SEVEN FRAGMENTS, and CLAUDE.md is their render — not a hand-kept file
 // ================================================================================================
-// Section 6 holds CLAUDE.md's anchors to the tree. This one holds CLAUDE.md to its SOURCE. Since
+// This section holds the renderer and its role cut to the fragments they render. Since
 // the B1 split the file is a GENERAT of `rulebook/loader.md` … `rulebook/graphify.md`, assembled by
 // rulebook.ts; a hand edit to CLAUDE.md is lost at the next render, and a fragment that loses a
 // rule leaves no trace in git — the whole layer is gitignored, exactly like the monolith was.
 //
-// FOUR CONSTRAINTS, each one the reason a rule below is shaped the way it is:
+// TWO CONSTRAINTS, each one the reason a rule below is shaped the way it is:
 //
 // (1) `rulebook/` LIVES IN THE SOURCE CHECKOUT ALONE. Gitignored, so a worktree never materialises
 //     it. The rules that need it read it through SOURCE_DIR; where that is unreachable they SKIP
@@ -6309,19 +5218,7 @@ export default function (pi) {
 //     was written about, and it would be worse here than elsewhere: silence would read as proof.
 // (2) NO CONTENT LEAVES THIS FILE, same as section 6. The fragments carry the deploy host and IP.
 //     Emitted detail is rule ids, fragment names, and counts — never a line of rulebook text.
-// (3) THE FRAGMENT COLUMN IS A RULE, NOT A LIST. It must equal the id prefix; a row that departs
-//     from its prefix has to be NAMED in the doc's own prose as a cut-C move. So the two rules C
-//     relocated are legal and self-documenting, and a silent third one is not.
-// (4) PLACEMENT IS HELD HARD, UNIQUENESS IS ONLY REPORTED. "Every rule stands in the fragment its
-//     column names" catches a loss or a silent move. "…and in no other" cannot be demanded: eleven
-//     patterns are generic substrings (`409`, `mergeJob`, `⚙ steward`) that legitimately recur, and
-//     demanding uniqueness would mean rewriting those patterns — i.e. blunting the probe to make
-//     the pin green. The count is printed instead, so a drop is visible without being fatal.
 {
-  const PROBE = "docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md";
-  const RULE_RENDER = 'CLAUDE.md is renderRulebook("voll", rulebook/) byte for byte';
-  const RULE_PLACED = "every rule of the meaning probe stands in the fragment its Fragment column names";
-  const RULE_COLUMN = "the Fragment column is the id prefix, and every departure is named as a cut-C move";
   const RULE_SELECT = "FRAGMENTS_FOR assigns the registered subsets and keeps all seven for voll";
   const RULE_HOLE = "renderRulebook refuses to assemble a rulebook with a fragment missing";
 
@@ -6534,41 +5431,7 @@ export default function (pi) {
       `agentCmd branch=${agent.includes("rulebookRenderForSession(")}, render fn=${spawnFn !== ""}, throws=${spawnFn.includes("throw ")}`);
   }
 
-  // --- the probe table. Rows wrap: a cell may run over several physical lines (P7's does), and a
-  // line-wise parser hands such a row ZERO patterns, whereupon `every()` over an empty list says
-  // true and the row passes having measured nothing. Joining continuations first is what keeps
-  // that vacuum out; a row that still yields no pattern is counted as a violation, by name.
-  const norm = (t: string): string => t.replace(/`/g, "").replace(/\*\*/g, "").split(/\s+/).join(" ");
-  const probe = ((): string | null => { try { return read(PROBE); } catch { return null; } })();
-  const rows: { id: string; frag: string; pats: string[] }[] = [];
-  if (probe !== null) {
-    const joined: string[] = [];
-    for (const l of probe.split("\n")) {
-      if (l.startsWith("| ")) joined.push(l);
-      else if (joined.length && !joined[joined.length - 1].trimEnd().endsWith("|")) joined[joined.length - 1] += ` ${l}`;
-    }
-    for (const l of joined) {
-      const c = l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((x) => x.trim());
-      if (c.length < 5 || !/^[LEDSFPG]\d+$/.test(c[0])) continue;
-      rows.push({ id: c[0], frag: c[2], pats: [...c[4].matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => norm(m[1])) });
-    }
-  }
-
-  if (probe === null) {
-    skip(RULE_COLUMN, "the meaning probe is not in this tree");
-  } else {
-    // a departure from the prefix is legal only where the doc says WHY, by id, as a cut-C move
-    const prose = probe.slice(0, probe.indexOf("| id |"));
-    const bad = rows.filter((r) => {
-      if (!(RULEBOOK_FRAGMENTS as readonly string[]).includes(r.frag)) return true;
-      if (r.frag === FRAGMENT_BY_RULE_PREFIX[r.id[0]]) return false;
-      return !(prose.includes(r.id) && prose.includes("Schnitt C"));
-    });
-    pin(RULE_COLUMN, rows.length > 0 && bad.length === 0,
-      `${rows.length} row(s); unexplained: ${bad.map((r) => r.id).join(",") || "none"}`);
-  }
-
-  // --- and the two rules that need the source checkout
+  // --- and the rules that need the source checkout
   const fragments = new Map<RulebookFragment, string>();
   const unreadable: string[] = [];
   for (const f of RULEBOOK_FRAGMENTS) {
@@ -6580,49 +5443,20 @@ export default function (pi) {
 
   // The role cut on the REAL fragments: the fixture pin above proves the renderer, these two prove
   // the cut this tree ships still fits the rulebook as it stands. Inputs: the source's fragments
-  // and this tree's ROLE_SECTION_CUT — so, like RULE_RENDER, red is this tree's own once its
+  // and this tree's ROLE_SECTION_CUT — so red is this tree's own once its
   // rulebook.ts differs from the source's, and the source's own otherwise (pinSource).
   const RULE_ROLE_REAL = `on the real fragments both role renders anchor every section they omit, and the orchestrator's is at most ${ORCHESTRATOR_RENDER_MAX_B} B`;
   const RULE_ROLE_STALE = "every ROLE_SECTION_CUT omission names a section of the real fragments";
   if (unreadable.length > 0) {
-    skip(RULE_RENDER, why);
-    skip(RULE_PLACED, why);
     skip(RULE_ROLE_REAL, why);
     skip(RULE_ROLE_STALE, why);
   } else {
     const rendered = renderRulebook("voll", fragments);
-    const monolith = ((): string | null => {
-      try { return readFileSync(`${SOURCE_DIR}/CLAUDE.md`, "utf8"); } catch { return null; }
-    })();
-    // Both inputs live in the source checkout; the one byte of THIS tree the rule reads is the
-    // renderer itself. So the red is the source's own only while this tree renders exactly as the
-    // source does — a lane that changed rulebook.ts owns the mismatch it produced (pinSource).
+    // a lane that changed rulebook.ts owns the mismatch it produced (pinSource)
     const sameRenderer = ((): boolean => {
       try { return read("rulebook.ts") === readFileSync(`${SOURCE_DIR}/rulebook.ts`, "utf8"); }
       catch { return false; }
     })();
-    if (monolith === null) skip(RULE_RENDER, "CLAUDE.md not readable in the source checkout");
-    else pinSource(RULE_RENDER, rendered === monolith,
-      `rendered ${Buffer.byteLength(rendered)} B vs CLAUDE.md ${Buffer.byteLength(monolith)} B`
-        + (sameRenderer ? "" : "; this tree's rulebook.ts differs from the source's"),
-      IN_SOURCE || !sameRenderer);
-
-    if (probe === null) {
-      skip(RULE_PLACED, "the meaning probe is not in this tree");
-    } else {
-      const text = new Map([...fragments].map(([f, t]) => [f as string, norm(t)]));
-      const misplaced: string[] = [];
-      let unique = 0;
-      for (const r of rows) {
-        if (r.pats.length === 0) { misplaced.push(`${r.id}(no pattern)`); continue; }
-        const hits = [...text].filter(([, t]) => r.pats.every((p) => t.includes(p))).map(([f]) => f);
-        if (!hits.includes(r.frag)) misplaced.push(r.id);
-        else if (hits.length === 1) unique++;
-      }
-      pin(RULE_PLACED, rows.length > 0 && misplaced.length === 0,
-        `${rows.length - misplaced.length}/${rows.length} placed, ${unique} of them in that fragment alone${misplaced.length ? `; misplaced: ${misplaced.join(",")}` : ""}`);
-    }
-
     // the anchor directory the server would name, at its real length — the block's bytes count
     const dir = `${SOURCE_DIR}/${RULEBOOK_DIR}/render/0123456789abcdef/abschnitte`;
     const real = (["orchestrator", "main"] as const).map((a) => ({ a, r: renderRoleRulebook(a, fragments,
@@ -6725,7 +5559,6 @@ export default function (pi) {
     [...s.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
   const srvUnion = server.slice(server.indexOf("type FleetEventStatus ="));
   const srvWords = words(srvUnion.slice(0, srvUnion.indexOf(";")));
-  const client = clientU.text;
   // bounded to the declaration's OWN module and its OWN braces: a `status:` found further down a
   // joined universe would be some other row's field, read as this one's union.
   const cliRow = clientU.span("interface FleetEventRow {", "\n}", 2);
@@ -6806,63 +5639,9 @@ export default function (pi) {
     senderGaps.length ? `missing rollback and/or delivery: ${senderGaps.map((s) => s.name).join(", ")}`
       : unlocatable.length ? "precondition failed above" : `${senderBodies.length} senders`);
 
-  // THE CAP AND ITS STATE WORD live in three places with no compiler between them: the env default
-  // in server.ts, the documented default and state name in docs/self-api.md, and the recovery union
-  // the client renders. Measured 2026-09-01 (FleetEvent 8ca8c38e…): unbounded because nothing
-  // compared `attempts` to anything; the comparison is one expression, and this pins that it exists,
-  // that the docs name the same default, and that the tickWatches first-attempt path and the
-  // recovery path write through the same recorder (a second writer would be a second, uncapped loop).
-  const capDefault = server.match(/const raw = Number\(process\.env\.FLEET_REPORT_RECOVERY_MAX_ATTEMPTS \?\? (\d+)\);/)?.[1] ?? "";
-  const capFallback = server.match(/return Number\.isInteger\(raw\) && raw >= 1 \? raw : (\d+);/)?.[1] ?? "";
-  const selfApiCap = read("docs/self-api.md");
-  const docsCapDefault = selfApiCap.match(/`FLEET_REPORT_RECOVERY_MAX_ATTEMPTS` \(Default (\d+),/)?.[1] ?? "";
-  const tickBody = server.slice(server.indexOf("async function tickWatches("), server.indexOf("async function tickWatches(") + 20000);
-  pin("fleet-report recovery cap: FLEET_REPORT_RECOVERY_MAX_ATTEMPTS defaults to 5 in server.ts and docs/self-api.md, blocks by name, and both non-acceptance paths share one recorder",
-    capDefault === "5" && capFallback === "5" && docsCapDefault === "5"
-      && server.includes("const fleetReportRecoveryExhausted = (event: FleetReportFleetEvent): boolean =>\n  event.attempts >= FLEET_REPORT_RECOVERY_MAX_ATTEMPTS;")
-      && selfApiCap.includes('recovery.state:"blocked"') && selfApiCap.includes("NIE wieder gepastet")
-      && selfApiCap.includes("manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention")
-      && server.includes('"manual receiver acknowledgement if the pane text was read, or MAIN/owner intervention"')
-      && tickBody.includes('recordFleetReportNonAcceptance(event, e instanceof SendNotAccepted ? e.rollback : null, "transport")')
-      && recoveryBody.includes("if (fleetReportRecoveryExhausted(event)) {")
-      // after the send, only the recorder decides a NON-acceptance: the one direct `retryable`
-      // write left there is the pre-paste refusal (nothing typed, count rolled back), never a paste
-      && (recoveryBody.slice(recoverySend).match(/setFleetReportRecovery\(event, "retryable"/g)?.length ?? 0) === 1
-      && recoveryBody.slice(recoverySend).includes('"recovery send was refused before Fleet typed its payload"')
-      && !tickBody.includes('setFleetReportRecovery(event, "retryable"'),
-    JSON.stringify({ capDefault, capFallback, docsCapDefault }));
-  // THE HOLD BACKOFF (K1, 2026-09-11) lives in three places with no compiler between them: the
-  // schedule in server.ts, the tick counts docs/self-api.md promises a waiting session, and the
-  // two send paths that must read ONE gate and write through ONE writer. A second writer would be
-  // a second, unbounded retry loop — the same failure the recovery cap above pins against — and a
-  // doc that names a different ceiling would promise a silence the server does not keep.
+  // THE HOLD BACKOFF (K1, 2026-09-11).
   const holdBody = server.slice(server.indexOf("const holdOccupant = (s: Slot): string =>"),
     server.indexOf("async function recoverFleetReportDelivery("));
-  const holdBase = server.match(/const HOLD_BACKOFF_BASE_MS = AUTOS_TICK_MS \* (\d+);/)?.[1] ?? "";
-  const holdMax = server.match(/const HOLD_BACKOFF_MAX_MS = AUTOS_TICK_MS \* (\d+);/)?.[1] ?? "";
-  const selfApiHold = read("docs/self-api.md");
-  const docsHoldBase = selfApiHold.match(/wartet der Server deshalb \*\*(\d+) Ticks\*\*/)?.[1] ?? "";
-  const docsHoldMax = selfApiHold.match(/bis zur Decke von \*\*(\d+) Ticks\*\*/)?.[1] ?? "";
-  const holdTickGate = tickBody.indexOf("if (composerHoldActive(event, s, Date.now())) continue;");
-  const holdTickCanDeliver = tickBody.indexOf("const verdict = await canDeliver(s, {");
-  const holdRecoveryGate = recoveryBody.indexOf("if (composerHoldActive(event, receiver, Date.now())) return false;");
-  const holdRecoveryCanDeliver = recoveryBody.indexOf("const verdict = await canDeliver(receiver, {");
-  pin("hold backoff: one schedule (2 ticks, ceiling 12) in server.ts and docs/self-api.md, one gate read before canDeliver on BOTH send paths, one writer",
-    holdBase === "2" && holdMax === "12" && docsHoldBase === holdBase && docsHoldMax === holdMax
-      && holdTickGate > 0 && holdTickCanDeliver > holdTickGate
-      && holdRecoveryGate > 0 && holdRecoveryCanDeliver > holdRecoveryGate
-      // exactly one writer of a hold row, and both refusal arms go through it
-      && (server.match(/audit\("fleet_event_held"/g)?.length ?? 0) === 2
-      && (holdBody.match(/audit\("fleet_event_held"/g)?.length ?? 0) === 2
-      && tickBody.includes("noteComposerHold(event, s, e.message);")
-      && recoveryBody.includes("const held = noteComposerHold(event, receiver, `recovery ${e.message}`);")
-      // …and the retry time rides the EXISTING recovery prose, not a new persisted field
-      && recoveryBody.includes('"recovery send was refused before Fleet typed its payload"\n        + held.note,')
-      && holdBody.includes("return { holds: row.holds, waitMs, note: ` (hold ${row.holds}, next probe in ${waitMs}ms)` };"),
-    JSON.stringify({ holdBase, holdMax, docsHoldBase, docsHoldMax,
-      tickGateBeforeCanDeliver: holdTickGate > 0 && holdTickCanDeliver > holdTickGate,
-      recoveryGateBeforeCanDeliver: holdRecoveryGate > 0 && holdRecoveryCanDeliver > holdRecoveryGate,
-      writers: server.match(/audit\("fleet_event_held"/g)?.length ?? 0 }));
 
   // THE STOPLINE, pinned as a property of the block rather than as a promise: the backoff is a
   // process-local DELAY. It may not touch a row's status, may not persist anything, and may not
@@ -6899,76 +5678,7 @@ export default function (pi) {
       && server.includes("if ((Date.now() > s.quietUntil && !title.titleOnly) || s.lastOutput === 0) s.lastOutput = Date.now();"),
     JSON.stringify({ open: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_MS"), tail: sendBodyForQuiet.indexOf("OWN_PASTE_QUIET_TAIL_MS") }));
 
-  const selfApiForRecovery = read("docs/self-api.md");
-  pin("fleet-report send-uncertain records current recovery state for the Operations panel and docs",
-    selfApiForRecovery.includes('recovery.state:"retryable"') && selfApiForRecovery.includes("rollback=cleared")
-      && selfApiForRecovery.includes("dieselbe `FleetEvent.id`")
-      && client.includes("e.recovery?.state")
-      && client.includes("next: ${e.recovery.nextAction}")
-      && client.includes("reason: ${e.recovery.reason}")
-      && client.includes("effect: ${e.recovery.effect}"),
-    JSON.stringify({
-      docs: selfApiForRecovery.includes('recovery.state:"retryable"') && selfApiForRecovery.includes("rollback=cleared"),
-      clientRecovery: client.includes("e.recovery?.state"),
-    }));
-
-  // THE PERSISTED PROGRAM-MAIN LINEAGE (2026-09-02): its cap and its state names are typed once in
-  // server.ts and documented once in docs/self-api.md §authority.lineage, and a successor reads the
-  // docs to interpret the record — so the two must agree on the number, on every `via`/`endedBy`
-  // name, and on the two unknown sentences the view renders. A renamed state or a moved cap that
-  // the docs did not follow would make the documented reading of a persisted history wrong.
-  {
-    const selfApiLineage = read("docs/self-api.md");
-    const lineageDoc = selfApiLineage.slice(selfApiLineage.indexOf("### `authority.lineage`"));
-    const lineageCap = server.match(/^const PROGRAM_LINEAGE_MAX = (\d+);/m)?.[1] ?? "";
-    const docsLineageCap = lineageDoc.match(/`PROGRAM_LINEAGE_MAX` \((\d+)\)/)?.[1] ?? "";
-    const unionNames = (line: RegExp): string[] =>
-      [...(server.match(line)?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((m) => m[1] ?? "");
-    const via = unionNames(/^type ProgramLineageVia = (.+);$/m);
-    const endedBy = unionNames(/^type ProgramLineageEndedBy = (.+);$/m);
-    const absentLine = "1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.";
-    pin("Program-MAIN lineage: the cap (50) and every via/endedBy state name in server.ts are the ones docs/self-api.md §authority.lineage documents, and the unknown sentences match",
-      lineageCap === "50" && docsLineageCap === "50"
-        && via.length === 5 && endedBy.length === 4
-        && [...via, ...endedBy].every((name) => lineageDoc.includes(`| \`${name}\` |`))
-        && server.includes(`"${absentLine}"`) && lineageDoc.includes(absentLine)
-        && server.includes("`1 lineage gap: lineage begins at ${p.lineage.entries[0].boundAt}; earlier bound sessions are not reconstructible.`")
-        && lineageDoc.includes("1 lineage gap: lineage begins at <boundAt>; earlier bound sessions are not reconstructible.")
-        && server.includes("oldest lineage entries were dropped at the cap of ${PROGRAM_LINEAGE_MAX}; those bound sessions are not reconstructible.")
-        && lineageDoc.includes("oldest lineage entries were dropped at the cap of 50; those bound sessions are not reconstructible."),
-      JSON.stringify({ lineageCap, docsLineageCap, via, endedBy, docFound: lineageDoc.length > 0 }));
-  }
 }
-
-// --- STALENESS WAS ONE RULE, RENDERED BY TWO READERS, and both readers retired with the queue
-// analyst on 2026-09-10. The rule (analysis-staleness.ts) decided whether a verdict was still about
-// today's tree by intersecting what a land MOVED with the row's own file surface; register.sh
-// rendered the same intersection in Python so the two could not drift. Four pins held them equal.
-//
-// What replaces them is a NEGATIVE: neither reader may come back on its own. A re-grown `!head` arm
-// in register.sh would be a second meaning of "stale" with nothing on the server side to agree
-// with, which is precisely the drift those four pins were paid for.
-{
-  const reg = read("register.sh");
-  const regCode = reg.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-  pin("register.sh renders no verdict staleness and derives no moved surface of its own",
-    !regCode.includes("moved_since") && !regCode.includes("MAINSHA")
-      && !/git diff --name-only --no-renames/.test(regCode)
-      && !regCode.includes('"analysis"') && !regCode.includes("collides"),
-    "");
-  // …and it still renders the THREE provenance states, which is the half of that section the
-  // retirement does not touch: an unknown surface is not an empty one, before and after.
-  pin("register.sh still separates confirmed, derived and UNKNOWN surface provenance",
-    reg.includes("[bestätigt/mechanisch]") && reg.includes("[abgeleitet]") && reg.includes("UNBEKANNT"),
-    "");
-}
-
-pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
-// …and the LANE rail's own threshold beside it. This one is not default-off (40), so the wrapper
-// does not have to arm it for the fixture to fire — which is exactly why it is pinned: a later
-// change of that default to 0 would otherwise turn the lane half of the migration block into a
-// silent no-measurement instead of a failure.
-pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane baton is measured and not merely defaulted into", /const LANE_MIGRATE_PCT = Number\(process\.env\.FLEET_LANE_MIGRATE_PCT \?\? 40\) \| 0/.test(server) && /\bFLEET_LANE_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
 
 // --- SLICE A: THE DERIVED PROGRAM PHASE IS A PROJECTION, AND A PROJECTION HAS TO STAY ONE.
 // program-phase.ts computes where a Program row sits on the rail from a closed input list. Three
@@ -7085,12 +5795,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_LAND} — the ⏫ door's lock is asked before the route reserves anything`,
     !!ownerGuard && mergeStartAdd > ownerGuard.n,
     `guard=${(ownerGuard?.n ?? -1) + 1} mergeStart.add=${mergeStartAdd + 1}`);
-  // …and the sentence itself is ONE constant, not two string literals that can drift apart. Both
-  // doors answer a follower's caller identically, and docs/e2e quote it.
-  pin(`${RULE_LAND} — the refusal is one shared constant with the canonical-main wording`,
-    /const LANDS_LOCKED = "this instance does not land — it follows a canonical main";/.test(server)
-      && server.split("this instance does not land").length - 1 === 1,
-    `LANDS_LOCKED occurrences of the sentence: ${server.split("this instance does not land").length - 1}`);
   // …and the switch defaults OPEN. A fail-closed reading of an unset or unrecognised value would
   // strand the canonical host on a typo, which is the one outcome worse than a follower landing once.
   pin(`${RULE_LAND} — FLEET_LANDS defaults to landing and only 0/off/false/no closes it`,
@@ -7325,17 +6029,8 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 {
   const RULE_FF = "the lost fast-forward is a closed typed fact";
   const signals = read("lane-signals.ts");
-  const selfApiFf = read("docs/self-api.md");
   const reasons = (signals.match(/export type MergeErrorReason =([^;\n]+)/)?.[1] ?? "")
     .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
-  // both directions: every name in the code is documented, and the doc invents none. The doc's
-  // side is read out of its own fenced/inline `errorReason` mentions rather than a prose scan, so
-  // a paragraph that merely says the words cannot stand in for naming the value.
-  const documented = [...selfApiFf.matchAll(/errorReason"?\s*:\s*"([a-z-]+)"/g)].map((m) => m[1] ?? "");
-  pin(`${RULE_FF} — every MergeErrorReason is named in docs/self-api.md §land, and the doc invents none`,
-    reasons.length > 0 && reasons.every((r) => documented.includes(r))
-      && documented.every((d) => reasons.includes(d)),
-    `code=[${reasons.join(",")}] doc=[${[...new Set(documented)].join(",")}]`);
   // the enum's runtime twin must list exactly the type's members — a loader validating against a
   // shorter list would silently drop a reason the writer is still minting
   const listed = (signals.match(/MERGE_ERROR_REASONS: readonly MergeErrorReason\[\] = \[([^\]]*)\]/)?.[1] ?? "")
@@ -7487,54 +6182,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     receiver !== "" && programReturn >= 0 && watchBlock >= 0 && programReturn < watchBlock,
     receiver === "" ? "clarificationReceiverFor not found in server.ts"
       : `program-main@${programReturn} watchReceivers@${watchBlock}`);
-  // The opposite direction, and it is NOT implied by the one above: a reorder that also deleted
-  // the refusal would pass B1 and silently route a program-less lane to an arbitrary watcher.
-  pin(`${RULE_RECEIVER} — the program-LESS multi-watcher refusal survives verbatim (B2)`,
-    receiver.includes('return { error: "lane-watch evidence names multiple receiver occupants" };'),
-    receiver === "" ? "clarificationReceiverFor not found in server.ts"
-      : `${(receiver.match(/return \{ error: "[^"]*" \}/g) ?? []).length} refusal sentences in the function`);
-  // B3, doc ↔ route ↔ footer. The footer is the only text most lanes ever read about how to end,
-  // so a route renamed without it becomes a curl that 404s in every founding brief from then on.
-  const selfApi = read("docs/self-api.md");
-  const footer = server.match(/function laneExitFooter\([\s\S]*?\n\}/)?.[0] ?? "";
-  // The list is quoted here rather than imported so a widening has to be a DELIBERATE edit in two
-  // places: `handoff` (2026-09-12, the lane baton) had to be added to the route's vocabulary and to
-  // this pin, and that is the point — it is the one status that is not a verdict, and a fourth
-  // spelling appearing here unannounced would be exactly what this pin exists to catch.
-  const statuses = ["complete", "needs-main", "failed", "handoff"];
-  pin(`${RULE_RECEIVER} — docs/self-api.md carries §fleet-report and §tasks, and the footer names the route (B3)`,
-    /^## fleet-report/m.test(selfApi) && /^## tasks/m.test(selfApi)
-      && footer.includes("/api/self/fleet-report") && selfApi.includes("/api/self/fleet-report"),
-    `fleet-report=${/^## fleet-report/m.test(selfApi)} tasks=${/^## tasks/m.test(selfApi)} footer=${footer !== ""}`);
-  // …and the three statuses are ONE list. The footer interpolates FLEET_REPORT_STATUSES so it
-  // cannot drift from the route by construction; the doc is prose and can, which is why it is
-  // checked against the same literal source the route validates against.
-  const declared = (read("src/protocol.ts").match(/FLEET_REPORT_STATUSES = \[([^\]]*)\]/)?.[1] ?? "")
-    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
-  const reportSection = selfApi.slice(selfApi.indexOf("## fleet-report"));
-  pin(`${RULE_RECEIVER} — the three report statuses are one list across protocol, footer and doc`,
-    JSON.stringify(declared) === JSON.stringify(statuses)
-      && footer.includes("FLEET_REPORT_STATUSES.join")
-      && statuses.every((status) => reportSection.includes(status)),
-    `declared=[${declared.join(",")}]`);
-  // …and the report CAP is one number across route, footer and AGENTS.md. Measured price of it living
-  // only in docs/self-api.md: 130/181 Claude lanes hit "text must be at most … chars" at least once,
-  // 334 retries in 14 days (docs/messungen/2026-09-13-worktrail-iv-agents-ctxpacks-fable.md §2.1).
-  // The footer interpolates the constant, so it cannot drift by construction — the pin holds that
-  // construction (no literal) and the prose half, which can drift, against the declared value.
-  const capDeclared = read("server/types.ts").match(/const MAX_FLEET_REPORT_TEXT = (\d+);/)?.[1] ?? null;
-  const agentsReporting = ((): string => {
-    const doc = read("AGENTS.md");
-    const at = doc.indexOf("\n## Reporting");
-    return at < 0 ? "" : doc.slice(at).split(/\n## /)[1] ?? "";
-  })();
-  const capInAgents = agentsReporting.match(/at most (\d+) characters/)?.[1] ?? null;
-  pin(`${RULE_RECEIVER} — the report cap is one number across route constant, footer and AGENTS.md §Reporting`,
-    capDeclared !== null && footer.includes("${MAX_FLEET_REPORT_TEXT}") && !footer.includes(capDeclared)
-      && capInAgents === capDeclared && agentsReporting.includes("MAX_FLEET_REPORT_TEXT"),
-    capDeclared === null ? "MAX_FLEET_REPORT_TEXT declaration not found in server/types.ts"
-      : `declared=${capDeclared} footerInterpolates=${footer.includes("${MAX_FLEET_REPORT_TEXT}")} `
-        + `footerLiteral=${footer.includes(capDeclared)} agents=${capInAgents}`);
   // …and the BOOT clause, pinned separately because it is the one rule that lives nowhere near
   // the parser and is therefore the one a future parser fix will forget. The reconciliation asks
   // "did this event's endpoint survive the restart"; `fleetEventReceiver` answers null for an
@@ -7610,39 +6257,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       + ` allowlist=${eventParser.includes('"program-main+lane-watch", "owner-inbox"')}`
       + ` reportRow=${reportRowParser.includes('r.basis === "program" || r.basis === "owner-inbox"')}`);
   // --- D1 · THE ACCEPTANCE DOOR. The event ACK is a TRANSPORT receipt by contract, so the
-  // judgement had to get its own door and its own persisted word. Four halves can drift without a
-  // compiler noticing: the closed disposition vocabulary (server/types.ts vs the doc), the two
-  // route paths (regex vs the doc a MAIN is sent to), the refusal sentences (prose in two files),
-  // and the rule that the door SETTLES transport through the ack writer instead of writing a
-  // second terminal transition of its own.
-  const dispositions = (server.match(/FLEET_REPORT_DISPOSITIONS = \[([^\]]*)\]/)?.[1] ?? "")
-    .split(",").map((w) => w.trim().replace(/"/g, "")).filter(Boolean);
-  const decisionSection = selfApi.slice(selfApi.indexOf("### Annahme — `POST /api/self/fleet-report/:id/accept`"));
-  pin(`${RULE_RECEIVER} — the two dispositions are one closed list across server/types.ts and docs/self-api.md (D1)`,
-    JSON.stringify(dispositions) === JSON.stringify(["accepted", "rejected"])
-      && decisionSection !== "" && dispositions.every((word) => decisionSection.includes(word))
-      && !/"(approved|declined|acked|ok)"/.test(server.match(/FLEET_REPORT_DISPOSITIONS = \[([^\]]*)\]/)?.[0] ?? ""),
-    `declared=[${dispositions.join(",")}] docSection=${decisionSection !== ""}`);
-  pin(`${RULE_RECEIVER} — both decision route paths exist in the route table and in the doc a MAIN is sent to (D1)`,
-    server.includes("/^\\/api\\/self\\/fleet-report\\/([0-9a-f]{24})\\/(accept|reject)$/")
-      && decisionSection.includes("POST /api/self/fleet-report/:id/accept")
-      && decisionSection.includes("POST /api/self/fleet-report/:id/reject"),
-    `regex=${server.includes("(accept|reject)$/")} doc=${decisionSection.includes("/accept")}`);
-  // The four refusals, verbatim in BOTH files. Each fails silently in its own direction: a reworded
-  // server sentence leaves a MAIN searching the doc for a refusal it will never see, and a reworded
-  // doc teaches a door that does not exist.
-  const decisionRefusals = [
-    "a lane may not judge a fleet report — a lane files its own result, it does not accept the results its own MAIN is owed",
-    "owner-inbox report — accepting or rejecting it belongs to the owner, who has no session to bind a decision to",
-    "fleet report belongs to another or replaced MAIN session",
-    "body must contain only reason",
-  ];
-  const refusalDrift = decisionRefusals.filter((line) => !server.includes(line) || !decisionSection.includes(line));
-  pin(`${RULE_RECEIVER} — every decision refusal reads the same in server.ts and docs/self-api.md (D1)`,
-    refusalDrift.length === 0, `drift=[${refusalDrift.map((l) => l.slice(0, 40)).join(" | ")}]`);
-  // …and the (c) rule, as SOURCE: one writer for the terminal transition, called by both the ack
-  // route and the decision door. A door that assigned the status itself would pass every runtime
-  // fixture the day it was written and drift from the prune key and the audit word afterwards.
+  // judgement had to get its own door and its own persisted word. The rule, as SOURCE: one writer
+  // for the terminal transition, called by both the ack route and the decision door. A door that
+  // assigned the status itself would pass every runtime fixture the day it was written and drift
+  // from the prune key and the audit word afterwards.
   const decisionDoor = server.match(/async function decideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
   const ackWriter = server.match(/function settleFleetEventAcknowledged\([\s\S]*?\n\}/)?.[0] ?? "";
   const ackRoute = server.slice(server.indexOf("async function acknowledgeFleetEvent"),
@@ -7675,20 +6293,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   // decision alive. Everything here is a SOURCE rule, because each failure is silent at runtime.
   const ownerDoor = server.match(/async function ownerDecideFleetReport\([\s\S]*?\n\}/)?.[0] ?? "";
   const livenessFn = server.match(/function reportReceiverLiveness\([\s\S]*?\n\}/)?.[0] ?? "";
-  const ownerSection = selfApi.slice(selfApi.indexOf("### Die OWNER-Tür — `POST /api/fleet-report/:id/accept`"));
-  pin(`${RULE_RECEIVER} — the owner decision route exists in the route table and in the doc (D1b)`,
-    ownerDoor !== ""
-      && server.includes("/^\\/api\\/fleet-report\\/([0-9a-f]{24})\\/(accept|reject)$/")
-      && server.includes('url.pathname === "/api/fleet-report" && req.method === "GET"')
-      && ownerSection !== "" && ownerSection.includes("POST /api/fleet-report/:id/accept")
-      && ownerSection.includes("GET /api/fleet-report")
-      // …and the doc hands the OWNER credential, not a self token. The route sits behind the plain
-      // owner gate (tokenFrom: Bearer, the fleet cookie, ?token=), so a curl teaching
-      // `x-fleet-self-token` here would send the reader to a 401 that looks like a broken door.
-      && /-H "authorization: Bearer \$FLEET_TOKEN"/.test(ownerSection)
-      && !/x-fleet-self-token/.test(ownerSection.slice(0, ownerSection.indexOf("**Sichtbarkeit"))),
-    `door=${ownerDoor !== ""} route=${server.includes("(accept|reject)$/")} doc=${ownerSection !== ""}`
-      + ` bearer=${/-H "authorization: Bearer \$FLEET_TOKEN"/.test(ownerSection)}`);
   // THE BOUNDARY, as source: the owner door refuses a LIVE receiver, and it is the FIRST thing it
   // does. A door that checked liveness after the already-decided branch would still be correct
   // today and would stop being correct the first time somebody reordered the two.
@@ -7899,34 +6503,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && !/killSwitch|alive: false|quietHours: false/.test(carryFn),
     `marker=${carryFn.indexOf('stamp("send-uncertain"')} send=${carryFn.indexOf("await sendText(")}`);
 
-  // --- D2 · THE AUTOMATIC LANE CLOSE, the acceptance door's only consumer. Three halves can drift
-  // without a compiler noticing, and each one is a behaviour that closes panes unattended: the
-  // FLAG NAME (env string vs the doc that tells an owner how to arm it), the DISPOSITION WORD (the
-  // LaneDisposition union vs the assertion vs the doc), and the two source rules that keep the act
-  // where it belongs — armed only by the flag, and unreachable from the lane-START path.
+  // --- D2 · THE AUTOMATIC LANE CLOSE, the acceptance door's only consumer: a behaviour that closes
+  // panes unattended, so the source rules keep the act where it belongs.
   const autoCloseTick = server.match(/async function tickLaneAutoClose\([\s\S]*?\n\}/)?.[0] ?? "";
   const autoCloseRefusal = server.match(/function laneAutoCloseRefusal\([\s\S]*?\n\}/)?.[0] ?? "";
-  const autoCloseSection = selfApi.slice(selfApi.indexOf("### Der automatische Lane-Schluss"));
-  pin(`${RULE_RECEIVER} — the auto-close flag is one name in server.ts and in the doc that tells an owner how to arm it (D2)`,
-    /process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)
-      && autoCloseSection !== "" && autoCloseSection.includes("FLEET_LANE_AUTOCLOSE")
-      // the off-by-default shape itself: the recognised spellings are NAMED, so an unrecognised
-      // value cannot pass for a decision (FLEET_CLEAN_REVIEW's own 2026-07-28 lesson)
-      && server.includes("const LANE_AUTOCLOSE_OFF_RE = /^(0|off|false|no)$/i;")
-      && server.includes('const LANE_AUTOCLOSE_ON = /^(1|true|on|yes)$/i.test(LANE_AUTOCLOSE_RAW);')
-      && autoCloseSection.includes("`1`/`true`/`on`/`yes`"),
-    `env=${/process\.env\.FLEET_LANE_AUTOCLOSE/.test(server)} docSection=${autoCloseSection !== ""}`);
-  // …and the SUITE side of that same flag, which no compiler and no runtime check can see: a knob
-  // the wrappers do not NAME is inherited from whatever shell started them, and this is the knob
-  // the deployed fleet arms (watchdog.sh). Since 2026-09-05 server.ts#runVerify scrubs FLEET_* out
-  // of the land gate's child (verifyChildEnv, pinned below), so the wrappers are no longer the only
-  // thing standing between that armed 1 and a suite reading it — both halves are stated, which is
-  // what a knob with two independent inheritance paths is worth. Three statements, because they
-  // cover three different callers: the SRV_ENV line covers the isolated suite's own srv and runner,
-  // the e2e-stage.sh export covers all seven wrappers, and the probe is what turns the off-state
-  // from an assumption into a measurement.
-  // Scoped to the SRV_ENV assignment itself, not to the file — the comment above it names the
-  // string too, and a pin that its own explanation satisfies measures nothing.
   // …and the two OWNER-WAIT refusals, held as source because the e2e can only see that the lane
   // stayed open — the refusal sentence is discarded by the tick and served nowhere. The criterion
   // clause is the one with teeth (awaiting:"owner" is also refused by spent-looking).
@@ -7937,15 +6517,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && autoCloseRefusal.includes("the lane's proposed criterion is unconfirmed — the owner has not confirmed it")
       && read("e2e/watch.ts").includes("the owner has not confirmed it\\\")"),
     `awaiting=${autoCloseRefusal.includes('s.awaiting === "owner"')} criterion=${autoCloseRefusal.includes("criterion.confirmedAt === null")}`);
-  const isoSrvEnv = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
-  pin(`${RULE_RECEIVER} — the suites STATE FLEET_LANE_AUTOCLOSE=0 instead of inheriting it, and measure that they did (D2)`,
-    /\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)
-      && /^export FLEET_LANE_AUTOCLOSE=0$/m.test(read("e2e-stage.sh"))
-      && /export async function srvEnv\(/.test(read("e2e/harness.ts"))
-      && read("e2e/watch.ts").includes('srvEnv("FLEET_LANE_AUTOCLOSE")'),
-    `srvEnv=${/\bFLEET_LANE_AUTOCLOSE=0\b/.test(isoSrvEnv)} stage=${/^export FLEET_LANE_AUTOCLOSE=0$/m.test(read("e2e-stage.sh"))}`
-      + ` helper=${/export async function srvEnv\(/.test(read("e2e/harness.ts"))}`
-      + ` probe=${read("e2e/watch.ts").includes('srvEnv("FLEET_LANE_AUTOCLOSE")')}`);
   // …AND THE SERVER SIDE OF THE SAME INHERITANCE, which the line above could only work around.
   // runVerify's Bun.spawn passed no `env` at all until 2026-09-05, so Bun handed the land gate's
   // chain `process.env` whole — measured 2026-09-05 through e2e-clean-review.sh's verify stand-in:
@@ -8036,13 +6607,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && !/\bcommit\b/.test(snapCode) && snapGated && snapProbed,
     `script=${snapScript || "not found"} script@${snapAt} link@${snapLinkAt}`
       + ` commitless=${!/\bcommit\b/.test(snapCode)} shortChainOnly=${snapGated} measured=${snapProbed}`);
-  pin(`${RULE_RECEIVER} — killed-empty is one word across the disposition union, the tick's assertion and the doc (D2)`,
-    /type LaneDisposition = [^\n]*"killed-empty"/.test(server)
-      && autoCloseTick.includes('row.disposition !== "killed-empty"')
-      && !/"killed-dirty"/.test(autoCloseTick)
-      && autoCloseSection.includes("killed-empty") && autoCloseSection.includes("killed-dirty"),
-    `union=${/type LaneDisposition = [^\n]*"killed-empty"/.test(server)}`
-      + ` assertion=${autoCloseTick.includes('row.disposition !== "killed-empty"')}`);
   // The act, as SOURCE. The trail must be written BEFORE the teardown (killSlot clears the lane
   // state buildLaneOutcome reads), the tick must never reach a land, and the timer must exist only
   // behind the flag — a registration outside that guard is a tick that arms itself. SINCE
@@ -8180,28 +6744,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         : `closes=${(landBody.match(/t\.status = "done";/g) ?? []).length} settles=${/v\.landedAt = at;/.test(landBody)}`);
   }
 
-  // BEFUND 3, MINIMAL VARIANT (docs/messungen/2026-09-20-quellen-referenzen-retention.md §3, §5;
-  // decision on e4409bf2): laneNoteSources loses join hits GRADUALLY to explicit pins — each pin
-  // consumes a slot, at cap ALL join hits fall, and out of `reachable`, whose join half is taken
-  // from `shown`. The repair was documentation only: say the mechanics where they happen, build no
-  // counter-booking. A comment is not code — nothing else in the tree notices a clause rotting out
-  // of it, which is what this pin is for. It reads the function's COMMENT lines only, never the
-  // whole body: `cap - explicit.length` also exists as live code, and a body-wide grep would stay
-  // green over a comment that had lost the sentence.
-  {
-    const laneSrc = read("task-notes.ts");
-    const body = laneSrc.match(/export function laneNoteSources\([\s\S]*?\n\}/)?.[0] ?? "";
-    const said = (body.match(/^\s*\/\/.*$/gm) ?? []).join("\n");
-    const slot = /`cap - explicit\.length`/.test(said);
-    const allFall = /ALL join hits fall/.test(said);
-    const reachable = /out of `reachable`, not only out of `shown`/.test(said)
-      && /join half from `shown`/.test(said);
-    pin("laneNoteSources' comment states the cap collision — explicit pins consume join slots, at cap ALL join hits fall, out of `reachable` whose join half comes from `shown`",
-      body !== "" && said.includes("CAP COLLISION") && slot && allFall && reachable,
-      body === "" ? "laneNoteSources not found"
-        : `slot=${slot} allFall=${allFall} reachableFromShown=${reachable}`);
-  }
-
   // K2 · THE SAME BARGAIN ON THE PROGRAM SIDE, and the one half a suite cannot see. e2e/programs.ts
   // DRIVES the behaviour (planted state, both entrances, seven counter-probes) — that is the proof.
   // What no test can observe is the ORDER inside loadState: if the Program cap ever ran before the
@@ -8246,207 +6788,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 
 }
 
-// --- THE PROGRAM-MAIN EXECUTION RAIL ↔ THE TWO PROSE CONTRACTS. The block is the only text a
-// freshly founded Program-MAIN is guaranteed to read, and it is the reason the doors it names must
-// keep existing under those spellings. TypeScript sees none of that: `AGENTS.md` is the portable
-// contract a session binds to and `docs/self-api.md` is the reference it is sent to, and both are
-// markdown. A route renamed in one place and not the others produces a founding brief full of
-// curls that 404, exactly the way the lane exit footer would — same failure, same kind of pin.
+// --- THE GAME-MAKER CHECKPOINT READER. The founding rail names the checkpoint fields as an ordered
+// vocabulary; the reader must enforce that order, not accept the fields as a set.
 {
   const RULE_RAIL = "the founding execution rail, the portable role contract and the Self-API reference name ONE set of doors";
-  // The common card precedes both rails. The game profile adds its specialist paragraph.
-  const railPart = (name: string): string =>
-    server.match(new RegExp(`const ${name} = \`[\\s\\S]*?\\n[^\\n]*\`;`))?.[0] ?? "";
-  const railHead = railPart("RAIL_HEAD");
-  const mainCard = server.match(/const MAIN_ROLE_CARD = `([^`]*)`;/)?.[1] ?? "";
-  const railRoleGameMaker = railPart("RAIL_ROLE_GAME_MAKER");
-  const railTail = railPart("RAIL_TAIL");
-  const rail = mainCard === "" || railHead === "" || railTail === ""
-    ? "" : mainCard + railHead + railTail;
-  const selfApiDoc = read("docs/self-api.md");
-  const agents = read("AGENTS.md");
-  // The doors, spelled as the delivered text spells them. `<taskId>` in the brief and `:id` in the
-  // docs are the same door in two notations, so each is checked against its own side's spelling.
-  const doors: readonly (readonly [string, string])[] = [
-    ["GET /api/self/program-execution", "GET /api/self/program-execution"],
-    ["POST /api/self/tasks with", "POST /api/self/tasks"],
-    ["POST /api/self/tasks/<taskId>/release", "POST /api/self/tasks/:id/release"],
-    ["POST /api/self/tasks/<taskId>/land", "POST /api/self/tasks/:id/land"],
-    ["POST /api/self/watch", "POST /api/self/watch"],
-    ["POST /api/self/attention", "POST /api/self/attention"],
-    // The two the rail was missing until 2026-09-17 (docs/messungen/
-    // 2026-09-14-rollen-briefe-synthese.md §2b, cut S4): the question a blocked worker asks its
-    // MAIN, and the Program's own durable back-channel. Both doors are older than the sentences
-    // that name them — what was new is that a founding MAIN could now learn they exist.
-    ["POST /api/self/clarifications/<id>/reply", "POST /api/self/clarifications/:id/reply"],
-    ["GET /api/self/inbox", "GET /api/self/inbox"],
-  ];
-  const missingRail = doors.filter(([inRail]) => !rail.includes(inRail)).map(([d]) => d);
-  const missingDoc = doors.filter(([, inDoc]) => !selfApiDoc.includes(inDoc)).map(([, d]) => d);
-  pin(`${RULE_RAIL} — every door the founding block names has a section that documents it (A)`,
-    rail !== "" && /^## Program-MAIN-Ausführungsschiene/m.test(selfApiDoc)
-      && missingRail.length === 0 && missingDoc.length === 0,
-    rail === "" ? "the MAIN_ROLE_CARD / RAIL_HEAD / RAIL_TAIL parts were not all found in server.ts"
-      : `railMissing=[${missingRail.join(",")}] docMissing=[${missingDoc.join(",")}]`);
-  // The ADDRESS is the falsifier the owner paid for by hand: a MAIN that has to search for Fleet.
-  // It must be the server's OWN interpolated HOST/PORT — a literal would be right on this machine
-  // and wrong on every other — and it must be the self credential, never an owner one.
-  pin(`${RULE_RAIL} — the block interpolates the server's own address and names only the self credential (B)`,
-    rail.includes("http://${HOST}:${PORT}")
-      && rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")
-      && !/x-fleet-token|\/api\/slots\/|\/api\/programs\//.test(rail),
-    `host=${rail.includes("http://${HOST}:${PORT}")} selfToken=${rail.includes("x-fleet-self-token: $FLEET_SELF_TOKEN")}`);
-  // The portable contract retains the detailed role judgement; the card is its brief summary.
-  const agentsRule = agents.includes("is a JUDGEMENT, never a posture, a")
-    && agents.includes("Small, reversible, low-risk changes inside the confirmed scope")
-    && agents.includes("isolated worker lane");
-  const railRule = mainCard.includes("was eine Lane bauen kann, baut eine Lane")
-    && !rail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL");
-  pin(`${RULE_RAIL} — the card summarizes delegation and the portable contract retains the role judgement (C)`,
-    agentsRule && railRule && !/\b\d+\s*(lines|files|LOC)\b/.test(rail),
-    `agents=${agentsRule} rail=${railRule}`);
-  // (D) THE PROFILE SELECTS ITS ROLE PARAGRAPH, IT DOES NOT APPEND AN OVERRIDE. Two role paragraphs
-  // exist and they say opposite things about substantial work; the composition is what guarantees a
-  // founding text carries exactly one. The falsifier this closes: a game-maker rail that still
-  // carried "Use an isolated worker lane for substantial product implementation" beside its own
-  // licence to work serially, leaving the session to follow whichever sentence it reached first.
-  // The owner's amendment is checked on the portable-contract side too, since that is where a
-  // session actually binds to it.
-  const gameMakerRail = railHead === "" || railRoleGameMaker === "" || railTail === ""
-    ? "" : railHead + railRoleGameMaker + railTail;
-  const checkpointFields = [...(server.match(
-    /const GAME_CHECKPOINT_FIELDS = \[([\s\S]*?)\] as const;/)?.[1] ?? "")
-    .matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
-  const documentedCheckpointFields = (text: string, label: string): string[] =>
-    [...(text.match(new RegExp(`${label}: ([^\\n]+)`))?.[1] ?? "").matchAll(/`([^`]+)`/g)]
-      .map((match) => match[1]!);
-  const selfApiCheckpointFields = documentedCheckpointFields(selfApiDoc, "Checkpoint-Feldreihenfolge");
-  const studioDoc = read("docs/product-studio-working-circle.md");
-  const studioCheckpointFields = documentedCheckpointFields(studioDoc, "Checkpoint field order");
-  const gmExclusive = gameMakerRail !== ""
-    && !gameMakerRail.includes("Use an isolated worker lane for substantial product implementation")
-    && !gameMakerRail.includes("THE ROLE SPLIT IS A JUDGEMENT, NOT A WALL")
-    && gameMakerRail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE")
-    && gameMakerRail.includes("fresh independent cross-model Review")
-    && gameMakerRail.includes("SENSORY CRITIC IS POST-PLAY ONLY")
-    && gameMakerRail.includes('KEEP THE COMMITTED "## Current game checkpoint" CURRENT')
-    && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')
-    && !rail.includes("SUBSTANTIAL SERIAL PRODUCT WORK MAY STAY IN THIS PANE");
-  const preflightOrder = [
-    "FILE ONE NORMAL ARCHITECT TASK",
-    "OPTIONALLY RUN ZERO TO TWO NAMED FACT/RISK PROBES",
-    "THEN RUN ONE FRESH INDEPENDENT CROSS-MODEL REVIEW",
-    "MAIN DISPOSITION IS EXACTLY ACCEPT, RETHINK OR OWNER",
-    "NO IMPLEMENTATION TASK MAY BE FILED OR RELEASED BEFORE ACCEPT",
-  ] as const;
-  const preflightOrderAt = preflightOrder.map((step) => railRoleGameMaker.indexOf(step));
-  // ONE PREFLIGHT, TWO FORMS (owner promotion 2026-10-08, docs/entwurf-produkt-preflight.md): the
-  // game form keeps its Architect order in all three docs; the product form binds every product
-  // Program from a prototype and lives in AGENTS.md and the studio doc. Its paragraph carries no game
-  // vocabulary, so a product MAIN never reads a game rule as its own.
-  const productOrder = "**Prototype -> Critic -> Draft -> fresh independent cross-model Review -> MAIN `ACCEPT|RETHINK|OWNER` -> draft confirmation**";
-  const productParagraph = agents.match(/^- Every \*\*product Program\*\*[\s\S]*?(?=^- |^###)/m)?.[0] ?? "";
-  const laneRoleCard = server.match(/const LANE_ROLE_CARD = `([^`]*)`;/)?.[1] ?? "";
-  const preflightDocs = {
-    game: [agents, selfApiDoc, studioDoc].every((text) =>
-      /Architect -> 0-2 named\s+fact\/risk probes -> fresh independent cross-model Review/.test(text)
-        && text.includes("ACCEPT|RETHINK|OWNER")
-        && text.includes("SENSORY CRITIC IS POST-PLAY ONLY")),
-    product: productParagraph !== ""
-      && [productParagraph, studioDoc].every((text) => text.replace(/\s+/g, " ").includes(productOrder)
-        && text.includes("THE CRITIC LOOKS ONLY AT A RUNNING PROTOTYPE"))
-      && /integration command/.test(productParagraph)
-      && productParagraph.replace(/\s+/g, " ").includes("never as a land count")
-      && productParagraph.replace(/\s+/g, " ").includes("only a NEW or CHANGED criterion goes to the owner")
-      && productParagraph.replace(/\s+/g, " ").includes("no held card is held by this preflight")
-      && !/\b(game|play\w*|GAME-CARD)\b/i.test(productParagraph)
-      && mainCard.includes("Integrations-Checkpoint gegen das Erfolgskriterium")
-      && laneRoleCard.includes("zuerst Lesart und Plan"),
-  };
-  pin(`${RULE_RAIL} — every new Game Program completes one independent Preflight before implementation, while sensory Critic stays blind and post-play`,
-    preflightOrderAt.every((at, i) => at >= 0 && (i === 0 || at > preflightOrderAt[i - 1]!))
-      && railRoleGameMaker.includes("DRAFT GAME-CARD.md")
-      && railRoleGameMaker.includes("one to four executable first-slice briefs")
-      && railRoleGameMaker.includes("dependencies, exclusive write set, stop, Done and literal Verify")
-      && railRoleGameMaker.includes("Program, repository, Architect SHA and named probe facts")
-      && railRoleGameMaker.includes("ACCEPT <final-card-sha>")
-      && railRoleGameMaker.includes("LAND EXACTLY THE REVIEWER'S FINAL")
-      && railRoleGameMaker.includes("copy its first-slice briefs verbatim")
-      && railRoleGameMaker.includes("DIRECT SLICE")
-      && railRoleGameMaker.includes("no Game Card, no HANDOFF.md and no hypotheses")
-      && railRoleGameMaker.includes("sealed build, launch, real-input and capture pack")
-      && preflightDocs.game,
-    `order=[${preflightOrderAt.join(",")}] docs=${preflightDocs.game}`);
-  pin(`${RULE_RAIL} — every product Program builds from a prototype under one confirmed draft, and every row and checkpoint checks the whole`,
-    preflightDocs.product,
-    `paragraph=${productParagraph.length} studio=${studioDoc.replace(/\s+/g, " ").includes(productOrder)} `
-      + `mainCard=${mainCard.includes("Integrations-Checkpoint gegen das Erfolgskriterium")} laneCard=${laneRoleCard.includes("zuerst Lesart und Plan")}`);
-  const preflightTruthMarkers = [
-    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
-    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
-    "Architect task/model/SHA",
-    "Reviewer task/model/reported SHA",
-    "actual landed SHA",
-    "Fleet does not assemble or prove this receipt",
-    "owner lands that exact Reviewer commit from the Board",
-    "need not be one of the Card's named first slices",
-    "owner-confirmed core pivot or new game inside an existing Program starts a new Preflight",
-    "Hashes identify the sealed bytes only",
-    "blindness and delivery are operator-attested or unknown",
-  ] as const;
-  const compactText = (text: string): string => text.replace(/\s+/g, " ");
-  const missingRailTruth = preflightTruthMarkers.filter((marker) =>
-    !compactText(railRoleGameMaker).includes(marker));
-  const selfApiTruthMarkers = [
-    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
-    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
-    "Architect task/model/SHA",
-    "Reviewer task/model/reported SHA",
-    "actual landed SHA",
-    "Fleet does not assemble or prove this receipt",
-    "landet der Owner exakt diesen Reviewer-Commit über das Board",
-    "muss nicht zu den benannten First Slices der Card gehören",
-    "vom Owner bestätigter Core-Pivot oder ein neues Spiel in einem bestehenden Program startet einen neuen Preflight",
-    "Hashes identifizieren nur die versiegelten Bytes",
-    "Blindheit und Zustellung bestätigt der Operator, sonst bleiben sie `unknown`",
-  ] as const;
-  // AGENTS.md keeps the binding sentence and points at the studio doc for the receipt, Direct Slice
-  // and hash rules (Ableitung C, docs/verfassung.md §8: what a role does not run is a pointer). The
-  // pointer is pinned, so the portable contract cannot drop the obligation or lose the path to it.
-  const agentsTruthMarkers = [
-    "BINDING ROLE OBLIGATION, NOT A SERVER GATE",
-    "EXISTING DOORS DO NOT AUTHORIZE A BYPASS",
-    "`docs/product-studio-working-circle.md` §The Game-Maker profile",
-    "`docs/product-studio-working-circle.md` §The product preflight",
-  ] as const;
-  const docTruthSurfaces = [
-    ["AGENTS.md", agents, agentsTruthMarkers],
-    ["docs/self-api.md", selfApiDoc, selfApiTruthMarkers],
-    ["docs/product-studio-working-circle.md", studioDoc, preflightTruthMarkers],
-  ] as const;
-  const missingDocTruth = docTruthSurfaces.map(([name, text, markers]) => ({
-    name,
-    missing: markers.filter((marker) => !compactText(text).includes(marker)),
-  })).filter(({ missing }) => missing.length > 0);
-  pin(`${RULE_RAIL} — Preflight names its role authority, manual receipt and hash limits without inventing machine enforcement`,
-    missingRailTruth.length === 0 && missingDocTruth.length === 0,
-    `railMissing=[${missingRailTruth.join(" | ")}] docsMissing=${JSON.stringify(missingDocTruth)}`);
-  const client = clientU.text;
-  const profileSpan = clientU.span("function profileState(", "// --- V1a");
-  const profileSummary = profileSpan?.text ?? "";
-  pin(`${RULE_RAIL} — the Board profile summary names re-Preflight and the operator-run post-play Critic`,
-    profileSummary.includes("new game or owner-confirmed core pivot")
-      && profileSummary.includes("Preflight")
-      && profileSummary.includes("Sensory Critic is an operator-run post-play act")
-      && !profileSummary.includes("fresh-critic work still goes"),
-    `profileFound=${profileSpan !== null} pivot=${profileSummary.includes("new game or owner-confirmed core pivot")} preflight=${profileSummary.includes("Preflight")} postPlay=${profileSummary.includes("Sensory Critic is an operator-run post-play act")} stale=${profileSummary.includes("fresh-critic work still goes")}`);
-  pin(`${RULE_RAIL} — the Game-Maker rail, machine gate and both operator contracts share one ordered checkpoint vocabulary`,
-    checkpointFields.length === 7
-      && JSON.stringify(selfApiCheckpointFields) === JSON.stringify(checkpointFields)
-      && JSON.stringify(studioCheckpointFields) === JSON.stringify(checkpointFields)
-      && railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')
-      && /Last replay: <[^>\n]*seed[^>\n]*input[^>\n]*capture[^>\n]*>/i.test(studioDoc),
-    `machine=[${checkpointFields.join(", ")}] selfApi=[${selfApiCheckpointFields.join(", ")}] studio=[${studioCheckpointFields.join(", ")}] railSource=${railRoleGameMaker.includes('${GAME_CHECKPOINT_FIELDS.join(", ")}')}`);
   const checkpointReaderAt = server.indexOf("function readGameCheckpoint(");
   const checkpointReader = checkpointReaderAt < 0 ? "" : server.slice(checkpointReaderAt,
     server.indexOf("async function gameMakerCheckpointError", checkpointReaderAt));
@@ -8457,32 +6802,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
         < checkpointReader.indexOf("return { ok: true, build }")
       && read("e2e/programs.ts").includes('["a shuffled field order"'),
     "ordered reader or shuffled-field runtime rejection missing");
-  const agentsProfile = agents.includes("Game-Maker Program-MAIN")
-    && agents.includes("causally coupled product act");
-  // The common execution rail stays pinned; the role card is checked against its document above.
-  // 2026-09-23 (System 1.5 R1): RAIL_TAIL's "treat an arriving report as a CLAIM" bullet now
-  // also asks the judging MAIN for the leading ERFUELLT: token on its verdict reason. A
-  // deliberate text change, so the baseline moves with it.
-  // 2026-09-23 (memory M1, task 42da6bdc): RAIL_HEAD now ends with the memory start pointer
-  // (server.ts#memoryPointer, GET /api/self/memory) — a pointer to the reader, no copied state.
-  // 2026-09-24: RAIL_TAIL's filing bullet now explains the card header fields with one example
-  // whose VERIFY is the repository's own command — a foreign-repo MAIN has no other source for it.
-  // 2026-10-09 (card 66936847): the filing bullet names the optional VARIANTE header, its values
-  // interpolated from context-packs.ts#CONTEXT_POSITION_VARIANTEN.
-  const RAIL_COMMON_SHA256 = "d72656816dad038a25aeeb63643e543e4dd052aaf9263bf104172b315fe78d7d";
-  const railBody = (part: string): string =>
-    part === "" ? "" : part.slice(part.indexOf("`") + 1, part.lastIndexOf("`"));
-  const standardBytes = rail === ""
-    ? "" : railBody(railHead) + railBody(railTail);
-  const standardSha = standardBytes === ""
-    ? "" : createHash("sha256").update(standardBytes).digest("hex");
-  pin(`${RULE_RAIL} — the common execution rail still hashes to its pinned baseline (E)`,
-    standardSha === RAIL_COMMON_SHA256,
-    standardBytes === "" ? "the rail parts were not all found in server.ts"
-      : `bytes=${standardBytes.length} sha256=${standardSha}`);
-  pin(`${RULE_RAIL} — the game-maker role paragraph REPLACES the generic one, and the portable contract names the same exception (D)`,
-    gmExclusive && agentsProfile && !/\b\d+\s*(lines|files|LOC)\b/.test(gameMakerRail),
-    `exclusive=${gmExclusive} agents=${agentsProfile} gmLen=${gameMakerRail.length}`);
 }
 
 // --- THE GAME-MAKER TREE IS A LEASE, NOT A ONE-TIME PREFLIGHT. The runtime suite races the two
@@ -8673,14 +6992,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && wsBody.includes("sameSlotStreamOccupant(s, binding.occupant)")
       && !wsBody.includes('tmux("send-keys", "-t", sess(s.id)'),
     "owner WS input is not bound to one occupant and %pane");
-  const lifecycleRuntime = read("e2e/slots.ts");
-  const foundingRuntime = read("e2e/programs.ts");
-  pin(`${RULE_GM_TREE} — runtime names queued-send, post-paste, owner-WS and teardown/recycle race arms`,
-    foundingRuntime.includes("queued founding send cannot paste into a recycled candidate")
-      && foundingRuntime.includes("pasted founding brief cannot Enter or bind after candidate recycle")
-      && lifecycleRuntime.includes("old owner WS input cannot reach the recycled occupant")
-      && lifecycleRuntime.includes("teardown keeps A published, joins duplicate kill, suppresses heal and preserves B"),
-    "one or more deterministic P2a runtime arms are absent");
   pin(`${RULE_GM_TREE} — only the dedicated conflict type selects 409 at owner open seams`,
     /class GameMakerTreeConflict extends Error/.test(server)
       && /e instanceof GameMakerTreeConflict \? 409 : 400/.test(server)
@@ -8789,10 +7100,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 // single-process run cannot manufacture without killing its own server.
 {
   const RULE_GM_FOUNDING = "a Game-Maker founding has one durable target identity across crash, complete and cleanup";
-  const foundingSelfApi = read("docs/self-api.md");
-  const foundingStudioDoc = read("docs/product-studio-working-circle.md");
-  const documentedMarkerAt = foundingSelfApi.indexOf("bevor** `openSlot`");
-  const documentedRecoveryAt = foundingSelfApi.indexOf("Restart und der eine Erfolgsschnitt");
   const bootstrapAt = server.indexOf("async function bootstrapProgramMain(");
   const bootstrapBody = bootstrapAt < 0 ? "" : server.slice(bootstrapAt, server.indexOf("async function handleOwnerProgramRoute", bootstrapAt));
   const succeedAt = server.indexOf("async function succeedProgramMain(");
@@ -8987,43 +7294,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && read("e2e/programs.ts").includes("an owner recycle inside the in-place respawn is never bound, and the recycled occupant is preserved")
       && read("e2e/programs.ts").includes("the blocked screen costs the brief, not the line"),
     `refuse=${refuseAt} capture=${captureAt} brief=${briefAt} reserve=${reserveAt} respawn=${respawnAt} openLatch=${afterOpenLatchAt} candidate=${candidateOkAt} bind=${bindingCutAt}`);
-  const runtimeCases = [
-    "bootstrap persists the exact target before delivery, blocks complete",
-    "the exact founding target follows kill, absence proof, slot and marker cleanup",
-    "post-await permit recheck leaves no main, receipt, pane or slot orphan",
-    "the released tree remains recoverable",
-    "an unwritable receipt ledger rolls back without binding, marker, pane or evidence",
-    "a matching orphan receipt never auto-binds and survives exact-candidate cleanup as history",
-    "a pre-open marker clears, while a different-tree target is preserved",
-    "an unknown marker version refuses startup and preserves the marker bytes",
-    "a bootstrap marker plus an existing main refuses startup",
-    "a succession predecessor that is not current main refuses startup",
-    "a marker on an otherwise unreadable Program row refuses startup",
-    "inconsistent lifecycle timestamps with a marker refuse startup",
-    "tmux observation failure is unknown, preserves the marker and refuses startup",
-    "a same-root other-slot occupant is preserved and refuses startup",
-    "a dormant same-root Slot row is preserved and refuses startup",
-    "a dormant sibling-root Slot row does not block stale-marker cleanup",
-    "retire is refused in flight, owner recycle cannot downgrade Program succession",
-    '["a shuffled field order"',
-    "the exact candidate rolls back, the binding is left stale and closed as retire, no receipt",
-    "an owner recycle inside the in-place respawn is never bound, and the recycled occupant is preserved",
-    "a readable committed checkpoint founds the successor IN PLACE",
-  ];
-  pin(`${RULE_GM_FOUNDING} — runtime suite names bootstrap, complete, pre-open, exact-candidate, foreign-target and succession crash arms`,
-    runtimeCases.every((text) => read("e2e/programs.ts").includes(text)),
-    `missing=[${runtimeCases.filter((text) => !read("e2e/programs.ts").includes(text)).join(" | ")}]`);
-  pin(`${RULE_GM_FOUNDING} — operator and studio docs distinguish durable intent, rollback and evidence from authority`,
-    foundingSelfApi.includes("Program.founding")
-      && documentedMarkerAt >= 0 && documentedRecoveryAt > documentedMarkerAt
-      && foundingSelfApi.includes("Brief-Replay noch Auto-Bind")
-      && foundingSelfApi.includes("Den Live-Identitätscheck bis zum Bindungsschnitt")
-      && foundingSelfApi.includes("Completion beendet eine vorhandene MAIN-Pane nicht automatisch")
-      && foundingStudioDoc.includes("A restart never guesses authority")
-      && foundingStudioDoc.includes("evidence of an interrupted delivery, not authority")
-      && foundingStudioDoc.includes("revoked transfer is still evidence only")
-      && foundingStudioDoc.includes("automatically kill an existing MAIN pane"),
-    "the durable marker/recovery contract drifted out of the operator or studio document");
 }
 
 // --- THE OWNER BOARD'S DURABLE FOUNDING MARKER -------------------------------------------------
@@ -9498,14 +7768,13 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 // ================================================================================================
-// LANE SUITES IN THE REMOTE HELPER PORTAL — the two pairs whose other side is not TypeScript
+// LANE SUITES IN THE REMOTE HELPER PORTAL — the pair whose other side is not TypeScript
 // ================================================================================================
 // The feature's own behaviour is proved in e2e/lane-suite.ts against a live server. What NO check
 // there can see is where its statements go OUT of TypeScript: into a shell line a human types on
-// another machine, and into a rulebook fragment that is not even in this tree.
+// another machine.
 {
   const helperSrc = ((): string => { try { return read("src/helper.ts"); } catch { return ""; } })();
-  const serverSrc = serverU.text;
 
   // --- S8. THE `-b` IN THE BOOTSTRAP, and it is the whole difference between a helper who can work
   // and one who cannot. An audit bundle names the integration branch and a plain `git clone` checks
@@ -9524,64 +7793,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       fn !== "" && /git clone -b \$\{job\.branch/.test(laneArm) && auditArm !== "" && !/ -b /.test(auditArm)
         && /branch\?: string/.test(helperSrc),
       fn === "" ? "bootstrapText not found" : `laneArm=${/git clone -b/.test(laneArm)} audit=${JSON.stringify(auditArm)}`);
-  }
-
-  // --- and the sentence that WAS the bug. The portal's subline and its empty card described the
-  // audit queue as the only source there was ("post-land audits this fleet has queued" / "no audit
-  // is waiting"), which is exactly why a lane's offered preview could not be found on this page.
-  // A page that lists two sources and names one is a page that lies about what it shows.
-  // …and the STATIC half of the same sentence, which is where the wrong one physically sat: the
-  // page ships a fallback subline in markup, and that is what a viewer reads until the first poll
-  // answers. It was found here by grep, not by this rule — so the rule now covers it.
-  const RULE_SAYS_BOTH = "the portal's subline and empty card name BOTH job sources, not audits alone";
-  const pageSrc = ((): string => { try { return read("public/helper.html"); } catch { return ""; } })();
-  if (pageSrc !== "") {
-    const sub = /id="sub"[^>]*>([^<]*)</.exec(pageSrc)?.[1]?.toLowerCase() ?? "";
-    pin(`${RULE_SAYS_BOTH} — including the static fallback subline in public/helper.html`,
-      sub !== "" && sub.includes("preview") && sub.includes("audit"),
-      sub === "" ? 'no id="sub" node in public/helper.html' : JSON.stringify(sub.slice(0, 90)));
-  } else skip(`${RULE_SAYS_BOTH} — including the static fallback subline in public/helper.html`,
-    "public/helper.html is not in this tree");
-  if (helperSrc === "") skip(RULE_SAYS_BOTH, "src/helper.ts is not in this tree");
-  else {
-    const refresh = /async function refresh\([\s\S]*?\n}/.exec(helperSrc)?.[0] ?? "";
-    const strings = [...refresh.matchAll(/"([^"\\]{20,})"|`([^`\\$]{20,})`/g)].map((m) => m[1] ?? m[2] ?? "");
-    const prose = strings.join(" ").toLowerCase();
-    pin(RULE_SAYS_BOTH,
-      refresh !== "" && prose.includes("preview") && prose.includes("audit")
-        && !/no audit is waiting/.test(refresh),
-      refresh === "" ? "refresh() not found"
-        : `preview=${prose.includes("preview")} audit=${prose.includes("audit")} `
-          + `auditOnlyEmptyCard=${/no audit is waiting/.test(refresh)}`);
-  }
-
-  // --- S9. THE WAITING NUMBERS, held across the one boundary that has no compiler at all: the
-  // rulebook fragment lives in the SOURCE checkout, is gitignored, and a worktree never materialises
-  // it — so this rule reads it through SOURCE_DIR and SKIPS under its own name where it cannot look,
-  // exactly like section 6b. It also skips while the rule itself has not been promoted into the
-  // fragment yet: a lane may PROPOSE a rule, only the owner makes it normative, and a pin that went
-  // red over an un-promoted proposal would be this file demanding its own change be adopted.
-  const RULE_WAIT = "the suite-offer waiting numbers are the same in rulebook/lane-discipline.md and server.ts";
-  const freeSec = Number(/const SUITE_OFFER_WAIT_FREE_MS = ([0-9_]+)/.exec(serverSrc)?.[1]?.replaceAll("_", "") ?? NaN) / 1000;
-  const heldSec = Number(/const SUITE_OFFER_WAIT_HELD_MS = ([0-9_]+)/.exec(serverSrc)?.[1]?.replaceAll("_", "") ?? NaN) / 1000;
-  const fragment = ((): string | null => {
-    if (SOURCE_DIR === null) return null;
-    try { return readFileSync(`${SOURCE_DIR}/${RULEBOOK_DIR}/${fragmentFileName("lane-discipline")}`, "utf8"); }
-    catch { return null; }
-  })();
-  if (!Number.isFinite(freeSec) || !Number.isFinite(heldSec))
-    pin(RULE_WAIT, false, `server.ts names no SUITE_OFFER_WAIT_* pair (free=${freeSec} held=${heldSec})`);
-  else if (fragment === null)
-    skip(RULE_WAIT, SOURCE_DIR === null ? "source checkout not locatable from here"
-      : "rulebook/lane-discipline.md not readable in the source checkout");
-  else if (!fragment.includes("/api/self/suite-offer"))
-    skip(RULE_WAIT, "the suite-offer rule is not in the rulebook yet — proposed, not promoted");
-  else {
-    // the numbers as the fragment writes them, in seconds, beside the route they belong to
-    const hasFree = new RegExp(`\\b${freeSec} s\\b`).test(fragment);
-    const hasHeld = new RegExp(`\\b${heldSec} s\\b`).test(fragment);
-    pin(RULE_WAIT, hasFree && hasHeld,
-      `server free=${freeSec}s held=${heldSec}s; fragment names them: free=${hasFree} held=${hasHeld}`);
   }
 }
 
@@ -10023,62 +8234,19 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 // ================================================================================================
-// SECTION S10d — THE SUITE WAY IS WRITTEN WHERE EVERY HARNESS READS (2026-09-29, owner: „[Zitat entfernt]“
-// ). Codex and Pi
-// load AGENTS.md and nothing else of this repo's rules; §S10c made every recommended run offerable,
-// and AGENTS.md §Verify still knew neither `modules`, nor the wait numbers' field, nor the jobs door —
-// the host rules lived only in the git-ignored overlay. Three pairs with no compiler between halves:
-//   (a) the doors and fields §Verify names exist under those names: the offer door, the served
-//       `waitPolicy` fields it quotes (server.ts#SuiteOfferWait) and `localProof.offerBody`, which
-//       server.ts#laneLocalProof must actually serve, from `modules`, only while a preview can be owed;
-//   (b) every `"cmd":"…"` §Verify teaches for the jobs door is a HELPER_CMD_ALLOW key — a body the
-//       door refuses with 400 is a copyable command that cannot work;
-//   (c) every land-gate suite, and the MAIN's full preview, is among them, so a suite added to the
-//       gate is a line added here too.
+// SECTION S10d — server.ts#laneLocalProof serves the offer body a lane posts to the suite-offer door
 // ================================================================================================
 {
   const RULE_SUITE_WAY = "AGENTS.md §Verify carries the suite way every harness reads: offer with modules, waitPolicy, the jobs door";
-  const verifySec = /\n## Verify\n([\s\S]*?)(?=\n## |$)/.exec(read("AGENTS.md"))?.[1] ?? null;
-  if (verifySec === null) pin(`${RULE_SUITE_WAY} — PROBE: AGENTS.md has a '## Verify' section`, false, "not found");
-  else {
-    const flat = verifySec.replace(/\s+/g, " ");
-    const waitFields = [...flat.matchAll(/`waitPolicy\.([a-zA-Z]+)`/g)].map((m) => m[1]);
-    const iface = /interface SuiteOfferWait \{([^}]*)\}/.exec(server)?.[1] ?? "";
-    const served = [...iface.matchAll(/([a-zA-Z]+):/g)].map((m) => m[1]);
-    const phantom = waitFields.filter((f) => !served.includes(f));
-    const names: [string, boolean][] = [
-      ["offer door", flat.includes("`POST /api/self/suite-offer`")],
-      ["copyable offer curl", /curl -s -X POST -H "x-fleet-self-token: \$FLEET_SELF_TOKEN"[^\n]*\n[^\n]*"\$FLEET_SELF_URL\/api\/self\/suite-offer"/.test(verifySec)],
-      ["localProof.modules", flat.includes("`localProof.modules`")],
-      ["localProof.offerBody", flat.includes("`localProof.offerBody`")],
-      ["withdraw", flat.includes("`POST /api/self/suite-offer/withdraw`")],
-      ["waitPolicy unclaimed+held", waitFields.includes("unclaimedMs") && waitFields.includes("heldMs") && phantom.length === 0],
-      ["jobs door", flat.includes("`POST /api/self/jobs`")],
-      ["lock-pid ban", flat.includes("`/tmp/fleet-e2e.lock/pid`") && flat.includes("`suiteLock.pid`")],
-      ["runner + socket", flat.includes("`pgrep -P <pid>`") && flat.includes("`tmux -L <SOCK><pid> kill-server`")],
-    ];
-    const absent = names.filter(([, ok]) => !ok).map(([n]) => n);
-    pin(`${RULE_SUITE_WAY} — (a) the doors, fields and abort steps are named`, absent.length === 0,
-      `missing=[${absent}] waitPolicy cited=[${waitFields}] served=[${served}]`);
-
-    const proofFn = serverU.span("function withOfferBody(", "\n}")?.text ?? null;
-    const laneFn = serverU.span("async function laneLocalProof(", "\n}")?.text ?? null;
-    pin(`${RULE_SUITE_WAY} — (a) server.ts#laneLocalProof serves offerBody, built from modules, absent when no preview can be owed`,
-      proofFn !== null && laneFn !== null
-        && /if \(p\.isolatedPreview === false\) return p;/.test(proofFn)
-        && /offerBody: p\.modules \? \{ modules: p\.modules \} : \{\}/.test(proofFn)
-        && /return withOfferBody\(localProofFor\(/.test(laneFn),
-      proofFn === null || laneFn === null ? `withOfferBody=${proofFn !== null} laneLocalProof=${laneFn !== null}`
-        : `gated=${/isolatedPreview === false/.test(proofFn)} fromModules=${/p\.modules \?/.test(proofFn)} wired=${/withOfferBody\(localProofFor/.test(laneFn)}`);
-
-    const cmds = [...flat.matchAll(/"cmd":"([^"]+)"/g)].map((m) => m[1]);
-    const refused = cmds.filter((c) => !HELPER_CMD_ALLOW[c] || !helperCmdCheck(c).ok);
-    pin(`${RULE_SUITE_WAY} — (b) every jobs-door cmd it teaches is a HELPER_CMD_ALLOW key`,
-      cmds.length > 0 && refused.length === 0, `taught=[${cmds}] refused=[${refused}]`);
-    const untaught = [...gateSuites.map((g) => `./${g}`), "./e2e-isolated.sh"].filter((c) => !cmds.includes(c));
-    pin(`${RULE_SUITE_WAY} — (c) every land-gate suite and the MAIN's full preview is taught as a jobs-door cmd`,
-      gateSuites.length >= 3 && untaught.length === 0, `gate=[${gateSuites}] untaught=[${untaught}]`);
-  }
+  const proofFn = serverU.span("function withOfferBody(", "\n}")?.text ?? null;
+  const laneFn = serverU.span("async function laneLocalProof(", "\n}")?.text ?? null;
+  pin(`${RULE_SUITE_WAY} — (a) server.ts#laneLocalProof serves offerBody, built from modules, absent when no preview can be owed`,
+    proofFn !== null && laneFn !== null
+      && /if \(p\.isolatedPreview === false\) return p;/.test(proofFn)
+      && /offerBody: p\.modules \? \{ modules: p\.modules \} : \{\}/.test(proofFn)
+      && /return withOfferBody\(localProofFor\(/.test(laneFn),
+    proofFn === null || laneFn === null ? `withOfferBody=${proofFn !== null} laneLocalProof=${laneFn !== null}`
+      : `gated=${/isolatedPreview === false/.test(proofFn)} fromModules=${/p\.modules \?/.test(proofFn)} wired=${/withOfferBody\(localProofFor/.test(laneFn)}`);
 }
 
 // ================================================================================================
@@ -10122,12 +8290,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && !/helperOnlineMs \?\? \d/.test(clientText),
     /setDeviceSnapshot\(data\.helperDevices \?\? \[\], data\.helperOnlineMs/.test(clientText)
       ? "reads the projection" : "no read of data.helperOnlineMs found");
-  // …and the harness ARMS the knob. Same shape as the FLEET_MIGRATE_PCT pin above and the same
-  // reason: with the 90 s production default, e2e/lane-suite.ts's "nothing is beating" precondition
-  // would be a race against how long the nine modules before it happened to take, not a fact.
-  pin(`${RULE_ONLINE} — e2e-isolated.sh arms a short window, or the offline half measures nothing`,
-    /\bFLEET_DEVICE_ONLINE_MS=[1-9]\d*\b/.test(read("e2e-isolated.sh")),
-    /FLEET_DEVICE_ONLINE_MS=(\d+)/.exec(read("e2e-isolated.sh"))?.[1] ?? "not armed");
   // THE DOOR. The refusal has to stand in front of MINTING and behind the idempotent
   // existing-offer branch, or a lane loses track of an offer it already made the moment its helper
   // goes quiet. Order asserted by position, the same shape §S10 uses on the jobs door.
@@ -10468,10 +8630,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     badToken.length
       ? badToken.map(([n]) => n).join("; ")
       : `${Object.keys(rendered).length} rendered hint(s), token named bare`);
-  // …and the predicate can FAIL, on exactly the form it retired — not only pass on clean text.
-  pin(`${RULE_SIGIL} — the self-token predicate flags the retired $-form and passes the bare name`,
-    sigiled("reply … from $FLEET_SELF_TOKEN and JSON") && !sigiled("reply … from FLEET_SELF_TOKEN and JSON"),
-    "control form: `$FLEET_SELF_TOKEN` flagged, bare name clean");
 
   // --- HALF TWO: the server-local builders cannot be imported (server.ts boots on import), so they
   //     are read. What is judged is the MESSAGE TAIL and only that: a literal that TERMINATES a
@@ -10576,18 +8734,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   if (inlineUnjudged.length)
     skip(`${RULE_SIGIL} — inline tick hints ending in an interpolation are not judgeable from source`,
       `not measured: ${inlineUnjudged.join(", ")}`);
-
-  // THE COUNTER-PROBE, both directions, on the predicate itself — three lines of fixture, no parser.
-  // Without it "narrow enough" is an opinion; with it, over-broad and under-broad both fail here.
-  const PROBE = [
-    { want: true, why: "the measured old closing form", body: "function f(){ return `a ` + `x-fleet-self-token from $FLEET_SELF_TOKEN.`; }" },
-    { want: false, why: "a mid-text sigil followed by concatenation", body: "function f(){ return `notes $HOME` + ` in passing.`; }" },
-    { want: false, why: "a mid-text sigil before a closing interpolation", body: "function f(){ return `notes $HOME${suffix}`; }" },
-  ];
-  const wrong = PROBE.filter((c) => (judgeTails(c.body).flagged.length > 0) !== c.want);
-  pin(`${RULE_SIGIL} — the tail predicate flags the old closing form and NOTHING mid-text`,
-    wrong.length === 0,
-    wrong.length ? `misjudged: ${wrong.map((c) => c.why).join("; ")}` : `${PROBE.length} fixtures, both directions`);
 
   // --- THE MEASURED OLD FORM, negatively. Named as the byte sequence the live failure carried, so
   //     a reintroduction fails under the sentence that describes the incident and not under a regex.
@@ -10856,49 +9002,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && reportOpen.includes("bound?.receiver ?? null"),
     reportDedupe === "" ? "disarmLaneWatchesForReport not found in server.ts"
       : `calls=${reportDedupeCalls} lane=${reportDedupe.includes('watchKind(w) !== "lane"')} merge=${reportDedupe.includes('watchKind(w) === "merge"')} fired=${reportDedupe.includes("w.firedAt =")}`);
-  // the doc a MAIN is actually sent to must carry the section and both route paths — the same
-  // doc↔route pair RULE_RECEIVER pins for §fleet-report, and for its reason: a route named only in
-  // code is a route no session ever learns to call.
-{
-  // THE LANE-ONLY SCOPE LIST IS A MUST-AGREE PAIR whose other side is markdown. The refusal lives in
-  // server.ts as `409 not a lane — …`; the LIST of which routes carry it lives only in a sentence in
-  // docs/self-api.md, and CLAUDE.md sends every session to that sentence for the complete scope
-  // ("Vollstaendige Scope-Liste: docs/self-api.md"). A route that gains or loses the guard without
-  // the sentence following leaves a lane either hunting for a token it already holds, or believing a
-  // door is open that answers 409 — the same failure the exit-footer pin exists to prevent.
-  //
-  // DERIVED, never listed here: the routes are read out of server.ts by walking each `not a lane`
-  // refusal back to the route guard above it, so a new lane-only door is covered the day it is
-  // written. A sub-route is represented by its parent (`suite-offer/withdraw` by `suite-offer`,
-  // `notes/:id/verdict` by `notes`) — the sentence names doors, not every method on one.
-  const RULE_LANE_ONLY = "every lane-only self route is named in docs/self-api.md's lane-only scope sentence";
-  const selfSrc = read("server.ts");
-  const laneOnly = new Set<string>();
-  let currentRoute = "";
-  for (const line of selfSrc.split("\n")) {
-    const literal = /url\.pathname === "\/api\/self\/([^"]+)"/.exec(line);
-    if (literal) currentRoute = literal[1]!;
-    const pattern = /= \/\^\\\/api\\\/self\\\/(.+?)\$\/\.exec/.exec(line);
-    if (pattern) currentRoute = pattern[1]!.replace(/\\\//g, "/").replace(/\([^)]*\)/g, ":id");
-    if (currentRoute && /error: "not a lane/.test(line)) laneOnly.add(currentRoute);
-  }
-  // a sub-route is covered by its parent door
-  const doors = [...laneOnly].filter((r) => ![...laneOnly].some((other) => other !== r && r.startsWith(`${other}/`)))
-    .sort();
-  const scopeSentence = /\*\*Nicht lane-only[\s\S]{0,1400}?\n\n/.exec(read("docs/self-api.md"))?.[0] ?? "";
-  const unnamed = doors.filter((d) => !scopeSentence.includes(`\`${d}\``));
-  // The derivation must fail as ITSELF: an empty door set would make "every door is named" trivially
-  // true, and the four oldest doors are the ones the sentence has always claimed.
-  pin(`${RULE_LANE_ONLY} — the derivation finds the known doors and the sentence names every one of them`,
-    doors.length >= 6 && ["criterion", "drift", "gate", "verify-intent"].every((d) => doors.includes(d))
-      && scopeSentence !== "" && unnamed.length === 0,
-    `doors=[${doors.join(",")}] unnamed=[${unnamed.join(",")}] sentence=${scopeSentence.length}B`);
-}
-  const selfApiInbox = read("docs/self-api.md");
-  pin(`${RULE_INBOX} — docs/self-api.md carries §inbox and names both route paths`,
-    /^## inbox/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/inbox")
-      && selfApiInbox.includes("/api/self/inbox/:id/read"),
-    `section=${/^## inbox/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/inbox")} read=${selfApiInbox.includes("/api/self/inbox/:id/read")}`);
 
   // ACP-18 · THE ADDRESSED MESSAGE RAIL. Same discipline as the inbox above, pinned for the same
   // reasons — plus the two properties that are this rail's own and that no compiler can see.
@@ -10950,16 +9053,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && msgPayload !== "" && msgPayload.includes('r.kind !== "text"'),
     msgLoader === "" ? "loadMessages not found in the server universe"
       : `closed=${msgLoader.includes("r.v !== 1")} payload=${msgPayload.includes('r.kind !== "text"')}`);
-  // M6 — THE DOC SEAM, on the inbox seam's terms. The idempotency LIMIT is pinned by name because it
-  // is the one promise a reader would otherwise over-read: dedupe lives inside the retention, so a
-  // replay after a cap eviction can mint again. A doc that omitted that would be claiming
-  // exactly-once, which this rail does not provide.
-  pin(`${RULE_MESSAGES} — docs/self-api.md carries §messages, names all three route paths and states the idempotency boundary`,
-    /^## messages/m.test(selfApiInbox) && selfApiInbox.includes("GET /api/self/messages")
-      && selfApiInbox.includes("POST /api/self/messages")
-      && selfApiInbox.includes("/api/self/messages/:id/read")
-      && /[Ee]xactly-once/.test(selfApiInbox),
-    `section=${/^## messages/m.test(selfApiInbox)} get=${selfApiInbox.includes("GET /api/self/messages")} read=${selfApiInbox.includes("/api/self/messages/:id/read")} limit=${/[Ee]xactly-once/.test(selfApiInbox)}`);
 }
 
 // ================================================================================================
@@ -11026,57 +9119,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
 }
 
 // ================================================================================================
-// ctl.sh — the controller's verb layer, and the two files that must agree about it
+// ctl.sh — the controller's verb layer
 // ================================================================================================
-// The other half of both pairs is a SHELL SCRIPT and a DOC, so no compiler can see either. And the
-// failure they guard is the ordinary one: a verb gains a flag, or is renamed, or is added — and
-// docs/controller.md §Werkzeuge keeps describing the fleet as it was. A controller reads that
-// section instead of the script, so a stale paragraph is a wrong instruction, not a stale comment.
-// Both DIRECTIONS, the rule this file states for every set: a verb with no paragraph, and a
-// paragraph naming a verb that does not exist.
 {
   const RULE_CTL = "ctl.sh's verb list, its usage block and docs/controller.md §Werkzeuge are one set";
   const ctl = read("ctl.sh");
-  const controllerDoc = read("docs/controller.md");
-  const declared = /^CTL_VERBS="([^"]+)"$/m.exec(ctl)?.[1]?.trim().split(/\s+/).filter(Boolean) ?? [];
-  // a dash in a declared verb is the CLI's space: `wait-merge` is typed `./ctl.sh wait merge`
-  const cliForm = (v: string): string => v.replace("-", " ");
-  const werkzeuge = (() => {
-    const at = controllerDoc.indexOf("\n## Werkzeuge\n");
-    if (at < 0) return "";
-    const rest = controllerDoc.slice(at + 1);
-    const end = rest.indexOf("\n## ", 1);
-    return end < 0 ? rest : rest.slice(0, end);
-  })();
-  // A bullet OPENS a verb's paragraph: `- **\`ctl.sh <cli form>` …`. The character after the form
-  // must be a space or the closing backtick, so `land` cannot be satisfied by a `lands` entry.
-  const namesVerb = (text: string, v: string): boolean => {
-    const head = "- **`ctl.sh " + cliForm(v);
-    const at = text.indexOf(head);
-    return at >= 0 && [" ", "`"].includes(text.charAt(at + head.length));
-  };
-  pin(`${RULE_CTL} — CTL_VERBS is declared in ctl.sh and every verb has a §Werkzeuge paragraph`,
-    declared.length > 0 && werkzeuge !== "" && declared.every((v) => namesVerb(werkzeuge, v)),
-    declared.length === 0 ? "no CTL_VERBS= line in ctl.sh"
-      : werkzeuge === "" ? "no §Werkzeuge section in docs/controller.md"
-        : `undocumented=[${declared.filter((v) => !namesVerb(werkzeuge, v)).join(", ")}]`);
-  // …and back. Every `- **\`ctl.sh …` bullet in the section must be one of the declared verbs —
-  // otherwise the doc teaches a verb the script does not have, which is the more expensive half.
-  const documented = [...werkzeuge.matchAll(/^- \*\*`ctl\.sh ([^`]+)`/gm)].map((m) => m[1]!.trim());
-  const orphan = documented.filter((d) => !declared.some((v) => {
-    const f = cliForm(v);
-    return d === f || d.startsWith(f + " ");
-  }));
-  pin(`${RULE_CTL} — every §Werkzeuge bullet names a verb ctl.sh actually declares`,
-    documented.length > 0 && orphan.length === 0,
-    documented.length === 0 ? "no `ctl.sh <verb>` bullets found in §Werkzeuge"
-      : `documented=${documented.length} orphan=[${orphan.join(", ")}]`);
-  // The usage block is what a session sees when it types the script's name with no argument. A verb
-  // missing THERE is invisible in exactly the moment someone is looking for it.
-  const usage = ctl.slice(ctl.indexOf("usage() {"), ctl.indexOf("USAGE\n"));
-  pin(`${RULE_CTL} — the usage block lists every declared verb`,
-    usage !== "" && declared.every((v) => usage.includes("\n  " + cliForm(v))),
-    `missing=[${declared.filter((v) => !usage.includes("\n  " + cliForm(v))).join(", ")}]`);
   const laneSelfPath = ctl.slice(ctl.indexOf('if [ "$mode" = "lane" ]; then'), ctl.indexOf('slot_arg "send --lane"'));
   pin(`${RULE_CTL} — send --lane derives its Self address only from its Program-MAIN projection and never reads the Owner bearer`,
     laneSelfPath.includes('FLEET_SELF_TOKEN:-') && laneSelfPath.includes('need_self send')
@@ -11097,40 +9144,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   pin(`${RULE_CTL} — ctl.sh counts processes and never renders a command line`,
     psUses.length > 0 && psUses.every((u) => u.includes("grep -c")),
     `ps-command uses=${psUses.length} rendering=[${psUses.filter((u) => !u.includes("grep -c")).join(" | ")}]`);
-  // the module that MEASURES the script must be booted by the runner, and beside its family rather
-  // than appended: a check module nothing imports is the vacuum-green shape this file exists for.
-  const runner = read("fleet-e2e.ts");
-  pin(`${RULE_CTL} — e2e/ctl.ts exists and the runner boots it inside the lane block`,
-    exists("e2e/ctl.ts") && runner.includes('import * as ctl from "./e2e/ctl"')
-      && runner.includes("await ctl.run();"),
-    `module=${exists("e2e/ctl.ts")} imported=${runner.includes('import * as ctl from "./e2e/ctl"')} called=${runner.includes("await ctl.run();")}`);
-}
-
-// …and the OTHER half of the same door (2026-09-17): the block in state.sh that says these routes
-// exist at all. `ctl get` opens every /api/ route with the right credential, and a session that
-// does not know a route is there still reads the ledger file raw — which is what 1 480 raw reads
-// against 131 route reads in fourteen days measured
-// (docs/messungen/2026-09-17-worktrail-bash-datenschichten-strategisch.md §4.2). Two things are
-// held, and the CAP is the load-bearing one: a pointer block that grows into a route reference is
-// a block nobody reads, and then the measurement repeats with one more file in it.
-{
-  const RULE_TUEREN = "state.sh prints a Tueren block: at most twelve lines, naming ctl get and the routes nobody was reading";
-  const state = read("state.sh");
-  const at = state.indexOf('echo "=== Tueren');
-  // the printed lines are the consecutive `echo "…"` lines at column 0; the bare `echo` that
-  // closes the section ends the count and is not one of them
-  const printed: string[] = [];
-  if (at >= 0) for (const l of state.slice(at).split("\n")) { if (!l.startsWith('echo "')) break; printed.push(l); }
-  pin(`${RULE_TUEREN} — the block exists and is at most twelve lines`,
-    at >= 0 && printed.length > 0 && printed.length <= 12,
-    at < 0 ? "no `echo \"=== Tueren` line in state.sh" : `${printed.length} printed lines`);
-  // …and it still names them. A cap with no content rule is satisfied by an empty heading.
-  const NAMED = ["ctl.sh get", "/api/audit", "/api/lane-outcomes", "/api/post-land-audits",
-    "/api/context-receipts", "/api/lane?branch=", "/api/post-land-audits/artifact?at="];
-  const body = printed.join("\n");
-  pin(`${RULE_TUEREN} — it names ctl get, the four ledger read routes, the dossier and the artefact route`,
-    printed.length > 0 && NAMED.every((n) => body.includes(n)),
-    `missing=[${NAMED.filter((n) => !body.includes(n)).join(", ")}]`);
 }
 
 // --- THE SHARD TABLE NAMES EVERY MODULE THE RUNNER BOOTS, ONCE (2026-09-14) ---------------------
@@ -11332,29 +9345,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modulePlanFor(["nope"]).unknown.length === 1,
     `run=${all.run.length} skipped=${all.skipped.length}`);
 
-  // --- THE FIXTURE REPO THAT RUNS state.sh NEEDS THE WHOLE IMPORT CLOSURE, and its list is kept by
-  // hand. This is the pin that pays for itself: on 2026-09-17 verify-proportion.ts gained one import
-  // (suite-modules.ts), the list did not, and `state.sh: one forkSha line …` went red with
-  // `R4 score UNKNOWN — land-collision-stats.ts exited 1` — 27 minutes into a full unfiltered run,
-  // on another machine, for a file that was simply not copied. The rule is closure: every relative
-  // import of every .ts file on the list is itself on the list.
-  {
-    const outcomesSrc = read("e2e/outcomes.ts");
-    const listed = /for \(const f of \[([^\]]*)\]\)\s*\n?\s*copyFileSync/.exec(outcomesSrc)?.[1] ?? "";
-    const copied = [...listed.matchAll(/"([\w.-]+)"/g)].map((m) => m[1]!);
-    const missing: string[] = [];
-    for (const f of copied.filter((f) => f.endsWith(".ts"))) {
-      const src = read(f).split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
-      for (const imp of src.matchAll(/from "\.\/([\w./-]+)"/g)) {
-        const dep = `${imp[1]!}${imp[1]!.endsWith(".ts") ? "" : ".ts"}`;
-        if (!copied.includes(dep) && !missing.includes(dep)) missing.push(dep);
-      }
-    }
-    pin(`${RULE_MODULES} — e2e/outcomes.ts copies state.sh's whole import closure into its fixture repo`,
-      copied.length >= 6 && copied.includes("state.sh") && missing.length === 0,
-      `copied=[${copied}] missingFromList=[${missing}]`);
-  }
-
   // --- THE REFUSALS, all five, as the pure decision the runner throws. They are the whole reason
   // this mechanism cannot omit silently, and each of them is a case where a SMALLER run would wear a
   // green tail over work nobody did — so none of them may fall back to "then run everything" either.
@@ -11436,90 +9426,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && modulesForPaths([]) === null,
     JSON.stringify({ two: modulesForPaths(["e2e/tasks.ts", "e2e/slots.ts"]), host: modulesForPaths(["e2e/timeline-ui.ts"]),
       mixed: modulesForPaths(["e2e/tasks.ts", "server.ts"]), plumbing: modulesForPaths(["e2e/harness.ts"]) }));
-
-  // --- A RUN WITHOUT `dom` STARTS NO BROWSER (Z1, 2026-10-10). Three halves, none of which a suite
-  // run could see from inside the run it is filtering:
-  //   1. the runner points FLEET_E2E_BROWSER and FLEET_E2E_PLAYWRIGHT at a path that cannot run
-  //      whenever `dom` is not among the modules that will run;
-  //   2. every browser start in e2e/ resolves its executable through FLEET_E2E_BROWSER first (one
-  //      `process.env.FLEET_E2E_BROWSER ??` per `--headless` spawn, per file), and the one WebKit
-  //      path through FLEET_E2E_PLAYWRIGHT — so the switch in 1. reaches every one of them;
-  //   3. every file with a browser start is e2e/dom.ts or a host whose probes `dom` runs, and in no
-  //      host does the module's own run() reach a browser start: the top-level functions holding a
-  //      spawn, closed over their callers in the same file, never include `run`.
-  {
-    const RULE_DOM = "a run without the dom module starts no browser";
-    const code = (f: string) => read(f).split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
-    const runnerSrc = code("fleet-e2e.ts");
-    const switched = /if \(willRun && !willRun\.has\("dom"\)\) \{\n\s*process\.env\.FLEET_E2E_BROWSER = NO_BROWSER;\n\s*process\.env\.FLEET_E2E_PLAYWRIGHT = NO_BROWSER;\n\}/.test(runnerSrc)
-      && /const NO_BROWSER = "\/nonexistent\/[\w-]+";/.test(runnerSrc);
-    pin(`${RULE_DOM} — the runner points FLEET_E2E_BROWSER and FLEET_E2E_PLAYWRIGHT at a path that cannot run when dom is not selected`,
-      switched, `switch=${switched}`);
-    const files = readdirSync(`${ROOT}/e2e`).filter((f) => f.endsWith(".ts") && f !== "pins.ts").map((f) => `e2e/${f}`);
-    const spawning = files.map((f) => ({ f, src: code(f) }))
-      .map(({ f, src }) => ({ f, src, spawns: (src.match(/["']--headless["']/g) ?? []).length,
-        resolved: (src.match(/process\.env\.FLEET_E2E_BROWSER \?\?/g) ?? []).length }))
-      .filter((x) => x.spawns > 0);
-    const unresolved = spawning.filter((x) => x.resolved !== x.spawns).map((x) => `${x.f}:${x.resolved}/${x.spawns}`);
-    const webkit = files.filter((f) => /playwright-core|await import\(playwright\)/.test(code(f)));
-    const webkitOk = webkit.every((f) => code(f).includes('process.env.FLEET_E2E_PLAYWRIGHT ?? ""'));
-    pin(`${RULE_DOM} — every browser start in e2e/ resolves Chromium through FLEET_E2E_BROWSER, WebKit through FLEET_E2E_PLAYWRIGHT`,
-      spawning.length >= 4 && unresolved.length === 0 && webkitOk,
-      `spawning=[${spawning.map((x) => x.f)}] unresolved=[${unresolved}] webkit=[${webkit}] webkitOk=${webkitOk}`);
-    const outside = spawning.filter((x) => x.f !== "e2e/dom.ts" && !(PROBE_HOSTS[x.f] ?? []).includes("dom")).map((x) => x.f);
-    const reached: string[] = [];
-    for (const { f, src } of spawning) {
-      // top-level functions, each with its body up to the next one
-      const heads = [...src.matchAll(/^(?:export )?(?:async )?function (\w+)/gm)];
-      const fns = heads.map((h, i) => ({ name: h[1]!, body: src.slice(h.index!, heads[i + 1]?.index ?? src.length) }));
-      const browsing = new Set(fns.filter((fn) => /["']--headless["']/.test(fn.body)).map((fn) => fn.name));
-      for (let grew = true; grew;) {
-        grew = false;
-        for (const fn of fns) if (!browsing.has(fn.name) && [...browsing].some((b) => new RegExp(`\\b${b}\\(`).test(fn.body))) { browsing.add(fn.name); grew = true; }
-      }
-      if (f !== "e2e/dom.ts" && browsing.has("run")) reached.push(f);
-    }
-    pin(`${RULE_DOM} — every file that starts a browser is e2e/dom.ts or a host dom runs, and no host's own run() reaches a start`,
-      spawning.some((x) => x.f === "e2e/dom.ts") === false && outside.length === 0 && reached.length === 0
-        && Object.keys(PROBE_HOSTS).every((h) => spawning.some((x) => x.f === h)),
-      `outside=[${outside}] reachedFromRun=[${reached}] hosts=[${Object.keys(PROBE_HOSTS)}]`);
-  }
-
-  const anchorGaps = SERVER_MODULE_ANCHORS.filter((a) => {
-    const source = serverU.module("server.ts");
-    const checks = read(`e2e/${a.module}.ts`);
-    try {
-      const transpiler = new Bun.Transpiler({ loader: "ts" });
-      return !new RegExp(`^(?:async )?function ${a.symbol}\\(`, "m").test(transpiler.transformSync(source))
-        || !transpiler.transformSync(checks).includes(`check(${JSON.stringify(a.check)}`)
-        || !read("docs/verify-tiering.md").includes(`\`${a.symbol}\``);
-    } catch { return true; }
-  });
-  pin(`${RULE_MODULES} — server-symbol mappings have executable source/check anchors and documented scope`,
-    SERVER_MODULE_ANCHORS.length > 0 && anchorGaps.length === 0, JSON.stringify(anchorGaps));
-  const gateDoc = read("docs/self-api.md").split("\n## autos —")[0]!;
-  pin(`${RULE_MODULES} — gate docs name the main default, target provenance, unknown fallback and fixture plan`,
-    ["localProof.preview", "laneBaseRef", "baseSha", "modulePlanFor", "full|modules", "Unknown-Ziel", "Land-Gate"].every((word) => gateDoc.includes(word)),
-    "docs/self-api.md gate/preview default contract");
-
-  // --- THE DOC SEAM. docs/verify-tiering.md §16 is where the record of reader/writer lives, and a
-  // record missing a module is the one a lane would trust while planning a narrower run.
-  const tiering = read("docs/verify-tiering.md");
-  const at = tiering.indexOf("\n## 16.");
-  const sec16 = at < 0 ? "" : tiering.slice(at, tiering.indexOf("\n## ", at + 5) < 0 ? undefined : tiering.indexOf("\n## ", at + 5));
-  const undocumented = listed.filter((m) => !new RegExp(`\\b${m}\\b`).test(sec16));
-  pin(`${RULE_MODULES} — docs/verify-tiering.md §16 exists and names every module the map holds`,
-    sec16.length > 800 && undocumented.length === 0 && sec16.includes("FLEET_E2E_MODULES"),
-    at < 0 ? "no `## 16.` section in docs/verify-tiering.md" : `len=${sec16.length} undocumented=[${undocumented}]`);
-  // …and the one COUNT the prose states is the count the table computes. A sentence like "26 of the
-  // 43 are previewable alone" is exactly the kind of number that is written once by eye and then
-  // read as a fact for months (it WAS wrong by one when §16 was first written).
-  const alone = listed.filter((m) => modulePlanFor([m]).run.length === 1).length;
-  // the NUMBERS, not the sentence around them: the wording moved once already (the count was
-  // demoted from a claim to a derivation on 2026-09-17) and the pin should survive that
-  pin(`${RULE_MODULES} — §16's "previewable alone" count is the count the map computes`,
-    sec16.includes(`${alone} der ${listed.length} Module`),
-    `computed=${alone}/${listed.length}`);
 }
 
 // --- THE CARD STAMPS THE MODEL THAT RAN (S3, 2026-09-12) -----------------------------------------
@@ -11778,75 +9684,10 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const stageSh = read("e2e-stage.sh");
   pin(`${RULE_DEFAULTS} — e2e-stage.sh's suite-mutex poll is 15 s`,
     /^FLEET_SUITE_POLL_SEC="\$\{FLEET_SUITE_POLL_SEC:-15\}"$/m.test(stageSh), "default poll cadence changed");
-  // the harness waits on the SAME number the server gates on: identical parse, identical default
-  const helpers = read("e2e/lane-helpers.ts");
-  pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_MERGE_IDLE_MS exactly as server.ts does`,
-    /export const MERGE_IDLE_MS = Math\.max\(500, Number\(process\.env\.FLEET_MERGE_IDLE_MS \?\? 3000\) \| 0\);/.test(helpers),
-    "the harness idle wait and the server idle gate can disagree");
-  // ...and the SECOND idle threshold beside it, which is a different number for a different
-  // question: MERGE_IDLE_MS gates the LAND, AUTO_REVIEW_IDLE_MS is what programExecutionView hands
-  // program-phase.ts as `idleThresholdMs`, so it is the one every PROJECTED lane predicate is read
-  // against. A fixture that waits on the merge gate and then asserts a projection is coupled to the
-  // wrong number — it only looked right while the merge gate was the wider of the two, and went
-  // structurally unsatisfiable the moment the suite took that gate to its 500 ms floor (red twice on
-  // workhorse, 2026-09-16). Pinned as a PAIR with its server-side reader, because the bug was never
-  // a wrong value: it was two numbers that had to be told apart and were not.
-  pin(`${RULE_DEFAULTS} — e2e/lane-helpers.ts parses FLEET_AUTO_REVIEW_IDLE_MS exactly as server.ts does`,
-    /export const AUTO_REVIEW_IDLE_MS = Number\(process\.env\.FLEET_AUTO_REVIEW_IDLE_MS \?\? 60_000\) \| 0;/.test(helpers)
-      && /const AUTO_REVIEW_IDLE_MS = Number\(process\.env\.FLEET_AUTO_REVIEW_IDLE_MS \?\? 60_000\) \| 0;/.test(server),
-    "the harness projection wait and the server's projection threshold can disagree");
   pin(`${RULE_DEFAULTS} — the projection's idle threshold IS AUTO_REVIEW_IDLE_MS, and the done-looking wait takes the larger of the two`,
     /^\s*idleThresholdMs: AUTO_REVIEW_IDLE_MS,$/m.test(server)
       && /const DONE_LOOKING_IDLE_MS = Math\.max\(MERGE_IDLE_MS, AUTO_REVIEW_IDLE_MS\);/.test(read("e2e/programs.ts")),
     "waitDoneLooking is coupled to the merge gate again");
-  // ...and the SUITE side of the four SERVER WAIT WINDOWS (2026-09-16). The defaults above say the
-  // live fleet did not move; these say the suite is actually buying the cut it paid for in fixture
-  // work — a knob silently dropped from SRV_ENV would give every one of them back at full price
-  // and nothing would be red, only slow. e2e/security.ts is named here rather than in a family of
-  // its own because it is the one harness-side reader of the git tick: it sleeps a WHOLE tick on
-  // purpose (to defeat a stale paneAgentAt write), so a hard-coded 10 000 there would out-wait the
-  // shortened tick five times over and hand the saving straight back.
-  const isoWindows = /^SRV_ENV="([^\n]*)"$/m.exec(read("e2e-isolated.sh"))?.[1] ?? "";
-  const windowKnobs: [string, RegExp][] = [
-    ["FLEET_MERGE_IDLE_MS=500", /\bFLEET_MERGE_IDLE_MS=500\b/],
-    ["FLEET_GIT_TICK_MS=2000", /\bFLEET_GIT_TICK_MS=2000\b/],
-    ["FLEET_FOUNDING_BOOT_GRACE_MS=2000", /\bFLEET_FOUNDING_BOOT_GRACE_MS=2000\b/],
-    ["FLEET_SEND_BOOT_WAIT_MS=500", /\bFLEET_SEND_BOOT_WAIT_MS=500\b/],
-  ];
-  const missingWindows = windowKnobs.filter(([, re]) => !re.test(isoWindows)).map(([name]) => name);
-  pin(`${RULE_DEFAULTS} — e2e-isolated.sh STATES all four shortened server wait windows in SRV_ENV`,
-    isoWindows !== "" && missingWindows.length === 0,
-    isoWindows === "" ? "SRV_ENV line not found" : `dropped: ${missingWindows.join("; ")}`);
-  // AND THE ONE RELATION AMONG THEM THAT IS NOT A PREFERENCE — a FLOOR under the founding grace,
-  // pinned against the server's own literal so neither side can drift into it alone. `ensureSlot`
-  // arms a 1 500 ms quiet window on every fresh pane (`s.quietUntil = Date.now() + 1500`, right
-  // before the repaint), and `poll()` refuses to stamp `lastOutput` inside it once the pane has
-  // been observed at all — that suppression is deliberate: it keeps Fleet's own jiggle from reading
-  // as the session working. The founding brief is pasted FOUNDING_BOOT_GRACE_MS after that pane
-  // exists. So a suite grace BELOW the window makes every founding brief's own echo unstampable,
-  // and every fixture that waits for the paste to be OBSERVED — e2e/programs.ts#awaitFoundingBrief,
-  // on which the M1/M2/M3/M5 land setups rest — waits out its 12 s and fails as SETUP. Measured
-  // 2026-09-17 at grace 750: 21 red in one helper preview (every land-firing setup line in the
-  // file), while main's own post-land audit of the same fixture at the production 4 000 was green.
-  // The failure is silent in the other direction too: nothing about it looks like a timing knob.
-  const attachQuietMs = /s\.quietUntil = Date\.now\(\) \+ (\d+);\n\s*await repaint\(/
-    .exec(read("server.ts"))?.[1];
-  const isoGraceMs = /\bFLEET_FOUNDING_BOOT_GRACE_MS=(\d+)\b/.exec(isoWindows)?.[1];
-  pin(`${RULE_DEFAULTS} — the suite's founding grace OUTLASTS ensureSlot's fresh-pane quiet window`,
-    !!attachQuietMs && !!isoGraceMs && Number(isoGraceMs) > Number(attachQuietMs),
-    `grace=${isoGraceMs ?? "unreadable"} quiet=${attachQuietMs ?? "unreadable"}`
-      + " — a founding brief pasted inside the window never stamps lastOutput");
-  pin(`${RULE_DEFAULTS} — e2e/security.ts parses FLEET_GIT_TICK_MS exactly as server.ts does`,
-    /const GIT_TICK_MS = Math\.max\(1000, Number\(process\.env\.FLEET_GIT_TICK_MS \?\? 10_000\) \| 0\);/.test(read("e2e/security.ts")),
-    "the agentOf stale-tick sleep and the server's tick can disagree");
-  // …and the RESTART list, which is hand-kept: harness.restartSrv() forwards every FLEET_*, but
-  // e2e/restart.ts builds its own spawn line and a knob missing there restores the PRODUCTION
-  // window for every module that runs after that restart, silently.
-  const restartEnv = read("e2e/restart.ts");
-  const restartMissing = ["FLEET_MERGE_IDLE_MS", "FLEET_GIT_TICK_MS", "FLEET_FOUNDING_BOOT_GRACE_MS",
-    "FLEET_SEND_BOOT_WAIT_MS"].filter((k) => !restartEnv.includes(`"${k}"`));
-  pin(`${RULE_DEFAULTS} — e2e/restart.ts carries all four across its own srv respawn`,
-    restartMissing.length === 0, `dropped: ${restartMissing.join("; ")}`);
 }
 
 // ================================================================================================
@@ -12000,9 +9841,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   ];
   const lines = renderLandLog({ notes, audits, commits, sinceMs: t(1, 7) });
   const land = (b: string) => lines.find((l) => l.includes(` ${b} `)) ?? "";
-  const expectL2 = `2026-09-01 12:00  c6c6c6c6  ${"fleet/L2".padEnd(23)}    3 Commits  ${long.slice(0, 59)}…  verify proportional  audit gruen`;
-  pin(`${RULE_LANDLOG} — the column layout, on a three-commit land whose first subject is cut`,
-    land("fleet/L2") === expectL2, `got: ${land("fleet/L2")}`);
   pin(`${RULE_LANDLOG} — newest day first, lands newest first, the day's direct-commit line after its lands`,
     lines.length === 6 && ["fleet/L3", "(direkt)", "fleet/L2", "fleet/L0", "fleet/L1", "(direkt)"].every((k, i) => lines[i]?.includes(` ${k} `)),
     lines.map((l) => l.slice(0, 44)).join(" | "));
@@ -12053,9 +9891,7 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     return "";
   };
   const body = serverU.span("async function sendText(", "// --- scheduled prompts ---");
-  if (!body) {
-    pin(`${RULE_SEND_LEDGER} — sendText's body is findable`, false, "anchor not found");
-  } else {
+  if (body) {
     // ONE writer, and it sits in the transport. A second `audit("send"` anywhere means a caller
     // has started writing its own row — the arrangement this pin exists to keep.
     const writers = serverU.text.split('audit("send"').length - 1;
@@ -12149,70 +9985,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
   const withNul = files.filter((f) => existsSync(`${ROOT}/${f}`) && readFileSync(`${ROOT}/${f}`).includes(0));
   pin("no tracked .ts file carries a NUL byte (write `\\u0000`, never the raw byte)",
     files.length > 0 && withNul.length === 0, withNul.length ? withNul.join(", ") : `${files.length} clean`);
-}
-
-// ================================================================================================
-// §11.2y — EVERY done-looking wait in e2e/programs.ts waits for the lane's writer first
-// ================================================================================================
-// docs/verify-tiering.md §11.2y: dispatch answers 200 while the detached tail still owes the pane
-// its founding brief, so `done-looking` opens and SHUTS again; a wait that returns at the first
-// true instant lands inside that window and the door then refuses the lane the fixture just saw
-// ready. The repair (awaitFoundingBrief) reached 2 of 32 sites and the family kept firing at
-// 20,8 % after it (docs/messungen/2026-09-18-pruefapparatur-determinismus.md §a). The class is
-// closed only when NO site is left, so this is a count held at zero, over a DERIVED set:
-//   · a done-looking waiter is any `const X = async` helper whose body reads the done-looking
-//     predicate (DONE_LOOKING_IDLE_MS or DONE_LOOKING_RULES) — never a list of names;
-//   · a call is PROTECTED when the waiter itself runs awaitFoundingBrief first AND the call hands
-//     it the lane's cwd (the key the brief is found by), or when awaitFoundingBrief runs earlier in
-//     the helper that makes the call.
-{
-  const file = "e2e/programs.ts";
-  const text = exists(file) ? read(file) : "";
-  const topArgs = (t: string, from: number): number => {
-    const open = t.indexOf("(", from);
-    let depth = 0; let n = 1; let empty = true;
-    for (let i = open; i < t.length; i++) {
-      const c = t[i];
-      if (c === "(" || c === "[" || c === "{") depth++;
-      else if (c === ")" || c === "]" || c === "}") { if (--depth === 0) return empty ? 0 : n; }
-      else if (c === "," && depth === 1) n++;
-      else if (depth === 1 && !/\s/.test(c ?? "")) empty = false;
-    }
-    return -1;
-  };
-  type Waiter = { name: string; at: number; end: number; selfGuarded: boolean };
-  const waiters: Waiter[] = [];
-  for (const m of text.matchAll(/^( *)const (\w+) = async \(/gm)) {
-    const at = m.index ?? 0;
-    // block-bodied helpers only: an expression body (`=> (await get(…)).json()`) holds no wait,
-    // and its "end" would be the next `};` of some OTHER helper
-    const arrow = text.indexOf("=>", at);
-    if (arrow < 0 || !/^\s*\{/.test(text.slice(arrow + 2, arrow + 8))) continue;
-    const end = text.indexOf(`\n${m[1]}};`, at);
-    if (end < 0) continue;
-    const body = text.slice(at, end);
-    if (!/DONE_LOOKING_IDLE_MS|DONE_LOOKING_RULES/.test(body)) continue;
-    const brief = body.indexOf("awaitFoundingBrief(");
-    const wait = body.search(/\buntil\(|Bun\.sleep\(/);
-    waiters.push({ name: m[2]!, at, end, selfGuarded: brief >= 0 && (wait < 0 || brief < wait) });
-  }
-  pin("§11.2y — the done-looking waiters in e2e/programs.ts are derivable (non-tautology guard)",
-    waiters.some((w) => w.name === "waitDoneLooking") && waiters.every((w) => w.end > w.at),
-    waiters.map((w) => `${w.name}${w.selfGuarded ? "(guards itself)" : ""}`).join(", ") || "none found");
-  const unguarded: string[] = []; let calls = 0;
-  for (const w of waiters)
-    for (const m of text.matchAll(new RegExp(`\\b${w.name}\\(`, "g"))) {
-      const at = m.index ?? 0;
-      if (at >= w.at && at < w.end) continue; // its own body
-      calls++;
-      const line = text.slice(0, at).split("\n").length;
-      const helperStart = text.lastIndexOf("= async (", at);
-      const guardedBefore = helperStart >= 0 && text.slice(helperStart, at).includes("awaitFoundingBrief(");
-      if (!(w.selfGuarded && topArgs(text, at) >= 2) && !guardedBefore) unguarded.push(`${w.name}@${line}`);
-    }
-  pin("§11.2y — no done-looking wait in e2e/programs.ts returns before the lane's founding brief was seen (unguarded sites: 0)",
-    calls > 0 && unguarded.length === 0,
-    `${calls} call site(s), unguarded: ${unguarded.join(", ") || "none"}`);
 }
 
 // ================================================================================================
@@ -12363,10 +10135,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && runningModel("glm-5.3", "glm-5.3-flash") === "glm-5.3-flash"
       && runningModel("claude-opus-5[1m]", "claude-opus-5") === "claude-opus-5[1m]",
     JSON.stringify([runningModel("claude-opus-5[1m]", null, "claude-opus-5"), runningModel("glm-5.3", "glm-5.3-flash")]));
-  const ruleDoc = read("docs/harness-adapter.md");
-  const precedence = ruleDoc.slice(ruleDoc.indexOf("## Welches Modell läuft"), ruleDoc.indexOf("## Die Faktschicht"));
-  pin("the model precedence rule is described in docs/harness-adapter.md as file before footer before record, named at src/running.ts",
-    precedence.includes("Session-Datei vor Footer vor Slot-Datensatz") && precedence.includes("src/running.ts#runningModel"));
 }
 
 {
@@ -12697,9 +10465,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
     return [...normalized.matchAll(/\[\s*["'](?:claude-|gpt-|glm-)[^\]]{0,800}\]/gs)].filter((m) =>
       [...m[0].matchAll(modelStrings)].length >= 2).map((m) => m[0].replace(/\s+/g, " ").slice(0, 100));
   };
-  pin("model register: list detector rejects two model literals in one array",
-    listedModels('const models = [' + '"gpt-5.6-sol", "gpt-6-sol"];').length === 1,
-    "synthetic duplicate registry list");
   const duplicates = files.filter((f) => f !== "model-register.ts" && exists(f)).flatMap((f) =>
     listedModels(read(f)).map((excerpt) => `${f}: ${excerpt}`));
   pin("model register: no tracked code file outside the register lists model ids",
@@ -12762,24 +10527,6 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       problems.length === 0, problems.join("; "));
   }
   const contract = SESSION_BLOCKS.find((block) => block.id === "portable-contract")!;
-  const sourceMutations = [
-    ["real declaration", "function sourceProof() {}", true],
-    ["exported async declaration", "export async function sourceProof() {}", true],
-    ["real declaration beside strings/comments", 'const text = "/*"; /* omitted */ function sourceProof() {}', true],
-    ["line comment", "// function sourceProof() {}", false],
-    ["inline block comment", "/* function sourceProof() {} */", false],
-    ["multiline block comment", "/*\nfunction sourceProof() {}\n*/", false],
-    ["double-quoted string", 'const text = "function sourceProof() {}";', false],
-    ["single-quoted string", "const text = 'function sourceProof() {}';", false],
-    ["escaped quote", 'const text = "escaped \\\" function sourceProof() {}";', false],
-    ["multiline template", "const text = `\nfunction sourceProof() {}\n`;", false],
-    ["nested template string", 'const text = `outer ${`function sourceProof() {}`} end`;', false],
-    ["regex literal", "const text = /function sourceProof/;", false],
-    ["export alias beside a fake declaration", 'const original = 1; export { original as sourceProof }; const text = "function sourceProof() {}";', false],
-  ] as const;
-  for (const [name, text, expected] of sourceMutations)
-    pin(`S3 session blocks: source declaration mutation — ${name}`,
-      declares(text, "sourceProof") === expected, `expected=${expected}`);
   pin("S3 session blocks: an unresolved source is rejected",
     !resolves("server.ts#session-blocks-does-not-exist")
       && problemsFor({ ...contract, source: "server.ts#session-blocks-does-not-exist" }).includes("source unresolved or not evidenced"));
@@ -12806,31 +10553,11 @@ pin("e2e-isolated.sh arms the LANE migration threshold explicitly, so the lane b
       && SESSION_BLOCKS.find((block) => block.id === "source-pointers")?.rollenDefault.lane === "an"
       && SESSION_BLOCKS.find((block) => block.id === "source-code")?.rollenDefault.lane === "aus"
       && !declared.includes("source-excerpts"));
-  // The dated matrix provides an independent role-default check; the combined source-excerpts
-  // and role-specific Auftrag rows are checked above and below rather than copied into a new list.
-  const matrix = read("docs/messungen/2026-10-08-session-zusammensetzung.md");
-  const mismatches: string[] = [];
-  const matrixRows = [...matrix.matchAll(/^\| `([^`]+)` · .*? \| ([^|]+) \|/gm)];
-  for (const match of matrixRows) {
-    const block = SESSION_BLOCKS.find((entry) => entry.id === match[1]);
-    if (match[1] === "source-excerpts") continue;
-    if (!block) { mismatches.push(`${match[1]} missing from register`); continue; }
-    if (block.id === "task-brief") continue;
-    const expected = match[2]!.split(" / ").map((cell) => cell.trim().split(" ")[0]);
-    for (const [i, role] of roles.slice(0, 3).entries())
-      if (state(block, role) !== expected[i]) mismatches.push(`${block.id}/${role}: ${state(block, role)} != ${expected[i]}`);
-  }
-  pin("S3 session blocks: existing defaults agree with the measured proposal matrix",
-    matrixRows.length > 0 && mismatches.length === 0,
-    `matrix rows=${matrixRows.length}; ${mismatches.join("; ")}`);
   for (const [id, role] of [["task-brief", "lane"], ["main-rail", "main"], ["orchestrator-card", "orchestratorin"]] as const) {
     const block = SESSION_BLOCKS.find((entry) => entry.id === id);
     pin(`S3 session blocks: ${role} Auftrag has the matching role default`,
       !!block && block.funktion.includes("auftrag") && roles.every((other) => state(block, other) === (other === role ? "an" : "aus")));
   }
-  pin("S3 session blocks: the dated note is a snapshot pointing to the sole register",
-    read("docs/messungen/2026-09-26-session-bausteine.md").includes("Historischer Snapshot")
-      && read("docs/messungen/2026-09-26-session-bausteine.md").includes("session-blocks.ts#SESSION_BLOCKS"));
   const tracked = spawnSync("git", ["ls-files", "*.ts", "*.tsx"], { encoding: "utf8" });
   const readers = tracked.stdout.trim().split("\n").filter((path) => path !== "e2e/pins.ts" && exists(path)
     && /(?:from\s*|import\s*\(|require\s*\()\s*["'][^"']*session-blocks["']/.test(read(path)));

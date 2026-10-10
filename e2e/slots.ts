@@ -5963,6 +5963,8 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       return { head: window.fixtureHead, branch: 'fixture', harness, plannedAt: 1000,
         selected: [{ id: 'fixture-alpha', bytes: 1024, source: 'repo-manifest', group: 'grundlagen', useWhen: 'Zweck des Packs', sourceHash: '1234567890abcdef' }],
         omitted: [{ id: 'fixture-omitted', reason: 'harness-unsupported', harnesses: ['pi'] }], role, plan, rollen: ROLLEN,
+        // Nur Ordner writes no session file: the server says so with an explicit null, never by leaving it out
+        ...(role === 'nur-ordner' ? { sessionAgents: null } : {}),
         start: { tuer: ort === 'worktree' ? 'lane' : 'open', startbar: role !== 'nur-ordner' || window.fixtureOrdnerStartbar,
           refusals: role === 'nur-ordner' && !window.fixtureOrdnerStartbar ? ['spawn-profile ist im Plan aus, diese Tuer liefert es trotzdem (plan)', 'self-credential ist im Plan aus, diese Tuer liefert es trotzdem (plan)'] : [] } };
     };

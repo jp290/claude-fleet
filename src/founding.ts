@@ -96,7 +96,7 @@ interface RolleRow { id: Role; wort: string; standard: { harness: string; modell
 // PREVIEW's source state, which the start receipt is later held against
 interface Plan {
   head?: string; branch?: string | null; harness?: string; plannedAt?: number; selected: FoundingPlanPack[]; omitted: FoundingPlanOmission[];
-  sessionAgents?: FoundingSessionAgents;
+  sessionAgents?: FoundingSessionAgents | null; // null: the role writes no session file (Nur Ordner)
 }
 interface Answer extends Plan {
   plan: SessionPlan; rollen: RolleRow[]; start: { tuer: "lane" | "open"; startbar: boolean; refusals: string[] };
@@ -1447,7 +1447,7 @@ function validPlan(j: unknown): j is Plan {
   if (!j || typeof j !== "object" || !("selected" in j) || !("omitted" in j)) return false;
   return Array.isArray(j.selected) && Array.isArray(j.omitted)
     && optional(j, "head", (v) => typeof v === "string") && optional(j, "plannedAt", (v) => typeof v === "number" && Number.isFinite(v))
-    && optional(j, "sessionAgents", validFile)
+    && optional(j, "sessionAgents", (v) => v === null || validFile(v))
     && j.selected.every((p: unknown) => !!p && typeof p === "object"
       && "id" in p && typeof p.id === "string" && "bytes" in p && typeof p.bytes === "number"
       && Number.isFinite(p.bytes) && p.bytes >= 0 && "source" in p

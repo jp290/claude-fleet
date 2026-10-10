@@ -1,7 +1,7 @@
 // One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { BASE, REPO, REPO2, ROOT, check, get, post, restartSrv } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { DAEMON_FEATURES } from "../helper-daemon/daemon";
@@ -25,8 +25,10 @@ export async function run(): Promise<void> {
   // === Lane A: one-gesture land (commit-if-dirty → land) + ↩ undo-last-land ===
   // Isolated fresh repos so main-mutation + undo never touch the shared REPO later tests use.
   {
+    const madeRepos: string[] = [];
     const freshRepo = async (suffix: string): Promise<{ repo: string; main: string; sha: string }> => {
       const repo = `${REPO}.${suffix}`;
+      madeRepos.push(repo);
       spawnSync("git", ["init", "-q", "-b", "main", repo]); // fakemerge hardcodes `git rebase main`
       spawnSync("git", ["-C", repo, "config", "user.email", "e2e@test"]);
       spawnSync("git", ["-C", repo, "config", "user.name", "e2e"]);
@@ -1234,5 +1236,17 @@ export async function run(): Promise<void> {
       && ((await (await get("/api/post-land-audits")).json()) as { malformed?: number }).malformed === 0);
 
     await setMergeMode("blocked"); // restore the suite default for later tests in this scope
+
+    // NO LANE OF THIS MODULE OUTLIVES IT. The repair-loop lane is human-gated by design and never
+    // lands, so it stayed open — on a repo of its own whose primary branch is `main` too, and
+    // server.ts#laneFacts keys each lane repo's primary checkout by its branch: a later module's
+    // rundgang map could then carry THIS repo under `main` (steward-core "lane map includes the
+    // primary checkout keyed by its branch", shard 2/3 of preview f1a1dadc4f1e, 2026-10-10, the
+    // first plan to put `lanes` and `core` into one shard). Every slot still open on a repo this
+    // module made is killed here.
+    const mine = new Set(madeRepos.map((r) => { try { return realpathSync(r); } catch { return r; } }));
+    const open = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree?: { repo: string } | null }[] }).slots
+      .filter((x) => { const r = x.worktree?.repo; if (!r) return false; try { return mine.has(realpathSync(r)); } catch { return mine.has(r); } });
+    for (const x of open) await post(`/api/slots/${x.id}/kill`, {});
   }
 }

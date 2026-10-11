@@ -2,18 +2,18 @@
 //
 // Everything the timeline view in src/client.ts shows comes through `loadTimeline` and nothing
 // else: it asks ONE route, `GET /api/timeline`, for a window of sessions, and turns the answer into
-// the view model below. The route is being built in parallel (lane 91040c44; its wire contract
-// lands in docs/trace-timeline-contract.md), so the WIRE SHAPE this file expects — `TimelineWire` —
-// is this draft's reading of the already-fixed event forms (NativeSnapshot / NativeEvent in
-// trace-native.ts, TraceEvent in trace-index.ts) wrapped in a window. When the route's contract
-// differs, the adaptation is this file and only this file: the view reads `TimelineModel` and never
-// the wire.
+// the view model below. The wire is the route's own type, `TimelinePage` of trace-timeline.ts
+// (contract: docs/trace-timeline-contract.md): session headers without events, one `entries` list
+// that carries the native tool events and the ledger events side by side, a `nextCursor` bound to
+// its window. When the route changes, the adaptation is this file and only this file: the view
+// reads `TimelineModel` and never the wire.
 //
-// Until the route exists the live board gets `state: "unavailable"` with the route's answer named
-// (status, reason) — never an empty timeline that reads as "nothing happened". What the draft shows
-// WITH data is proven by e2e/timeline-ui.ts, which serves a synthetic wire body behind the same URL
-// from the fixtures in e2e/trace-native-fixtures.ts; nothing of that enters the production bundle
-// (the check asserts the bundle carries neither the fixture module nor its canary).
+// An answer that is not that page — another schema, a missing or mistyped field — becomes
+// `state: "unavailable"` with one sentence naming the field, never an exception and never an empty
+// timeline that reads as "nothing happened". What the lens shows WITH data is proven by
+// e2e/timeline-ui.ts, which serves a synthetic `TimelinePage` behind the same URL from the fixtures
+// in e2e/trace-native-fixtures.ts; nothing of that enters the production bundle (the check asserts
+// the bundle carries neither the fixture module nor its canary).
 //
 // HONESTY RULES the model carries, so the view cannot lose them:
 //   - `atKnown: false` when a native event has no record timestamp: it sits at its observation time
@@ -22,36 +22,21 @@
 //     distance between a call and its result, and is labelled as that.
 //   - clock uncertainty is `"unknown"` for every host pair; equal x means equal record time, never
 //     causality.
-//   - gaps are kept per session with their byte ranges; a pending call is a gap too
-//     (`missing-result`), and a horizon that begins after the window says what lies before it is
-//     UNMEASURED, not empty.
+//   - gaps are kept per session with their byte ranges, and the page's fleet-wide gaps beside them;
+//     a session without an indexed source is a track with its gaps, not a missing track.
+//   - the page carries no detail texts: arguments and results stay `null` (not delivered) — the
+//     detail door `GET /api/timeline/detail` is not read here.
 import type { NativeEvent, NativeSnapshot } from "../trace-native";
-import type { SourceHorizon, TraceEvent } from "../trace-index";
+import type { TraceEvent } from "../trace-index";
+import type { TimelineEntry, TimelinePage, TimelineSession as TimelineWireSession } from "../trace-timeline";
 
-// --- input: the query and the wire ----------------------------------------------------------------
+// --- input: the query ------------------------------------------------------------------------------
 export interface TimelineQuery {
   from: number;                 // ms, window start (inclusive)
   to: number;                   // ms, window end (inclusive)
-  harness?: readonly string[];  // narrow to these harness names
-  sessions?: readonly string[]; // narrow to these session keys
-  page?: string | null;         // the `next` cursor of a previous answer
-}
-export interface TimelineWireDetail { locator: string; redacted: boolean; text: string }
-export interface TimelineWireSession {
-  key: string;                  // NativeSnapshot.identityKey — session + host + occupation, never the slot alone
-  harness: string; host: string; label: string | null;
-  slot: number | null; openedAt: number | null; project: string | null; program: string | null;
-  snapshot: NativeSnapshot;     // fleet.trace-native/v1, this window's generation
-  details?: TimelineWireDetail[]; // resolved, redacted detail texts by locator — optional, never raw bytes
-}
-export interface TimelineWire {
-  schema: "fleet.timeline/v1";
-  now: number;
-  window: { from: number; to: number };
-  sessions: TimelineWireSession[];
-  ledger: TraceEvent[];         // the ledger projection's events inside the window (trace-index.ts)
-  horizon: SourceHorizon[];     // per ledger source: how far back it reaches
-  next: string | null;          // cursor for the next page, null when this is the last
+  harness?: string;             // narrow to this harness name
+  session?: string;             // narrow to this session id (a uuid, not a track key)
+  page?: string | null;         // the `next` of a previous model; it carries its own window
 }
 
 // --- output: the view model ---------------------------------------------------------------------
@@ -90,7 +75,7 @@ export interface TimelineEvent {
 export interface TimelineSession {
   key: string; label: string; harness: string; host: string; version: string;
   slot: number | null; openedAt: number | null; project: string | null; program: string | null;
-  state: NativeSnapshot["state"];
+  state: NativeSnapshot["state"] | "unmeasured";   // "unmeasured": no native source indexed for this session yet
   occupation: "unknown" | { slot: number; openedAt: number };
   parentSession: string | null;
   horizon: { state: "read" | "unmeasured"; oldestAt: number | null; newestAt: number | null; reason: string | null };
@@ -126,30 +111,31 @@ const GAP_TEXT: Record<string, string> = {
   "unsupported-codex-item": "Codex-Eintrag nicht unterstützt",
   "source-rewritten": "Quelle wurde umgeschrieben",
   "source-generation-or-binding-changed": "Quelle oder Bindung gewechselt",
-  "pair-missing-in-snapshot": "Gegenstück nicht im Snapshot",
+  "source-missing": "Quelldatei nicht gefunden",
+  "source-indexing": "Quelle wird noch gelesen",
+  "session-budget": "Quelle noch nicht im Index",
+  "occupation-source-ambiguous": "Session hält mehrere Belegungen, Zuordnung offen",
+  "additional-source-gaps": "weitere Lücken der Quelle",
 };
 const gapOf = (session: string | null, code: string, offset?: number, bytes?: number): TimelineGap =>
   ({ session, code, offset: offset ?? null, bytes: bytes ?? null, text: GAP_TEXT[code] ?? code });
 
 const toolLabel = (e: NativeEvent): string => e.kind === "tool.call" ? e.tool.name : `${e.tool.name === "unknown" ? "" : e.tool.name + " "}Resultat`.trim();
 
-function toolEvent(s: TimelineWireSession, e: NativeEvent, details: Map<string, TimelineWireDetail>, byId: Map<string, NativeEvent>): TimelineEvent {
-  const own = e.detailRef ? details.get(e.detailRef.locator) ?? null : null;
-  const pair = e.pair ? byId.get(e.pair) ?? null : null;
-  const pairText = pair?.detailRef ? details.get(pair.detailRef.locator)?.text ?? null : null;
+function toolEvent(key: string | null, id: string, e: NativeEvent): TimelineEvent {
   const isCall = e.kind === "tool.call";
   const refs: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(e.refs)) if (typeof v === "string" || typeof v === "number") refs[k] = v;
   return {
-    id: e.id, session: s.key, kind: isCall ? "tool.call" : "tool.result", family: "tool",
+    id, session: key, kind: isCall ? "tool.call" : "tool.result", family: "tool",
     label: toolLabel(e), sub: e.refs.call ?? "", at: e.at, atKnown: e.occurredAt !== null, clock: e.atClock,
-    observedAt: e.observedAt, status: e.status, verdict: null, pair: e.pair,
+    observedAt: e.observedAt, status: STATUSES.has(e.status) ? e.status : "unknown", verdict: null, pair: e.pair ?? null,
     separationMs: e.separation?.ms ?? null, duration: null,
-    args: isCall ? own?.text ?? null : pairText,
-    result: isCall ? pairText : own?.text ?? null,
-    error: e.outcome === "error" ? (isCall ? pairText : own?.text) ?? "Fehler laut Quelle, Text nicht geliefert" : null,
+    // the page carries no detail texts: what a call said is not delivered, which is not "said nothing"
+    args: null, result: null,
+    error: e.outcome === "error" ? "Fehler laut Quelle, Text nicht geliefert" : null,
     source: { name: e.source, locator: e.detailRef?.locator ?? null, fp: e.detailRef?.fp ?? null,
-      record: e.record, sidechain: e.record.sidechain,
+      record: e.record, sidechain: e.record.sidechain === true,
       edge: e.edge ? `${e.edge.from.session ?? e.edge.from.kind} → ${e.edge.to.session ?? e.edge.to.kind} · ${e.edge.channel}` : null, refs },
     files: e.files,
   };
@@ -172,13 +158,13 @@ function ledgerKind(kind: string): { kind: TimelineKind; label: string; verdict:
   return { kind: "other", label: kind, verdict: null };
 }
 
-function ledgerEvent(e: TraceEvent, i: number, session: string | null): TimelineEvent {
+function ledgerEvent(id: string, e: TraceEvent, session: string | null): TimelineEvent {
   const k = ledgerKind(e.kind);
   const refs: Record<string, string | number> = {};
   for (const [key, v] of Object.entries(e.refs)) if (typeof v === "string" || typeof v === "number") refs[key] = v;
   const sub = e.refs.sha?.slice(0, 7) ?? k.verdict ?? e.refs.task?.slice(0, 8) ?? e.refs.branch ?? "";
   return {
-    id: `ledger:${e.source}:${e.at}:${e.kind}:${i}`, session, kind: k.kind, family: "ledger",
+    id, session, kind: k.kind, family: "ledger",
     label: k.label, sub, at: e.at, atKnown: true, clock: "fleet server wallclock", observedAt: null,
     status: k.kind === "report" || k.kind === "land" || k.kind === "gate" || k.kind === "audit"
       ? (/fail|red|rejected|error|refused/.test(k.verdict ?? "") ? "error" : /unknown|not-measured|waited/.test(k.verdict ?? "") ? "unknown" : "ok")
@@ -196,18 +182,116 @@ function unavailable(now: number, window: TimelineModel["window"], status: numbe
     gaps: [], clock: { uncertainty: "unknown", note: CLOCK_NOTE }, ledgerUnassigned: 0, next: null };
 }
 
+// --- reading the page: every field the model takes is checked before it is read ---------------------
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !Array.isArray(v);
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+const STATUSES = new Set<string>(["ok", "error", "pending", "late", "unknown"]);
+const SOURCE_STATES = new Set<string>(["read", "pending", "rejected", "unsupported", "unmeasured"]);
+const isToolKind = (kind: unknown): boolean => kind === "tool.call" || kind === "tool.result";
+// the first field of the page that is missing or has another form, as its path ("sessions[2].occupation"), or null
+function malformed(p: Obj): string | null {
+  if (!isObj(p.window) || !isNum(p.window.from) || !isNum(p.window.to)) return "window";
+  if (!Array.isArray(p.sessions)) return "sessions";
+  for (const [i, s] of p.sessions.entries()) {
+    const at = `sessions[${i}]`;
+    if (!isObj(s)) return at;
+    for (const k of ["key", "session", "harness", "host"]) if (!isStr(s[k])) return `${at}.${k}`;
+    if (!isObj(s.occupation) || !isNum(s.occupation.slot) || !isNum(s.occupation.openedAt)) return `${at}.occupation`;
+    if (!isObj(s.source) || !isStr(s.source.state)) return `${at}.source`;
+    const h = s.source.horizon;
+    if (h !== null && h !== undefined && (!isObj(h) || !isStr(h.state))) return `${at}.source.horizon`;
+    if (!Array.isArray(s.gaps) || s.gaps.some((g) => !isObj(g) || !isStr(g.code))) return `${at}.gaps`;
+  }
+  if (!Array.isArray(p.entries)) return "entries";
+  for (const [i, e] of p.entries.entries()) {
+    const at = `entries[${i}]`;
+    if (!isObj(e) || !isStr(e.id) || !isNum(e.at)) return at;
+    if (e.sessionKey !== null && !isStr(e.sessionKey)) return `${at}.sessionKey`;
+    const v = e.event;
+    if (v === null) continue;
+    if (!isObj(v) || !isStr(v.source) || !isStr(v.kind) || !isNum(v.at) || !isObj(v.refs) || !Array.isArray(v.files)) return `${at}.event`;
+    if (isToolKind(v.kind) && (!isObj(v.record) || !isNum(v.record.offset) || !isNum(v.record.bytes) || !isObj(v.tool)
+      || !isStr(v.tool.name) || !isStr(v.status) || !isStr(v.outcome) || !isNum(v.observedAt) || !isStr(v.atClock))) return `${at}.event`;
+  }
+  if (p.nextCursor !== null && !isStr(p.nextCursor)) return "nextCursor";
+  if (!Array.isArray(p.gaps) || p.gaps.some((g) => !isStr(g))) return "gaps";
+  if (!Array.isArray(p.ledger) || p.ledger.some((l) => !isObj(l) || !Array.isArray(l.horizon))) return "ledger";
+  return null;
+}
+// the route binds a cursor to the window that asked (409 cursor-stale otherwise), so the model's
+// `next` carries that window with it and a later page asks the same window again
+const nextOf = (cursor: string | null, window: { from: number; to: number }): string | null =>
+  cursor === null ? null : JSON.stringify({ cursor, from: window.from, to: window.to });
+function cursorOf(page: string): { cursor: string; from: number; to: number } | null {
+  try { const c = JSON.parse(page) as unknown; return isObj(c) && isStr(c.cursor) && isNum(c.from) && isNum(c.to) ? { cursor: c.cursor, from: c.from, to: c.to } : null; }
+  catch { return null; }
+}
+
+function modelOf(page: TimelinePage, status: number, continued: boolean): TimelineModel {
+  const events: TimelineEvent[] = [];
+  const sessions: TimelineSession[] = [];
+  const gaps: TimelineGap[] = [];
+  const own = new Map<string, TimelineEvent[]>();
+  let ledgerUnassigned = 0;
+  for (const entry of page.entries as TimelineEntry[]) {
+    const e = entry.event;
+    if (!e) continue;   // `session:<key>`: the session's own place in the order, its header carries it
+    const ev = isToolKind(e.kind) ? toolEvent(entry.sessionKey, entry.id, e as NativeEvent) : ledgerEvent(entry.id, e, entry.sessionKey);
+    if (entry.sessionKey) own.set(entry.sessionKey, [...own.get(entry.sessionKey) ?? [], ev]);
+    else if (ev.family === "ledger") ledgerUnassigned++;
+    events.push(ev);
+  }
+  for (const s of page.sessions as TimelineWireSession[]) {
+    const mine = own.get(s.key) ?? [];
+    const sessionGaps = s.gaps.map((g) => gapOf(s.key, g.code, g.offset, g.bytes));
+    const h = s.source.horizon;
+    sessions.push({
+      key: s.key, label: s.session.slice(0, 8), harness: s.harness, host: s.host,
+      version: s.source.version ?? "unbekannt", slot: s.occupation.slot, openedAt: s.occupation.openedAt,
+      project: s.project, program: s.program,
+      state: SOURCE_STATES.has(s.source.state) ? s.source.state as TimelineSession["state"] : "unmeasured",
+      occupation: { slot: s.occupation.slot, openedAt: s.occupation.openedAt },
+      parentSession: null,
+      horizon: h?.state === "read" ? { state: "read", oldestAt: h.oldestAt, newestAt: h.newestAt ?? null, reason: null }
+        : { state: "unmeasured", oldestAt: null, newestAt: null, reason: h?.state === "unmeasured" ? h.reason : "keine native Quelle im Index" },
+      counts: { calls: mine.filter((e) => e.kind === "tool.call").length, results: mine.filter((e) => e.kind === "tool.result").length,
+        errors: mine.filter((e) => e.status === "error").length, pending: mine.filter((e) => e.status === "pending").length,
+        ledger: mine.filter((e) => e.family === "ledger").length },
+      gaps: sessionGaps,
+    });
+    gaps.push(...sessionGaps);
+  }
+  // the page's own gaps are fleet-wide and the same on every page of a window: said once, on the first
+  if (!continued) for (const code of page.gaps) gaps.push(gapOf(null, code));
+  for (const l of page.ledger) for (const h of l.horizon)
+    if (h.state === "unmeasured") gaps.push(gapOf(null, "ledger-unmeasured"));
+  events.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  const ats = events.map((e) => e.at);
+  return {
+    state: events.length || sessions.length ? "read" : "empty", route: ROUTE, status, reason: null, now: Date.now(),
+    window: page.window,
+    span: { from: ats.length ? Math.min(...ats) : null, to: ats.length ? Math.max(...ats) : null },
+    sessions, events, gaps, clock: { uncertainty: "unknown", note: CLOCK_NOTE }, ledgerUnassigned,
+    next: nextOf(page.nextCursor, page.window),
+  };
+}
+
 /**
  * Load one window of the fleet's session timeline. Input: `TimelineQuery` (ms window, optional
- * harness/session narrowing, page cursor). Output: `TimelineModel` — sessions, events sorted by
- * `at`, gaps, the data's span, and the route's own state when it could not answer. `fetchFn` is
- * injectable for a check; the view passes nothing.
+ * harness/session narrowing, the `next` of a previous model). Output: `TimelineModel` — sessions,
+ * events sorted by `at`, gaps, the data's span, and the route's own state when it could not answer.
+ * `fetchFn` is injectable for a check; the view passes nothing.
  */
 export async function loadTimeline(query: TimelineQuery, fetchFn: typeof fetch = fetch): Promise<TimelineModel> {
-  const window = { from: Math.min(query.from, query.to), to: Math.max(query.from, query.to) };
+  const cursor = query.page ? cursorOf(query.page) : null;
+  const window = cursor ? { from: cursor.from, to: cursor.to } : { from: Math.min(query.from, query.to), to: Math.max(query.from, query.to) };
+  if (query.page && !cursor) return unavailable(Date.now(), window, null, "bekam einen Seitenzeiger, den diese Linse nicht ausgegeben hat");
   const params = new URLSearchParams({ from: String(window.from), to: String(window.to) });
-  for (const h of query.harness ?? []) params.append("harness", h);
-  for (const s of query.sessions ?? []) params.append("session", s);
-  if (query.page) params.set("page", query.page);
+  if (query.harness) params.set("harness", query.harness);
+  if (query.session) params.set("session", query.session);
+  if (cursor) params.set("cursor", cursor.cursor);
   let res: Response;
   try { res = await fetchFn(`${ROUTE}?${params}`); }
   // `reason` is a predicate of the route ("antwortet 404 (no such route)") — the view names the
@@ -219,68 +303,14 @@ export async function loadTimeline(query: TimelineQuery, fetchFn: typeof fetch =
     catch { reason += " (ohne lesbaren Fehlertext)"; }
     return unavailable(Date.now(), window, res.status, reason);
   }
-  let wire: TimelineWire;
-  try { wire = (await res.json()) as TimelineWire; }
+  let body: unknown;
+  try { body = await res.json(); }
   catch { return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber kein JSON`); }
-  if (wire?.schema !== "fleet.timeline/v1" || !Array.isArray(wire.sessions))
-    return unavailable(Date.now(), window, res.status, `antwortet mit Schema ${JSON.stringify(wire?.schema ?? null)} statt fleet.timeline/v1`);
-
-  const now = typeof wire.now === "number" ? wire.now : Date.now();
-  const events: TimelineEvent[] = [];
-  const gaps: TimelineGap[] = [];
-  const sessions: TimelineSession[] = [];
-  // ledger events are claimed by session key, then by slot+openedAt (the occupation proof), never by slot alone
-  const byKey = new Map<string, TimelineWireSession>();
-  const byOccupation = new Map<string, TimelineWireSession>();
-  for (const s of wire.sessions) {
-    byKey.set(s.key, s);
-    const occ = s.snapshot.identity?.occupation;
-    if (occ && occ !== "unknown") byOccupation.set(`${occ.slot}@${occ.openedAt}`, s);
-    else if (s.slot !== null && s.openedAt !== null) byOccupation.set(`${s.slot}@${s.openedAt}`, s);
-    if (s.snapshot.identity?.session) byKey.set(s.snapshot.identity.session, s);
-  }
-  const ledgerCount = new Map<string, number>();
-  let ledgerUnassigned = 0;
-  for (const [i, e] of (Array.isArray(wire.ledger) ? wire.ledger : []).entries()) {
-    const owner = (e.refs.session ? byKey.get(e.refs.session) : undefined)
-      ?? (typeof e.refs.slot === "number" && typeof e.refs.openedAt === "number" ? byOccupation.get(`${e.refs.slot}@${e.refs.openedAt}`) : undefined) ?? null;
-    if (owner) ledgerCount.set(owner.key, (ledgerCount.get(owner.key) ?? 0) + 1); else ledgerUnassigned++;
-    events.push(ledgerEvent(e, i, owner?.key ?? null));
-  }
-  for (const s of wire.sessions) {
-    const snap = s.snapshot;
-    const details = new Map((s.details ?? []).map((d) => [d.locator, d]));
-    const byId = new Map(snap.events.map((e) => [e.id, e]));
-    const own = snap.events.map((e) => toolEvent(s, e, details, byId));
-    const pairMissing = own.filter((e) => e.pair && !byId.has(e.pair))
-      .map((e) => gapOf(s.key, "pair-missing-in-snapshot", e.source.record?.offset));
-    const sessionGaps = [...snap.gaps.map((g) => gapOf(s.key, g.code, g.offset, g.bytes)), ...pairMissing];
-    const h = snap.horizon;
-    sessions.push({
-      key: s.key, label: s.label ?? snap.identity?.session.slice(0, 8) ?? s.key.slice(0, 8), harness: s.harness, host: s.host,
-      version: snap.version, slot: s.slot, openedAt: s.openedAt, project: s.project, program: s.program, state: snap.state,
-      occupation: snap.identity?.occupation && snap.identity.occupation !== "unknown"
-        ? { slot: snap.identity.occupation.slot, openedAt: snap.identity.occupation.openedAt } : "unknown",
-      parentSession: snap.identity?.parentSession ?? null,
-      horizon: h.state === "read" ? { state: "read", oldestAt: h.oldestAt, newestAt: h.newestAt ?? null, reason: null }
-        : { state: "unmeasured", oldestAt: null, newestAt: null, reason: h.reason },
-      counts: { calls: own.filter((e) => e.kind === "tool.call").length, results: own.filter((e) => e.kind === "tool.result").length,
-        errors: own.filter((e) => e.status === "error").length, pending: own.filter((e) => e.status === "pending").length,
-        ledger: ledgerCount.get(s.key) ?? 0 },
-      gaps: sessionGaps,
-    });
-    events.push(...own);
-    gaps.push(...sessionGaps);
-  }
-  for (const h of Array.isArray(wire.horizon) ? wire.horizon : [])
-    if (h.state === "unmeasured") gaps.push(gapOf(null, "ledger-unmeasured", undefined, undefined));
-  events.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
-  const ats = events.map((e) => e.at);
-  return {
-    state: events.length ? "read" : "empty", route: ROUTE, status: res.status, reason: null, now,
-    window: wire.window ?? window,
-    span: { from: ats.length ? Math.min(...ats) : null, to: ats.length ? Math.max(...ats) : null },
-    sessions, events, gaps, clock: { uncertainty: "unknown", note: CLOCK_NOTE }, ledgerUnassigned,
-    next: typeof wire.next === "string" ? wire.next : null,
-  };
+  if (!isObj(body) || body.schema !== "fleet.timeline/v1")
+    return unavailable(Date.now(), window, res.status, `antwortet mit Schema ${JSON.stringify(isObj(body) ? body.schema ?? null : null)} statt fleet.timeline/v1`);
+  const bad = malformed(body);
+  if (bad) return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber das Feld ${bad} fehlt oder hat nicht die Form von fleet.timeline/v1`);
+  // the checks above cover every field the model reads; a form they missed still ends as a sentence, never a throw
+  try { return modelOf(body as unknown as TimelinePage, res.status, !!cursor); }
+  catch (e) { return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber die Seite ist nicht lesbar (${e instanceof Error ? e.message : String(e)})`); }
 }

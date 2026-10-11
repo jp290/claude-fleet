@@ -5,7 +5,7 @@
 # keeps proving the DEFAULT-OFF behaviour untouched.
 #   ./e2e-postland-audit.sh
 set -u
-export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_HOST_LOAD_MAX=off FLEET_HOST_SWAP_MAX_PCT=off
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never collide. The port base comes from the
 # PORT BAND TABLE in e2e-isolated.sh — never pick one here.

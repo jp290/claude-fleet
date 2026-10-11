@@ -4,7 +4,7 @@
 # Throwaway copy of the repo on its own tmux socket + port: the live fleet is never touched.
 #   ./e2e-security.sh
 set -u
-export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_HOST_LOAD_MAX=off FLEET_HOST_SWAP_MAX_PCT=off
 # Same hermetic reason as e2e-isolated.sh: launched from inside a lane, this script's env
 # carries the pane's scoped credentials, and tmux bakes its server env into every pane it
 # spawns. Strip them so the server's OWN issuing logic is the only source of a self token.

@@ -6,7 +6,7 @@
 # socket/port, throwaway copy of the repo — the live fleet is never touched.
 #   ./e2e-claude-gate.sh
 set -u
-export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001
+export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_HOST_LOAD_MAX=off FLEET_HOST_SWAP_MAX_PCT=off
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never share a socket/port —
 # one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh).

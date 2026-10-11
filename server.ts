@@ -22092,18 +22092,22 @@ function tickHostDiskSpace(): void {
 // (5-min load average) and FLEET_HOST_SWAP_MAX_PCT (swap used of total, in %) each arm one half;
 // while a reading is above its threshold tickDispatch starts no lane and the row that would have
 // started says `waiting: host-brake …`, then starts on its own once both are back at or below.
-// Unset, empty or not a positive number: nothing is read and the tick is what it was. Read only:
+// UNSET IS ARMED at load 25 and swap 70 % (systemlast-befund 2026-10-11: the brake existed, nothing
+// set it, and the box thrashed again at swap 4,7/5 GB and load 43). Set to anything that is not a
+// positive number (`off`, `0`, empty) disarms that half; both off, nothing is read and the tick is
+// what it was — the e2e wrappers export `off` beside their disk floor. Read only:
 // no running lane is touched, and a hand start (ctl.sh dispatch, POST /api/tasks/:id/dispatch)
 // never passes here — it is the owner's act. A failed reading holds, like the disk floor above.
 // FLEET_TEST_HOST_PRESSURE names a file `{"load5":n,"swapPct":n}` read INSTEAD of the machine —
 // the e2e seam ((hb) in e2e/tasks.ts). It lives inside this section because e2e/host-hygiene.ts
 // runs tickDispatch on exactly this slice.
-function hostBrakeMax(value: string | undefined): number | null {
-  const max = value?.trim() ? Number(value) : NaN;
+function hostBrakeMax(value: string | undefined, fallback: number): number | null {
+  if (value === undefined) return fallback;
+  const max = value.trim() ? Number(value) : NaN;
   return Number.isFinite(max) && max > 0 ? max : null;
 }
-const HOST_LOAD_MAX = hostBrakeMax(process.env.FLEET_HOST_LOAD_MAX);
-const HOST_SWAP_MAX_PCT = hostBrakeMax(process.env.FLEET_HOST_SWAP_MAX_PCT);
+const HOST_LOAD_MAX = hostBrakeMax(process.env.FLEET_HOST_LOAD_MAX, 25);
+const HOST_SWAP_MAX_PCT = hostBrakeMax(process.env.FLEET_HOST_SWAP_MAX_PCT, 70);
 const HOST_PRESSURE_TEST_FILE = process.env.FLEET_TEST_HOST_PRESSURE || null;
 type HostBrake = { held: boolean; load5: number | null; swapPct: number | null };
 let hostBrakeHeld = false;

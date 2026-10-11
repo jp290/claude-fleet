@@ -232,16 +232,16 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     writerReserveBytes: number; runningWriters: number; reservedBytes: number; availableBytes: number | null;
     path: string; measuredAt: number };
   type View = { diskSpace: Space; data: { startable: { id: string }[] } | null };
-  type Fixture = { clock: { free: number; unreadable: boolean }; queue: Map<string, { covers: { mainAfter: string }[] }>;
+  type Fixture = { clock: { free: number; unreadable: boolean; load5: number; swapUsed: number }; queue: Map<string, { covers: { mainAfter: string }[] }>;
     tasks: { status: string; note?: string }[]; override(value: string | undefined, fallback: number): number; counts: { audits: number; lanes: number; ticks: number; measurements: number };
     measure(): Space; timer(): ReturnType<typeof setInterval>; view: { read(): View }; flush(): Promise<void>;
     occupancy(n: number, gates?: number, audit?: boolean, holder?: "foreign" | "own" | "child" | "dead" | "missing" | "invalid" | "denied"): void };
   const setup = `
-    const clock = {free: 3 * 1024 ** 3, unreadable: false};
+    const clock = {free: 3 * 1024 ** 3, unreadable: false, load5: 1, swapUsed: 100};
     const counts = {audits: 0, lanes: 0, ticks: 0, measurements: 0};
     let holder = 'missing';
     const SUITE_LOCK = '/fixture/suite-lock';
-    const process = {env: {}, pid: 10, kill(pid, signal) {
+    const process = {env: FIXTURE_ENV, platform: 'darwin', pid: 10, kill(pid, signal) {
       if (signal !== 0) throw Error('sensor must not signal a process');
       if (holder === 'dead') throw Object.assign(Error('gone'), {code: 'ESRCH'});
       if (holder === 'denied') throw Object.assign(Error('permission'), {code: 'EPERM'});
@@ -249,7 +249,11 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     const readFileSync = (path) => {if (path !== SUITE_LOCK + '/pid') throw Error('wrong lock path');
       if (holder === 'missing') throw Error('absent');
       return holder === 'invalid' ? '0' : holder === 'own' ? '10' : '20';};
-    const Bun = {spawnSync(args) {if (args.join(' ') !== 'ps -o ppid= -p 20') throw Error('unexpected ancestry command');
+    // the host brake's two reads: 5-min load, and swap as sysctl prints it, of 1000 M
+    const loadavg = () => [0, clock.load5, 0];
+    const Bun = {spawnSync(args) {if (args.join(' ') === '/usr/sbin/sysctl -n vm.swapusage')
+      return {exitCode: 0, stdout: new TextEncoder().encode('total = 1000.00M  used = ' + clock.swapUsed + '.00M  free = 0.00M  (encrypted)')};
+      if (args.join(' ') !== 'ps -o ppid= -p 20') throw Error('unexpected ancestry command');
       return {exitCode: 0, stdout: new TextEncoder().encode(holder === 'child' ? '10' : '1')};}};
     const tmpdir = () => '/fixture/tmp';
     const statfsSync = (path) => {counts.measurements++; if (clock.unreadable) throw Error('no reading');
@@ -298,14 +302,16 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
         if (audit) serverRuns.set('audit', {});},
       timer() {kickAuditDrain(); return setInterval(() => {counts.ticks++; tickHostDiskSpace(); void tickDispatch();}, DISPATCH_TICK_MS);}};
   `;
-  const build = (mutation: "audit" | "lane" | "lanes-count" | "suite-reserve" | null): Fixture => {
+  const build = (mutation: "audit" | "lane" | "lanes-count" | "suite-reserve" | "brake-default" | null,
+    env: Record<string, string> = {}): Fixture => {
     let code = actual;
     if (mutation === "audit") code = code.replace('if (measureHostDiskSpace().state === "disk-space-held") break;', 'if (false) break;');
     if (mutation === "lane") code = code.replace('if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }', 'if (false) { waiting(diskSpaceWaitNote(space)); continue; }');
     if (mutation === "lanes-count") code = code.replace('const runningWriters = gates +', 'const runningWriters = slots.length + gates +');
     if (mutation === "suite-reserve") code = code.replace('const runningWriters = gates + (auditRunningRepo ? 1 : 0) + foreignDiskSuiteCount();', 'const runningWriters = 0;');
+    if (mutation === "brake-default") code = code.replace('if (value === undefined) return fallback;', 'if (value === undefined) return null;');
     if (mutation && code === actual) throw Error(`missing ${mutation} admission mutation`);
-    return new Function(new Bun.Transpiler({loader: "ts"}).transformSync(setup + code + finish))() as Fixture;
+    return new Function("FIXTURE_ENV", new Bun.Transpiler({loader: "ts"}).transformSync(setup + code + finish))(env) as Fixture;
   };
   const held = async (f: Fixture): Promise<boolean> => {
     const timer = f.timer();
@@ -391,6 +397,37 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     const mutant = build(mutation);
     assert(`host-disk removing ${mutation} hold makes the same negative probe red`, !(await held(mutant)), JSON.stringify(mutant.counts));
   }
+
+  // THE HOST BRAKE UNSET IS ARMED (server.ts#hostBrakeMax): 5-min load above 25 or swap above 70 %
+  // holds an unattended lane start, at or below lets it go, `off` disarms. Same slice, 12 GiB free so
+  // the disk holds nothing; the readings go through the sensor's own loadavg and sysctl parse.
+  const brakeRun = async (env: Record<string, string>, load5: number, swapUsed: number,
+    mutation: "brake-default" | null = null) => {
+    const b = build(mutation, env);
+    Object.assign(b.clock, { free: 12 * 1024 ** 3, load5, swapUsed });
+    const timer = b.timer();
+    try {
+      const until = Date.now() + 2000;
+      while (b.counts.ticks < 4 && b.counts.lanes === 0 && Date.now() < until) await Bun.sleep(10);
+    } finally { clearInterval(timer); }
+    return { ticks: b.counts.ticks, lanes: b.counts.lanes, status: b.tasks[0].status, note: b.tasks[0].note ?? "" };
+  };
+  const loadHigh = await brakeRun({}, 26, 100);
+  assert("host-brake unset: load5 26 over the default 25 holds the released lane four ticks, the note names reading and threshold",
+    loadHigh.ticks >= 4 && loadHigh.lanes === 0 && loadHigh.status === "queued"
+      && loadHigh.note.startsWith("waiting: host-brake load5=26 (max 25) swapPct=10 (max 70)"), JSON.stringify(loadHigh));
+  const swapHigh = await brakeRun({}, 1, 710);
+  assert("host-brake unset: swap 71 % over the default 70 holds the released lane four ticks, the note names reading and threshold",
+    swapHigh.ticks >= 4 && swapHigh.lanes === 0 && swapHigh.status === "queued"
+      && swapHigh.note.startsWith("waiting: host-brake load5=1 (max 25) swapPct=71 (max 70)"), JSON.stringify(swapHigh));
+  const atLimits = await brakeRun({}, 25, 700);
+  assert("host-brake unset: at exactly load5 25 and swap 70 % the released lane starts — only above holds",
+    atLimits.lanes === 1 && atLimits.status === "sent" && !atLimits.note.includes("host-brake"), JSON.stringify(atLimits));
+  const off = await brakeRun({ FLEET_HOST_LOAD_MAX: "off", FLEET_HOST_SWAP_MAX_PCT: "off" }, 40, 900);
+  assert("host-brake `off` disarms both halves: at load5 40 and swap 90 % the released lane starts",
+    off.lanes === 1 && off.status === "sent", JSON.stringify(off));
+  const noDefault = await brakeRun({}, 26, 100, "brake-default");
+  assert("host-brake removing the unset default makes the load-26 hold red", noDefault.lanes === 1, JSON.stringify(noDefault));
 }
 
 // §MUTATION — the proof that §b can fail, and the cheapest one available.

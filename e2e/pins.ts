@@ -4563,6 +4563,42 @@ export default function (pi) {
   pin("no worker stays pinned to the Claude route",
     claudeRoutes.length === 0,
     claudeRoutes.join(" | ") || "no Claude routes parsed");
+  // THE CODEX BYPASS of systemlast-befund 2026-10-11: autoReview, the card extractor and
+  // tickCardSweep ran `codex exec` on gpt-6.1-sol (server.log, 09.10.). Those boots resolved the
+  // card worker `source=register`, i.e. without FLEET_WORKER_ROUTE_CARD; since .env set 'claude'
+  // no codex line followed. The route decision is executed here in exactly that state — every
+  // register role on the codex harness — so a rollback key that stops winning is red, and the
+  // unset control proves the check sees the codex path at all. The second half holds the adapter
+  // to its one caller: autoReview (reviewDiffs) and the extractor (extractCard, tickCardSweep's
+  // only reader) reach codex exec through runWorker's route and nowhere else.
+  let routeOf: ((env: Record<string, string>) => Record<string, { route: string }>) | null = null;
+  try {
+    const routeFn = server.slice(server.indexOf("const codexWorkerRoute = "), routesStart);
+    const routeSrc = new Bun.Transpiler({ loader: "ts" }).transformSync(routeFn
+      + routesBody.replace(/ satisfies [^;]*$/, "") + "};\nreturn WORKER_ROUTES;");
+    routeOf = (env) => new Function("process", "WORKER_MODELS", routeSrc)({ env },
+      new Proxy({}, { get: () => ({ harness: "codex" }) }));
+  } catch { /* an unparsable route block is red below */ }
+  const pinnedBack = routeOf?.({ FLEET_WORKER_ROUTE_REVIEW: "claude", FLEET_WORKER_ROUTE_CARD: "claude" });
+  const unpinned = routeOf?.({});
+  pin("FLEET_WORKER_ROUTE_REVIEW/_CARD='claude' keep autoReview and the card extractor off codex exec even when the register names codex",
+    pinnedBack?.review?.route === "claude" && pinnedBack.card?.route === "claude"
+      && unpinned?.review?.route === "codex-exec" && unpinned.card?.route === "codex-exec",
+    JSON.stringify({ pinnedBack: pinnedBack ?? "route block did not execute", unpinned }));
+  const rwStart = server.indexOf("async function runWorker(");
+  const rwBody = rwStart < 0 ? "" : server.slice(rwStart, server.indexOf("\n}\n", rwStart));
+  const fnBody = (name: string): string => {
+    const at = server.indexOf(`async function ${name}(`);
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+  };
+  pin("codex exec has one caller, runWorker under the route's codex-exec branch, and autoReview/card reach it only there",
+    server.split("workerViaCodexExec(").length === 3 && rwBody.split("workerViaCodexExec(").length === 2
+      && rwBody.includes('const route = spec.cmd ? "cmd" : workerRouteFor(spec.worker).route;')
+      && rwBody.indexOf('if (route === "codex-exec") {') < rwBody.indexOf("workerViaCodexExec(")
+      && /runWorker\(\{\s*(?:\/\/[^\n]*\n\s*)*worker: "card"/.test(fnBody("extractCard"))
+      && fnBody("reviewDiffs").includes("runWorker(") && /worker: "review"/.test(fnBody("reviewDiffs"))
+      && fnBody("tickCardSweep").includes("extractCard(") && !fnBody("tickCardSweep").includes("workerViaCodexExec"),
+    `workerViaCodexExec occurrences=${server.split("workerViaCodexExec(").length - 1}`);
   pin("worker routes select transport only; model and effort belong to MODEL_DEFAULTS",
     /type WorkerRouteConfig = \{ route: "claude" \| "codex-exec" \};/.test(server)
       && /: \{ route: "codex-exec" \};/.test(server)

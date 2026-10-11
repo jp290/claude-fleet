@@ -9848,7 +9848,7 @@ const TL_GLYPH: Record<TimelineKind, string> = {
   commit: "⌑", land: "▲", gate: "▮", audit: "☑", deploy: "⇧", other: "·",
 };
 const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "Fehler", pending: "wartet", late: "spät", unknown: "unbekannt" };
-const TL_SOURCE_STATE: Record<TimelineSession["state"], string> = { read: "gelesen", pending: "wartet", rejected: "abgewiesen", unsupported: "nicht unterstützt" };
+const TL_SOURCE_STATE: Record<TimelineSession["state"], string> = { read: "gelesen", pending: "wartet", rejected: "abgewiesen", unsupported: "nicht unterstützt", unmeasured: "ungemessen" };
 const TL_VERDICT_WORD: Record<string, string> = {
   green: "grün", red: "rot", landed: "gelandet", failed: "fehlgeschlagen", unknown: "unbekannt", complete: "fertig",
   handoff: "Übergabe", "needs-main": "braucht MAIN", rejected: "abgelehnt", accepted: "angenommen", resolved: "aufgelöst",

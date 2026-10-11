@@ -5,8 +5,11 @@
 // answered here. The one route the lens reads, GET /api/timeline, is served from the native
 // fixtures of e2e/trace-native-fixtures.ts (five harness sessions, each tool call and result) plus
 // a hand-written ledger (report with verdict, clarification, founding, commit, land, gate, audit,
-// deploy) and two contract edge sessions (a record without a timestamp, a snapshot that stops
-// before its identity record). NOTHING of that is in the bundle — a claim below asserts it.
+// deploy) and three contract edge sessions (a record without a timestamp, a snapshot that stops
+// before its identity record, a call without its result). The body is typed as the route's own
+// `TimelinePage` (trace-timeline.ts) and laid out as `TimelineIndex.page` lays it out: session
+// headers without events, one `entries` list in time order, ledger entries claimed only by an exact
+// session + occupation match. NOTHING of that is in the bundle — a claim below asserts it.
 //
 // Every claim is a DOM fact at 1200×900 and at 390×844, and every claim has a MUTANT (owner card
 // 2026-10-07: „[Zitat entfernt]“): `TIMELINE_MUTANTS` swaps one needle of
@@ -14,16 +17,19 @@
 // page itself, for a claim about colour — and expects the named claim to go red. A needle that left the source throws, so a probe that could not apply its mutation fails as
 // ITSELF, never as "caught".
 //
-// WHAT IS NOT PROVEN HERE: that the live route answers this wire shape — it does not exist yet
-// (lane 91040c44 builds it). The last claim is the honest half of that: without the route the lens
-// names the 404 and draws no track.
+// WHAT IS NOT PROVEN HERE: that the live route fills this shape with the same CONTENT — the
+// fixture is typed as `TimelinePage`, so a change of the route's type breaks tsc here, but the body
+// is built by hand, not by `TimelineIndex`. The prototype wire this check once served (sessions
+// carrying their `snapshot`) is now the foreign-answer claim: the lens names the missing field and
+// draws no track. Without the route at all the lens names the 404.
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { NATIVE_CANARY, NATIVE_FIXTURES, loadNativeUiFixtures } from "./trace-native-fixtures";
-import { normalizeNative } from "../trace-native";
+import { normalizeNative, type NativeEvent, type NativeSnapshot } from "../trace-native";
 import type { TraceEvent } from "../trace-index";
-import type { TimelineWire, TimelineWireSession } from "../src/timeline";
+import { TIMELINE_BUDGET, type TimelineEntry, type TimelinePage, type TimelineSession } from "../trace-timeline";
 
 export interface TimelineDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // `width`: the one viewport the mutant is judged at — 1200 unless the claim is a phone claim
@@ -51,6 +57,9 @@ export const TL_CLAIM = {
   emptyOne: "without the route the lens says it in one sentence that names GET /api/timeline exactly once, with the status and the server's error text",
   rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary; opening it shows Kopieren, which writes exactly the full raw value to the clipboard; the visible Quelle text carries none of it",
   toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind Mehr and appear on tap; on the desktop they stand in the row and there is no Mehr",
+  // owner 2026-10-11: „[Zitat entfernt]“ — the lens read a prototype wire, the route serves TimelinePage
+  wire: "the lens reads the route's own TimelinePage: every session header is a track, the error call and the report are marks, and the page raises no exception",
+  foreign: "an answer of another form — the prototype wire, or a page whose session lacks its occupation — ends as state unavailable in one sentence naming the field, with no track and no exception",
 } as const;
 
 export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
@@ -60,8 +69,12 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `if (fam === "report") return { kind: "report", label: "Report", verdict: qual || verb || null };`,
     with: `if (fam === "report") return { kind: "other", label: "Report", verdict: null };` },
   { name: "a session's gaps dropped from the model", claim: TL_CLAIM.unknown, file: "src/timeline.ts",
-    needle: "const sessionGaps = [...snap.gaps.map((g) => gapOf(s.key, g.code, g.offset, g.bytes)), ...pairMissing];",
+    needle: "const sessionGaps = s.gaps.map((g) => gapOf(s.key, g.code, g.offset, g.bytes));",
     with: "const sessionGaps: TimelineGap[] = [];" },
+  { name: "the lens reads sessions[].snapshot again (the prototype wire)", claim: TL_CLAIM.wire, file: "src/timeline.ts",
+    needle: "const h = s.source.horizon;", with: "const h = (s as unknown as { snapshot: { horizon: typeof s.source.horizon } }).snapshot.horizon;" },
+  { name: "the page read without checking its fields", claim: TL_CLAIM.foreign, file: "src/timeline.ts",
+    needle: "const bad = malformed(body);", with: "const bad = null as string | null;" },
   { name: "a timeless record claims a known time", claim: TL_CLAIM.unknown, file: "src/timeline.ts",
     needle: "atKnown: e.occurredAt !== null,", with: "atKnown: true," },
   { name: "back from call zoom jumps to the overview", claim: TL_CLAIM.zoom, file: "src/client.ts",
@@ -99,35 +112,48 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
 const T = Date.parse("2026-01-01T00:00:00.000Z");
 const encode = (rows: readonly unknown[]): Uint8Array => new TextEncoder().encode(rows.map((r) => JSON.stringify(r) + "\n").join(""));
 
-// the wire GET /api/timeline would answer for this window: five fixture sessions, two edge sessions, a ledger
-export async function timelineWireFixture(): Promise<TimelineWire> {
+// the page GET /api/timeline answers for this window, laid out as trace-timeline.ts#TimelineIndex.page lays it
+// out: five fixture sessions and three edge sessions as headers, their native events and a ledger as entries
+const HOST = "synthetic-host";
+const sha = (v: unknown): string => createHash("sha256").update(JSON.stringify(v)).digest("hex");
+export async function timelineWireFixture(): Promise<TimelinePage> {
+  const window = { from: T - 3600_000, to: T + 3000 };
+  const sources: { snapshot: NativeSnapshot; uuid: string | null; slot: number; openedAt: number; program: string | null; task: string | null }[] = [];
   const ui = await loadNativeUiFixtures();
-  const sessions: TimelineWireSession[] = ui.map((f, i) => ({
-    key: f.snapshot.identityKey ?? `unbound-${f.name}`, harness: f.snapshot.harness, host: f.snapshot.sourceHost, label: f.name,
-    slot: i + 1, openedAt: T - 60_000 * (i + 1), project: "/synthetic/repo", program: i < 2 ? "ae1f4279" : null,
-    snapshot: f.snapshot, details: f.details,
-  }));
+  ui.forEach((f, i) => sources.push({ snapshot: f.snapshot, uuid: null, slot: i + 1, openedAt: T - 60_000 * (i + 1),
+    program: i < 2 ? "ae1f4279" : null, task: i === 0 ? "3b2698ac" : null }));
   // a Codex record without a timestamp: the event sits at its observation time and says so
   const codex = NATIVE_FIXTURES[1];
   if (!codex) throw new Error("timeline wire fixture: the codex native fixture is missing");
   const rows = JSON.parse(JSON.stringify(codex.rows)) as Record<string, unknown>[];
   const timeless = rows.map((r, i) => i === 1 ? { ...r, timestamp: undefined } : r);
   const codexTimeless = await normalizeNative({ ...codex.input, sourceId: "codex-ohne-zeit", bytes: encode(timeless), observedAt: T + 2500 });
-  sessions.push({ key: codexTimeless.identityKey ?? "unbound-codex-ohne-zeit", harness: "codex", host: "synthetic-host", label: "codex-ohne-zeit",
-    slot: 6, openedAt: T - 7000, project: "/synthetic/repo", program: null, snapshot: codexTimeless, details: [] });
+  sources.push({ snapshot: codexTimeless, uuid: "00000000-0000-4000-8000-000000000006", slot: 6, openedAt: T - 7000, program: null, task: null });
   // a snapshot that stops before its identity record: no events, horizon unmeasured, two gaps
   const claude = NATIVE_FIXTURES[0];
   if (!claude) throw new Error("timeline wire fixture: the claude native fixture is missing");
   const torn = await normalizeNative({ ...claude.input, sourceId: "claude-abgerissen", bytes: new TextEncoder().encode('{"type":'), observedAt: T + 2600 });
-  sessions.push({ key: "torn-claude-abgerissen", harness: "claude", host: "synthetic-host", label: "claude-abgerissen",
-    slot: 7, openedAt: T - 8000, project: "/synthetic/repo", program: null, snapshot: torn, details: [] });
+  sources.push({ snapshot: torn, uuid: "00000000-0000-4000-8000-000000000007", slot: 7, openedAt: T - 8000, program: null, task: null });
   // a call whose result the snapshot does not hold yet: pending, with its own `missing-result` gap
   const open = await normalizeNative({ ...claude.input, sourceId: "claude-offen", bytes: encode(claude.rows.slice(0, 1)), observedAt: T + 2700 });
-  sessions.push({ key: open.identityKey ?? "unbound-claude-offen", harness: "claude", host: "synthetic-host", label: "claude-offen",
-    slot: 8, openedAt: T - 9000, project: "/synthetic/repo", program: null, snapshot: open, details: [] });
+  sources.push({ snapshot: open, uuid: "00000000-0000-4000-8000-000000000008", slot: 8, openedAt: T - 9000, program: null, task: null });
+  const sessions: TimelineSession[] = [];
+  const entries: TimelineEntry[] = [];
+  for (const f of sources) {
+    const s = f.snapshot, session = f.uuid ?? s.identity?.session;
+    if (!session) throw new Error(`timeline wire fixture: ${s.source} has no session id`);
+    // the route's key: host, session and occupation — never the native identityKey the events carry
+    const key = sha([HOST, session, f.slot, f.openedAt]);
+    sessions.push({ key, session, host: HOST, occupation: { slot: f.slot, openedAt: f.openedAt, proofHash: sha(["receipt", key]) },
+      harness: s.harness, project: "synthetic0project", program: f.program, task: f.task, branch: null,
+      source: { id: s.source, version: s.version, state: s.state, completeBytes: s.completeBytes, indexedBytes: s.inputBytes,
+        availableBytes: s.inputBytes, horizon: s.horizon }, gaps: s.gaps, observedAt: f.openedAt, clockUncertainty: "unknown" });
+    entries.push({ id: `session:${key}`, at: Math.max(window.from, f.openedAt), sessionKey: key, event: null });
+    for (const e of s.events) if (e.at >= window.from && e.at <= window.to) entries.push({ id: e.id, at: e.at, sessionKey: key, event: e });
+  }
   const first = sessions[0];
   if (!first) throw new Error("timeline wire fixture: no session");
-  const bound = { slot: first.slot ?? 1, openedAt: first.openedAt ?? T };
+  const bound = { session: first.session, slot: first.occupation.slot, openedAt: first.occupation.openedAt };
   const ledger: TraceEvent[] = [
     { source: "fleet.json", kind: "task.created", at: T + 400, refs: { task: "3b2698ac", ...bound }, files: [] },
     { source: "fleet-reports.jsonl", kind: "report.filed.handoff", at: T + 2300, refs: { task: "3b2698ac", ...bound }, files: [],
@@ -136,13 +162,22 @@ export async function timelineWireFixture(): Promise<TimelineWire> {
     { source: "prompts.jsonl", kind: "commit.lane", at: T + 1800, refs: { task: "3b2698ac", branch: "fleet/261007-x", sha: "c0ffee1234567", ...bound }, files: ["src/a.ts"] },
     { source: "fleet/land note", kind: "land.gate.green", at: T + 2400, refs: { task: "3b2698ac", branch: "fleet/261007-x", ...bound }, files: [] },
     { source: "lane-outcomes.jsonl", kind: "land.main-direct.landed", at: T + 2450, refs: { task: "3b2698ac", branch: "fleet/261007-x", sha: "deadbeef00000", ...bound }, files: [] },
-    { source: "post-land-audits.jsonl", kind: "audit.red", at: T + 2550, refs: { branch: "fleet/261007-x", sha: "deadbeef00000" }, files: [] },
-    { source: "audit.jsonl", kind: "deploy.done", at: T + 2700, refs: { sha: "deadbeef00000" }, files: [] },
+    { source: "post-land-audits.jsonl", kind: "audit.red", at: T + 2550, refs: { task: "3b2698ac", branch: "fleet/261007-x", sha: "deadbeef00000" }, files: [] },
+    { source: "audit.jsonl", kind: "deploy.done", at: T + 2700, refs: { task: "3b2698ac", sha: "deadbeef00000" }, files: [] },
   ];
-  return { schema: "fleet.timeline/v1", now: T + 3000, window: { from: T - 3600_000, to: T + 3000 }, sessions, ledger,
-    horizon: [{ source: "audit.jsonl", state: "unmeasured", reason: "ledger not readable in this fixture", clock: "fleet server wallclock (Date.now at write)" }],
-    next: null };
+  // claimed by an exact session + occupation match, as the route claims it; the audit and the deploy name none
+  for (const e of ledger) entries.push({ id: sha([e.source, e.kind, e.at, e.detailRef, e.refs]), at: e.at, event: e,
+    sessionKey: e.refs.session === first.session && e.refs.slot === first.occupation.slot && e.refs.openedAt === first.occupation.openedAt ? first.key : null });
+  entries.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  return { schema: "fleet.timeline/v1", host: HOST, revision: "1", window, sessions, entries, nextCursor: null, pending: false,
+    coverage: "incomplete", gaps: ["history-before-retained-sources-unknown"],
+    ledger: [{ task: "3b2698ac", horizon: [{ source: "audit.jsonl", state: "unmeasured", reason: "ledger not readable in this fixture", clock: "fleet server wallclock (Date.now at write)" }] }],
+    budget: TIMELINE_BUDGET,
+    work: { readBytes: 0, sourceReads: 0 } };
 }
+// the native event of an entry: the page types `event` as TraceEvent, a tool entry carries the NativeEvent
+const nativeOf = (e: TimelineEntry | undefined): NativeEvent | null =>
+  e?.event && (e.event.kind === "tool.call" || e.event.kind === "tool.result") ? e.event as NativeEvent : null;
 
 export async function runTimelineDom(sourceRoot: string, artifacts?: string,
   only: { widths?: readonly number[]; mutate?: TimelineMutant } = {}): Promise<TimelineDomResult[]> {
@@ -170,7 +205,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
   const wire = await timelineWireFixture();
   // `delayMs` holds the next answer back, `narrow` makes it a one-session variant — together they
   // stage the late answer of a window that has been closed meanwhile
-  const fx = { route404: false, timelineHits: 0, delayMs: 0, narrow: false };
+  const fx = { route404: false, timelineHits: 0, delayMs: 0, narrow: false, foreign: null as unknown, exceptions: [] as string[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("timeline DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -206,6 +241,11 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         return;
       }
       if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      // every uncaught exception and console error of the page — the owner's 11.10. symptom was a TypeError here
+      if (msg.method === "Runtime.exceptionThrown") { const d = (msg.params as { exceptionDetails?: { text?: string; exception?: { description?: string } } }).exceptionDetails;
+        fx.exceptions.push(String(d?.exception?.description ?? d?.text ?? "exception").slice(0, 200)); return; }
+      if (msg.method === "Runtime.consoleAPICalled" && (msg.params as { type?: string }).type === "error") {
+        fx.exceptions.push("console.error: " + JSON.stringify((msg.params as { args?: unknown[] }).args ?? []).slice(0, 200)); return; }
       if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
       if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
       const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
@@ -219,7 +259,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       if (p === "/api/timeline") {
         fx.timelineHits++;
         if (fx.route404) return void json(requestId, { error: "no such route" }, 404);
-        const body = fx.narrow ? { ...wire, sessions: wire.sessions.slice(0, 1), ledger: [] } : wire;
+        if (fx.foreign !== null) return void json(requestId, fx.foreign);
+        const one = wire.sessions[0]?.key;
+        const body = fx.narrow ? { ...wire, sessions: wire.sessions.slice(0, 1), entries: wire.entries.filter((e) => e.sessionKey === one), ledger: [] } : wire;
         if (fx.delayMs > 0) { setTimeout(() => void json(requestId, body), fx.delayMs); return; }
         return void json(requestId, body);
       }
@@ -342,16 +384,17 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
     };
     const results: TimelineDomResult[] = [];
     let targetId = "";
-    const expectedGaps = wire.sessions.reduce((n, s) => n + s.snapshot.gaps.length, 0);
+    const expectedGaps = wire.sessions.reduce((n, s) => n + s.gaps.length, 0);
     const claudeKey = wire.sessions[0]?.key ?? "";
     const codexKey = wire.sessions.find((s) => s.harness === "codex")?.key ?? null;
-    const errorCall = wire.sessions[0]?.snapshot.events.find((e) => e.kind === "tool.call" && e.status === "error");
+    const errorCall = nativeOf(wire.entries.find((e) => e.sessionKey === claudeKey && nativeOf(e)?.kind === "tool.call" && nativeOf(e)?.status === "error")) ?? undefined;
+    const reportId = wire.entries.find((e) => e.event?.kind.startsWith("report."))?.id ?? "";
     const pendingCallAt = T + 1000;
     for (const [width, height] of ([[1200, 900], [390, 844]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
       const mobile = width <= 700;
-      fx.route404 = false; fx.timelineHits = 0;
+      fx.route404 = false; fx.timelineHits = 0; fx.foreign = null; fx.exceptions = [];
       if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
       targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -369,6 +412,14 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       facts.open = { lens: r1.lens, zoom: r1.zoom, tracks: r1.tracks.length, marks: r1.marks.length, hits: fx.timelineHits };
       claims[TL_CLAIM.open] = r1.lens === "Zeitleiste" && r1.zoom === "overview" && r1.tracks.length === wire.sessions.length && fx.timelineHits === 1;
       await shot(`${width}-1-ueberblick`);
+      // --- 1b. the route's own page read as such: headers are tracks, entries are marks, nothing thrown
+      facts.wire = { state: r1.state, stateText: r1.stateText.slice(0, 160), tracks: r1.tracks.length, sessions: wire.sessions.length,
+        errorCall: r1.marks.some((m) => m.id === errorCall?.id), report: r1.marks.some((m) => m.id === reportId), exceptions: fx.exceptions.slice(0, 3) };
+      claims[TL_CLAIM.wire] = r1.state === null && r1.tracks.length === wire.sessions.length && wire.sessions.every((s) => r1.tracks.includes(s.key))
+        && !!errorCall && r1.marks.some((m) => m.id === errorCall.id) && r1.marks.some((m) => m.id === reportId) && fx.exceptions.length === 0;
+      // a lens that drew no track has nothing to walk through: the claims below are unmeasured, not
+      // red, and `open` and `wire` above already carry the red
+      if (!r1.tracks.length) { facts.unmeasured = "no track drawn: every later claim of this width is unmeasured"; results.push({ width, height, claims, facts }); continue; }
 
       // --- 2. one axis for all tracks: record-time order holds across tracks
       const byAt = [...r1.marks].sort((a, b) => a.at - b.at);
@@ -521,8 +572,9 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         && expectedRaw.includes("native:") && copiedText === expectedRaw
         && !(r6b.fields.Quelle ?? "").includes("native:") && !(r6b.fields.Quelle ?? "").includes("Bytes ") && (r6b.fields.Quelle ?? "").includes("Sidechain");
       claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
-        && (f.Argumente ?? "").startsWith("Synthetic tool.call side-1") && (f.Resultat ?? "").startsWith("Synthetic tool.result side-1")
-        && (f.Fehler ?? "").startsWith("Synthetic tool.result side-1") && (f.Zeitpunkte ?? "").includes("Aufzeichnung:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
+        // the page carries no detail texts (the detail door is not read): not delivered, and said so
+        && (f.Argumente ?? "").startsWith("nicht geliefert") && (f.Resultat ?? "").startsWith("nicht geliefert")
+        && (f.Fehler ?? "").startsWith("Fehler laut Quelle, Text nicht geliefert") && (f.Zeitpunkte ?? "").includes("Aufzeichnung:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
         && (f.Dauer ?? "").includes("Abstand der Aufzeichnungen") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").startsWith("claude") && (f.Quelle ?? "").includes("Sidechain")
         && pendingResult.startsWith("wartet");
       await click(".tliclose");
@@ -582,6 +634,27 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       facts.emptyOne = { routeNamed, text: r10.stateText.slice(0, 160) };
       claims[TL_CLAIM.emptyOne] = routeNamed === 1 && r10.stateText.startsWith("Die Zeitleiste hat noch keine Quelle: GET /api/timeline antwortet 404 (no such route).");
       await click("#shell-outcomes .shellclose");
+
+      // --- 10b. an answer of another form: the prototype wire this lens once read, then a page whose
+      // first session lacks its occupation — each one sentence naming the field, no track, nothing thrown
+      fx.route404 = false;
+      const before = fx.exceptions.length;
+      const proto = { schema: "fleet.timeline/v1", now: T + 3000, window: wire.window, ledger: [], horizon: [], next: null,
+        sessions: [{ key: claudeKey, harness: "claude", host: HOST, label: "claude", slot: 1, openedAt: T, project: null, program: null, snapshot: { events: [] } }] };
+      const { occupation: _gone, ...headless } = wire.sessions[0]!;
+      const foreign: { name: string; field: string; read?: NonNullable<Read> }[] = [];
+      for (const [name, body, field] of [["prototype", proto, "sessions[0].session"], ["missing", { ...wire, sessions: [headless, ...wire.sessions.slice(1)] }, "sessions[0].occupation"]] as const) {
+        fx.foreign = body;
+        await openLens();
+        foreign.push({ name, field, read: await read() });
+        await click("#shell-outcomes .shellclose");
+      }
+      fx.foreign = null;
+      facts.foreign = { cases: foreign.map((c) => ({ name: c.name, state: c.read?.state, text: c.read?.stateText.slice(0, 200), tracks: c.read?.tracks.length })),
+        exceptions: fx.exceptions.slice(before, before + 3) };
+      claims[TL_CLAIM.foreign] = foreign.every((c) => !!c.read && c.read.state === "unavailable" && c.read.tracks.length === 0 && c.read.marks.length === 0
+        && c.read.stateText.includes(`das Feld ${c.field} fehlt`) && (c.read.stateText.match(/\/api\/timeline/g) ?? []).length === 1)
+        && fx.exceptions.length === before;
 
       // --- 11. a late answer of a closed window: open (answer held back, one session), close, open
       // again (answer at once, every session), let the late answer land, repaint — still every session

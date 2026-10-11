@@ -111,8 +111,43 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 AUDIT_CMD='[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "audit skipped: could not establish node_modules"; exit 42; }; ./e2e-isolated.sh'
 AUDIT_Q=$(printf '%s' "$AUDIT_CMD" | sed "s/'/'\\\\''/g")
 
+# --- srv HEALTH (drops/1791710844000-systemlast-befund-2026-10-11.md) -------------------------------
+# On 2026-10-08 and 2026-10-11 srv grew to 2,4 and 1,9 GB, the 8 GB box swapped, and every request
+# took ~100 s: alive to has-session below, dead to every reader. No agent on the box could restart
+# it (the classifier refused kill-session and POST /api/deploy alike), so the remedy lives here.
+# Every FLEET_WATCHDOG_PROBE_S the loop reads srv's footprint (top's MEM: resident plus compressed)
+# and times GET / at the address .env gives the server; FLEET_WATCHDOG_STRIKES readings in a row
+# above FLEET_WATCHDOG_MEM_MB, or without an answer within FLEET_WATCHDOG_LATENCY_S, kill srv and
+# the branch below respawns it — the documented deploy path, lanes survive it. A reading that cannot
+# be taken is no strike, and the latency half counts only at an address that has answered once, so
+# a wrong address cannot become a restart loop. Two probe intervals of grace follow every respawn.
+# FLEET_WATCHDOG_SOCK names the tmux socket (a test instance's own); unset, the live one.
+# Like VERIFY_CMD, all of this loads only on `launchctl kickstart -k …/com.claude-fleet.watchdog`.
+WD_SOCK="${FLEET_WATCHDOG_SOCK:-claudefleet}"
+HEALTH_MEM_MB="${FLEET_WATCHDOG_MEM_MB:-1536}"
+HEALTH_LATENCY_S="${FLEET_WATCHDOG_LATENCY_S:-10}"
+HEALTH_EVERY_S="${FLEET_WATCHDOG_PROBE_S:-30}"
+HEALTH_STRIKES="${FLEET_WATCHDOG_STRIKES:-3}"
+health_url() {
+  ( cd "$FLEET_DIR" && if [ -f .env ]; then set -a; . ./.env >/dev/null 2>&1; set +a; fi
+    printf 'http://%s:%s/' "${FLEET_HOST:-127.0.0.1}" "${FLEET_PORT:-8790}" )
+}
+srv_pid() { tmux -L "$WD_SOCK" list-panes -t '=srv' -F '#{pane_pid}' 2>/dev/null | head -n 1; }
+# MEM as top prints it (`1935M`, `1.9G`, `512K`, a trailing +/-) in whole MB, or nothing
+srv_mem_mb() {
+  pid=$(srv_pid); [ -n "$pid" ] || return 0
+  top -l 1 -pid "$pid" -stats mem 2>/dev/null | tail -n 1 | awk '{ v = $1; sub(/[+-]$/, "", v)
+    if (v !~ /^[0-9.]+[BKMG]?$/) exit
+    u = substr(v, length(v)); n = v + 0
+    if (u == "G") n *= 1024; else if (u == "K") n /= 1024; else if (u == "B") n /= 1048576
+    printf "%d\n", n }'
+}
+strikes=0
+next_probe=0
+answered_url=""
+
 while true; do
-  if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
+  if ! tmux -L "$WD_SOCK" has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     #
@@ -203,7 +238,9 @@ while true; do
     #                           OLDEST unmeasured land, so a day that is never quiet is still measured
     # Either at 0 releases at once (the harnesses do this). Set them in .env, never in this line —
     # the line is the deploy path. Rule and proof: docs/verify-tiering.md §6.0b, server.ts#auditCadenceOf.
-    if tmux -L claudefleet new-session -d -s srv \
+    strikes=0
+    next_probe=$(( $(date +%s) + 2 * HEALTH_EVERY_S ))
+    if tmux -L "$WD_SOCK" new-session -d -s srv \
       "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=\${FLEET_VERIFY_TIMEOUT_MS:-480000} FLEET_VERIFY_WAIT_MS=\${FLEET_VERIFY_WAIT_MS:-2700000} FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
@@ -211,6 +248,29 @@ while true; do
       # success lines during the exact outage it should have documented
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv down and RESTART FAILED (tmux error)" >> "$FLEET_DIR/server.log"
       sleep 25 # back off — a broken tmux/deploy isn't fixed by hammering every 5s
+    fi
+  elif [ "$(date +%s)" -ge "$next_probe" ]; then
+    next_probe=$(( $(date +%s) + HEALTH_EVERY_S ))
+    why=""
+    mem=$(srv_mem_mb)
+    if [ -n "$mem" ] && [ "$mem" -gt "$HEALTH_MEM_MB" ]; then why="mem=${mem}MB over ${HEALTH_MEM_MB}MB"; fi
+    url=$(health_url)
+    curl -s -o /dev/null -m "$HEALTH_LATENCY_S" "$url"; rc=$?
+    if [ "$rc" -eq 0 ]; then answered_url="$url"
+    elif [ "$url" = "$answered_url" ]; then why="${why:+$why, }GET $url no answer within ${HEALTH_LATENCY_S}s (curl $rc)"; fi
+    if [ -z "$why" ]; then strikes=0
+    else
+      strikes=$((strikes + 1))
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv health strike $strikes/$HEALTH_STRIKES: $why" >> "$FLEET_DIR/server.log"
+      if [ "$strikes" -ge "$HEALTH_STRIKES" ]; then
+        pid=$(srv_pid)
+        echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv unhealthy $strikes probes in a row — killing srv (pid $pid), respawn follows" >> "$FLEET_DIR/server.log"
+        tmux -L "$WD_SOCK" kill-session -t '=srv' 2>/dev/null
+        # a thrashing or stopped bun can outlive its pane: only the pid read above, never a name
+        n=0; while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ $n -lt 10 ]; do sleep 1; n=$((n + 1)); done
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null; fi
+        strikes=0
+      fi
     fi
   fi
   sleep 5

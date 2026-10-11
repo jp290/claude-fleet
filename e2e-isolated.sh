@@ -1046,11 +1046,31 @@ cd "$DIR" || exit 1
 # the SAME env the srv spawn got — see the SRV_ENV comment above for why the two must be one string.
 # FLEET_E2E_SUITE rides in FRONT of it, not inside it: it is a harness-only label (the name every
 # trail row this run writes is stamped with, e2e/trail-emit.ts) and the server has no use for it.
-eval "PATH='$DIR:$PATH' FLEET_E2E_SUITE=isolated $SRV_ENV bun fleet-e2e.ts"
+# The runner writes scratch of its own beside $DIR, named by ITS pid, not by this wrapper's $$:
+# fleet-e2e-standin-<pid> (e2e/harness.ts#standInBin), fleet-e2e-stagelock-<pid> plus its .q/.owner/
+# .say files and fleet-e2e-fifo-<pid> plus fleet-e2e-fifo-order-<pid> (e2e/verify-queue.ts §2b, §2c),
+# fleet-e2e-gaprepo-<pid> (e2e/restart.ts) and fleet-e2e-ratelimit-<pid> (e2e/steward-core.ts). Nobody removed them: 683 standin dirs on
+# 2026-10-11, and a full TMPDIR killed a gate on 2026-10-07 (fcd441a9). The pid comes from the
+# runner's own shell: `exec` keeps both its pid and its ppid, which e2e/verify-queue.ts reads as
+# this wrapper's lock pid.
+RUNNER_PID_FILE="${TMPDIR:-/tmp}/fleet-e2e-runnerpid-$$"
+eval "PATH='$DIR:$PATH' FLEET_E2E_SUITE=isolated $SRV_ENV sh -c 'echo \$\$ > \"\$0\"; exec bun fleet-e2e.ts' '$RUNNER_PID_FILE'"
 code=$?
 
 reap_socket_panes "$SOCK"
 tmux -L "$SOCK" kill-server 2>/dev/null
-# unique-per-run DIR: clean up on success, keep for post-mortem on failure
-if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi
+# the runner's scratch goes on EVERY verdict: the post-mortem a red run keeps is $DIR, not these
+_runner_pid=$(cat "$RUNNER_PID_FILE" 2>/dev/null); rm -f "$RUNNER_PID_FILE"
+case "$_runner_pid" in
+  ''|*[!0-9]*) echo "runner scratch NOT removed: no runner pid in $RUNNER_PID_FILE" ;;
+  *) _rt="${TMPDIR:-/tmp}"
+     rm -rf "$_rt/fleet-e2e-standin-$_runner_pid" "$_rt/fleet-e2e-gaprepo-$_runner_pid" \
+       "$_rt/fleet-e2e-ratelimit-$_runner_pid" "$_rt/fleet-e2e-stagelock-$_runner_pid" \
+       "$_rt/fleet-e2e-stagelock-$_runner_pid".* "$_rt/fleet-e2e-fifo-$_runner_pid" \
+       "$_rt/fleet-e2e-fifo-$_runner_pid".* "$_rt/fleet-e2e-fifo-order-$_runner_pid" ;;
+esac
+# unique-per-run DIR: clean up on success, keep for post-mortem on failure. $DIR.worktrees is the
+# same instance: the server's lanes land next to their repo (server.ts#createWorktree), 35 MB in a
+# four-module run of 2026-10-11, and nothing else ever removed it on a green run.
+if [ "$code" = 0 ]; then rm -rf "$DIR" "$DIR.worktrees"; else echo "kept test instance for inspection: $DIR"; fi
 exit $code

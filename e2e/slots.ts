@@ -8115,7 +8115,7 @@ export const KEEP_MUTANTS: readonly KeepMutant[] = [
     file: "src/composer.ts", needle: `send.setAttribute("aria-disabled", String(orphan));`, with: `send.setAttribute("aria-disabled", "false");` },
 ];
 export interface ComposerKeepDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
-export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: KeepMutant; artifacts?: string } = {}): Promise<ComposerKeepDomResult[]> {
+export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: KeepMutant; artifacts?: string; widths?: readonly (390 | 1440)[] } = {}): Promise<ComposerKeepDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-keep-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   const m = only.mutate, artifacts = only.artifacts;
@@ -8258,6 +8258,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
     const results: ComposerKeepDomResult[] = [];
     for (const [width, height] of [[1440, 900], [390, 844]] as const) {
       if (m && m.width !== width) continue;
+      if (only.widths && !only.widths.includes(width)) continue;
       const runs = (step: KeepStep) => !m || m.step === step;
       shotIndex = 0;
       const claims: Record<string, boolean> = {};
@@ -10898,7 +10899,7 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
 // dequeue, and an Esc marker arriving as meta.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
-export async function runBundleChatDom(sourceRoot: string, artifacts?: string): Promise<BundleChatDomResult[]> {
+export async function runBundleChatDom(sourceRoot: string, artifacts?: string, widths?: readonly (1200 | 390)[]): Promise<BundleChatDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-bundle-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
@@ -11015,6 +11016,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
     const results: BundleChatDomResult[] = [];
     let targetId = "";
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      if (widths && !widths.includes(width)) continue;
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
@@ -11161,7 +11163,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string): 
 // composer's "Senden nimmt sie mit", and both gone once the row no longer carries the field.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface HeldDeliveriesDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
-export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: string): Promise<HeldDeliveriesDomResult[]> {
+export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: string, widths?: readonly (1200 | 390)[]): Promise<HeldDeliveriesDomResult[]> {
   const scratch = resolve(tmpdir(), `fleet-held-dom-${process.pid}-${crypto.randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
@@ -11263,6 +11265,7 @@ export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: strin
     const results: HeldDeliveriesDomResult[] = [];
     let targetId = "";
     for (const [width, height] of [[1200, 900], [390, 844]] as const) {
+      if (widths && !widths.includes(width)) continue;
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];

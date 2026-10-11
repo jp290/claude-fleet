@@ -582,6 +582,35 @@ const IN_SOURCE = SOURCE_DIR === ROOT;
     `${stagers.length} stagers; no-runner=[${noRunner}] no-exit=[${noExit}]`);
 }
 
+{
+  // fcd441a9: the runner's own scratch (standin, stagelock, gaprepo) is named by the RUNNER's pid,
+  // and until 2026-10-11 nothing removed it — 683 standin dirs, and a full TMPDIR killed a gate on
+  // 2026-10-07. The wrapper learns that pid from the runner's shell and removes the three after the
+  // run on EVERY verdict: between `code=$?` and the green/red retention line, never inside it.
+  // Code lines only, continuations joined, so a commented-out removal is a removal that is gone.
+  const iso = read("e2e-isolated.sh").replace(/\\\n\s*/g, " ").split("\n")
+    .filter((l) => l.trim() && !l.trim().startsWith("#")).join("\n");
+  const launchAt = iso.search(/^eval "[^\n]*'echo \\\$\\\$ > \\"\\\$0\\"; exec bun fleet-e2e\.ts' '\$RUNNER_PID_FILE'"$/m);
+  const codeAt = iso.indexOf("\ncode=$?\n", launchAt);
+  const retainAt = iso.indexOf(`if [ "$code" = 0 ]; then rm -rf "$DIR"`, codeAt);
+  const removedAt = (kind: string) => {
+    const m = new RegExp(`^.*\\brm -rf\\b[^\\n]*"\\$_rt/fleet-e2e-${kind}-\\$_runner_pid"`, "m").exec(iso.slice(codeAt));
+    return m ? codeAt + m.index : -1;
+  };
+  const kinds = { standin: removedAt("standin"), stagelock: removedAt("stagelock"), gaprepo: removedAt("gaprepo"), fifo: removedAt("fifo") };
+  pin("e2e-isolated.sh records its runner's pid and removes that run's standin/stagelock/gaprepo scratch after the run, on every verdict",
+    launchAt > 0 && codeAt > launchAt && retainAt > codeAt
+      && Object.values(kinds).every((at) => at > codeAt && at < retainAt),
+    JSON.stringify({ launchAt, codeAt, retainAt, ...kinds }));
+  // The age half is scratch-reap.sh's (MAIN answer to fcd441a9, clarification dbdbecc3): a kept red
+  // instance falls after FLEET_E2E_SCRATCH_RETENTION_H (default 48), and only because the wrapper
+  // calls it at START, before its own runner — a wrapper that stops calling it keeps every red run.
+  const reapAt = iso.search(/^\[ -x "\$SRC\/scratch-reap\.sh" \] && "\$SRC\/scratch-reap\.sh" "\$\{TMPDIR:-\/tmp\}"$/m);
+  const retention = /^RETENTION_H="\$\{FLEET_E2E_SCRATCH_RETENTION_H:-(\d+)\}"$/m.exec(read("scratch-reap.sh"))?.[1] ?? null;
+  pin("e2e-isolated.sh calls scratch-reap.sh at start, before its runner, and scratch-reap.sh ages a kept instance out after FLEET_E2E_SCRATCH_RETENTION_H (default 48)",
+    reapAt > 0 && launchAt > reapAt && retention === "48", JSON.stringify({ reapAt, launchAt, retention }));
+}
+
 // ================================================================================================
 // 2. Port bands — the table in e2e-isolated.sh against the wrappers that claim a band
 // ================================================================================================

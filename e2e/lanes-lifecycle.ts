@@ -498,14 +498,14 @@ async function snapshotTruthChecks(): Promise<void> {
   check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
     !wired(boardCode.replace(/instanceSource && !helpers\.size/, "false")));
 
-  // DOM — three pages per width (snapshotBoardDom below): runs in e2e/dom.ts
+  // DOM — two pages per width, four in the mutant mode (snapshotBoardDom below): runs in e2e/dom.ts
 }
 
 // THE SNAPSHOT BOARD IN A REAL BROWSER (the rig of instanceBandDom, fed with the board's wire):
 // the built bundle behind a fixture origin; three loads per width (1200×900, 390×844) — a snapshot
 // with a carried binding, a snapshot whose carried binding cannot be read, and the live fleet.
 interface SnapshotPageFacts { rowText: string; tiRow: { tone: string | null; state: string | null; text: string } | null; helperText: string | null; helperTitle: string | null; repoRows: number; rights: string; brief: string | null; briefLen: number }
-export async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] }> {
+export async function snapshotBoardDom(sourceRoot: string, opts: { mutants?: boolean } = {}): Promise<{ views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts | null; mutant: SnapshotPageFacts | null } }[] }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
@@ -623,14 +623,15 @@ export async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { s
       })()`);
     };
     const carriedMain = { slot: 11, openedAt: 1000, sessionId: null, boundAt: 2 };
-    const views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts; mutant: SnapshotPageFacts } }[] = [];
+    const views: { size: string; pages: { carried: SnapshotPageFacts; unknown: SnapshotPageFacts; live: SnapshotPageFacts | null; mutant: SnapshotPageFacts | null } }[] = [];
     for (const [width, height, mobile] of [[1200, 900, false], [390, 844, true]] as const) {
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
       const source = { head: S, branch: "fleet/snapshot", dirty: 0, measuredAt: 1, target: { branch: "overhaul", head: "d".repeat(40), ahead: 2 } };
       const carried = await load(source, [program(carriedMain)]);
       const unknown = await load(source, [program({ sessionId: null })]);
-      const mutant = await load(source, [program(carriedMain)], true);
-      const live = await load(undefined, [program(undefined)]);
+      // the mutant and the live page only prove the claims above CAN fail: e2e/dom.ts's mutant mode
+      const mutant = opts.mutants ? await load(source, [program(carriedMain)], true) : null;
+      const live = opts.mutants ? await load(undefined, [program(undefined)]) : null;
       views.push({ size: `${width}x${height}`, pages: { carried, unknown, mutant, live } });
     }
     return { views };
@@ -640,11 +641,11 @@ export async function snapshotBoardDom(sourceRoot: string): Promise<{ views: { s
 }
 
 // THE BAND IN A REAL BROWSER: the real client bundle behind a fixture origin (the rig of
-// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Three loads per width
-// (900 × 700, 390 × 844): the band with long names, the same with segments that cannot shrink
-// (nowrap), and an /api/sessions without instance.source. A browser that cannot run is the PROBE line — red, never a skip.
+// e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Two loads per width
+// (900 × 700, 390 × 844): the band with long names and an /api/sessions without instance.source;
+// the mutant mode adds the same band with segments that cannot shrink (nowrap). A browser that cannot run is the PROBE line — red, never a skip.
 interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][] }
-export async function instanceBandDom(sourceRoot: string): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[]; expected: string }> {
+export async function instanceBandDom(sourceRoot: string, opts: { mutants?: boolean } = {}): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts | null; live: BandDomFacts }[]; expected: string }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
@@ -719,10 +720,11 @@ export async function instanceBandDom(sourceRoot: string): Promise<{ views: { si
           lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth,
           boxes: [r, lr].filter(Boolean).map((x) => [x.left, x.right, x.top, x.bottom].map((n) => Math.round(n * 100) / 100)) }; })()`);
     };
-    const views: { size: string; real: BandDomFacts; mutant: BandDomFacts; live: BandDomFacts }[] = [];
+    const views: { size: string; real: BandDomFacts; mutant: BandDomFacts | null; live: BandDomFacts }[] = [];
     for (const [width, height, mobile] of [[900, 700, false], [390, 844, true]] as const) {
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
-      const real = await load(indexHtml, source), mutant = await load(mutantHtml, source), live = await load(indexHtml, undefined);
+      // the unshrinkable mutant only proves the band claim CAN fail: e2e/dom.ts's mutant mode
+      const real = await load(indexHtml, source), mutant = opts.mutants ? await load(mutantHtml, source) : null, live = await load(indexHtml, undefined);
       views.push({ size: `${width}x${height}`, real, mutant, live });
     }
     return { views, expected };

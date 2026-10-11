@@ -710,6 +710,21 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   sonst geschieht nichts (Owner-Tür: 409 `setting-changed`). Ein Warm-Turn wird nur in einen als leer
   gelesenen Composer getippt. Weitere Ablehnungen beim Einschalten: 409 `steward`, `lane`, `game-maker`
   (ausgenommen) und `no-threshold`. Gemessen in `e2e/slots.ts#runKeepCache`.
+- **Der Default-Warm-Turn gebundener MAINs** (seit 2026-10-11, Owner 10.10.): ohne jeden Schalter hält
+  derselbe Tick eine claude-Program-MAIN mit lebender Bindung und die Orchestratorin (der eine Slot,
+  auf den die Rollenadresse `orchestrator` auflöst) warm (`server.ts#keepCacheBound`,
+  `#keepCacheBoundDecision`): `keepCacheIdleMin` (Default 50) Minuten nach dem letzten Modellaufruf und
+  vor 60 min ein kurzer Turn, der nichts über ihren Stand sagt („[fleet] Cache warmhalten. Antworte nur
+  mit „ok" …"), über dieselben Zustellgates und denselben Composer-Check wie der Owner-Schalter. Er
+  warmt nur — keine Schwelle, keine Nachfolge, kein `keepCacheWork`. Keinen Turn gibt es bei Lanes,
+  codex/pi, dem Steward, einer 5-min-Cache-Stufe (`cache-5m`), nach einer Kompaktierung (`compacted`),
+  über `KEEP_CACHE_WARM_MAX` und über dem Stundendeckel (`hour-cap`, `FLEET_KEEP_WARM_PER_HOUR`, Default 2).
+  Abschalten je Belegung: `PATCH … {warmBound:false}` (400 `bad-warm-bound` für Nicht-Booleans); er
+  fährt mit der übrigen Einstellung durch die Owner-Tür-Nachfolge. Die succession facts tragen dann
+  `mode: "bound"`, `hourCap`, `warmLastHour`; die Zeile in `GET /api/sessions` trägt
+  `keepCache {at, act, outcome, n}` (letzter Akt, Warm-Turns seit Boot), fehlt ohne Akt. Hintergrund:
+  12 von 12 Auto-Kompaktierungen dieses Hosts begannen 53–54 min nach dem letzten Modellaufruf, im
+  Leerlauf. Gemessen in `e2e/slots.ts#runKeepCache` (G).
 - **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
   scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
   der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und
@@ -2988,7 +3003,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   subject}], unknown: []}`, **neueste zuerst**. `kind` ist genau eines von `attention-answer` ·
   `fleet-report` · `audit-red` · `ambient-land` · `card-verdict` · `text-proposal` (der Owner hat einen
   Textvorschlag DIESES Programs bestätigt oder abgelehnt; `subject` ist der Vorschlag mit `status` und
-  `decisionReason`, §program-text) · `owner-input` (eigener Absatz unten). `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
+  `decisionReason`, §program-text) · `owner-input` · `compaction` (je ein eigener Absatz unten). `subject` ist die aufgelöste Zeile selbst (Attention- bzw.
   Report-Zeile) oder `null`; löst ein `ref` nicht mehr auf, steht daneben eine Zeile in `unknown`
   (`entry <id> names a <kind> row that is no longer present (retention)`) — beide Zielarten sind
   beschnittene Enden (`pruneAttention`, `pruneFleetReports`), „der Zeiger hat seine Zeile überlebt"
@@ -3061,6 +3076,19 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Branches über alle Vorgängerinnen, wörtlich, älteste zuerst; über 8000 Zeichen bleiben die ÄLTESTEN
   ganzen Einträge draußen, und eine Zeile nennt ihre Zahl. Ohne Eingaben fehlt der Block, der Brief
   bleibt bytegleich. Der allgemeine Inbox-Hinweis (60-s-Tick) zählt `owner-input` mit.
+- **`compaction` — Claude hat den Kontext einer Lane dieses Programs oder seiner MAIN kompaktiert**
+  (seit 2026-10-11, Owner 10.10.). Quelle ist derselbe Harvester: die Zeile
+  `{"type":"system","subtype":"compact_boundary","compactMetadata":{trigger, preTokens, postTokens, …}}`,
+  die Claude Code bei jeder Kompaktierung schreibt (`server.ts#noteCompaction`). Sie landet an drei
+  Stellen: an der Belegung (`Slot.compaction`, in `GET /api/sessions` als `compaction {at, trigger,
+  preTokens, postTokens, idle}`, fehlt ohne Kompaktierung), als Zeile im Ledger `streams/compactions.jsonl`
+  und als Inbox-Zeiger — für eine Lane an ihr aktives Program, für eine gebundene MAIN an jedes ihrer
+  Programs. `subject` ist `{slot, openedAt, sessionId, role, at, trigger, preTokens, postTokens, idle}`;
+  `idle` heißt, Claude hat daneben „Compacted while idle, before the prompt cache expired" geschrieben.
+  Die Fortsetzungs-Zusammenfassung (`isCompactSummary:true`, „This session is being continued from a
+  previous conversation …") ist weder Prompt-Historie noch `owner-input`. Der Füllstand liest nach einer
+  Kompaktierung `postTokens`, bis ein echter Modellaufruf folgt (`server.ts#readClaudeTail`). Eine
+  Kompaktierung ist keine Lese-Quittung: die Session hält eine Zusammenfassung, gelesen hat sie nichts.
 - **Und `audit-red` tippt NIE in eine Pane** (`server.ts#nudgeableUnread`). Das ist der Zweck des
   Kinds: ein rotes Audit hört auf, ein Paste zu sein, und die gebundene MAIN findet es beim nächsten
   `GET /api/self/inbox`. Der Inbox-Nudge zählt darum nur die übrigen Kinds und **sagt es in seinem

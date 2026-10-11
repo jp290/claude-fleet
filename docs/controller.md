@@ -337,7 +337,9 @@ wird mit 409 `busy` abgewiesen. Ungebundene Sessions, die Orchestratorin und sei
 (Program-Record im Moment des Kills, Bindungsschnitt), und ihre stehende Übergabe reist wörtlich als
 Abschnitt hinter dem Founding-Brief — der Record gilt, wo beide sich widersprechen. Seit 2026-10-11
 gilt das auch für `POST /api/self/succeed` der Standard-Program-MAIN (`server.ts#selfStandingHandoverLines`);
-vorher kam die stehende Übergabe auf der Self-Tür nicht an. Lane, Game-Maker
+vorher kam die stehende Übergabe auf der Self-Tür nicht an. Auf der ungebundenen Schiene der Self-Tür
+wird sie seit demselben Tag zum Kanal des Linien-Records, wenn der Body weder `intent` noch `pointer`
+noch `carry` nennt (ein Body-Kanal gewinnt ganz), und der Brief nennt ihre Schreibzeit. Lane, Game-Maker
 und Steward antworten mit benanntem 409 (`reason`) und behalten ihre eigene Schiene. Die
 Schwellen-Hinweise der ungebundenen und der Standard-Program-Schiene nennen die stehende Übergabe als
 Alternative, wenn gerade Arbeit läuft; steht eine frische (der Transkript-Rest seit ihr erreicht eine
@@ -421,6 +423,8 @@ Owner-Schalter keepCache (`server.ts#tickKeepCache`, `docs/self-api.md` §keepCa
 gemessenen Stunde wird eine ruhende Session über ihrer Schwelle ohne eigenen Turn nachgefolgt oder,
 solange Arbeit absehbar ist, mit einem kurzen Turn warm gehalten. Einen laufenden Subagenten liest
 auch er nicht; solange einer läuft, ruht die Pane nicht, und keiner der beiden Akte greift.
+Ohne Schalter warmt derselbe Tick eine gebundene claude-Program-MAIN und die Orchestratorin nach
+50 min Ruhe mit einem kurzen Turn, abschaltbar je Belegung (`docs/self-api.md` §Default-Warm-Turn).
 
 ## Kontext-Hinweis des Servers
 

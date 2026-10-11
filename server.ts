@@ -170,7 +170,7 @@ import {
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
-  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom, type LaneStandNudged, laneStandNudgedFrom, type SlotPlan, slotPlanFrom,
+  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom, type SlotCompaction, compactionFrom, type LaneStandNudged, laneStandNudgedFrom, type SlotPlan, slotPlanFrom,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -2678,6 +2678,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   codexDisconnectSeenAt: null,
   sleeping: null,
   standingHandover: null,
+  compaction: null,
   laneStandNudged: null,
   plan: null,
   history: [],
@@ -6246,11 +6247,11 @@ function stateSnapshot(): string {
     memoryGrant?: MemoryGrant;
     reportDelegate?: ReportDelegate;
     handover?: HandoverSetting;
-    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; compaction?: SlotCompaction; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.memoryGrant ? { memoryGrant: s.memoryGrant } : {}), ...(s.reportDelegate ? { reportDelegate: s.reportDelegate } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -10104,6 +10105,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.codexFirstTurn = null;
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.standingHandover = null; // ...and has written no handover of its own yet
+  s.compaction = null; // ...and has been compacted never
   s.laneStandNudged = null; // ...and has been reminded of no stand
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
@@ -10336,6 +10338,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.codexFirstTurn = null;
   s.sleeping = null;
   s.standingHandover = null;
+  s.compaction = null;
   s.laneStandNudged = null;
   s.plan = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
@@ -10789,7 +10792,7 @@ type SendPath =
   | "backlog-nudge"     // the open-backlog reminder
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "stand-nudge"       // the one-line reminder that a lane's stand is behind its commits (tickLaneStand)
-  | "cache-warm"        // one short turn that keeps an owner-set session's prompt cache warm (tickKeepCache)
+  | "cache-warm"        // one short turn that keeps a session's prompt cache warm — owner switch or bound default (tickKeepCache)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
   // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
   | "rate-limit-resume";
@@ -10842,7 +10845,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "backlog-nudge": "Backlog-Erinnerung",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
   "stand-nudge": "Stand-Erinnerung einer Lane",
-  "cache-warm": "Cache-Warmhalten (Owner-Einstellung dieser Session)",
+  "cache-warm": "Cache-Warmhalten (keepCache)",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
   "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
 };
@@ -13782,8 +13785,14 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       return json({ error: `this session is Program-MAIN of ${bound.length} active programs and ${bound.filter((p) => isGameMaker(p)).map((p) => p.id).join(", ")} is game-maker — a game-maker Program succeeds alone; the owner must move the other bindings first` }, 409);
     const gameMaker = bound.length === 1 && isGameMaker(bound[0]!);
     const handoffReady = gameMaker ? await handoffCommittedAfterOpen(s) : null;
-    const pointerCommitted = bound.length === 0 && channel.pointer !== null
-      ? await lineagePointerCommitted(predecessorIdentity.cwd, channel.pointer) : null;
+    // THE STANDING HANDOVER IS THE CHANNEL when the body names none (Orchestratorin, 11.10.: handover
+    // written, then succeed with model/effort only — the line record came out with intent and pointer
+    // null). The generic rail reads it as the owner door does (handleOwnerSucceed); a body channel
+    // or a carry still wins, whole, so the two never mix.
+    const standing = bound.length === 0 && !namesChannel && carry === null ? liveStandingHandover(s) : null;
+    const lineChannel: LineageChannel = standing ? { intent: standing.intent, pointer: standing.pointer } : channel;
+    const pointerCommitted = bound.length === 0 && lineChannel.pointer !== null
+      ? await lineagePointerCommitted(predecessorIdentity.cwd, lineChannel.pointer) : null;
     // Git — and, on the Standard rail, the body read above — is an external await. Owner
     // kill/recycle is allowed while one runs, but that new occupant cannot inherit this request.
     if (!sameSuccessionOccupant(s, predecessorIdentity))
@@ -13820,8 +13829,10 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       if (checkpoint) return json({ error: checkpoint }, 409);
       return await succeedProgramMain(bound[0]!, s, label, carry, spawn, predecessorIdentity, bound.slice(1));
     }
-    return await succeedGeneric(s, { label, carry, channel, spawn, predecessorIdentity,
-      memoryGrant: body?.memoryGrant, appendix: null, beforeKill: null });
+    return await succeedGeneric(s, { label, carry, channel: lineChannel, spawn, predecessorIdentity,
+      memoryGrant: body?.memoryGrant,
+      appendix: standing ? `--- Der Übergabetext oben ist die stehende Übergabe deiner Vorgängerin vom ${new Date(standing.at).toISOString()} (POST /api/self/handover) ---` : null,
+      beforeKill: null });
   } finally {
     successionInflight.delete(identity);
   }
@@ -16748,12 +16759,18 @@ interface InboxJoinCtx {
   auditRow: (at: number) => Promise<Record<string, unknown> | null>;
   adjudication: (at: number) => Promise<AuditAdjudication | undefined>;
   ownerInput: (id: string) => Promise<OwnerInputRow | null>;
+  compaction: (id: string) => Promise<CompactionRow | null>;
 }
 function inboxJoinCtx(): InboxJoinCtx {
   let rows: Map<number, Record<string, unknown>> | null = null;
   let judged: Map<number, AuditAdjudication> | null = null;
   let typed: Map<string, OwnerInputRow> | null = null;
+  let compacted: Map<string, CompactionRow> | null = null;
   return {
+    compaction: async (id) => {
+      if (!compacted) compacted = new Map((await compactionRows()).map((r) => [r.id, r]));
+      return compacted.get(id) ?? null;
+    },
     ownerInput: async (id) => {
       if (!typed) typed = new Map((await ownerInputRows()).map((r) => [r.id, r]));
       return typed.get(id) ?? null;
@@ -16797,6 +16814,14 @@ async function inboxSubject(e: ProgramInboxEntry, ctx: InboxJoinCtx, program: Pr
       ? { subject: { slot: row.slot, openedAt: row.openedAt, sessionId: row.sessionId, at: row.at,
         branch: row.branch, text: row.text }, unknown: null }
       : { subject: null, unknown: `entry ${e.id} names an owner input no longer on the ledger (retention)` };
+  }
+  // a compaction, joined from the ledger row the entry names: whose context, when, before and after
+  if (e.kind === "compaction") {
+    const row = await ctx.compaction(e.ref);
+    return row
+      ? { subject: { slot: row.slot, openedAt: row.openedAt, sessionId: row.sessionId, role: row.role, at: row.at,
+        trigger: row.trigger, preTokens: row.preTokens, postTokens: row.postTokens, idle: row.idle }, unknown: null }
+      : { subject: null, unknown: `entry ${e.id} names a compaction no longer on the ledger (retention)` };
   }
   if (e.kind === "ambient-land") return await ambientLandSubject(e);
   const row: AttentionRequest | FleetReport | undefined = e.kind === "attention-answer"
@@ -23719,14 +23744,23 @@ async function tickHarvest(): Promise<void> {
       const composed = (recentComposed.get(s.id) ?? []).filter((e) => Date.now() - e.ts < COMPOSED_TTL);
       recentComposed.set(s.id, composed);
       let dirty = false;
+      const boundaries: CompactBoundary[] = [];
+      let idleNotice = false;
       for (const line of lines) {
         if (!line.trim()) continue;
         let e: TEntry | null;
+        let raw: unknown;
         try {
-          e = viewEntry(JSON.parse(line), 0);
+          raw = JSON.parse(line);
+          e = viewEntry(raw, 0);
         } catch {
           continue;
         }
+        const boundary = compactBoundaryOf(raw);
+        if (boundary) { boundaries.push(boundary); continue; }
+        if (isCompactIdleNotice(raw)) { idleNotice = true; continue; }
+        // Claude's continuation summary after a compaction: its own text in a user line, never a prompt
+        if ((raw as { isCompactSummary?: unknown }).isCompactSummary === true) continue;
         if (e?.role !== "user") continue;
         for (const b of e.blocks) {
           if (b.t !== "text") continue;
@@ -23742,10 +23776,72 @@ async function tickHarvest(): Promise<void> {
         }
       }
       if (dirty) saveHistory(s);
+      for (const b of boundaries)
+        await noteCompaction(s, b, idleNotice).catch((err: unknown) => logError("noteCompaction", err));
+      // the notice can land one harvest step after its boundary: it belongs to the newest one seen
+      if (!boundaries.length && idleNotice && s.compaction && s.compaction.openedAt === s.openedAt
+        && s.compaction.sessionId === s.sessionId && !s.compaction.idle) {
+        s.compaction = { ...s.compaction, idle: true };
+        saveState();
+      }
     }
   } finally {
     harvestBusy = false;
   }
+}
+
+// --- CLAUDE COMPACTION, SEEN AT THE TRANSCRIPT (owner 10.10.: „[Zitat entfernt]“
+// ). Claude writes one line
+// per compaction, measured on 14 real transcripts of this host (2026-10-11):
+//   {"type":"system","subtype":"compact_boundary","timestamp":…,"compactMetadata":{"trigger":"auto"|"manual",
+//    "preTokens":351703,"postTokens":7075,"durationMs":62764,…}}
+// followed by the continuation summary (a user line with isCompactSummary:true, "This session is being
+// continued from a previous conversation …") and, for 12 of the 12 auto ones, the informational notice
+// "Compacted while idle, before the prompt cache expired" — each began 53–54 min after the last model call.
+// The harvester sees every new line once, so it is the event; readClaudeTail reads the same boundary for
+// the fill. The event goes to three places: the occupant (Slot.compaction, on the sessions row), a ledger
+// row (streams/compactions.jsonl), and an inbox POINTER for the Program whose MAIN must know — a lane's
+// Program, or the Programs a compacted MAIN is bound to (the inbox it reads with state.sh --brief).
+// It is no read receipt: a compacted session has read nothing, it holds a summary.
+interface CompactBoundary { at: number; trigger: string; preTokens: number | null; postTokens: number | null }
+function compactBoundaryOf(raw: unknown): CompactBoundary | null {
+  const d = raw as { type?: unknown; subtype?: unknown; timestamp?: unknown; compactMetadata?: unknown } | null;
+  if (!d || d.type !== "system" || d.subtype !== "compact_boundary") return null;
+  const at = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
+  if (!Number.isFinite(at)) return null;
+  const m = (typeof d.compactMetadata === "object" && d.compactMetadata !== null ? d.compactMetadata : {}) as Record<string, unknown>;
+  const tok = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
+  return { at, trigger: typeof m.trigger === "string" && m.trigger ? m.trigger.slice(0, 40) : "unknown",
+    preTokens: tok(m.preTokens), postTokens: tok(m.postTokens) };
+}
+const isCompactIdleNotice = (raw: unknown): boolean => {
+  const d = raw as { type?: unknown; content?: unknown } | null;
+  return !!d && d.type === "system" && typeof d.content === "string" && d.content.startsWith("Compacted while idle");
+};
+const COMPACTION_FILE = `${STREAM_DIR}/compactions.jsonl`;
+// the Programs whose MAIN is told: a lane's own Program while active, the bound set of a MAIN
+function compactionPrograms(s: Slot): Program[] {
+  if (s.worktree) return programs.filter((p) => p.id === s.programId && p.status === "active");
+  return boundProgramsForMain(s);
+}
+async function noteCompaction(s: Slot, b: CompactBoundary, idle: boolean): Promise<void> {
+  if (!s.cwd) return;
+  const id = randomBytes(12).toString("hex");
+  const told = compactionPrograms(s);
+  s.compaction = { at: b.at, openedAt: s.openedAt, sessionId: s.sessionId, trigger: b.trigger,
+    preTokens: b.preTokens, postTokens: b.postTokens, idle, ledgerId: id };
+  await appendEventStrict(COMPACTION_FILE, { id, at: b.at, slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
+    role: positionRole(s), programIds: told.map((p) => p.id), trigger: b.trigger, preTokens: b.preTokens,
+    postTokens: b.postTokens, idle });
+  for (const program of told) appendProgramInbox(program, "compaction", id);
+  await saveStateNow();
+}
+interface CompactionRow { id: string; at: number; slot: number; openedAt: number; sessionId: string | null; role: string;
+  trigger: string; preTokens: number | null; postTokens: number | null; idle: boolean }
+async function compactionRows(): Promise<CompactionRow[]> {
+  const { rows } = await readLedger<Record<string, unknown>>(COMPACTION_FILE);
+  return rows.filter((r) => typeof r.id === "string" && typeof r.at === "number" && typeof r.slot === "number"
+    && typeof r.openedAt === "number" && typeof r.trigger === "string") as unknown as CompactionRow[];
 }
 
 // --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. The default route runs headless
@@ -26019,7 +26115,7 @@ function successionFacts(s: Slot): SuccessionFacts {
 // THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
 // {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean,
-// keepCacheIdleMin?: 5..55 in 5-steps}; null returns the threshold to the rail's env value. Every
+// keepCacheIdleMin?: 5..55 in 5-steps, warmBound?: boolean}; null returns the threshold to the rail's env value. Every
 // field is this occupant's and dies with it (Slot.handover).
 // The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
 function handoverView(s: Slot): Response {
@@ -26038,8 +26134,10 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   const hasNudge = has("nudge");
   const hasKeep = has("keepCache");
   const hasIdle = has("keepCacheIdleMin");
-  if (!hasPct && !hasNudge && !hasKeep && !hasIdle)
-    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache and/or keepCacheIdleMin" }, 400);
+  const hasWarm = has("warmBound");
+  if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasWarm)
+    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin and/or warmBound" }, 400);
+  if (hasWarm && typeof body.warmBound !== "boolean") return json({ refusal: "bad-warm-bound", error: "warmBound must be true or false" }, 400);
   if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
     return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
   if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
@@ -26056,6 +26154,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
     nudge: hasNudge ? body.nudge as boolean : cur?.nudge ?? true,
     keepCache: hasKeep ? body.keepCache as boolean : cur?.keepCache ?? false,
     keepCacheIdleMin: hasIdle ? body.keepCacheIdleMin as number : cur?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
+    warmBound: hasWarm ? body.warmBound as boolean : cur?.warmBound ?? true,
     setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
   };
   // the switch is refused where its act cannot happen, like a setting on another harness: the
@@ -26069,7 +26168,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   }
   // the fleet's own values are no setting: storing them would keep a record that says nothing
   s.handover = next.thresholdPct === null && next.nudge && !next.keepCache
-    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT ? null : next;
+    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT && next.warmBound ? null : next;
   // a CHANGED switch or duration is a new start for the tick's bookkeeping of this occupant (warm
   // turns, retry window); a save with the same values is none, or saving again and again would
   // reset the warm cap and keep a session warm without end
@@ -26130,19 +26229,22 @@ const KEEP_CACHE_RETRY_MS = 120_000;
 const KEEP_CACHE_OWN_TURN_MS = 600_000;
 type KeepCacheAct = "succeed" | "warm";
 interface KeepCacheLast { at: number; act: KeepCacheAct; outcome: string }
+// `warmAts`: the warm turns of the last hour (the bound default's hour cap); `warmTotal`: every warm
+// turn this occupant got since boot, the count its sessions row shows
 interface KeepCacheRun { openedAt: number; sessionId: string | null; warmTurns: number; lastWarmAt: number;
-  last: KeepCacheLast | null }
+  last: KeepCacheLast | null; warmAts: number[]; warmTotal: number }
 interface KeepCacheDecision { act: KeepCacheAct | null; reason: string; thresholdPct: number | null;
   lastUsageAt: number | null; dueAt: number | null; work: string[] }
-interface KeepCacheFacts extends KeepCacheDecision { idleMin: number; lifetimeMin: number; warmTurns: number;
-  warmMax: number; last: KeepCacheLast | null }
+interface KeepCacheFacts extends KeepCacheDecision { mode: KeepCacheMode; idleMin: number; lifetimeMin: number; warmTurns: number;
+  warmMax: number; last: KeepCacheLast | null; hourCap: number | null; warmLastHour: number }
 // process-local like migrateTried: a restart forgets the warm count rather than carrying automation
 // intent into a new process, and the next decision reads the transcript afresh
 const keepCacheRuns = new Map<number, KeepCacheRun>();
 function keepCacheRunOf(s: Slot): KeepCacheRun {
   const run = keepCacheRuns.get(s.id);
   if (run && run.openedAt === s.openedAt && run.sessionId === s.sessionId) return run;
-  const fresh: KeepCacheRun = { openedAt: s.openedAt, sessionId: s.sessionId, warmTurns: 0, lastWarmAt: 0, last: null };
+  const fresh: KeepCacheRun = { openedAt: s.openedAt, sessionId: s.sessionId, warmTurns: 0, lastWarmAt: 0, last: null,
+    warmAts: [], warmTotal: 0 };
   keepCacheRuns.set(s.id, fresh);
   return fresh;
 }
@@ -26155,6 +26257,63 @@ const keepCacheRunKey = (h: HandoverSetting | null): string =>
 // A warm turn in flight is typed only while the setting still reads exactly this.
 const keepCacheVersion = (h: HandoverSetting | null): string | null =>
   h?.keepCache ? `${h.keepCacheIdleMin}:${h.thresholdPct}` : null;
+
+// THE DEFAULT WARM TURN (owner 10.10. ~22:0x: „[Zitat entfernt]“
+// ). The
+// same tick, the same delivery gates and the same composer check as the owner's switch above, with
+// three differences, all of them narrower: it needs no switch, only a LIVE BINDING — a claude
+// Program-MAIN bound to an active Program, or the one slot the role address "orchestrator" resolves
+// to; it only ever WARMS (no threshold, no succeed, no foreseeable-work read: a bound MAIN is the
+// session the next owner or lane turn lands in); and it is capped per hour on top of the warm cap.
+// The owner switches it off per occupant with PATCH /api/slots/:id/handover {warmBound:false}, which
+// rides on to an owner-door successor with the rest of the setting (carryHandoverSetting).
+// WHY 50 MIN IS EARLY ENOUGH: on this host Claude compacted 12 of 12 idle sessions 53–54 min after their
+// last model call ("Compacted while idle, before the prompt cache expired", 14 transcripts, 2026-10-11);
+// the warm turn at the default 50 min plus one 60 s tick is planned before that (a busy or held pane can push it later). A session whose cache tier
+// reads 5 min, or that compacted after its last call, gets nothing: there is no cache left to keep.
+type KeepCacheMode = "owner" | "bound";
+// the hour cap: 2 fits the 50-min default twice into an hour and no more; FLEET_KEEP_WARM_PER_HOUR moves it
+const KEEP_CACHE_BOUND_PER_HOUR = Math.max(1, Number(process.env.FLEET_KEEP_WARM_PER_HOUR ?? 2) | 0);
+function keepCacheBound(s: Slot): boolean {
+  if (!s.cwd || s.worktree || s.label === STEWARD_LABEL || harnessOf(s.harness) !== CLAUDE_HARNESS) return false;
+  const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
+  if (own && !own.warmBound) return false;
+  return boundProgramsForMain(s).length > 0 || deliveryRecipient({ kind: "orchestrator" }) === s;
+}
+const keepCacheModeOf = (s: Slot): KeepCacheMode | null => liveKeepCache(s) ? "owner" : keepCacheBound(s) ? "bound" : null;
+const keepCacheBoundIdleMin = (s: Slot): number =>
+  s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.keepCacheIdleMin : KEEP_CACHE_IDLE_MIN_DEFAULT;
+// the version a decision of EITHER mode was made under; null = nothing may be typed any more
+function keepCacheVersionOf(s: Slot): string | null {
+  const mode = keepCacheModeOf(s);
+  return mode === "owner" ? `owner:${keepCacheVersion(liveKeepCache(s))}`
+    : mode === "bound" ? `bound:${keepCacheBoundIdleMin(s)}` : null;
+}
+const warmLastHour = (run: KeepCacheRun, now: number): number => run.warmAts.filter((t) => now - t < 3_600_000).length;
+function keepCacheBoundDecision(s: Slot, now: number): KeepCacheDecision {
+  const no = (reason: string, rest: Partial<KeepCacheDecision> = {}): KeepCacheDecision =>
+    ({ act: null, reason, thresholdPct: null, lastUsageAt: null, dueAt: null, work: [], ...rest });
+  if (!keepCacheBound(s)) return no("off");
+  if (s.sleeping) return no("asleep");
+  if (!s.sessionId) return no("unpinned");
+  const cache = deliveryCacheReading(s);
+  const lastUsageAt = cache.at;
+  if (lastUsageAt === null) return no("no-usage");
+  if (cache.ttlQuelle === "5m") return no("cache-5m", { lastUsageAt });
+  const compactedAt = ctxCache.get(s.id)?.compactedAt ?? null;
+  if (compactedAt !== null && compactedAt >= lastUsageAt) return no("compacted", { lastUsageAt });
+  const dueAt = lastUsageAt + keepCacheBoundIdleMin(s) * 60_000;
+  const facts = { lastUsageAt, dueAt };
+  if (now < dueAt) return no("before-duration", facts);
+  if (now >= lastUsageAt + KEEP_CACHE_LIFETIME_MIN * 60_000) return no("expired", facts);
+  const run = keepCacheRunOf(s);
+  if (run.lastWarmAt && lastUsageAt > run.lastWarmAt + KEEP_CACHE_OWN_TURN_MS) run.warmTurns = 0;
+  if (run.warmTurns >= KEEP_CACHE_WARM_MAX) return no("warm-cap", facts);
+  if (warmLastHour(run, now) >= KEEP_CACHE_BOUND_PER_HOUR) return no("hour-cap", facts);
+  return { act: "warm", reason: "bound", thresholdPct: null, lastUsageAt, dueAt, work: [] };
+}
+// what a bound session is told: that this is a warm turn and what to answer — nothing about its state
+const KEEP_CACHE_BOUND_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
 function keepCacheWork(s: Slot): string[] {
   const own = new Set(boundProgramsForMain(s).map((p) => p.id));
   return [
@@ -26193,11 +26352,21 @@ function keepCacheDecision(s: Slot, now: number): KeepCacheDecision {
   return { act: "warm", reason: "work-foreseeable", ...facts };
 }
 function keepCacheFacts(s: Slot, now: number): KeepCacheFacts | null {
-  const set = liveKeepCache(s);
-  if (!set) return null;
+  const mode = keepCacheModeOf(s);
+  if (!mode) return null;
   const run = keepCacheRunOf(s);
-  return { ...keepCacheDecision(s, now), idleMin: set.keepCacheIdleMin, lifetimeMin: KEEP_CACHE_LIFETIME_MIN,
-    warmTurns: run.warmTurns, warmMax: KEEP_CACHE_WARM_MAX, last: run.last };
+  const owner = mode === "owner";
+  return { ...(owner ? keepCacheDecision(s, now) : keepCacheBoundDecision(s, now)), mode,
+    idleMin: owner ? liveKeepCache(s)!.keepCacheIdleMin : keepCacheBoundIdleMin(s), lifetimeMin: KEEP_CACHE_LIFETIME_MIN,
+    warmTurns: run.warmTurns, warmMax: KEEP_CACHE_WARM_MAX, last: run.last,
+    hourCap: owner ? null : KEEP_CACHE_BOUND_PER_HOUR, warmLastHour: warmLastHour(run, now) };
+}
+// THE SESSIONS ROW'S HALF (letzter Zug und Zaehler): the last warm-or-succeed act this occupant got and
+// how many warm turns since boot — omitted while there is none, the 2 s poll's data-saver rule
+function keepCacheRowView(s: Slot): { at: number; act: KeepCacheAct; outcome: string; n: number } | null {
+  const run = keepCacheRuns.get(s.id);
+  if (!run || run.openedAt !== s.openedAt || !run.last) return null;
+  return { at: run.last.at, act: run.last.act, outcome: run.last.outcome.slice(0, 80), n: run.warmTotal };
 }
 function keepCacheWarmText(d: KeepCacheDecision, now: number): string {
   const idle = d.lastUsageAt === null ? "?" : Math.floor((now - d.lastUsageAt) / 60_000);
@@ -26233,18 +26402,19 @@ async function tickKeepCache(): Promise<void> {
   const now = Date.now();
   // the setting's version is taken WITH the decision: the warm text and the succeed both come from
   // `d`, so every later check asks about exactly the setting `d` was read under
-  const due: { s: Slot; d: KeepCacheDecision; run: KeepCacheRun; version: string | null }[] = [];
+  const due: { s: Slot; d: KeepCacheDecision; run: KeepCacheRun; version: string | null; mode: KeepCacheMode }[] = [];
   for (const s of slots) {
-    if (!liveKeepCache(s) || keepCacheInflight.has(s.id)) continue;
+    const mode = keepCacheModeOf(s);
+    if (!mode || keepCacheInflight.has(s.id)) continue;
     const run = keepCacheRunOf(s);
     if (run.last && now - run.last.at < KEEP_CACHE_RETRY_MS) continue;
-    const d = keepCacheDecision(s, now);
-    if (d.act) due.push({ s, d, run, version: keepCacheVersion(liveKeepCache(s)) });
+    const d = mode === "owner" ? keepCacheDecision(s, now) : keepCacheBoundDecision(s, now);
+    if (d.act) due.push({ s, d, run, version: keepCacheVersionOf(s), mode });
   }
   if (!due.length) return;
   keepCacheTickBusy = true;
   try {
-    for (const { s, d, run, version } of due) {
+    for (const { s, d, run, version, mode } of due) {
       const openedAt = s.openedAt;
       const sessionId = s.sessionId;
       await waitForKeepCacheTestLatch(String(s.id));
@@ -26252,7 +26422,7 @@ async function tickKeepCache(): Promise<void> {
       // could reach the pane — for a warm turn at the queue (beforeSend) and as the last question
       // before the paste (beforePaste), for a succession with the owner door's own questions up to
       // the kill. A switched-off or re-set session gets nothing.
-      const unwanted = (current: Slot): string | null => keepCacheVersion(liveKeepCache(current)) !== version
+      const unwanted = (current: Slot): string | null => keepCacheVersionOf(current) !== version
         ? `keepCache of slot ${s.id} was switched off or changed after the decision` : null;
       const stillSet = (current: Slot): void => {
         const why = unwanted(current);
@@ -26284,12 +26454,12 @@ async function tickKeepCache(): Promise<void> {
       // owner's own standing intent for this session, as a one-shot is (canDeliver's rule)
       if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
       const verdict = await canDeliver(s, { now, idleMs: MIGRATE_IDLE_MS, quietHours: false });
-      if (!verdict.ok || s.openedAt !== openedAt || s.sessionId !== sessionId || !liveKeepCache(s)) {
+      if (!verdict.ok || s.openedAt !== openedAt || s.sessionId !== sessionId || keepCacheModeOf(s) !== mode) {
         if (!verdict.ok && s.openedAt === openedAt)
           run.last = { at: now, act: "warm", outcome: `held: ${verdict.gate}${verdict.detail ? ` (${verdict.detail})` : ""}` };
         continue;
       }
-      const text = keepCacheWarmText(d, now);
+      const text = mode === "owner" ? keepCacheWarmText(d, now) : KEEP_CACHE_BOUND_TEXT;
       keepCacheInflight.add(s.id);
       void (async () => {
         try {
@@ -26316,6 +26486,8 @@ async function tickKeepCache(): Promise<void> {
             } });
           const sentAt = Date.now();
           run.warmTurns++;
+          run.warmTotal++;
+          run.warmAts = [...run.warmAts.filter((t) => sentAt - t < 3_600_000), sentAt];
           run.lastWarmAt = sentAt;
           run.last = { at: sentAt, act: "warm", outcome: `sent (${acceptance})` };
           s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
@@ -44192,6 +44364,7 @@ if (existsSync(STATE_FILE)) {
             transcript: (psl2 as { transcript: string }).transcript };
         // the standing handover comes back only for the occupation that wrote it (standingHandoverFrom)
         s.standingHandover = standingHandoverFrom((v as { standingHandover?: unknown }).standingHandover, s.openedAt);
+        s.compaction = compactionFrom((v as { compaction?: unknown }).compaction, s.openedAt);
         s.plan = slotPlanFrom((v as { plan?: unknown }).plan);
         s.laneStandNudged = laneStandNudgedFrom((v as { laneStandNudged?: unknown }).laneStandNudged, s.openedAt);
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
@@ -45722,7 +45895,10 @@ interface ApiErrorLine { at: number; text: string; kind: ApiStallKind; resetAt: 
 // and for "no assistant line in the tail" — neither is a stall anyone can act on.
 type DeliveryTtlSource = "1h" | "5m" | "codex" | "unknown";
 interface DeliveryCacheFact { at: number | null; ttlSec: number; ttlQuelle: DeliveryTtlSource }
-interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null; cache?: DeliveryCacheFact }
+// `compactedAt`: the newest compact_boundary in the tail when no real model call followed it (claude
+// only) — the fill is then Claude's own postTokens, and the cache the last call wrote is spent
+interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null; cache?: DeliveryCacheFact;
+  compactedAt?: number | null }
 // Positive source resolutions are cached separately: Pi needs one directory read + session-head
 // validation to find its timestamped filename, but after that an unchanged file must cost exactly
 // one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
@@ -45907,6 +46083,9 @@ function claudeLimitResetAt(text: string, at: number): number | null {
 //     41 %. The window did not empty; the last real turn still says what it holds.
 //   - the error round is decided by the LAST assistant line alone: a real reply after the error
 //     means the session moved on, and no older line may resurrect the stall.
+// And one for a compaction: a compact_boundary NEWER than every real usage line is the window now —
+// its postTokens, never the older usage, which counted a context that no longer exists. Without a
+// postTokens the numerator is null (unknown), not the pre-compaction number (noteCompaction).
 function readClaudeTail(file: string, size: number): ContextTail {
   const from = Math.max(0, size - CTX_TAIL_BYTES);
   let text: string;
@@ -45925,14 +46104,26 @@ function readClaudeTail(file: string, size: number): ContextTail {
   let apiError: ApiErrorLine | null = null;
   let lastUsageAt: number | null = null;
   let tier: DeliveryTtlSource | null = null;
+  let compactedAt: number | null = null;
+  let compacted = false;
   // every assistant line carries message.usage, so this one cheap filter finds both kinds of line
   for (let i = lines.length - 1; i >= 0 && (read === null || !decided || tier === null); i--) {
-    if (!lines[i].includes('"usage"')) continue;
+    const boundaryLine = lines[i].includes('"compact_boundary"');
+    if (!boundaryLine && !lines[i].includes('"usage"')) continue;
     let d: { type?: unknown; timestamp?: unknown; error?: unknown; isApiErrorMessage?: unknown;
       message?: { model?: unknown; usage?: unknown; content?: unknown } };
     try { d = JSON.parse(lines[i]) as typeof d; }
     catch { continue; } // torn line (the tail's first line is usually a fragment) — keep walking back
     if (typeof d !== "object" || d === null) continue;
+    if (boundaryLine && d.type === "system") {
+      const b = compactBoundaryOf(d);
+      if (b && read === null && !compacted) {
+        compacted = true;
+        compactedAt = b.at;
+        read = b.postTokens;
+      }
+      continue;
+    }
     const isError = d.isApiErrorMessage === true;
     if (!decided && d.type === "assistant") {
       decided = true;
@@ -45965,10 +46156,12 @@ function readClaudeTail(file: string, size: number): ContextTail {
       else if (typeof c.ephemeral_5m_input_tokens === "number" && c.ephemeral_5m_input_tokens > 0) tier = "5m";
     }
     // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
-    if (read === null) read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+    if (read === null && !compacted) read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+    // a compaction without postTokens leaves the numerator unknown; the walk goes on for the rest
+    if (compacted && read === null && decided && tier !== null && lastUsageAt !== null) break;
   }
   return { read, apiError, cache: { at: lastUsageAt, ttlSec: tier === "1h" ? 3600 : 300,
-    ttlQuelle: tier ?? "unknown" } };
+    ttlQuelle: tier ?? "unknown" }, compactedAt };
 }
 
 // Pi puts the timestamp in the filename, so the pinned UUID is a suffix rather than the whole
@@ -50116,6 +50309,15 @@ Bun.serve<WSData>({
             ...((): Record<string, unknown> => {
               const sc = successionRowView(s);
               return sc ? { succession: sc } : {};
+            })(),
+            // the newest Claude compaction of this occupant (noteCompaction) and the last keepCache act
+            // with its warm count (keepCacheRowView) — each omitted while there is none
+            ...(s.compaction && s.compaction.openedAt === s.openedAt ? { compaction: { at: s.compaction.at,
+              trigger: s.compaction.trigger, preTokens: s.compaction.preTokens, postTokens: s.compaction.postTokens,
+              idle: s.compaction.idle } } : {}),
+            ...((): Record<string, unknown> => {
+              const kc = keepCacheRowView(s);
+              return kc ? { keepCache: kc } : {};
             })(),
             // WHY THIS LANE IS STILL STANDING, in the actuator's own words — the sentence the
             // tick's next pass will decide on, through the one function it decides with

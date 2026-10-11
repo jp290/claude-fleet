@@ -16385,6 +16385,50 @@ async function ownerLaneInput(): Promise<void> {
         && !String(tokened.subject?.text).includes(laneToken),
       JSON.stringify(tokened?.subject?.text ?? null));
 
+    // A CLAUDE COMPACTION in the same lane (server.ts#noteCompaction): the three lines Claude writes, in
+    // the key set of a real compacted transcript of this host (2026-10-10, numbers copied, text not):
+    // the boundary, the continuation summary as a user line, and the idle notice — one chunk, so the
+    // summary has been read the moment the boundary shows up
+    const compactAt = Date.now() - 1_000;
+    const summaryText = `This session is being continued from a previous conversation that ran out of context. compaction probe ${process.pid}`;
+    const head = { isSidechain: false, sessionId, cwd: laneCwd, entrypoint: "cli", userType: "external", version: "2.1.200",
+      gitBranch: laneRow.worktree?.branch ?? "", slug: "compaction-probe" };
+    appendFileSync(transcript, `${JSON.stringify({ ...head, parentUuid: null, logicalParentUuid: crypto.randomUUID(),
+      type: "system", subtype: "compact_boundary", content: "Conversation compacted", isMeta: false, level: "info",
+      timestamp: new Date(compactAt).toISOString(), uuid: crypto.randomUUID(),
+      compactMetadata: { trigger: "auto", preTokens: 351703, postTokens: 7075, durationMs: 62764, cumulativeDroppedTokens: 344628 } })}\n`
+      + `${JSON.stringify({ ...head, parentUuid: crypto.randomUUID(), type: "user", isCompactSummary: true,
+        isVisibleInTranscriptOnly: true, promptId: crypto.randomUUID(), turnPosition: 0,
+        timestamp: new Date(compactAt - 5).toISOString(), uuid: crypto.randomUUID(), message: { role: "user", content: summaryText } })}\n`
+      + `${JSON.stringify({ ...head, parentUuid: crypto.randomUUID(), type: "system", subtype: "informational",
+        content: "Compacted while idle, before the prompt cache expired", isMeta: false, level: "notice",
+        timestamp: new Date(compactAt + 80).toISOString(), uuid: crypto.randomUUID() })}\n`);
+    type CompactionSubject = { slot?: number; role?: string; at?: number; trigger?: string; preTokens?: number | null;
+      postTokens?: number | null; idle?: boolean };
+    const compactionEntry = async (): Promise<(Entry & { subject?: CompactionSubject | null }) | undefined> =>
+      ((await selfInbox(mainToken)).view?.entries ?? []).find((e) => e.kind === "compaction") as
+        (Entry & { subject?: CompactionSubject | null }) | undefined;
+    try {
+      await until(async () => !!(await compactionEntry()), { timeoutMs: 20_000, what: "the compaction reaches the MAIN's inbox" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const compacted = await compactionEntry();
+    check("compaction: Claude's compact_boundary in a Program lane's transcript is a compaction entry in its MAIN's inbox — when, trigger, context before and after, idle",
+      !!compacted && compacted.subject?.slot === laneSlot && compacted.subject.role === "lane" && compacted.subject.at === compactAt
+        && compacted.subject.trigger === "auto" && compacted.subject.preTokens === 351703 && compacted.subject.postTokens === 7075
+        && compacted.subject.idle === true,
+      JSON.stringify(compacted ?? null));
+    const afterCompaction = await ownerEntries();
+    check("compaction: Claude's continuation summary is neither an owner-input entry nor a line of the lane's prompt history",
+      !!compacted && !afterCompaction.some((e) => String(e.subject?.text ?? "").includes(`compaction probe ${process.pid}`))
+        && !(await history()).some((h) => h.text.includes(`compaction probe ${process.pid}`)),
+      JSON.stringify(afterCompaction.map((e) => String(e.subject?.text ?? "").slice(0, 60))));
+    const laneSession = (await sessions()).slots.find((x) => x.id === laneSlot) as
+      { compaction?: { at?: number; preTokens?: number; postTokens?: number; idle?: boolean }; ctx?: { usedTokens?: number } | null } | undefined;
+    check("compaction: GET /api/sessions carries the compaction on the lane's row and counts the context after it (postTokens), not before",
+      laneSession?.compaction?.at === compactAt && laneSession.compaction.preTokens === 351703
+        && laneSession.compaction.postTokens === 7075 && laneSession.compaction.idle === true && laneSession.ctx?.usedTokens === 7075,
+      JSON.stringify({ compaction: laneSession?.compaction, ctx: laneSession?.ctx }));
+
     // the baton: the successor's brief carries the owner's words verbatim, oldest first
     const predecessorAt = readState().slots?.[String(laneSlot)]?.openedAt;
     const report = await selfPost("/api/self/fleet-report", laneToken,

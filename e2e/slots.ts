@@ -5532,7 +5532,7 @@ async function runKeepCache(): Promise<void> {
   const latch = `${ROOT}/keep-inflight-latch`;
   const keepLatch = `${ROOT}/keep-decided-latch`;
   for (const f of [latch, keepLatch].flatMap((l) => [l, `${l}.reached`, `${l}.release`])) rmSync(f, { force: true });
-  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch, FLEET_TEST_KEEP_CACHE_LATCH: keepLatch });
+  await restartSrv({ FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch, FLEET_TEST_KEEP_CACHE_LATCH: keepLatch, FLEET_KEEP_WARM_PER_HOUR: "1" });
   // parks the tick after its decision for `slot`, runs `between`, releases, and says whether it parked
   const parkAfterDecision = async (slot: number, start: () => Promise<unknown>, between: () => Promise<unknown>): Promise<boolean> => {
     for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
@@ -5613,6 +5613,35 @@ async function runKeepCache(): Promise<void> {
     allRefused && sAfter.setting?.keepCache === false && sAfter.setting.keepCacheIdleMin === 50
       && gAfter.setting?.keepCache === false && tAfter.setting === null,
     `${seen.join(" ")} · S=${JSON.stringify(sAfter.setting)} G=${JSON.stringify(gAfter.setting)} T=${JSON.stringify(tAfter.setting)}`);
+
+  // G, THE BOUND DEFAULT (owner 10.10.: „[Zitat entfernt]“): G is
+  // a bound Program-MAIN with no switch, its last call 51 min old on a 1h cache. The tick types the
+  // short bound text once, and the hour cap (1 in this run, FLEET_KEEP_WARM_PER_HOUR) holds the next;
+  // C, bound to nothing, gets none. Mutations: drop the hour-cap gate (the decision reads warm again),
+  // drop keepCacheBound's binding read (C is warmed), drop the warmBound read (G stays on after PATCH).
+  const BOUND = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const boundRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
+    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Cache warmhalten"));
+  let gWarm: PromptLogEntry[] = [];
+  for (let i = 0; i < 100 && !gWarm.length; i++) {
+    gWarm = await boundRows(G);
+    if (!gWarm.length) await Bun.sleep(100);
+  }
+  type BoundFacts = { mode?: string; act?: string | null; reason?: string; hourCap?: number | null; warmLastHour?: number };
+  const gView = (await hv(G.slot)) as unknown as { succession?: { keepCache?: BoundFacts | null } | null };
+  const gRow = ((await sessions()).slots.find((y) => y.id === G.slot) as { keepCache?: { act?: string; n?: number; outcome?: string } } | undefined)?.keepCache;
+  check("keepCache bound: a bound Program-MAIN without any switch gets ONE short warm turn that names no state, the hour cap holds the next, its sessions row carries the last act and the count — and an unbound session gets none",
+    gWarm.length === 1 && gWarm[0]!.text === BOUND && gView.succession?.keepCache?.mode === "bound"
+      && gView.succession.keepCache.act === null && gView.succession.keepCache.reason === "hour-cap"
+      && gView.succession.keepCache.hourCap === 1 && gView.succession.keepCache.warmLastHour === 1
+      && gRow?.act === "warm" && gRow.n === 1 && !!gRow.outcome?.startsWith("sent") && (await boundRows(C)).length === 0,
+    JSON.stringify({ rows: gWarm.map((e) => e.text), facts: gView.succession?.keepCache, row: gRow, c: (await boundRows(C)).length }));
+  const gBad = await hp(G.slot, { expectedOpenedAt: G.openedAt, warmBound: "nein" });
+  const gOff = await hp(G.slot, { expectedOpenedAt: G.openedAt, warmBound: false });
+  check("keepCache bound: PATCH warmBound:false switches the default off for this occupant (a non-boolean is 400) — stored, and no decision is made any more",
+    gBad.status === 400 && gBad.body.refusal === "bad-warm-bound" && gOff.status === 200
+      && (gOff.body.setting as { warmBound?: boolean } | null)?.warmBound === false && gOff.body.succession?.keepCache === null,
+    JSON.stringify({ bad: gBad.status, refusal: gBad.body.refusal, setting: gOff.body.setting, keep: gOff.body.succession?.keepCache }));
 
   const WARM = "[fleet] Prompt-Cache warmhalten";
   const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>

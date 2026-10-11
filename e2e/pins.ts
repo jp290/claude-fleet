@@ -3939,7 +3939,7 @@ await import(pathToFileURL(process.argv[2]).href);
     killAskAt > genericBody.indexOf("const brief = ") && genericBody.indexOf("const brief = ") > 0
       && killAskAt < genericBody.indexOf("await respawnInPlace(s, ")
       && /beforeKill \}\);/.test(ownerDoorBody) && ownerDoorBody.includes("await ownerSucceedBusy(s)")
-      && /appendix: null, beforeKill: null \}\);/.test(bodyOf("async function handleSelfSucceed(", "// THE GENERIC RAIL")),
+      && /\bbeforeKill: null \}\);/.test(bodyOf("async function handleSelfSucceed(", "// THE GENERIC RAIL")),
     `ask@${killAskAt} brief@${genericBody.indexOf("const brief = ")} respawn@${genericBody.indexOf("await respawnInPlace(s, ")}`);
   const executionStart = server.indexOf("async function programExecutionView(");
   const executionBody = executionStart < 0 ? ""

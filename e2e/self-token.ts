@@ -1797,6 +1797,45 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
       && heirTok !== tok,
     JSON.stringify({ lineage: heir.lineage, standingHandover: heir.standingHandover }));
 
+  // THE SELF DOOR READS IT TOO (Orchestratorin, 11.10.: handover written, then succeed with model/effort
+  // only — the record came out with intent null). A body naming no channel takes the standing handover;
+  // a body intent still wins it whole. Mutations: drop the liveStandingHandover read in handleSelfSucceed
+  // (record intent null), or let it override a body channel (the second record names the standing text).
+  const nextTok = async (old: string): Promise<{ tok: string; openedAt: number | undefined }> => {
+    let t = "";
+    for (let i = 0; i < 60 && (!t || t === old); i++) {
+      t = await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "";
+      if (!t || t === old) await Bun.sleep(150);
+    }
+    return { tok: t, openedAt: (await sessions()).slots.find((x) => x.id === free)?.openedAt };
+  };
+  const recordOf = async (t: string): Promise<{ intent?: string | null; pointer?: string | null } | undefined> =>
+    ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": t } })).json()) as
+      { lineage?: { record?: { intent?: string | null; pointer?: string | null } } | null }).lineage?.record;
+  const STAND = `self-door standing intent ${process.pid}`;
+  const standWrote = await selfPost(heirTok, "/api/self/handover", { intent: STAND });
+  const selfEmpty = await selfPost(heirTok, "/api/self/succeed", { effort: "high" });
+  const third = await nextTok(heirTok);
+  let thirdBrief = "";
+  for (let i = 0; i < 100 && !thirdBrief; i++) {
+    thirdBrief = (await plogRead()).findLast((e) => e.slot === free && e.openedAt === third.openedAt
+      && e.text.startsWith("[fleet succession]"))?.text ?? "";
+    if (!thirdBrief) await Bun.sleep(100);
+  }
+  const thirdRecord = await recordOf(third.tok);
+  check("self succession door: a body naming no channel carries the session's standing handover into the line record, and the brief says where the text came from",
+    standWrote.ok && selfEmpty.ok && thirdRecord?.intent === STAND && thirdRecord.pointer === null
+      && thirdBrief.includes("die stehende Übergabe deiner Vorgängerin vom ") && thirdBrief.includes("(POST /api/self/handover)"),
+    `${standWrote.status} ${selfEmpty.status} record=${JSON.stringify(thirdRecord)} brief=${JSON.stringify(thirdBrief.slice(-300))}`);
+  const BODY = `self-door body intent ${process.pid}`;
+  const stand2 = await selfPost(third.tok, "/api/self/handover", { intent: `${STAND} (zweite)` });
+  const selfBody = await selfPost(third.tok, "/api/self/succeed", { intent: BODY });
+  const fourth = await nextTok(third.tok);
+  const fourthRecord = await recordOf(fourth.tok);
+  check("self succession door: a body intent wins over the standing handover whole — the record names the body's text and nothing of the standing one",
+    stand2.ok && selfBody.ok && fourthRecord?.intent === BODY && fourthRecord.pointer === null,
+    `${stand2.status} ${selfBody.status} record=${JSON.stringify(fourthRecord)}`);
+
   await post(`/api/slots/${free}/kill`, {});
   rmSync(proj, { recursive: true, force: true });
   rmSync(repo, { recursive: true, force: true });

@@ -2012,8 +2012,10 @@ function loadReportDelegate(v: unknown): ReportDelegate | null {
 // succeeded through the owner door (no turn of its own) or, while further work is foreseeable, kept
 // warm by one short turn — always before the prompt cache's measured lifetime runs out
 // (KEEP_CACHE_LIFETIME_MIN, docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md).
+// `warmBound: false` switches off the DEFAULT warm turn a bound Program-MAIN or the Orchestratorin gets
+// without any switch (server.ts#keepCacheBoundOf); true is the fleet's value and stores no record.
 interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean; keepCacheIdleMin: number;
-  setAt: number; occupant: MemoryGrantOccupant }
+  warmBound: boolean; setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
@@ -2029,19 +2031,21 @@ const KEEP_CACHE_IDLE_MIN_DEFAULT = 50;
 const keepCacheIdleMinOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
   && n >= KEEP_CACHE_IDLE_MIN_MIN && n <= KEEP_CACHE_IDLE_MIN_MAX && n % KEEP_CACHE_IDLE_MIN_STEP === 0;
 // fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values).
-// A record written before the keepCache pair existed reads with the pair off at its default duration.
+// A record written before the keepCache pair existed reads with the pair off at its default duration,
+// one written before `warmBound` with the default warm turn on.
 function loadHandoverSetting(v: unknown): HandoverSetting | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "setAt", "occupant"].includes(k))) return null;
+  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "warmBound", "setAt", "occupant"].includes(k))) return null;
   const o = g.occupant as Record<string, unknown> | null;
   const keepCache = g.keepCache ?? false;
   const keepCacheIdleMin = g.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
+  const warmBound = g.warmBound ?? true;
   if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
-    || typeof keepCache !== "boolean" || !keepCacheIdleMinOk(keepCacheIdleMin)
+    || typeof keepCache !== "boolean" || !keepCacheIdleMinOk(keepCacheIdleMin) || typeof warmBound !== "boolean"
     || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
     || typeof o.openedAt !== "number") return null;
-  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, setAt: g.setAt,
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, warmBound, setAt: g.setAt,
     occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
 }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
@@ -2068,6 +2072,23 @@ const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover 
     || (r.intent === null) === (r.pointer === null)) return null;
   const ahead = typeof r.ahead === "number" && Number.isInteger(r.ahead) && r.ahead >= 0 ? r.ahead : null;
   return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null, ahead };
+};
+// THE NEWEST CLAUDE COMPACTION of one occupation (server.ts#noteCompaction), copied off the transcript's
+// own `{"type":"system","subtype":"compact_boundary"}` line: when it happened, Claude's `trigger`
+// ("auto" | "manual", kept as written), and its `compactMetadata.preTokens`/`postTokens` — the context
+// before and after. `idle` = Claude wrote its "Compacted while idle" notice beside it. Bound to the
+// occupation like a standing handover; `ledgerId` is its row in streams/compactions.jsonl.
+interface SlotCompaction { at: number; openedAt: number; sessionId: string | null; trigger: string;
+  preTokens: number | null; postTokens: number | null; idle: boolean; ledgerId: string }
+const compactionFrom = (raw: unknown, openedAt: number): SlotCompaction | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const tok = (v: unknown): boolean => v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0 || r.openedAt !== openedAt
+    || !(r.sessionId === null || typeof r.sessionId === "string") || typeof r.trigger !== "string" || r.trigger.length > 40
+    || !tok(r.preTokens) || !tok(r.postTokens) || typeof r.idle !== "boolean" || typeof r.ledgerId !== "string") return null;
+  return { at: r.at, openedAt, sessionId: r.sessionId as string | null, trigger: r.trigger,
+    preTokens: r.preTokens as number | null, postTokens: r.postTokens as number | null, idle: r.idle, ledgerId: r.ledgerId };
 };
 // THE PLAN A SLOT WAS STARTED WITH (faafc637): the window's plan input exactly as the door accepted
 // it — hash and switches — plus where and through which door, so a respawn of the same occupation
@@ -2239,6 +2260,8 @@ interface Slot {
   sleeping: SlotSleep | null;
   // the occupant's own pre-written handover (StandingHandover above); null = none written
   standingHandover: StandingHandover | null;
+  // the occupant's newest Claude compaction (SlotCompaction above); null = none seen
+  compaction: SlotCompaction | null;
   // the stand reminder's once-per-stand memory (LaneStandNudged above); null = nothing fired yet
   laneStandNudged: LaneStandNudged | null;
   // the plan this occupation was started with (SlotPlan above); null = started without one
@@ -2862,8 +2885,10 @@ const loadProgramLineage = (value: unknown): ProgramLineageRead => {
 // or rejected what the MAIN proposed, and the reason (if any) rides on the proposal itself.
 // `owner-input` points at a row of the owner-input ledger by its id: words the owner typed straight
 // into the pane of one of this Program's lanes, harvested from that lane's transcript.
+// `compaction` points at a row of the compaction ledger by its id: Claude compacted the context of one of
+// this Program's lanes, or of its MAIN (server.ts#noteCompaction) — when, and how much before and after.
 type ProgramInboxKind = "attention-answer" | "fleet-report" | "audit-red" | "ambient-land" | "card-verdict"
-  | "text-proposal" | "owner-input";
+  | "text-proposal" | "owner-input" | "compaction";
 interface ProgramInboxEntry {
   id: string;                       // 24 hex, minted by appendProgramInbox
   kind: ProgramInboxKind;
@@ -2877,7 +2902,7 @@ interface ProgramInbox { v: 1; entries: ProgramInboxEntry[]; dropped: number }
 // history either; past it appendProgramInbox drops and COUNTS, exactly like the lineage
 const PROGRAM_INBOX_MAX = 100;
 const PROGRAM_INBOX_KINDS: ProgramInboxKind[] = ["attention-answer", "fleet-report", "audit-red", "ambient-land", "card-verdict",
-  "text-proposal", "owner-input"];
+  "text-proposal", "owner-input", "compaction"];
 const PROGRAM_INBOX_ENTRY_KEYS = ["id", "kind", "at", "ref", "readBy", "readAt"];
 const PROGRAM_INBOX_REF_MAX = 200;
 type ProgramInboxRead = { ok: true; inbox: ProgramInbox } | { ok: false; error: string };
@@ -3825,7 +3850,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
-  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, LaneStandNudged, SlotPlan, Slot,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, SlotCompaction, LaneStandNudged, SlotPlan, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3874,7 +3899,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, laneStandNudgedFrom, slotPlanFrom,
+  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, compactionFrom, laneStandNudgedFrom, slotPlanFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

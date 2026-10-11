@@ -3,7 +3,8 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, stopSrv, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor, restartSrv, until, UntilTimeout } from "./harness";
-import { settleForMerge, waitMerge } from "./lane-helpers";
+import { MERGE_IDLE_MS, settleForMerge, waitMerge } from "./lane-helpers";
+import { DONE_LOOKING_RULES, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { MODEL_DEFAULTS } from "../model-register";
 import type { Ctx } from "./ctx";
 
@@ -758,10 +759,33 @@ export async function run(ctx: Ctx): Promise<void> {
       await restartSrv({ ...proofEnv, FLEET_AUTO_REVIEW_MS: "0", FLEET_REVIEW_OPTIN_TICK_MS: "1000" });
       if (lane) await settleForMerge(lane.slot);
       await post(`/api/programs/${pg.id}/promotion`, { policy: { v: 1, selfLand: "green-only" } });
+      // THE DOOR'S OWN PREDICATE before the land, read from the door's own inputs. restartSrv returns
+      // on the first /api/sessions 200, while the boot tickGit is still walking the slots, and until
+      // it reaches this lane `alive`, `git` and `gitOp` are null — the door (selfLandTaskForMain,
+      // rung 12) then answers 409 `not done-looking (no signal)`, correctly: unknown is never
+      // permission. settleForMerge tests only the idle clock. Measured: trail isolated-* 06.–10.10.,
+      // 12 of 26 runs red, the 409 coming back in ~1 s; forced by dropping the boot tickGit, the
+      // door read {alive:null, gitOp:null, git:null, idleMs:557}. Same wait as programs.ts#m1WaitDoor.
+      let doorFacts = "no row";
+      let doorReady = false;
+      if (lane) {
+        const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+        try {
+          doorReady = await until(async () => {
+            const res = await fetch(BASE + "/api/steward/sessions", { headers: { authorization: `Bearer ${svTok}` } });
+            const row = res.ok ? ((await res.json()) as { slots: (LaneSignalView & { id: number })[] }).slots.find((x) => x.id === lane.slot) : undefined;
+            if (!row) { doorFacts = res.ok ? `slot ${lane.slot} has no row` : `steward view ${res.status}`; return false; }
+            doorFacts = JSON.stringify({ failing: DONE_LOOKING_RULES.filter((r) => !r.holds(row, MERGE_IDLE_MS)).map((r) => r.prose),
+              alive: row.alive, gitOp: row.gitOp, git: row.git, idleMs: row.idleMs, merge: row.merge });
+            return laneWatchSignal(row, MERGE_IDLE_MS) === "done-looking";
+          }, { timeoutMs: 30_000, stepMs: 250, what: `slot ${lane.slot} done-looking at the land door`, last: () => doorFacts });
+        } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+      }
+      check("ansatz land setup: the lane's own done-looking predicate holds at the door after the restart", doorReady, doorFacts);
       const land = await self(`/api/self/tasks/${author?.id}/land`, {}); const landText = await land.text();
       if (lane) await waitMerge(lane.slot);
       check("ansatz land: unanswered ueberdenken blocks nothing and is in MAIN land response", land.ok && landText.includes('"running":true')
-        && landText.includes(`"eventId":"${outside.id}"`) && landText.includes('"answerOwed":true') && (await oRow(author?.id ?? ""))?.status === "done", `status=${land.status}`);
+        && landText.includes(`"eventId":"${outside.id}"`) && landText.includes('"answerOwed":true') && (await oRow(author?.id ?? ""))?.status === "done", land.ok ? `status=${land.status}` : `status=${land.status} ${landText.slice(0, 600)} door=${doorFacts}`);
       const outcomes = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: { branch: string; ansatzReviews?: { eventId: string; changedAfterReview: boolean | null }[] }[] }).outcomes;
       check("ansatz action sensor: outcome retains historical revised verdict", outcomes.find((o) => o.branch === lane?.branch)?.ansatzReviews
         ?.find((e) => e.eventId === verdict.id)?.changedAfterReview === true, "durable outcome");

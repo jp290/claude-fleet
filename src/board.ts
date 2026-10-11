@@ -373,13 +373,16 @@ export async function doLand(slot: number) {
       ? mgv.last.verify : undefined;
     const proceed = await showLandReview(`Land ${s.worktree.branch} → main — review what lands`, slot, verify);
     if (!proceed) return;
+    // the land form chosen in this browser (#landFormOf), for /merge only: "alle Commits" names
+    // {"squash":false}, "ein Commit" is the server's default and sends no switch; ⏏ takes none at all
+    const commits = landFormOf(s.worktree.repo, s.cwd ?? null).form === "commits";
     const direct = await post(`/api/slots/${slot}/land`, {});
     if (direct.ok) {
       for (const p of panes) if (p.slot === slot) p.assign(0);
       await refresh();
       return;
     }
-    const r = await post(`/api/slots/${slot}/merge`, {});
+    const r = await post(`/api/slots/${slot}/merge`, commits ? { squash: false } : {});
     const j = (await r.json().catch(() => ({}))) as
       { running?: boolean; status?: string; landed?: boolean; detail?: string; error?: string };
     if (!r.ok) { alert(`Land failed: ${j.error ?? r.status}`); return; }
@@ -2846,19 +2849,19 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
 // (server.ts#landSwitchesFrom, {squash}) — the commits as they were made, or one commit at the land. A
 // project's default over the whole view (the Projekte block's head: a gear in a project's own head left
 // its name 53 px on the phone), a lane's own in the opened lane; kept in this browser
-// (fleet.board.landform). A NUMBER of commits is no form the server has. NOTHING READS THE CHOICE YET:
-// the switch exists only on the MAIN's land call, the board's own Mergen and Land lane answer 409 to it
-// (server.ts, the /merge door since bc9d0a79), so they send none and land the commits as made — and a
-// MAIN never sees a choice kept in this browser. The field says so behind its ⓘ (owner 2026-10-09: „[Zitat entfernt]“
-// ), rather than promising a
-// switch that is dropped.
+// (fleet.board.landform). A NUMBER of commits is no form the server has. Since d5657b56 every gated land
+// is ONE commit unless the call names {"squash":false} (docs/self-api.md, "Der Schalter squash"), so a
+// choice not made reads "ein Commit". Mergen (#doLand) sends {"squash":false} for "alle Commits" and no
+// switch otherwise; ⏏ and the confirm of a conflict resolution answer 409 to a named squash:true and get
+// none. A MAIN's land door never sees a choice kept in this browser. The field says so behind its ⓘ
+// (owner 2026-10-09: „[Zitat entfernt]“).
 type LandForm = "commits" | "squash";
 const LAND_FORM_WORD: Record<LandForm, string> = { commits: "alle Commits", squash: "ein Commit" };
-// what "ein Commit" means, in the Kern's words (25225eeb): the series stays under the lane's history ref,
-// and a lane of one commit lands as it is
+// what "ein Commit" means since d5657b56: the land is one commit S described from the accepted report, a
+// lane of one commit too; the series stays under the lane's history ref, a series with a merge commit lands as it is
 const LAND_FORM_SAY: Record<LandForm, string> = { commits: "Die Commits landen so, wie sie gemacht wurden",
-  squash: "Die Commits der Lane landen als ein Commit — ihre Reihe bleibt im Verlauf der Lane erhalten, eine Lane mit nur einem Commit landet unverändert" };
-const LAND_FORM_NOTE = "Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.";
+  squash: "Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert" };
+const LAND_FORM_NOTE = "Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.";
 type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
 let landFormOpen: string | null = null;
 // the sentence on where the choice holds, open behind the field's ⓘ; closing the gear closes it too
@@ -2870,11 +2873,11 @@ function landForms(): LandForms {
   const o = v && typeof v === "object" ? v as Partial<Record<keyof LandForms, unknown>> : {};
   return { repo: pick(o.repo), lane: pick(o.lane) };
 }
-// a lane's own form, or its project's, or the commits as made
+// a lane's own form, or its project's, or the server's default: one commit
 function landFormOf(repo: string, path: string | null): { form: LandForm; own: boolean } {
   const f = landForms();
   const own = path ? f.lane[path] : undefined;
-  return own ? { form: own, own: true } : { form: f.repo[repo] ?? "commits", own: false };
+  return own ? { form: own, own: true } : { form: f.repo[repo] ?? "squash", own: false };
 }
 function setLandForm(kind: keyof LandForms, key: string, form: LandForm | null): void {
   const f = landForms();
@@ -3064,6 +3067,9 @@ const RANKE_CSS = `
      row's ground (an opened or focused row has one) and under its node */
   #board .ranke { --rk-ret: 18px; }
   #board .ranke .rk { padding-right: var(--rk-ret); }
+  /* a stem whose check after the land is open keeps room right of its words for the dashed line that
+     ends in its diamond (#stemLine) — without it the words ran up to the diamond and no line showed */
+  #board .ranke .rk > .zr.base[data-audit="run"], #board .ranke .rk > .zr.base[data-audit="queue"] { padding-right: 24px; }
   #board .ranke .rk > svg { z-index: 1; }
   #board .ranke .zr > .nd { z-index: 2; }
   #board .ranke .rk > svg path.rail { stroke: var(--c-edge-hi); }
@@ -3317,15 +3323,17 @@ const redStages = (w: WorkplaceRow) => WAY_CHECKS.filter(({ key }) => w.checks?.
 // ink while one runs (here or on a helper), an ink ring while one only waits, and for the server's
 // last minutes after its runs ended filled green, filled red, or an amber ring without a result —
 // then it goes, and what the checks came to stands at the opened lane's points (#wayLine). Read from the runs naming the lane
-// (MeterBall) and the checks' own states.
+// (MeterBall) and the checks' own states. NOT THE CHECK AFTER THE LAND (owner 2026-10-10: „[Zitat entfernt]“
+// ): it measures the
+// stem's tip and covers every land since the run before, so it is the stem's diamond (#stemAudit) and
+// never a lane's, its own land's neither — a landed lane only keeps its way back dashed until it is through
 type GateLook = "run" | "queue" | "ok" | "bad" | "unk";
 const endedLook = (b: MeterBall): GateLook => (b.tone === "ok" ? "ok" : b.tone === "red" ? "bad" : "unk");
+const LANE_CHECKS = WAY.filter(({ key }) => key !== "audit");
 function gateLook(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[] = []): GateLook | null {
-  const states = WAY_CHECKS.map(({ key }) => w.checks?.[key] ?? null);
-  // the check after its land, while the server's audit covers it or waits for it
-  const after = w.target.landed === "yes" ? auditOf(w.branch) : null;
-  if (states.some((c) => c?.state === "running") || after === "run" || mine.some((b) => b.station === "run" || b.station === "helper")) return "run";
-  if (states.some((c) => c?.state === "waiting") || after === "queue" || mine.some((b) => b.station === "wait")) return "queue";
+  const states = LANE_CHECKS.map(({ key }) => w.checks?.[key] ?? null);
+  if (states.some((c) => c?.state === "running") || mine.some((b) => b.station === "run" || b.station === "helper")) return "run";
+  if (states.some((c) => c?.state === "waiting") || mine.some((b) => b.station === "wait")) return "queue";
   // green only where every run that just ended passed; a red one says red
   const looks = ended.map(endedLook);
   return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;
@@ -3354,17 +3362,7 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
     line.title = `${meterKind(b.kind).label} · ${b.branch ?? "Branch nicht gemeldet"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
     out.push(line);
   }
-  const after = w.target.landed === "yes" ? auditOf(w.branch) : null;
-  if (!out.length && after) {
-    const line = el("span", "gl");
-    line.dataset.gate = after;
-    const gx = el("span", "gx");
-    gx.appendChild(el("b", "", `Nachprüfung ${after === "run" ? "läuft" : "wartet"}`));
-    gx.appendChild(el("span", "q", `für das Land nach ${w.target.branch}`));
-    line.append(el("span", "gd"), gx);
-    out.push(line);
-  }
-  if (!out.length) for (const { key, word } of WAY_CHECKS) {
+  if (!out.length) for (const { key, word } of LANE_CHECKS) {
     const c = w.checks?.[key];
     if (c?.state !== "running" && c?.state !== "waiting") continue;
     const line = el("span", "gl");
@@ -3393,8 +3391,10 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
 // THE STEM'S CHECK AFTER THE LAND (owner 2026-10-09: „[Zitat entfernt]“
 // ): the audit measures a stem's newest tip after a land,
 // folded over every land since the run before (server.ts#schedulePostLandAudit) — so it is the STEM's
-// own diamond, on the line from its row to its head where its lanes come back: ink while it runs, an
-// ink ring while lands wait for it. The server names the repo by its basename
+// own diamond and no lane's (#gateLook): at the END of a dashed line from its row to the right, just
+// before its head (owner 2026-10-10: „[Zitat entfernt]“
+// ; placed by #drawRankeLines) — ink while it runs, an ink ring
+// while lands wait for it. The server names the repo by its basename
 // (server.ts#postLandAuditLiveView), so a repo matches by its full path, or by a basename no other
 // project on this board shares — a run placed by a guess is worse than one left in Prüfungen.
 type StemAudit = { look: "run" | "queue"; lines: { look: "run" | "queue"; head: string; more: string }[]; balls: MeterBall[] };
@@ -4860,23 +4860,36 @@ export function drawRankeLines(root: HTMLElement): void {
         gb.dataset.placed = "1";
       }
     }
+    // A STEM'S LINE TO THE RIGHT (#stemAudit): from the end of what its row says, plain to its head —
+    // and while the check after its land is open, dashed like a way back and ENDING in its diamond just
+    // before the head, the rest of the way plain; a stem no lane comes back to has no head, so its
+    // dashed line ends in the diamond where the head would stand
+    const stemLine = (par: HTMLElement, y: number, headX: number, head: boolean): void => {
+      const x = Math.round(end(par)) + 5;
+      const sg = par.querySelector<HTMLElement>(":scope > .lgate.stem");
+      if (!sg) {
+        if (head && headX - 4 > x) paths.push({ cls: "rail", d: `M${x} ${y}H${headX - 4}` });
+        return;
+      }
+      const gx = headX - GATE_RAIL;
+      if (gx - 6 > x) paths.push({ cls: "rail back wait audit", d: `M${x} ${y}H${gx - 6}` });
+      if (head && headX - 4 > gx + 6) paths.push({ cls: "rail", d: `M${gx + 6} ${y}H${headX - 4}` });
+      const pb0 = par.getBoundingClientRect();
+      sg.style.left = `${gx - (pb0.left - tb.left)}px`;
+      sg.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
+      sg.style.top = `${y - (pb0.top - tb.top)}px`;
+      sg.dataset.placed = "1";
+    };
+    for (const par of rk.querySelectorAll<HTMLElement>(":scope > .zr.base")) {
+      const p = mid(par);
+      if (p && !rails.has(par.dataset.id ?? "")) stemLine(par, p[1], railX(par), false);
+    }
     // THE TARGET'S HEAD: from the end of what the target's row says to the rail, and the dot the rail
     // hangs from — a ring while lanes wait to land there, filled once all have
     for (const [pk, rl] of rails) {
       const par = [...rk.querySelectorAll<HTMLElement>(":scope > .zr[data-id]")].find((x) => x.dataset.id === pk);
       if (!par) continue;
-      const x = Math.round(end(par)) + 5;
-      // the stem's own way to its head is dashed while the check after its land is open
-      if (rl.x - 4 > x) paths.push({ cls: `rail${par.dataset.audit ? " back wait" : ""}`, d: `M${x} ${rl.top}H${rl.x - 4}` });
-      const sg = par.querySelector<HTMLElement>(":scope > .lgate");
-      if (sg) {
-        const pb0 = par.getBoundingClientRect();
-        const gx = Math.min(x - 1 + GATE_DASHES, rl.x - GATE_RAIL);
-        sg.style.left = `${gx - (pb0.left - tb.left)}px`;
-        sg.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
-        sg.style.top = `${rl.top - (pb0.top - tb.top)}px`;
-        sg.dataset.placed = "1";
-      }
+      stemLine(par, rl.top, rl.x, true);
       paths.push({ cls: "rail", d: `M${rl.x} ${rl.top + 4}V${rl.low}` });
       if (rl.inkLow !== null) paths.push({ cls: "rail ink", d: `M${rl.x} ${rl.top + 4}V${rl.inkLow}` });
       const pb = par.getBoundingClientRect();

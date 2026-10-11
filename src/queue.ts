@@ -5,6 +5,7 @@ import { Shell, ShellRow, openShell } from "./shell";
 import { askRisk } from "./dialog";
 import { attachEntityCards } from "./entcard";
 import { mdInto } from "./md";
+import { laneTitleOf } from "./suitemeter";
 import { noteFirstSentence } from "../task-notes";
 import { ProjectedWaveTask, TaskWaveProjection, TaskWaveUnresolved, projectTaskWaves } from "../task-waves";
 import type { KonzeptAnmerkung, KonzeptIndexRow, KonzeptVersion } from "../konzept-ledger";
@@ -1380,11 +1381,15 @@ export function qProgramShort(title: string): string {
   const head = title.split(/\s+[—–-]\s+/)[0] ?? title;
   return head.length > Q_PROGRAM_CHIP_MAX ? `${head.slice(0, Q_PROGRAM_CHIP_MAX - 1)}…` : head;
 }
+// A ROW WITH A CARD is titled by its ZIEL (red team f8c69c56 §5 Nr. 3: 82 % of the open rows read
+// "ROLLE: claude/…", the filers' first line), in the words its lane carries (suitemeter.ts#laneTitleOf).
 // A CARD-SHAPED FIRST LINE ("[FLEET-BETRIEB · MITTEL · SUITE-ZEIT: …]") is the row's own title, but
 // its program and size segments are exactly what the chips beside it already say. Drop those
 // two, keep every other segment, and fall back to the sentence rule when the line is not one.
 export const Q_SIZE_WORD = /^(klein|mittel|gro(ss|ß))$/i;
-export function qRowTitle(text: string, programTitle: string | undefined): string {
+export function qRowTitle(text: string, programTitle: string | undefined, ziel?: string): string {
+  const goal = ziel?.trim() ? laneTitleOf(ziel, null) : null;
+  if (goal) return goal;
   const line = text.split("\n")[0] ?? "";
   const m = /^\[([^\]\n]{41,})\]/.exec(line);
   if (!m) return qFirstLine(text);
@@ -1428,7 +1433,7 @@ export function qTaskSummary(t: TaskInfo, text: string, now: number,
   if (t.notes?.n) chips.push({ text: `📎 ${t.notes.n}`, cls: "att", title: `${t.notes.n} assigned note${t.notes.n === 1 ? "" : "s"}` });
   if (t.comments?.n) chips.push({ text: `💬 ${t.comments.n}`, cls: "att", title: `${t.comments.n} comment${t.comments.n === 1 ? "" : "s"}` });
   return {
-    title: qRowTitle(text, p?.title),
+    title: qRowTitle(text, p?.title, taskCardFull.get(t.id)?.ziel),
     chips,
     age: { text: fmtDur(Math.max(0, now - t.created)), cls: "age", title: `filed by ${tag ? `${source} / ${tag}` : source}` },
   };
@@ -1657,7 +1662,7 @@ export function qBundleDraft(ids: readonly string[]):
   if (progs.size > 1) return "the rows belong to different programs — move them into one first";
   if (ts.some((t) => !taskText.has(t.id))) return "task texts are still loading — try again in a moment";
   const progTitle = programsList.find((p) => p.id === [...progs][0])?.title;
-  const titles = ts.map((t) => qRowTitle(qTaskText(t.id), progTitle).replace(/[[\]]/g, "").slice(0, Q_BUNDLE_TITLE_MAX));
+  const titles = ts.map((t) => qRowTitle(qTaskText(t.id), progTitle, taskCardFull.get(t.id)?.ziel).replace(/[[\]]/g, "").slice(0, Q_BUNDLE_TITLE_MAX));
   const released = ts.filter((t) => t.status === "queued").map((t) => t.id);
   const text = [
     `[BÜNDEL · ${titles.slice(0, 2).join(" + ")}${ts.length > 2 ? ` (+${ts.length - 2})` : ""}]`,
@@ -3267,7 +3272,7 @@ export function renderQueueDetail() {
     for (const id of ids) {
       const line = el("div", "qbundlesrc");
       line.append(el("span", "qbundleid", id), el("span", "", qRowTitle(qTaskText(id),
-        programsList.find((p) => p.id === tasksList.find((x) => x.id === id)?.programId)?.title)));
+        programsList.find((p) => p.id === tasksList.find((x) => x.id === id)?.programId)?.title, taskCardFull.get(id)?.ziel)));
       shell.detail.appendChild(line);
     }
     if (ids.length > 1) {

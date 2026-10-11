@@ -1,4 +1,4 @@
-import { nearestRank, validPerfRecord, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type PerfRecord } from "./src/protocol";
+import { nearestRank, validPerfRecord, validFieldRow, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
@@ -240,6 +240,8 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // row when it is judged. Append-only — the live list in fleet.json is a bounded tail
 // (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
 const PERF_FILE = `${import.meta.dir}/perf.jsonl`;
+// the board's own field rows (src/fieldperf.ts, src/protocol.ts#FieldRow): one per open page and minute
+const FIELD_FILE = `${import.meta.dir}/field-perf.jsonl`;
 function rWithoutAt(r: PerfRecord & { at: number }): unknown {
   const { at, ...record } = r;
   return record;
@@ -50550,6 +50552,30 @@ Bun.serve<WSData>({
     // the transport ledger (server/transport.ts). Its OWN route on purpose: /api/sessions is the endpoint
     // being shrunk, and a counter inside it would inflate what it measures. Owner-only, read-only.
     if (url.pathname === "/api/transport" && req.method === "GET") return json(transportReport());
+    // THE BOARD'S FIELD ROWS (src/fieldperf.ts): written by the owner's own page with its cookie, like
+    // /api/perf, one row per page and minute — numbers only (validFieldRow), stamped with the server's time
+    if (url.pathname === "/api/perf/field" && req.method === "POST") {
+      if (!tokenOk(cookieToken(req))) return json({ error: "Owner cookie required" }, 403);
+      const text = await req.text();
+      if (Buffer.byteLength(text) > PERF_BODY_MAX) return json({ error: "field row too large" }, 413);
+      let raw: unknown;
+      try { raw = JSON.parse(text); } catch { return json({ error: "invalid field JSON" }, 400); }
+      if (!validFieldRow(raw)) return json({ error: "invalid field row" }, 400);
+      const line = JSON.stringify({ ...raw, at: Date.now() }) + "\n";
+      if (existsSync(FIELD_FILE) && statSync(FIELD_FILE).size + Buffer.byteLength(line) > PERF_ROTATE_BYTES)
+        renameSync(FIELD_FILE, `${FIELD_FILE}.1`);
+      appendFileSync(FIELD_FILE, line, { mode: 0o600 });
+      chmodSync(FIELD_FILE, 0o600);
+      return json({ accepted: 1 });
+    }
+    // …read back owner-only, newest last (`limit` 1–500, default 50). A lane reads field-perf.jsonl from
+    // the main checkout instead: no self route, so the pre-auth allowlist stays as reviewed
+    if (url.pathname === "/api/perf/field" && req.method === "GET") {
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50));
+      const { rows } = await readLedger<FieldRow & { at: number }>(FIELD_FILE);
+      const valid = rows.filter((r) => { const { at, ...row } = r; return Number.isFinite(at) && validFieldRow(row); });
+      return json({ n: valid.length, rows: valid.slice(-limit) });
+    }
     if (url.pathname === "/api/perf") {
       if (!tokenOk(cookieToken(req))) return json({ error: "Owner cookie required" }, 403);
       if (req.method === "POST") {

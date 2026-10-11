@@ -1,4 +1,4 @@
-import { PERF_ROTATE_BYTES, type PerfRecord } from "../src/protocol";
+import { PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "../src/protocol";
 // The three send paths (JSON answers, static assets, ws.send): gzip, the app.js cache-buster
 // chain, and the byte ledger behind GET /api/transport. See server/transport.ts.
 //
@@ -8,7 +8,7 @@ import { PERF_ROTATE_BYTES, type PerfRecord } from "../src/protocol";
 // when it is done. That also makes the "a new bundle reaches the client" check a real swap
 // rather than a claim about a file nobody touched.
 import { writeFileSync, readFileSync, existsSync, unlinkSync, statSync } from "node:fs";
-import { BASE, IP, ROOT, TOKEN, REPO, check, get, post, wsUrl } from "./harness";
+import { BASE, IP, ROOT, TOKEN, REPO, check, get, paneEnv, post, wsUrl } from "./harness";
 
 interface Ledger {
   totals: { httpBytes: number; httpRequests: number; gzipSaved: number; wsBytes: number; wsMessages: number; wsConnections: number; wsOpen: number };
@@ -213,6 +213,41 @@ export async function runPerfTransport(): Promise<void> {
   if (id === undefined) return;
   await post(`/api/slots/${id}/open`, { cwd: REPO });
   try {
+    // THE BOARD'S FIELD ROWS (src/fieldperf.ts): the owner's page writes them with its cookie and only the
+    // owner reads them back — numbers only, the server's own time; a self-token has no door to them
+    const fieldFiles = [`${ROOT}/field-perf.jsonl`, `${ROOT}/field-perf.jsonl.1`];
+    const fieldBefore = fieldFiles.map((f) => existsSync(f) ? readFileSync(f) : null);
+    try {
+      for (const f of fieldFiles) if (existsSync(f)) unlinkSync(f);
+      const field: FieldRow = { v: 424242, sha: "0123abc", dev: { w: 390, h: 844, touch: true, ua: "safari-ios" }, pageMs: 61_000,
+        windowMs: 60_000, firstSlotMs: 412, clicks: [{ a: "side", ms: 38 }, { a: "board", ms: 120 }, { a: "queue", ms: 64 }],
+        routes: { "/api/sessions": { n: 30, bytes: 2_445_000 }, "/api/slots/:n/brief": { n: 20, bytes: 61_000 } }, selfMs: 0.8 };
+      const fieldPost = (body: unknown, h: HeadersInit = headers): Promise<Response> => fetch(BASE + "/api/perf/field", { method: "POST", headers: h, body: JSON.stringify(body) });
+      const selfTok = await paneEnv(`s${id}`, "FLEET_SELF_TOKEN") ?? "";
+      const fieldRead = (h: HeadersInit = headers): Promise<Response> => fetch(BASE + "/api/perf/field?limit=5", { headers: h });
+      check("field: the scratch session carries a self-token to try the read with", selfTok.length > 0);
+      check("field: anonymous rows are refused", (await fetch(BASE + "/api/perf/field", { method: "POST", body: "{}" })).status === 401);
+      check("field: an owner bearer without the owner cookie cannot write a row",
+        (await fieldPost(field, { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" })).status === 403);
+      check("field: a row with a field beyond the numbers is refused and nothing is kept",
+        (await fieldPost({ ...field, token: "must-never-be-stored" })).status === 400 && !existsSync(fieldFiles[0]));
+      check("field: a route that is not a route shape is refused",
+        (await fieldPost({ ...field, routes: { "/api/files/Users/Owner/notes.md": { n: 1, bytes: 1 } } })).status === 400);
+      check("field: a click outside the three areas is refused", (await fieldPost({ ...field, clicks: [{ a: "terminal", ms: 5 }] })).status === 400);
+      check("field: the owner cookie appends a valid row", (await fieldPost(field)).ok);
+      const read = await fieldRead();
+      const got = read.ok ? (await read.json()) as { n: number; rows: (FieldRow & { at: number })[] } : null;
+      const { at, ...rest } = got?.rows.at(-1) ?? { at: NaN };
+      check("field: the owner reads the row back as written, with the server's time",
+        got?.n === 1 && JSON.stringify(rest) === JSON.stringify(field) && Number.isFinite(at) && at > 0, JSON.stringify(got));
+      check("field: a session's self-token cannot read the rows (no self route, the owner gate answers)",
+        (await fieldRead({ "x-fleet-self-token": selfTok })).status === 401);
+      check("field: the old self route is gone (the owner gate answers it like any unknown path)",
+        (await fetch(BASE + "/api/self/field", { headers: { "x-fleet-self-token": selfTok } })).status === 401);
+      check("field: the ledger is private", (statSync(fieldFiles[0]).mode & 0o777) === 0o600);
+    } finally {
+      for (const [i, f] of fieldFiles.entries()) { if (fieldBefore[i]) writeFileSync(f, fieldBefore[i]!); else if (existsSync(f)) unlinkSync(f); }
+    }
     const responses: [string, Response][] = [
       ["sessions", await get("/api/sessions")],
       ["transcript", await get(`/api/slots/${id}/transcript?after=0`)],

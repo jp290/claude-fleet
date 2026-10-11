@@ -967,6 +967,43 @@ export interface PerfRecord {
   ok: boolean;
   attrs?: PerfAttrs;
 }
+// THE BOARD MEASURES ITSELF ON THE OWNER'S DEVICE (UI-MAIN 11.10., owner „[Zitat entfernt]“):
+// one row per open page and minute, numbers only — no token, no content, no path beyond the /api route
+// shape. `firstSlotMs` is navigation start → the first painted row of the left bar (once per page);
+// `clicks` each click in the left bar, the right tab or the queue → the paint after the DOM answered;
+// `routes` the /api requests of the minute by route shape (`/api/slots/:n/brief`), count and bytes;
+// `selfMs` what the measuring itself cost inside its handlers that minute (src/fieldperf.ts).
+export const FIELD_AREAS = ["side", "board", "queue"] as const;
+export type FieldArea = typeof FIELD_AREAS[number];
+export interface FieldRow {
+  v: number; sha: string | null;
+  dev: { w: number; h: number; touch: boolean; ua: string };
+  pageMs: number; windowMs: number; firstSlotMs: number | null;
+  clicks: { a: FieldArea; ms: number }[];
+  routes: Record<string, { n: number; bytes: number }>;
+  selfMs: number;
+}
+export const FIELD_CLICKS_MAX = 200, FIELD_ROUTES_MAX = 60;
+const FIELD_UA = /^(chrome|safari|firefox|edge|other)-(ios|android|mac|win|linux|other)$/;
+export function validFieldRow(raw: unknown): raw is FieldRow {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  const keys = ["v", "sha", "dev", "pageMs", "windowMs", "firstSlotMs", "clicks", "routes", "selfMs"];
+  if (Object.keys(r).length !== keys.length || !keys.every((k) => k in r)) return false;
+  const ms = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 86_400_000;
+  const int = (n: unknown, max: number) => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= max;
+  if (!int(r.v, Number.MAX_SAFE_INTEGER) || !(r.sha === null || (typeof r.sha === "string" && /^[0-9a-f]{7,40}$/.test(r.sha)))) return false;
+  const d = r.dev as Record<string, unknown> | null;
+  if (!d || typeof d !== "object" || Object.keys(d).length !== 4 || !int(d.w, 20_000) || !int(d.h, 20_000)
+    || typeof d.touch !== "boolean" || typeof d.ua !== "string" || !FIELD_UA.test(d.ua)) return false;
+  if (!ms(r.pageMs) || !ms(r.windowMs) || !(r.firstSlotMs === null || ms(r.firstSlotMs)) || !ms(r.selfMs)) return false;
+  if (!Array.isArray(r.clicks) || r.clicks.length > FIELD_CLICKS_MAX || !r.clicks.every((c) => !!c && typeof c === "object"
+    && Object.keys(c).length === 2 && (FIELD_AREAS as readonly unknown[]).includes((c as { a: unknown }).a) && ms((c as { ms: unknown }).ms))) return false;
+  const routes = r.routes as Record<string, unknown> | null;
+  if (!routes || typeof routes !== "object" || Array.isArray(routes) || Object.keys(routes).length > FIELD_ROUTES_MAX) return false;
+  return Object.entries(routes).every(([k, x]) => /^\/api(\/[a-z0-9:_-]{1,40}){0,6}$/.test(k) && !!x && typeof x === "object"
+    && Object.keys(x).length === 2 && int((x as { n: unknown }).n, 100_000) && int((x as { bytes: unknown }).bytes, 1e12));
+}
 export const PERF_BATCH_MAX = 50;
 export const PERF_BODY_MAX = 64_000;
 export const PERF_ROTATE_BYTES = 1_000_000;

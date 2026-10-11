@@ -11915,8 +11915,12 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // round 6: the check after a land on the board, a label that is only its branch, the live field's line
   { name: "the stem's check after the land has no diamond", state: "viele", width: 1200, claim: "each stem carries its diamond",
     needle: "  if (mainAudit) mrow.appendChild(stemAuditButton(mainAuditKey, mainAudit, \"main\"));", with: "" },
-  { name: "the stem's line to its head stays solid while its check is open", state: "viele", claim: "each stem carries its diamond",
-    needle: "paths.push({ cls: `rail${par.dataset.audit ? \" back wait\" : \"\"}`, d: `M${x} ${rl.top}H${rl.x - 4}` });", with: "paths.push({ cls: \"rail\", d: `M${x} ${rl.top}H${rl.x - 4}` });" },
+  { name: "the stem's line to its diamond is not dashed", state: "viele", claim: ["each stem carries its diamond", "each stem's check after the land stands at the end of a dashed line"],
+    needle: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${gx - 6}` });", with: "      if (gx - 6 > x) paths.push({ cls: \"rail\", d: `M${x} ${y}H${gx - 6}` });" },
+  { name: "the stem's dashed line runs past its diamond to the head", state: "viele", width: 1200, claim: "each stem's check after the land stands at the end of a dashed line",
+    needle: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${gx - 6}` });", with: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${headX - 4}` });" },
+  { name: "the check after a land is a lane's diamond again", state: "viele", claim: "the running check after E's land puts none on E's row",
+    needle: "  const states = LANE_CHECKS.map(({ key }) => w.checks?.[key] ?? null);", with: "  const states = WAY_CHECKS.map(({ key }) => w.checks?.[key] ?? null);" },
   { name: "the stem's check matches no basename", state: "viele", width: 1200, claim: "each stem carries its diamond",
     needle: "    || (repo === name && (workplaces?.repos ?? []).filter((x) => baseName(x.repo) === name).length === 1);", with: "    || false;" },
   { name: "a landed lane's way goes solid while its check after the land runs", state: "viele", width: 1200, claim: "a landed lane's way back stays dashed",
@@ -11939,15 +11943,27 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "    projects.firstElementChild!.appendChild(landFormButton(\"projects\", `Beim Land der Lanes — ${says}`));", with: "" },
   { name: "a land form is not kept", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
     needle: "  prefSet(\"fleet.board.landform\", JSON.stringify(next));", with: "" },
-  { name: "the field promises the switch to Mergen", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "const LAND_FORM_NOTE = \"Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.\";",
-    with: "const LAND_FORM_NOTE = \"Gilt für jedes Land, auch für „Mergen“.\";" },
+  { name: "the field says again that nothing reads the choice", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "const LAND_FORM_NOTE = \"Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.\";",
+    with: "const LAND_FORM_NOTE = \"Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.\";" },
+  { name: "the field promises the choice to the MAIN's land door", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "const LAND_FORM_NOTE = \"Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.\";",
+    with: "const LAND_FORM_NOTE = \"Gilt für jedes Land, auch wenn eine MAIN die Lane landet.\";" },
+  { name: "ein Commit says again a lane of one commit lands unchanged", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "  squash: \"Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert\" };",
+    with: "  squash: \"Die Commits der Lane landen als ein Commit — ihre Reihe bleibt im Verlauf der Lane erhalten, eine Lane mit nur einem Commit landet unverändert\" };" },
+  { name: "a choice not made reads alle Commits again", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+    needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"squash\", own: false };", with: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"commits\", own: false };" },
   { name: "an opened lane carries no gear", state: "lane", claim: "an opened lane carries a gear at the end of its way",
     needle: "    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? \"\" : \" (wie das Projekt)\"}`));", with: "" },
   { name: "a lane that follows ignores its project", state: "lane", width: 1200, claim: "an opened lane carries a gear at the end of its way",
-    needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"commits\", own: false };", with: "  return own ? { form: own, own: true } : { form: \"commits\", own: false };" },
-  { name: "Mergen sends the land form the board's route refuses", state: "live", width: 1200, claim: "Mergen asks first",
-    needle: "    const r = await post(`/api/slots/${slot}/merge`, {});", with: "    const r = await post(`/api/slots/${slot}/merge`, { squash: landFormOf(s.worktree.repo, s.cwd ?? null).form === \"squash\" });" },
+    needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"squash\", own: false };", with: "  return own ? { form: own, own: true } : { form: \"squash\", own: false };" },
+  { name: "Mergen drops the land form again", state: "live", width: 1200, claim: "Mergen asks first",
+    needle: "    const r = await post(`/api/slots/${slot}/merge`, commits ? { squash: false } : {});", with: "    const r = await post(`/api/slots/${slot}/merge`, {});" },
+  { name: "Mergen names squash:true for ein Commit", state: "live", width: 1200, claim: "Mergen asks first",
+    needle: "    const r = await post(`/api/slots/${slot}/merge`, commits ? { squash: false } : {});", with: "    const r = await post(`/api/slots/${slot}/merge`, { squash: !commits });" },
+  { name: "⏏ carries the land form too", state: "live", width: 1200, claim: "Mergen asks first",
+    needle: "    const direct = await post(`/api/slots/${slot}/land`, {});", with: "    const direct = await post(`/api/slots/${slot}/land`, commits ? { squash: false } : {});" },
   { name: "a device that reports says läuft again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
     needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\" };" },
   { name: "the test instance's row says nothing in its chip", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
@@ -12677,17 +12693,19 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // gear over the projects sets each shown project's default, a gear at the end of an opened lane's way
           // the lane's own — kept in this browser (fleet.board.landform), each field closing with where it holds
           type LfRead = { head: { title: string; exp: string | null } | null; lane: { title: string } | null; stored: string | null;
-            sets: { cls: string; label: string; choices: string[]; on: string[]; note: string | null; info: string | null; follow: string | null }[] };
+            sets: { cls: string; label: string; choices: string[]; says: string[]; on: string[]; note: string | null; info: string | null; follow: string | null }[] };
           const lfRead = () => evaluate<LfRead>(`(() => { const g = document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn'), lg = document.querySelector('#boardbody .zd.wl.lf .lf-btn');
             return { head: g ? { title: g.title, exp: g.getAttribute('aria-expanded') } : null, lane: lg ? { title: lg.title } : null, stored: localStorage.getItem('fleet.board.landform'),
               sets: [...document.querySelectorAll('#boardbody .zd.lf-set')].map((z) => ({ cls: z.className, label: z.querySelector('.lf-k')?.textContent ?? '',
-                choices: [...z.querySelectorAll('.lf-c')].map((b) => b.textContent), on: [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent),
+                choices: [...z.querySelectorAll('.lf-c')].map((b) => b.textContent), says: [...z.querySelectorAll('.lf-c')].map((b) => b.title), on: [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent),
                 note: z.querySelector('.lf-hint')?.textContent ?? null, info: z.querySelector('.lf-i')?.getAttribute('aria-expanded') ?? null, follow: [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'wie das Projekt')?.title ?? null })) }; })()`);
           const pick = (cls: string, word: string) => evaluate(`[...document.querySelectorAll('#boardbody .zd.lf-set.${cls} .lf-c')].find((b) => b.textContent === ${JSON.stringify(word)})?.click()`);
           const pressed = (cls: string, word: string) => wait(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-c[aria-pressed="true"]')?.textContent === ${JSON.stringify(word)}`, 3000);
           // the sentence on where it holds stands behind the field's ⓘ (owner 2026-10-09: „[Zitat entfernt]“
-          // ), and says that nothing reads the choice yet
-          const LF_NOTE = "Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.";
+          // ): Mergen sends the choice, the MAIN's land door
+          // does not see it (since d5657b56 every gated land is one commit unless the call names squash:false)
+          const LF_NOTE = "Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.";
+          const LF_SQUASH = "Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert";
           const lfInfo = async (cls: string) => { await evaluate(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-i')?.click()`);
             await wait(`!!document.querySelector('#boardbody .zd.lf-set.${cls} .lf-hint')`, 3000); return lfRead(); };
           const lfQuiet = await lfRead();
@@ -12695,8 +12713,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await wait(`document.querySelector('#boardbody .zd.lf-set.repo')`, 3000);
           const lf0 = await lfRead();
           const lf0i = await lfInfo("repo");
-          await pick("repo", "ein Commit");
-          await pressed("repo", "ein Commit");
+          await pick("repo", "alle Commits");
+          await pressed("repo", "alle Commits");
           const lf1 = await lfRead();
           await shot(`${st}-landform-${width}`);
           await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
@@ -12708,26 +12726,27 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await wait(`document.querySelector('#boardbody .zd.lf-set.lane')`, 3000);
           const lf2 = await lfRead();
           const lf2i = await lfInfo("lane");
-          await pick("lane", "alle Commits");
-          await pressed("lane", "alle Commits");
+          await pick("lane", "ein Commit");
+          await pressed("lane", "ein Commit");
           const lf3 = await lfRead();
           await shot(`${st}-landform-lane-${width}`);
           facts.landForm = { lfQuiet, lf0, lf0i, lf1, lfOpen, lf2, lf2i, lf3 };
           const set0 = lf0.sets[0], set1 = lf1.sets[0], set2 = lf2.sets[0], set3 = lf3.sets[0];
-          claims[`${tag}the gear over the projects opens one line for the shown project — alle Commits pressed — and an ⓘ for the sentence where it holds; ein Commit is kept for the project in this browser`] =
-            lfQuiet.head?.exp === "false" && lfQuiet.stored === null && lfQuiet.sets.length === 0
+          claims[`${tag}the gear over the projects opens one line for the shown project — ein Commit pressed without a choice, as the server lands — and an ⓘ for the sentence where it holds; alle Commits is kept for the project in this browser`] =
+            lfQuiet.head?.exp === "false" && lfQuiet.head?.title === "Beim Land der Lanes — claude-fleet: ein Commit" && lfQuiet.stored === null && lfQuiet.sets.length === 0
             && lf0.head?.exp === "true" && lf0.sets.length === 1 && !!set0 && set0.cls.split(" ").includes("repo") && set0.label === "Beim Land jeder Lane"
-            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["alle Commits"])
+            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["ein Commit"])
+            && set0.says[1] === LF_SQUASH
             && set0.note === null && set0.info === "false" && lf0i.sets[0]?.note === LF_NOTE && lf0i.sets[0]?.info === "true"
-            && !!set1 && JSON.stringify(set1.on) === JSON.stringify(["ein Commit"]) && lf1.head?.title === "Beim Land der Lanes — claude-fleet: ein Commit"
-            && lf1.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: {} });
-          claims[`${tag}an opened lane carries a gear at the end of its way: its line follows the project (ein Commit) until alle Commits is kept as the lane's own`] =
-            lfOpen.lane?.title === "Beim Land dieser Lane: ein Commit (wie das Projekt)" && lf2.sets.length === 1 && !!set2 && set2.cls.split(" ").includes("lane")
+            && !!set1 && JSON.stringify(set1.on) === JSON.stringify(["alle Commits"]) && lf1.head?.title === "Beim Land der Lanes — claude-fleet: alle Commits"
+            && lf1.stored === JSON.stringify({ repo: { [REPO]: "commits" }, lane: {} });
+          claims[`${tag}an opened lane carries a gear at the end of its way: its line follows the project (alle Commits) until ein Commit is kept as the lane's own`] =
+            lfOpen.lane?.title === "Beim Land dieser Lane: alle Commits (wie das Projekt)" && lf2.sets.length === 1 && !!set2 && set2.cls.split(" ").includes("lane")
             && set2.label === "Beim Land dieser Lane" && JSON.stringify(set2.choices) === JSON.stringify(["wie das Projekt", "alle Commits", "ein Commit"])
-            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: ein Commit"
+            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: alle Commits"
             && set2.note === null && set2.info === "false" && lf2i.sets[0]?.note === LF_NOTE
-            && !!set3 && JSON.stringify(set3.on) === JSON.stringify(["alle Commits"]) && lf3.lane?.title === "Beim Land dieser Lane: alle Commits"
-            && lf3.stored === JSON.stringify({ repo: { [REPO]: "squash" }, lane: { [pathOf(own)]: "commits" } });
+            && !!set3 && JSON.stringify(set3.on) === JSON.stringify(["ein Commit"]) && lf3.lane?.title === "Beim Land dieser Lane: ein Commit"
+            && lf3.stored === JSON.stringify({ repo: { [REPO]: "commits" }, lane: { [pathOf(own)]: "squash" } });
           // back to the state as it was: nothing kept, the page anew
           await evaluate(`localStorage.removeItem('fleet.board.landform')`);
           await reopen(restored);
@@ -13074,25 +13093,32 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             closedTag === "Live" && ownTag === null && !closedT && lane(r, 12)?.exp === "true"
             && !!liveT && liveT.text.startsWith("Testinstanz läuft bis") && liveT.buttons.join(",") === "Öffnen,Stoppen,Mergen";
           await shot(`${st}-laeuft-${width}`);
-          // Mergen: the existing land review with its diff first, the merge only after its answer — and with
-          // ein Commit set for the project it still sends no switch: /merge and /land answer 409 to one
-          // until the server reads it there (src/board.ts#LAND_FORM_NOTE)
-          await evaluate(`localStorage.setItem('fleet.board.landform', ${JSON.stringify(JSON.stringify({ repo: { [REPO]: "squash" }, lane: {} }))})`);
-          fx.writes = [];
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(liveLane))})?.querySelector('.live-merge-btn')?.click()`);
-          const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
-          const askTitle = await evaluate<string | null>(`document.querySelector('.riskoverlay .landreviewpanel h2')?.textContent ?? null`);
-          const beforeAnswer = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => w.path);
-          await shot(`${st}-rueckfrage-${width}`);
-          await evaluate(`[...document.querySelectorAll('.riskoverlay .riskbtn')].find((b) => /land$/.test(b.textContent))?.click()`);
-          await wait(`!document.querySelector('.riskoverlay')`, 3000);
-          await wait(`false`, 300);
-          const landW = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path));
-          facts.merge = { asked, askTitle, beforeAnswer, after: landW.map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
+          // Mergen: the existing land review with its diff first, the merge only after its answer — and the land
+          // form goes along to /merge alone: without a choice (ein Commit, the server's default) no switch, with
+          // alle Commits {"squash":false}; ⏏ (/land) never carries one, it answers 409 to a named squash:true
+          const mergeOnce = async (form: "squash" | "commits" | null) => {
+            if (form) await evaluate(`localStorage.setItem('fleet.board.landform', ${JSON.stringify(JSON.stringify({ repo: { [REPO]: form }, lane: {} }))})`);
+            else await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+            fx.writes = [];
+            await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(liveLane))})?.querySelector('.live-merge-btn')?.click()`);
+            const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
+            const askTitle = await evaluate<string | null>(`document.querySelector('.riskoverlay .landreviewpanel h2')?.textContent ?? null`);
+            const beforeAnswer = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => w.path);
+            if (!form) await shot(`${st}-rueckfrage-${width}`);
+            await evaluate(`[...document.querySelectorAll('.riskoverlay .riskbtn')].find((b) => /land$/.test(b.textContent))?.click()`);
+            await wait(`!document.querySelector('.riskoverlay')`, 3000);
+            await wait(`false`, 300);
+            const landW = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path));
+            return { asked, askTitle, beforeAnswer, after: landW.map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
+          };
+          const mergeNone = await mergeOnce(null), mergeCommits = await mergeOnce("commits");
+          facts.merge = { none: mergeNone, commits: mergeCommits };
           await evaluate(`localStorage.removeItem('fleet.board.landform')`);
-          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge — with ein Commit set, no switch in the body`] =
-            asked && askTitle === `Land ${liveLane.branch} → main — review what lands` && beforeAnswer.length === 0
-            && landW.map((w) => w.path).join(",") === "/api/slots/12/land,/api/slots/12/merge" && JSON.stringify(landW[1]?.body) === "{}";
+          const asksFirst = (m: typeof mergeNone) => m.asked && m.askTitle === `Land ${liveLane.branch} → main — review what lands` && m.beforeAnswer.length === 0;
+          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge — without a choice no switch in the body, with alle Commits {"squash":false}, and ⏏ before it none`] =
+            asksFirst(mergeNone) && asksFirst(mergeCommits)
+            && mergeNone.after.join(",") === "/api/slots/12/land {},/api/slots/12/merge {}"
+            && mergeCommits.after.join(",") === `/api/slots/12/land {},/api/slots/12/merge {"squash":false}`;
           // the field under the project's head
           // Live-Session toggles its field: tapped only while the field is closed
           const startOpen = async (sentence: string) => {
@@ -13219,12 +13245,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
           // NO FLAG AT A CLOSED LANE (owner 2026-10-10: „[Zitat entfernt]“): C's red result
           // on an older stand, D's and E's green ones stand at their opened points, not on the row. What waits
-          // or runs is the DIAMOND on the way back (#gateLook): a ring while it waits, filled while it runs —
-          // on a landed lane's solid line too
+          // or runs is the DIAMOND on the way back (#gateLook): a ring while it waits, filled while it runs.
+          // THE CHECK AFTER A LAND IS NO LANE'S (owner 2026-10-10: „[Zitat entfernt]“
+          // ): E's own check after its land runs, and
+          // E's row carries no diamond for it — that is the stem's (below)
           const gate2 = (slot: number) => r.gates.find((x) => x.row === String(slot))?.gate ?? null;
           facts.manyGates = r.gates.map((x) => `${x.row}: ${x.gate}`);
-          claims[`${tag}no closed lane carries a flag, red or green; a waiting check is a ring diamond, the running check after a land a filled one`] =
-            [c, d, e, f, g].every((x) => !x.flag) && gate2(12) === "queue" && gate2(14) === "run" && gate2(15) === null;
+          claims[`${tag}no closed lane carries a flag, red or green; a waiting check is a ring diamond, and the running check after E's land puts none on E's row`] =
+            [c, d, e, f, g].every((x) => !x.flag) && gate2(12) === "queue" && gate2(14) === null && gate2(15) === null;
           // THE DIAMOND'S COLOURS AFTER A RUN (owner 2026-10-09: „[Zitat entfernt]“; 2026-10-08: „[Zitat entfernt]“
           // ): for the server's minutes after its runs ended, filled green
           // where they passed, filled red where one failed — no flag stands for them afterwards
@@ -13278,12 +13306,25 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             // THE CHECK AFTER A LAND ON THE BOARD (round 6, owner 2026-10-09: „[Zitat entfernt]“
             // ; „[Zitat entfernt]“):
             // while the audit runs for E's land on overhaul and a land on main waits for it, each stem carries
-            // its diamond beside its head — ink where it runs, a ring where it waits — its line to the head
-            // dashed, and E's way back stays dashed although E has landed. The server names the repo by its
-            // basename (fx.audit). Without an audit no stem has a diamond and E's way is solid
-            const stemsOf = () => evaluate<{ id: string | null; audit: string | null; gate: string | null; placed: string | null; aria: string }[]>(`[...document.querySelectorAll('#boardbody .ranke .zr.base')].map((x) => {
-              const g = x.querySelector(':scope > .lgate.stem'); return { id: x.dataset.id ?? null, audit: x.dataset.audit ?? null, gate: g?.dataset.gate ?? null, placed: g?.dataset.placed ?? null, aria: g?.getAttribute('aria-label') ?? '' }; })`);
-            const dashedHeads = () => evaluate<number>(`[...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait').length`);
+            // its diamond — ink where it runs, a ring where it waits — at the END of a dashed line from the
+            // stem's row to the right (owner 2026-10-10: „[Zitat entfernt]“
+            // ), and E's way back stays dashed although
+            // E has landed. The server names the repo by its basename (fx.audit). Without an audit no stem has
+            // a diamond or a dashed line and E's way is solid
+            type StemRead = { id: string | null; audit: string | null; gate: string | null; placed: string | null; aria: string; cx: number | null; cy: number | null; rowEnd: number;
+              line: { x0: number; x1: number; y: number } | null; dashed: number };
+            const stemsOf = () => evaluate<StemRead[]>(`(() => { const lines = [...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait audit')
+                .map((p) => { const m = /^M([\\d.]+) ([\\d.]+)H([\\d.]+)$/.exec(p.getAttribute('d') ?? ''); return m ? { x0: +m[1], y: +m[2], x1: +m[3], rk: p.closest('.rk') } : null; }).filter(Boolean);
+              return [...document.querySelectorAll('#boardbody .ranke .zr.base')].map((x) => { const g = x.querySelector(':scope > .lgate.stem'), t = x.closest('.rk').getBoundingClientRect();
+                const gi = g?.querySelector(':scope > i')?.getBoundingClientRect(), cx = gi ? gi.left + gi.width / 2 - t.left : null, cy = gi ? gi.top + gi.height / 2 - t.top : null;
+                const rowEnd = Math.max(0, ...[...x.querySelectorAll(':scope > .lr, :scope > .nm, :scope > .rt, :scope > .ti, :scope > .fc')].map((e) => e.getBoundingClientRect().right - t.left));
+                const mine = lines.filter((l) => l.rk === x.closest('.rk') && cy !== null && Math.abs(l.y - cy) <= 1);
+                return { id: x.dataset.id ?? null, audit: x.dataset.audit ?? null, gate: g?.dataset.gate ?? null, placed: g?.dataset.placed ?? null, aria: g?.getAttribute('aria-label') ?? '',
+                  cx, cy, rowEnd, line: mine[0] ? { x0: mine[0].x0, x1: mine[0].x1, y: mine[0].y } : null, dashed: mine.length }; }); })()`);
+            const dashedHeads = () => evaluate<number>(`[...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait audit').length`);
+            // the line starts at the end of what the stem's row says and ends at the diamond's left tip
+            const endsInDiamond = (x: StemRead | undefined) => !!x?.line && x.cx !== null && x.dashed === 1
+              && Math.abs(x.line.x0 - (Math.round(x.rowEnd) + 5)) <= 1.5 && Math.abs(x.line.x1 - (x.cx - 6)) <= 1.5 && x.line.x1 - x.line.x0 >= 6;
             const eBack = (rr: Read) => rr.backs.find((b) => b.for === pathOf(lanesOf(st).find((l) => l.slot === 14)!))?.cls ?? null;
             const quietStems = await stemsOf(), quietHeads = await dashedHeads(), quietE = eBack(r);
             fx.audit = true;
@@ -13291,15 +13332,22 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const ra = await read();
             const stems = await stemsOf(), heads = await dashedHeads();
             await shot(`${st}-nachpruefung-${width}`);
+            // the same with E opened: its points say its check after the land, its row carries no diamond
+            await evaluate(`document.querySelector('#boardbody .zr[data-slot="14"]')?.click()`);
+            await wait(`document.querySelector('#boardbody .zr[data-slot="14"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
+            await settle(150);
+            await shot(`${st}-nachpruefung-offen-${width}`);
             fx.audit = false;
             await reopen(restored);
             const sm = stems.find((x) => x.id === `${REPO}#main`), so = stems.find((x) => x.id === `${REPO}#overhaul`);
             facts.stemAudit = { quietStems, quietHeads, quietE, stems, heads, e: eBack(ra), overflow: ra.secOverflow, page: ra.pageScroll };
-            claims[`${tag}while the check after a land runs on overhaul and a land on main waits for it, each stem carries its diamond — ink on overhaul, a ring on main — its line to its head dashed; none without`] =
+            claims[`${tag}while the check after a land runs on overhaul and a land on main waits for it, each stem carries its diamond — ink on overhaul, a ring on main — on a dashed line; none without`] =
               quietStems.every((x) => x.gate === null && !x.audit) && quietHeads === 0
               && so?.audit === "run" && so.gate === "run" && so.placed === "1" && /^Nachprüfung läuft [^—]* · für 5e6b — Nachprüfung von overhaul, Klick zeigt sie$/.test(so.aria)
               && sm?.audit === "queue" && sm.gate === "queue" && sm.placed === "1" && /^1 Land wartet auf die nächste Nachprüfung · 4d2e — Nachprüfung von main/.test(sm.aria)
               && heads === 2 && ra.secOverflow <= 0 && ra.pageScroll <= 0;
+            claims[`${tag}each stem's check after the land stands at the end of a dashed line from its row to the right: the line leaves where the row's words end and ends at the diamond`] =
+              endsInDiamond(so) && endsInDiamond(sm) && quietStems.every((x) => x.dashed === 0);
             claims[`${tag}a landed lane's way back stays dashed while the check after its land runs — E's, solid once nothing of its way is open`] =
               (quietE ?? "").split(" ").includes("land") && (eBack(ra) ?? "").split(" ").includes("wait");
           }

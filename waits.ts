@@ -28,7 +28,12 @@ export interface BlockerHistory {
 }
 export interface BlockerTotals { freigabe: number | null; dispatch: number | null; ms: Partial<Record<BlockerArt, number>>; unknown: boolean }
 
-export function loadBlockerHistory(value: unknown): BlockerHistory | undefined {
+// `seenUntil`: the row's last observation before the restart (server.ts#blockerObservedAt, written
+// with every state save). An OPEN section is closed there — it was observed that long — and only the
+// stretch from there to the next observation stays `unknown`. Without it (an older state file, a
+// value before the section began) the open section closes at its own start, as before. Measured
+// 2026-10-11 (Red Team 2, B): closing at the start booked 61 % of that day's wait hours `unknown`.
+export function loadBlockerHistory(value: unknown, seenUntil?: unknown): BlockerHistory | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const r = value as Record<string, unknown>;
   const timestamp = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -45,8 +50,9 @@ export function loadBlockerHistory(value: unknown): BlockerHistory | undefined {
     if (section.bis === null && index !== r.abschnitte.length - 1) return undefined;
     const previous = abschnitte.at(-1);
     if (previous && (previous.bis === null || previous.bis !== section.von)) return undefined;
+    const closeAt = timestamp(seenUntil) && seenUntil >= section.von ? seenUntil : section.von;
     abschnitte.push({ art: section.art as BlockerArt, adressat: section.adressat, wurzel: section.wurzel,
-      von: section.von, bis: section.bis === null ? section.von : section.bis });
+      von: section.von, bis: section.bis === null ? closeAt : section.bis });
   }
   return { freigabe: r.freigabe, dispatch: r.dispatch, abschnitte };
 }

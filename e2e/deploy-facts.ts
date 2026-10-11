@@ -516,6 +516,18 @@ export async function run(): Promise<void> {
       const respawn = await deploys();
       check("§6 a respawn on that same head writes nothing more — one row per head, not one per lap",
         respawn.total === before.total + 1, `${before.total} → ${respawn.total}`);
+      // CHARGE 2b (5): the watchdog's respawn on a NEW head is still a row (a different commit runs),
+      // but it names the watchdog and its reason — never an unattributed, i.e. silent, deploy
+      commit("server.ts", "// v8 — respawned by the watchdog");
+      const headC = headNow();
+      await restartSrv({ FLEET_REPO_DIR: FIX, FLEET_BOOT_CAUSE: "watchdog", FLEET_BOOT_WHY: "health: mem=1600MB over 1536MB" });
+      const byWatchdog = await deploys();
+      const wRow = byWatchdog.deploys[0];
+      check("§6 a watchdog respawn on a new head is a row that names the watchdog and its reason, not an unattributed deploy",
+        headC !== headB && byWatchdog.total === before.total + 2 && wRow?.by === "watchdog" && wRow.stage === "boot"
+          && wRow.ok === null && wRow.target === null && wRow.bootHead === headC
+          && wRow.reason === "watchdog respawn, no deploy — health: mem=1600MB over 1536MB",
+        JSON.stringify(wRow).slice(0, 300));
     }
 
     // --- §7 A DEPLOY GOES LIVE ONLY ON A TIP THE FULL SUITE SAW ----------------------------------

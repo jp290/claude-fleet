@@ -3,7 +3,7 @@
 import { MODEL_DEFAULTS } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
@@ -2880,10 +2880,22 @@ export async function run(ctx: Ctx): Promise<void> {
     const sendSource = sendStart >= 0 && sendEnd > sendStart ? taskServerSource.slice(sendStart, sendEnd) : "";
     check("delivery residue fixture: sendText and its recovery helper are readable", !!sendSource,
       `start=${sendStart} end=${sendEnd}`);
-    type SendTrace = { events: string[]; acceptance?: string; error?: string; refused?: boolean };
+    type SendTrace = { events: string[]; acceptance?: string; error?: string; refused?: boolean;
+      audits: string[]; earlier: string[] };
+    // `plan` (Charge 2b, residue by hash and the transcript witness): `reads` and `composer` are the
+    // field's answers in order — one per readComposer and per awaitComposer, falling back to the old
+    // two-read shape when they run out; `sends` runs that many sends through ONE instance (the record
+    // of a kept payload lives in its module scope) and reports the last; `transcript` is the file the
+    // slot's transcript resolves to; `notAccepted` lets a not-accepted send start the stuck-delivery
+    // sensor, as it does live (a no-op here). `earlier` names how the earlier sends ended.
     const exerciseSend = async (source: string, before: string, afterResidue: string,
-      readiness: { state: "ready" | "blocked"; why?: string } | null = { state: "ready" }): Promise<SendTrace> => {
+      readiness: { state: "ready" | "blocked"; why?: string } | null = { state: "ready" },
+      plan: { reads?: string[]; composer?: string[]; sends?: number; transcript?: string; notAccepted?: true } = {}): Promise<SendTrace> => {
       const events: string[] = [];
+      const audits: string[] = [];
+      const earlier: string[] = [];
+      const reads = [...(plan.reads ?? [])];
+      const answers = [...(plan.composer ?? [])];
       let composerReads = 0;
       class Refused extends Error {}
       class Occupied extends Refused {
@@ -2899,10 +2911,11 @@ export async function run(ctx: Ctx): Promise<void> {
         deliveryHeader: () => "[fleet-zustellung · probe] ", DEFAULT_BOOT_SETTLE_MS: 0,
         wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
         existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
-        readComposer: async () => before, sameBoundPane: () => true,
+        readComposer: async () => reads.length ? reads.shift()! : before, sameBoundPane: () => true,
         paneReadiness: async () => readiness,
         DELIVERY_HEADER_PREFIX: "[fleet-zustellung · ",
         awaitComposer: async () => { composerReads++; events.push(composerReads === 1 ? "reread" : "accept-read");
+          if (answers.length) return answers.shift()!;
           return composerReads === 1 ? afterResidue : ""; },
         tmux: async (...args: string[]) => { events.push(args[0] === "send-keys" && args.at(-1) === "Enter"
           ? "enter" : args[0] === "send-keys" ? "header" : args[0] === "paste-buffer" ? "paste" : args[0]!);
@@ -2911,7 +2924,7 @@ export async function run(ctx: Ctx): Promise<void> {
         SOCK: "probe", Bun: { sleep: async () => {}, spawn: () => ({ stdin: { write: () => {}, end: async () => {} },
           exited: Promise.resolve(0) }) },
         SNAPSHOT_MIRROR: null, // server.ts#SNAPSHOT_MIRROR: a live instance, not a read-only mirror
-        audit: () => {}, SendAgentNotAlive: Refused, SendRefused: Refused, SendComposerOccupied: Occupied,
+        audit: (event: string) => { audits.push(event); }, SendAgentNotAlive: Refused, SendRefused: Refused, SendComposerOccupied: Occupied,
         randomBytes, waitForSendTestLatch: async () => {}, SEND_BEFORE_PASTE_TEST_LATCH: null,
         SEND_AFTER_PASTE_TEST_LATCH: null, OWN_PASTE_QUIET_MS: 1000, OWN_PASTE_QUIET_TAIL_MS: 100,
         ACCEPT_WAIT_MS: 200, acceptWaitMs: () => 200, awaitArrival: async () => "complete", SendNotAccepted: NotAccepted,
@@ -2919,21 +2932,32 @@ export async function run(ctx: Ctx): Promise<void> {
         sendFailureDelivery: () => "refused",
         auditActorScope: { getStore: () => undefined },
         stuckDeliveryProbes: new Map<number, string>(), stuckDeliveries: new Map<number, unknown>(),
-        observeStuckDelivery: () => { throw new Error("observed fixture must not start the residue sensor"); },
+        observeStuckDelivery: () => { if (!plan.notAccepted) throw new Error("observed fixture must not start the residue sensor"); },
+        createHash, transcriptFile: () => plan.transcript ?? null, openSync, fstatSync, readSync, closeSync,
       };
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const send = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn sendText;`)(deps) as
         (slot: { id: number; inputChain: Promise<unknown>; sleeping: boolean }, text: string,
           submit: boolean, options: { path: string; bypassQueue?: true }) => Promise<{ acceptance: string }>;
+      const slot = { id: 1, inputChain: Promise.resolve(), sleeping: false };
+      for (let i = 1; i < (plan.sends ?? 1); i++) {
+        try {
+          earlier.push((await send(slot, "next payload", true, { path: "owner", bypassQueue: true })).acceptance);
+        } catch (e) { earlier.push(e instanceof NotAccepted ? "not-accepted" : e instanceof Error ? e.message : String(e)); }
+        events.length = 0;
+        audits.length = 0;
+        composerReads = 0;
+      }
       try {
         // bypassQueue: overhaul's delivery bundling fronts sendText; this fixture measures the paste body behind it
-        const result = await send({ id: 1, inputChain: Promise.resolve(), sleeping: false }, "next payload", true,
-          { path: "owner", bypassQueue: true });
-        return { events, acceptance: result.acceptance };
-      } catch (e) { return { events, error: e instanceof Error ? e.message : String(e), refused: e instanceof Refused }; }
+        const result = await send(slot, "next payload", true, { path: "owner", bypassQueue: true });
+        return { events, acceptance: result.acceptance, audits, earlier };
+      } catch (e) {
+        return { events, error: e instanceof Error ? e.message : String(e), refused: e instanceof Refused, audits, earlier };
+      }
     };
     const fleetRest = "[fleet-zustellung · old path] [Pasted text #3]";
-    const recovered = sendSource ? await exerciseSend(sendSource, fleetRest, "") : { events: [] };
+    const recovered = sendSource ? await exerciseSend(sendSource, fleetRest, "") : { events: [], audits: [], earlier: [] };
     const recovers = (trace: SendTrace): boolean => trace.acceptance === "observed"
       && trace.events.filter((e) => e === "enter").length === 2
       && trace.events.indexOf("enter") < trace.events.indexOf("reread")
@@ -2941,21 +2965,57 @@ export async function run(ctx: Ctx): Promise<void> {
       && trace.events.lastIndexOf("enter") > trace.events.indexOf("paste");
     check("(A) a Fleet-headed paste rest gets one recovery Enter, a fresh empty read, then the new paste and submit",
       recovers(recovered), JSON.stringify(recovered));
-    const still = sendSource ? await exerciseSend(sendSource, fleetRest, "still occupied") : { events: [] };
+    const still = sendSource ? await exerciseSend(sendSource, fleetRest, "still occupied") : { events: [], audits: [], earlier: [] };
     const staysHeld = (trace: SendTrace): boolean => trace.events.filter((e) => e === "enter").length === 1
       && trace.events.includes("reread") && !trace.events.includes("paste")
       && /composer occupied/.test(trace.error ?? "");
     check("(A) if the Fleet residue remains occupied after Enter, no new paste or second Enter follows",
       staysHeld(still), JSON.stringify(still));
-    const draft = sendSource ? await exerciseSend(sendSource, "owner draft", "") : { events: [] };
+    const draft = sendSource ? await exerciseSend(sendSource, "owner draft", "") : { events: [], audits: [], earlier: [] };
     check("(A) text without a Fleet head stays untouched and blocks the new paste",
       draft.events.length === 0 && /composer occupied/.test(draft.error ?? ""), JSON.stringify(draft));
     const blocked = sendSource ? await exerciseSend(sendSource, "", "",
-      { state: "blocked", why: "fixture blocked screen" }) : { events: [] };
+      { state: "blocked", why: "fixture blocked screen" }) : { events: [], audits: [], earlier: [] };
     check("(A) a blocked readiness screen refuses before any pane action or acceptance",
       blocked.refused === true && blocked.events.length === 0 && blocked.acceptance === undefined
       && /gate=blocked-screen: fixture blocked screen — nothing typed/.test(blocked.error ?? ""),
       JSON.stringify(blocked));
+    check("(A) every rest submission is a ledger row (send_residue), a rest of another message included",
+      recovered.audits.filter((a) => a === "send_residue").length === 1, JSON.stringify(recovered.audits));
+    // CHARGE 2b (1): a rest that IS the new message is submitted once and never typed again — by the
+    // visible field when it shows the whole text, by the kept-payload record when it shows only the
+    // folded `[Pasted text …]` of the not-accepted send before it (Slot 9, 2026-10-11 09:34/09:40)
+    const composedProbe = "[fleet-zustellung · probe] next payload";
+    const onceOnly = (trace: SendTrace): boolean => trace.acceptance === "observed"
+      && trace.events.filter((e) => e === "enter").length === 1 && !trace.events.includes("paste")
+      && trace.audits.includes("send_residue");
+    const sameVisible = sendSource ? await exerciseSend(sendSource, composedProbe, "") : { events: [], audits: [], earlier: [] };
+    check("(2b-1) a Fleet rest equal to the new message by hash is submitted once, and the new copy is never typed",
+      onceOnly(sameVisible), JSON.stringify(sameVisible));
+    const folded = "[fleet-zustellung · probe] [Pasted text #1 +3 lines]";
+    const sameKept = sendSource ? await exerciseSend(sendSource, folded, "", { state: "ready" },
+      { sends: 2, reads: ["", folded], composer: [composedProbe], notAccepted: true }) : { events: [], audits: [], earlier: [] };
+    check("(2b-1) a folded rest of the same message, kept by a not-accepted send, is submitted once and not typed again",
+      JSON.stringify(sameKept.earlier) === '["not-accepted"]' && onceOnly(sameKept), JSON.stringify(sameKept));
+    const foldedFresh = sendSource ? await exerciseSend(sendSource, folded, "") : { events: [], audits: [], earlier: [] };
+    check("(2b-1) a folded rest with no record of it is still submitted AND followed by the new paste — no message is lost",
+      recovers(foldedFresh) && foldedFresh.audits.includes("send_residue"), JSON.stringify(foldedFresh));
+    // CHARGE 2b (2): the transcript speaks before "not accepted" — a user turn with the typed text since
+    // the Enter turns a field that still shows text into a stale frame; an older turn does not
+    const turnFile = (at: number): string => {
+      const file = join(mkdtempSync(join(tmpdir(), "fleet-e2e-took-turn-")), "t.jsonl");
+      writeFileSync(file, `${JSON.stringify({ type: "user", isSidechain: false, timestamp: new Date(at).toISOString(),
+        message: { role: "user", content: `${composedProbe}` } })}\n`);
+      return file;
+    };
+    const withTurn = sendSource ? await exerciseSend(sendSource, "", "", { state: "ready" },
+      { composer: ["still shows the payload"], transcript: turnFile(Date.now() + 60_000) }) : { events: [], audits: [], earlier: [] };
+    check("(2b-2) a field still holding text after the window is observed when the transcript has the turn since the Enter",
+      withTurn.acceptance === "observed" && withTurn.audits.includes("send_turn_in_transcript"), JSON.stringify(withTurn));
+    const oldTurn = sendSource ? await exerciseSend(sendSource, "", "", { state: "ready" },
+      { composer: ["still shows the payload"], transcript: turnFile(Date.now() - 3_600_000), notAccepted: true }) : { events: [], audits: [], earlier: [] };
+    check("(2b-2) a turn older than the Enter is no witness: the send stays not accepted",
+      /prompt not accepted/.test(oldTurn.error ?? "") && !oldTurn.audits.includes("send_turn_in_transcript"), JSON.stringify(oldTurn));
   }
 
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
@@ -11390,6 +11450,19 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(gap.abschnitte.map((s) => [s.art, s.von, s.bis])) === JSON.stringify([
         ["hold", 100, 200], ["after", 200, 200], ["unknown", 200, 300], ["collision", 300, null]])
         && blockerTotals(gap).ms.unknown === 100 && blockerTotals(gap).unknown === true, JSON.stringify(gap));
+    // CHARGE 2b (4): the row's last observation before the restart (stateSnapshot's blockerObservedAt)
+    // closes the open section THERE — only 260..300 was unobserved; a value before the section's
+    // start is no observation of it and changes nothing
+    const openAt = { ...history, dispatch: null,
+      abschnitte: history.abschnitte.slice(0, 2).map((s, i) => i === 1 ? { ...s, bis: null } : s) };
+    const seen = observeBlocker(loadBlockerHistory(openAt, 260)!, bCollision, 300);
+    const seenBefore = observeBlocker(loadBlockerHistory(openAt, 150)!, bCollision, 300);
+    check("(blockers) restart closes an open section at its last observation, and only the stretch after it is unknown",
+      JSON.stringify(seen.abschnitte.map((s) => [s.art, s.von, s.bis])) === JSON.stringify([
+        ["hold", 100, 200], ["after", 200, 260], ["unknown", 260, 300], ["collision", 300, null]])
+        && blockerTotals(seen).ms.after === 60 && blockerTotals(seen).ms.unknown === 40
+        && JSON.stringify(seenBefore.abschnitte) === JSON.stringify(gap.abschnitte),
+      JSON.stringify({ seen: seen.abschnitte, seenBefore: seenBefore.abschnitte }));
     const ready = finishBlockers(observeBlocker({ freigabe: 100, dispatch: null, abschnitte: [] }, undefined, 100), 200);
     check("(blockers) ready without a deriveWaits reason is unknown until actual dispatch",
       blockerTotals(ready).ms.unknown === 100 && blockerTotals(ready).unknown === true, JSON.stringify(ready));

@@ -385,6 +385,12 @@ type AuditEvent =
   // an owner-capable send exhausted the bounded fresh-pane readiness wait and was delivered
   // anyway. The row makes the possible loss visible without turning it into a refusal.
   | "send_boot_timeout"
+  // a send found a Fleet-headed rest in the field and submitted it (server.ts#sendText): one row per
+  // rest, with both hashes and whether it WAS the new message — then nothing is typed a second time
+  | "send_residue"
+  // the field still held text after the acceptance window, but the session's transcript already had
+  // the turn (server.ts#transcriptTookTurn) — a stale frame, booked observed instead of not accepted
+  | "send_turn_in_transcript"
   // a bootstrap call overwrote a STALE Program-MAIN binding. The one row that separates "this
   // Program was rebound" from "it was bootstrapped for the first time" after the fact — the
   // response says it once, to one caller. Detail names the program and the REPLACED occupation

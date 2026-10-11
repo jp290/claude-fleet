@@ -6283,6 +6283,10 @@ function stateSnapshot(): string {
     lineageHandovers, lineageHandoverLosses,
     ...(successionDebts.length ? { successionDebts } : {}),
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
+    // each waiting row's LAST observation, riding whatever save happens anyway — never a save of its
+    // own (2133cacc: no clock write per tick). A restart closes an open wait section here instead of
+    // at its start (waits.ts#loadBlockerHistory)
+    ...(blockerObservedAt.size ? { blockerObservedAt: Object.fromEntries(blockerObservedAt) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -11277,6 +11281,54 @@ async function submitFleetResidue(s: Slot, bound: BoundSlotPane): Promise<string
   if (!sameBoundPane(s, bound)) throw new Error("slot changed during Fleet residue probe");
   return after;
 }
+// THE FLEET PAYLOAD A COMPOSER KEPT — slot -> the occupant it was typed into and the sha256 of what
+// was typed (header + body). Written where a send ends "not accepted" with its text still in the
+// field, consumed by the next send's residue read. Measured 2026-10-11 (Slot 9, audit.jsonl and
+// transcript aa571a0b): an owner /send of 1902 B ended SendNotAccepted at 09:34, the owner sent the
+// same text again at 09:40, and that send submitted the rest AND typed the second copy — one message,
+// two turns. A long paste shows in the field only as `[Pasted text #n …]`, so the field alone cannot
+// say whether the rest IS the new message; this record can. Not persisted: after a restart no record
+// exists and a rest is submitted as before, which is the direction that never loses a message.
+const unsentFleetPayloads = new Map<number, { openedAt: number; sha256: string }>();
+const payloadSha256 = (composed: string): string => createHash("sha256").update(composed, "utf8").digest("hex");
+// THE TRANSCRIPT IS THE SECOND WITNESS OF A TURN (Red Team 2, B, 2026-10-11): 5 of 6 sends booked
+// "not accepted" were already a user turn in the session's transcript — under load the TUI redraws
+// late, and a field that still SHOWS the text after the window is a stale frame, not a refused turn.
+// Before a send says "not accepted", the transcript's tail is asked for a user line written since
+// the Enter that carries the typed text. Only the tail: this runs on the refusal path of a box that
+// may be swapping, and the turn it looks for is seconds old. `false` covers every way of not
+// knowing (no transcript for this harness, no file yet, unreadable) — the verdict then stays the
+// field's, exactly as before.
+const TOOK_TURN_TAIL_BYTES = 512 * 1024;
+const TOOK_TURN_PROBE_CHARS = 200;
+const TOOK_TURN_SLACK_MS = 2_000;
+function transcriptTookTurn(s: Slot, typed: string, since: number): boolean {
+  const probe = typed.trim().slice(0, TOOK_TURN_PROBE_CHARS);
+  const file = probe ? transcriptFile(s) : null;
+  if (!file) return false;
+  let tail: string;
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, TOOK_TURN_TAIL_BYTES);
+    const buf = Buffer.alloc(length);
+    readSync(fd, buf, 0, length, size - length);
+    tail = buf.toString("utf8");
+  } catch { return false; } finally { if (fd !== null) closeSync(fd); }
+  for (const line of tail.split("\n")) {
+    if (!line.includes('"user"')) continue;
+    let d: { type?: unknown; isSidechain?: unknown; timestamp?: unknown; message?: { content?: unknown } };
+    try { d = JSON.parse(line) as typeof d; } catch { continue; } // the tail's first line is cut mid-way
+    if (d.type !== "user" || d.isSidechain === true || typeof d.timestamp !== "string") continue;
+    if (!(Date.parse(d.timestamp) >= since - TOOK_TURN_SLACK_MS)) continue;
+    const c = d.message?.content;
+    const text = typeof c === "string" ? c : Array.isArray(c)
+      ? c.map((b: { type?: unknown; text?: unknown }) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join("\n") : "";
+    if (text.includes(probe)) return true;
+  }
+  return false;
+}
 
 type SendTextOptions = { path: SendPath; rollbackOwnPayload?: true; requireAgent?: true;
   senders?: readonly SlotStreamOccupant[];
@@ -11747,10 +11799,27 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       // before the next paste; every other occupied composer remains untouched.
       const before = await readComposer(s, bound);
       if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during composer probe — nothing typed");
+      // the record is consumed by this read whatever it finds: a field without a Fleet rest has
+      // nothing left that the record could describe
+      const kept = unsentFleetPayloads.get(s.id);
+      unsentFleetPayloads.delete(s.id);
       if (before?.startsWith(DELIVERY_HEADER_PREFIX)) {
+        // IS THE REST THIS MESSAGE? Equal by hash — the visible field when it shows the whole text,
+        // else the record of what the not-accepted send typed — and an equal rest is submitted
+        // INSTEAD of a second copy. Every rest submission is a ledger row, equal or not.
+        const sha256 = payloadSha256(composed);
+        const recorded = kept?.openedAt === occupant.openedAt ? kept.sha256 : null;
+        const same = before === composed || recorded === sha256;
         const afterResidue = await submitFleetResidue(s, bound);
+        const taken = afterResidue === "" ? "yes" : afterResidue === null ? "unknown" : "no";
+        audit("send_residue", s.id, `${options.path} ${[...before].length} chars same=${same} taken=${taken}`,
+          { sendPath: options.path, residueChars: [...before].length, residueSha256: recorded ?? payloadSha256(before),
+            payloadSha256: sha256, same, taken });
         if (afterResidue === null) throw new Error("Fleet residue submission unobservable — nothing pasted");
         if (afterResidue) throw new SendComposerOccupied(afterResidue.length);
+        // the rest WAS this message and the field took it: nothing is typed twice. Observed — the
+        // payload was read on screen before the Enter that emptied the field.
+        if (same) return { acceptance: "observed" as const };
       } else if (before) throw new SendComposerOccupied(before.length);
     }
     // Readiness is a process fact, not an output fact. `openedAt` asks "could this pane still be
@@ -11858,6 +11927,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       }
       if (!sameBoundPane(s, bound)) throw new Error("slot changed before Enter");
       phase("arrival");
+      const enterAt = Date.now();
       const sk = await tmux("send-keys", "-t", bound.paneId, "Enter");
       phase("submit");
       if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
@@ -11882,8 +11952,19 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         return { acceptance: arrival === "complete" ? "observed" as const : "unobservable" as const };
       }
       if (after === null) return { acceptance: "unobservable" as const };
+      // the field still shows text — the transcript speaks first (transcriptTookTurn): a user turn
+      // with this text since the Enter is a taken turn behind a stale frame, never a refusal
+      if (transcriptTookTurn(s, text, enterAt)) {
+        audit("send_turn_in_transcript", s.id, `${options.path} field held ${after.length} chars after ${acceptMs}ms, the transcript has the turn`,
+          { sendPath: options.path, fieldChars: after.length, acceptWaitMs: acceptMs });
+        return { acceptance: "observed" as const };
+      }
       const rollback = options.rollbackOwnPayload
         ? await rollbackOwnComposerPayload(s, bound, composed) : null;
+      // what stays in the field WHOLE is recorded for the next send's rest read: untouched (no
+      // rollback) or kept by it. "cleared" left nothing, and "residue" left an unknown part of it
+      if (header && (rollback === null || rollback.startsWith("kept:")))
+        unsentFleetPayloads.set(s.id, { openedAt: occupant.openedAt, sha256: payloadSha256(composed) });
       throw new SendNotAccepted(
         `prompt not accepted — composer still holds ${after.length} chars after ${acceptMs}ms`
           + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
@@ -43845,6 +43926,11 @@ if (existsSync(STATE_FILE)) {
     rolePresets = normalizeRolePresets((persisted as { rolePresets?: unknown }).rolePresets) ?? null;
     // N3: how many task verdicts a hand-edited file carried past the cap. Counted, then said.
     let overCappedVerdicts = 0;
+    // the rows' last blocker observations (stateSnapshot); a malformed map reads as none, and
+    // loadBlockerHistory checks each value itself
+    const seenRaw = (persisted as { blockerObservedAt?: unknown }).blockerObservedAt;
+    const blockerSeenAt: Record<string, unknown> = seenRaw && typeof seenRaw === "object" && !Array.isArray(seenRaw)
+      ? seenRaw as Record<string, unknown> : {};
     if (stateOwner === null && Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
@@ -43885,7 +43971,7 @@ if (existsSync(STATE_FILE)) {
           // pre-field and malformed rows stay ABSENT — never "owner": the field exists so a released
           // row can be told apart from one nobody recorded, and a hand-edit must not mint either.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
-          blockers: loadBlockerHistory(t.blockers),
+          blockers: loadBlockerHistory(t.blockers, blockerSeenAt[t.id]),
           // the review opt-in: the one stored value or ABSENT — a hand-edited "none" or typo asks for nothing
           review: loadTaskReview((t as { review?: unknown }).review),
           ...(t.reviewDefaultOff === true ? { reviewDefaultOff: true as const } : {}),
@@ -47049,7 +47135,7 @@ const DEPLOY_INFLIGHT_MAX_MS = 10 * 60_000;
 type DeployPrincipal = "owner" | "steward";
 // …and the third value only the boot writes: a restart that no principal announced (see
 // recordUnattributedBoot). Never a verb argument, so no route can claim it.
-type DeployBy = DeployPrincipal | "unattributed";
+type DeployBy = DeployPrincipal | "unattributed" | "watchdog";
 interface DeployMarker {
   id: string; at: number; by: DeployPrincipal;
   target: string;                 // the HEAD this deploy set out to put in the running process
@@ -47098,7 +47184,7 @@ function validDeployRow(raw: unknown): DeployRow | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Partial<DeployRow>;
   if (typeof row.id !== "string" || !/^[0-9a-f]{8}$/.test(row.id)
-    || !["owner", "steward", "unattributed"].includes(String(row.by))
+    || !["owner", "steward", "unattributed", "watchdog"].includes(String(row.by))
     || !(row.ok === true || row.ok === false || row.ok === null)
     || !["build", "restart", "boot"].includes(String(row.stage))
     || !(typeof row.target === "string" || row.target === null)
@@ -47201,6 +47287,14 @@ async function resolveDeployMarker(): Promise<void> {
 // by, and a crash loop must not mint a row per lap. An empty ledger, or a head that could not be
 // read, has nothing to compare and writes nothing — the next measurable boot still compares.
 const UNATTRIBUTED_BOOT_REASON = "srv booted without a deploy marker — restarted outside POST /api/deploy";
+// …UNLESS THE WATCHDOG SAYS IT RESPAWNED SRV (Red Team 2, B, 2026-10-11): the 11:38 respawn stood in
+// the ledger as an unattributed boot of b490faee — a silent deploy, to every reader. watchdog.sh hands
+// the srv it starts FLEET_BOOT_CAUSE=watchdog and its reason in FLEET_BOOT_WHY; the row then names
+// the watchdog and that reason. Still a row: a different commit IS running, and the ledger must not
+// lie by omission (2026-09-14) — but it says it was a respawn, never a deploy.
+const BOOT_BY_WATCHDOG = process.env.FLEET_BOOT_CAUSE === "watchdog";
+const BOOT_WHY = (process.env.FLEET_BOOT_WHY ?? "").trim().slice(0, 120);
+const WATCHDOG_BOOT_REASON = "watchdog respawn, no deploy";
 async function recordUnattributedBoot(): Promise<void> {
   await bootHeadReady;
   if (BOOT_HEAD === null) return;
@@ -47209,9 +47303,9 @@ async function recordUnattributedBoot(): Promise<void> {
   for (let i = rows.length - 1; i >= 0 && !newest; i--) newest = validDeployRow(rows[i]);
   if (!newest || newest.bootHead === BOOT_HEAD) return;
   await appendDeployRow({
-    at: Date.now(), id: randomBytes(4).toString("hex"), by: "unattributed", stage: "boot", ok: null,
+    at: Date.now(), id: randomBytes(4).toString("hex"), by: BOOT_BY_WATCHDOG ? "watchdog" : "unattributed", stage: "boot", ok: null,
     target: null, bootHead: BOOT_HEAD, head: null, hitTarget: null, bundleStale: null,
-    reason: UNATTRIBUTED_BOOT_REASON,
+    reason: BOOT_BY_WATCHDOG ? `${WATCHDOG_BOOT_REASON}${BOOT_WHY ? ` — ${BOOT_WHY}` : ""}` : UNATTRIBUTED_BOOT_REASON,
   });
 }
 

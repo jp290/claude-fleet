@@ -2591,8 +2591,14 @@ export async function run(): Promise<void> {
             if (stopped) process.kill(pid, "SIGCONT");
           }
         };
-        const partialError = (ms: number): RegExp => new RegExp(`^send outcome uncertain: prompt not submitted — the `
-          + `composer still held only part of the \\d+-char payload after ${ms}ms; no Enter was sent$`);
+        // The window before the grace is server.ts#acceptWaitMs: acceptMs times the 1-min load per
+        // core, 1x to 5x (ACCEPT_LOAD_MAX_FACTOR). The probe cannot know the load the server read, so
+        // the bound it names must lie in that band, and the answer must come at or after it.
+        const partialBoundMs = (error: string): number | null => {
+          const m = /^send outcome uncertain: prompt not submitted — the composer still held only part of the \d+-char payload after (\d+)ms; no Enter was sent$/.exec(error);
+          const ms = m ? Number(m[1]) : NaN;
+          return ms >= acceptMs + graceMs && ms <= 5 * acceptMs + graceMs ? ms : null;
+        };
         const notObservedNotice = "prompt acceptance not observed — check the pane; do not paste again";
 
         if (pid > 0) {
@@ -2626,14 +2632,15 @@ export async function run(): Promise<void> {
           const behindProbe = await until(() => stateText().endsWith(stuckText.slice(0, -1)) || count(stuckText) > 0,
             { timeoutMs: 3000, what: "the probe's BSpace behind the stopped payload" })
             .catch((error: unknown) => { if (error instanceof UntilTimeout) return false; throw error; });
+          const stuckBoundMs = partialBoundMs(stuck.body?.error ?? "");
           check("owner send: a payload still partial when the grace runs out answers 409 after the grace and sends no Enter",
-            stuck.response.status === 409 && partialError(acceptMs + graceMs).test(stuck.body?.error ?? "")
+            stuck.response.status === 409 && stuckBoundMs !== null
               && stuck.body?.receipt?.delivery === "uncertain" && stuck.body.receipt.acceptance === "not-observed"
-              && stuck.answeredAfterMs >= acceptMs + graceMs && drained && behindProbe
+              && stuck.answeredAfterMs >= stuckBoundMs && drained && behindProbe
               && count(stuckText) === 0 && stateText().endsWith(stuckText.slice(0, -1))
               && await replay(stuck.response, notObservedNotice),
             JSON.stringify({ http: stuck.response.status, error: stuck.body?.error?.slice(0, 160) ?? null,
-              receipt: stuck.body?.receipt ?? null, answeredAfterMs: stuck.answeredAfterMs, acceptMs, graceMs,
+              receipt: stuck.body?.receipt ?? null, answeredAfterMs: stuck.answeredAfterMs, boundMs: stuckBoundMs, acceptMs, graceMs,
               drained, behindProbe, turns: count(stuckText), composerBytes: stateText().length }));
           await clearFixtureComposer("the stopped payload");
 
@@ -2654,11 +2661,13 @@ export async function run(): Promise<void> {
             writeFileSync(modeFile, "normal\n");
           }
           check("owner send: a placeholder frame inside the grace never earns the Enter — 409 after the grace",
-            placeholder?.response.status === 409 && partialError(acceptMs + graceMs).test(placeholder.body?.error ?? "")
+            placeholder?.response.status === 409 && partialBoundMs(placeholder.body?.error ?? "") !== null
+              && placeholder.answeredAfterMs >= (partialBoundMs(placeholder.body?.error ?? "") ?? Infinity)
               && placeholder.contAtMs !== null && placeholderPhase === "typing"
               && stateText().endsWith(placeholderText) && count(placeholderText) === 0,
             JSON.stringify({ http: placeholder?.response.status ?? null, error: placeholder?.body?.error?.slice(0, 160) ?? null,
-              contAfterPasteMs: placeholder?.contAtMs ?? null, phase: placeholderPhase,
+              contAfterPasteMs: placeholder?.contAtMs ?? null, answeredAfterMs: placeholder?.answeredAfterMs ?? null,
+              boundMs: partialBoundMs(placeholder?.body?.error ?? ""), phase: placeholderPhase,
               composerBytes: stateText().length, turns: count(placeholderText) }));
           await clearFixtureComposer("the placeholder payload");
         }
@@ -3310,6 +3319,9 @@ export async function run(): Promise<void> {
       JSON.stringify(legacyLoaded.fleetReports));
     reportSetup.need(auditReadError === "", "the rotation-aware audit ledger is readable", auditReadError);
     reportSetup.met();
+    // A baseline, not zero: the state above keeps `events`, and a module before this one may have
+    // filed a real report on the same instance (e2e/slots.ts's planned-respawn baton does).
+    const reportEventsBefore = (await fleetReportEventRows()).length;
 
     const nonLane = await selfFleetReport(mainTok, { status: "complete", text: "MAIN cannot report" });
     const nonLaneText = await nonLane.text();
@@ -3324,8 +3336,8 @@ export async function run(): Promise<void> {
     const noReceiverText = await noReceiver.text();
     check("Q2 fleet-report receiver: a lane without exact evidence is honestly refused by name",
       noReceiver.status === 409 && noReceiverText.includes("no exact clarification receiver evidence")
-        && (await fleetReportEventRows()).length === 0,
-      `${noReceiver.status} ${noReceiverText}`);
+        && (await fleetReportEventRows()).length === reportEventsBefore,
+      `${noReceiver.status} ${noReceiverText} events=${reportEventsBefore}->${(await fleetReportEventRows()).length}`);
 
     const invalids = await Promise.all([
       selfFleetReport(completeTok, {}),
@@ -3336,8 +3348,8 @@ export async function run(): Promise<void> {
     ]);
     check("fleet-report validation: the exported four-value status is closed and the body is exactly status+text",
       JSON.stringify(FLEET_REPORT_STATUSES) === JSON.stringify(["complete", "needs-main", "failed", "handoff"])
-        && invalids.every((r) => r.status === 400) && (await fleetReportEventRows()).length === 0,
-      invalids.map((r) => r.status).join("/"));
+        && invalids.every((r) => r.status === 400) && (await fleetReportEventRows()).length === reportEventsBefore,
+      `${invalids.map((r) => r.status).join("/")} events=${reportEventsBefore}->${(await fleetReportEventRows()).length}`);
 
     const completeRes = await selfFleetReport(completeTok,
       { status: "complete", text: "All requested B-D checks are green." });

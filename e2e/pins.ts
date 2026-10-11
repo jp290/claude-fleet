@@ -4622,6 +4622,23 @@ export default function (pi) {
       && acceptSendBody.includes('const after = await awaitComposer(s, bound, (r) => r === "", acceptMs);')
       && /until: \(r: string \| null\) => boolean, waitMs = acceptWaitMs\(\)\)/.test(server),
     JSON.stringify(acceptOf ? [acceptOf(0.5, 8), acceptOf(8, 8), acceptOf(30, 8), acceptOf(80, 8)] : "acceptWaitMs did not execute"));
+  // A RESTART KEEPS WHAT WAS OBSERVED (Charge 2b (4), waits.ts#loadBlockerHistory): the rows' last
+  // blocker observations ride every state save, and the load hands each row's value to the loader,
+  // which closes an open section there (its own check is e2e/tasks.ts "(blockers) restart closes …").
+  // Either half missing and the open section closes at its start again — the 61 % unknown of 11.10.
+  pin("blocker observations survive a restart: the snapshot writes blockerObservedAt and the load hands each row its value",
+    server.slice(server.indexOf("function stateSnapshot("), server.indexOf("\n}\n", server.indexOf("function stateSnapshot(")))
+      .includes("blockerObservedAt: Object.fromEntries(blockerObservedAt)")
+      && server.includes("blockers: loadBlockerHistory(t.blockers, blockerSeenAt[t.id]),"),
+    "stateSnapshot or the task load lost the blocker observation hand-off");
+  // A RESPAWN IS NO DEPLOY (Charge 2b (5)): the srv the watchdog starts carries FLEET_BOOT_CAUSE and
+  // the reason, already cut to a quote-free alphabet, and the health branch hands its reason on. The
+  // server half (the row's `by: "watchdog"`) is e2e/deploy-facts.ts §6.
+  pin("the watchdog's respawn tells the boot it was a respawn, with a quote-free reason",
+    watchdog.includes("FLEET_BOOT_CAUSE=watchdog FLEET_BOOT_WHY='$boot_why' exec bun server.ts")
+      && watchdog.includes(`boot_why=$(printf '%s' "\${respawn_why:-srv was down}" | tr -cd 'A-Za-z0-9 =:/._(),-' | cut -c1-120)`)
+      && watchdog.includes('respawn_why="health: $why"'),
+    "watchdog.sh no longer hands the boot cause to the srv it starts");
   // A HELD FIELD PARKS, IT DOES NOT DROP (server.ts#parkFleetSend): every Fleet sender the
   // systemlast-befund saw refused "composer occupied — nothing typed" hands that refusal to the parked
   // list under its own key, and the two ticks that would re-offer the same subject skip it while it

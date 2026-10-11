@@ -335,7 +335,9 @@ ist dasselbe Prädikat wie bei `sleep` (keine Pane-Ausgabe binnen `MERGE_IDLE_MS
 wird mit 409 `busy` abgewiesen. Ungebundene Sessions, die Orchestratorin und seit dem zweiten Schnitt
 (2026-10-07) die exakt gebundene Standard-Program-MAIN: sie geht über `server.ts#succeedProgramMain`
 (Program-Record im Moment des Kills, Bindungsschnitt), und ihre stehende Übergabe reist wörtlich als
-Abschnitt hinter dem Founding-Brief — der Record gilt, wo beide sich widersprechen. Lane, Game-Maker
+Abschnitt hinter dem Founding-Brief — der Record gilt, wo beide sich widersprechen. Seit 2026-10-11
+gilt das auch für `POST /api/self/succeed` der Standard-Program-MAIN (`server.ts#selfStandingHandoverLines`);
+vorher kam die stehende Übergabe auf der Self-Tür nicht an. Lane, Game-Maker
 und Steward antworten mit benanntem 409 (`reason`) und behalten ihre eigene Schiene. Die
 Schwellen-Hinweise der ungebundenen und der Standard-Program-Schiene nennen die stehende Übergabe als
 Alternative, wenn gerade Arbeit läuft; steht eine frische (der Transkript-Rest seit ihr erreicht eine

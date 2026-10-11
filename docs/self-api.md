@@ -516,7 +516,8 @@ steht, eine generische Linie nach dem Fenster, ein re-gegründetes oder inaktive
 seine Zeilen. Solange eine Nachfolge oder Gründung läuft, verweigert `POST /api/deploy` den srv-Restart
 (`server.ts#deployBlocker`). Genauso bricht eine Nachfolge ab, deren Vorgängerin gerade von einem anderen
 Akt beendet oder neu gestartet wird: 409, nichts wird wieder geöffnet. `carry` ist optional und auf 500 Zeichen
-begrenzt; es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
+begrenzt; darüber ist es 400 mit Länge und Deckel, nichts endet und nichts wird gekürzt (seit 2026-10-11,
+vorher schnitt die Tür still ab). Es ist ein unpersistierter Prompt-Satz, kein Transfer. **`model` und `effort` sind optional (seit 2026-09-02):**
 abwesend = wörtliche Vererbung aus dem Datensatz der Vorgängerin; vorhanden = der Nachfolger wird darauf
 geöffnet, validiert exakt wie `open`/`dispatch` gegen die geerbte Harness (`MODEL_RE` bzw.
 `HARNESS_MODEL_RE`, dazu das Register — §model —, Effort aus `effortLevels` des Adapters), ungültig = 400 und KEIN Slot geöffnet;
@@ -851,7 +852,9 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   stehende Übergabe geht NICHT in den Record (der bleibt Byte für Byte, was die Self-Tür erfasst),
   sondern als Abschnitt hinter den Founding-Brief: `intent` wörtlich bzw. der `pointer`, mit Schreibzeit,
   Alter und dem Satz „[Zitat entfernt]“ — der Record ist im Moment der
-  Übergabe gemessen, die stehende Übergabe davor. Danach der Transkript-Rest wie oben. Antwort wie
+  Übergabe gemessen, die stehende Übergabe davor. Seit 2026-10-11 trägt auch `POST /api/self/succeed`
+  der Standard-Program-MAIN die stehende Übergabe ihrer Belegung so im Brief (`server.ts#selfStandingHandoverLines`,
+  hinter dem Record, mit demselben Vorrangsatz); vorher kam sie nur über diese Owner-Tür an. Danach der Transkript-Rest wie oben. Antwort wie
   `succeed` der Program-Schiene plus `briefBytes`; Fehler aus `succeedProgramMain` (Founding offen,
   Preflight) kommen unverändert, ohne `reason`. Game-Maker bleibt abgewiesen.
 - **`GET /api/slots/:id/succeed`** (Owner) — die Lese-Tür für den Knopf, ohne Wirkung: `{ready,
@@ -1292,6 +1295,9 @@ oben, sonst `null`) — neben `intent` und `successCriterion` der Zeile. `nonGoa
 `decisionLog` und `textProposals` stehen nicht in der Listenzeile; Geschichte und Autoren liefert
 `GET /api/programs/:id/text-proposals`. `GET /api/self/programs` zeigt der MAIN ihr Program voll,
 also auch `decisionLog` und `textProposals` im gespeicherten Format (ohne `programId`/`current`/`stale`).
+Nur die Inbox nicht (seit 2026-10-11, `server.ts#publicSelfProgram`): statt `inbox` steht dort
+`inboxSummary: {entries, unread, oldestUnreadAt, lost, door}`, und `door` ist `GET /api/self/inbox?program=<id>`,
+die Tür, die die Einträge liest.
 
 **Laden:** `decisionLog` und `textProposals` sind geschlossen, versioniert und default-abwesend; ein
 unlesbarer Record laedt als abwesend (Meldung im Server-Log), das Program bleibt.
@@ -5251,7 +5257,18 @@ genau eine Receipt-Zeile, auch wenn der Prompt nicht gesendet werden konnte oder
 der Kontextplan fehlte (dann mit dem Grund unter `ausgelassen`). Ohne `plan` bleibt jede Tuer die
 alte und antwortet `plan: "none"`; `packs` und `plan` zusammen sind 400. `attach` und
 `bootstrap-main` lehnen einen Plan mit Grund ab (die MAIN-Tuer baut Brief, Schiene und Anker selbst).
-Nachfolge, Attach und Harness-Wechsel planen die Session-Datei weiterhin nicht neu.
+**Der Plan über eine Neubelegung (seit 2026-10-11).** Ein mit `plan` gestarteter Slot trägt ihn als
+`plan` im Slot-Record (`server/types.ts#SlotPlan`: Hash, Schalter, Tür, Ort). Eine Lane-Nachfolge und ein
+Harness-Wechsel fragen `acceptFoundingPlan` mit genau diesem Plan und dem Harness/Modell/Effort der neuen
+Session erneut (`server.ts#carrySlotPlan`, keine zweite Ableitung): bei exakter Antwort schreibt die neue
+Session die Datei des Plans, die Receipt-Zeile ist der Plan-Block, die Antwort trägt ihn unter `plan`.
+Sonst antworten Tür und Receipt-Zeile (soweit die Tür eine schreibt) `plan: "none"` mit `planGrund`
+(der Grund der Tür, z. B. der verschobene Hash nach einem Harness-Wechsel) und `planHash`, und die neue
+Session startet wie eine ungeplante. Eine MAIN-Nachfolge (Program- oder ungebundene Schiene) trägt einen
+`/open`-Plan nie weiter — ihre Nachfolgerin gründet die Nachfolge-Schiene mit eigenem Brief und
+Kontextplan — und sagt das als `plan: "none"` mit Grund. `bootstrap-main {slot}` (Attach) gründet nichts:
+die MAIN behält ihre Belegung und den Plan, die Antwort nennt `plan: {hash, kept: "attach"}`. Ein Slot ohne
+Plan bekommt keines dieser Felder.
 
 **Die Anatomie eines Packs (seit 2026-10-09, Karte dd549bce).** `sources` ist der **Kern** eines
 Packs — er kommt immer mit, wenn die Leiter das Pack waehlt. Daneben darf ein Pack im Manifest

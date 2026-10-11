@@ -5190,6 +5190,7 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
           && r.weg === "Session-Datei" && r.gemessen === "lieferung" && typeof r.bytes === "number" && /^[0-9a-f]{64}$/.test(r.fassung)))
         && typeof row.datei === "object" && row.datei.sha256 === fileSha && row.datei.bytes === Buffer.byteLength(file ?? ""),
       JSON.stringify(row ?? null).slice(0, 500));
+    if (body.slot && body.cwd) await plannedRespawnProbes(body.slot, body.cwd, off.plan.planHash, off.sessionAgents.text);
     for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
     await plannedDoorProbes(off.plan.planHash, body.slot);
     // HEAD moves between preview and start: 409 with the plan a start would take now, nothing created
@@ -5226,6 +5227,55 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
       `${drifted.status} ${JSON.stringify(driftedBody).slice(0, 300)}`);
   } finally {
     for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
+  }
+
+  // (6) of the 2026-10-11 succession cut: a planned lane keeps hash and selection across a harness
+  // switch on the same harness and across its own baton — the new session's file is still the plan's,
+  // the switched-off pack stays out, the receipt is the plan block. A switch to another harness moves
+  // the hash: plan "none" with the door's reason, and the new session starts the way an unplanned one
+  // does (the pack the plan switched off is back). Each restart is answered once its pane shows a
+  // ready screen, planted after the new occupation appears.
+  async function plannedRespawnProbes(slot: number, cwd: string, hash: string, planFile: string): Promise<void> {
+    type Answer = { ok?: boolean; plan?: Receipt | "none"; planGrund?: string; planHash?: string; error?: string };
+    const occupation = async (): Promise<number> =>
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt: number }[] }).slots.find((x) => x.id === slot)?.openedAt ?? 0;
+    const restart = async (send: () => Promise<Response>, screen: string): Promise<{ status: number; body: Answer }> => {
+      const before = await occupation();
+      const pending = send();
+      for (let i = 0; i < 80; i++) {
+        const now = await occupation();
+        if (now > 0 && now !== before) break;
+        await Bun.sleep(150);
+      }
+      await plantScreen(slot, screen, "planned respawn fixture");
+      const res = await pending;
+      return { status: res.status, body: await res.json() as Answer };
+    };
+    const fileNow = (): string | null => existsSync(`${cwd}/AGENTS.override.md`) ? readFileSync(`${cwd}/AGENTS.override.md`, "utf8") : null;
+    const kept = (a: Answer): boolean => typeof a.plan === "object" && a.plan.hash === hash;
+    const same = await restart(() => post(`/api/slots/${slot}/lane-harness`, { harness: "claude" }), "❯");
+    const sameRow = await receiptOf(slot);
+    check("planned respawn: a harness switch on the same harness keeps the plan — answer and receipt carry its hash, the file is still the plan's",
+      same.status === 200 && kept(same.body) && sameRow?.hash === hash && fileNow() === planFile && !fileNow()?.includes(MARKER),
+      `${same.status} ${JSON.stringify(same.body).slice(0, 300)} receipt=${sameRow?.hash ?? "none"}`);
+    // off the record, not the pane: plantScreen respawned the pane with a stand-in that carries no env
+    const token = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+      .slots?.[String(slot)]?.selfToken ?? "";
+    const handoff = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+      headers: { "x-fleet-self-token": token, "content-type": "application/json" },
+      body: JSON.stringify({ status: "handoff", text: "planned respawn fixture: done nothing / open nothing / next: the baton" }) });
+    const baton = await restart(() => fetch(`${BASE}/api/self/succeed`, { method: "POST",
+      headers: { "x-fleet-self-token": token, "content-type": "application/json" }, body: "{}" }), "❯");
+    const batonRow = await receiptOf(slot);
+    check("planned respawn: the lane's own baton keeps the plan — answer and receipt carry its hash, the successor's file is still the plan's",
+      handoff.ok && baton.status === 200 && kept(baton.body) && batonRow?.hash === hash && fileNow() === planFile,
+      `handoff=${handoff.status} ${baton.status} ${JSON.stringify(baton.body).slice(0, 300)}`);
+    const away = await restart(() => post(`/api/slots/${slot}/lane-harness`, { harness: "codex", model: "gpt-6.1-sol", effort: "high" }),
+      ">_ OpenAI Codex (v0.147.0)");
+    check("planned respawn: a switch to another harness answers plan none with the door's reason and the plan's hash — the new session starts unplanned",
+      away.status === 200 && away.body.plan === "none" && away.body.planHash === hash
+        && !!away.body.planGrund?.startsWith("Harness-Wechsel: ") && !!fileNow()?.includes(MARKER),
+      `${away.status} ${JSON.stringify(away.body).slice(0, 400)}`);
   }
 
   // EVERY DOOR THE PLAN REACHES, and what each must not do with it (MAIN review of 44e468d7): parts
@@ -5291,6 +5341,26 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
       mainPlan.start?.startbar === true && opn.status === 200 && typeof opnBody.plan === "object" && opnBody.plan.hash === mainPlan.plan?.planHash
         && JSON.stringify(opnRow) === JSON.stringify(opnBody.plan) && opnHistory.every((entry) => !entry.text.includes(MARKER)),
       `start=${JSON.stringify(mainPlan.start)} ${opn.status} ${JSON.stringify(opnBody).slice(0, 300)}`);
+    // (6) a MAIN's succession never carries its /open plan: the successor is founded by the succession
+    // rail's own brief, and the answer says so as plan none with that reason and the plan's hash
+    if (opn.status === 200) {
+      const mainToken = await paneEnv(`s${mainSlot}`, "FLEET_SELF_TOKEN") ?? "";
+      const openedBefore = ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt: number }[] }).slots.find((x) => x.id === mainSlot)?.openedAt ?? 0;
+      const succPending = fetch(`${BASE}/api/self/succeed`, { method: "POST",
+        headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: "{}" });
+      for (let i = 0; i < 80; i++) {
+        const now = ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt: number }[] }).slots.find((x) => x.id === mainSlot)?.openedAt ?? 0;
+        if (now > 0 && now !== openedBefore) break;
+        await Bun.sleep(150);
+      }
+      await plantScreen(mainSlot, "❯", "planned main succession fixture");
+      const succ = await succPending;
+      const succBody = await succ.json() as { plan?: unknown; planGrund?: string; planHash?: string };
+      check("planned start: a MAIN started with a plan succeeds with plan none, the succession rail's reason and the plan's hash",
+        succ.status === 200 && succBody.plan === "none" && succBody.planHash === mainPlan.plan?.planHash
+          && !!succBody.planGrund?.includes("Nachfolge-Schiene"),
+        `${succ.status} ${JSON.stringify(succBody).slice(0, 300)}`);
+    }
     // what /open cannot carry: the preview says so and the door refuses with the same reasons
     const spare = await freeSlot();
     const partsPlan = await preview(packsOff, "role=main&ort=repo&parts=");

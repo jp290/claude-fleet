@@ -2069,6 +2069,23 @@ const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover 
   const ahead = typeof r.ahead === "number" && Number.isInteger(r.ahead) && r.ahead >= 0 ? r.ahead : null;
   return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null, ahead };
 };
+// THE PLAN A SLOT WAS STARTED WITH (faafc637): the window's plan input exactly as the door accepted
+// it — hash and switches — plus where and through which door, so a respawn of the same occupation
+// line (lane succession, harness switch) can ask acceptFoundingPlan the SAME question again instead
+// of deriving a second plan. null = started without `plan`, which is today's start, untouched.
+interface SlotPlan { hash: string; door: "lane" | "open"; place: string; label: string | null; plan: Record<string, unknown> }
+const SLOT_PLAN_KEYS = ["hash", "role", "ort", "bausteine", "packs", "parts"];
+const slotPlanFrom = (raw: unknown): SlotPlan | null => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const plan = r.plan;
+  if (typeof r.hash !== "string" || !/^[0-9a-f]{64}$/.test(r.hash) || (r.door !== "lane" && r.door !== "open")
+    || typeof r.place !== "string" || (r.label !== null && typeof r.label !== "string")
+    || typeof plan !== "object" || plan === null || Array.isArray(plan)
+    || (plan as Record<string, unknown>).hash !== r.hash
+    || Object.keys(plan).some((key) => !SLOT_PLAN_KEYS.includes(key))) return null;
+  return { hash: r.hash, door: r.door, place: r.place, label: r.label as string | null, plan: { ...(plan as Record<string, unknown>) } };
+};
 // WHICH STAND-REMINDER TRIGGERS ALREADY FIRED, for one occupation and one stand (`standAt`, null =
 // before the first stand). Persisted so a server restart does not remind twice for the same stand;
 // a new stand or a new occupant starts it empty (server.ts#tickLaneStand).
@@ -2224,6 +2241,8 @@ interface Slot {
   standingHandover: StandingHandover | null;
   // the stand reminder's once-per-stand memory (LaneStandNudged above); null = nothing fired yet
   laneStandNudged: LaneStandNudged | null;
+  // the plan this occupation was started with (SlotPlan above); null = started without one
+  plan: SlotPlan | null;
   history: { text: string; ts: number; source?: "owner" | "fleet" }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
@@ -3806,7 +3825,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
-  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, LaneStandNudged, Slot,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, LaneStandNudged, SlotPlan, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3855,7 +3874,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, laneStandNudgedFrom,
+  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, laneStandNudgedFrom, slotPlanFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,

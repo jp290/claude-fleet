@@ -1335,7 +1335,8 @@ export async function run(ctx: Ctx): Promise<void> {
     writeFileSync(`${sr}/.fleet/init.md`, `${INIT}\n`);
     spawnSync("git", ["-C", sr, "add", ".fleet/init.md"]);
     spawnSync("git", ["-C", sr, "commit", "-qm", "repo entry"]);
-    const carry = "C".repeat(600);
+    // exactly the cap: an overlong carry is refused, never cut (e2e/programs.ts, 2026-10-11)
+    const carry = "C".repeat(500);
     const overridden = await successionPost("succeed", successorTok, { model: "claude-opus-5[1m]", effort: "max", carry });
     const oj = (await overridden.json()) as { ok?: boolean; slot?: number };
     const overrideRow = (await succRows()).find((x) => x.id === oj.slot);
@@ -1351,7 +1352,7 @@ export async function run(ctx: Ctx): Promise<void> {
       overrideBrief = await successionBriefOf(oj.slot);
       if (!overrideBrief) await Bun.sleep(100);
     }
-    check("the optional inter-session carry is capped at 500 characters",
+    check("the optional inter-session carry: 500 characters, the cap, arrive whole",
       overrideBrief.includes("C".repeat(500)) && !overrideBrief.includes("C".repeat(501)), `brief=${overrideBrief.length} chars`);
     check("a repo with a tracked .fleet/init.md: the brief carries its lines verbatim right after the order line, and no neutral entry",
       overrideBrief.includes(`Beginne exakt in dieser Reihenfolge:\n${INIT}\n`)

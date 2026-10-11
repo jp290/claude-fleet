@@ -38617,16 +38617,36 @@ function squashGoalSentence(t: Task | undefined): string {
   return first.length > SQUASH_GOAL_MAX ? `${first.slice(0, SQUASH_GOAL_MAX - 1).trimEnd()}…` : first;
 }
 
-// <typ>(<bereich>) from the NEWEST lane subject that has that form, `feat` when none does
+// <typ>(<bereich>) from the NEWEST lane subject that has that form and whose type is not a
+// SQUASH_MINOR_TYPES one, else from the newest of that form, `feat` when none has it: a lane that
+// closes with its docs commit is still named by its work (5a2cd07d was "docs(self-api)" for a
+// feat/fix series)
 const SQUASH_TYPE_SCOPE = /^([a-z][a-z0-9-]*)\(([^)\n]+)\)!?:\s/i;
+const SQUASH_MINOR_TYPES: ReadonlySet<string> = new Set(["docs", "chore", "test"]);
 const SQUASH_CO_AUTHOR = /^co-authored-by:\s*\S/i;
 
 interface SquashPlan { sha: string; squash: LandSquash }
+
+// The body's commit list, one line per lane commit: the same text for a squash being written and
+// for the one an earlier land of the branch already wrote, which is how planSquashLand recognises it.
+function squashSeriesList(series: { sha: string; subject: string }[]): string {
+  const span = series.length === 1 ? series[0]!.sha.slice(0, 8) : `${series[0]!.sha.slice(0, 8)}..${series[series.length - 1]!.sha.slice(0, 8)}`;
+  return [`Lane-Commits (${series.length}, ${span}):`, ...series.map((c) => `${c.sha.slice(0, 8)} ${c.subject}`)].join("\n");
+}
+function squashSeriesOf(out: string): { sha: string; subject: string; body: string }[] {
+  return out.split("\x1e").map((rec) => rec.replace(/^\n/, "").split("\x1f"))
+    .filter((f) => /^[0-9a-f]{40,64}$/.test(f[0] ?? ""))
+    .map(([sha, subject, body]) => ({ sha: sha!, subject: subject ?? "", body: body ?? "" }));
+}
 
 // THE PLAN, and nothing moves in it: S is written as an OBJECT (commit-tree) and the history ref's
 // number is chosen. `null` = mainBefore..H holds no commit, and there is nothing to land as one;
 // `{off}` = it holds a merge commit and lands as it is (a squash would drop the merged side).
 // A single lane commit is planned like a series: same tree, the land's subject and body.
+// When that one commit IS the squash an earlier land of this branch wrote (it lost its
+// fast-forward and left the lane on S), the new S keeps S's message as it is: the report was
+// consumed by that first land call, so a new message could only say "kein angenommener Report"
+// and list S as its one commit, and the first description would be gone.
 // An unreadable series is an error, never a guess at a count.
 async function planSquashLand(s: Slot, cwd: string, root: string, branch: string, mainBefore: string,
   gated: string, report: LandReadyReport | null): Promise<SquashPlan | { off: SquashOff } | null | { error: string }> {
@@ -38642,33 +38662,40 @@ async function planSquashLand(s: Slot, cwd: string, root: string, branch: string
   const author = await git(cwd, "log", "-1", "--format=%an%x1f%ae", gated);
   if (log.code !== 0 || tree.code !== 0 || author.code !== 0)
     return { error: `the lane series ${mainBefore.slice(0, 8)}..${gated.slice(0, 8)} could not be read` };
-  const series = log.out.split("\x1e").map((rec) => rec.replace(/^\n/, "").split("\x1f"))
-    .filter((f) => /^[0-9a-f]{40,64}$/.test(f[0] ?? ""))
-    .map(([sha, subject, body]) => ({ sha: sha!, subject: subject ?? "", body: body ?? "" }));
+  const series = squashSeriesOf(log.out);
   if (series.length !== commits) return { error: `the lane series read ${series.length} commits where rev-list counted ${commits}` };
-  const typed = [...series].reverse().map((c) => SQUASH_TYPE_SCOPE.exec(c.subject)).find((m) => m !== null);
+  // <n> counts this branch's squash lands: a lane that lands more than once keeps every series
+  const prefix = `refs/fleet/lane-history/${branch}/`;
+  const refs = await git(root, "for-each-ref", "--format=%(refname)", prefix);
+  if (refs.code !== 0) return { error: `the lane history refs under ${prefix} could not be listed` };
+  const taken = refs.out.split("\n").map((r) => Number(r.slice(prefix.length))).filter((n) => Number.isInteger(n) && n > 0);
+  // S is recognised by its body: it lists the newest kept series, read against THIS main (that
+  // series' own base is an ancestor of it)
+  let prior: string | null = null;
+  if (commits === 1 && taken.length > 0) {
+    const ref = `${prefix}${Math.max(...taken)}`;
+    const kept = await gitReadRaw(root, "log", "--reverse", "--format=%H%x1f%s%x1f%B%x1e", `${mainBefore}..${ref}`);
+    if (kept.code !== 0) return { error: `the lane history ${ref} could not be read` };
+    const keptSeries = squashSeriesOf(kept.out);
+    if (keptSeries.length > 0 && series[0]!.body.includes(squashSeriesList(keptSeries))) prior = series[0]!.body.trim();
+  }
+  const typedAll = [...series].reverse().map((c) => SQUASH_TYPE_SCOPE.exec(c.subject)).filter((m) => m !== null);
+  const typed = typedAll.find((m) => !SQUASH_MINOR_TYPES.has(m[1]!.toLowerCase())) ?? typedAll[0];
   const head = typed ? `${typed[1]}(${typed[2]})` : "feat";
   const task = s.taskId ? tasks.find((t) => t.id === s.taskId) : undefined;
   const goal = squashGoalSentence(task);
   const subject = `${head}: ${s.taskId ?? branch}${goal ? ` — ${goal}` : ""}`;
-  const span = commits === 1 ? series[0]!.sha.slice(0, 8) : `${series[0]!.sha.slice(0, 8)}..${series[series.length - 1]!.sha.slice(0, 8)}`;
-  const listed = [`Lane-Commits (${commits}, ${span}):`,
-    ...series.map((c) => `${c.sha.slice(0, 8)} ${c.subject}`)].join("\n");
+  const listed = squashSeriesList(series);
   // every DISTINCT Co-Authored-By line of the series, in the order it first appears
   const trailers = [...new Set(series.flatMap((c) => c.body.split("\n").map((l) => l.trim())
     .filter((l) => SQUASH_CO_AUTHOR.test(l))))];
-  const message = [subject, report?.text.trim() || "kein angenommener Report", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
+  const message = prior ?? [subject, report?.text.trim() || "kein angenommener Report", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
   // authored as the lane's newest commit was; the committer is whoever this server commits as
   const [name, email] = author.out.split("\x1f");
   const made = await gitWith(name && email ? { ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email } : undefined,
     cwd, ["commit-tree", tree.out, "-p", mainBefore, "-m", message]);
   if (made.code !== 0 || !/^[0-9a-f]{40,64}$/.test(made.out))
     return { error: `the squash commit could not be written: ${(made.err || made.out).slice(0, 200)}` };
-  // <n> counts this branch's squash lands: a lane that lands more than once keeps every series
-  const prefix = `refs/fleet/lane-history/${branch}/`;
-  const refs = await git(root, "for-each-ref", "--format=%(refname)", prefix);
-  if (refs.code !== 0) return { error: `the lane history refs under ${prefix} could not be listed` };
-  const taken = refs.out.split("\n").map((r) => Number(r.slice(prefix.length))).filter((n) => Number.isInteger(n) && n > 0);
   return { sha: made.out, squash: { from: gated, commits, ref: `${prefix}${Math.max(0, ...taken) + 1}` } };
 }
 

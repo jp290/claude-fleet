@@ -3031,6 +3031,146 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 
+  // 261011 · THE SUBJECT NAMES THE LANE'S WORK, AND A SECOND LAND KEEPS THE FIRST DESCRIPTION.
+  // (1) A lane that closes with a docs commit — "feat(land): …" then "docs(self-api): …" — lands
+  // without a switch as ONE first-parent commit named "feat(land): <taskId> — …": a docs, chore or
+  // test commit never names the land while the series carries other work (the first case was
+  // 5a2cd07d itself, named docs(self-api) for a feat/fix series). (2) A land that ends `ff-lost`
+  // leaves the lane on its squash commit S, and its report already consumed by the land call; the
+  // next land must carry S's body — the accepted report and the ORIGINAL lane-commit list — onto
+  // main, never re-squash S into "kein angenommener Report". The race is the product's own
+  // TEST-ONLY ff latch plus a commit of the main checkout, with no retry round left (ROUNDS=0).
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const sqLatch = `${ROOT}/squash-relands-ff.latch`;
+    for (const f of [sqLatch, `${sqLatch}.reached`, `${sqLatch}.release`]) rmSync(f, { force: true });
+    await restartSrv({ FLEET_TEST_LAND_FF_LATCH: sqLatch, FLEET_LAND_FF_RETRY_ROUNDS: "0" });
+    const programR = await post("/api/programs", {
+      title: "Land subject and reland", intent: "A land is named by its work and keeps its description.",
+      successCriterion: "Main gains one described commit per land.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    check("land subject + reland setup: a green-only MAIN is bound in REPO2 on a server with the ff latch and no ff retry",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true
+        && promotionR?.ok === true && /^[0-9a-f]{32}$/.test(mainToken),
+      JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error, promotion: promotionR?.status }));
+    // one card row, its lane, its commits and ONE complete report the MAIN accepted
+    const openLane = async (name: string, ziel: string, commits: [string, string][], reportText: string) => {
+      const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false, text: `land subject + reland: ${name}`,
+        card: { ziel, surface: { files: ["code.txt"], symbols: [] }, done: "main gains one commit",
+          verify: `${REPO2.replace(/\/[^/]+$/, "")}/fakeverify2`, verboten: ["no other file"] } });
+      const rowId = ((await taskR.json()) as { task?: { id: string } }).task?.id ?? "";
+      const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+      const slot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+      const lane = ((await (await get("/api/sessions")).json()) as {
+        slots: { id: number; cwd: string | null; worktree?: { branch?: string } }[];
+      }).slots.find((s) => s.id === slot);
+      const cwd = lane?.cwd ?? "";
+      if (cwd) for (const [file, msg] of commits) {
+        writeFileSync(`${cwd}/${file}`, `${file}\n`);
+        spawnSync("git", ["-C", cwd, "add", file]);
+        spawnSync("git", ["-C", cwd, "commit", "-qm", msg]);
+      }
+      const reportR = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "x-fleet-self-token": tokenOf(slot), "content-type": "application/json" },
+        body: JSON.stringify({ status: "complete", text: reportText }) });
+      const reportId = reportR.ok ? ((await reportR.json()) as { report?: { id?: string } }).report?.id ?? "" : "";
+      const acceptR = reportId ? await fetch(`${BASE}/api/self/fleet-report/${reportId}/accept`, { method: "POST",
+        headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: "{}" }) : null;
+      return { rowId, slot, cwd, branch: lane?.worktree?.branch ?? "",
+        setup: { task: taskR.status, dispatch: dispatchR?.status ?? null, report: reportR.status, accept: acceptR?.status ?? null } };
+    };
+    const readyAhead = async (slot: number, cwd: string, ahead: number, what: string): Promise<boolean> => {
+      try {
+        return await until(async () => {
+          const brief = (await plogRead()).some((e) => e.cwd === cwd && e.source === "auto");
+          const sx = (await (await get("/api/sessions")).json()) as {
+            now: number; slots: { id: number; lastOutput: number; git: { dirty: number; ahead: number } | null }[];
+          };
+          const current = sx.slots.find((s) => s.id === slot);
+          return brief && !!current?.lastOutput && current.git?.dirty === 0 && current.git.ahead === ahead
+            && sx.now - current.lastOutput >= 1500;
+        }, { timeoutMs: 30_000, stepMs: 100, what });
+      } catch { return false; }
+    };
+    // the door's own idle gate (MERGE_IDLE_MS) is cleared first, and a refusal keeps its words
+    const land = async (rowId: string, slot: number): Promise<{ ok: boolean; status: number | null; text: string }> => {
+      if (!rowId || !mainToken || !slot) return { ok: false, status: null, text: "no row, MAIN token or lane slot" };
+      await settleForMerge(slot);
+      const r = await fetch(`${BASE}/api/self/tasks/${rowId}/land`, { method: "POST", headers: { "x-fleet-self-token": mainToken } });
+      return { ok: r.ok, status: r.status, text: r.ok ? "" : (await r.text()).slice(0, 400) };
+    };
+    const rowDone = async (rowId: string, what: string): Promise<boolean> => {
+      try {
+        return await until(async () => ((await (await get("/api/tasks")).json()) as {
+          tasks: { id: string; status: string }[] }).tasks.some((r) => r.id === rowId && r.status === "done"),
+        { timeoutMs: 20_000, stepMs: 100, what });
+      } catch { return false; }
+    };
+
+    // (1) feat, then docs: the land is named by the feat
+    const subjBefore = git2("rev-parse", "main");
+    const ls = await openLane("subject", "Ein Land heisst nach seiner Arbeit. Der Docs-Commit benennt es nicht.",
+      [["subj-1.txt", "feat(land): die Arbeit der Lane"], ["subj-2.txt", "docs(self-api): die Beschreibung danach"]],
+      "SUBJ-ACCEPTED: feat und docs, ein Commit.");
+    const lsReady = await readyAhead(ls.slot, ls.cwd, 2, "subject lane done-looking with two commits");
+    const lsLand = await land(ls.rowId, ls.slot);
+    const lsDone = await rowDone(ls.rowId, "subject lane row done");
+    const subjFirstParent = git2("log", "--first-parent", "--format=%s", `${subjBefore}..main`).split("\n").filter(Boolean);
+    check("land subject: a lane \"feat(land): …\" then \"docs(self-api): …\" lands without a switch as ONE first-parent commit named \"feat(land): <taskId> — \"",
+      lsLand.ok && lsDone && git2("rev-list", "--count", `${subjBefore}..main`) === "1"
+        && subjFirstParent.length === 1 && subjFirstParent[0]!.startsWith(`feat(land): ${ls.rowId} — `),
+      JSON.stringify({ setup: ls.setup, ready: lsReady, land: lsLand, done: lsDone, subjFirstParent }));
+
+    // (2) ff-lost, then a second land
+    const lr = await openLane("reland", "Ein zweites Land behaelt die Beschreibung des ersten. Der Rest bleibt draussen.",
+      [["reland-1.txt", "fix(reland): erste Stufe"], ["reland-2.txt", "fix(reland): zweite Stufe"]],
+      "RELAND-ACCEPTED: der Text des angenommenen Reports.");
+    const lrReady = await readyAhead(lr.slot, lr.cwd, 2, "reland lane done-looking with two commits");
+    // the list a squash writes: each lane commit as <sha8> <subject>, oldest first
+    const original = lr.cwd ? spawnSync("git", ["-C", lr.cwd, "log", "--reverse", "--format=%H %s", "-2"]).stdout.toString().trim()
+      .split("\n").map((l) => `${l.slice(0, 8)}${l.slice(40)}`).join("\n") : "";
+    writeFileSync(sqLatch, "armed\n", { mode: 0o600 });
+    const first = await land(lr.rowId, lr.slot);
+    let parked = false;
+    for (let i = 0; i < 600 && !parked; i++) { parked = existsSync(`${sqLatch}.reached`); if (!parked) await Bun.sleep(100); }
+    writeFileSync(`${REPO2}/reland-intruder.txt`, "a commit of the main checkout itself\n");
+    spawnSync("git", ["-C", REPO2, "add", "reland-intruder.txt"]);
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "reland intruder commit on main"]);
+    const intruder = git2("rev-parse", "main");
+    rmSync(sqLatch, { force: true });
+    writeFileSync(`${sqLatch}.release`, "go\n", { mode: 0o600 });
+    const v1 = lr.slot ? await waitMerge(lr.slot) : { gone: false, last: null };
+    const sBody = lr.cwd ? spawnSync("git", ["-C", lr.cwd, "log", "-1", "--format=%b", "HEAD"]).stdout.toString().trim() : "";
+    check("reland setup: the first land ends ff-lost and leaves the lane on ONE squash commit whose body quotes the accepted report",
+      first.ok && parked && !v1.gone && v1.last?.errorReason === "ff-lost" && git2("rev-parse", "main") === intruder
+        && sBody.startsWith("RELAND-ACCEPTED: der Text des angenommenen Reports.") && sBody.includes("Lane-Commits (2, "),
+      JSON.stringify({ setup: lr.setup, ready: lrReady, first, parked, verdict: v1.last, sBody: sBody.slice(0, 400) }));
+    const lrReady2 = await readyAhead(lr.slot, lr.cwd, 1, "reland lane done-looking on its squash commit");
+    const second = await land(lr.rowId, lr.slot);
+    const lrDone = await rowDone(lr.rowId, "reland lane row done");
+    const mainBody = git2("log", "-1", "--format=%b", "main");
+    check("reland: a land after ff-lost carries the first squash's body onto main — the accepted report and the original lane commits, never \"kein angenommener Report\"",
+      second.ok && lrDone && git2("rev-list", "--count", `${intruder}..main`) === "1" && mainBody === sBody
+        && !mainBody.includes("kein angenommener Report")
+        && original.split("\n").length === 2 && original.split("\n").every((l) => mainBody.includes(l)),
+      JSON.stringify({ ready: lrReady2, second, done: lrDone, original, sBody: sBody.slice(0, 400), mainBody: mainBody.slice(0, 400) }));
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    for (const rowId of [ls.rowId, lr.rowId]) if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+    for (const f of [sqLatch, `${sqLatch}.reached`, `${sqLatch}.release`]) rmSync(f, { force: true });
+    await restartSrv(); // back to the suite's own latch-less server with its retry budget
+  }
+
   // THE OWNER'S ⏫ READS THE SWITCHES (owner 09.10., the board's gear). A plain lane with two
   // commits: ⏏ still refuses keep and moves nothing, ⏫ refuses a non-boolean squash with 400, and
   // ⏫ {"squash":true} lands the two commits as ONE commit on main with the gated tree, the series

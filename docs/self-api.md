@@ -5701,7 +5701,9 @@ Zahnrad im Board füllt (Owner 09.10.). Die Antwort beider Türen nennt `squash:
   weil S^{tree} = H^{tree} ist, gilt das Gate-Verdikt für S unverändert. Es gibt also keinen zweiten
   Gate-Lauf, und übernommene grüne Helfer-Jobs bleiben über `treeSha` gültig.
 - **Betreff** `<typ>(<bereich>): <taskId> — <erster Satz aus ZIEL>`. Typ und Bereich kommen aus dem
-  jüngsten Lane-Betreff dieser Form, sonst `feat`. Ohne Karte nimmt er den ersten Satz der ersten
+  jüngsten Lane-Betreff dieser Form, dessen Typ nicht `docs`, `chore` oder `test` ist
+  (`server.ts#SQUASH_MINOR_TYPES`); trägt die Serie nur solche, aus dem jüngsten dieser Form, sonst
+  `feat`. Eine Lane, die mit ihrem Docs-Commit schließt, heißt also nach ihrer Arbeit. Ohne Karte nimmt er den ersten Satz der ersten
   Zeile des Zeilentexts. **Body:** der jüngste `complete`-Report dieser Belegung, den die MAIN, der
   Owner oder sein Delegierter **angenommen** hat (`decision.disposition: „[Zitat entfernt]“`, kein Regel-Urteil
   wie `superseded`) und den noch kein Land verbraucht hat (`server.ts#squashReportFor`). Ein neuerer
@@ -5714,6 +5716,11 @@ Zahnrad im Board füllt (Owner 09.10.). Die Antwort beider Türen nennt `squash:
   eigenen Repo der Lane. Der Baum ist identisch, Index und Working Tree bleiben unberührt. Erst danach
   laufen Nabe, `advanceIntegration` und `recordLand` unverändert. Das ist kein Rebase, und es liegt
   vor dem Fast-Forward. Verliert der Land die Vorspulung, rebast die Retry-Runde nur noch S.
+  Endet er mit `ff-lost`, steht die Lane auf S. Der nächste Land erkennt S daran, dass sein Body die
+  Liste der jüngsten `lane-history`-Serie trägt, und übernimmt die Nachricht von S unverändert:
+  derselbe Betreff und Body (der angenommene Report, den der erste Land-Aufruf verbraucht hat, und
+  die ursprünglichen Lane-Commits). Baum, `lane-history/<n+1>` und Note entstehen wie bei jedem
+  Squash (`server.ts#planSquashLand`).
 - **Die `fleet/land`-Note** trägt `squash {from: H, commits: N, ref}`. In `lane-outcomes.jsonl`
   zählt `commitCount` die N Lane-Commits vor der Zusammenfassung; `headSha` und `mainAfter` sind S.
 - **Hat die Lane einen Commit**, wird auch er neu geschrieben: derselbe Baum, Betreff und Body wie

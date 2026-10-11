@@ -2914,7 +2914,7 @@ export async function run(ctx: Ctx): Promise<void> {
         audit: () => {}, SendAgentNotAlive: Refused, SendRefused: Refused, SendComposerOccupied: Occupied,
         randomBytes, waitForSendTestLatch: async () => {}, SEND_BEFORE_PASTE_TEST_LATCH: null,
         SEND_AFTER_PASTE_TEST_LATCH: null, OWN_PASTE_QUIET_MS: 1000, OWN_PASTE_QUIET_TAIL_MS: 100,
-        ACCEPT_WAIT_MS: 200, awaitArrival: async () => "complete", SendNotAccepted: NotAccepted,
+        ACCEPT_WAIT_MS: 200, acceptWaitMs: () => 200, awaitArrival: async () => "complete", SendNotAccepted: NotAccepted,
         rollbackOwnComposerPayload: async () => "cleared", auditSend: () => {},
         sendFailureDelivery: () => "refused",
         auditActorScope: { getStore: () => undefined },

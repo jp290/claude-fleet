@@ -12,7 +12,7 @@ import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
-import { tmpdir, homedir, hostname, loadavg } from "node:os";
+import { tmpdir, homedir, hostname, loadavg, cpus } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -10978,6 +10978,16 @@ function auditSend(s: Slot, path: SendPath, bytes: number,
 // Env-tunable for the suites only (same reason as READY_WAIT_MS): a stand-in that renders no composer
 // must not pay the full window on every send. Floor 200 ms — below one redraw the answer is noise.
 const ACCEPT_WAIT_MS = Math.max(200, Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 3000) | 0);
+// UNDER LOAD A TURN IS TAKEN LATE (systemlast-befund 2026-10-11: tickFastProgramInbox read "composer
+// still holds 354 chars after 3000ms" four times while the box swapped at load 30-43, and an owner
+// /send booked SendNotAccepted at 11:34 sat in the Orchestratorin's field until the owner's second
+// copy at 11:40 submitted it as residue). The read after a paste and the read after Enter wait
+// ACCEPT_WAIT_MS times the 1-min load per core, at most ACCEPT_LOAD_MAX_FACTOR times; at or under
+// one runnable process per core they wait exactly what they did.
+const ACCEPT_LOAD_MAX_FACTOR = 5;
+function acceptWaitMs(load1 = loadavg()[0] ?? 0, cores = cpus().length): number {
+  return Math.round(ACCEPT_WAIT_MS * Math.min(ACCEPT_LOAD_MAX_FACTOR, Math.max(1, load1 / Math.max(1, cores))));
+}
 // THE ARRIVAL GRACE: what a payload that is PROVABLY STILL ARRIVING gets after the arrival window,
 // and only that one ("partial" at the window's end). Measured 2026-10-08 under load 30-37: two
 // /send payloads (3013 and 1656 chars) answered "the composer still held only part of the payload
@@ -11131,14 +11141,14 @@ async function observeStuckDelivery(s: Slot, bound: BoundSlotPane, sendId: strin
 }
 // Poll the composer until `until` holds, within the window. Returns the last residue read.
 async function awaitComposer(s: Slot, bound: BoundSlotPane,
-  until: (r: string | null) => boolean): Promise<string | null> {
+  until: (r: string | null) => boolean, waitMs = acceptWaitMs()): Promise<string | null> {
   const started = Date.now();
   let last: string | null = null;
   for (;;) {
     if (!sameBoundPane(s, bound)) return null;
     last = await readComposer(s, bound);
     if (until(last)) return last;
-    if (Date.now() - started >= ACCEPT_WAIT_MS) return last;
+    if (Date.now() - started >= waitMs) return last;
     await Bun.sleep(100);
   }
 }
@@ -11821,7 +11831,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
         // A Watch event may be lost forever after an unobservable send. Its own arrival read gets
         // the normal 3 s ceiling even when a suite shortens ordinary composer probes to 800 ms.
         const watchEvent = options.path === "fleet-event";
-        const arrivalWaitMs = watchEvent ? Math.max(ACCEPT_WAIT_MS, 3000) : ACCEPT_WAIT_MS;
+        const loadedWaitMs = acceptWaitMs();
+        const arrivalWaitMs = watchEvent ? Math.max(loadedWaitMs, 3000) : loadedWaitMs;
         const onRows: (rows: readonly string[]) => void =
           (rows) => { deliveryRead.collapsedDisplay ??= composerCollapsedPaste(rows, header ?? ""); };
         const collapsedHeader = watchEvent ? header ?? null : null;
@@ -11846,7 +11857,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       phase("submit");
       if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
       if (!observes) return { acceptance: "not-applicable" as const };
-      const after = await awaitComposer(s, bound, (r) => r === "");
+      const acceptMs = acceptWaitMs();
+      const after = await awaitComposer(s, bound, (r) => r === "", acceptMs);
       phase("accept");
       if (!sameBoundPane(s, bound)) throw new Error("slot changed after submit");
       if (after === "") {
@@ -11868,7 +11880,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       const rollback = options.rollbackOwnPayload
         ? await rollbackOwnComposerPayload(s, bound, composed) : null;
       throw new SendNotAccepted(
-        `prompt not accepted — composer still holds ${after.length} chars after ${ACCEPT_WAIT_MS}ms`
+        `prompt not accepted — composer still holds ${after.length} chars after ${acceptMs}ms`
           + (rollback ? `; Fleet payload rollback ${rollback}` : ""),
         rollback);
     } finally {
@@ -23139,7 +23151,7 @@ interface AskRead { calls: Map<string, unknown>; answered: Set<string>; binding:
 function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry | null {
   const cap = (t: string, max: number) => (full ? t : trim(t, max));
   const d = raw as {
-    type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown;
+    type?: unknown; isMeta?: unknown; isSidechain?: unknown; isCompactSummary?: unknown; timestamp?: unknown;
     message?: { content?: unknown }; toolUseResult?: unknown;
     attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; timestamp?: unknown };
   };
@@ -23168,7 +23180,11 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   }
   const content = d.message?.content;
   const blocks: TBlock[] = [];
-  let meta = false;
+  // THE COMPACTION SUMMARY ("This session is being continued from a previous conversation …") is a
+  // user line Claude Code writes itself, flagged isCompactSummary (measured 2026-10-11 in the four
+  // transcripts behind streams/owner-inputs.jsonl, all four rows of which were such summaries): real
+  // content, typed by nobody, so it is meta like a task notification.
+  let meta = d.isCompactSummary === true;
   if (d.type === "user") {
     if (typeof content === "string") {
       if (content.startsWith("<system-reminder")) return null; // harness noise, not the user
@@ -25719,7 +25735,8 @@ async function tickMessageNudge(): Promise<void> {
   try {
     const now = Date.now();
     for (const s of slots) {
-      if (!s.cwd || s.lastOutput === 0 || pendingMessageNudges.has(s.id)) continue;
+      if (!s.cwd || s.lastOutput === 0 || pendingMessageNudges.has(s.id)
+        || parkedSends.some((p) => p.fleet?.key.startsWith(`inbox-nudge:${s.id}:`))) continue;
       const unreadIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
         .map((m) => m.id).sort();
       if (!unreadIds.length) continue;
@@ -25751,16 +25768,29 @@ async function tickMessageNudge(): Promise<void> {
               throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
             recipient = current;
           };
-          const { acceptance } = await sendText(s, text, true, { path: "inbox-nudge", rollbackOwnPayload: true,
+          const options = (): Omit<SendTextOptions, "path"> => ({ rollbackOwnPayload: true,
             ...(lane ? { deliveryClass: "sofort" as const, address: { kind: "slot" as const, id: s.id },
               bypassQueue: true, beforePaste: checkRecipient } : {}),
             bundleGate: { idleMs: BACKLOG_IDLE_MS },
             beforeSend: async (current) => checkRecipient(current) });
-          const sentAt = Date.now();
-          messageNudgeTried.set(recipient.id, { key, lastAt: sentAt });
-          recipient.history = [...recipient.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
-          saveHistory(recipient);
-          logPrompt(recipient, text, "auto", sentAt, undefined, acceptance);
+          const delivered = (current: Slot, acceptance: Acceptance): void => {
+            const sentAt = Date.now();
+            messageNudgeTried.set(current.id, { key, lastAt: sentAt });
+            current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+            saveHistory(current);
+            logPrompt(current, text, "auto", sentAt, undefined, acceptance);
+          };
+          try {
+            const { acceptance } = await sendText(s, text, true, { ...options(), path: "inbox-nudge" });
+            delivered(recipient, acceptance);
+          } catch (e) {
+            // a held field parks the notice instead of dropping it (systemlast-befund 2026-10-11);
+            // a message read or added meanwhile cancels it through checkRecipient, nothing typed
+            if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, { key: `inbox-nudge:${s.id}:${key}`,
+              send: (current) => sendText(current, text, true, { ...options(), path: "inbox-nudge", requireAgent: true }),
+              onDelivered: delivered }) === null) return;
+            throw e;
+          }
         } catch (e) {
           if (!(e instanceof DeliveryCancelled)) {
             messageNudgeTried.set(s.id, { key: prior?.key ?? "", lastAt: Date.now() });
@@ -26564,7 +26594,7 @@ async function tickMigrate(): Promise<void> {
   try {
     for (const { s, fill, lane, attempt } of due) {
       const pendingKey = `${s.id}:${attempt.sessionId}`;
-      if (pendingMigrateNudges.has(pendingKey)) continue;
+      if (pendingMigrateNudges.has(pendingKey) || fleetSendParked(`migrate:${pendingKey}`)) continue;
       // Same unobserved-pane rule as tickWatches: contextFill's null currently masks this for a
       // fresh transcript, but that unrelated absence semantic is not an idle-safety guarantee.
       if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
@@ -26589,34 +26619,47 @@ async function tickMigrate(): Promise<void> {
       // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
       const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
       pendingMigrateNudges.add(pendingKey);
+      const beforeSend = async (current: Slot): Promise<void> => {
+        if (current !== s || s.sessionId !== attempt.sessionId)
+          throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
+      };
+      // a delivered nudge, typed at once or out of the parked list: counted, kept, logged
+      const migrateDelivered = (current: Slot, acceptance: Acceptance): void => {
+        const sentAt = Date.now();
+        attempt.nudges++;
+        attempt.lastAt = sentAt;
+        migrateTried.set(current.id, attempt);
+        if (attempt.nudges >= MIGRATE_MAX_NUDGES && !attempt.gaveUp) {
+          attempt.gaveUp = true;
+          audit("migrate_gave_up", current.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
+        }
+        current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+        saveHistory(current);
+        logPrompt(current, text, "auto", sentAt, undefined, acceptance);
+      };
       void (async () => {
         try {
           const { acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
-            bundleGate: { idleMs: MIGRATE_IDLE_MS },
-            beforeSend: async (current) => {
-              if (current !== s || s.sessionId !== attempt.sessionId)
-                throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
-            } });
-          const sentAt = Date.now();
-          attempt.nudges++;
-          attempt.lastAt = sentAt;
-          migrateTried.set(s.id, attempt);
-          if (attempt.nudges >= MIGRATE_MAX_NUDGES && !attempt.gaveUp) {
-            attempt.gaveUp = true;
-            audit("migrate_gave_up", s.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
-          }
-          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
-          saveHistory(s);
-          logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+            bundleGate: { idleMs: MIGRATE_IDLE_MS }, beforeSend });
+          migrateDelivered(s, acceptance);
         } catch (e) {
-          if (!(e instanceof DeliveryCancelled)) {
-            logError("migrationSend", e);
-            logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-            attempt.lastAt = Date.now();
-            migrateTried.set(s.id, attempt);
-          }
-        } finally { pendingMigrateNudges.delete(pendingKey); }
-      })();
+          // THE HELD FIELD MUST NOT EAT THE MIGRATION (systemlast-befund 2026-10-11: under memory
+          // pressure "composer occupied — nothing typed" dropped this nudge exactly when it was
+          // needed, and the cooldown below kept it away). It waits as a parked Fleet send instead.
+          if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, { key: `migrate:${pendingKey}`,
+            send: (current) => sendText(current, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
+              requireAgent: true, beforeSend }),
+            onDelivered: migrateDelivered }) === null) return;
+          throw e;
+        }
+      })().catch((e: unknown) => {
+        if (!(e instanceof DeliveryCancelled)) {
+          logError("migrationSend", e);
+          logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+          attempt.lastAt = Date.now();
+          migrateTried.set(s.id, attempt);
+        }
+      }).finally(() => { pendingMigrateNudges.delete(pendingKey); });
     }
   } finally {
     migrateTickBusy = false;
@@ -38653,6 +38696,21 @@ function squashGoalSentence(t: Task | undefined): string {
   return first.length > SQUASH_GOAL_MAX ? `${first.slice(0, SQUASH_GOAL_MAX - 1).trimEnd()}…` : first;
 }
 
+// A REPORT NAMES ITS LAND: an accepted report whose first line is `BETREFF: <typ>(<bereich>): <Satz>`
+// gives the subject its type and goal. A kept lane lands charge after charge on ONE row, so the
+// row's ZIEL repeats and the type is whichever lane commit came last (e13a98fc was "fix(timeline)"
+// for a host-stability charge); only the report knows what THIS charge was. The line leaves the
+// body. Without it, or with a line of another form, the rules below and above stand as they were.
+const SQUASH_REPORT_SUBJECT = /^BETREFF:\s*([a-z][a-z0-9-]*)\(([^)\n]+)\)!?:\s*(\S.*)$/i;
+function squashReportSubject(report: LandReadyReport | null): { head: string; goal: string; body: string } | null {
+  const [first = "", ...rest] = (report?.text.trim() ?? "").split("\n");
+  const m = SQUASH_REPORT_SUBJECT.exec(first.trim());
+  if (!m) return null;
+  const goal = m[3]!.replace(/\s+/g, " ").trim().replace(/\.$/, "");
+  return { head: `${m[1]}(${m[2]})`, goal: goal.length > SQUASH_GOAL_MAX ? `${goal.slice(0, SQUASH_GOAL_MAX - 1).trimEnd()}…` : goal,
+    body: rest.join("\n").trim() };
+}
+
 // <typ>(<bereich>) from the NEWEST lane subject that has that form and whose type is not a
 // SQUASH_MINOR_TYPES one, else from the newest of that form, `feat` when none has it: a lane that
 // closes with its docs commit is still named by its work (5a2cd07d was "docs(self-api)" for a
@@ -38717,15 +38775,16 @@ async function planSquashLand(s: Slot, cwd: string, root: string, branch: string
   }
   const typedAll = [...series].reverse().map((c) => SQUASH_TYPE_SCOPE.exec(c.subject)).filter((m) => m !== null);
   const typed = typedAll.find((m) => !SQUASH_MINOR_TYPES.has(m[1]!.toLowerCase())) ?? typedAll[0];
-  const head = typed ? `${typed[1]}(${typed[2]})` : "feat";
+  const named = squashReportSubject(report);
+  const head = named?.head ?? (typed ? `${typed[1]}(${typed[2]})` : "feat");
   const task = s.taskId ? tasks.find((t) => t.id === s.taskId) : undefined;
-  const goal = squashGoalSentence(task);
+  const goal = named?.goal ?? squashGoalSentence(task);
   const subject = `${head}: ${s.taskId ?? branch}${goal ? ` — ${goal}` : ""}`;
   const listed = squashSeriesList(series);
   // every DISTINCT Co-Authored-By line of the series, in the order it first appears
   const trailers = [...new Set(series.flatMap((c) => c.body.split("\n").map((l) => l.trim())
     .filter((l) => SQUASH_CO_AUTHOR.test(l))))];
-  const message = prior ?? [subject, report?.text.trim() || "kein angenommener Report", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
+  const message = prior ?? [subject, named?.body || report?.text.trim() || "kein angenommener Report", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
   // authored as the lane's newest commit was; the committer is whoever this server commits as
   const [name, email] = author.out.split("\x1f");
   const made = await gitWith(name && email ? { ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email } : undefined,
@@ -53473,6 +53532,13 @@ Bun.serve<WSData>({
       s.history = [...s.history, { text: body.text, ts, source: body.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
+      // THE BOARD IS THE OWNER (UI-MAIN-Befund 11.10.): a sentence typed into the board's composer
+      // reaches a lane as this POST under the owner COOKIE, and its pane line opens with the
+      // `[fleet-zustellung · Owner-Credential …]` head the harvester skips — so it reached neither the
+      // MAIN's inbox nor the successor's brief. The cookie is the browser; ctl.sh, the Orchestratorin
+      // and every MAIN send with the bearer and stay outside, as the harvester keeps them outside.
+      if (tokenChannel(req) === "cookie")
+        void recordOwnerLaneInput(s, body.text, ts).catch((e: unknown) => logError("recordOwnerLaneInput", e));
       // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.
       // `submitRequested` is that flag by its real name; `acceptance` is what the pane showed.
       return json({ ok: true, receipt: { sendId, at: ts, submitRequested: submit, acceptance, receiver } });

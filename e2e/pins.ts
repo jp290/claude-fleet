@@ -4599,6 +4599,47 @@ export default function (pi) {
       && fnBody("reviewDiffs").includes("runWorker(") && /worker: "review"/.test(fnBody("reviewDiffs"))
       && fnBody("tickCardSweep").includes("extractCard(") && !fnBody("tickCardSweep").includes("workerViaCodexExec"),
     `workerViaCodexExec occurrences=${server.split("workerViaCodexExec(").length - 1}`);
+  // UNDER LOAD A TURN IS TAKEN LATE (server.ts#acceptWaitMs, systemlast-befund 2026-10-11): the read
+  // after a paste and after Enter wait ACCEPT_WAIT_MS times the 1-min load per core, capped at 5x.
+  // Executed from the source with the readings injected: idle and one-per-core wait exactly 3000 ms,
+  // load 30 on 8 cores 11250, load 80 the 15000 cap — and the two reads in sendText ask it.
+  let acceptOf: ((load1: number, cores: number) => number) | null = null;
+  try {
+    const at = server.indexOf("const ACCEPT_LOAD_MAX_FACTOR = ");
+    const fnEnd = server.indexOf("\n}\n", server.indexOf("function acceptWaitMs(", at));
+    const src = new Bun.Transpiler({ loader: "ts" }).transformSync(
+      "const ACCEPT_WAIT_MS = 3000;\n" + server.slice(at, fnEnd + 3) + "\nreturn acceptWaitMs;");
+    const fn = new Function("loadavg", "cpus", src)(() => [0, 0, 0], () => []) as (l: number, c: number) => number;
+    acceptOf = (l, c) => fn(l, c);
+  } catch { /* a missing or unparsable function is red below */ }
+  const acceptSendBody = (() => {
+    const at = server.indexOf("async function sendText(");
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+  })();
+  pin("the composer reads after paste and Enter wait longer under load: 3000 idle, 11250 at load 30 on 8 cores, 15000 cap",
+    acceptOf?.(0.5, 8) === 3000 && acceptOf(8, 8) === 3000 && acceptOf(30, 8) === 11250 && acceptOf(80, 8) === 15000
+      && acceptSendBody.includes("const loadedWaitMs = acceptWaitMs();")
+      && acceptSendBody.includes('const after = await awaitComposer(s, bound, (r) => r === "", acceptMs);')
+      && /until: \(r: string \| null\) => boolean, waitMs = acceptWaitMs\(\)\)/.test(server),
+    JSON.stringify(acceptOf ? [acceptOf(0.5, 8), acceptOf(8, 8), acceptOf(30, 8), acceptOf(80, 8)] : "acceptWaitMs did not execute"));
+  // A HELD FIELD PARKS, IT DOES NOT DROP (server.ts#parkFleetSend): every Fleet sender the
+  // systemlast-befund saw refused "composer occupied — nothing typed" hands that refusal to the parked
+  // list under its own key, and the two ticks that would re-offer the same subject skip it while it
+  // waits. Delivery out of the list is the Watch block's "parked watch" in e2e/watch.ts.
+  const parkBodyOf = (name: string): string => {
+    const at = server.search(new RegExp(`(?:async )?function ${name}\\(`));
+    return at < 0 ? "" : server.slice(at, server.indexOf("\n}\n", at));
+  };
+  const parks: [string, string][] = [["tickMigrate", "migrate:"], ["tickMessageNudge", "inbox-nudge:"],
+    ["hintAttentionOrchestrator", "attention:"], ["tickOrphanReports", "report-orphan:"],
+    ["notifyOrchestratorOfProgramLoss", "program-event:"]];
+  const unparked = parks.filter(([fn, key]) => !new RegExp(`instanceof SendComposerOccupied\\) \\|\\| parkFleetSend\\(|instanceof SendComposerOccupied && parkFleetSend\\(`).test(parkBodyOf(fn))
+    || !parkBodyOf(fn).includes(`key: \`${key}`));
+  pin("migration, inbox nudge, attention hint, orphan report and program event park on an occupied composer instead of dropping it",
+    unparked.length === 0
+      && parkBodyOf("tickMigrate").includes("fleetSendParked(`migrate:${pendingKey}`)) continue;")
+      && parkBodyOf("tickMessageNudge").includes("parkedSends.some((p) => p.fleet?.key.startsWith(`inbox-nudge:${s.id}:`))) continue;"),
+    unparked.map(([fn]) => fn).join(", ") || "all park");
   pin("worker routes select transport only; model and effort belong to MODEL_DEFAULTS",
     /type WorkerRouteConfig = \{ route: "claude" \| "codex-exec" \};/.test(server)
       && /: \{ route: "codex-exec" \};/.test(server)

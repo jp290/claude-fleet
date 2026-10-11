@@ -16311,8 +16311,14 @@ async function ownerLaneInput(): Promise<void> {
     const ownerText = `Owner input probe ${process.pid}: die Kachel bitte rot statt orange, und den Rand weglassen.`;
     const deliveryText = `delivery probe ${process.pid}: this came through Fleet, not from the owner's keyboard`;
     const tokenText = `token probe ${process.pid}: FLEET_SELF_TOKEN=${laneToken} gehoert nicht in einen Eintrag`;
+    // Claude Code's own compaction summary, in its own line shape (isCompactSummary, measured
+    // 2026-10-11: all four rows of the live streams/owner-inputs.jsonl were such summaries)
+    const compactText = `This session is being continued from a previous conversation that ran out of context. compact probe ${process.pid}`;
+    const compact = (at: number): string => `${JSON.stringify({ type: "user", isSidechain: false, isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, uuid: crypto.randomUUID(), timestamp: new Date(at).toISOString(), sessionId, cwd: laneCwd,
+      message: { role: "user", content: compactText } })}\n`;
     const typedAt = Date.now() - 3_000;
-    appendFileSync(transcript, user(ownerText, typedAt)
+    appendFileSync(transcript, compact(typedAt - 1_000) + user(ownerText, typedAt)
       + user(`[fleet-zustellung · Owner-Credential · Slot ${laneSlot}] ${deliveryText}`, typedAt + 1_000)
       + user(tokenText, typedAt + 2_000));
     type Entry = ProgramInboxView["entries"][number];
@@ -16333,6 +16339,46 @@ async function ownerLaneInput(): Promise<void> {
       laneHistory.some((h) => h.text.includes(deliveryText) && h.source === "fleet")
         && !entries.some((e) => String(e.subject?.text ?? "").includes(deliveryText)),
       JSON.stringify(entries.map((e) => e.subject?.text)));
+    check("owner input: Claude Code's compaction summary in the same chunk is no entry — it is a harness line, not the owner's words",
+      !!typed && !entries.some((e) => String(e.subject?.text ?? "").includes(`compact probe ${process.pid}`)),
+      JSON.stringify(entries.map((e) => String(e.subject?.text ?? "").slice(0, 80))));
+    // THE BOARD COMPOSER (src/client.ts#deliver): the owner's sentence reaches the lane as POST /send
+    // under the board's cookie, and its pane line carries the Owner-Credential head the harvester
+    // skips. The same route with the bearer is ctl.sh or a MAIN, and stays out.
+    const boardText = `board probe ${process.pid}: der Owner schreibt aus dem Board-Composer in die Lane`;
+    const bearerText = `bearer probe ${process.pid}: eine MAIN schreibt mit dem Owner-Token in die Lane`;
+    // the lane's pane was spawned before the restart under the suite's own FLEET_CMD, so no `claude`
+    // runs in it and the owner /send (requireAgent) refuses both sends with 409 before the recording
+    // is reached (helper preview 172f5a3f1275). The claude stand-in goes into the pane first, and the
+    // sends wait until it is the pane's process — the comm the server's agent probe reads.
+    const respawn = await tmuxOut("respawn-pane", "-k", "-t", `s${laneSlot}`, `${dir}/claude`);
+    let agentUp = false;
+    try {
+      agentUp = respawn.code === 0 && await until(async () => {
+        const pid = (await tmuxOut("display-message", "-p", "-t", `s${laneSlot}`, "#{pane_pid}")).out.trim();
+        const comm = pid ? Bun.spawnSync(["ps", "-o", "comm=", "-p", pid]).stdout.toString().trim() : "";
+        return basename(comm).startsWith("claude");
+      }, { timeoutMs: 10_000, what: "the claude stand-in runs in the lane's pane" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    check("owner input SETUP: the claude stand-in runs in the lane's pane before the owner sends", agentUp,
+      `respawn-pane exited ${respawn.code}`);
+    if (!agentUp) return;
+    const boardSend = await fetch(`${BASE}/send`, { method: "POST",
+      headers: { "content-type": "application/json", cookie: `fleet_${PORT}=${TOKEN}` },
+      body: JSON.stringify({ slot: laneSlot, text: boardText }) });
+    const bearerSend = await post("/send", { slot: laneSlot, text: bearerText });
+    const refusal = async (r: Response): Promise<string> => (r.ok ? "" : (await r.text()).slice(0, 160));
+    const refusals = { board: await refusal(boardSend), bearer: await refusal(bearerSend) };
+    try {
+      await until(async () => (await ownerEntries()).some((e) => e.subject?.text === boardText),
+        { timeoutMs: 10_000, what: "the board's sentence reaches the MAIN's inbox" });
+    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
+    const afterBoard = await ownerEntries();
+    const boardEntry = afterBoard.find((e) => e.subject?.text === boardText);
+    check("owner input: a sentence from the board composer (POST /send with the owner cookie) is an owner-input entry, one with the bearer is none",
+      boardSend.ok && bearerSend.ok && !!boardEntry && boardEntry.subject?.slot === laneSlot
+        && !afterBoard.some((e) => e.subject?.text === bearerText),
+      JSON.stringify({ board: boardSend.status, bearer: bearerSend.status, refusals, entries: afterBoard.map((e) => String(e.subject?.text ?? "").slice(0, 60)) }));
     const tokened = entries.find((e) => String(e.subject?.text ?? "").startsWith(`token probe ${process.pid}`));
     check("owner input: a token in the owner's line is cut before the entry is written",
       !!laneToken && !!tokened && String(tokened.subject?.text).includes("FLEET_SELF_TOKEN=[redacted]")

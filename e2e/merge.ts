@@ -3372,6 +3372,99 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 
+  // 5a515516 · A REPORT NAMES ITS LAND (server.ts#squashReportSubject). A kept lane lands two charges
+  // through ONE row, each on an accepted report whose first line is "BETREFF: <typ>(<bereich>): <Satz>".
+  // Each land's subject takes type and goal from ITS report — two different subjects, though the row's
+  // ZIEL and the lane commits' type ("fix(kept2)") stay the same — and the BETREFF line leaves the body.
+  // Mutation: drop `named?.head ??` and `named?.goal ??` in planSquashLand, and both subjects fall back
+  // to "fix(kept2): <row> — <first ZIEL sentence>", which this check reads as red.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const mainBefore = git2("rev-parse", "main");
+    const programR = await post("/api/programs", {
+      title: "Charge subjects", intent: "Each charge of a kept lane is named by its report.",
+      successCriterion: "Two charges, two subjects.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false,
+      text: "Eine Live-Lane landet Charge um Charge. Der Kartensatz bleibt derselbe." });
+    const rowId = ((await taskR.json()) as { task?: { id: string } }).task?.id ?? "";
+    const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+    const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+    type ChargeSlot = { id: number; cwd: string | null; lastOutput: number; git: { dirty: number; ahead: number } | null };
+    const laneNow = async (): Promise<{ now: number; slot: ChargeSlot | undefined }> => {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: ChargeSlot[] };
+      return { now: sx.now, slot: sx.slots.find((x) => x.id === laneSlot) };
+    };
+    const cwd = (await laneNow()).slot?.cwd ?? "";
+    const laneToken = tokenOf(laneSlot);
+    const charge = async (n: number, file: string, text: string): Promise<{ sha: string; subject: string; body: string; facts: unknown }> => {
+      const from = git2("rev-parse", "main");
+      if (cwd) {
+        writeFileSync(`${cwd}/${file}`, `${file}\n`);
+        spawnSync("git", ["-C", cwd, "add", file]);
+        spawnSync("git", ["-C", cwd, "commit", "-qm", `fix(kept2): Tranche ${n}`]);
+      }
+      const reportR = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+        headers: { "x-fleet-self-token": laneToken, "content-type": "application/json" },
+        body: JSON.stringify({ status: "complete", text }) });
+      const id = reportR.ok ? ((await reportR.json()) as { report?: { id?: string } }).report?.id ?? "" : "";
+      const acceptR = id ? await fetch(`${BASE}/api/self/fleet-report/${id}/accept`, { method: "POST",
+        headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: "{}" }) : null;
+      let ready = false;
+      try {
+        ready = await until(async () => {
+          const brief = (await plogRead()).some((e) => e.cwd === cwd && e.source === "auto");
+          const { now, slot } = await laneNow();
+          return brief && !!slot?.lastOutput && slot.git?.dirty === 0 && slot.git.ahead === 1 && now - slot.lastOutput >= 1500;
+        }, { timeoutMs: 30_000, stepMs: 100, what: `charge ${n} lane done-looking` });
+      } catch { /* the check names the missing precondition */ }
+      const landR = rowId && mainToken ? await fetch(`${BASE}/api/self/tasks/${rowId}/land`, { method: "POST",
+        headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: '{"keep":true}' }) : null;
+      let settled = false;
+      try {
+        settled = await until(async () => {
+          const m = (await (await get(`/api/slots/${laneSlot}/merge`)).json()) as { running?: boolean };
+          return m.running === false && git2("rev-parse", "main") !== from;
+        }, { timeoutMs: 20_000, stepMs: 100, what: `charge ${n} land settled` });
+      } catch { /* checked below */ }
+      try { await until(async () => (await laneNow()).slot?.git?.ahead === 0,
+        { timeoutMs: 10_000, stepMs: 100, what: `charge ${n} git tick after land` }); } catch { /* the next charge names it */ }
+      const sha = git2("rev-parse", "main");
+      return { sha, subject: git2("log", "-1", "--format=%s", sha), body: git2("log", "-1", "--format=%b", sha),
+        facts: { report: reportR.status, accept: acceptR?.status ?? null, ready, land: landR?.status ?? null, settled,
+          count: git2("rev-list", "--count", `${from}..${sha}`) } };
+    };
+    const c1 = await charge(1, "charge1.txt", "BETREFF: perf(host): Charge eins haelt die Box unter Last.\n\nCHARGE-1-REPORT: Bremse und Watchdog.");
+    const c2 = await charge(2, "charge2.txt", "BETREFF: feat(inbox): Charge zwei parkt Zustellungen\n\nCHARGE-2-REPORT: Composer und Migration.");
+    check("charge subjects setup: a green-only MAIN and a live lane in REPO2",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true && promotionR?.ok === true
+        && /^[0-9a-f]{32}$/.test(mainToken) && dispatchR?.ok === true && cwd !== "",
+      JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error, dispatch: dispatchR?.status, cwd }));
+    check("charge subjects: two kept lands of one row take type and goal from their accepted report's BETREFF line — two subjects, one commit each, the line not in the body",
+      c1.subject === `perf(host): ${rowId} — Charge eins haelt die Box unter Last`
+        && c2.subject === `feat(inbox): ${rowId} — Charge zwei parkt Zustellungen`
+        && c1.body.startsWith("CHARGE-1-REPORT: Bremse und Watchdog.") && c2.body.startsWith("CHARGE-2-REPORT: Composer und Migration.")
+        && !c1.body.includes("BETREFF:") && !c2.body.includes("BETREFF:")
+        && git2("rev-list", "--count", `${mainBefore}..main`) === "2",
+      JSON.stringify({ c1: { subject: c1.subject, body: c1.body.slice(0, 200), facts: c1.facts },
+        c2: { subject: c2.subject, body: c2.body.slice(0, 200), facts: c2.facts } }));
+    if (laneSlot) await post(`/api/slots/${laneSlot}/kill`, {});
+    if (cwd) await post("/api/worktrees/remove", { repo: REPO2, path: cwd });
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

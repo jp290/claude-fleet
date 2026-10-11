@@ -5423,6 +5423,8 @@ async function runMigrateTickRace(): Promise<void> {
     },
     DeliveryCancelled: class extends Error {}, audit: () => {}, MAX_HISTORY: 50, saveHistory: () => {}, logPrompt: () => {},
     logError: () => {}, sendFailureDelivery: () => "send-failed",
+    // a0387eec: a held field parks the nudge; this race never holds one, so nothing is parked
+    SendComposerOccupied: class extends Error {}, fleetSendParked: () => false, parkFleetSend: () => null,
   };
   const tick = new Function(...Object.keys(deps), `${js}; return tickMigrate;`)(...Object.values(deps)) as () => Promise<void>;
   const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await Bun.sleep(0); };

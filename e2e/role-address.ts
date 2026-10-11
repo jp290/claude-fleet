@@ -91,7 +91,9 @@ export async function messageDeliveryChecks(): Promise<void> {
         sent.push({ openedAt: slot.openedAt, options });
         return { acceptance: "observed" };
       }, MAX_HISTORY: 100, saveHistory: () => {}, logPrompt: () => {},
-      logError: (_name: string, error: unknown) => { throw error; }, sendFailureDelivery: () => "failed" };
+      logError: (_name: string, error: unknown) => { throw error; }, sendFailureDelivery: () => "failed",
+      // a0387eec: a held field parks the notice; no fixture here holds one, so nothing is parked
+      parkedSends: [], SendComposerOccupied: class extends Error {}, parkFleetSend: () => null };
     const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickMessageNudge, messageInboundFor, messageAddressesFor }; }`)(deps) as {
       tickMessageNudge: () => Promise<void>;
       messageInboundFor: (s: Occupant, m: MessageRow) => boolean;

@@ -3,7 +3,8 @@
 // Every check of the suite that starts a browser runs HERE, so a run can leave them out by its
 // module choice (`FLEET_E2E_MODULES` without `dom`, or a shard without the unit `dom`) and still run
 // every other check. The probes themselves stay where their family lives — the rigs are libraries:
-//   · e2e/slots.ts        runFoundingFocusDom … runRightsDom (the board, the composer, the islands)
+//   · e2e/slots.ts        runFoundingFocusDom … runRightsDom (the board, the composer, the islands),
+//                         runActivityDom (the Activity window's type and loading states)
 //   · e2e/lanes-lifecycle.ts  instanceBandDom, snapshotBoardDom (the Testinstanz band and board)
 //   · e2e/drops.ts        runDropChatDom (the chat view's pictures)
 //   · e2e/timeline-ui.ts  runTimelineDom (the session timeline lens)
@@ -25,7 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check } from "./harness";
 import {
-  ARBEITSORTE_MUTANTS, ArbeitsorteVerdictsIn, KEEP_MUTANTS, STRIP_MUTANTS, runArbeitsorteDom, runBundleChatDom,
+  ACTIVITY_MUTANTS, ARBEITSORTE_MUTANTS, ArbeitsorteVerdictsIn, KEEP_MUTANTS, STRIP_MUTANTS, runActivityDom, runArbeitsorteDom, runBundleChatDom,
   runComposerKeepDom, runComposerTargetDom, runFoundingFocusDom, runGlassIslandDom, runHeldDeliveriesDom,
   runPhoneIslandDom, runRightsDom, runSettingsDom, runStripDom, runTermFindDom, startArbeitsorteBrowser,
   type ArbeitsorteBrowser, type ArbeitsorteDomResult,
@@ -43,6 +44,7 @@ export async function run(): Promise<void> {
   await snapshotDom(sourceRoot);
   await dropsDom(sourceRoot);
   await timelineDom(sourceRoot);
+  await activityDom(sourceRoot);
 }
 
 // --- from e2e/slots.ts: the founding window, settings, composer, chat, terminal search, Arbeitsorte,
@@ -378,6 +380,31 @@ async function timelineDom(sourceRoot: string): Promise<void> {
         JSON.stringify(hit?.facts ?? null).slice(0, 600));
     } catch (error) {
       check(`timeline DOM mutant — PROBE: ${m.name}`, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+// --- from e2e/slots.ts: the Activity window's type (G0.3) and its loading states, and their mutants
+async function activityDom(sourceRoot: string): Promise<void> {
+  try {
+    for (const result of await runActivityDom(sourceRoot)) {
+      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      for (const [claim, ok] of Object.entries(result.claims))
+        check(`activity DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
+    }
+  } catch (error) {
+    check("activity DOM — PROBE: Chromium runs the real client bundle behind the fixture origin", false,
+      error instanceof Error ? error.message : String(error));
+    return;
+  }
+  // every mutant must turn its claim red at 1200×900 — a needle that left the source fails as the probe
+  for (const m of ACTIVITY_MUTANTS) {
+    try {
+      const hit = (await runActivityDom(sourceRoot, undefined, { widths: [1200], mutate: m }))[0];
+      check(`activity DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      check(`activity DOM mutant — PROBE: ${m.name}`, false, error instanceof Error ? error.message : String(error));
     }
   }
 }

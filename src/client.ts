@@ -8383,7 +8383,8 @@ function renderAudit() {
   auditProject = auditProjects(auditData);
   const shRows: ShellRow[] = [];
   let selIdx = -1;
-  if (!rows.length) shell.list.appendChild(el("div", "histnone", "no events match this filter"));
+  if (!actLoaded.has("audit")) shell.list.appendChild(actLoading("histnone", "loading…"));
+  else if (!rows.length) shell.list.appendChild(el("div", "histnone", "no events match this filter"));
   for (const e of rows) {
     const cat = AUDIT_CAT[e.event] ?? "other";
     const r = el("div", `shellrow auditrow cat-${cat}`);
@@ -8396,7 +8397,7 @@ function renderAudit() {
     // the project comes SECOND on the sub-line: an event without one is a real state (Fleet-wide
     // events have no slot at all), and an em dash there is quieter than an absent column
     const where = auditProject.get(e);
-    m.appendChild(el("div", "shrsub", `${fmtTs(e.ts)} · ${where ? baseName(where) : "no project"}`));
+    m.appendChild(actMeta("shrsub", [[fmtTs(e.ts), true], [where ? baseName(where) : "no project", !!where]]));
     r.appendChild(m);
     const key = `${e.ts}|${e.event}`;
     const act = () => { auditPick = key; renderActivity(); renderAuditDetail(e); shell.showDetail(true); };
@@ -8416,9 +8417,8 @@ function renderAuditDetail(e: AuditEntry) {
   if (!shell) return;
   shell.detail.replaceChildren();
   shell.detail.appendChild(el("div", "rvhead", decodeAudit(e.event, e.detail) || e.event));
-  shell.detail.appendChild(el("div", "diffstat",
-    `${fmtTs(e.ts)} · ${e.event}${typeof e.slot === "number" ? ` · slot ${e.slot}` : ""}`
-    + ` · ${AUDIT_CAT[e.event] ?? "other"}`));
+  shell.detail.appendChild(actMeta("diffstat", [[fmtTs(e.ts), true], [e.event, true],
+    ...typeof e.slot === "number" ? [[`slot ${e.slot}`, false] as const] : [], [AUDIT_CAT[e.event] ?? "other", false]]));
   // where it happened, said in full — the row can only show a folder's basename, and two checkouts
   // of one repo differ in the part it has to cut
   const where = auditProject.get(e);
@@ -8564,7 +8564,7 @@ function renderCommits() {
   shell.list.replaceChildren();
   cmRowOf = new Map();
   if (cmErr) { shell.list.appendChild(el("div", "diffstat err", cmErr)); shell.setRows([]); return; }
-  if (!cmData) { shell.list.appendChild(el("div", "hint shellhint", "loading…")); shell.setRows([]); return; }
+  if (!cmData) { shell.list.appendChild(actLoading("hint shellhint", "loading…")); shell.setRows([]); return; }
   if (cmData.error) { shell.list.appendChild(el("div", "hint shellhint", cmData.error)); shell.setRows([]); return; }
 
   // repo chooser — only when Fleet actually has more than one open, so the common case is quiet
@@ -8624,7 +8624,7 @@ function renderCommits() {
     cmRowOf.set(r, c);
     const m = el("div", "shrmain");
     m.appendChild(el("div", "shrname", c.subject || "(no subject)"));
-    m.appendChild(el("div", "shrsub", `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}`));
+    m.appendChild(actMeta("shrsub", [[c.hash, true], [fmtTs(c.ts), true], ...c.stat ? [[c.stat, false] as const] : []]));
     r.appendChild(m);
     const act = () => { cmPick = c.hash; renderActivity(); renderCommitDetail(c); shell.showDetail(true); };
     r.onclick = act;
@@ -8647,13 +8647,13 @@ function renderCommitDetail(c: RvCommit) {
   if (!shell) return;
   shell.detail.replaceChildren();
   shell.detail.appendChild(el("div", "rvhead", c.subject || "(no subject)"));
-  shell.detail.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}`));
+  shell.detail.appendChild(actMeta("diffstat", [[c.hash, true], [fmtTs(c.ts), true], ...c.stat ? [[c.stat, false] as const] : []]));
 
   // THE CHANGE ITSELF, which is what a commit row is asking about. It used to be absent entirely:
   // the pane showed a provenance note and nothing about the code, so the lens could tell you a
   // commit existed and never what it did.
   const body = el("div", "cmdiff");
-  body.appendChild(el("div", "hint shellhint", "reading the change…"));
+  body.appendChild(actLoading("hint shellhint", "reading the change…"));
   shell.detail.appendChild(body);
   const seq = ++cmDiffSeq;
   void (async () => {
@@ -8724,7 +8724,7 @@ function renderCommitDetail(c: RvCommit) {
   if (!actLoaded.has("lands")) {
     // the ledger is not loaded YET — that is this window's bookkeeping, not a fact about the commit,
     // so it is fetched rather than reported. Re-renders this pane once, if it is still the one shown.
-    const note = el("div", "hint shellhint", "checking the land ledger…");
+    const note = actLoading("hint shellhint", "checking the land ledger…");
     shell.detail.appendChild(note);
     void loadLens("lands").then(() => {
       if (shell.isOpen() && cmPick === c.hash && actLens === "commits") renderCommitDetail(c);
@@ -8734,10 +8734,8 @@ function renderCommitDetail(c: RvCommit) {
       "no land recorded within an hour of this commit — it was probably committed by hand"));
   } else {
     for (const o of near) {
-      const line = el("div", "shrsub");
-      line.textContent = `${fmtTs(o.ts)} · ${(o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")}`
-        + `${o.shortstat ? ` · ${o.shortstat}` : ""}`;
-      shell.detail.appendChild(line);
+      shell.detail.appendChild(actMeta("shrsub", [[fmtTs(o.ts), true],
+        [(o.branch ?? "(branch not recorded)").replace(/^fleet\//, ""), !!o.branch], ...o.shortstat ? [[o.shortstat, false] as const] : []]));
     }
     shell.detail.appendChild(el("div", "hint shellhint",
       "matched by TIME (±1h), not identity — the ledger records a branch and a moment, not the"
@@ -8984,7 +8982,8 @@ function renderOutcomes() {
   shell.list.replaceChildren();
   const shRows: ShellRow[] = [];
   let selIdx = -1;
-  if (!rows.length) shell.list.appendChild(el("div", "histnone", "no outcomes match this filter"));
+  if (!actLoaded.has("lands")) shell.list.appendChild(actLoading("histnone", "loading…"));
+  else if (!rows.length) shell.list.appendChild(el("div", "histnone", "no outcomes match this filter"));
   for (const o of rows) {
     const ref = landRef(o);
     const dispo = o.disposition ?? "unknown";
@@ -8994,7 +8993,7 @@ function renderOutcomes() {
     nm.appendChild(el("span", "ocdispo", DISPO_WORD[dispo] ?? dispo));
     nm.appendChild(el("span", "ocbranch", (o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")));
     m.appendChild(nm);
-    m.appendChild(el("div", "shrsub", `${fmtTs(o.ts)}${o.shortstat ? ` · ${o.shortstat}` : ""}`));
+    m.appendChild(actMeta("shrsub", [[fmtTs(o.ts), true], ...o.shortstat ? [[o.shortstat, false] as const] : []]));
     r.appendChild(m);
     // the coverage relation is the one fact worth carrying in the index — it is what the feed is for
     r.appendChild(chip(reviewRel(o) === "covered" ? "③" : "·", `rel-${reviewRel(o)}`, REL_WORD[reviewRel(o)]));
@@ -9280,12 +9279,13 @@ function akteSource<T>(host: HTMLElement, title: string, src: Measured<T>, empty
 }
 
 // one entry on the trail: when, which source it came from, what it says
-function akteStep(host: HTMLElement, kind: string, ts: number, title: string, sub?: string): HTMLElement {
+// `subMono`: the sub is a record one copies (a slot event's raw detail, a sha) rather than words
+function akteStep(host: HTMLElement, kind: string, ts: number, title: string, sub?: string, subMono = false): HTMLElement {
   const r = el("div", `aktestep step-${kind}`);
   r.appendChild(el("span", "aktekind", kind));
   const m = el("div", "shrmain");
   m.appendChild(el("div", "shrname", title));
-  m.appendChild(el("div", "shrsub", `${ts ? fmtTs(ts) : "—"}${sub ? ` · ${sub}` : ""}`));
+  m.appendChild(actMeta("shrsub", [[ts ? fmtTs(ts) : "—", !!ts], ...sub ? [[sub, subMono] as const] : []]));
   r.appendChild(m);
   host.appendChild(r);
   return r;
@@ -9304,18 +9304,19 @@ function renderAkte() {
   shell.list.replaceChildren();
   const shRows: ShellRow[] = [];
   let selIdx = -1;
-  if (!loaded) shell.list.appendChild(el("div", "histnone", "no lanes on record"));
+  if (!actLoaded.has("akte")) shell.list.appendChild(actLoading("histnone", "loading…"));
+  else if (!loaded) shell.list.appendChild(el("div", "histnone", "no lanes on record"));
   for (const l of akteData) {
     const r = el("div", "shellrow akterow");
     r.title = l.repo ? `${l.branch} · ${l.repo}` : l.branch;
     const m = el("div", "shrmain");
-    m.appendChild(el("div", "shrname", l.branch));
+    m.appendChild(el("div", "shrname mono", l.branch));
     // a live lane has no disposition yet and saying "landed"/"—" for it would be a claim; "open"
     // is the honest word for a lane whose story is still being written
     const state = l.live !== null ? `open · slot ${l.live}` : l.disposition ?? "no outcome recorded";
     // ts 0 means the server could not read a time for this lane (a live pane with no transcript
     // yet) — printing the epoch there would be a fabricated date, so the field simply says nothing
-    m.appendChild(el("div", "shrsub", `${l.ts ? `${fmtTs(l.ts)} · ` : ""}${state}${l.repo ? ` · ${baseName(l.repo)}` : ""}`));
+    m.appendChild(actMeta("shrsub", [...l.ts ? [[fmtTs(l.ts), true] as const] : [], [state, false], ...l.repo ? [[baseName(l.repo), true] as const] : []]));
     r.appendChild(m);
     // the busy flag is set BEFORE the re-render, not inside the loader: renderActivity runs
     // synchronously here, so a flag the loader sets afterwards would arrive one frame too late and
@@ -9336,7 +9337,7 @@ function renderAkte() {
   shell.setRows(shRows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
   if (akteDoc && akteDoc.branch === aktePick) renderAkteDetail(akteDoc);
-  else if (akteBusy) { shell.detail.replaceChildren(); shell.detail.appendChild(el("div", "hint shellhint", "reading…")); }
+  else if (akteBusy) { shell.detail.replaceChildren(); shell.detail.appendChild(actLoading("hint shellhint", "reading…")); }
 }
 
 async function loadAkteDoc(branch: string) {
@@ -9363,11 +9364,12 @@ async function loadAkteDoc(branch: string) {
 // fact — whether anything was read — is not on any ledger, and the movement says so in words.
 const AKTE_CTX_ID = "font-size:12px;color:#ddd";
 const AKTE_CTX_META = "font-size:10.5px;color:#6f6f6f";
-// one pack per line: the id, and beside it the fact that belongs to it (bytes, time, why left out)
-function akteCtxLine(col: HTMLElement, id: string, meta = "", dim = false) {
+// one pack per line: the id, and beside it the fact that belongs to it (bytes, time, why left out);
+// `word` for a line that holds a sentence where an id would stand — it reads in sans, not as an id
+function akteCtxLine(col: HTMLElement, id: string, meta = "", dim = false, word = false) {
   const row = el("div", "aktectxrow");
   row.style.cssText = "display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;line-height:1.5";
-  row.appendChild(el("span", "", id)).style.cssText = dim ? AKTE_CTX_META : AKTE_CTX_ID;
+  row.appendChild(el("span", word ? "" : "mono", id)).style.cssText = dim ? AKTE_CTX_META : AKTE_CTX_ID;
   if (meta) row.appendChild(el("span", "", meta)).style.cssText = AKTE_CTX_META;
   col.appendChild(row);
 }
@@ -9387,7 +9389,7 @@ function akteContextColumn<T>(col: HTMLElement, title: string, src: ContextColum
     return;
   }
   if (src.state === "absent") {
-    akteCtxLine(col, "none on record");
+    akteCtxLine(col, "none on record", "", false, true);
     akteCtxNote(col, src.why);
     return;
   }
@@ -9452,10 +9454,9 @@ function renderAkteDetail(d: Dossier) {
   if (!shell) return;
   const host = shell.detail;
   host.replaceChildren();
-  host.appendChild(el("div", "rvhead", d.branch));
-  host.appendChild(el("div", "diffstat",
-    `${d.repo ? baseName(d.repo) : "repository unknown"}`
-    + `${d.liveSlot !== null ? ` · open in slot ${d.liveSlot}` : d.slot !== null ? ` · ran in slot ${d.slot}` : " · slot unknown"}`));
+  host.appendChild(el("div", "rvhead mono", d.branch));
+  host.appendChild(actMeta("diffstat", [[d.repo ? baseName(d.repo) : "repository unknown", !!d.repo],
+    [d.liveSlot !== null ? `open in slot ${d.liveSlot}` : d.slot !== null ? `ran in slot ${d.slot}` : "slot unknown", false]]));
 
   // ① THE ORDER
   const task = akteSource(host, "① the order", d.task,
@@ -9471,15 +9472,17 @@ function renderAkteDetail(d: Dossier) {
     if (t.criterion) {
       host.appendChild(el("div", "aktehead", "done-criterion"));
       host.appendChild(el("div", "aktetext", t.criterion.text));
-      host.appendChild(el("div", "shrsub", t.criterion.confirmedAt
-        ? `confirmed by the owner ${fmtTs(t.criterion.confirmedAt)}`
-        : "PROPOSED — never confirmed by the owner, so nothing was measured against it"));
+      const crit = el("div", "shrsub", t.criterion.confirmedAt ? "confirmed by the owner "
+        : "PROPOSED — never confirmed by the owner, so nothing was measured against it");
+      if (t.criterion.confirmedAt) crit.appendChild(el("span", "mono", fmtTs(t.criterion.confirmedAt)));
+      host.appendChild(crit);
     }
     if (t.brief) {
       host.appendChild(el("div", "aktehead", "the brief it was sent"));
-      host.appendChild(el("div", "aktepre", t.brief.text));
-      host.appendChild(el("div", "shrsub", `${t.brief.model} · ${fmtTs(t.brief.at)}${t.brief.edited
-        ? (briefByMain(t.brief) ? " · sharpened by its Program-MAIN" : " · edited by the owner") : ""}`));
+      host.appendChild(el("div", "aktepre aktebrief", t.brief.text));
+      const meta = actMeta("shrsub", [[t.brief.model, true], [fmtTs(t.brief.at), true]]);
+      if (t.brief.edited) meta.append(briefByMain(t.brief) ? " · sharpened by its Program-MAIN" : " · edited by the owner");
+      host.appendChild(meta);
     }
   }
 
@@ -9490,14 +9493,14 @@ function renderAkteDetail(d: Dossier) {
   const prompts = akteSource(host, "③ what it did", d.prompts, "no prompt was ever sent to this lane");
   const events = d.events.state === "read" ? d.events.value : null;
   const commits = d.commits.state === "read" ? d.commits.value : null;
-  type Step = { ts: number; kind: string; title: string; sub?: string };
+  type Step = { ts: number; kind: string; title: string; sub?: string; subMono?: boolean };
   const steps: Step[] = [];
   for (const p of prompts?.rows ?? [])
     steps.push({ ts: p.ts ?? 0, kind: "prompt", title: (p.text ?? "").slice(0, 400), sub: p.source ?? "" });
   for (const e of events?.rows ?? [])
-    steps.push({ ts: e.ts ?? 0, kind: "slot", title: e.event ?? "", sub: e.detail ?? "" });
+    steps.push({ ts: e.ts ?? 0, kind: "slot", title: e.event ?? "", sub: e.detail ?? "", subMono: true });
   for (const c of commits?.rows ?? [])
-    steps.push({ ts: c.at, kind: "commit", title: c.subject, sub: `${c.sha.slice(0, 8)} · ${c.author}` });
+    steps.push({ ts: c.at, kind: "commit", title: c.subject, sub: `${c.sha.slice(0, 8)} · ${c.author}`, subMono: true });
   steps.sort((a, b) => a.ts - b.ts);
   // a cut list must say so. Silently showing 200 of 900 prompts is the same failure as rendering an
   // unread source as empty: the reader believes they have seen the lane.
@@ -9507,7 +9510,7 @@ function renderAkteDetail(d: Dossier) {
     commits && commits.total > commits.rows.length ? `${commits.total - commits.rows.length} older commit(s)` : "",
   ].filter(Boolean);
   if (cut.length) host.appendChild(el("div", "hint shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
-  for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub);
+  for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub, s.subMono);
   // the two sources that ride inside ③ still get their own verdict line when they could not be read
   if (d.events.state === "unknown") akteSource(host, "slot events", d.events, "");
   if (d.commits.state === "unknown") akteSource(host, "commits", d.commits, "");
@@ -9571,10 +9574,12 @@ function renderAkteDetail(d: Dossier) {
     if (fails.length) host.appendChild(el("div", "aktepre akteout", fails.map((name) => `FAIL  ${name}`).join("\n")));
     // an un-adjudicated red is the state the whole adjudication rail exists to make visible:
     // "nobody has looked at this yet" is different from "someone looked and called it noise"
-    if (a.adjudication)
-      host.appendChild(el("div", "shrsub", `${typeof a.adjudication.by === "object"
-        ? `rule ${a.adjudication.by.rule} carried` : "owner ruled"} "${a.adjudication.verdict}" ${fmtTs(a.adjudication.at)}`
-        + `${a.adjudication.note ? ` — ${a.adjudication.note}` : ""}`));
+    if (a.adjudication) {
+      const ruled = el("div", "shrsub", `${typeof a.adjudication.by === "object"
+        ? `rule ${a.adjudication.by.rule} carried` : "owner ruled"} "${a.adjudication.verdict}" `);
+      ruled.append(el("span", "mono", fmtTs(a.adjudication.at)), a.adjudication.note ? ` — ${a.adjudication.note}` : "");
+      host.appendChild(ruled);
+    }
     else if (a.result === "red")
       host.appendChild(el("div", "akteunknownw", "un-adjudicated — nobody has ruled on this red yet"));
     if (a.out) host.appendChild(el("div", "aktepre akteout", a.out));
@@ -9640,8 +9645,11 @@ async function switchLens(k: ActLens) {
   shell.setSubtitle("");
   if (k === "timeline") {
     shell.foot.textContent = "";
+    // the load starts BEFORE the first paint: it sets tlBusy before its first await, so the lens
+    // opens on "wird geladen" instead of "noch nichts geladen" while the route has not answered
+    const loading = loadLens(k);
     renderActivity();
-    await loadLens(k);
+    await loading;
     // the overview IS the landing: on a phone the canvas is the pushed screen, the rail one ‹ away
     if (shell.isOpen()) { if (tlMobile()) shell.showDetail(true); renderActivity(); }
     return;
@@ -9676,6 +9684,22 @@ async function switchLens(k: ActLens) {
 
 // each lens loads once per window; switching back is instant and re-fetches nothing
 const actLoaded = new Set<ActLens>();
+// every loading state of the window says itself to a screen reader too, politely: it never interrupts
+function actLoading(cls: string, text: string): HTMLElement {
+  const n = el("div", cls, text);
+  n.setAttribute("aria-live", "polite");
+  return n;
+}
+// a meta line of the window, its parts joined by " · ": what one copies (a time, a sha, a path, an
+// id) in mono, the words in sans (G0.3) — the text reads exactly as the one string it replaces
+function actMeta(cls: string, parts: readonly (readonly [string, boolean])[]): HTMLElement {
+  const n = el("div", cls);
+  parts.forEach(([text, mono], i) => {
+    if (i) n.append(" · ");
+    n.appendChild(el("span", mono ? "mono" : "", text));
+  });
+  return n;
+}
 async function loadLens(k: ActLens) {
   if (actLoaded.has(k)) return;
   if (k === "lands") {
@@ -10052,7 +10076,8 @@ function renderTimeline() {
       if (s.key === tlScope) { r.classList.add("sel"); selIdx = shRows.length; }
       shRows.push({ el: r, open: act });
     }
-  } else shell.list.appendChild(el("div", "histnone", tlBusy ? "Sessions werden geladen …" : m?.state === "unavailable" ? "keine Quelle" : "keine Session im Fenster"));
+  } else shell.list.appendChild(tlBusy ? actLoading("histnone", "Sessions werden geladen …")
+    : el("div", "histnone", m?.state === "unavailable" ? "keine Quelle" : "keine Session im Fenster"));
   shell.setRows(shRows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
   shell.setSubtitle(m ? m.state === "read"
@@ -10064,7 +10089,7 @@ function renderTimeline() {
   shell.detail.replaceChildren();
   const pane = el("div", "tlpane");
   shell.detail.appendChild(pane);
-  if (!m) { pane.appendChild(el("div", "tlstate", tlBusy ? "Zeitleiste wird geladen …" : "noch nichts geladen")); shell.foot.textContent = ""; return; }
+  if (!m) { pane.appendChild(tlBusy ? actLoading("tlstate", "Zeitleiste wird geladen …") : el("div", "tlstate", "noch nichts geladen")); shell.foot.textContent = ""; return; }
   if (m.state === "unavailable") {
     const box = el("div", "tlstate");
     box.dataset.state = "unavailable";

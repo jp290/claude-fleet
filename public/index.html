@@ -1468,6 +1468,12 @@
     color: var(--faint); font-size: 11px; line-height: 1.5; }
   .shellfoot:empty { display: none; }
   .shellhint { color: var(--chat-mute); font-size: var(--chat-ui-fs); padding: 10px 2px; line-height: 1.5; }
+  /* the Activity window (src/client.ts#openActivity) reads in sans (G0.3): the body's mono is the
+     terminal's, and every lens here is read by a person. Mono stays on what one copies — a branch,
+     a slot number, a time, a path, a pack id, a command and its output, a raw record. */
+  #shell-outcomes { font-family: var(--chat-sans); }
+  #shell-outcomes :is(.mono, .ocbranch, .aud-ts, .aud-slot, .pkdpath, .cmfiles, .aktepre, .qdtext) { font-family: var(--chat-mono); }
+  #shell-outcomes .aktepre.aktebrief { font-family: var(--chat-sans); }
 
   /* --- the session timeline lens (src/client.ts#renderTimeline, data: src/timeline.ts) ----------
      Program ae1f4279 part 5: every session a track on one axis inside the Activity window's shell;

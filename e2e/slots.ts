@@ -22,6 +22,7 @@ import { scanTitleOnly, type TitleCarry } from "../titlebytes";
 import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-register";
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
+import { timelineWireFixture } from "./timeline-ui";
 
 // A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
 // starts it from THIS runner, whose env carries FLEET_VERIFY_CMD (e2e-isolated.sh evals SRV_ENV into
@@ -14218,5 +14219,311 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
       try { rmdirSync(dirname(tr)); } catch { /* not ours to empty — leave it */ }
     }
     rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// --- THE ACTIVITY WINDOW'S TYPE AND ITS LOADING STATES (card 8aff0861, Grammatik G0.3) -----------
+// The real client bundle behind a fixture origin (the rig of e2e/timeline-ui.ts#runTimelineDom): every
+// lens of #shell-outcomes opened on fixture ledgers, its list and its first row's detail read at
+// 1200×900 and 390×844. Three DOM claims, each with a mutant (ACTIVITY_MUTANTS) that must turn it red:
+//   prose  — every text node that reads as words (two words of letters side by side) is set in sans,
+//            outside the verbatim blocks one copies (a command and its output, a raw record, a diff)
+//   tokens — a branch, a slot, a time, a path, a pack id and a verify command stand in mono
+//   live   — each of the window's nine loading states, held open by a route that has not answered,
+//            is on screen and carries aria-live="polite"
+export const ACT_CLAIM = {
+  prose: "every text a person reads as words is set in --chat-sans, in every lens, list and detail",
+  tokens: "what one copies stands in --chat-mono: branch, slot, time, path, sha, model, pack id, verify command — in a meta line too",
+  live: "each of the nine loading states is shown while its route is held, and carries aria-live=polite",
+} as const;
+export interface ActivityMutant { name: string; claim: string; file: "src/client.ts" | "public/index.html"; needle: string; with: string }
+export const ACTIVITY_MUTANTS: readonly ActivityMutant[] = [
+  { name: "the window keeps the body's mono", claim: ACT_CLAIM.prose, file: "public/index.html",
+    needle: "#shell-outcomes { font-family: var(--chat-sans); }", with: "#shell-outcomes { }" },
+  { name: "the Akte's 'none on record' set as a pack id", claim: ACT_CLAIM.prose, file: "src/client.ts",
+    needle: `el("span", word ? "" : "mono", id)`, with: `el("span", "mono", id)` },
+  { name: "branch, time and slot fall back to sans", claim: ACT_CLAIM.tokens, file: "public/index.html",
+    needle: ":is(.mono, .ocbranch, .aud-ts, .aud-slot, ", with: ":is(.mono, " },
+  { name: "a meta line sets every part in sans", claim: ACT_CLAIM.tokens, file: "src/client.ts",
+    needle: `n.appendChild(el("span", mono ? "mono" : "", text));`, with: `n.appendChild(el("span", "", text));` },
+  { name: "the Akte's event line keeps its time and record in sans", claim: ACT_CLAIM.tokens, file: "src/client.ts",
+    needle: `[[ts ? fmtTs(ts) : "—", !!ts], ...sub ? [[sub, subMono] as const] : []]`, with: `[[ts ? fmtTs(ts) : "—", false], ...sub ? [[sub, false] as const] : []]` },
+  { name: "the brief's model and time in sans", claim: ACT_CLAIM.tokens, file: "src/client.ts",
+    needle: "[[t.brief.model, true], [fmtTs(t.brief.at), true]]", with: "[[t.brief.model, false], [fmtTs(t.brief.at), false]]" },
+  { name: "a loading line without aria-live", claim: ACT_CLAIM.live, file: "src/client.ts",
+    needle: `n.setAttribute("aria-live", "polite");`, with: "void n;" },
+  { name: "Lands says 'no outcomes' while its ledger loads", claim: ACT_CLAIM.live, file: "src/client.ts",
+    needle: `if (!actLoaded.has("lands")) shell.list.appendChild(actLoading("histnone", "loading…"));\n  else if (!rows.length)`,
+    with: "if (!rows.length)" },
+  { name: "the timeline paints before its load starts", claim: ACT_CLAIM.live, file: "src/client.ts",
+    needle: "const loading = loadLens(k);\n    renderActivity();\n    await loading;", with: "renderActivity();\n    await loadLens(k);" },
+];
+export interface ActivityDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runActivityDom(sourceRoot: string, artifacts?: string,
+  only: { widths?: readonly number[]; mutate?: ActivityMutant } = {}): Promise<ActivityDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-activity-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  if (artifacts) mkdirSync(artifacts, { recursive: true });
+  const mutant = only.mutate;
+  const clientPath = resolve(sourceRoot, "src/client.ts");
+  let mutationApplied = !mutant || mutant.file === "public/index.html";
+  const built = await Bun.build({ entrypoints: [clientPath], target: "browser",
+    plugins: mutant?.file === "src/client.ts" ? [{ name: "activity-mutant", setup(build) {
+      build.onLoad({ filter: /\.ts$/ }, ({ path }) => {
+        if (path !== clientPath) return;
+        const source = readFileSync(path, "utf8");
+        mutationApplied = source.includes(mutant.needle);
+        return { contents: source.replace(mutant.needle, mutant.with), loader: "ts" };
+      });
+    } }] : [] });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0].text();
+  let indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  if (mutant?.file === "public/index.html") { mutationApplied = indexHtml.includes(mutant.needle); indexHtml = indexHtml.replace(mutant.needle, mutant.with); }
+  if (!mutationApplied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`activity mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
+
+  // --- the fixture ledgers: one land, two audit events, one commit, one lane and its dossier
+  const now = Date.now(), at = now - 3 * 3600_000;
+  const REPO_FX = "/fixture/claude-fleet", BRANCH = "fleet/261009-sans-im-fenster-a1b2";
+  const WT = `${REPO_FX}.worktrees/fleet-261009-sans-im-fenster-a1b2`, SHA = "ca3ba17e0d1f", MAIN_SHA = "deadbeef0123";
+  const VERIFY_CMD = "bun e2e/pins.ts && bunx tsc --noEmit && bun run build";
+  const outcomes = [{ ts: at, branch: BRANCH, base: "main", headSha: SHA, disposition: "landed", model: "claude-opus-5-5", modelOrigin: "spawn",
+    shortstat: "2 files changed, 29 insertions(+), 13 deletions(-)", commitCount: 2, filesTouched: ["src/client.ts", "public/index.html"],
+    e2eTouched: false, verified: true, sessionMs: 3_600_000, ownerPrompts: 1, confirmedByHuman: false, resolvedConflict: false, repairRounds: 0,
+    briefHash: "5f1c2a9e", repo: REPO_FX, mainAfter: MAIN_SHA,
+    review: { state: "covered", at: at + 60_000, model: "claude-opus-5-5", scope: "diff", findings: [],
+      notes: "the reviewer found nothing to flag in the two files it was given" } }];
+  const audit = [{ ts: at + 2000, event: "self_heal_recreate", slot: 9, detail: "created:no-session" },
+    { ts: at + 1000, event: "slot_open", slot: 9, detail: WT }];
+  const commits = { repos: [REPO_FX], repo: REPO_FX, branch: "main",
+    commits: [{ hash: SHA.slice(0, 8), ts: at, subject: "fix(activity): the window reads in sans", stat: "2 files changed, 29 insertions(+), 13 deletions(-)" }] };
+  const commitDiff = { files: ["M\tsrc/client.ts"], diff: "diff --git a/src/client.ts b/src/client.ts\n--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,2 +1,2 @@\n-// the old line reads in mono\n+// the new line reads in sans\n" };
+  const lanes = { lanes: [{ branch: BRANCH, repo: REPO_FX, ts: at, disposition: "landed", live: null }], total: 1 };
+  const read = <T>(value: T) => ({ state: "read", value });
+  const dossier = { branch: BRANCH, repo: REPO_FX, worktree: null, slot: 9, liveSlot: null,
+    task: read({ id: "8aff0861", text: "Das Activity-Fenster liest sich wie ein Terminal, obwohl ein Mensch dort Saetze liest.", kind: "auftrag",
+      source: "owner", status: "done", note: null, match: "slot",
+      brief: { text: "ZIEL: Lesetext in Sans, nur was man kopiert in Mono.", at, model: "claude-opus-5-5", edited: false },
+      criterion: { text: "Lesetext steht in Sans, Shas und Pfade in Mono", proposedAt: at, confirmedAt: at + 500 } }),
+    prompts: read({ rows: [{ ts: at + 100, text: "fuehre die zugewiesene Karte aus", source: "owner" }], total: 1 }),
+    events: read({ rows: [{ ts: at + 1000, event: "slot_open", slot: 9, detail: WT }], total: 1 }),
+    commits: read({ rows: [{ sha: SHA, at: at + 1500, author: "Owner", subject: "fix(activity): the window reads in sans" }], total: 1 }),
+    outcomes: read({ rows: [{ ts: at, disposition: "landed", commitCount: 2, shortstat: "2 files changed", verified: true, confirmedByHuman: false }], total: 1 }),
+    landNotes: read([{ state: "read", sha: MAIN_SHA, note: { at: at + 2000, confirmedByHuman: false, verify: { cmd: VERIFY_CMD, ok: true, out: "ALL PASS" } } }]),
+    audits: read({ rows: [{ at: at + 4000, result: "green", mainSha: MAIN_SHA, covers: [BRANCH], exitCode: 0, out: "ALL PASS", cmd: "./e2e-isolated.sh" }], total: 1 }),
+    context: { read: "unknown", unknown: [],
+      chosen: { state: "read", total: 1, rows: [{ receipt: "r1", at, head: null, selected: [{ id: "verify-e2e", origin: "program", privateVerdict: null }],
+        omitted: [{ id: "graphify", why: "not needed for a style change" }] }] },
+      // an absent column: the line where a pack id would stand holds a sentence
+      delivered: { state: "absent", why: "no context receipt names this lane's branch" },
+      borrowed: { state: "read", total: 1, rows: [{ at: at + 300, id: "haltung-worker", bytes: 2048, origin: null, head: null }] } } };
+  const wire = await timelineWireFixture();
+  // a held route answers only when released — the loading state it causes stands on screen meanwhile
+  const held = new Map<string, (() => void)[]>();
+  const holding = new Set<string>();
+  const hold = (...keys: string[]) => { for (const k of keys) holding.add(k); };
+  const release = (...keys: string[]) => { for (const k of keys) { holding.delete(k); for (const go of held.get(k) ?? []) go(); held.delete(k); } };
+
+  const browser = await startArbeitsorteBrowser(`${scratch}/profile`);
+  let socket: WebSocket | undefined;
+  try {
+    socket = new WebSocket(browser.endpoint);
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined, targetId = "";
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const url = new URL(request.url), p = url.pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now, chips: [], tasks: [],
+        slots: [{ id: 1, cwd: REPO_FX, label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: "/fixture/orch.jsonl", ttlSec: 300 });
+      const key = p === "/api/lane" && url.searchParams.has("branch") ? "/api/lane?branch" : p;
+      const body = key === "/api/lane-outcomes" ? { outcomes, total: outcomes.length, malformed: 0 }
+        : key === "/api/audit" ? { events: audit, total: audit.length, malformed: 0 }
+          : key === "/api/commits" ? commits : key === "/api/commit-diff" ? commitDiff
+            : key === "/api/lane" ? lanes : key === "/api/lane?branch" ? dossier
+              : key === "/api/timeline" ? wire : key === "/api/dispositions" ? { dispositions: [] } : null;
+      if (body === null) return void json(requestId, { error: "fixture: not served" }, 404);
+      const answer = () => void json(requestId, body);
+      if (holding.has(key)) held.set(key, [...(held.get(key) ?? []), answer]); else answer();
+    };
+    const evaluate = async <V>(expression: string): Promise<V> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("activity DOM probe: evaluate failed: " + JSON.stringify(r.exceptionDetails).slice(0, 300) + " in " + expression.replace(/\s+/g, " ").slice(0, 160));
+      return (r.result as { value: V }).value;
+    };
+    const settle = (ms = 80) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    const W = "document.querySelector('#shell-outcomes')";
+    // the fixture's own way through the window: nothing to click is the probe failing as itself
+    const click = async (expr: string, what: string) => {
+      if (!await evaluate<boolean>(`(() => { const n = ${expr}; if (!n) return false; n.click(); return true; })()`))
+        throw new Error("activity DOM probe: nothing to click: " + what);
+      await settle();
+    };
+    const tab = (label: string) => click(`[...${W}.querySelectorAll('.actlens button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`, `lens ${label}`);
+    const firstRow = () => click(`${W}.querySelector('.shelllist .shellrow')`, "the lens's first row");
+    // a loading line by its exact words: on screen, and what it says to a screen reader
+    const loading = (text: string) => evaluate<{ seen: boolean; live: string | null }>(`(() => {
+      const n = [...${W}?.querySelectorAll('*') ?? []].find((e) => e.childElementCount === 0 && e.textContent.trim() === ${JSON.stringify(text)});
+      return { seen: !!n, live: n ? n.getAttribute('aria-live') : null }; })()`);
+    const results: ActivityDomResult[] = [];
+    for (const [width, height] of ([[1200, 900], [390, 844]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      holding.clear(); held.clear();
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = undefined;
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await navigate("http://fleet.fixture/blank");
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
+      await navigate("http://fleet.fixture/");
+      if (!await wait("document.querySelector('#outcomebtn')", 15000)) throw new Error("activity DOM probe: the page never drew #outcomebtn");
+
+      // --- 1. the nine loading states, each held open by its route
+      const states: Record<string, { seen: boolean; live: string | null }> = {};
+      const see = async (name: string, text: string) => { await wait(`[...${W}?.querySelectorAll('*') ?? []].some((e) => e.textContent.trim() === ${JSON.stringify(text)})`, 3000); states[name] = await loading(text); };
+      hold("/api/lane-outcomes");
+      await click("document.querySelector('#outcomebtn')", "#outcomebtn");
+      await see("lands list", "loading…");
+      release("/api/lane-outcomes");
+      await wait(`${W}.querySelector('.shelllist .shellrow')`);
+      hold("/api/audit");
+      await tab("Audit");
+      await see("audit list", "loading…");
+      release("/api/audit");
+      await wait(`${W}.querySelector('.shelllist .auditrow')`);
+      hold("/api/lane");
+      await tab("Akte");
+      await see("akte list", "loading…");
+      release("/api/lane");
+      await wait(`${W}.querySelector('.shelllist .akterow')`);
+      hold("/api/lane?branch");
+      await firstRow();
+      await see("akte dossier", "reading…");
+      release("/api/lane?branch");
+      await wait(`${W}.querySelector('.shelldetail .aktehead')`);
+      hold("/api/timeline");
+      await tab("Zeitleiste");
+      await see("timeline sessions", "Sessions werden geladen …");
+      await see("timeline canvas", "Zeitleiste wird geladen …");
+      release("/api/timeline");
+      await wait(`${W}.querySelector('.tlcanvas, .tllist')`);
+      // a fresh window on Commits: the land ledger is not loaded there yet
+      await click(`${W}.querySelector('.shellclose')`, "the window's close");
+      hold("/api/commits");
+      await click(`[...document.querySelectorAll('#morepanel button')].find((b) => b.textContent.includes('Commits'))`, "⋯ Commits");
+      await see("commits list", "loading…");
+      release("/api/commits");
+      await wait(`${W}.querySelector('.shelllist .shellrow')`);
+      hold("/api/commit-diff", "/api/lane-outcomes");
+      await firstRow();
+      await see("commit change", "reading the change…");
+      await see("commit land ledger", "checking the land ledger…");
+      release("/api/commit-diff", "/api/lane-outcomes");
+      await wait(`${W}.querySelector('.shelldetail .difftxt')`);
+      facts.loading = states;
+      claims[ACT_CLAIM.live] = Object.keys(states).length === 9 && Object.values(states).every((s) => s.seen && s.live === "polite");
+
+      // --- 2. every lens, its list and its first row's detail: what is set in which face
+      const VERBATIM = ".aktepre:not(.aktebrief), .qdtext, .difftxt, .fvtext, pre, code";
+      const prose = new Map<string, { t: string; cls: string; mono: boolean }>();
+      const walk = async () => {
+        for (const n of await evaluate<{ t: string; cls: string; mono: boolean }[]>(`(() => { const out = [];
+          const w = document.createTreeWalker(${W}, NodeFilter.SHOW_TEXT); let n;
+          while ((n = w.nextNode())) { const t = n.textContent.trim(), p = n.parentElement;
+            if (!t || !p || p.closest(${JSON.stringify(VERBATIM)}) || !/\\p{L}{2,} \\p{L}{2,}/u.test(t)) continue;
+            out.push({ t: t.slice(0, 60), cls: String(p.className), mono: /mono|Menlo|Consolas/i.test(getComputedStyle(p).fontFamily) }); }
+          return out; })()`)) prose.set(`${n.cls}|${n.t}`, n);
+      };
+      for (const lens of ["Zeitleiste", "Lands", "Commits", "Audit", "Akte"]) {
+        await tab(lens);
+        await settle(250);
+        await walk();
+        await shot(`${width}-${lens}-liste`);
+        if (lens === "Zeitleiste") await click(`${W}.querySelector('.tlev')`, "a timeline mark");
+        else await firstRow();
+        await settle(400);
+        await walk();
+        await shot(`${width}-${lens}-detail`);
+      }
+      const monoProse = [...prose.values()].filter((n) => n.mono);
+      facts.prose = { judged: prose.size, inMono: monoProse.slice(0, 12) };
+      claims[ACT_CLAIM.prose] = prose.size >= 40 && monoProse.length === 0;
+
+      // --- 3. the copyable tokens, each read where it stands
+      const face = async (lens: string, expr: string) => {
+        await tab(lens);
+        if (lens !== "Lands") await firstRow();
+        await settle(300);
+        return evaluate<{ text: string; mono: boolean } | null>(`(() => { const n = ${expr}; return n ? { text: n.textContent.trim().slice(0, 60), mono: /mono|Menlo|Consolas/i.test(getComputedStyle(n).fontFamily) } : null; })()`);
+      };
+      const tokens = {
+        branch: await face("Lands", `${W}.querySelector('.shelllist .ocbranch')`),
+        slot: await face("Audit", `${W}.querySelector('.shelllist .aud-slot')`),
+        time: await face("Audit", `${W}.querySelector('.shelldetail .aud-ts')`),
+        path: await face("Audit", `${W}.querySelector('.shelldetail .pkdpath')`),
+        dossierBranch: await face("Akte", `${W}.querySelector('.shelldetail .rvhead')`),
+        packId: await face("Akte", `[...${W}.querySelectorAll('.aktectxrow span')].find((s) => s.textContent === 'verify-e2e')`),
+        verifyCmd: await face("Akte", `[...${W}.querySelectorAll('.aktepre')].find((s) => s.textContent === ${JSON.stringify(VERIFY_CMD)})`),
+        // the meta lines: the copyable part stands in mono beside its words
+        landTime: await face("Lands", `${W}.querySelector('.shelllist .shrsub span')`),
+        commitSha: await face("Commits", `${W}.querySelector('.shelllist .shrsub span')`),
+        commitTime: await face("Commits", `${W}.querySelector('.shelldetail .diffstat span:nth-child(2)')`),
+        auditTime: await face("Audit", `${W}.querySelector('.shelllist .shrsub span')`),
+        akteEventTime: await face("Akte", `${W}.querySelector('.aktestep.step-slot .shrsub span')`),
+        akteEventPath: await face("Akte", `${W}.querySelector('.aktestep.step-slot .shrsub span:last-child')`),
+        briefModel: await face("Akte", `${W}.querySelector('.aktebrief + .shrsub span')`),
+        briefTime: await face("Akte", `${W}.querySelector('.aktebrief + .shrsub span:nth-child(2)')`),
+      };
+      facts.tokens = tokens;
+      claims[ACT_CLAIM.tokens] = Object.values(tokens).every((t) => t?.mono === true)
+        && tokens.akteEventPath?.text === WT.slice(0, 60) && tokens.briefModel?.text === "claude-opus-5-5";
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close();
+    await browser.close();
+    rmSync(scratch, { recursive: true, force: true });
   }
 }

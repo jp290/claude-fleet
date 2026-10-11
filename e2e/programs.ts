@@ -8760,15 +8760,16 @@ export async function run(ctx: Ctx): Promise<void> {
     skipped?: { id: string; reason: string }[] };
   const s5After = (await s5Digest()).filter((t) => s5Ids.includes(t.id));
   const s5Want: Record<string, string> = { [s5A]: "code.txt", [s5B]: "code.txt ctx-mod.txt", [s5C]: "fleet-e2e.ts" };
+  const s5Settled = await auditSettled();
   const s5Audit = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(s5AuditFrom)
     .map((l) => JSON.parse(l) as { event?: string; slot?: number; programId?: string; ids?: string; n?: number })
     .filter((r) => r.event === "task_cards_confirm");
   check("S5 (1): the MAIN confirms three rows of P in one call — filesOrigin confirmed, files = card.surface.files, ONE audit line",
     s5Res.status === 200 && s5Body.ok === true && s5Body.confirmed?.length === 3
       && s5After.length === 3 && s5After.every((t) => t.filesOrigin === "confirmed" && t.files?.join(" ") === s5Want[t.id])
-      && s5Audit.length === 1 && s5Audit[0]?.slot === successorSlot && s5Audit[0]?.programId === mainProgram.id
+      && s5Settled !== null && s5Audit.length === 1 && s5Audit[0]?.slot === successorSlot && s5Audit[0]?.programId === mainProgram.id
       && s5Audit[0]?.n === 3 && s5Audit[0]?.ids === s5Ids.join(","),
-    `${s5Res.status} ${JSON.stringify(s5Body)} rows=${JSON.stringify(s5After)} audit=${JSON.stringify(s5Audit)}`);
+    `${s5Res.status} ${JSON.stringify(s5Body)} rows=${JSON.stringify(s5After)} audit=${JSON.stringify(s5Audit)} settled=${s5Settled ?? ">5000"}ms`);
   check("S5 (4): a row without a card is skipped and NAMED in the answer, never confirmed from its prose",
     s5Body.skipped?.length === 1 && s5Body.skipped[0]?.id === s5NoCard
       && (s5Body.skipped[0]?.reason ?? "").includes("no card on this row")
@@ -8875,6 +8876,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const pv = await rvPreview(mainProgram.id);
   const pvRow = (id: string): RvRow | undefined => pv.body.pending?.find((r) => r.id === id);
   const rvReasons = (id: string): string => (pvRow(id)?.reasons ?? []).join(" | ");
+  const pvSettled = await auditSettled();
   check("release-valid (1): the preview gives each pending row its card-valid verdict — hard reasons, soft hints, hold and scout — lists queued rows apart and carries a stamp",
     pv.status === 200 && pv.body.programId === mainProgram.id && /^[0-9a-f]{64}$/.test(pv.body.stamp ?? "")
       && (pv.body.repo ?? "").endsWith(REPO.split("/").pop() ?? "\0")
@@ -8889,8 +8891,8 @@ export async function run(ctx: Ctx): Promise<void> {
       && !pvRow(rvQueued) && (pv.body.queued ?? []).some((q) => q.id === rvQueued && q.hold === false)
       && !pvRow(rvForeign)
       && JSON.stringify((await allTasks()).filter((t) => rvIds.includes(t.id))) === rvRowsBefore
-      && auditSince(rvAuditFrom).every((r) => r.event !== "program_release_valid" && r.event !== "task_release"),
-    JSON.stringify({ status: pv.status, repo: pv.body.repo, pending: pv.body.pending?.filter((r) => rvIds.includes(r.id)), queued: pv.body.queued }));
+      && pvSettled !== null && auditSince(rvAuditFrom).every((r) => r.event !== "program_release_valid" && r.event !== "task_release"),
+    JSON.stringify({ status: pv.status, repo: pv.body.repo, pending: pv.body.pending?.filter((r) => rvIds.includes(r.id)), queued: pv.body.queued, settled: pvSettled ?? ">5000" }));
 
   // (2) OWNER-ONLY, and a closed body: a MAIN's own token is 401 on both verbs; every malformed body is
   // a 400 that writes nothing; an unknown program is 404
@@ -8947,10 +8949,11 @@ export async function run(ctx: Ctx): Promise<void> {
   // (5) A REPEAT of the same submit reads its own answer: status is not in the stamp, so the stamp still
   // matches and rvValid now answers "already queued" — no second release, no second audit row
   const subAgain = await rvSubmit(mainProgram.id, { stamp: pv.body.stamp, ids: [rvValid] });
+  const subAgainSettled = await auditSettled();
   check("release-valid (5): repeating the submit is stable — rvValid is skipped as already queued and no audit row is added",
     subAgain.status === 200 && subAgain.body.results?.[0]?.result === "skipped" && subAgain.body.results[0].reason === "already queued"
-      && auditSince(rvAuditFrom).filter((r) => r.event === "program_release_valid").length === 1,
-    JSON.stringify(subAgain.body));
+      && subAgainSettled !== null && auditSince(rvAuditFrom).filter((r) => r.event === "program_release_valid").length === 1,
+    JSON.stringify({ ...subAgain.body, settled: subAgainSettled ?? ">5000" }));
 
   // (6) A STALE STAMP: rvStale's brief is rewritten after a preview — the submit answers conflict for
   // every id and writes nothing; the next preview has a new stamp and the card is now stale (hard)

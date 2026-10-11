@@ -118,7 +118,7 @@ authority (§7).
 The filer knows the files and symbols now; write them down, reasoning after the six fields:
 
 ```text
-ZIEL: one sentence — what changes
+ZIEL: one short sentence — what changes; it becomes the land's commit subject
 FLAECHE: files · datei#symbol (the change targets, not the proof)
 DONE: one checkable sentence
 VERIFY: the command or chain step that proves it
@@ -130,6 +130,29 @@ Both create doors (`POST /api/tasks`, `POST /api/self/tasks`) also take an
 optional `card{ziel, surface{files, symbols}, done, verify, verboten, size, after?}` (`ROLLE` is the
 spawn triple, `size` is `klein`/`mittel`/`gross`, `after` holds queue row ids as `NACH:` does);
 `card-extract.ts#validateCard` checks it against the repo, and any gap is a 400 that files nothing.
+
+**A strand has one live lane.** A fix or the next batch goes to that lane as `DONE NEU: …`, not as
+a new row. A new row only for work with its own proof or a second worker. The lane lands in
+batches with `keep` (worktree, slot and branch stay, `docs/self-api.md` §keep), one commit per
+land, and visible work only after the owner has looked at the test instance.
+
+**Writing the card** (`docs/messungen/2026-10-10-karten-nachrichten-reports.md` §9.1):
+
+1. Every number in ZIEL or DONE names its source: `gemessen <where>` or `Schätzung <where>`. An
+   estimate is never an acceptance limit.
+2. A premise from an earlier note or probe stands as `ANNAHME (<source>)`; the lane checks it first.
+3. `REPORT:` names the fields the MAIN needs to decide.
+4. File first, then write on with the returned id. A rebrief starts from `.brief.text`, never
+   `.text`.
+
+```text
+DONE: the MAIN brief does not grow with the Program record: +N decisions change only counter digits.
+ZAHL: ~12 000 B · Schätzung, 2026-10-09-rollen-kontext-inventar.md N1 · a target, not acceptance:
+      above it, the lane sets the cap just over its measured value and names both.
+REPORT: brief bytes before/after at 1 and 3 Programs.
+```
+
+Messages, reports and decisions: §Reporting.
 
 ### Rows for a repo that is not claude-fleet
 
@@ -270,6 +293,36 @@ lane: `update` refuses there by construction, and a lane-built graph dies with t
 (an older lane, a foreign repo) is normal: use `rg`/`ast-grep`.
 
 ## Reporting
+
+Message, report and decision each open with one line that carries the act. Whatever the register
+already holds (report, decision, job, land) is named by its id, not retold
+(`docs/messungen/2026-10-10-karten-nachrichten-reports.md` §9.2, §9.3).
+
+**Message** (MAIN ↔ orchestrator, MAIN → lane):
+
+1. First line: the act only the receiver can do, or `INFO, keine Antwort`.
+2. No handwritten clock time; the server stamps every message.
+3. A state report only when the receiver waits for exactly that fact (deployable, owner yes).
+4. A red that belongs to main: one line `GEERBT: "<check>" · main <sha> · Reparatur <row>`.
+5. Scope added to a running lane: `DONE NEU: …`, and the lane acknowledges it.
+
+```text
+LAND-BITTE fbc31d7c · Baum 4ff54c08 · Entscheid 13929aac (ja) · zusammen mit 99f313ab
+```
+
+**Report** (the accepted one becomes the body of the land commit):
+
+1. First line: `STATUS · result in one sentence · ENTSCHEID NÖTIG: keiner | <question>`.
+2. `BELEG`: commit, tree, job ids, each tail verbatim.
+3. `MESSUNG` only when the card asks for numbers.
+4. `OFFEN` and `KARTE FEHLTE`, one line each.
+5. Visible work: what you saw yourself in the test window, the neighbouring surface included.
+
+**Decision** on a report: only what the MAIN checked itself and where it differs from the report.
+
+```text
+ERFÜLLT: ja · selbst geprüft: Basis 376719 = eigene Messung, Decken nachgerechnet · Abweichung vom Report: keine · Land: Orchestratorin
+```
 
 The body is `{status, text}`; `text` is at most 4000 characters (`MAX_FLEET_REPORT_TEXT` in
 `server/types.ts`) — draft it in a scratch file, check `wc -c`, POST once. Report a changed

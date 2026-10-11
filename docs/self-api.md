@@ -5390,12 +5390,12 @@ Aufrufstellen, beide Routen, kein Tick).
 ```
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
-# eine Live-Bau-Lane: ihre Commits landen als EIN Commit, und die Lane läuft weiter (§squash, §keep):
+# eine Live-Bau-Lane: sie landet als EIN Commit (Default, §squash) und läuft weiter (§keep):
 curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/land \
-  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' -d '{"squash":true,"keep":true}'
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' -d '{"keep":true}'
 ```
 
-Erfolg: `{running:true, task, laneSlot, candidate, sessionIdMatch, selfLand,
+Erfolg: `{running:true, task, laneSlot, candidate, sessionIdMatch, selfLand, squash,
 watch:{kind:"merge",target:<laneSlot>}}`. **Sofort danach `POST /api/self/watch` mit genau diesem
 `watch`-Objekt abonnieren** — jedes nicht-grüne Ergebnis (Konflikt, rotes Verify, unbekanntes
 Verify) erreicht dich über das bestehende merge-terminal-Event. Die Route macht KEINEN Retry und
@@ -5680,15 +5680,20 @@ jetzt von einer Maschine abgelehnt werden, die nicht diese ist — zwei getrennt
   pushen danach in `recordLand` wie vor W5d — sie schiedsrichten nicht, und ihr abgelehnter Push
   bleibt ein rotes `hubPush`-Feld auf der Land-Note.
 
-### Der Schalter `squash`: ein Commit je Land (a9629daa, seit 2026-10-09)
+### Der Schalter `squash`: ein Commit je Land (a9629daa, Default seit 2026-10-11)
 
-Owner (08.10.): „[Zitat entfernt]“. Mit `{„[Zitat entfernt]“:true}` landet
-eine Lane mit mehr als einem Commit über `mainBefore` als **ein** Commit S
+Owner (08.10.): „[Zitat entfernt]“, und 10.10. ~21:0x: „[Zitat entfernt]“
+
+. Die Ebene ist der LAND, nicht der Lane-Commit:
+**jeder gated Land landet als ein Commit S** über `mainBefore`, auch eine Lane mit nur einem Commit
 (`server.ts#planSquashLand`, `#moveSquashLand`, Entwurf `docs/design/live-bau-profil-2026-10.md` §3).
-Nur mit dem Schalter: jede andere Lane landet ihre Commits wie bisher, und deren Bodies bleiben das
-Befund-Register auf main. Zwei Türen setzen ihn: die MAIN mit `POST /api/self/tasks/:id/land` für
-Live-Bau-Lanes, und der Owner mit ⏫ (`POST /api/slots/:id/merge`), dessen Body das Zahnrad im Board
-füllt (Owner 09.10.). ⏫ liest nur `squash` und `keep` mit derselben Typprüfung wie
+Lane-Commits sind frei und bleiben unter `lane-history`. **Die Ausnahme ist `{"squash":false}`:**
+dann landet die Serie unverändert, und die `fleet/land`-Note trägt `squashOff: "switch"`. Ein leerer Body
+und `{"squash":true}` sind derselbe Land (`server.ts#LandSwitches`: `squash` ist `null`, wenn der
+Aufrufer nichts nennt). Dieselbe Regel gilt an beiden Türen: die MAIN mit
+`POST /api/self/tasks/:id/land`, und der Owner mit ⏫ (`POST /api/slots/:id/merge`), dessen Body das
+Zahnrad im Board füllt (Owner 09.10.). Die Antwort beider Türen nennt `squash: true|false`.
+⏫ liest nur `squash` und `keep` mit derselben Typprüfung wie
 `server.ts#landSwitchesFrom` (Nicht-Boolean = 400), weil sein Body auch `confirm`, `reverify` und
 `overrideRejectedReport` trägt.
 
@@ -5697,8 +5702,11 @@ füllt (Owner 09.10.). ⏫ liest nur `squash` und `keep` mit derselben Typprüfu
   Gate-Lauf, und übernommene grüne Helfer-Jobs bleiben über `treeSha` gültig.
 - **Betreff** `<typ>(<bereich>): <taskId> — <erster Satz aus ZIEL>`. Typ und Bereich kommen aus dem
   jüngsten Lane-Betreff dieser Form, sonst `feat`. Ohne Karte nimmt er den ersten Satz der ersten
-  Zeile des Zeilentexts. **Body:** der `complete`-Report dieser Belegung, den noch kein Land verbraucht
-  hat, darunter `Lane-Commits (N, erster..letzter):` mit Kurz-Sha und Betreff je Zeile, dann jede
+  Zeile des Zeilentexts. **Body:** der jüngste `complete`-Report dieser Belegung, den die MAIN, der
+  Owner oder sein Delegierter **angenommen** hat (`decision.disposition: „[Zitat entfernt]“`, kein Regel-Urteil
+  wie `superseded`) und den noch kein Land verbraucht hat (`server.ts#squashReportFor`). Ein neuerer
+  unentschiedener Report zählt nicht. Fehlt ein angenommener Report, steht dort
+  `kein angenommener Report`. Darunter `Lane-Commits (N, erster..letzter):` mit Kurz-Sha und Betreff je Zeile, dann jede
   verschiedene `Co-Authored-By`-Zeile der Serie in der Reihenfolge ihres ersten Auftretens.
 - **Die Serie bleibt erreichbar** unter `refs/fleet/lane-history/<branch>/<n>`. `<n>` zählt die
   Squash-Lands des Branches, und dieser Ref wird nie zur Nabe gepusht.
@@ -5708,10 +5716,17 @@ füllt (Owner 09.10.). ⏫ liest nur `squash` und `keep` mit derselben Typprüfu
   vor dem Fast-Forward. Verliert der Land die Vorspulung, rebast die Retry-Runde nur noch S.
 - **Die `fleet/land`-Note** trägt `squash {from: H, commits: N, ref}`. In `lane-outcomes.jsonl`
   zählt `commitCount` die N Lane-Commits vor der Zusammenfassung; `headSha` und `mainAfter` sind S.
-- **Hat die Lane höchstens einen Commit**, ist der Land byte-gleich zu einem ohne Schalter.
+- **Hat die Lane einen Commit**, wird auch er neu geschrieben: derselbe Baum, Betreff und Body wie
+  oben, `Lane-Commits (1, <sha>)`, die Serie unter `lane-history`. Ohne Commit gibt es nichts zu landen.
+- **Trägt die Serie einen Merge-Commit**, landet sie unverändert, denn ein Squash schnitte die
+  gemergte Seite vom Ziel ab. Die Note trägt dann `squashOff: "merge-in-series"` (bei
+  `{"squash":false}`: `squashOff: "switch"`).
+- **Das Lane-Dossier** (`server.ts#laneDossier`) liest die EIGENEN Commits einer Squash-Lane über
+  `squash.from` der Land-Note, nicht über `headSha`, das S ist.
 - **Ein Confirm** einer geprüften Konfliktlösung (`guarded`-Sprosse an der Self-Tür, `confirm` an ⏫)
-  landet den geprüften Kandidaten so, wie er geprüft wurde, und verweigert den Schalter mit 409,
-  statt ihn still fallen zu lassen. ⏫ mit `reverify` misst nur und verweigert ihn ebenso.
+  landet den geprüften Kandidaten so, wie er geprüft wurde, also **nicht** als S. Ein ausdrücklich
+  genanntes `{"squash":true}` verweigert er mit 409, statt es still fallen zu lassen; der Default
+  ohne Schalter geht durch. ⏫ mit `reverify` misst nur und verweigert `squash:true` ebenso.
 - **Eine bereits gemergte Lane an ⏫** hat keine Serie mehr: `squash` ändert dort nichts.
 
 ```
@@ -5757,7 +5772,7 @@ Danach (`server.ts#landLane`, Parameter `keep`):
   Arbeit, und dort muss main nicht der Lane-HEAD sein: ⏏ verweigert `keep` und `squash` mit 409,
   statt die Schalter still fallen zu lassen. Aus demselben Grund verweigert ⏫ `keep` bei einer
   bereits gemergten Lane. Die Confirm-Arme (`guarded` an der Self-Tür, `confirm` an ⏫) und ⏫ mit
-  `reverify` verweigern beide Schalter.
+  `reverify` verweigern `keep` und ein genanntes `squash:true`.
 
 ### Wohin das Verdikt geht: an den, der gelandet hat (seit 2026-09-04)
 

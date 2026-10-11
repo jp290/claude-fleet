@@ -281,7 +281,13 @@ export async function run(): Promise<void> {
     check("(setup B) main advanced — the server is now inside the advance→record window", advanced,
       `${mainBeforeB.slice(0, 8)} -> ${g(REPO, "rev-parse", MAIN).out.slice(0, 8)}`);
     const mainAfterB = g(REPO, "rev-parse", MAIN).out;
-    check("(setup B) main was fast-forwarded to exactly the lane tip", mainAfterB === laneTipB);
+    // 261011: a land is ONE commit — the lane tip's tree on the old main, the tip kept under
+    // lane-history before main moves. The note is not written yet inside this window, so git says it.
+    const keptB = g(REPO, "rev-parse", `refs/fleet/lane-history/${lb.branch}/1`).out;
+    check("(setup B) main was fast-forwarded to exactly the lane tip",
+      g(REPO, "show", "-s", "--format=%P", mainAfterB).out === mainBeforeB && keptB === laneTipB
+        && g(REPO, "rev-parse", `${mainAfterB}^{tree}`).out === g(REPO, "rev-parse", `${laneTipB}^{tree}`).out,
+      JSON.stringify({ mainBeforeB, mainAfterB, laneTipB, keptB }));
 
     await restartSrv(); // …and the pause knob is gone with it
 

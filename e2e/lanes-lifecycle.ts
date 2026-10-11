@@ -17,7 +17,7 @@ import { BASE, PORT, REPO, ROOT, SOCK, TOKEN, UntilTimeout, check, get, lastRevi
   reviewRunsFor, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { repoGraph, roleOf } from "../server/deploy-classify";
-import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { exists, landedAsOne, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 // THE TESTINSTANZ BAND (ranke-notiz R11): a test instance says which branch and stand it shows and
 // what of it is not on its target yet; the live fleet says nothing. One claim per statement, each
@@ -2902,8 +2902,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     const cV = await waitMerge(cSlot);
     check("a clone lane lands through the ordinary script path, agent never consulted", cV.gone,
       JSON.stringify(cV));
+    // 261011: one commit on the old main with the gated tree, the clone's commit under lane-history
+    const cOne = landedAsOne(cRepo, "main");
     check("the clone lane's commit reached the repo's main",
-      g(cRepo, "log", "--oneline", "-8").includes("clone lane work"), g(cRepo, "log", "--oneline", "-3"));
+      cOne.ok && cOne.subjects.includes("clone lane work"), JSON.stringify(cOne));
     check("landing a clone lane removes the clone from disk", !exists(cCwd), cCwd);
     const cMainAfter = g(cRepo, "rev-parse", "main");
     const cNote = spawnSync("git", ["-C", cRepo, "notes", "--ref=fleet/land", "show", cMainAfter], { encoding: "utf8" });

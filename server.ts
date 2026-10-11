@@ -17936,7 +17936,7 @@ function landSwitchesFrom(raw: string): LandSwitches | { error: string } {
   const { squash, keep } = parsed as { squash?: unknown; keep?: unknown };
   if (squash !== undefined && typeof squash !== "boolean") return { error: "squash must be a boolean" };
   if (keep !== undefined && typeof keep !== "boolean") return { error: "keep must be a boolean" };
-  return { squash: squash === true, keep: keep === true };
+  return { squash: typeof squash === "boolean" ? squash : null, keep: keep === true };
 }
 
 // ACP · THE FOURTH CONSUMER OF THE AUTHORITY BRACKET, and the only one that moves an INTEGRATION
@@ -18211,7 +18211,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     if (resolvedCandidate) {
       // the confirm lands the REVIEWED candidate exactly as it was reviewed, through its own path
       // (confirmResolvedCandidate) — a switch there would be silently dropped, so it is refused
-      if (switches.squash || switches.keep)
+      if (switches.squash === true || switches.keep)
         return json({ error: "this call confirms a reviewed conflict resolution, which lands the reviewed candidate as it is and closes the lane — squash and keep apply to the gated land only; call again without them" }, 409);
       selfConfirmSpent.set(t.id, candidate);
       audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=guarded confirm=resolved-candidate`);
@@ -18236,7 +18236,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     // spent where the run actually starts, not at the guard: a later rung that refuses must not
     // consume the one re-run a server-down verdict earns
     if (serverDownRetry) serverDownRetrySpent.set(t.id, candidate);
-    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}${switches.squash ? " squash" : ""}${switches.keep ? " keep" : ""}`);
+    audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}${switches.squash === false ? " no-squash" : " squash"}${switches.keep ? " keep" : ""}`);
     // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
     // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
@@ -18250,7 +18250,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     // that re-ran it would be the auto-land this Program's non-goals forbid.
     return json({ running: true, task: { id: t.id, status: t.status, programId: t.programId },
       laneSlot: lane.id, candidate, sessionIdMatch, selfLand: policy.selfLand,
-      ...(switches.squash ? { squash: true } : {}), ...(switches.keep ? { keep: true } : {}),
+      squash: switches.squash !== false, ...(switches.keep ? { keep: true } : {}),
       watch: { kind: "merge", target: lane.id }, ansatzReviews: taskAnsatzReviews(t) });
   } finally {
     mergeStart.delete(lane.id);
@@ -29519,19 +29519,27 @@ interface LandProvenance {
   // `mainBefore` is the rebase target, so without this a note cannot say what main did while the
   // lane lived. Absent where the slot recorded no fork — never `mainBefore` standing in for it.
   forkSha?: string;
-  // …and the SQUASH, where the MAIN's land call carried the switch and the lane had more than one
-  // commit (a9629daa): `from` is the gated tip H, `commits` how many lane commits mainBefore..H held,
+  // …and the SQUASH every gated land makes of a lane with at least one commit (a9629daa, default
+  // since 261011): `from` is the gated tip H, `commits` how many lane commits mainBefore..H held,
   // `ref` where H stays reachable. Absent on every other land, which landed its commits as they were.
   squash?: LandSquash;
+  // …and the EXCEPTION, present exactly when a land with commits did not squash them: "switch" = the
+  // land call carried {"squash":false}; "merge-in-series" = the series holds a merge commit, whose
+  // second parent a squash would cut off main (Program-MAIN, 261011), so it landed as it was.
+  squashOff?: SquashOff;
 }
 // a9629daa · THE ONE RECORD OF A SQUASH LAND, on the note, the intent and the outcome's facts alike.
 interface LandSquash { from: string; commits: number; ref: string }
+type SquashOff = "switch" | "merge-in-series";
 // The switches of the MAIN's land call (POST /api/self/tasks/:id/land, server.ts#landSwitchesFrom)
-// and of the owner's ⏫ (POST /api/slots/:id/merge, same type check on its two fields). Both off is
-// the land as it always was; nothing but those two doors ever sets one. `keep` (bc9d0a79):
-// the lane lands and goes on — worktree, slot, branch and row stay, the next land is the same row's.
-interface LandSwitches { squash: boolean; keep: boolean }
-const NO_LAND_SWITCHES: LandSwitches = { squash: false, keep: false };
+// and of the owner's ⏫ (POST /api/slots/:id/merge, same type check on its two fields); nothing but
+// those two doors ever sets one. `squash` (owner 10.10., „[Zitat entfernt]“): null
+// is the caller naming nothing, and a land then IS one commit — only `false` lands the series as it
+// was, and the note says so (`squashOff`). `true` is the same land as null, named; the doors that
+// cannot squash refuse a NAMED switch and pass the default. `keep` (bc9d0a79): the lane lands and
+// goes on — worktree, slot, branch and row stay, the next land is the same row's.
+interface LandSwitches { squash: boolean | null; keep: boolean }
+const NO_LAND_SWITCHES: LandSwitches = { squash: null, keep: false };
 // The outcome of ONE push attempt. `ok:false` says the fleet's history stopped at this machine.
 //
 // W5d SPLIT THE FALSE ARM IN TWO, and the split is what lets a caller decide instead of guess.
@@ -29649,6 +29657,7 @@ async function writeLandNote(repo: string, base: string, branch: string, mainBef
       ...(prov.hubSkipped ? { hubSkipped: prov.hubSkipped } : {}),
       ...(prov.bundleBuild ? { bundleBuild: prov.bundleBuild } : {}),
       ...(prov.squash ? { squash: prov.squash } : {}),
+      ...(prov.squashOff ? { squashOff: prov.squashOff } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       actor: prov.actor,
       at: Date.now(),
@@ -36308,7 +36317,12 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
   // base branch name, on any row a land wrote), so this still resolves after the branch is deleted.
   let commits: Measured<Capped<{ sha: string; at: number; author: string; subject: string }>>;
   const base = typeof newest?.base === "string" ? newest.base : (live?.worktree?.baseSha ?? null);
-  const head = typeof newest?.headSha === "string" ? newest.headSha : (live ? branch : null);
+  // …except after a squash land, whose headSha is S — the LAND's one commit, not the lane's. The
+  // lane's own series is the note's squash.from, kept reachable under refs/fleet/lane-history.
+  const newestNote = repo && typeof newest?.mainAfter === "string" ? await readLandNote(repo, newest.mainAfter) : null;
+  const squashFrom = newestNote?.state === "read" ? (newestNote.note.squash as { from?: unknown } | undefined)?.from : undefined;
+  const head = typeof squashFrom === "string" && /^[0-9a-f]{40,64}$/.test(squashFrom) ? squashFrom
+    : typeof newest?.headSha === "string" ? newest.headSha : (live ? branch : null);
   if (!repo) commits = unmeasured("no source names this lane's repository");
   else if (!base || !head) commits = unmeasured("no fork point on record for this lane — its own commits cannot be separated from the base");
   else {
@@ -38566,22 +38580,28 @@ function cleanVerifyStop(verify: NonNullable<MergeLast["verify"]>, branch: strin
 }
 
 // --- a9629daa · THE SQUASH LAND (docs/design/live-bau-profil-2026-10.md §3) -------------------------
-// Owner, 2026-10-08: „[Zitat entfernt]“. A land whose MAIN set the
-// `squash` switch lands mainBefore..H as ONE commit S = H^{tree} on mainBefore. Only with the switch:
-// every other lane keeps its commit bodies on main as the finding register they are.
+// Owner, 2026-10-08: „[Zitat entfernt]“, and 10.10. ~21:0x: „[Zitat entfernt]“
+// 
+// . So a gated land lands mainBefore..H as ONE commit
+// S = H^{tree} on mainBefore by DEFAULT — one lane commit included, which gets the land's subject
+// and body like a series does. The level is the LAND: lane commits are free and go under
+// lane-history. Only {"squash":false} lands the series as it was, and the note says so (squashOff).
 // THREE THINGS IT IS NOT. It is no second gate — S^{tree} is the H^{tree} the gate measured, so
 // the verdict and any adopted helper receipt (adoptedGateSteps, keyed by tree) stand for S unchanged.
 // It is no rebase — the branch moves H→S by compare-and-swap, tree identical, index and working tree
 // untouched, and it moves BEFORE the fast-forward, never after it. And it pushes nothing: the series
 // stays under refs/fleet/lane-history/<branch>/<n> in this repo, and the hub push takes main alone.
 
-// THE REPORT THE LAND STANDS ON: the newest `complete` report this lane occupant filed that no land
-// has consumed yet — read before recordLandCalled stamps it. Null is an answer (no report, or only
-// consumed ones), and S then carries the lane's subject lines alone.
+// THE REPORT THE LAND STANDS ON: the newest `complete` report this lane occupant filed that its MAIN
+// (or the owner, or the owner's delegate) ACCEPTED and no land has consumed yet — read before
+// recordLandCalled stamps it. A newer undecided report is the lane speaking again, not a judgement,
+// and a rule verdict (superseded, accepted-by-land) is bookkeeping: neither is what the land stands
+// on. Null is an answer (no accepted report), and S then says "kein angenommener Report".
 function squashReportFor(s: Slot): LandReadyReport | null {
   let newest: LandReadyReport | null = null;
   for (const r of fleetReports) {
     if (r.status !== "complete" || r.landCalledAt !== undefined) continue;
+    if (r.decision?.disposition !== "accepted" || (typeof r.decision.by === "object" && "rule" in r.decision.by)) continue;
     if (r.worker.slot !== s.id || r.worker.openedAt !== s.openedAt || r.worker.branch !== s.worktree?.branch) continue;
     if (!newest || r.reportedAt > newest.reportedAt) newest = r;
   }
@@ -38604,14 +38624,19 @@ const SQUASH_CO_AUTHOR = /^co-authored-by:\s*\S/i;
 interface SquashPlan { sha: string; squash: LandSquash }
 
 // THE PLAN, and nothing moves in it: S is written as an OBJECT (commit-tree) and the history ref's
-// number is chosen. `null` = mainBefore..H holds at most one commit, and the land is byte for byte the
-// one without the switch. An unreadable series is an error, never a guess at a count.
+// number is chosen. `null` = mainBefore..H holds no commit, and there is nothing to land as one;
+// `{off}` = it holds a merge commit and lands as it is (a squash would drop the merged side).
+// A single lane commit is planned like a series: same tree, the land's subject and body.
+// An unreadable series is an error, never a guess at a count.
 async function planSquashLand(s: Slot, cwd: string, root: string, branch: string, mainBefore: string,
-  gated: string, report: LandReadyReport | null): Promise<SquashPlan | null | { error: string }> {
+  gated: string, report: LandReadyReport | null): Promise<SquashPlan | { off: SquashOff } | null | { error: string }> {
   const count = await git(cwd, "rev-list", "--count", `${mainBefore}..${gated}`);
   const commits = Number(count.out);
   if (count.code !== 0 || !Number.isInteger(commits)) return { error: `the lane series ${mainBefore.slice(0, 8)}..${gated.slice(0, 8)} could not be counted` };
-  if (commits <= 1) return null;
+  if (commits === 0) return null;
+  const merges = await git(cwd, "rev-list", "--merges", "--count", `${mainBefore}..${gated}`);
+  if (merges.code !== 0 || !/^\d+$/.test(merges.out)) return { error: `the lane series ${mainBefore.slice(0, 8)}..${gated.slice(0, 8)} could not be searched for merge commits` };
+  if (Number(merges.out) > 0) return { off: "merge-in-series" };
   const log = await gitReadRaw(cwd, "log", "--reverse", "--format=%H%x1f%s%x1f%B%x1e", `${mainBefore}..${gated}`);
   const tree = await git(cwd, "rev-parse", `${gated}^{tree}`);
   const author = await git(cwd, "log", "-1", "--format=%an%x1f%ae", gated);
@@ -38626,12 +38651,13 @@ async function planSquashLand(s: Slot, cwd: string, root: string, branch: string
   const task = s.taskId ? tasks.find((t) => t.id === s.taskId) : undefined;
   const goal = squashGoalSentence(task);
   const subject = `${head}: ${s.taskId ?? branch}${goal ? ` — ${goal}` : ""}`;
-  const listed = [`Lane-Commits (${commits}, ${series[0]!.sha.slice(0, 8)}..${series[series.length - 1]!.sha.slice(0, 8)}):`,
+  const span = commits === 1 ? series[0]!.sha.slice(0, 8) : `${series[0]!.sha.slice(0, 8)}..${series[series.length - 1]!.sha.slice(0, 8)}`;
+  const listed = [`Lane-Commits (${commits}, ${span}):`,
     ...series.map((c) => `${c.sha.slice(0, 8)} ${c.subject}`)].join("\n");
   // every DISTINCT Co-Authored-By line of the series, in the order it first appears
   const trailers = [...new Set(series.flatMap((c) => c.body.split("\n").map((l) => l.trim())
     .filter((l) => SQUASH_CO_AUTHOR.test(l))))];
-  const message = [subject, report?.text.trim() ?? "", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
+  const message = [subject, report?.text.trim() || "kein angenommener Report", listed, trailers.join("\n")].filter(Boolean).join("\n\n");
   // authored as the lane's newest commit was; the committer is whoever this server commits as
   const [name, email] = author.out.split("\x1f");
   const made = await gitWith(name && email ? { ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email } : undefined,
@@ -38674,7 +38700,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // this has just verified the asker's identity, and the gate below runs for minutes.
   const landOpenedAt = s.openedAt;
   // a9629daa · the report a squash commit's body quotes, read before the line below consumes it
-  const squashReport = switches.squash ? squashReportFor(s) : null;
+  const squashOn = switches.squash !== false;
+  const squashReport = squashOn ? squashReportFor(s) : null;
   // …and the tip each gate below measured. A land with a switch moves the lane branch itself (the
   // squash CAS) or leaves the lane working on (keep), so it must know which commit was proven; every
   // gate site sets it just before it runs.
@@ -39172,7 +39199,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
         macWhyOf(firstVerifyPlan);
-        if (switches.squash || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+        if (squashOn || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
         // the helper route's gate is runLandGate, which runs the local half here and hands the
         // suites to the helper; every other land runs its chain here, exactly as before
         let verify = dirtyStop ? undefined : gateDenied
@@ -39341,9 +39368,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // a9629daa · S is PLANNED here — an object, no ref moves — so the intent below already
               // names the commit main is about to become, and boot recovery finds main at it. It
               // MOVES after the second look, so a dirty main leaves the lane branch where it was.
-              const squashPlan: SquashPlan | null | { error: string } = switches.squash && squashed === null && gatedTip
+              const planned: SquashPlan | { off: SquashOff } | null | { error: string } = squashOn && squashed === null && gatedTip
                 ? await planSquashLand(s, cwd, root, branch, mainBefore, gatedTip, squashReport) : null;
-              if (squashPlan && "error" in squashPlan) throw new Error(`${squashPlan.error} — nothing was landed`);
+              if (planned && "error" in planned) throw new Error(`${planned.error} — nothing was landed`);
+              const squashPlan: SquashPlan | null = planned && "sha" in planned ? planned : null;
+              const squashOff: SquashOff | null = switches.squash === false ? "switch" : planned && "off" in planned ? planned.off : null;
               const squashNote = squashed ?? squashPlan?.squash ?? null;
               // declare the land before making it — the marker is on disk before main moves, so a
               // restart in the advance→record window is finishable at boot instead of unrecoverable.
@@ -39352,7 +39381,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const prov: LandProvenance = { verify, confirmedByHuman: false, actor,
                 ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}),
                 ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}),
-                ...(squashNote ? { squash: squashNote } : {}) };
+                ...(squashNote ? { squash: squashNote } : {}), ...(squashOff ? { squashOff } : {}) };
               await markLandIntent(root, main, branch, mainBefore, squashPlan?.sha ?? (await git(root, "rev-parse", branch)).out, prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
               // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------
@@ -39370,8 +39399,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 { verify, ...(ffRounds ? { ffRounds } : {}) });
               if (dirtyNow) { clearLandIntent(root); res = dirtyNow; break; }
               // a9629daa · THE MOVE: H under its history ref, the branch H→S by compare-and-swap.
-              // Without a plan (one commit) a land with the switch still asks the CAS's question as a
-              // read: is the branch on the tip its gate measured? Either way a lane that committed
+              // Without a plan (no commit, {"squash":false}, or a retry over S) a squashing or kept land
+              // still asks the CAS's question as a read: is the branch on the tip its gate measured? Either way a lane that committed
               // during the gate ends `lane-moved`, and nothing moved.
               if (squashPlan) {
                 const moved = await moveSquashLand(s, cwd, root, branch, squashPlan);
@@ -39383,7 +39412,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   break;
                 }
                 squashed = squashPlan.squash;
-              } else if ((switches.squash || switches.keep) && gatedTip) {
+              } else if ((squashOn || switches.keep) && gatedTip) {
                 const tipNow = (await git(root, "rev-parse", branch)).out;
                 if (tipNow !== gatedTip) {
                   clearLandIntent(root);
@@ -39532,7 +39561,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                   candidateMainSha = landMain; // a reviewable verdict from here on describes THIS main
                   const retryPlan = await verifyPlanFor(cwd, root, landMain);
                   macWhyOf(retryPlan);
-                  if (switches.squash || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+                  if (squashOn || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
                   if (landByHelper && retryPlan) verify = await gateRun(() => runLandGate(landCtx, landMain, retryPlan, 0));
                   else verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));
                   // a retry may NEVER turn a non-green gate into a land by rolling it again: the
@@ -51309,8 +51338,8 @@ Bun.serve<WSData>({
         // never reach it, so a switch asked of them is refused rather than dropped.
         if (body?.squash !== undefined && typeof body.squash !== "boolean") return json({ error: "squash must be a boolean" }, 400);
         if (body?.keep !== undefined && typeof body.keep !== "boolean") return json({ error: "keep must be a boolean" }, 400);
-        const switches: LandSwitches = { squash: body?.squash === true, keep: body?.keep === true };
-        if ((switches.squash || switches.keep) && (body?.confirm === true || body?.reverify === true))
+        const switches: LandSwitches = { squash: typeof body?.squash === "boolean" ? body.squash : null, keep: body?.keep === true };
+        if ((switches.squash === true || switches.keep) && (body?.confirm === true || body?.reverify === true))
           return json({ error: "confirm lands the reviewed candidate as it is and reverify only measures — squash and keep apply to the gated land only; call again without them" }, 409);
         const { repo, branch } = s.worktree;
         const cwd = s.cwd;
@@ -51421,7 +51450,7 @@ Bun.serve<WSData>({
         const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, carry.carriedRuns, ownerActor, switches)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
-        return json({ running: true, ...(switches.squash ? { squash: true } : {}), ...(switches.keep ? { keep: true } : {}) });
+        return json({ running: true, squash: switches.squash !== false, ...(switches.keep ? { keep: true } : {}) });
       } finally {
         mergeStart.delete(s.id);
       }

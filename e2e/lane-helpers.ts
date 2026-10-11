@@ -316,3 +316,23 @@ export const driveMerge = async (ln: Lane, name: string): Promise<{ gone: boolea
   }
   return { ...(await waitMerge(ln.slot, { requireVerdict: true })), branch: ln.branch };
 };
+
+// 261011 · A LAND IS ONE COMMIT. What an ordinary land leaves on `ref` (a branch or a sha) of
+// `repo`: ONE commit whose only parent is the note's mainBefore, whose tree is the gated lane tip's
+// (note squash.from), that tip kept under note squash.ref. `subjects` are the lane's own commit
+// subjects from the kept series, newest first, so a check can still name the work it landed.
+export interface LandedAsOne { ok: boolean; tip: string; parents: string; mainBefore: string | null;
+  from: string | null; ref: string | null; subjects: string[] }
+export const landedAsOne = (repo: string, ref: string): LandedAsOne => {
+  const g = (...args: string[]): string => spawnSync("git", ["-C", repo, ...args]).stdout.toString().trim();
+  const tip = g("rev-parse", ref);
+  type OneNote = { mainBefore?: string; squash?: { from?: string; ref?: string } };
+  let note: OneNote | null = null;
+  try { note = JSON.parse(g("notes", "--ref=fleet/land", "show", tip)) as OneNote; } catch { /* not a land tip */ }
+  const mainBefore = note?.mainBefore ?? null, from = note?.squash?.from ?? null, kept = note?.squash?.ref ?? null;
+  const parents = g("show", "-s", "--format=%P", tip);
+  const subjects = mainBefore && from ? g("log", "--format=%s", `${mainBefore}..${from}`).split("\n").filter(Boolean) : [];
+  const ok = !!mainBefore && !!from && !!kept && parents === mainBefore && g("rev-parse", kept) === from
+    && g("rev-parse", `${tip}^{tree}`) === g("rev-parse", `${from}^{tree}`) && subjects.length > 0;
+  return { ok, tip, parents, mainBefore, from, ref: kept, subjects };
+};

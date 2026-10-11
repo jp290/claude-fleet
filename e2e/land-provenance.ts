@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { BASE, REPO, REPO2, ROOT, check, get, post, restartSrv } from "./harness";
-import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { VerifyField, exists, landedAsOne, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 import { DAEMON_FEATURES } from "../helper-daemon/daemon";
 
 // a slot's own scoped credential, out of the persisted state — polled for the shape, because
@@ -40,10 +40,10 @@ export async function run(): Promise<void> {
     };
     const headOf = (repo: string, ref = "HEAD"): string => spawnSync("git", ["-C", repo, "rev-parse", ref]).stdout.toString().trim();
     // land a lane with committed work via the clean script path (no conflict → agent never consulted)
-    const landClean = async (slot: number): Promise<void> => {
+    const landClean = async (slot: number, body: Record<string, unknown> = {}): Promise<void> => {
       await setMergeMode("blocked"); // a clean rebase must NOT consult the agent
       await settleForMerge(slot);
-      await post(`/api/slots/${slot}/merge`, {});
+      await post(`/api/slots/${slot}/merge`, body);
       await waitMerge(slot);
     };
 
@@ -65,9 +65,10 @@ export async function run(): Promise<void> {
       (await get(`/api/slots/${lane.slot}/merge`)).status === 400);
     const ogAfter = headOf(og.repo, og.main);
     check("one-gesture land: main advanced past its pre-land SHA", ogAfter !== ogBefore, `${ogBefore} -> ${ogAfter}`);
+    // 261011: one commit on the old main with the gated tree; the agent's message is the lane's, under lane-history
+    const ogOne = landedAsOne(og.repo, og.main);
     check("one-gesture land: the committed work reached main with the expected message",
-      spawnSync("git", ["-C", og.repo, "log", "--oneline"]).stdout.toString().includes("stand-in commit message"),
-      spawnSync("git", ["-C", og.repo, "log", "--oneline"]).stdout.toString().trim());
+      ogOne.ok && ogOne.subjects.includes("feat: stand-in commit message"), JSON.stringify(ogOne));
     // the undoable land surfaces to the board via GET /merge on any live lane of the same repo
     const probeMg = (await (await get(`/api/slots/${probe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
     check("undo: the landed lane is exposed as undoable on the repo's board",
@@ -132,7 +133,7 @@ export async function run(): Promise<void> {
     // its remote gate covers every commit it would discard rather than only the tip.
     //
     // land a fresh lane carrying one commit per given file, and report the SHAs it moved main over
-    const landWork = async (repo: string, files: string[]): Promise<{ branch: string; before: string; after: string }> => {
+    const landWork = async (repo: string, files: string[], body: Record<string, unknown> = {}): Promise<{ branch: string; before: string; after: string }> => {
       const l = (await (await post("/api/lanes", { repo })).json()) as { slot: number; cwd: string; branch: string };
       for (const f of files) {
         await Bun.write(`${l.cwd}/${f}`, `${f} work\n`);
@@ -140,7 +141,7 @@ export async function run(): Promise<void> {
         spawnSync("git", ["-C", l.cwd, "commit", "-qm", `work ${f}`]);
       }
       const before = headOf(repo, "main");
-      await landClean(l.slot);
+      await landClean(l.slot, body);
       return { branch: l.branch, before, after: headOf(repo, "main") };
     };
     const undoOnce = async (repo: string): Promise<{ status: number; error?: string; ok?: boolean }> => {
@@ -249,8 +250,9 @@ export async function run(): Promise<void> {
     const rr = await freshRepo("undorange");
     spawnSync("git", ["init", "--bare", "-q", `${rr.repo}.remote.git`]);
     spawnSync("git", ["-C", rr.repo, "remote", "add", "origin", `${rr.repo}.remote.git`]);
-    const rr1 = await landWork(rr.repo, ["r1a.txt", "r1b.txt"]); // TWO commits — the tip is not the whole land
-    const rr2 = await landWork(rr.repo, ["r2.txt"]);
+    // {"squash":false}: the premise is a land of TWO commits on main, which a default land squashes into one
+    const rr1 = await landWork(rr.repo, ["r1a.txt", "r1b.txt"], { squash: false }); // TWO commits — the tip is not the whole land
+    const rr2 = await landWork(rr.repo, ["r2.txt"], { squash: false });
     const rrMid = spawnSync("git", ["-C", rr.repo, "rev-parse", `${rr1.after}^`]).stdout.toString().trim(); // r1a: inside rr1's range, not its tip
     spawnSync("git", ["-C", rr.repo, "push", "-q", "origin", `${rrMid}:refs/heads/keep`]);
     spawnSync("git", ["-C", rr.repo, "fetch", "-q", "origin"]);

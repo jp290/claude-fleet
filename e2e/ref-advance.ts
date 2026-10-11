@@ -2,7 +2,7 @@
 // and the matching fork point for a new lane.
 import { spawnSync } from "node:child_process";
 import { REPO, check, post } from "./harness";
-import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { exists, landedAsOne, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(): Promise<void> {
   // --- issue 3: ref-advance land. With the integration branch checked out NOWHERE (the
@@ -39,9 +39,11 @@ export async function run(): Promise<void> {
     check("ref-advance: land succeeds with the primary parked off-main AND dirty on the lane's file",
       raV.gone && !exists(ra.cwd), JSON.stringify(raV));
     const integSha = spawnSync("git", ["-C", raRepo, "rev-parse", integ]).stdout.toString().trim();
+    // 261011: the land is ONE commit with the gated tree; the lane commit itself stays under lane-history
+    const raOne = landedAsOne(raRepo, integ);
     check("ref-advance: integration branch ref advanced to include the lane commit (branch -f)",
-      integSha !== baseSha && spawnSync("git", ["-C", raRepo, "log", "--oneline", integ]).stdout.toString().includes("animation rebuild"),
-      `integ=${integSha} base=${baseSha}`);
+      integSha !== baseSha && raOne.ok && raOne.subjects.some((x) => x.includes("animation rebuild")),
+      `integ=${integSha} base=${baseSha} ${JSON.stringify(raOne)}`);
     const deskHead = spawnSync("git", ["-C", raRepo, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
     const deskFile = await Bun.file(`${raRepo}/deck.html`).text();
     check("ref-advance: primary stayed on desk with its dirty edit untouched by the land",

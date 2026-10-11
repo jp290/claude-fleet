@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, stopSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
 import type { AgentBinding, BoundAgentObservation, BoundAgentWait } from "./harness";
 import type { Ctx } from "./ctx";
-import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
+import { MERGE_IDLE_MS, landedAsOne, settleForMerge } from "./lane-helpers";
 
 const statOrNull = (path: string): ReturnType<typeof statSync> | null => {
   try { return statSync(path); } catch { return null; }
@@ -1362,10 +1362,10 @@ export async function run(ctx: Ctx): Promise<void> {
         if (!((await r.json()) as { running?: boolean }).running) break;
         await Bun.sleep(100);
       }
+      const uOne = landedAsOne(REPO_C, "main"); // 261011: one commit, the lane's under lane-history
       check("V1: with NO FLEET_VERIFY_CMD a clean rebase still auto-lands (unconfigured ≠ skipped)",
-        landedU && spawnSync("git", ["-C", REPO_C, "log", "--oneline", "-3"]).stdout.toString()
-          .includes("noverify clean lane work"),
-        spawnSync("git", ["-C", REPO_C, "log", "--oneline", "-3"]).stdout.toString().trim());
+        landedU && uOne.ok && uOne.subjects.includes("noverify clean lane work"),
+        JSON.stringify(uOne));
       const ouAll = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
         { outcomes: { branch: string | null; disposition: string; verified: boolean | null }[] }).outcomes;
       const ou = ouAll.find((o) => o.branch === lu.branch);

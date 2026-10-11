@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, ut
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { authorFallbackGates, exists, fakeClaudeInPane, serverLogMark, setMergeMode, settleForAuthorMerge,
+import { authorFallbackGates, exists, fakeClaudeInPane, landedAsOne, serverLogMark, setMergeMode, settleForAuthorMerge,
   settleForMerge, waitMerge } from "./lane-helpers";
 import { projectPromotionPolicyFacts } from "../land-candidate";
 
@@ -311,7 +311,8 @@ exec '${realGit}' "$@"
     const landed = git(repo, "rev-parse", "overhaul");
     const noteRaw = spawnSync(realGit, ["-C", repo, "notes", "--ref=fleet/land", "show", landed]);
     const note = noteRaw.status === 0 ? JSON.parse(noteRaw.stdout.toString()) as
-      { base?: string; mainBefore?: string; mainAfter?: string; verify?: { ok?: boolean; out?: string } } : null;
+      { base?: string; mainBefore?: string; mainAfter?: string; verify?: { ok?: boolean; out?: string };
+        squash?: unknown; squashOff?: string } : null;
     check("merge preservation: ordinary land keeps the exact merge HEAD and tree",
       request.ok && verdict.gone && landed === candidate && git(repo, "rev-parse", "overhaul^{tree}") === tree,
       JSON.stringify({ request: request.status, verdict, candidate, landed, tree }));
@@ -325,6 +326,11 @@ exec '${realGit}' "$@"
         && note.verify.out?.trim() === "ALL PASS" && note.base === "overhaul"
         && note.mainBefore === integration && note.mainAfter === candidate,
       JSON.stringify({ gates: gates(), note }));
+    // 261011 · the one exception to "a land is one commit" (Program-MAIN): a series holding a merge
+    // commit lands as it is — a squash would cut the merged side off the target — and says why
+    check("merge preservation: a series with a merge commit is not squashed by default — the note says squashOff \"merge-in-series\" and carries no squash",
+      note?.squashOff === "merge-in-series" && note.squash === undefined,
+      JSON.stringify(note));
     check("merge preservation: primary main remains identical for an overhaul land",
       git(repo, "rev-parse", "main") === primary, git(repo, "rev-parse", "main"));
     if (!verdict.gone) await post(`/api/slots/${lane.slot}/kill`, {});
@@ -697,8 +703,10 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${lnClean.slot}/merge`, {});
   const vC = await waitMerge(lnClean.slot);
   check("conflict-free lane merges + lands via the script, agent never consulted", vC.gone, JSON.stringify(vC));
+  // 261011: the land is ONE commit on the old main with the gated tree, the lane's commit kept under lane-history
+  const cOne = landedAsOne(REPO, "main");
   check("script-path lane commit reached main",
-    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("clean lane work"));
+    cOne.ok && cOne.subjects.includes("clean lane work"), JSON.stringify(cOne));
   // WHO LANDED IT, on all three carriers. Until 2026-08-24 the land note answered `confirmedByHuman`
   // and nothing else, so a land a session made by reading fleet.json's owner token was
   // BYTE-IDENTICAL in the ledger to one the owner made from the board (measured once, `9cc8b1e`).
@@ -1009,8 +1017,9 @@ export async function run(lc: LaneCtx): Promise<void> {
       && landedEvent.payload.verify?.ok === true && landedText.includes("landed=YES")
       && !landedText.includes("Awaiting your review"),
     JSON.stringify({ event: landedEvent, text: landedText }));
+  const vpOne = landedAsOne(REPO, "main");
   check("V1: passing verify lane's commit reached main",
-    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("verify-pass lane work"));
+    vpOne.ok && vpOne.subjects.includes("verify-pass lane work"), JSON.stringify(vpOne));
   spawnSync("git", ["-C", REPO, "rm", "-q", "verify-pass.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop delayed verify fixture from main"]);
 
@@ -2606,7 +2615,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       filedR.ok && filed.task?.base === "overhaul" && dispatchR?.ok === true
         && taskLane?.worktree?.base === "overhaul" && taskFork === overhaulBefore,
       JSON.stringify({ filed, dispatched, lane: taskLane?.worktree, taskFork, overhaulBefore }));
-    let taskLand: { merge: number; gone: boolean; laneTip: string; overhaulAfter: string; mainAfter: string } | null = null;
+    let taskLand: { merge: number; gone: boolean; laneTip: string; overhaulAfter: string; mainAfter: string;
+      one: ReturnType<typeof landedAsOne> } | null = null;
     if (taskLane?.cwd && dispatched?.slot) {
       await Bun.write(`${taskLane.cwd}/overhaul-task.txt`, "task base overhaul\n");
       spawnSync("git", ["-C", taskLane.cwd, "add", "overhaul-task.txt"]);
@@ -2617,7 +2627,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       const verdict = await waitMerge(dispatched.slot);
       const overhaulAfter = spawnSync("git", ["-C", REPO, "rev-parse", "overhaul"]).stdout.toString().trim();
       const mainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
-      taskLand = { merge: mergeR.status, gone: verdict.gone, laneTip, overhaulAfter, mainAfter };
+      taskLand = { merge: mergeR.status, gone: verdict.gone, laneTip, overhaulAfter, mainAfter, one: landedAsOne(REPO, "overhaul") };
     }
 
     const retargetMainFork = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
@@ -2661,7 +2671,8 @@ export async function run(lc: LaneCtx): Promise<void> {
       retargetLand = { merge: mergeR.status, gone: verdict.gone, finalTip, mainAfter, auditRow };
     }
     check("integration base: task and retargeted lanes land on overhaul; main stays byte-identical and audit names the tip",
-      taskLand?.merge === 200 && taskLand.gone && taskLand.overhaulAfter === taskLand.laneTip
+      taskLand?.merge === 200 && taskLand.gone && taskLand.one.ok && taskLand.one.from === taskLand.laneTip
+        && taskLand.overhaulAfter === taskLand.one.tip
         && taskLand.mainAfter === mainBefore && retargetLand?.merge === 200 && retargetLand.gone
         && retargetLand.finalTip.length > 0 && retargetLand.mainAfter === mainBefore
         && retargetLand.auditRow?.main === "overhaul" && retargetLand.auditRow.mainSha === retargetLand.finalTip
@@ -2814,6 +2825,10 @@ export async function run(lc: LaneCtx): Promise<void> {
     const reportR = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
       headers: { "x-fleet-self-token": tokenOf(laneSlot), "content-type": "application/json" },
       body: JSON.stringify({ status: "complete", text: "SQUASH-REPORT-MARK: drei Stufen, ein Commit." }) });
+    // the body quotes the report the MAIN ACCEPTED (261011), so the MAIN accepts it here
+    const reportId = reportR.ok ? ((await reportR.json()) as { report?: { id?: string } }).report?.id ?? "" : "";
+    const acceptR = reportId ? await fetch(`${BASE}/api/self/fleet-report/${reportId}/accept`, { method: "POST",
+      headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: "{}" }) : null;
     let ready = false;
     try {
       ready = await until(async () => {
@@ -2826,12 +2841,13 @@ export async function run(lc: LaneCtx): Promise<void> {
           && sx.now - current.lastOutput >= 1500;
       }, { timeoutMs: 30_000, stepMs: 100, what: "squash lane done-looking with three commits" });
     } catch { /* the setup check names the missing precondition */ }
-    check("squash land setup: a green-only MAIN, a lane with three commits and a complete report",
+    check("squash land setup: a green-only MAIN, a lane with three commits and a complete report the MAIN accepted",
       programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true
         && promotionR?.ok === true && /^[0-9a-f]{32}$/.test(mainToken) && dispatchR?.ok === true
-        && branch.length > 0 && reportR.ok && ready,
+        && branch.length > 0 && reportR.ok && acceptR?.ok === true && ready,
       JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error,
-        promotion: promotionR?.status, dispatch: dispatchR?.status, branch, report: reportR.status, ready }));
+        promotion: promotionR?.status, dispatch: dispatchR?.status, branch, report: reportR.status,
+        accept: acceptR?.status, ready }));
     const land = (body: string): Promise<Response> => fetch(`${BASE}/api/self/tasks/${rowId}/land`, {
       method: "POST", headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body });
     const notBool = await land('{"squash":"yes"}');
@@ -2887,6 +2903,134 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 
+  // 261011 · ONE LAND, ONE COMMIT, NO SWITCH (owner 10.10. ~21:0x: „[Zitat entfernt]“
+  // ).
+  // A bound MAIN lands four card rows with an EMPTY land call: three lane commits, one lane commit,
+  // an accepted report followed by a newer undecided one, and an undecided report alone. main's
+  // first-parent history gains exactly one commit per land, its subject
+  // "<typ>(<bereich>): <taskId> — <first ZIEL sentence>", its body opening with the ACCEPTED report's
+  // text — never the newer undecided one — or with "kein angenommener Report". The default going
+  // back to squash:false turns the first-parent check red: four lands would then add seven commits.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const mainBefore = git2("rev-parse", "main");
+    const programR = await post("/api/programs", {
+      title: "One commit per land", intent: "Every land is one described commit.",
+      successCriterion: "Main gains one commit per land.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    check("one commit per land setup: a green-only MAIN is bound in REPO2",
+      programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true
+        && promotionR?.ok === true && /^[0-9a-f]{32}$/.test(mainToken),
+      JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error, promotion: promotionR?.status }));
+    type OneLane = { name: string; ziel: string; goal: string; commits: [string, string][];
+      reports: { text: string; accept: boolean }[]; head: string; bodyStart: string; absent: string[] };
+    const lanes: OneLane[] = [
+      { name: "three", ziel: "Lane A landet drei Stufen als einen Commit. Dieser Satz bleibt draussen.",
+        goal: "Lane A landet drei Stufen als einen Commit",
+        commits: [["one-a1.txt", "feat(eins): erste Stufe"], ["one-a2.txt", "feat(eins): zweite Stufe"], ["one-a3.txt", "fix(eins): dritte Stufe"]],
+        reports: [{ text: "ONE-A-ACCEPTED: drei Stufen gelandet.", accept: true }], head: "fix(eins)",
+        bodyStart: "ONE-A-ACCEPTED: drei Stufen gelandet.", absent: [] },
+      { name: "single", ziel: "Lane B landet ihren einen Commit neu beschrieben. Auch hier zaehlt nur der erste Satz.",
+        goal: "Lane B landet ihren einen Commit neu beschrieben",
+        commits: [["one-b1.txt", "docs(einzel): die Lane-Nachricht, die nicht auf main steht"]],
+        reports: [{ text: "ONE-B-ACCEPTED: ein Commit, neu benannt.", accept: true }], head: "docs(einzel)",
+        bodyStart: "ONE-B-ACCEPTED: ein Commit, neu benannt.", absent: [] },
+      { name: "newer-undecided", ziel: "Lane C landet auf dem angenommenen Report. Der neuere zaehlt nicht.",
+        goal: "Lane C landet auf dem angenommenen Report",
+        commits: [["one-c1.txt", "feat(zwei): angenommen"], ["one-c2.txt", "chore: nachgeschoben"]],
+        reports: [{ text: "ONE-C-ACCEPTED: das hat die MAIN angenommen.", accept: true },
+          { text: "ONE-C-NEWER-UNDECIDED: das hat niemand entschieden.", accept: false }], head: "feat(zwei)",
+        bodyStart: "ONE-C-ACCEPTED: das hat die MAIN angenommen.", absent: ["ONE-C-NEWER-UNDECIDED"] },
+      { name: "no-accepted", ziel: "Lane D landet ohne angenommenen Report. Ihr Report ist offen.",
+        goal: "Lane D landet ohne angenommenen Report",
+        commits: [["one-d1.txt", "fix(drei): ohne Urteil"]],
+        reports: [{ text: "ONE-D-UNDECIDED: niemand hat das angenommen.", accept: false }], head: "fix(drei)",
+        bodyStart: "kein angenommener Report", absent: ["ONE-D-UNDECIDED"] },
+    ];
+    const landed: { name: string; rowId: string; sha: string; subject: string; body: string; seriesCount: string; facts: unknown }[] = [];
+    for (const l of lanes) {
+      const before = git2("rev-parse", "main");
+      const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false, text: `one commit per land: ${l.name}`,
+        // REPO2 has its own FLEET_VERIFY_CMD_REPOS entry, so the card names that command verbatim
+        card: { ziel: l.ziel, surface: { files: ["code.txt"], symbols: [] }, done: "main gains one commit",
+          verify: `${REPO2.replace(/\/[^/]+$/, "")}/fakeverify2`, verboten: ["no other file"] } });
+      const taskJ = (await taskR.json()) as { task?: { id: string }; error?: string };
+      const rowId = taskJ.task?.id ?? "";
+      const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+      const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+      const lane = ((await (await get("/api/sessions")).json()) as {
+        slots: { id: number; cwd: string | null; worktree?: { branch?: string } }[];
+      }).slots.find((s) => s.id === laneSlot);
+      const branch = lane?.worktree?.branch ?? "";
+      if (lane?.cwd) for (const [file, msg] of l.commits) {
+        writeFileSync(`${lane.cwd}/${file}`, `${file}\n`);
+        spawnSync("git", ["-C", lane.cwd, "add", file]);
+        spawnSync("git", ["-C", lane.cwd, "commit", "-qm", msg]);
+      }
+      const filed: { status: number; accept: number | null }[] = [];
+      for (const r of l.reports) {
+        const reportR = await fetch(`${BASE}/api/self/fleet-report`, { method: "POST",
+          headers: { "x-fleet-self-token": tokenOf(laneSlot), "content-type": "application/json" },
+          body: JSON.stringify({ status: "complete", text: r.text }) });
+        const id = reportR.ok ? ((await reportR.json()) as { report?: { id?: string } }).report?.id ?? "" : "";
+        const acceptR = r.accept && id ? await fetch(`${BASE}/api/self/fleet-report/${id}/accept`, { method: "POST",
+          headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" }, body: "{}" }) : null;
+        filed.push({ status: reportR.status, accept: acceptR?.status ?? null });
+      }
+      let ready = false;
+      try {
+        ready = await until(async () => {
+          const brief = (await plogRead()).some((e) => e.cwd === lane?.cwd && e.source === "auto");
+          const sx = (await (await get("/api/sessions")).json()) as {
+            now: number; slots: { id: number; lastOutput: number; git: { dirty: number; ahead: number } | null }[];
+          };
+          const current = sx.slots.find((s) => s.id === laneSlot);
+          return brief && !!current?.lastOutput && current.git?.dirty === 0 && current.git.ahead === l.commits.length
+            && sx.now - current.lastOutput >= 1500;
+        }, { timeoutMs: 30_000, stepMs: 100, what: `one-commit lane ${l.name} done-looking` });
+      } catch { /* the land check names the missing precondition */ }
+      const landR = rowId && mainToken ? await fetch(`${BASE}/api/self/tasks/${rowId}/land`, {
+        method: "POST", headers: { "x-fleet-self-token": mainToken } }) : null;
+      const started = landR ? (await landR.json()) as { running?: boolean; squash?: boolean; error?: string } : null;
+      let done = false;
+      try {
+        done = await until(async () => ((await (await get("/api/tasks")).json()) as {
+          tasks: { id: string; status: string }[] }).tasks.some((r) => r.id === rowId && r.status === "done"),
+        { timeoutMs: 20_000, stepMs: 100, what: `one-commit lane ${l.name} row done` });
+      } catch { /* the land check reports the missing terminal state */ }
+      const sha = git2("rev-parse", "main");
+      const series = branch ? git2("rev-parse", "--verify", "--quiet", `refs/fleet/lane-history/${branch}/1`) : "";
+      landed.push({ name: l.name, rowId, sha, subject: git2("log", "-1", "--format=%s", sha), body: git2("log", "-1", "--format=%b", sha),
+        seriesCount: series ? git2("rev-list", "--count", `${before}..${series}`) : "",
+        facts: { task: taskR.status, taskError: taskJ.error?.slice(0, 300), dispatch: dispatchR?.status, branch, filed, ready, land: landR?.status, started, done,
+          sameTree: series !== "" && git2("rev-parse", `${sha}^{tree}`) === git2("rev-parse", `${series}^{tree}`) } });
+    }
+    const firstParent = git2("log", "--first-parent", "--format=%s", `${mainBefore}..main`).split("\n").filter(Boolean).reverse();
+    check("one commit per land: four lands without a switch add exactly four first-parent commits to main, each \"<typ>(<bereich>): <taskId> — <first ZIEL sentence>\", the lane series under refs/fleet/lane-history",
+      landed.length === 4 && git2("rev-list", "--count", `${mainBefore}..main`) === "4"
+        && JSON.stringify(firstParent) === JSON.stringify(lanes.map((l, i) => `${l.head}: ${landed[i]?.rowId} — ${l.goal}`))
+        && landed.every((x, i) => x.seriesCount === String(lanes[i]!.commits.length) && (x.facts as { sameTree: boolean }).sameTree),
+      JSON.stringify({ firstParent, landed: landed.map((x) => ({ name: x.name, seriesCount: x.seriesCount, facts: x.facts })) }));
+    check("one commit per land: each body opens with the ACCEPTED report's text — never a newer undecided one — or with \"kein angenommener Report\"",
+      landed.length === 4 && landed.every((x, i) => x.body.startsWith(lanes[i]!.bodyStart)
+        && lanes[i]!.absent.every((a) => !x.body.includes(a))
+        && x.body.includes(`Lane-Commits (${lanes[i]!.commits.length}, `)),
+      JSON.stringify(landed.map((x) => ({ name: x.name, body: x.body.slice(0, 400) }))));
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    for (const x of landed) if (x.rowId) await post(`/api/tasks/${x.rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+  }
+
   // THE OWNER'S ⏫ READS THE SWITCHES (owner 09.10., the board's gear). A plain lane with two
   // commits: ⏏ still refuses keep and moves nothing, ⏫ refuses a non-boolean squash with 400, and
   // ⏫ {"squash":true} lands the two commits as ONE commit on main with the gated tree, the series
@@ -2932,9 +3076,10 @@ export async function run(lc: LaneCtx): Promise<void> {
   // bc9d0a79 · THE KEPT LAND. One live lane lands three times through the SAME row: first with
   // {"squash":true,"keep":true} (two commits → one S1, the lane and its row stay, its fork moves to
   // S1, no verdict is left on it, and the row projects RUNNING), then after two more commits and a
-  // fresh complete report with {"keep":true} alone (both commits land as they are — no squash
-  // without the switch), and last with no switch at all, which closes the lane and the row as every
-  // land always has. The owner doors' switches are the block above.
+  // fresh complete report with {"keep":true,"squash":false} (both commits land as they are — the one
+  // exception to the default squash, and the note says so), and last with no switch at all, which
+  // squashes its one commit and closes the lane and the row as every land always has. The owner
+  // doors' switches are the block above.
   {
     const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
     const mainBefore = git2("rev-parse", "main");
@@ -3000,8 +3145,8 @@ export async function run(lc: LaneCtx): Promise<void> {
     };
     const rowStatus = async (): Promise<string | undefined> => ((await (await get("/api/tasks")).json()) as {
       tasks: { id: string; status: string }[] }).tasks.find((r) => r.id === rowId)?.status;
-    const noteOf = (sha: string): { squash?: { commits?: number } } | null => {
-      try { return JSON.parse(git2("notes", "--ref=fleet/land", "show", sha)) as { squash?: { commits?: number } }; }
+    const noteOf = (sha: string): { squash?: { commits?: number }; squashOff?: string } | null => {
+      try { return JSON.parse(git2("notes", "--ref=fleet/land", "show", sha)) as { squash?: { commits?: number }; squashOff?: string }; }
       catch { return null; }
     };
     if (cwd) { commitIn("kept1.txt", "feat(kept): erste Tranche"); commitIn("kept2.txt", "feat(kept): zweite Tranche"); }
@@ -3051,21 +3196,25 @@ export async function run(lc: LaneCtx): Promise<void> {
     const again = await land('{"keep":true}');
     check("kept land: the landed tip cannot land twice — the same row answers 409 already landed until a new commit",
       again.status === 409 && (await again.text()).includes("already landed"), `${again.status}`);
-    // LAND 2 — keep alone, two new commits, a fresh report: no squash without the switch
+    // LAND 2 — keep with {"squash":false}, two new commits, a fresh report: the series lands as it is
     commitIn("kept3.txt", "fix(kept): dritte Tranche");
     commitIn("kept4.txt", "fix(kept): vierte Tranche");
     const report2 = await report("KEPT-REPORT-2");
     const ready2 = await doneLooking(2);
-    const land2 = await land('{"keep":true}');
+    const laneHead2 = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+    const land2 = await land('{"keep":true,"squash":false}');
+    const started2 = (await land2.json()) as { squash?: boolean };
     const settled2 = await settled(s1);
     const s2 = git2("rev-parse", "main");
     const after2 = (await laneNow()).slot;
-    const facts2 = { report2: report2.status, ready2, land: land2.status, settled2, status: await rowStatus(),
-      count: git2("rev-list", "--count", `${s1}..${s2}`), baseSha: after2?.worktree?.baseSha,
-      slotCwd: after2?.cwd, note: noteOf(s2), s2 };
-    check("kept land: the same row lands again after a fresh complete report; without squash both commits land as they are, and the lane stays with baseSha on the new main",
-      report2.ok && ready2 && land2.ok && settled2 && facts2.status === "sent" && facts2.count === "2"
-        && facts2.baseSha === s2 && facts2.slotCwd === cwd && facts2.note !== null && facts2.note.squash === undefined,
+    const facts2 = { report2: report2.status, ready2, land: land2.status, started2, settled2, status: await rowStatus(),
+      count: git2("rev-list", "--count", `${s1}..${s2}`), subjects: git2("log", "--format=%s", `${s1}..${s2}`),
+      laneHead2, baseSha: after2?.worktree?.baseSha, slotCwd: after2?.cwd, note: noteOf(s2), s2 };
+    check("kept land: the same row lands again after a fresh complete report; {\"squash\":false} lands both commits as they are (main = the lane's own tip), the note says squashOff \"switch\", and the lane stays with baseSha on the new main",
+      report2.ok && ready2 && land2.ok && started2.squash === false && settled2 && facts2.status === "sent" && facts2.count === "2"
+        && facts2.s2 === laneHead2 && facts2.subjects === "fix(kept): vierte Tranche\nfix(kept): dritte Tranche"
+        && facts2.baseSha === s2 && facts2.slotCwd === cwd && facts2.note !== null && facts2.note.squash === undefined
+        && facts2.note.squashOff === "switch",
       JSON.stringify(facts2));
     // LAND 3 — no switch: the land as it always was closes the lane and the row
     commitIn("kept5.txt", "chore(kept): letzte Tranche");
@@ -3203,7 +3352,8 @@ async function rebuildBundleAfterClientLand(): Promise<void> {
     lane = null;
     const head = git(repo, "rev-parse", "main");
     const raw = spawnSync("git", ["-C", repo, "notes", "--ref=fleet/land", "show", head]);
-    return { landed: head === candidate, head, note: raw.status === 0 ? JSON.parse(raw.stdout.toString()) as Note : null };
+    const one = landedAsOne(repo, "main");
+    return { landed: one.ok && one.from === candidate, head, note: raw.status === 0 ? JSON.parse(raw.stdout.toString()) as Note : null };
   };
   try {
     rmSync(repo, { recursive: true, force: true });

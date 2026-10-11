@@ -12,7 +12,7 @@ import { observedSourceHash } from "../context-manifest";
 import { fleetEventFrom, loadMessageAddress, loadMessages } from "../server/types";
 import type { SessionAgentsPart } from "../session-agents";
 import { CONTEXT_PACKS } from "../context-packs";
-import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, setMergeMode, settleForMerge } from "./lane-helpers";
+import { AUTO_REVIEW_IDLE_MS, MERGE_IDLE_MS, landedAsOne, setMergeMode, settleForMerge } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { projectLandWaves, LAND_WAVE_COSTS_2026_09 } from "../task-land-waves";
 import { parseFormattedCard, validateCard, type CardValidationContext, type RawCard } from "../card-extract";
@@ -12263,10 +12263,11 @@ export async function run(ctx: Ctx): Promise<void> {
       greenLanded = await slRow(greenRowId);
     }
     const greenMainAfter = spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim();
+    const greenOne = landedAsOne(REPO2, "main"); // 261011: one commit, the lane's under lane-history
     check("self-land: the integration branch moved and the row retired — the land completed through the ordinary land path",
       greenLanded?.status === "done" && greenMainAfter !== greenMainBefore
-        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland green work"),
-      JSON.stringify({ status: greenLanded?.status, before: greenMainBefore.slice(0, 8), after: greenMainAfter.slice(0, 8) }));
+        && greenOne.ok && greenOne.subjects.includes("selfland green work"),
+      JSON.stringify({ status: greenLanded?.status, before: greenMainBefore.slice(0, 8), after: greenMainAfter.slice(0, 8), one: greenOne }));
     await Bun.sleep(AUTOS_TICK_MS * 2 + 200);
     const a2AfterLand = await a2View();
     const a2LandedReport = (readState().fleetReports ?? []).find((r) => r.id === slSecondReport.id) as
@@ -12444,7 +12445,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("self-land progress guard: a REPAIRED candidate is admitted on the very next call and lands — the guard bounds cycling, not repair",
       repairedReady && repaired.ok && repairedBody.running === true
         && repairedBody.candidate !== redVerdict?.candidateSha && repairedRow?.status === "done"
-        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-4"]).stdout.toString().includes("selfland red repaired"),
+        && ((o) => o.ok && o.subjects.includes("selfland red repaired"))(landedAsOne(REPO2, "main")),
       JSON.stringify({ ready: repairedReady, res: repaired.status, body: repairedBody,
         // THE ROW'S NOTE, not merely its status — added 2026-09-12 after this check fell with
         // `row:"queued"` and nothing else, which cost a 35-minute rerun to get no further. Every
@@ -13608,7 +13609,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // explicitly removes the reason; an override then changes ONE proof field for each control.
     // Returns whether the persisted row was actually found, so a patch that reached nothing fails
     // as ITSELF instead of reading as "the loader rejected it".
-    const ffHistoricalDetail = ffVerdict?.detail ?? "";
+    // the bytes the OLD writer wrote: it never squashed, so its detail ended at "— lane kept"; a land
+    // that squashes by default (261011) appends where the series went, which no legacy row carries
+    const ffHistoricalDetail = (ffVerdict?.detail ?? "").replace(/ — the lane branch stands on its squash commit; .*$/s, "");
     const ffPlantPersisted = async (overrides: Partial<FfVerdict>): Promise<boolean> => {
       await stopSrv();
       const st = readState();
@@ -13717,13 +13720,18 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     const ffRelandAfter = main2Of();
     const ffLog = spawnSync("git", ["-C", REPO2, "log", "--oneline", "-4"]).stdout.toString();
+    // 261011: the re-land is ONE commit on the intruder. The lost round had already moved the lane
+    // branch onto its squash commit, so the lane's own commits are the FIRST kept series of the branch.
+    const ffOne = landedAsOne(REPO2, "main");
+    const ffSeries = spawnSync("git", ["-C", REPO2, "log", "--format=%s", `${ffIntruder}..refs/fleet/lane-history/${ffLane.branch}/1`]).stdout.toString();
     check("(b) THE RE-LAND: after a lost fast-forward the bound MAIN lands its own lane itself — main moves past the intruder onto the lane's work",
       ffReland.ok && ffRelandBody.running === true && ffRow?.status === "done"
         && ffRelandBefore === ffIntruder && ffRelandAfter !== ffRelandBefore
-        && ffLog.includes("selfland lost-ff work") && ffLog.includes("intruder landed on main first"),
+        && ffOne.ok && ffOne.mainBefore === ffIntruder && ffSeries.includes("selfland lost-ff work")
+        && ffLog.includes("intruder landed on main first"),
       JSON.stringify({ reland: ffReland.status, body: ffRelandBody, row: ffRow?.status,
         before: ffRelandBefore.slice(0, 8), after: ffRelandAfter.slice(0, 8),
-        log: ffLog.split("\n").slice(0, 4) }));
+        log: ffLog.split("\n").slice(0, 4), one: ffOne, series: ffSeries.slice(0, 300) }));
 
     // --- (8e) THE LOST FAST-FORWARD IS RETRIED, RE-VERIFIED, AND ONLY THEN LANDED (2026-09-04) --
     // (8b) proved the typed dead end. The owner's answer to it is a BOUNDED retry under a HELD
@@ -15209,7 +15217,7 @@ exit 0
     check("declined-harness self-land: the MAIN's own door takes the pi-zai lane and the land completes — main moved, row done",
       pzLand.ok && pzLandText.includes('"running":true') && pzLanded?.status === "done"
         && spawnSync("git", ["-C", REPO2, "rev-parse", "main"]).stdout.toString().trim() !== pzMainBefore
-        && spawnSync("git", ["-C", REPO2, "log", "--oneline", "-3"]).stdout.toString().includes("selfland pi-zai work"),
+        && ((o) => o.ok && o.subjects.includes("selfland pi-zai work"))(landedAsOne(REPO2, "main")),
       JSON.stringify({ land: pzLand.status, body: pzLandText.slice(0, 240), status: pzLanded?.status ?? null }));
     for (const slot of [pzLaneSlot, pzMainSlot]) if (slot !== null) await post(`/api/slots/${slot}/kill`, {});
     await post(`/api/tasks/${pzRowId}/done`, {});

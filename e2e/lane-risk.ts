@@ -1,7 +1,8 @@
 // worktreeRisk as real file names + the lane's own unpushed commits, and 💾 lane commit
 // (quick + agent mode) as the SAVE that land/merge cannot do.
 import { spawnSync } from "node:child_process";
-import { REPO, check, get, post } from "./harness";
+import { existsSync } from "node:fs";
+import { REPO, check, get, post, restartSrv } from "./harness";
 
 export async function run(): Promise<void> {
   // --- Part A: worktreeRisk — real dirty files + unpushed commits, not just counts ---
@@ -33,6 +34,31 @@ export async function run(): Promise<void> {
   check("single-slot risk endpoint matches the worktrees-map row for the same lane",
     riskDirty.empty === false && riskDirty.dirtyFiles.some((f) => f.includes("code.txt")), JSON.stringify(riskDirty));
   check("risk endpoint rejects a non-lane slot", (await get("/api/slots/2/risk")).status === 400);
+
+  // --- Part A2: 5a515516 (b) · A git THAT FAILS IS UNKNOWN, AND UNKNOWN NEVER DELETES. The
+  // no-upstream fallback lists the lane's own commits with `git log`; when that read failed, the
+  // list was empty, `empty` was true, and the orphan door removed the worktree over commits nobody
+  // had pushed (`git worktree remove` does not look at commits). FLEET_TEST_WORKTREE_RISK_FAIL=log
+  // makes that one read answer as a failed git does. BREAKS IF: worktreeRisk stops setting
+  // `unknown` on a failed read, or removeWorktreeSafe stops refusing on it.
+  await restartSrv({ FLEET_TEST_WORKTREE_RISK_FAIL: "log" });
+  const lnUnknown = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnUnknown.cwd}/unknown-risk.txt`, "work only this branch holds\n");
+  spawnSync("git", ["-C", lnUnknown.cwd, "add", "unknown-risk.txt"]);
+  spawnSync("git", ["-C", lnUnknown.cwd, "commit", "-qm", "unknown-risk: a commit nobody pushed"]);
+  const riskUnknown = (await (await get(`/api/slots/${lnUnknown.slot}/risk`)).json()) as WtRiskRow & { unknown?: string | null };
+  check("a failed git in the risk read is UNKNOWN, never empty — the preview names what could not be measured",
+    riskUnknown.empty === false && typeof riskUnknown.unknown === "string" && riskUnknown.unknown.includes("git log"),
+    JSON.stringify(riskUnknown));
+  await post(`/api/slots/${lnUnknown.slot}/kill`, {}); // kill leaves the tree on disk: an orphan
+  const removeUnknown = await post("/api/worktrees/remove", { repo: REPO, path: lnUnknown.cwd });
+  const removeUnknownBody = await removeUnknown.text();
+  check("the orphan door refuses to remove a worktree whose risk is unknown — the tree and its commit stay",
+    removeUnknown.status === 409 && removeUnknownBody.includes("could not be measured")
+      && existsSync(`${lnUnknown.cwd}/unknown-risk.txt`),
+    `${removeUnknown.status} ${removeUnknownBody.slice(0, 200)} tree=${existsSync(lnUnknown.cwd)}`);
+  await restartSrv();
+  spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", lnUnknown.cwd]);
 
   // --- Part B2: 💾 lane commit — the SAVE that land/merge (dirty-tree refusers) can't do.
   // Commit-only (never push/land); reversible by the owner. lnDirty is dirty here (its

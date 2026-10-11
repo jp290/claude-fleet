@@ -191,6 +191,18 @@ const MAX_SENTENCE = 400;
 const MAX_LIST = 20;
 const collapse = (v: string): string => v.replace(/\s+/g, " ").trim();
 const text1 = (v: unknown): string => collapse(typeof v === "string" ? v : "").slice(0, MAX_SENTENCE);
+// 5a515516 (c) · KAPPEN HEISST ABLEHNEN. ZIEL, VERIFY and DONE were cut at MAX_SENTENCE without a
+// mark (277 cut cards, 01.-11.10., docs/messungen retrospective): the brief and reviewDiffs then read
+// a sentence nobody wrote. A field over its limit is a gap naming the field and its length — at both
+// create doors a 400 that files nothing — and nothing is cut, so every reader has the whole text.
+export const CARD_FIELD_MAX = { ziel: 160, verify: 400, done: 1200 } as const;
+const sentence = (field: keyof typeof CARD_FIELD_MAX, v: unknown, gaps: string[]): string => {
+  const t = collapse(typeof v === "string" ? v : "");
+  const n = [...t].length;
+  if (n > CARD_FIELD_MAX[field])
+    gaps.push(`${field}: ${n} characters, at most ${CARD_FIELD_MAX[field]} — a card that is too long is refused, never cut`);
+  return t;
+};
 // A list field's ENTRIES, normalized but UNCUT — the count an over-long surface list is refused
 // on. `list` keeps the cut for the fields that stay capped (verboten, after, stray header lines).
 const listRaw = (v: unknown): string[] => (Array.isArray(v) ? v : [])
@@ -279,9 +291,9 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
       gaps.push(`variante: VARIANTE: ${value} is not declared in the request`);
     else variante = value as ContextPositionVariante;
   }
-  const ziel = text1(raw.ziel);
+  const ziel = sentence("ziel", raw.ziel, gaps);
   if (!ziel) gaps.push("ziel: the extractor returned no goal sentence");
-  const done = text1(raw.done);
+  const done = sentence("done", raw.done, gaps);
   if (!done) gaps.push("done: no checkable done sentence");
   const repoCommand = ctx.foreignVerifyCommand;
   // THE REPO COMMAND VERBATIM is compared BEFORE the sentence cut: an inline FLEET_VERIFY_CMD_REPOS
@@ -294,7 +306,7 @@ export function validateCard(raw: RawCard, ctx: CardValidationContext): CardVali
   const verbatim = typeof repoCommand === "string" && !!fullVerify && fullVerify === collapse(repoCommand);
   if (repoCommand === undefined && !verbatim && previewNamed && !previewConditional)
     gaps.push("verify: preview not owed by a card — Vorschau nur wenn localProof.isolatedPreview es verlangt; eine VERIFY-Zeile erweitert die Regel nicht");
-  const rawVerify = verbatim || (repoCommand === undefined && previewNamed && previewConditional) ? fullVerify : text1(raw.verify);
+  const rawVerify = verbatim || (repoCommand === undefined && previewNamed && previewConditional) ? fullVerify : sentence("verify", raw.verify, gaps);
   const { verify, aliased } = typeof repoCommand === "string"
     ? { verify: rawVerify, aliased: false } : verifyAliased(rawVerify);
   // A foreign repo WITHOUT its own entry keeps the chain rule it had before v7 — refusing all of
@@ -842,11 +854,11 @@ export function buildCardPrompt(text: string, effortLevels: readonly string[]): 
     "",
     `Answer in ONE message with STRICT JSON, no markdown fences and nothing else, spelling "${CARD_KEY}":`,
     `{"${CARD_KEY}": {`,
-    '  "ziel": "one sentence: what changes",',
+    `  "ziel": "one sentence of at most ${CARD_FIELD_MAX.ziel} characters: what changes",`,
     `  "rolle": {"harness": "", "model": "", "effort": ""},`,
     '  "surface": {"files": ["existing paths the text names as change targets"], "symbols": ["datei#symbol references the text names"], "creates": ["paths the text names as NEW files to create"]},',
-    '  "done": "one checkable sentence: how a reader decides it is finished",',
-    '  "verify": "the command or chain step the text names as proof",',
+    `  "done": "one checkable sentence of at most ${CARD_FIELD_MAX.done} characters: how a reader decides it is finished",`,
+    `  "verify": "the command or chain step the text names as proof, at most ${CARD_FIELD_MAX.verify} characters",`,
     '  "verboten": ["constraints the text states as forbidden"],',
     '  "program": "",',
     '  "size": "klein, mittel or gross — only when the text states the lane size (e.g. KLEINE LANE)",',

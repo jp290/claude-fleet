@@ -5975,7 +5975,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && s7Sent.receipt.effort === null,
       JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
     const longDone = `${"d".repeat(887)} DONE-END-900`;
-    const longVerify = `bun e2e/pins.ts ${"v".repeat(469)} VERIFY-END-500`;
+    const longVerify = `bun e2e/pins.ts ${"v".repeat(369)} VERIFY-END-400`;
     const longBrief = [`[S7A-LONG-FIELDS]`, "FLAECHE: wave-brief.ts",
       `ZIEL: ${s7Goal}`, `DONE: ${longDone}`, `VERIFY: ${longVerify}`,
       "VERBOTEN: kein Auto-Dispatch", "", "Die lange Karte bleibt ein Auftrag."].join("\n");
@@ -5985,14 +5985,14 @@ export async function run(ctx: Ctx): Promise<void> {
     const longId = ((await longPost.json()) as { task?: { id?: string } }).task?.id ?? "";
     const longSent = longId ? await dispatchAndRead(longId, longBrief) : { prompt: "", agents: "", receipt: undefined, slot: null };
     await closeLane(longSent.slot);
-    // Restoring laneProse's old deletion drops the raw 900/500-character lines; the card fallback
-    // contains only the extractor's 400-character values, so both end markers disappear.
-    check("(s7a-live-long-fields) sent founding bytes keep DONE 900 and VERIFY 500 through their last words",
+    // Restoring laneProse's old deletion drops the raw 900/400-character lines. VERIFY sits exactly
+    // at card-extract.ts#CARD_FIELD_MAX (5a515516 (c): longer is refused at the create door, never cut).
+    check("(s7a-live-long-fields) sent founding bytes keep DONE 900 and VERIFY 400 through their last words",
       longPost.ok && longSent.prompt.includes(`DONE: ${longDone}`)
       && longSent.prompt.includes(`VERIFY: ${longVerify}`)
       && longSent.prompt.includes("VERBOTEN: kein Auto-Dispatch"),
       JSON.stringify({ post: longPost.status, doneEnd: longSent.prompt.includes("DONE-END-900"),
-        verifyEnd: longSent.prompt.includes("VERIFY-END-500") }));
+        verifyEnd: longSent.prompt.includes("VERIFY-END-400") }));
     const classBrief = ["KLASSE: hand", "GROESSE: klein", "FLAECHE: wave-brief.ts",
       "VERIFY: bun e2e/pins.ts", "DONE: das Klassen-Receipt nennt das Tripel", "",
       "ZIEL: wave-brief.ts bleibt dieselbe Arbeit."].join("\n");
@@ -9874,7 +9874,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // command, keep the gap.
     const longCommand = `cd /Users/someone/claude-fleet-demo && ${Array.from({ length: 12 }, (_, i) => `bun run step-${i} --flag-${"x".repeat(20)}`).join(" && ")}`;
     const longCtx = { ...cardCtx, foreignVerifyCommand: longCommand };
-    const longGap = (v: string) => `verify: "${v.slice(0, 400)}" does not name this repository's configured verify command or script`;
+    const longGap = (v: string) => `verify: "${v}" does not name this repository's configured verify command or script`;
     const longExact = validateCard({ ziel: "z", done: "d", verify: longCommand.replace(/ && /g, "\n  &&  ") }, longCtx);
     check("(v8) a foreign card repeating its repo's inline verify command verbatim validates even past 400 chars, and keeps the whole command",
       longCommand.length > 450 && longExact.valid && !longExact.gaps.some((g) => g.startsWith("verify"))
@@ -9883,8 +9883,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const longTail = `${longCommand} && rm -rf dist`;
     const longOther = validateCard({ ziel: "z", done: "d", verify: longTail }, longCtx);
     const shortOther = validateCard({ ziel: "z", done: "d", verify: "bun run typecheck" }, longCtx);
+    // 5a515516 (c): only the verbatim command is exempt from CARD_FIELD_MAX.verify; a longer other
+    // value carries the length gap beside the command gap, and nothing is cut.
     check("(v8) a foreign card naming a different command keeps the verify gap — also one sharing the long command's first 400 chars",
-      !longOther.valid && longOther.gaps.includes(longGap(longTail)) && longOther.body.verify.length === 400
+      !longOther.valid && longOther.gaps.includes(longGap(longTail)) && longOther.body.verify === longTail
+      && longOther.gaps.some((g) => g.startsWith(`verify: ${[...longTail].length} characters, at most 400`))
       && !shortOther.valid && shortOther.gaps.includes(longGap("bun run typecheck")),
       JSON.stringify({ tail: longOther.gaps, short: shortOther.gaps }));
     const fleetScript = validateCard({ ziel: "z", done: "d", verify: "./verify.sh" }, cardCtx);
@@ -13147,7 +13150,7 @@ export async function run(ctx: Ctx): Promise<void> {
       id: string; text: string; source: string; kind: string; status: string;
       programId?: string; repo?: string | null; releasedBy?: string; slot?: number | null;
       spawn?: { harness: string | null; model: string | null; effort: string | null };
-      card?: { valid?: boolean; rolle?: { harness: string; model: string; effort: string }; variante?: string };
+      card?: { valid?: boolean; rolle?: { harness: string; model: string; effort: string }; variante?: string; ziel?: string };
     }
     const mState = (): MState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as MState;
     const mSess = async (): Promise<MSlot[]> =>
@@ -13628,6 +13631,33 @@ export async function run(ctx: Ctx): Promise<void> {
       rcListRes.status === 400 && rcListError.includes("card rejected, nothing filed")
         && rcListError.includes("verboten: arrived as a string, not a list") && !rcListFiled,
       `${rcListRes.status}:${rcListError} filed=${rcListFiled}`);
+    // (rc4-len) 5a515516 (c) · KAPPEN HEISST ABLEHNEN: a sentence field over its limit (ZIEL 160, VERIFY 400,
+    // DONE 1200 — card-extract.ts#CARD_FIELD_MAX) is a 400 naming the field and its length at both create
+    // doors, nothing is filed, and a field AT its limit is stored whole. MUTATION: validateCard back on the
+    // silent cut (text1) files every one of these and stores a ZIEL cut to nothing shorter.
+    const lenZiel = "z".repeat(161);
+    const lenOwnerRes = await post("/api/tasks", { text: "acp23 len ziel too long", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, ziel: lenZiel } });
+    const lenOwnerError = ((await lenOwnerRes.json()) as { error?: string }).error ?? "";
+    const lenVerifyRes = await post("/api/tasks", { text: "acp23 len verify too long", queue: false,
+      programId: mMainProgram, repo: REPO, card: { ...rcCard, verify: `bun e2e/pins.ts ${"v".repeat(400)}` } });
+    const lenVerifyError = ((await lenVerifyRes.json()) as { error?: string }).error ?? "";
+    const lenMainRes = await mFile(mToken, { text: "acp23 len done too long", kind: "auftrag",
+      card: { ...rcCard, done: "d".repeat(1201) } });
+    const lenMainError = ((await lenMainRes.json()) as { error?: string }).error ?? "";
+    const lenFiled = ((await (await get("/api/tasks")).json()) as { tasks: { text?: string }[] }).tasks
+      .filter((t) => (t.text ?? "").startsWith("acp23 len") && t.text !== "acp23 len ziel at the limit").length;
+    const lenAtLimit = await rcFile({ text: "acp23 len ziel at the limit", card: { ...rcCard, ziel: "y".repeat(160) } });
+    const lenAtLimitZiel = (await mRow(lenAtLimit))?.card?.ziel ?? "";
+    // the program's filing cap counts pending rows: this probe's row must not cost (va1) and (rc2b) theirs
+    if (lenAtLimit) await post(`/api/tasks/${lenAtLimit}/delete`, {});
+    check("(rc4-len) a card field over its limit is refused 400 naming the field and its length at both create doors, nothing is filed, and a field at its limit is stored whole",
+      lenOwnerRes.status === 400 && lenOwnerError.includes("ziel: 161 characters, at most 160")
+        && lenVerifyRes.status === 400 && lenVerifyError.includes("verify: 416 characters, at most 400")
+        && lenMainRes.status === 400 && lenMainError.includes("done: 1201 characters, at most 1200")
+        && lenFiled === 0 && !!lenAtLimit && lenAtLimitZiel.length === 160,
+      JSON.stringify({ owner: [lenOwnerRes.status, lenOwnerError.slice(0, 160)], verify: [lenVerifyRes.status, lenVerifyError.slice(0, 160)],
+        main: [lenMainRes.status, lenMainError.slice(0, 160)], filed: lenFiled, atLimit: lenAtLimitZiel.length }));
     // (va) VARIANTE AT BOTH CREATE DOORS (card 66936847). The author card's `variante` is checked by
     // validateCard against context-packs.ts#CONTEXT_POSITION_VARIANTEN like the header is: live-bau
     // files and the stored card carries it; any other value is a 400 naming the gap at the owner door

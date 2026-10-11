@@ -316,6 +316,56 @@ export async function run(): Promise<void> {
       fin.status === "merged" && fin.landed === true, JSON.stringify(fin));
   }
 
+  // === B2 — 5a515516 (a): a merge-path read that FAILS is an error, never a silent land ========
+  // `git rev-parse` on an unreadable ref exits 128 and echoes the ref, and mergeJob used `.out` as a
+  // sha at sixteen sites. The reads fail only on a broken repository, which no suite produces on
+  // cue between a fast-forward and its record, so FLEET_TEST_MERGE_REVPARSE_FAIL names ONE site
+  // that answers exactly as git would. BREAKS IF: server.ts#mergeRevParse stops testing the exit
+  // code and the shape — "main" then reaches recordLand as mainAfter and the verdict is a land.
+  await restartSrv({ FLEET_TEST_MERGE_REVPARSE_FAIL: "after-ff" });
+  await setMergeMode("blocked"); // a CLEAN lane: the auto-land path, as in B
+  const lr = await openLane();
+  check("(setup B2) lane for the failed read after the fast-forward opened", !!lr, JSON.stringify(lr));
+  if (lr) {
+    await Bun.write(`${lr.cwd}/revparse-after.txt`, "work whose land the server cannot read back\n");
+    const cR = commitAll(lr.cwd, "lane B2 work");
+    const mainBeforeR = g(REPO, "rev-parse", MAIN).out;
+    await settleForMerge(lr.slot);
+    const startedR = (await (await post(`/api/slots/${lr.slot}/merge`, {})).json()) as { running?: boolean };
+    const doneR = startedR.running === true ? await waitMerge(lr.slot, { requireVerdict: true }) : { gone: false, last: null };
+    const mainAfterR = g(REPO, "rev-parse", MAIN).out;
+    const pendingR = await readLandPending();
+    check("a failed rev-parse AFTER the fast-forward is an error that says main moved and the land is unrecorded — never landed:true",
+      cR.code === 0 && startedR.running === true && doneR.last?.status === "error" && doneR.last.landed === false
+        && doneR.last.detail.includes("git rev-parse") && doneR.last.detail.includes("the land is NOT recorded")
+        && mainAfterR !== mainBeforeR && Object.keys(pendingR).length === 1,
+      JSON.stringify({ commit: cR.code, started: startedR, last: doneR.last, moved: mainAfterR !== mainBeforeR,
+        pending: Object.keys(pendingR) }));
+    await restartSrv(); // the knob is gone, and the boot's land recovery finds the standing intent
+    const noteR = g(REPO, "notes", "--ref=fleet/land", "show", mainAfterR);
+    check("…and the intent it left standing is what the boot's land recovery records the land from",
+      noteR.code === 0 && noteR.out.includes(lr.branch) && Object.keys(await readLandPending()).length === 0,
+      `${noteR.code} ${noteR.out.slice(0, 160)}`);
+    await post(`/api/slots/${lr.slot}/kill`, {});
+  }
+  // …and a read that fails BEFORE main moves is the same error with nothing moved and no intent left
+  await restartSrv({ FLEET_TEST_MERGE_REVPARSE_FAIL: "rebased-main" });
+  const lp = await openLane();
+  if (lp) {
+    await Bun.write(`${lp.cwd}/revparse-before.txt`, "work that never lands on an unread main\n");
+    commitAll(lp.cwd, "lane B2 pre-ff work");
+    const mainBeforeP = g(REPO, "rev-parse", MAIN).out;
+    await settleForMerge(lp.slot);
+    const startedP = (await (await post(`/api/slots/${lp.slot}/merge`, {})).json()) as { running?: boolean };
+    const doneP = startedP.running === true ? await waitMerge(lp.slot, { requireVerdict: true }) : { gone: false, last: null };
+    check("a failed rev-parse BEFORE the fast-forward is an error with main unmoved and no land intent",
+      doneP.last?.status === "error" && doneP.last.landed === false && doneP.last.detail.includes("git rev-parse")
+        && g(REPO, "rev-parse", MAIN).out === mainBeforeP && Object.keys(await readLandPending()).length === 0,
+      JSON.stringify({ started: startedP, last: doneP.last }));
+    await post(`/api/slots/${lp.slot}/kill`, {});
+  } else check("(setup B2) lane for the failed read before the fast-forward opened", false, "no lane");
+  await restartSrv();
+
   // === C — the recovery must not INVENT a record ========================================
   // Two markers planted by hand into the quiescent state file, because both are states the
   // recovery has to tell apart from a real interrupted land and neither can be produced on

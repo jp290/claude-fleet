@@ -221,7 +221,7 @@ export interface ReviewFinding { title: string; file: string; line: number | nul
   impact: "high" | "medium" | "low"; cost: string; basis: "verified" | "inferred"; detail: string }
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
 export interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
-  shortstat: string | null; empty: boolean }
+  shortstat: string | null; empty: boolean; unknown?: string | null }
 export interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null;
   notepad?: string | null; review?: ReviewCandidateInfo | null }
 // server.ts#ReviewCandidateView — a lane parked for later owner review, with its identity
@@ -292,6 +292,8 @@ export function showRiskPreview(title: string, risk: WtRisk, confirmLabel: strin
   if (risk.empty) {
     body.push(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
   } else {
+    // server.ts#worktreeRisk · a read that failed: not safe, not a list — the server refuses on it too
+    if (risk.unknown) body.push(el("div", "riskhead", `could not verify (${risk.unknown}) — check manually before proceeding`));
     if (risk.dirtyFiles.length) {
       body.push(el("div", "riskhead",
         `${risk.dirtyFiles.length} uncommitted file${risk.dirtyFiles.length === 1 ? "" : "s"}`));

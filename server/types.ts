@@ -1871,6 +1871,11 @@ interface LaneRef {
   // verify fact gathered before the park describes that parked state, not this occupation, and no
   // reader may count it as current. Absent on every other lane, whose record stays byte-identical.
   resumedFrom?: LaneResume;
+  // When a land with `keep` last kept this lane (landLane). Present from the first keep-land on;
+  // the record goes with the worktree, so a land without keep and a kill (`s.worktree = null`) are
+  // what end it. The auto-close refuses any lane carrying it: whatever the lane reports after a
+  // keep-land, only its MAIN's next land or a kill decides that it is finished.
+  keptAt?: number;
 }
 // THE REVIEW CANDIDATE: a finished lane parked for a LATER owner review (task 260924000549-f855,
 // docs/messungen/2026-09-23-worktree-lebenszyklus.md §3, corrected there from a slot-holding halt to

@@ -6188,7 +6188,7 @@ export default function (pi) {
   const mergeRecord = server.indexOf("await recordLand(root, main, branch, mainBefore, mainAfter,", mergeAdv);
   pin(`${RULE_LAND} — W5d: the hub arbitrates BEFORE the local fast-forward, and its two refusals are told apart`,
     mergeArb > 0 && mergeAdv > mergeArb && mergeRecord > mergeAdv
-      && server.indexOf("const laneTip = (await git(root, \"rev-parse\", branch)).out;", mergeArb - 400) > 0
+      && server.indexOf("const laneTip = await mergeRevParseOrNull(root, branch, \"push-tip\");", mergeArb - 900) > 0
       && server.includes('errorReason: "hub-unreachable"')
       && server.includes("const caught = await catchUpMainToHub(root, main);")
       && server.includes('errorReason: "hub-lost"')
@@ -6199,6 +6199,15 @@ export default function (pi) {
       && (server.match(/await pushLandToHub\(/g) ?? []).length === 2,
     JSON.stringify({ arb: mergeArb, advance: mergeAdv, record: mergeRecord,
       pushCallSites: (server.match(/await pushLandToHub\(/g) ?? []).length }));
+  // 5a515516 (a) · EVERY rev-parse IN mergeJob CHECKS ITS EXIT CODE: a failed one echoes the ref and
+  // exits 128, and `.out` read as a sha recorded a land at no commit. Behaviour: e2e/land-durability.ts B2.
+  const mergeJobBody = server.slice(server.indexOf("async function mergeJob("),
+    server.indexOf("\n}\n", server.indexOf("async function mergeJob(")));
+  const rawRevParse = mergeJobBody.match(/\(await git\([^)]*"rev-parse"[^)]*\)\)\.out/g) ?? [];
+  pin(`${RULE_LAND} — mergeJob reads no rev-parse through a bare .out (mergeRevParse checks the exit code and the sha)`,
+    mergeJobBody.length > 1000 && rawRevParse.length === 0
+      && /const mainAfter = await mergeRevParseOrNull\(root, main, "after-ff"\);\n\s+if \(mainAfter === null\)\n\s+throw new Error/.test(mergeJobBody),
+    JSON.stringify({ body: mergeJobBody.length, raw: rawRevParse }));
   // …and once the hub has SAID YES, a local advance that fails is a repair case and never a race
   // (9e587653): the `hub-only` stop sits inside the failed-advance arm and AHEAD of the retry, so no
   // second round can push a new tip onto a hub that already holds this one.
@@ -6427,7 +6436,7 @@ export default function (pi) {
       // and the premise itself: main MOVING is what a retry answers. A fast-forward refused over a
       // dirty main checkout leaves main where it was, and re-gating the same tree twice for that
       // would hold this machine's one mutex through two full chains to reach the same verdict.
-      && server.includes('const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;')
+      && server.includes("const mainMoved = mainNow !== null && mainNow !== mainBefore;")
       && read("e2e/programs.ts").includes('FLEET_LAND_FF_RETRY_ROUNDS: "0"'),
     `retry=${ffRetry} rebase=${ffReRebase} verify=${ffReVerify} stop=${ffReStop} mint=${ffMint}`);
   // --- M3 · AND THE OTHER REASON IS AN ORDERING, WHICH NO COMPILER CAN SEE ---------------------

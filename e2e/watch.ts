@@ -4980,8 +4980,9 @@ export async function run(): Promise<void> {
     const outsideLineageLane = await d2NewLane();
     const clarifyLane = await d2NewLane();
     const lockedLane = await d2NewLane(); // its tree refuses removal (locked) — the close must obey
+    const keptLane = await d2NewLane(); // a keep-land kept it; its accepted report after that is no finish
     const d2Lanes = [acceptedLane, rejectedLane, dirtyLane, aheadLane, rejectedAheadLane,
-      undecidedLane, reportlessLane, outsideLineageLane, clarifyLane, lockedLane];
+      undecidedLane, reportlessLane, outsideLineageLane, clarifyLane, lockedLane, keptLane];
     const d2Refusers = [dirtyLane, aheadLane, rejectedAheadLane, undecidedLane, reportlessLane,
       outsideLineageLane];
     // the deterministic stand-in for the race the refusal guard exists for: the served cache says
@@ -4989,16 +4990,16 @@ export async function run(): Promise<void> {
     // exactly the shape a removal-refusal reaches the tick in. Lock is read by remove only; every
     // git read the predicate and the outcome recorder make works unchanged on a locked tree.
     const d2Lock = lockedLane.cwd ? spawnSync("git", ["-C", REPO, "worktree", "lock", lockedLane.cwd]) : null;
-    const d2Setup = precondition("D2 setup: one MAIN and ten distinct lanes with their own credentials, a locked tree, a proposed criterion, the planted verdicts, the spent shape and a stated FLEET_LANE_AUTOCLOSE=0");
+    const d2Setup = precondition("D2 setup: one MAIN and eleven distinct lanes with their own credentials, a locked tree, a proposed criterion, the planted verdicts, the spent shape and a stated FLEET_LANE_AUTOCLOSE=0");
     d2Setup.need(!!d2MainOpen?.ok && d2Lanes.every((l) => typeof l.slot === "number" && !!l.cwd && !!l.branch)
-        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 11 && d2Lock?.status === 0,
-      "one MAIN occupant and ten distinct lanes exist, and the locked lane's tree is locked against removal",
+        && new Set([d2Main, ...d2Lanes.map((l) => l.slot)]).size === 12 && d2Lock?.status === 0,
+      "one MAIN occupant and eleven distinct lanes exist, and the locked lane's tree is locked against removal",
       JSON.stringify({ d2Main, lanes: d2Lanes.map((l) => l.slot), locked: d2Lock?.status ?? "no cwd" }));
     const d2MainTok = await paneEnv(`s${d2Main}`, "FLEET_SELF_TOKEN") ?? "";
     const d2Tok = new Map<number, string>();
     for (const l of d2Lanes) d2Tok.set(l.slot, await paneEnv(`s${l.slot}`, "FLEET_SELF_TOKEN") ?? "");
     d2Setup.need(/^[0-9a-f]{32}$/.test(d2MainTok) && [...d2Tok.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
-        && new Set([d2MainTok, ...d2Tok.values()]).size === 11,
+        && new Set([d2MainTok, ...d2Tok.values()]).size === 12,
       "every participant carries its own exact scoped credential",
       `lengths=${[d2MainTok, ...d2Tok.values()].map((t) => t.length).join("/")}`);
 
@@ -5038,6 +5039,11 @@ export async function run(): Promise<void> {
       d2Plant.slots[String(l.slot)].taskId = d2TaskId(l.slot);
     }
     d2Plant.slots[String(clarifyLane.slot)].taskId = d2ClarifyTaskId;
+    // the mark a keep-land leaves (landLane's keep branch, proven on a real land in e2e/merge.ts
+    // "kept land: a keep-land marks the lane kept"), planted here so the lane differs from the
+    // accepted lane that closes in exactly this one fact
+    const keptWorktree = d2Plant.slots[String(keptLane.slot)]?.worktree as Record<string, unknown> | undefined;
+    if (keptWorktree) keptWorktree.keptAt = Date.now() - 1000;
     d2Plant.tasks = (d2Plant.tasks ?? []).map((t) => t.id === d2ClarifyTaskId
       ? { ...t, status: "sent", slot: clarifyLane.slot } : t);
     writeFileSync(d2Path, JSON.stringify(d2Plant, null, 2), { mode: 0o600 });
@@ -5059,7 +5065,7 @@ export async function run(): Promise<void> {
     const d2Decide: [{ slot: number }, "accept" | "reject"][] = [
       [acceptedLane, "accept"], [rejectedLane, "reject"], [dirtyLane, "accept"],
       [aheadLane, "accept"], [rejectedAheadLane, "reject"], [clarifyLane, "accept"],
-      [lockedLane, "accept"],
+      [lockedLane, "accept"], [keptLane, "accept"],
     ];
     // the clarify lane's criterion, proposed by the lane itself BEFORE its report is judged — the
     // measured order of task b28b9d89 (criterion filed, needs-main report accepted, then closed).
@@ -5110,7 +5116,7 @@ export async function run(): Promise<void> {
         && d2CriterionBefore?.proposedAt === d2ProposedBody.proposedAt && d2CriterionBefore?.confirmedAt === null,
       "the clarify lane proposed its criterion through its own door, and it is served unconfirmed",
       JSON.stringify({ status: d2Proposed.status, body: d2ProposedBody, task: d2ClarifyTaskId, criterion: d2CriterionBefore }));
-    d2Setup.need(d2Verdicts.length === 7
+    d2Setup.need(d2Verdicts.length === 8
         && d2Report.get(acceptedLane.slot)?.decision?.disposition === "accepted"
         && d2Report.get(rejectedLane.slot)?.decision?.disposition === "rejected"
         && d2Report.get(rejectedAheadLane.slot)?.decision?.disposition === "rejected"
@@ -5118,7 +5124,7 @@ export async function run(): Promise<void> {
         && decisionOccupant(d2Report.get(outsideLineageLane.slot)?.decision)?.slot === acceptedLane.slot
         && (undecidedRow?.decision ?? null) === null
         && (await selfFleetReports(d2Tok.get(reportlessLane.slot) ?? "")).reports.length === 0,
-      "seven reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
+      "eight reports carry a verdict by the exact lineage holder, one names a non-holder, one is undecided, and one lane filed nothing",
       JSON.stringify({ decided: d2Verdicts, undecided: undecidedRow?.id ?? null,
         dispositions: [...d2Report.entries()].map(([s, r]) => [s, r.decision?.disposition ?? null]) }));
 
@@ -5163,6 +5169,7 @@ export async function run(): Promise<void> {
       { slot: outsideLineageLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: clarifyLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
       { slot: lockedLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
+      { slot: keptLane.slot, want: "spent (stalled + dirty=0)", holds: d2Spent },
     ];
     const d2Unmet = (snap: D2Sv[]): string[] => d2Want
       .filter((w) => !w.holds(snap.find((x) => x.id === w.slot)))
@@ -5323,6 +5330,16 @@ export async function run(): Promise<void> {
         && clarifyCriterionArmed !== null && clarifyCriterionArmed.confirmedAt === null,
       JSON.stringify({ open: clarifyOpenArmed, rows: clarifyRowsArmed.length, decision: d2Report.get(clarifyLane.slot)?.decision?.disposition ?? null,
         criterion: clarifyCriterionArmed }));
+    // 5a515516 (d) · BREAKS IF: the keptAt clause in server.ts#laneAutoCloseRefusal is removed, or the
+    // boot restore drops keptAt — this lane then matches the accepted lane that closed above in every
+    // fact, its one report accepted and consumed by no land (the shape of slot 21, 725b5caa).
+    const keptOpenArmed = ((await liveSlots()).find((x) => x.id === keptLane.slot)?.cwd ?? null) !== null;
+    const keptRowsArmed = await outcomesOf(keptLane.branch);
+    check("D2 refusal: a lane a keep-land kept is never closed, however accepted the report it filed after that land",
+      keptOpenArmed && keptRowsArmed.length === 0 && !!keptWorktree
+        && d2Report.get(keptLane.slot)?.decision?.disposition === "accepted",
+      JSON.stringify({ open: keptOpenArmed, rows: keptRowsArmed.length, planted: !!keptWorktree,
+        decision: d2Report.get(keptLane.slot)?.decision?.disposition ?? null }));
 
     // --- (a2) EVERY REFUSAL, UNDER ITS OWN NAME, ON THE ROUTE THE PRINCIPALS ALREADY POLL. Until
     // 2026-09-17 the tick computed each of these sentences and dropped it at its `continue`: the
@@ -5346,6 +5363,7 @@ export async function run(): Promise<void> {
         "a report's verdict does not name a MAIN this Program's lineage records as holding authority at decision time"],
       ["unconfirmed criterion", clarifyLane.slot,
         "the lane's proposed criterion is unconfirmed — the owner has not confirmed it"],
+      ["kept by a land", keptLane.slot, "a land kept this lane — only its MAIN's next land or a kill ends it"],
     ];
     const d2Armed = await d2Poll();
     const d2Wrong = d2Named.filter(([, slot, want]) =>
@@ -5450,6 +5468,7 @@ export async function run(): Promise<void> {
 
     for (const l of d2Refusers) await post(`/api/slots/${l.slot}/kill`, {});
     if (!clarifyClosed) await post(`/api/slots/${clarifyLane.slot}/kill`, {});
+    await post(`/api/slots/${keptLane.slot}/kill`, {});
     if (d2Main) await post(`/api/slots/${d2Main}/kill`, {});
     // the locked tree outlived its close by design; leave no lock and no orphan behind for the
     // modules after this one — unlock first, or the remove would refuse exactly as the tick did.

@@ -8689,9 +8689,18 @@ async function workplaces(): Promise<Workplaces> {
 // that needs to show it BEFORE the click (risk preview panels) and the
 // one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
 // AND nothing unpushed — the destructive click becomes a no-op cleanup, not a judgment call.
-interface WorktreeRisk { dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean }
+// 5a515516 (b) · `unknown` names the read that FAILED: a failed `git status` or `git log` used to
+// leave its list empty, and an empty pair read as `empty` — provably safe to drop — over work
+// nobody had measured. Unknown is never empty, and removeWorktreeSafe refuses on it.
+interface WorktreeRisk { dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean;
+  unknown: string | null }
+// TEST-ONLY, absent in production: `log` makes the no-upstream fallback's `git log` answer as a
+// failed git does. It fails on its own only in a broken repository, which no suite builds on cue.
+const WORKTREE_RISK_FAIL = process.env.FLEET_TEST_WORKTREE_RISK_FAIL ?? null;
 async function worktreeRisk(repo: string, path: string, preservedBy?: string): Promise<WorktreeRisk> {
+  const failed: string[] = [];
   const st = await statusLines(path); // column-preserving — see statusLines
+  if (st.code !== 0) failed.push("git status");
   const dirtyFiles = st.code === 0 ? st.lines.slice(0, 200) : [];
   let unpushedCommits: CommitRow[] = [];
   // "safe to drop" = the commits are preserved somewhere: pushed to a push/upstream ref,
@@ -8719,10 +8728,14 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
     if (!onRemote.out.trim() && !merged) {
       // scope to the lane's OWN commits (HEAD not in the integration branch's base),
       // else a no-upstream lane over-reports all of main's history as "unpushed"
-      const baseSha = (await git(repo, "rev-parse", intRef)).out;
-      const lg = baseSha
+      const base = await git(repo, "rev-parse", intRef);
+      if (base.code !== 0 || !/^[0-9a-f]{40,64}$/.test(base.out)) failed.push(`git rev-parse ${intRef}`);
+      const baseSha = base.code === 0 ? base.out : "";
+      const lg = WORKTREE_RISK_FAIL === "log" ? { code: 128, out: "", err: "injected by FLEET_TEST_WORKTREE_RISK_FAIL" }
+        : baseSha
         ? await git(path, "log", "--no-color", `${baseSha}..HEAD`, "--format=%h%x09%ct%x09%s")
         : await git(path, "log", "--no-color", "--format=%h%x09%ct%x09%s");
+      if (lg.code !== 0) failed.push("git log");
       unpushedCommits = parseCommitLog(lg.out);
     }
   }
@@ -8730,7 +8743,8 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
   return {
     dirtyFiles, unpushedCommits,
     shortstat: sh.code === 0 && sh.out ? sh.out : null,
-    empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
+    empty: failed.length === 0 && dirtyFiles.length === 0 && unpushedCommits.length === 0,
+    unknown: failed.length ? `${failed.join(", ")} failed` : null,
   };
 }
 
@@ -8802,6 +8816,7 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
   const sync = form === "clone" ? await syncLaneRefs({ repo, branch, form }, path) : null;
   if (sync) return { error: `${sync.error} — lane kept, its state could not be verified`, code: 409 };
   const risk = await worktreeRisk(repo, path, preservedBy);
+  if (risk.unknown) return { error: `the worktree's risk could not be measured (${risk.unknown}) — lane kept`, code: 409 };
   if (risk.dirtyFiles.length) return { error: `worktree has uncommitted changes:\n${risk.dirtyFiles.join("\n").slice(0, 400)}`, code: 409 };
   if (risk.unpushedCommits.length)
     return { error: `unpushed commits:\n${risk.unpushedCommits.map((c) => `${c.hash} ${c.subject}`).join("\n").slice(0, 400)}`, code: 409 };
@@ -9078,6 +9093,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
     // the lane's fork is now the main this land made: a later land, outcome row or teardown that
     // read the first fork would count this land's commits a second time
     if (facts.mainAfter && s.cwd === path && s.worktree?.branch === branch) s.worktree.baseSha = facts.mainAfter;
+    if (s.cwd === path && s.worktree?.branch === branch) s.worktree.keptAt = Date.now();
     saveState();
     void tickGit().catch(() => {});
     return { kept: path, branch };
@@ -25275,6 +25291,12 @@ function laneAutoCloseRefusal(s: Slot, now: number): string | null {
   // path types nothing anywhere.
   if (!autosOn) return "automation is paused (autosOn is off)";
   if (!s.cwd || !s.worktree) return "not a fleet-created worktree lane";
+  // A KEPT LANE IS NEVER CLOSED HERE, whatever it filed since. The report clause below (bc9d0a79)
+  // held only while every report was consumed by a keep-land; one accepted report without a land
+  // after it, and the lane read as finished — measured: slot 21, task 725b5caa, keep-land d281c40c,
+  // report c07c58b5 accepted, closed killed-empty by the tick. The mark is the land's, not a report's.
+  if (s.worktree.keptAt !== undefined)
+    return "a land kept this lane — only its MAIN's next land or a kill ends it";
   if (s.label === STEWARD_LABEL) return "the planning pane is a standing role, not a spent lane";
   if (slotTeardownInflight.has(s.id) || restarting.has(s.id))
     return "a teardown or restart already holds this slot";
@@ -28529,6 +28551,25 @@ const VERIFY_SERVER_DOWN_MARK = /^\S+: server did not come up \(phase: /m;
 // by timing from the outside — and an unproven fix for it would be worth nothing, so the hole
 // gets a handle. Nothing but the sleep changes; the land path is byte-identical when unset.
 const LAND_PAUSE_MS = Math.max(0, Number(process.env.FLEET_TEST_LAND_PAUSE_MS ?? 0) | 0);
+// TEST-ONLY, absent in production: names ONE merge-path read (its `site`) that answers as a failed
+// `git rev-parse` does — exit 128 with the ref echoed on stdout. The reads fail only on a broken
+// repository, which no suite can produce on cue between a fast-forward and its record.
+const MERGE_REVPARSE_FAIL = process.env.FLEET_TEST_MERGE_REVPARSE_FAIL ?? null;
+// 5a515516 (a) · A MERGE-PATH READ CHECKS ITS EXIT CODE. A failed `git rev-parse` exits 128 and
+// echoes the ref (or prints nothing), and mergeJob used `.out` as a sha: "main" handed to
+// recordLand as mainAfter records a land at no commit, and "" !== mainBefore reads as "main moved".
+// `null` is the failed read; the throwing form names the ref and the site for mergeJob's catch,
+// which turns it into status "error".
+async function mergeRevParseOrNull(dir: string, ref: string, site: string): Promise<string | null> {
+  const r = MERGE_REVPARSE_FAIL === site ? { code: 128, out: ref, err: "injected by FLEET_TEST_MERGE_REVPARSE_FAIL" }
+    : await git(dir, "rev-parse", ref);
+  return r.code === 0 && /^[0-9a-f]{40,64}$/.test(r.out) ? r.out : null;
+}
+async function mergeRevParse(dir: string, ref: string, site: string): Promise<string> {
+  const sha = await mergeRevParseOrNull(dir, ref, site);
+  if (sha === null) throw new Error(`git rev-parse ${ref} failed (${site}) — the merge cannot name the commit it is acting on`);
+  return sha;
+}
 // TEST-ONLY and absent in every real deployment. The Game-Maker restart suite needs to stop at
 // one otherwise unobservable await boundary: after an orphan pane is gone, but before openSlot
 // revalidates the durable founding marker and publishes a new occupant. The armed/reached/release
@@ -39212,13 +39253,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     const reviewable = r.status === "resolved" || r.status === "awaiting-author"
       || (r.status === "interrupted" && (r.conflicted?.length ?? 0) > 0);
     if (!reviewable) return r;
-    const mainSha = candidateMainSha ?? (await git(root, "rev-parse", main)).out;
-    const tip = await git(cwd, "rev-parse", "HEAD");
-    if (!/^[0-9a-f]{40,64}$/.test(mainSha) || tip.code !== 0 || !/^[0-9a-f]{40,64}$/.test(tip.out)) return r;
-    const diff = await git(cwd, "diff", "--binary", `${mainSha}...${tip.out}`, "--");
+    const mainSha = candidateMainSha ?? await mergeRevParseOrNull(root, main, "verdict-main");
+    const tip = await mergeRevParseOrNull(cwd, "HEAD", "verdict-tip");
+    if (mainSha === null || !/^[0-9a-f]{40,64}$/.test(mainSha) || tip === null) return r;
+    const diff = await git(cwd, "diff", "--binary", `${mainSha}...${tip}`, "--");
     if (diff.code !== 0) return r;
     const diffHash = await patchIdOf(cwd, diff.out, "");
-    return diffHash ? { ...r, mainSha, candidateSha: tip.out, diffHash } : r;
+    return diffHash ? { ...r, mainSha, candidateSha: tip, diffHash } : r;
   };
   // the verdict write, extracted so the ② author path can leave early without duplicating it: a
   // slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared by openSlot,
@@ -39347,7 +39388,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     //     TWO GIT READS AND NO VERDICT: this only decides whether to QUEUE. The authoritative
     //     `dirtyStop` below is still the only site a `dirty-main` verdict is written from, and
     //     still the SECOND look — after the wait, which is the window M3 built it for.
-    const mainAtEntry = (await git(root, "rev-parse", main)).out;
+    const mainAtEntry = await mergeRevParse(root, main, "entry-main");
     const entryPlan = await verifyPlanFor(cwd, root, mainAtEntry);
     const entryDirty = entryPlan ? await dirtyMainStop(root, main, mainAtEntry, branch, {}) : null;
     gateInherited = inheritedSuiteHolder();
@@ -39551,7 +39592,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // land or verdict write, on BOTH paths. `undefined` when no FLEET_VERIFY_CMD is set:
         // field stays absent and today's behavior is unchanged. mainSha === the main just
         // rebased onto, reused below as mainBefore for the clean-path land.
-        const mainSha = (await git(root, "rev-parse", main)).out;
+        const mainSha = await mergeRevParse(root, main, "rebased-main");
         candidateMainSha = mainSha;
         const cleanPath = pre.clean && unreviewed.length === 0;
         // --- M3 · THE VORFLUGPRUEFUNG, BEFORE ANYTHING IS SPENT (owner 2026-09-06) ------------
@@ -39651,7 +39692,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         const gateHoldBy = gateInherited ?? gateHoldPid;
         const gateChildHold = gateProportional ? null : gateHoldBy;
         macWhyOf(firstVerifyPlan);
-        if (squashOn || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+        if (squashOn || switches.keep) gatedTip = await mergeRevParse(cwd, "HEAD", "gated-tip");
         // the helper route's gate is runLandGate, which runs the local half here and hands the
         // suites to the helper; every other land runs its chain here, exactly as before
         let verify = dirtyStop ? undefined : gateDenied
@@ -39834,7 +39875,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}),
                 ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}),
                 ...(squashNote ? { squash: squashNote } : {}), ...(squashOff ? { squashOff } : {}) };
-              await markLandIntent(root, main, branch, mainBefore, squashPlan?.sha ?? (await git(root, "rev-parse", branch)).out, prov);
+              await markLandIntent(root, main, branch, mainBefore, squashPlan?.sha ?? await mergeRevParse(root, branch, "intent-tip"), prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
               // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------
               // Minutes of gate stand between the preflight and this line, and the main checkout
@@ -39865,12 +39906,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 }
                 squashed = squashPlan.squash;
               } else if ((squashOn || switches.keep) && gatedTip) {
-                const tipNow = (await git(root, "rev-parse", branch)).out;
+                const tipNow = await mergeRevParseOrNull(root, branch, "tip-now");
                 if (tipNow !== gatedTip) {
                   clearLandIntent(root);
                   res = { status: "error", landed: false, branch, at: Date.now(), verify,
                     errorReason: "lane-moved", ...(ffRounds ? { ffRounds } : {}),
-                    detail: `the lane committed after its gate: ${branch} is at ${tipNow.slice(0, 8) || "an unreadable commit"}, not the gated ${gatedTip.slice(0, 8)} — nothing was landed, lane kept; land again to gate its new tip`.slice(0, 600) };
+                    detail: `the lane committed after its gate: ${branch} is at ${tipNow?.slice(0, 8) ?? "an unreadable commit"}, not the gated ${gatedTip.slice(0, 8)} — nothing was landed, lane kept; land again to gate its new tip`.slice(0, 600) };
                   break;
                 }
               }
@@ -39889,9 +39930,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // NO HUB CONFIGURED = null = every line below behaves exactly as it did before W5d,
               // which is what keeps a single-host fleet byte-for-byte unchanged. A repo with no
               // remote under that name is the same null (5857e934, `hubRemoteMissing`).
-              const laneTip = (await git(root, "rev-parse", branch)).out;
-              const mainAtPush = await git(root, "rev-parse", main);
-              if (mainAtPush.code !== 0 || !/^[0-9a-f]{40,64}$/.test(mainAtPush.out)) throw new Error(`cannot read ${main} before hub push`);
+              const laneTip = await mergeRevParseOrNull(root, branch, "push-tip");
+              const mainAtPushSha = await mergeRevParseOrNull(root, main, "push-main");
+              if (laneTip === null || mainAtPushSha === null) {
+                clearLandIntent(root); // main never moved — the declaration is void, not pending
+                throw new Error(`cannot read ${laneTip === null ? branch : main} before the hub push (git rev-parse failed) — nothing was landed`);
+              }
+              const mainAtPush = { out: mainAtPushSha };
               const arb = await (async () => {
                 if (mainAtPush.out !== mainBefore) return null;
                 const arb = await pushLandToHub(root, main, laneTip);
@@ -39931,7 +39976,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // the hub has already said no to. That is precisely the state this whole cut
                 // exists to make impossible, so it stops here instead, naming what it measured
                 // rather than the race it assumed.
-                const afterCatch = (await git(root, "rev-parse", main)).out;
+                const afterCatch = await mergeRevParseOrNull(root, main, "after-catch");
+                if (afterCatch === null) {
+                  clearLandIntent(root);
+                  throw new Error(`the hub (${arb.remote}) refused this land and ${main} could not be read after the catch-up (git rev-parse failed) — nothing was landed`);
+                }
                 if (afterCatch === mainBefore) {
                   clearLandIntent(root);
                   res = { status: "error", landed: false, branch, at: Date.now(), verify,
@@ -39961,7 +40010,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // NAMING, NOT REPAIRING: resolving it means moving or discarding somebody's commit —
                 // the direct one here or the land on the hub — and that is not this server's call.
                 if (arb?.ok) {
-                  const localNow = (await git(root, "rev-parse", main)).out;
+                  const localNow = await mergeRevParseOrNull(root, main, "hub-only-main") ?? "an unreadable commit";
                   const split = localNow === mainBefore
                     ? `${main} here did not move (${adv.error.slice(0, 160)}) and is now BEHIND the hub`
                     : `${main} here moved to ${localNow} under this land, so the hub and this host have DIVERGED`;
@@ -39983,8 +40032,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // machine-wide mutex through both, and end at exactly this verdict anyway. Main
                 // moving is the whole premise of the retry, so it is checked rather than assumed;
                 // an unreadable sha counts as "did not move" (no absence is evidence here either).
-                const mainNow = (await git(root, "rev-parse", main)).out;
-                const mainMoved = /^[0-9a-f]{40,64}$/.test(mainNow) && mainNow !== mainBefore;
+                const mainNow = await mergeRevParseOrNull(root, main, "main-now");
+                const mainMoved = mainNow !== null && mainNow !== mainBefore;
                 if (mainMoved && ffRounds < LAND_FF_RETRY_ROUNDS && !ffHeld && !ffLockDenied) {
                   ffHeld = await holdSuiteLock(VERIFY_WAIT_MS, holdOwner);
                   if (ffHeld) gateHoldPid = process.pid; // ours now, and the finally below owns it
@@ -40009,11 +40058,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                     throw new Error(`the retry rebase left the lane ${rst.out ? "not clean" : `not rebased onto ${main}`} — nothing was landed`);
                   // THE TREE IS NEW, SO THE GATE RUNS AGAIN. `true`: this gate inherits the mutex we
                   // are holding instead of queueing for it (runVerify → FLEET_SUITE_LOCK_HELD_BY).
-                  landMain = (await git(root, "rev-parse", main)).out;
+                  landMain = await mergeRevParse(root, main, "retry-main");
                   candidateMainSha = landMain; // a reviewable verdict from here on describes THIS main
                   const retryPlan = await verifyPlanFor(cwd, root, landMain);
                   macWhyOf(retryPlan);
-                  if (squashOn || switches.keep) gatedTip = (await git(cwd, "rev-parse", "HEAD")).out;
+                  if (squashOn || switches.keep) gatedTip = await mergeRevParse(cwd, "HEAD", "retry-gated-tip");
                   if (landByHelper && retryPlan) verify = await gateRun(() => runLandGate(landCtx, landMain, retryPlan, 0));
                   else verify = await gateRun(() => runVerify(cwd, landMain, retryPlan, gateInherited ?? gateHoldPid));
                   // a retry may NEVER turn a non-green gate into a land by rolling it again: the
@@ -40049,7 +40098,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                       detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept${ffNote}`.slice(0, 600) };
                 break;
               } else {
-                const mainAfter = (await git(root, "rev-parse", main)).out;
+                const mainAfter = await mergeRevParseOrNull(root, main, "after-ff");
+                if (mainAfter === null)
+                  throw new Error(`${main} was fast-forwarded, but reading it back failed (git rev-parse) — the land is NOT recorded; its intent stays on disk and the next boot's land recovery records it`);
                 if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
                 // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
                 // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
@@ -44669,7 +44720,10 @@ if (existsSync(STATE_FILE)) {
             // directory, and syncLaneRefs stops mirroring its refs.
             ...(form === "clone" ? { form: "clone" } : {}),
             // …and the resume record by the same law: whole or absent, never a lane killed over it
-            ...(resumedFrom ? { resumedFrom } : {}) };
+            ...(resumedFrom ? { resumedFrom } : {}),
+            // …and the keep mark by the same law: a number or absent. Dropping it at boot would
+            // hand a kept lane back to the auto-close on the first restart.
+            ...(typeof (wt as { keptAt?: unknown }).keptAt === "number" ? { keptAt: (wt as { keptAt: number }).keptAt } : {}) };
         }
         if ((v as { webSearch?: unknown }).webSearch === true && hOf.id === "codex" && s.worktree) s.webSearch = true;
       }

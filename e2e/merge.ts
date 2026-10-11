@@ -5,7 +5,7 @@ import { MODEL_DEFAULTS, roleDefaultsFor } from "../model-register";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { WORKER_CONTRACTS } from "../src/protocol";
-import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { authorFallbackGates, exists, fakeClaudeInPane, landedAsOne, serverLogMark, setMergeMode, settleForAuthorMerge,
   settleForMerge, waitMerge } from "./lane-helpers";
@@ -3243,7 +3243,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
     const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
     type KeptSlot = { id: number; cwd: string | null; lastOutput: number;
-      git: { dirty: number; ahead: number } | null; worktree?: { branch?: string; baseSha?: string } };
+      git: { dirty: number; ahead: number } | null; worktree?: { branch?: string; baseSha?: string; keptAt?: number } };
     const laneNow = async (): Promise<{ now: number; slot: KeptSlot | undefined }> => {
       const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: KeptSlot[] };
       return { now: sx.now, slot: sx.slots.find((s) => s.id === laneSlot) };
@@ -3304,6 +3304,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const settled1 = await settled(mainBefore);
     const s1 = git2("rev-parse", "main");
     const after1 = (await laneNow()).slot;
+    const keptAtBefore = first?.worktree?.keptAt ?? null;
     const merge1 = (await (await get(`/api/slots/${laneSlot}/merge`)).json()) as { last?: unknown };
     const outcome1 = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as {
       outcomes: { branch?: string; commitCount?: number; headSha?: string | null }[];
@@ -3311,13 +3312,20 @@ export async function run(lc: LaneCtx): Promise<void> {
     const facts1 = { land: land1.status, started1, settled1, status: await rowStatus(),
       oneCommit: git2("rev-list", "--count", `${mainBefore}..${s1}`), laneHead: spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"]).stdout.toString().trim(),
       worktree: exists(cwd), slotCwd: after1?.cwd, baseSha: after1?.worktree?.baseSha, branchTip: git2("rev-parse", `refs/heads/${branch}`),
-      last: merge1.last ?? null, note: noteOf(s1)?.squash ?? null, outcome: outcome1, s1 };
+      last: merge1.last ?? null, note: noteOf(s1)?.squash ?? null, outcome: outcome1, s1,
+      keptAtBefore, keptAt: after1?.worktree?.keptAt ?? null };
     check("kept land: {squash,keep} lands ONE commit and leaves worktree, slot, branch and the row (sent) standing, branch and lane HEAD on S1, worktree.baseSha = S1, no verdict left",
       land1.ok && started1.running === true && started1.keep === true && started1.squash === true && settled1
         && facts1.status === "sent" && facts1.oneCommit === "1" && facts1.laneHead === s1 && facts1.branchTip === s1
         && facts1.worktree && facts1.slotCwd === cwd && facts1.baseSha === s1 && facts1.last === null
         && facts1.note?.commits === 2 && outcome1?.commitCount === 2 && outcome1.headSha === s1,
       JSON.stringify(facts1));
+    // 5a515516 (d) · THE KEEP IS THE LANE'S, NOT A REPORT'S: the keep-land marks the worktree record,
+    // and server.ts#laneAutoCloseRefusal refuses on that mark alone (e2e/watch.ts D2 "kept lane").
+    // BREAKS IF: landLane's keep branch stops writing keptAt.
+    check("kept land: a keep-land marks the lane kept (worktree.keptAt), which an unkept lane does not carry",
+      land1.ok && settled1 && facts1.keptAtBefore === null && typeof facts1.keptAt === "number" && facts1.keptAt > 0,
+      JSON.stringify({ keptAtBefore: facts1.keptAtBefore, keptAt: facts1.keptAt }));
     // the git tick has to have seen the land before the projection reads ahead=0
     try { await until(async () => (await laneNow()).slot?.git?.ahead === 0,
       { timeoutMs: 10_000, stepMs: 100, what: "kept lane git tick after land 1" }); } catch { /* the phase check names it */ }
@@ -3336,6 +3344,42 @@ export async function run(lc: LaneCtx): Promise<void> {
     const again = await land('{"keep":true}');
     check("kept land: the landed tip cannot land twice — the same row answers 409 already landed until a new commit",
       again.status === 409 && (await again.text()).includes("already landed"), `${again.status}`);
+    // 5a515516 (d) · THE CASE OF 3A, end to end (slot 21, task 725b5caa, keep-land d281c40c, report
+    // c07c58b5): after the keep-land the lane files a NEW report, its MAIN accepts it and lands
+    // nothing, and the lane sits idle on main's tip. Every report is judged by the MAIN — the one
+    // the keep-land consumed and the new one — so the only thing between this lane and the armed
+    // auto-close is the keep. BREAKS IF: the keptAt clause in server.ts#laneAutoCloseRefusal is
+    // removed (the tick then closes it killed-empty, as it closed 3A).
+    const decide = (id: string): Promise<Response> => fetch(`${BASE}/api/self/fleet-report/${id}/accept`, {
+      method: "POST", headers: { "x-fleet-self-token": mainToken, "content-type": "application/json" },
+      body: JSON.stringify({ reason: "3A: accepted, nothing landed" }) });
+    const idOf = async (r: Response): Promise<string> => ((await r.clone().json()) as { report?: { id?: string } }).report?.id ?? "";
+    const reportAfter = await report("KEPT-REPORT-AFTER-THE-KEEP-LAND");
+    const decidedFirst = await decide(await idOf(report1));
+    const decidedAfter = await decide(await idOf(reportAfter));
+    await restartSrv({ FLEET_LANE_AUTOCLOSE: "1" });
+    const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+    type KeptSv = { id: number; stalled: boolean; git: { dirty: number; ahead: number } | null };
+    let spent = false;
+    try {
+      spent = await until(async () => {
+        const v = ((await (await fetch(`${BASE}/api/steward/sessions`, { headers: { authorization: `Bearer ${svTok}` } }))
+          .json()) as { slots: KeptSv[] }).slots.find((x) => x.id === laneSlot);
+        return v?.stalled === true && v.git?.dirty === 0 && v.git.ahead === 0;
+      }, { timeoutMs: 60_000, stepMs: 250, what: "kept lane spent-looking on the armed fleet" });
+    } catch { /* a lane the mutant closed first is no longer listed as stalled; the check reads that */ }
+    await Bun.sleep(Math.max(3000, AUTOS_TICK_MS * 8)); // ticks enough to close it, were it closable
+    const keptRow = ((await (await get("/api/sessions")).json()) as {
+      slots: { id: number; cwd: string | null; autoCloseRefusal?: string | null }[] }).slots.find((x) => x.id === laneSlot);
+    const keptClosedRows = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as {
+      outcomes: { branch?: string; disposition?: string }[] }).outcomes.filter((o) => o.branch === branch && o.disposition === "killed-empty");
+    await restartSrv(); // the stated FLEET_LANE_AUTOCLOSE=0 again for everything below
+    check("kept land (3A): after a keep-land, a new report its MAIN accepted without a land leaves the idle lane at ahead 0 open — the armed auto-close refuses it by the keep",
+      reportAfter.ok && decidedFirst.ok && decidedAfter.ok && spent && keptRow?.cwd === cwd
+        && keptRow.autoCloseRefusal === "a land kept this lane — only its MAIN's next land or a kill ends it"
+        && keptClosedRows.length === 0,
+      JSON.stringify({ report: reportAfter.status, decided: [decidedFirst.status, decidedAfter.status], spent,
+        cwd: keptRow?.cwd ?? null, refusal: keptRow?.autoCloseRefusal ?? null, killedEmpty: keptClosedRows.length }));
     // LAND 2 — keep with {"squash":false}, two new commits, a fresh report: the series lands as it is
     commitIn("kept3.txt", "fix(kept): dritte Tranche");
     commitIn("kept4.txt", "fix(kept): vierte Tranche");

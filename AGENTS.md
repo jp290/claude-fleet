@@ -317,6 +317,9 @@ LAND-BITTE fbc31d7c · Baum 4ff54c08 · Entscheid 13929aac (ja) · zusammen mit 
 3. `MESSUNG` only when the card asks for numbers.
 4. `OFFEN` and `KARTE FEHLTE`, one line each.
 5. Visible work: what you saw yourself in the test window, the neighbouring surface included.
+6. A live lane's land subject belongs to the batch it reports, not to the row's first card; today a
+   line `BETREFF: <type>(<area>): <sentence>` above the STATUS line sets it and leaves the body
+   (`server.ts#squashReportSubject`).
 
 **Decision** on a report: only what the MAIN checked itself and where it differs from the report.
 

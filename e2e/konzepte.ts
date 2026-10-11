@@ -1249,12 +1249,21 @@ async function privatePackHandover(): Promise<void> {
           "x-fleet-self-token": tokenFor(slot) }, body: JSON.stringify(body) });
         return { status: r.status, text: await r.text() };
       };
+      // A CLAUDE LANE OR PROGRAM-MAIN gets the fold (server.ts#ownerKorrekturenText, Charge 4): its own
+      // position's entry verbatim, no other position's, no quelle, and the view as live source instead
+      // of the "vor deinem ersten Akt" order. Codex, Pi and the Orchestratorin keep the pointer alone.
+      const folds = (role: typeof roles[number], harness: string): boolean => harness === "claude" && role !== "orchestrator";
       const delivered = (r: Received | null, role: typeof roles[number], harness: string): boolean =>
         r?.pointer === `${i.base}${door}` && r.status === 200 && r.tag === (harness === "pi-zai" ? "pi" : harness)
         && r.body?.bindung?.rolle === role && r.body.bindung.harness === harness
         && JSON.stringify(r.body.geltendeEintraege?.map((entry) => entry.id)) === JSON.stringify([`start-${role}`])
-        && (r.text + r.native).includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"') && (r.text + r.native).includes("vor deinem ersten Akt")
-        && !(r.text + r.native).includes("synthetische Startkorrektur") && !(r.text + r.native).includes("private-fixture.md")
+        && (r.text + r.native).includes('"x-fleet-self-token: $FLEET_SELF_TOKEN"')
+        && (folds(role, harness)
+          ? (r.text + r.native).includes(`- synthetische Startkorrektur ${role} [start-${role}]`)
+            && roles.every((other) => other === role || !(r.text + r.native).includes(`synthetische Startkorrektur ${other}`))
+            && (r.text + r.native).includes(`gefaltet fuer ${role}/${harness}`) && !(r.text + r.native).includes("vor deinem ersten Akt")
+          : (r.text + r.native).includes("vor deinem ersten Akt") && !(r.text + r.native).includes("synthetische Startkorrektur"))
+        && !(r.text + r.native).includes("private-fixture.md")
         && !(r.text + r.native).includes(`${konzeptRoot}/k-owner-korrekturen`);
       for (const harness of ["claude", "codex", "pi-zai"]) {
         const spawn = { harness, model: harness === "pi-zai" ? "glm-5.3" : harness === "codex" ? "gpt-6.1-sol" : "opus", effort: "high" };
@@ -1282,7 +1291,7 @@ async function privatePackHandover(): Promise<void> {
             opened = await call(`/api/slots/${slot}/open`, "POST", { cwd: product, label: "Orchestrator (heft-fixture)", packs: [], ...spawn });
           }
           const first = slot !== null && opened.status === 200 ? await receive(slot) : null;
-          check(`konzepte owner delivery (${harness}/${role}): the first prompt delivers only the reader pointer and the receiver reads its position's correction`,
+          check(`konzepte owner delivery (${harness}/${role}): the first prompt delivers ${folds(role, harness) ? "its position's correction folded" : "only the reader pointer"} and the receiver reads its position's correction`,
             opened.status === 200 && delivered(first, role, harness),
             `open=${opened.status} ${opened.text.slice(0, 200)} received=${JSON.stringify(first)}`);
           // a Program-MAIN is bound in memory before its brief is pasted (bootstrapProgramMainReserved):
@@ -1318,7 +1327,7 @@ async function privatePackHandover(): Promise<void> {
           rmSync(`${reads}/heft-${slot}.json`, { force: true });
           const succession = await selfCall(slot, "/api/self/succeed", { model: spawn.model, effort: "high" });
           const second = succession.status === 200 ? await receive(slot) : null;
-          check(`konzepte owner delivery (${harness}/${role}): succession delivers the reader pointer under the successor's current position`,
+          check(`konzepte owner delivery (${harness}/${role}): succession delivers ${folds(role, harness) ? "the fold" : "the reader pointer"} under the successor's current position`,
             succession.status === 200 && delivered(second, role, harness),
             `succession=${succession.status} ${succession.text.slice(0, 250)} received=${JSON.stringify(second)}`);
           check(`konzepte owner delivery (${harness}/${role}): the successor's immediate reader is position-bound`, second?.status === 200);

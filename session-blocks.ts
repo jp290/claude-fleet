@@ -77,7 +77,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     lieferart: ["native Datei", "Prompt", "Abruf"],
     rollenDefault: {"lane": "an", "main": "an", "orchestratorin": "an", "nur-ordner": "aus"},
     source: "server.ts#ownerKorrekturenPointer",
-    belege: ["server.ts#ownerKorrekturenPointer", "server.ts#laneContextDelivery", "server.ts#briefAndSend", "server.ts#buildLaneSuccessionBrief", "server.ts#railBlockFor", "server.ts#buildOrchestratorSpawnBrief", "server.ts#buildOrchestratorSuccessionBrief", "konzept-ledger.ts#konzeptLeseansicht", "konzept-ledger.ts#OWNER_KORREKTUREN"],
+    belege: ["server.ts#ownerKorrekturenPointer", "server.ts#ownerKorrekturenText", "server.ts#laneContextDelivery", "server.ts#briefAndSend", "server.ts#buildLaneSuccessionBrief", "server.ts#railBlockFor", "server.ts#buildOrchestratorSpawnBrief", "server.ts#buildOrchestratorSuccessionBrief", "konzept-ledger.ts#konzeptLeseansicht", "konzept-ledger.ts#OWNER_KORREKTUREN"],
     breaksWithout: "Ohne den Reader-Zeiger in der nativen Startdatei oder im Start- und Nachfolgebrief fehlen der Session die fuer ihre Position geltenden Owner-Korrekturen.",
     fassung: "unknown", bytes: "unknown",
   },

@@ -58,6 +58,7 @@ export async function run(): Promise<void> {
     slotRepoReady && /^[0-9a-f]{40}$/.test(slotGit("rev-parse", "HEAD").stdout.trim()), slotGit("status", "--short").stdout);
   await runPerfMarks();
   await runFoundingPlanProbe(slotCwd);
+  await runSessionToolsBound(slotCwd);
   const permissionsEnvBefore = await tmuxEnvSnapshot();
   let permissionsEnvDuring: (string | null)[] = [];
   try {
@@ -5046,6 +5047,71 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 // each role the route answers one plan whose hash is a function of its inputs, every row carries its
 // own facts, Nur Ordner delivers only what the folder loads natively, and the session file the window
 // shows is the plan's own render. A fixture repo of its own, so no other section's tree is read.
+// THE ROLE'S BUILT-IN TOOLS WHERE THE SPAWN KNOWS THE ROLE (server.ts#SESSION_TOOLS, Nachbesserung f88a2e99):
+// a MAIN bound at its spawn starts with the MAIN allowlist on --tools, a session bound to nothing keeps every
+// tool. The binding is PLANTED (as e2e/programs.ts#ownerLaneInput plants its MAIN) and the server reboots on
+// FLEET_CMD=claude with a `sleep` stand-in, so ↻ restart spawns the real claude line; the pane's start command
+// is that line. The Orchestratorin's list rides the claude gate (runPackMcpSpawn).
+async function runSessionToolsBound(cwd: string): Promise<void> {
+  const dir = mkdtempSync(`${tmpdir()}/fleet-e2e-session-tools-`);
+  const sleepBin = Bun.which("sleep");
+  check("session tools SETUP: a `sleep` for the claude stand-in", !!sleepBin);
+  if (!sleepBin) return;
+  writeFileSync(`${dir}/claude`, `#!/bin/sh\nexec '${sleepBin}' 100000\n`, { mode: 0o755 });
+  const made = await post("/api/programs", { title: "session tools probe", intent: "a bound MAIN's spawn line",
+    successCriterion: "--tools on a bound MAIN only", nonGoals: [], decisions: [], evidence: [], openQuestions: [] });
+  const programId = ((await made.json()) as { program?: { id?: string } }).program?.id ?? "";
+  await post(`/api/programs/${programId}/confirm`, {});
+  await post(`/api/programs/${programId}/activate`, {});
+  const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots
+    .filter((x) => !x.cwd && x.id <= 16).map((x) => x.id).slice(-2);
+  const [boundSlot = 0, plainSlot = 0] = free;
+  const opened = [boundSlot, plainSlot].filter(Boolean);
+  for (const [slot, label] of [[boundSlot, "tools-bound-main"], [plainSlot, "tools-plain"]] as const)
+    if (slot) await post(`/api/slots/${slot}/open`, { cwd, label });
+  await stopSrv();
+  const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, { openedAt?: number; sessionId?: string | null }>;
+    programs?: { id: string; main?: unknown }[] };
+  const row = state.slots?.[String(boundSlot)];
+  const program = state.programs?.find((p) => p.id === programId);
+  const ready = !!programId && opened.length === 2 && !!row?.openedAt && !!program;
+  check("session tools SETUP: an active Program, a slot to bind as its MAIN and an unbound slot", ready,
+    JSON.stringify({ programId, free, openedAt: row?.openedAt ?? null }));
+  if (ready) {
+    program!.main = { slot: boundSlot, openedAt: row!.openedAt, sessionId: row!.sessionId ?? null, boundAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2), { mode: 0o600 });
+  }
+  const startLine = async (slot: number): Promise<string> => {
+    for (let i = 0; i < 60; i++) {
+      const line = (await tmuxOut("display-message", "-t", `=s${slot}:`, "-p", "#{pane_start_command}")).out;
+      if (line.includes("--prompt-suggestions")) return line;
+      await Bun.sleep(150);
+    }
+    return "";
+  };
+  try {
+    await restartSrv({ FLEET_CMD: "claude", PATH: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}` });
+    if (!ready) return;
+    for (const slot of opened) await post(`/api/slots/${slot}/restart`, {});
+    const bound = await startLine(boundSlot);
+    const plain = await startLine(plainSlot);
+    check("session tools: a MAIN bound at its spawn starts with the MAIN allowlist on --tools",
+      bound.includes("--tools ") && bound.includes("Bash,Read,Write,Edit,Artifact,ToolSearch,TaskStop,Agent,WebFetch,WebSearch,SendMessage,SendFeedback,Skill,Monitor,PushNotification"),
+      bound.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
+    check("session tools: a session bound to nothing keeps every tool — the MAIN's list cut and no --tools",
+      plain.includes("FLEET-LISTENSCHNITT (main,") && !plain.includes("--tools"),
+      plain.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
+  } finally {
+    // the server first, while the opened slots keep the tmux server alive: killed first, srv is the last
+    // session, the tmux server exits, and the next new-session starts one from THIS process's env —
+    // FLEET_VERIFY_CMD included, which every later srv then inherits (e2e/restart.ts V1, P-7c)
+    await restartSrv();
+    for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
+    await post(`/api/programs/${programId}/complete`, { force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function runFoundingPlanProbe(scratch: string): Promise<void> {
   const repo = resolve(scratch, "founding-plan");
   mkdirSync(repo, { recursive: true });
@@ -14298,6 +14364,11 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
       restartArgv.split('"autoMemoryEnabled":false').length === 2 && openArgv.includes('"autoMemoryEnabled":false')
         && healArgv.includes('"autoMemoryEnabled":false'),
       restartArgv.slice(-400) || "no claude argv");
+    // THE ROLE'S BUILT-IN TOOLS (server.ts#SESSION_TOOLS): an allowlist takes the schemas out, a deny rule does not
+    check("session tools: a lane's claude starts with exactly the lane allowlist on --tools, once",
+      restartArgv.includes("--tools Bash,Read,Edit,Write,ToolSearch,Agent,WebFetch,Skill,TaskStop,WebSearch,ScheduleWakeup,Artifact,Monitor,SendFeedback")
+        && restartArgv.split("--tools ").length === 2,
+      restartArgv.slice(-400) || "no claude argv");
     check("session list cut: the lane's start context names the cut and how to load an entry back",
       restartArgv.includes("FLEET-LISTENSCHNITT (lane, server.ts#SESSION_LIST_CUT)")
         && restartArgv.includes("Datei ~/.claude/commands/<name>.md lesen und befolgen: audit")
@@ -14320,6 +14391,10 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     check("session list cut: a MAIN keeps its role's entries (handoff, the steward pulses) and still drops the foreign ones",
       mainArgv.includes("FLEET-LISTENSCHNITT (main,") && mainArgv.includes('"anthropic-skills:docx":"off"')
         && !mainArgv.includes('"handoff":') && !mainArgv.includes('"rundgang":') && mainArgv.includes("Agent(example-reviewer)"),
+      mainArgv.slice(-400) || "no claude argv");
+    // an /open session is bound to no Program at its spawn: "generic", the MAIN's list cut and no --tools
+    check("session tools: a session /open founds without a Program binding keeps every tool — no --tools on its line",
+      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && !mainArgv.includes("--tools"),
       mainArgv.slice(-400) || "no claude argv");
     check("auto-memory: a MAIN's claude keeps its auto-memory — no autoMemoryEnabled on its line",
       mainArgv.includes("FLEET-LISTENSCHNITT (main,") && !mainArgv.includes("autoMemoryEnabled"),
@@ -14367,6 +14442,9 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     check("auto-memory: the Orchestratorin's claude keeps its auto-memory — no autoMemoryEnabled on its line",
       orchArgv.includes("FLEET-LISTENSCHNITT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled"),
       `slot=${orch} ${oo?.status ?? "-"} ${orchArgv.slice(-400) || "no claude argv"}`);
+    check("session tools: the Orchestratorin's claude starts with the orchestrator allowlist on --tools, Skill and Workflow in it",
+      orchArgv.includes("--tools Bash,Read,Write,ToolSearch,PushNotification,Agent,Artifact,WebSearch,Edit,WebFetch,TaskStop,Skill,Workflow,AskUserQuestion,ScheduleWakeup"),
+      `slot=${orch} ${orchArgv.slice(-400) || "no claude argv"}`);
   } finally {
     for (const slot of opened) await post(`/api/slots/${slot}/kill`, {});
     for (const tr of trFiles) {

@@ -1742,6 +1742,15 @@ filters by a session's binding — …`: der Owner hat keine Bindung und liest d
 und die Fassungsdateien. Beweis: `e2e/konzepte.ts` §leseansicht, synthetische Eintraege je Geltungsachse,
 dazu die Modus-Faltung (voll, Einzeiler, Volllesen) an einer Fassung v5 mit vier Modus-Eintraegen.
 
+**Im Brief statt als Pflicht-GET (Charge 4, `server.ts#ownerKorrekturenText`).** Eine Claude-Lane und eine
+Claude-Program-MAIN bekommen diese Sicht beim Start, bei der Nachfolge und beim Harness-Wechsel der Lane schon
+gefaltet als Text: jeder Eintrag mit `modi:"*"` woertlich, jeder Modus-Eintrag als Ausloeser-Zeile, dazu die
+Leseansicht als Live-Quelle — fuer die Bindung, in die die Session gegruendet wird (`server.ts#korrekturLeserOf`,
+dieselben drei Koordinaten wie oben). Die Einzeleintrag-Tuer bleibt der Weg fuer einen Ausloeser. Jede
+Abweisung oben laesst den bisherigen Zeiger stehen, dessen Satz sie `unknown` nennt; Codex-, Pi-Sessions und
+die Orchestratorin bekommen weiter nur den Zeiger. Gruendungsfenster und Plan-Receipt messen denselben Text
+(`owner-heft`). Beweis: `e2e/konzepte.ts` §owner delivery (claude Lane und Program-MAIN, Start und Nachfolge).
+
 ### Anmerkungen — `GET|POST /api/self/konzepte/:id/anmerkungen`
 
 ```
@@ -2575,7 +2584,10 @@ Die lebendig gebundene MAIN liest eine eigene Program-Zeile als `{ok, sessionIdM
 `task` enthält den vollständigen `text`, die Karte (`card`), Brief und Kommentare; die
 200-Zeichen-Vorschau von `program-execution` bleibt eine Vorschau. Program und Ziel-Repo kommen
 aus Bindung und Checkout. Fremde oder ungebundene Zeile bzw. anderes Repo: 409; unbekannte Id: 404.
-Eine Lane erhält 409 `a lane may not …`.
+Eine Lane liest hier ihre EIGENE Zeile, `taskId` oder `originId` ihres Slots, als `{ok, task}` — ihre
+Karte, der Weg zurück, wenn eine Kompaktierung den Brief aus dem Fenster genommen hat (die Lane-Rollenkarte
+nennt die Tür). Jede andere Id ist für eine Lane 409 (`a lane may not read another queue row …`), auch eine
+existierende (`server.ts#handle`, Route `selfTaskRead`).
 
 ## task comment — `POST /api/self/tasks/:id/comment`
 
@@ -6471,7 +6483,8 @@ Lineage-Eintrag wird als `retire` geschlossen, und `bootstrap-main` gründet das
 Bootstrap: nach Target-Open, nach Brief-Send vor dem Receipt und nach dem Receipt unmittelbar vor dem
 Bindungsschnitt wird die vollständige Live-Identität erneut geprüft. Unmittelbar VOR dem Brief-Send
 bindet der Bootstrap den Kandidaten nur im Speicher (`program.main`), damit der erste Abruf der
-Owner-Korrekturen, zu dem der Brief „[Zitat entfernt]“ auffordert, schon die Program-MAIN-Position
+Owner-Korrekturen, zu dem der Brief „[Zitat entfernt]“ auffordert (bei einer Claude-MAIN steht die Sicht
+seit Charge 4 schon gefaltet im Brief, die Leseansicht als Live-Quelle), schon die Program-MAIN-Position
 liest (50055013). Diese Bindung erreicht nie die Platte, solange der Bootstrap-Marker steht
 (`server.ts#stateSnapshot`), bekommt keinen Lineage-Eintrag und wird von jedem Fehlerweg zurückgenommen
 (Cleanup des Bootstraps, `server.ts#clearProgramFounding`): eine gescheiterte Erstzustellung hinterlässt

@@ -724,8 +724,20 @@ function packAnatomyChecks(check: ContextPlanCheck): void {
     capabilities: fullCapabilities(), position: "lane" });
   const seedsNoPosition = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["always", "verification"],
     capabilities: fullCapabilities() });
-  check("pack anatomy: the Fleet seeds declare none, so a position changes nothing in their plan",
-    JSON.stringify(seeds) === JSON.stringify(seedsNoPosition) && seeds.selected.every((pack) => !("anatomie" in pack)));
+  // ONE seed declares anatomy (Charge 4): portable-core's Zusatz "reporting", on for a Claude lane and off
+  // without a position; every other seed plans byte for byte the same with and without one
+  const reportingOn = (plan: typeof seeds): boolean | undefined => plan.selected.find((pack) => pack.id === "portable-core")
+    ?.anatomie?.zusaetze.find((z) => z.id === "reporting")?.an;
+  const others = (plan: typeof seeds) => JSON.stringify(plan.selected.filter((pack) => pack.id !== "portable-core"));
+  const coreAnchors = (plan: typeof seeds): string[] => {
+    const sources = plan.selected.find((pack) => pack.id === "portable-core")?.sources;
+    return !sources || "privateSourceId" in sources ? [] : sources.map((source) => source.anchor);
+  };
+  check("pack anatomy: among the Fleet seeds only portable-core declares anatomy — its reporting Zusatz is on at a Claude lane and off without a position",
+    others(seeds) === others(seedsNoPosition) && seeds.selected.every((pack) => pack.id === "portable-core" || !("anatomie" in pack))
+      && reportingOn(seeds) === true && reportingOn(seedsNoPosition) === false
+      && coreAnchors(seeds).includes("## Reporting") && !coreAnchors(seedsNoPosition).includes("## Reporting"),
+    JSON.stringify(seeds.selected.find((pack) => pack.id === "portable-core")?.anatomie ?? null));
   const broken: [string, Record<string, unknown>][] = [
     ["an unknown fassung", { fassung: "gueltig" }],
     ["a Zusatz without a condition", { zusaetze: [{ id: "leer", bedingung: {}, sources: [{ path: "docs/kern.md", anchor: "## Kern" }] }] }],

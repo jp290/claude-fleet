@@ -452,6 +452,20 @@ export async function run(ctx: Ctx): Promise<void> {
         && stateFile().laneSucceedCounts?.[truthTaskId] === 4,
       JSON.stringify(stateFile().slots?.[String(truthSlot)] ?? {}).slice(0, 200));
 
+    // THE LANE'S CARD DOOR (Charge 4): GET /api/self/tasks/:id answers a lane for its own row, the
+    // card it was founded on, and stays 409 for every other id — a real row of the queue included
+    const selfTaskGet = (id: string): Promise<Response> =>
+      fetch(`${BASE}/api/self/tasks/${id}`, { headers: { "x-fleet-self-token": truthTok } });
+    const ownCard = await selfTaskGet(truthTaskId);
+    const ownCardBody = (await ownCard.json().catch(() => ({}))) as { task?: { id?: string; text?: string } };
+    const foreignId = (stateFile().tasks ?? []).find((t) => t.id !== truthTaskId)?.id ?? "0badc0de";
+    const foreignCard = await selfTaskGet(foreignId);
+    const foreignText = await foreignCard.text();
+    check("lane card door: a lane reads its own queue row on GET /api/self/tasks/:id, verbatim, and any other row stays 409",
+      ownCard.status === 200 && ownCardBody.task?.id === truthTaskId && ownCardBody.task.text === truthRowText
+        && foreignCard.status === 409 && foreignText.includes("a lane may not read another queue row") && !foreignText.includes(truthRowText),
+      `own=${ownCard.status} ${JSON.stringify(ownCardBody).slice(0, 160)} foreign=${foreignId} ${foreignCard.status} ${foreignText.slice(0, 160)}`);
+
     // THE REGISTER, BEFORE ANY TICKET (6633fc41): a successor of this CODEX lane asked onto a claude
     // model is the 2026-09-26 shape — Slot 7 stood as harness=codex, model=claude-opus-5-5[1m] and the
     // provider answered 400. HARNESS_MODEL_RE admits the name; model-register.ts files it under claude,

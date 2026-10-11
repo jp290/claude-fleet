@@ -236,6 +236,11 @@ export const CONTEXT_PACKS = [
     triggers: ["always"],
     hardness: "hard",
     sources: [{ id: "portable-core.contract", path: "AGENTS.md", anchor: "## Portable operating contract", sorte: "anleitung", positions: CONTRACT_BOX }],
+    // THE REPORT RULES TRAVEL WITH A CLAUDE LANE (Charge 4): a lane writes the report, so its file
+    // carries AGENTS.md ## Reporting inline, read at the lane's head like the contract. Only a Claude
+    // lane: a MAIN and the Orchestratorin plan as before, and a Codex or Pi file is left as it was.
+    zusaetze: [{ id: "reporting", bedingung: { positions: ["lane"], harnesses: ["claude"] },
+      sources: [{ id: "portable-core.reporting", path: "AGENTS.md", anchor: "## Reporting", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } }] }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,

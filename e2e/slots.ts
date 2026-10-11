@@ -4971,8 +4971,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("the SAME socket still recovers the pending land",
       ownRecoveryLog.includes("land recovery:") && gitAt("notes", "--ref=fleet/land", "show", laneTip).length > 0,
       `recovered=${ownRecoveryLog.includes("land recovery:")}`);
+    // the dispatch tick may run between the boot and this read: with the dispatcher stopped it
+    // prefixes its own reason, and the restart origin must survive that (server.ts#dispatchStoppedNote)
     check("the SAME socket still requeues its stranded sent task",
-      ownRecoveryTask?.status === "queued" && ownRecoveryTask.note === "requeued after restart",
+      ownRecoveryTask?.status === "queued"
+        && /^(?:waiting: dispatcher stopped — )?requeued after restart$/.test(ownRecoveryTask.note ?? ""),
       JSON.stringify(ownRecoveryTask));
 
     await bootWith(originalBytes);

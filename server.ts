@@ -21370,7 +21370,9 @@ const programDispatchStopped = (t: Pick<Task, "programId">): boolean => {
 };
 const dispatchStoppedNote = (reason: string, previous: string | null | undefined): string => {
   const prior = previous?.replace(/^waiting: (?:dispatcher stopped|program dispatch off) — /, "");
-  const retained = prior && (/ — requeued(?:; lane kept.*)?$/.test(prior)
+  // the boot reconcile's "requeued after restart" is an origin too: without it the next stopped
+  // tick rewrote a restart requeue into a plain "waiting: dispatcher stopped" (e2e/slots.ts, 23/138)
+  const retained = prior && (/ — requeued(?:; lane kept.*)?$/.test(prior) || prior === "requeued after restart"
     || prior.startsWith("handed back by the wave lane ")) ? prior : null;
   return `waiting: ${reason}${retained ? ` — ${retained}` : ""}`;
 };

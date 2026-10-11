@@ -13,6 +13,7 @@ import { BASE, REPO, ROOT, check, get, paneEnv, plantScreen, plogRead, post, rea
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge, waitMerge } from "./lane-helpers";
 import { newPlantedSid } from "./restart";
+import { readLedger } from "../server/persist";
 
 export type DigJ = {
   now?: number; prior?: { kind?: string } | null; slots?: { id: number }[];
@@ -1247,10 +1248,13 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   writeFileSync("steward-journal.jsonl",
     `${JSON.stringify({ ts: "not-a-number", kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
   const coldLed = await getLedgers();
+  // the window's size, read off the instance ledger with the server's own reader: watch.ts and
+  // restart.ts append their rows here first. 5 is server.ts#LEDGER_COLD_ROWS.
+  const ledgerRows = (await readLedger("post-land-audits.jsonl")).rows.length;
   check("an unusable anchor yields since:null and the last few rows, never a fake-empty ledger delta",
     coldLed?.since === null && coldLed.audits.some((a) => a.mainSha === "freshshaaaa")
-    && coldLed.audits.some((a) => a.mainSha === "staleshaaaa"),
-    JSON.stringify({ since: coldLed?.since, audits: coldLed?.audits.map((a) => a.mainSha) }));
+    && coldLed.audits.some((a) => a.mainSha === "staleshaaaa") && coldLed.audits.length === Math.min(ledgerRows, 5),
+    JSON.stringify({ since: coldLed?.since, ledgerRows, audits: coldLed?.audits.map((a) => a.mainSha) }));
   await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
   // the trails themselves stay owner-only — the digest projection is the steward's ONLY view of them
   check("steward token on the post-land audit trail is still out of scope (403)",

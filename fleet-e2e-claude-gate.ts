@@ -227,12 +227,23 @@ const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });
 const a2 = (await a2res.json()) as { auto: AutoInfo };
 check("create auto on alive-claude slot", a2res.ok && !!a2.auto?.id);
-await Bun.sleep(afterTick(1000, AUTOS_TICK_MS)); // same budget as branch 1, so the pair is comparable
+// Branch 1 is a negative control and has to out-wait the tick; this branch is positive, so it waits
+// for the STATE it claims. tickAutos writes lastResult only after sendText returns, which trails the
+// marker on the pane under load (land of 4c1c3b81: marker on the pane, lastResult "missing" after a
+// fixed sleep). Same auto and the same tick budget as branch 1, plus a bound for the send itself.
+const a2Budget = afterTick(1000, AUTOS_TICK_MS) + 20_000;
+const a2Started = Date.now();
+let a2after: AutoInfo | undefined;
+for (;;) {
+  a2after = ((await (await get("/api/sessions")).json()) as { autos: AutoInfo[] }).autos.find((a) => a.id === a2.auto.id);
+  if (a2after?.lastResult || Date.now() - a2Started >= a2Budget) break;
+  await Bun.sleep(200);
+}
+const a2Waited = Date.now() - a2Started;
 const cap2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
 check("alive-claude gate: marker reached the pane", cap2.out.includes(marker2), cap2.out.slice(-160));
-const sess2 = (await (await get("/api/sessions")).json()) as { autos: AutoInfo[] };
-const a2after = sess2.autos.find((a) => a.id === a2.auto.id);
-check("alive-claude gate: lastResult reports sent", a2after?.lastResult === "sent", a2after?.lastResult ?? "missing");
+check("alive-claude gate: lastResult reports sent", a2after?.lastResult === "sent",
+  `${a2after?.lastResult ?? "missing"} (last read after ${a2Waited}ms of ${a2Budget}ms)`);
 
 // Transcript-family regression needing this harness's real session pin (history.ts explains why).
 await runFreshPinnedTranscriptIsolation(8);

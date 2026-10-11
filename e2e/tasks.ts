@@ -13580,12 +13580,24 @@ export async function run(ctx: Ctx): Promise<void> {
     if (vaFiled) await post(`/api/tasks/${vaFiled}/delete`, {});
     // (rc2b) THE MAIN DOOR TAKES THE SAME CARD WITH after — and the RELEASE proves the stored id:
     // releaseCardRefusal would 409 naming rcPred if the door had not written what the card carries.
-    const rcMainCarry = await rcFile({ text: `acp23 rc main-filed with after, NACH ${rcPred}`,
+    // The filing is this check's own precondition and gets its own row: a refused filing (notiz
+    // 694ca6a9: PROGRAM_MAX_PENDING full) used to surface as the release door's answer to an empty id.
+    const rcMainCarryFiled = await mFile(mToken, { kind: "auftrag", text: `acp23 rc main-filed with after, NACH ${rcPred}`,
       card: { ...rcCard, ...(rcPred ? { after: [rcPred] } : {}) } });
-    const rcMainCarryRes = await rcRelease(rcMainCarry);
-    check("(rc2b) the MAIN door takes an author card with after, stores it, and releases the row — the release proving the stored id",
-      !!rcMainCarry && !!rcPred && rcMainCarryRes.status === 200 && (await mRow(rcMainCarry))?.status === "queued",
-      `${rcMainCarryRes.status}:${rcMainCarryRes.status === 200 ? "" : await rcMainCarryRes.text()}`);
+    const rcMainCarryFiledText = await rcMainCarryFiled.text();
+    const rcMainCarry = ((): string => {
+      try { return (JSON.parse(rcMainCarryFiledText) as { task?: { id: string } }).task?.id ?? ""; } catch { return ""; }
+    })();
+    check("rc2b setup: fixture row filed", rcMainCarryFiled.ok && !!rcMainCarry,
+      `${rcMainCarryFiled.status}:${rcMainCarryFiledText.slice(0, 300)}`);
+    const rc2b = "(rc2b) the MAIN door takes an author card with after, stores it, and releases the row — the release proving the stored id";
+    if (!rcMainCarry) check(`NOT MEASURED — the setup row died: ${rc2b}`, false,
+      `"rc2b setup: fixture row filed" is red above; the release door was never asked`);
+    else {
+      const rcMainCarryRes = await rcRelease(rcMainCarry);
+      check(rc2b, !!rcPred && rcMainCarryRes.status === 200 && (await mRow(rcMainCarry))?.status === "queued",
+        `${rcMainCarryRes.status}:${rcMainCarryRes.status === 200 ? "" : await rcMainCarryRes.text()}`);
+    }
     const rcAfterRes = await rcRelease(rcAfter);
     interface RcWait { id: string; grund: string; adressat: string; kette: string[] }
     const rcPlan = (await (await get("/api/start-plan")).json()) as StartPlan & { waits?: RcWait[] };

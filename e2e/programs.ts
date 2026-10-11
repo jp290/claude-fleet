@@ -16250,7 +16250,9 @@ async function ownerLaneInput(): Promise<void> {
   check("owner input SETUP: a `sleep` for the claude stand-in", !!sleepBin);
   if (!sleepBin) return;
   symlinkSync(sleepBin, `${bin}/claude`);
-  writeFileSync(`${dir}/claude`, `#!/bin/sh\nexec '${bin}/claude' 100000\n`, { mode: 0o755 });
+  // the stand-in draws claude's ready marker itself: the successor's pane is spawned by the server,
+  // and a fixture respawn after it would race ensureSlot (openedAt is on disk before the pane exists)
+  writeFileSync(`${dir}/claude`, `#!/bin/sh\nprintf '%s\\n' '❯'\nexec '${bin}/claude' 100000\n`, { mode: 0o755 });
   const projects = `${dir}/projects`;
   const program = await activateNewProgram("Owner input: the lane's words reach its MAIN and its successor");
   const mainOpen = await post(`/api/slots/${(await sessions()).slots.find((s) => !s.cwd)?.id ?? 0}/open`,
@@ -16430,17 +16432,9 @@ async function ownerLaneInput(): Promise<void> {
       JSON.stringify({ compaction: laneSession?.compaction, ctx: laneSession?.ctx }));
 
     // the baton: the successor's brief carries the owner's words verbatim, oldest first
-    const predecessorAt = readState().slots?.[String(laneSlot)]?.openedAt;
     const report = await selfPost("/api/self/fleet-report", laneToken,
       { status: "handoff", text: "owner input fixture: the next session continues on this branch." });
-    const pending = selfSucceed(laneToken);
-    let opened = false;
-    for (let i = 0; i < 60 && !opened; i++) {
-      await Bun.sleep(150);
-      opened = readState().slots?.[String(laneSlot)]?.openedAt !== predecessorAt;
-    }
-    if (opened) await tmuxOut("respawn-pane", "-k", "-t", `s${laneSlot}`, `printf '%s\\n' '❯'; exec '${bin}/claude' 100000`);
-    const succeeded = await pending;
+    const succeeded = await selfSucceed(laneToken);
     const brief = (await history()).findLast((h) => h.text.includes("[fleet staffelstab]"))?.text ?? "";
     const blockAt = brief.indexOf("--- WAS DER OWNER DIREKT IN DIE PANE DIESER LANE GETIPPT HAT");
     const block = blockAt < 0 ? "" : brief.slice(blockAt);

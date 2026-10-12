@@ -194,6 +194,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
 import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
+import { STATE_DIR } from "./server/state-dir";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
@@ -220,8 +221,8 @@ auditActorScope.enterWith({ kind: "machine", why: "boot" });
 const SEED_LINES = 3000;
 const MAX_RECENTS = 8;
 const MAX_PINS = 20;
-const STREAM_DIR = `${import.meta.dir}/streams`;
-const STATE_FILE = `${import.meta.dir}/fleet.json`;
+const STREAM_DIR = `${STATE_DIR}/streams`;
+const STATE_FILE = `${STATE_DIR}/fleet.json`;
 // Codex writes its conversation identity lazily, on the first prompt rather than at TUI boot.
 // Tests point this at their staged scratch tree; production follows Codex's own default.
 const CODEX_SESSIONS_DIR = process.env.FLEET_CODEX_SESSIONS_DIR
@@ -231,32 +232,32 @@ const CODEX_BIND_SLACK_MS = 5000;
 const CODEX_CANDIDATE_LIMIT = 20;
 // the single-instance lock (see claimInstanceLock). Lives next to STATE_FILE because the thing
 // being protected is the DIRECTORY, which is what STATE_FILE and every ledger below derive from.
-const PID_FILE = `${import.meta.dir}/fleet.pid`;
-const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
+const PID_FILE = `${STATE_DIR}/fleet.pid`;
+const STEWARD_JOURNAL_FILE = `${STATE_DIR}/steward-journal.jsonl`;
 // per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
 // buildLaneOutcome). Rotated by appendEvent at AUDIT_ROTATE_BYTES, same as AUDIT_FILE.
-const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
+const LANE_OUTCOME_FILE = `${STATE_DIR}/lane-outcomes.jsonl`;
 // every fleet-report, twice: one `open` row with the full text when it is filed and one `decision`
 // row when it is judged. Append-only — the live list in fleet.json is a bounded tail
 // (pruneFleetReports, FLEET_REPORT_KEEP) and this is what survives it.
-const PERF_FILE = `${import.meta.dir}/perf.jsonl`;
+const PERF_FILE = `${STATE_DIR}/perf.jsonl`;
 // the board's own field rows (src/fieldperf.ts, src/protocol.ts#FieldRow): one per open page and minute
-const FIELD_FILE = `${import.meta.dir}/field-perf.jsonl`;
+const FIELD_FILE = `${STATE_DIR}/field-perf.jsonl`;
 function rWithoutAt(r: PerfRecord & { at: number }): unknown {
   const { at, ...record } = r;
   return record;
 }
-const FLEET_REPORT_LEDGER_FILE = `${import.meta.dir}/fleet-reports.jsonl`;
-const RULEBOOK_AB_LEDGER_FILE = `${import.meta.dir}/rulebook/ab.jsonl`;
+const FLEET_REPORT_LEDGER_FILE = `${STATE_DIR}/fleet-reports.jsonl`;
+const RULEBOOK_AB_LEDGER_FILE = `${STATE_DIR}/rulebook/ab.jsonl`;
 // every queue row that went terminal or was evicted, WHOLE — the bound in capTasks retires terminal
 // rows from fleet.json, and this is what makes that retirement not a delete (see archiveTaskLine).
 // Deliberately NOT through appendEvent: its one-generation rotation overwrites `.1`, which is a
 // delete with extra steps, and eviction must know synchronously whether its line reached disk.
-const TASK_ARCHIVE_FILE = `${import.meta.dir}/tasks-archive.jsonl`;
+const TASK_ARCHIVE_FILE = `${STATE_DIR}/tasks-archive.jsonl`;
 // Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
 // is always freshly derived; only this delivery receipt is historical and append-only.
-const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
-const CONTEXT_BORROW_FILE = `${import.meta.dir}/context-borrows.jsonl`;
+const CONTEXT_RECEIPT_FILE = `${STATE_DIR}/context-receipts.jsonl`;
+const CONTEXT_BORROW_FILE = `${STATE_DIR}/context-borrows.jsonl`;
 // Which anchor renderer wrote the delivered block. Every row written from here carries it; a row
 // WITHOUT it predates the field and is v1 — that is the only honest way to keep the ledger's
 // byte-reconstruction promise across a renderer change.
@@ -266,14 +267,14 @@ const CONTEXT_ANCHOR_RENDERER = "v2";
 const NO_SNIPPET_RECEIPT = { bytes: 0, hits: 0, omitted: [] } as const;
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
-const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
+const DISPOSITION_FILE = `${STATE_DIR}/dispositions.jsonl`;
 // A fourth trail stood here until 2026-09-10: `analysis-verdicts.jsonl`, one line per assignment
 // of the retired queue analyst's `Task.analysis`. The file on disk is left where it is — an
 // append-only trail is history, and deleting it would erase what the analyst actually produced.
 // Nothing writes it any more, and no route reads it.
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
-const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
+const POSTLAND_AUDIT_FILE = `${STATE_DIR}/post-land-audits.jsonl`;
 // the suite's QUARANTINE list (e2e/harness.ts#parseQuarantine owns its rules), tracked in this tree.
 // Read fresh per request, only to SHOW it: the suite applies it, this server never decides with it.
 const QUARANTINE_FILE = `${import.meta.dir}/e2e/quarantine.json`;
@@ -281,28 +282,28 @@ const QUARANTINE_FILE = `${import.meta.dir}/e2e/quarantine.json`;
 // (see the ADJUDICATION region below). A SIDE rail, exactly like DISPOSITION_FILE, and for the same
 // reason plus one: it makes "a judgement can never rewrite `result`" structural rather than a rule
 // the route has to keep. Same appendEvent discipline/rotation as the trails above.
-const AUDIT_ADJUDICATION_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
+const AUDIT_ADJUDICATION_FILE = `${STATE_DIR}/audit-adjudications.jsonl`;
 // the ARTEFACT rail for that same trail — one append-only line per helper suite.log that arrived
 // AFTER its audit row was written. A SIDE rail for the identical reason the adjudication rail is
 // one, and the pattern is copied rather than re-invented (see THE HELPER ARTEFACT RAIL below).
-const HELPER_ARTIFACT_FILE = `${import.meta.dir}/helper-artifacts.jsonl`;
+const HELPER_ARTIFACT_FILE = `${STATE_DIR}/helper-artifacts.jsonl`;
 // THE CARD TRAIL — one line per extraction attempt, successful or not. It is a trail and not a
 // field for the reason every trail here exists: `Task.card` says what the row looks like NOW, and
 // this says what it cost and how often the reading failed. Without it "the extractor is fine" and
 // "the extractor has been returning gaps for a week" are the same observation. Same appendEvent
 // discipline/rotation as the trails above.
-const CARD_FILE = `${import.meta.dir}/cards.jsonl`;
-const WORKER_RUN_FILE = `${import.meta.dir}/worker-runs.jsonl`;
+const CARD_FILE = `${STATE_DIR}/cards.jsonl`;
+const WORKER_RUN_FILE = `${STATE_DIR}/worker-runs.jsonl`;
 // THE STATE SNAPSHOT TRAIL — one row per STATE_SNAPSHOT_MS with the operating state a tick would
 // choose from (docs/messungen/2026-09-22-jev-treiber-schatten-label.md §e). Every other trail here
 // records an EVENT; this one records the STATE between them, which cannot be rebuilt afterwards.
 // Counts, enums, ids and the lane's branch only — never text (task, pane, path). Same appendEvent
 // discipline/rotation as above. Read back by exactly one route, GET /api/self/memory?view=observations.
-const STATE_SNAPSHOT_FILE = `${import.meta.dir}/state-snapshots.jsonl`;
+const STATE_SNAPSHOT_FILE = `${STATE_DIR}/state-snapshots.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
-const POSTLAND_AUDIT_QUEUE_FILE = `${import.meta.dir}/post-land-audit-queue.json`;
+const POSTLAND_AUDIT_QUEUE_FILE = `${STATE_DIR}/post-land-audit-queue.json`;
 const HOME = process.env.HOME!;
 const SHELL = process.env.SHELL ?? "/bin/sh";
 // Safe default: claude WITH its permission prompts. Opt into unattended mode explicitly:
@@ -6361,7 +6362,7 @@ function writeStateFile(body: string): void {
     // best-effort: an unreadable/absent current state is not a reason to fail the save
     try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* first save, or no prior file */ }
     renameSync(tmp, STATE_FILE);
-    const dir = openSync(import.meta.dir, "r");
+    const dir = openSync(STATE_DIR, "r");
     try { fsyncSync(dir); } finally { closeSync(dir); }
   } catch (e) {
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* nothing more to do about the temp */ }
@@ -21912,7 +21913,7 @@ const VARIANT_CHECK_TIMEOUT_MS = Math.max(250, Number(process.env.FLEET_VARIANT_
 // draining buffered output, never a live holder — a holder that survived the group kill is
 // exactly what this bound exists to stop waiting for.
 const VARIANT_CHECK_DRAIN_MS = Math.max(100, Number(process.env.FLEET_VARIANT_CHECK_DRAIN_MS ?? 2_000) | 0);
-const VARIANT_COMPARE_FILE = `${import.meta.dir}/variant-compare.jsonl`;
+const VARIANT_COMPARE_FILE = `${STATE_DIR}/variant-compare.jsonl`;
 // WHOSE freeing lane would end the hold — so a claim never holds a row it could not be waiting for.
 // A full program's claim must not stop a foreign row in the same repo; a full repo's must not stop
 // a row targeting another repo; only the free-slot count is genuinely fleet-wide, and that one is
@@ -44187,7 +44188,7 @@ async function handleIntake(req: Request): Promise<Response> {
 
 // --- startup: claim the directory, restore persisted state, adopt stray sessions, seed offsets ---
 
-// A second server over the same import.meta.dir corrupts fleet.json: STATE_FILE and every ledger
+// A second server over the same STATE_DIR corrupts fleet.json: STATE_FILE and every ledger
 // follow the DIRECTORY, not FLEET_PORT/FLEET_SOCK. The lock is deliberately weak in the safe
 // direction — a stale pidfile must never wedge a watchdog respawn — and refuses only when it can
 // SEE a live `server.ts` (`ps -o command=` makes a recycled pid decidable). Design table, residual
@@ -44213,7 +44214,7 @@ async function claimInstanceLock(): Promise<void> {
       const fd = openSync(PID_FILE, "wx", 0o600);
       try { writeSync(fd, `${process.pid}\n`); fsyncSync(fd); } finally { closeSync(fd); }
       if (readPidFile() === process.pid) return;
-      console.log(`REFUSING TO START: lost the race for ${PID_FILE} to pid ${readPidFile()} — it owns ${import.meta.dir}.`);
+      console.log(`REFUSING TO START: lost the race for ${PID_FILE} to pid ${readPidFile()} — it owns ${STATE_DIR}.`);
       process.exit(1);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -44225,7 +44226,7 @@ async function claimInstanceLock(): Promise<void> {
       continue;
     }
     if (Date.now() >= deadline) {
-      console.log(`REFUSING TO START: fleet server pid ${holder} is already running against ${import.meta.dir}.`
+      console.log(`REFUSING TO START: fleet server pid ${holder} is already running against ${STATE_DIR}.`
         + ` A second one would write the same ${STATE_FILE} — the state file follows the DIRECTORY,`
         + ` not FLEET_PORT/FLEET_SOCK. Stop it first, or run a test instance from a scratch copy`
         + ` (pattern: e2e-isolated.sh).`);
@@ -45322,12 +45323,14 @@ if (existsSync(file)) {
 }
 // START (only as entry point): the boot, up to the audit clock below
 if (import.meta.main) {
+// FLEET_STATE_DIR may name a directory that does not exist yet; unset, both already exist
+mkdirSync(dirname(RULEBOOK_AB_LEDGER_FILE), { recursive: true, mode: 0o700 });
 await claimInstanceLock();
 // A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
 // live peer can be writing one, and a credential-bearing temp must not be left lying around.
-for (const name of readdirSync(import.meta.dir)) {
+for (const name of readdirSync(STATE_DIR)) {
   if (name !== "fleet.json.tmp" && !/^fleet\.json\.\d+\.\d+\.tmp$/.test(name)) continue;
-  unlinkSync(`${import.meta.dir}/${name}`);
+  unlinkSync(`${STATE_DIR}/${name}`);
 }
 // release only what is still OURS — a lock we lost must not be unlinked out from under its owner
 process.on("exit", () => {
@@ -47700,10 +47703,10 @@ function bundleStale(): BundleStale {
 // route, the same line the land path holds (every `mergeJob(` call site is a route too).
 // Who may pull it, and whether anything unattended ever does, is the owner's decision, not this
 // region's.
-const DEPLOY_FILE = `${import.meta.dir}/deploys.jsonl`;
+const DEPLOY_FILE = `${STATE_DIR}/deploys.jsonl`;
 // The in-flight marker: the ONLY thing that crosses the restart. Next to the other state files
 // (same directory rule as the audit queue) so a scratch instance carries its own.
-const DEPLOY_MARKER_FILE = `${import.meta.dir}/deploy-inflight.json`;
+const DEPLOY_MARKER_FILE = `${STATE_DIR}/deploy-inflight.json`;
 const DEPLOY_BUILD_CMD = process.env.FLEET_DEPLOY_BUILD_CMD ?? "bun run build";
 // Default derived from SOCK, not hard-coded: a test instance's verb must kill ITS srv, never the
 // live one. Same reason every other tmux call in this file goes through the same variable.

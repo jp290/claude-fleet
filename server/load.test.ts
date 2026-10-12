@@ -1,8 +1,8 @@
 // Neuaufbau K4b: server.ts lässt sich laden, ohne dass ein Server startet. Start (Boot, Zeitschleifen,
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendEvent } from "./persist";
@@ -21,8 +21,12 @@ function freePort(): number {
   return port;
 }
 
-// eigener Port, eigener tmux-Socket, nur Loopback: ginge doch ein Start los, träfe er nie die Live-Fleet
-const isolation = { FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: `fleetload${process.pid}` };
+// eigener Port, eigener tmux-Socket, nur Loopback, Zustand und Ledger in einem eigenen Verzeichnis
+// (FLEET_STATE_DIR): ginge doch ein Start los, träfe er nie die Live-Fleet
+const STATE_DIR = mkdtempSync(join(tmpdir(), "fleet-load-state-"));
+const isolation = { FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: `fleetload${process.pid}`,
+  FLEET_STATE_DIR: STATE_DIR };
+afterAll(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 let loadProvenSafe = false;
 
 describe("server.ts laden", () => {
@@ -49,6 +53,7 @@ describe("server.ts laden", () => {
     expect(ms).toBeLessThan(LOAD_DEADLINE_MS);
     expect(tmuxServer.exitCode).not.toBe(0);
     expect(absentBefore.filter((name) => existsSync(join(ROOT, name)))).toEqual([]);
+    expect(readdirSync(STATE_DIR)).toEqual([]);
     loadProvenSafe = true;
   }, LOAD_DEADLINE_MS + 5_000);
 });
@@ -65,22 +70,10 @@ async function load() {
   return server;
 }
 
-// tokenGate schreibt jeden Fehlversuch als owner_auth_fail ins audit.jsonl neben server.ts
-// (server/audit-log.ts): nur in einem Baum ohne eigenes Audit-Log und danach wieder weg — im
-// Verzeichnis eines laufenden Servers fälschte der Test dessen Ledger
-async function withScratchAuditLog(run: () => Promise<void>): Promise<void> {
-  const file = join(ROOT, "audit.jsonl");
-  if (existsSync(file)) throw new Error(`${file} gibt es schon — der Test schriebe in ein echtes Audit-Log; im frischen Baum fahren`);
-  const barrier = mkdtempSync(join(tmpdir(), "fleet-load-"));
-  try {
-    await run();
-  } finally {
-    // audit() schreibt ohne await; alle Ledger-Zeilen teilen eine Schreibkette (persist.ts), also
-    // ist die Audit-Zeile samt chmod fertig, sobald eine danach eingereihte Zeile geschrieben ist
-    await appendEvent(join(barrier, "barrier.jsonl"), {});
-    rmSync(barrier, { recursive: true, force: true });
-    rmSync(file, { force: true });
-  }
+// audit() schreibt ohne await; alle Ledger-Zeilen teilen eine Schreibkette (persist.ts), also ist eine
+// Audit-Zeile samt chmod fertig, sobald eine danach eingereihte Zeile geschrieben ist
+async function auditSettled(): Promise<void> {
+  await appendEvent(join(STATE_DIR, "barrier.jsonl"), {});
 }
 
 describe("paneApiError, im Prozess importiert", () => {
@@ -138,13 +131,24 @@ describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", ()
     const res = await request("/api/sessions", { host: allowedHost, origin: "http://evil.example" });
     expect(res).toEqual({ status: 403, body: { error: "cross-origin request blocked" } });
   });
-  test("ohne Token keine Sitzungsliste", () => withScratchAuditLog(async () => {
+  test("ohne Token keine Sitzungsliste", async () => {
     expect(await request("/api/sessions", { host: allowedHost })).toEqual({ status: 401, body: { error: "unauthorized" } });
-  }));
-  test("ein falscher Token öffnet nichts", () => withScratchAuditLog(async () => {
+  });
+  test("ein falscher Token öffnet nichts", async () => {
     expect(await request("/api/sessions", { host: allowedHost, authorization: "Bearer falsch" }))
       .toEqual({ status: 401, body: { error: "unauthorized" } });
-  }));
+  });
+  test("der Fehlversuch steht im audit.jsonl unter FLEET_STATE_DIR, nicht neben server.ts", async () => {
+    const besideServer = join(ROOT, "audit.jsonl");
+    const sizeBeside = () => existsSync(besideServer) ? statSync(besideServer).size : -1;
+    const before = sizeBeside();
+    await request("/api/sessions", { host: allowedHost, authorization: "Bearer falsch-fuer-das-ledger" });
+    await auditSettled();
+    const rows = readFileSync(join(STATE_DIR, "audit.jsonl"), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line) as { event?: string });
+    expect(rows.at(-1)?.event).toBe("owner_auth_fail");
+    expect(sizeBeside()).toBe(before);
+  });
 });
 
 describe("Route-Handler ohne Port, mit Owner-Token", () => {
@@ -185,7 +189,7 @@ describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden ü
     return { status: res.status, body: await res.json() };
   }
 
-  test("Token, Slot, Program und Auftrag aus der Datei stehen in /api/sessions, /api/programs und /api/tasks", () => withScratchAuditLog(async () => {
+  test("Token, Slot, Program und Auftrag aus der Datei stehen in /api/sessions, /api/programs und /api/tasks", async () => {
     const { loadPersistedState, adoptTokens } = await load();
     const dir = mkdtempSync(join(tmpdir(), "fleet-state-"));
     const before = gitStatus();
@@ -228,9 +232,9 @@ describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden ü
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }));
+  });
 
-  test("eine kaputte Datei wird neben sich selbst zu .corrupt, neben server.ts entsteht nichts", () => withScratchAuditLog(async () => {
+  test("eine kaputte Datei wird neben sich selbst zu .corrupt, neben server.ts entsteht nichts", async () => {
     const { loadPersistedState } = await load();
     const dir = mkdtempSync(join(tmpdir(), "fleet-state-"));
     const before = gitStatus();
@@ -244,5 +248,5 @@ describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden ü
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }));
+  });
 });

@@ -2695,7 +2695,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const routeStart = server.indexOf('if (url.pathname === "/api/context-receipts"');
   const routeBody = routeStart < 0 ? "" : server.slice(routeStart, server.indexOf("\n    }", routeStart));
   pin("context-receipts.jsonl is one ledger constant shared by its append-only writer and owner reader route",
-    /const CONTEXT_RECEIPT_FILE = `\$\{import\.meta\.dir\}\/context-receipts\.jsonl`;/.test(server)
+    /const CONTEXT_RECEIPT_FILE = `\$\{STATE_DIR\}\/context-receipts\.jsonl`;/.test(server)
     && /appendEvent\(CONTEXT_RECEIPT_FILE, \{/.test(server)
     && /readLedger<Record<string, unknown>>\(CONTEXT_RECEIPT_FILE\)/.test(routeBody),
     routeBody ? `${routeBody.length} route bytes` : "reader route missing");
@@ -3028,7 +3028,7 @@ await import(pathToFileURL(process.argv[2]).href);
   const reportOpens = server.split('audit("fleet_report_open"').length - 1;
   const decisionStamps = server.split("report.decision = {").length - 1;
   pin("fleet-reports.jsonl gets an OPEN row at every report filing and a DECISION row at every verdict stamp",
-    /const FLEET_REPORT_LEDGER_FILE = `\$\{import\.meta\.dir\}\/fleet-reports\.jsonl`;/.test(server)
+    /const FLEET_REPORT_LEDGER_FILE = `\$\{STATE_DIR\}\/fleet-reports\.jsonl`;/.test(server)
     && reportOpens === 2 && server.split("const ledgered = ledgerReportOpen(report);").length - 1 === reportOpens
     && decisionStamps === 4
     && server.split("const ledgered = ledgerReportDecision(report, report.decision);").length - 1 === decisionStamps

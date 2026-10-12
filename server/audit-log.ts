@@ -1,13 +1,10 @@
-import { resolve } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { appendEvent } from "./persist";
 import type { AuditActor } from "./auth";
+import { STATE_DIR } from "./state-dir";
 
-// this module sits one level below the repo root, so the ledger path is anchored explicitly
-// rather than on import.meta.dir — it is the same absolute string as before, when the constant
-// lived in server.ts's anchor nest next to STATE_FILE and the other ledgers.
-const PUB = resolve(import.meta.dir, "..");
-export const AUDIT_FILE = `${PUB}/audit.jsonl`;
+// next to STATE_FILE and the other ledgers (server/state-dir.ts)
+export const AUDIT_FILE = `${STATE_DIR}/audit.jsonl`;
 
 // --- audit log: append-only, own write chain + mode 600 (same discipline as saveHistory/
 // saveState in server.ts), deliberately NOT routed through console.log — watchdog.sh redirects

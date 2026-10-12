@@ -4,7 +4,7 @@
 # Der Commit liegt schon in $CI_HOME/repo.git (merge-check.ts schiebt ihn per git push dorthin).
 # Fährt die Teile des Urteils parallel, jedes mit eigenem TMPDIR, eigenem Suite-Lock und eigenem
 # Port-Band (FLEET_E2E_BAND 7–9; der Helfer-Daemon nimmt die kleinsten freien, 0–4 bei fünf Plätzen):
-#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci (falls vorhanden)
+#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci ./server (falls vorhanden)
 #   gate    ./e2e-claude-gate.sh
 #   review  ./e2e-clean-review.sh, danach ./e2e-security.sh
 #   s1–s3   die kleinen Units in drei Shards; die großen laufen nachts und vor jedem Deploy
@@ -43,10 +43,11 @@ if ! bun install --frozen-lockfile > "$RUN/install.log" 2>&1; then
 fi
 TSC=$(grep -o "bunx tsc [^&]*" watchdog.sh | head -n 1)
 [ -n "$TSC" ] || { echo "merge-check red $(( $(now_ms) - T0 )) — keine tsc-Zeile in watchdog.sh"; exit 3; }
-# die Unit-Tests gehören zum Kandidaten: ein Baum ohne ci/*.test.ts hat keine, und das ist „nicht
-# anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
-TESTS="bun test ./ci"
-if ! ls ci/*.test.ts > /dev/null 2>&1; then TESTS="true"; echo "na tests — der Kandidat hat keine ci/*.test.ts"; fi
+# die Unit-Tests gehören zum Kandidaten: ein Baum ohne ci/*.test.ts und server/*.test.ts hat keine,
+# und das ist „nicht anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
+TESTS=""
+for d in ci server; do ls "$d"/*.test.ts > /dev/null 2>&1 && TESTS="$TESTS ./$d"; done
+if [ -n "$TESTS" ]; then TESTS="bun test$TESTS"; else TESTS="true"; echo "na tests — der Kandidat hat keine ci/*.test.ts oder server/*.test.ts"; fi
 
 # job <name> <band> <command line>: im Hintergrund, mit eigener Prozessgruppe (timeout tötet sie ganz)
 job() {

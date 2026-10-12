@@ -157,10 +157,15 @@ export const parseShard = (raw: string | undefined): { k: number; n: number } | 
 
 // Longest-processing-time first: heaviest unit to the emptiest shard, ties to the lower shard
 // index. Deterministic for a given table and n, so every shard computes the same plan on its own.
-export const shardPlan = (n: number): Map<string, number> => {
+// `skip` takes units OUT OF THE TABLE before the plan is made (FLEET_E2E_SKIP_UNITS, see
+// selectSkipUnits below), so the plan of a skipping run is the plan of the smaller table — every
+// shard still computes it alone, and no shard holds a skipped unit. Without `skip` (or with an
+// empty one) the plan is the one this function always made, byte for byte; e2e/pins.ts holds both.
+export const shardPlan = (n: number, skip?: ReadonlySet<string>): Map<string, number> => {
   const load = Array.from({ length: n }, () => 0);
   const plan = new Map<string, number>();
-  const byWeight = SHARD_UNITS.map((u, i) => ({ u, i })).sort((a, b) => b.u.seconds - a.u.seconds || a.i - b.i);
+  const byWeight = SHARD_UNITS.map((u, i) => ({ u, i })).filter(({ u }) => !skip?.has(u.unit))
+    .sort((a, b) => b.u.seconds - a.u.seconds || a.i - b.i);
   for (const { u } of byWeight) {
     let best = 0;
     for (let s = 1; s < n; s++) if (load[s]! < load[best]!) best = s;
@@ -168,4 +173,35 @@ export const shardPlan = (n: number): Map<string, number> => {
     plan.set(u.unit, best + 1);
   }
   return plan;
+};
+
+// THE UNIT SKIP, decided in one pure place like suite-modules.ts#selectModules: no skip, a set of
+// units to leave out, or a refusal in words. FLEET_E2E_SKIP_UNITS=dom is what a `quiet` or `deploy`
+// audit run carries (the helper daemon sets it from the claim, helper-daemon/daemon.ts#auditScopeEnv)
+// so the browser unit stays for the `nightly` run. It CUTS THE TABLE, not the run: combined with a
+// shard, every shard plans over SHARD_UNITS minus the skip (shardPlan above); alone, the run is every
+// unit but the skipped ones. Each refusal is a case where running anyway would answer a different
+// question than the one asked, so none of them falls back to a smaller or a full run — the caller stops:
+//   · a value that names nothing (`,,`);
+//   · together with --modules — a selection is a subset already, and nobody has measured the two at
+//     once (the same words the shard+modules refusal uses);
+//   · a name that is no unit of SHARD_UNITS — a typo would otherwise skip nothing and run the unit;
+//   · a skip of every unit, which would be a green over no work at all.
+// `raw` undefined (or empty, which the runner folds into undefined) is "no skip", byte for byte.
+export const selectSkipUnits = (opts: { raw: string | undefined; modulesGiven: boolean }):
+  { skip: ReadonlySet<string> | null; refusal: string | null } => {
+  if (opts.raw === undefined) return { skip: null, refusal: null };
+  const names = [...new Set(opts.raw.split(",").map((s) => s.trim()).filter(Boolean))];
+  if (!names.length)
+    return { skip: null, refusal: `FLEET_E2E_SKIP_UNITS wants a comma-separated list of shard units, got '${opts.raw}'` };
+  if (opts.modulesGiven)
+    return { skip: null, refusal: "FLEET_E2E_SKIP_UNITS and --modules together is a selection nobody has measured — use one" };
+  const known = new Set(SHARD_UNITS.map((u) => u.unit));
+  const unknown = names.filter((u) => !known.has(u));
+  if (unknown.length)
+    return { skip: null, refusal: `FLEET_E2E_SKIP_UNITS names no unit of e2e/ctx.ts#SHARD_UNITS: ${unknown.join(", ")}`
+      + ` — known: ${[...known].join(" ")}` };
+  if (names.length === known.size)
+    return { skip: null, refusal: "FLEET_E2E_SKIP_UNITS skips every unit — a run of nothing is refused, never reported green" };
+  return { skip: new Set(names), refusal: null };
 };

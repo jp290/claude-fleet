@@ -26,7 +26,7 @@ import { HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk } from "../src/protocol"
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { artifactsOf, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
+import { artifactsOf, auditScopeEnv, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
   pointsAt, portBand, bandEnv, PORT_BANDS, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
   EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
@@ -572,6 +572,71 @@ export async function run(h: {
     `2/3=${JSON.stringify(shardEnv("2/3"))} 0/3=${JSON.stringify(shardEnv("0/3"))} x=${JSON.stringify(shardEnv("x"))}`);
   check("(HD) the daemon declares audit-shard — the word the fleet offers shard jobs on",
     DAEMON_FEATURES.includes("audit-shard"), JSON.stringify(DAEMON_FEATURES));
+
+  // (HD.scope) THE AUDIT SCOPE FORK. A `quiet`/`deploy` audit's claim carries `skipUnits: ["dom"]`, a
+  // `nightly` one `domMutants: true`; the suite gets exactly FLEET_E2E_SKIP_UNITS / FLEET_E2E_DOM_MUTANTS
+  // from them, a claim with neither gets nothing, and every value the daemon will not turn into an env
+  // word — or either field on a kind that is not an audit — is null, which `work` reports unrunnable.
+  // MUTATION: drop the kind arm in daemon.ts#auditScopeEnv ⇒ a lane-suite with skipUnits reads as a
+  // scoped audit ⇒ red.
+  const scopeOf = (kind: string | undefined, su: unknown, dm: unknown): string => JSON.stringify(auditScopeEnv(kind, su, dm));
+  check("(HD.scope) an audit's skipUnits reach its suite as FLEET_E2E_SKIP_UNITS and domMutants as FLEET_E2E_DOM_MUTANTS=1, a claim with neither gets nothing",
+    scopeOf("audit", ["dom"], undefined) === '{"FLEET_E2E_SKIP_UNITS":"dom"}'
+      && scopeOf(undefined, ["dom", "ctl"], undefined) === '{"FLEET_E2E_SKIP_UNITS":"dom,ctl"}'
+      && scopeOf("audit", undefined, true) === '{"FLEET_E2E_DOM_MUTANTS":"1"}'
+      && scopeOf("audit", ["dom"], true) === '{"FLEET_E2E_SKIP_UNITS":"dom","FLEET_E2E_DOM_MUTANTS":"1"}'
+      && scopeOf(undefined, undefined, undefined) === "{}" && scopeOf("command", undefined, undefined) === "{}",
+    `skip=${scopeOf("audit", ["dom"], undefined)} mutants=${scopeOf("audit", undefined, true)} none=${scopeOf(undefined, undefined, undefined)}`);
+  check("(HD.scope) a lane-suite or command claim carrying either field, and any malformed value, is refused — never run whole",
+    scopeOf("lane-suite", ["dom"], undefined) === "null" && scopeOf("command", undefined, true) === "null"
+      && scopeOf("daemon-update", ["dom"], undefined) === "null"
+      && ["dom", [], ["DOM"], ["a,b"], ["a b"], ["a=b"], [1], [""]].every((v) => scopeOf("audit", v, undefined) === "null")
+      && [false, 1, "true", null].every((v) => scopeOf("audit", undefined, v) === "null"),
+    `lane-suite=${scopeOf("lane-suite", ["dom"], undefined)} command=${scopeOf("command", undefined, true)} empty=${scopeOf("audit", [], undefined)}`);
+  check("(HD.scope) the daemon declares audit-skip-units — the word the fleet offers a scoped audit on",
+    DAEMON_FEATURES.includes("audit-skip-units"), JSON.stringify(DAEMON_FEATURES));
+  // …AND `work` HONOURS THE NULL: a stub fleet lists one audit and answers its claim with a scope this
+  // daemon will not run; the tick's run must report it 127 and ask for no bundle — the full suite in
+  // its place would be filed as the scoped run. The claim request in the stub's list is the
+  // precondition: it proves the run got as far as the fork. MUTATION: delete the `scopeVars === null`
+  // return in daemon.ts#work ⇒ the run asks for the bundle and reports no 127 ⇒ red.
+  const scopeAsked: string[] = [];
+  let scopeReport: { jobId?: string; exitCode?: number | null; tail?: string } | null = null;
+  let scopeListed = false;
+  const scopeStub = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    scopeAsked.push(path);
+    if (path === "/api/helper/device") return Response.json({ desiredMode: "active" });
+    if (path === "/api/helper/jobs") {
+      const jobs = scopeListed ? [] : [{ id: "scope-e2e", kind: "audit", repo: "/r", main: "main", branches: [], covers: 1,
+        claim: null, localRunning: false }];
+      scopeListed = true;
+      return Response.json({ jobs });
+    }
+    if (path === "/api/helper/claim")
+      return Response.json({ job: { id: "scope-e2e", kind: "audit", repo: "/r", main: "main", mainSha: "a".repeat(40),
+        skipUnits: ["dom,ctl"] } });
+    if (path === "/api/helper/result") { scopeReport = await req.json(); return Response.json({ result: "unknown" }); }
+    return new Response("not found", { status: 404 });
+  } });
+  const scopeWork = mkdtempSync(`${tmpdir()}/fleet-hd-scope-`);
+  const scopeCfg = loadConfig("/x", { fleetUrl: `http://127.0.0.1:${scopeStub.port}`, token: "t", deviceId: "abcdefgh", name: "n",
+    workDir: scopeWork }, 0o600);
+  const scopeLog = console.log;
+  console.log = () => {};
+  try {
+    await tick(scopeCfg, { offUntil: 0, lastMode: "" });
+    for (let i = 0; i < 100 && scopeReport === null; i++) await Bun.sleep(50);
+  } finally {
+    console.log = scopeLog;
+    scopeStub.stop(true);
+    rmSync(scopeWork, { recursive: true, force: true });
+  }
+  const scopeGot = scopeReport as { jobId?: string; exitCode?: number | null; tail?: string } | null;
+  check("(HD.scope) a claimed audit whose skipUnits the daemon will not run is reported 127 before any bundle is asked for",
+    scopeAsked.includes("/api/helper/claim") && scopeGot?.jobId === "scope-e2e" && scopeGot.exitCode === 127
+      && /skipUnits\/domMutants/.test(scopeGot.tail ?? "") && !scopeAsked.some((p) => p.includes("bundle")),
+    `asked=${JSON.stringify(scopeAsked)} report=${JSON.stringify(scopeGot)?.slice(0, 300)}`);
 
   check("(HD) the tail and the trail id are taken exactly the way the portal asks a human to take them",
     tailOf("a\nb\nc\nd", 2) === "c\nd" && trailIdOf(`noise ${TRAIL} more`) === TRAIL
@@ -1766,8 +1831,9 @@ export async function run(h: {
     // uses for the same fixture. The grace only arms while a device is inside the online window, so
     // the heartbeat below is a precondition of the fixture and not decoration.
     // FLEET_AUDIT_MAX_WAIT_MS 0 puts every land past the cadence's ceiling at once: the job below must
-    // carry `overdue` (server.ts#auditPastMaxWait). It releases nothing earlier — with no land in
-    // flight the entry is due at once anyway (trigger `no-land`).
+    // carry `overdue` (server.ts#auditPastMaxWait). It releases nothing — the ceiling is no trigger
+    // since Z1; the entry is due at once because the runner's startSrv boots FLEET_AUDIT_QUIET_MS 0
+    // with no day window (FLEET_AUDIT_QUIET_DAY ""), trigger `quiet`.
     const rUp = await startSrv({ audit: true, auditPing: true,
       extra: { FLEET_AUDIT_HELPER_GRACE_MS: "20000", FLEET_AUDIT_MAX_WAIT_MS: "0" } });
     check("(HD.11) fixture: a Program bound to a plain session, one lane of it, the ping armed",

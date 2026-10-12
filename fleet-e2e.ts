@@ -2,6 +2,7 @@
 //   bun fleet-e2e.ts
 //   bun fleet-e2e.ts --shard k/n      (or FLEET_E2E_SHARD=k/n — the wrapper passes no argv)
 //   bun fleet-e2e.ts --modules a,b    (or FLEET_E2E_MODULES=a,b — same reason)
+//   FLEET_E2E_SKIP_UNITS=dom bun fleet-e2e.ts   (env only; combinable with --shard, never with --modules)
 // Creates slots 1+2, kills them, and restarts the `srv` tmux session along the way.
 //
 // This file is the RUNNER only: the checks live in e2e/*.ts, one module per check family, and
@@ -25,7 +26,7 @@
 // does not distinguish a product failure from missing setup. Both filters at once is refused —
 // nobody has measured that. Contract and the fixture record: docs/verify-tiering.md §16.
 import { REPO, SOCK, check, failures, post, quarantineLine, results } from "./e2e/harness";
-import { newCtx, parseShard, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
+import { newCtx, parseShard, selectSkipUnits, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
 import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
@@ -98,9 +99,6 @@ const shardArg = ((): string | undefined => {
 const shard = shardArg === undefined ? null : parseShard(shardArg);
 if (shardArg !== undefined && !shard)
   throw new Error(`--shard wants k/n with 1 ≤ k ≤ n, got '${shardArg}'`);
-const myUnits: ReadonlySet<string> | null = shard
-  ? new Set([...shardPlan(shard.n)].filter(([, s]) => s === shard.k).map(([u]) => u))
-  : null;
 
 // --modules a,b on argv wins over FLEET_E2E_MODULES. An UNSET or empty variable is "no filter", the
 // same shape --shard has above; a value that is present but names nothing usable is an error, never
@@ -111,6 +109,22 @@ const modulesArg = ((): string | undefined => {
   const eq = process.argv.find((a) => a.startsWith("--modules="));
   return eq ? eq.slice("--modules=".length) : process.env.FLEET_E2E_MODULES || undefined;
 })();
+
+// FLEET_E2E_SKIP_UNITS=a,b takes whole units out of the TABLE the run is cut from — env only, because
+// the one writer is the helper daemon (a `quiet`/`deploy` audit claim's `skipUnits`), and e2e/pins.ts
+// holds that no wrapper and no watchdog line assigns it. Unset or empty is no skip, byte for byte. Its
+// refusals (a malformed value, an unknown unit, together with --modules) are one pure decision,
+// e2e/ctx.ts#selectSkipUnits, pinned like selectModules' below.
+const skipped = selectSkipUnits({ raw: process.env.FLEET_E2E_SKIP_UNITS || undefined, modulesGiven: modulesArg !== undefined });
+if (skipped.refusal) throw new Error(skipped.refusal);
+const skip = skipped.skip;
+// The units this run holds: the shard's share of the (skip-reduced) plan under --shard, every unit
+// but the skipped ones under a skip alone, `null` ("no unit filter") with neither.
+const myUnits: ReadonlySet<string> | null = shard
+  ? new Set([...shardPlan(shard.n, skip ?? undefined)].filter(([, s]) => s === shard.k).map(([u]) => u))
+  : skip
+    ? new Set(SHARD_UNITS.map((u) => u.unit).filter((u) => !skip.has(u)))
+    : null;
 // Every refusal is one pure decision (suite-modules.ts#selectModules) so that each of them is a
 // pinned fact rather than a line of this file nothing ever executes: a malformed value, both cuts at
 // once, an unknown name, an unsatisfiable read, and a selection needing the lane block without
@@ -121,7 +135,7 @@ const { plan, refusal } = selectModules({
 if (refusal) throw new Error(refusal);
 const laneModules = new Set(MODULE_FIXTURES.filter((m) => m.lane).map((m) => m.module));
 // The modules that will actually run: the plan's closure under --modules, the shard's units under
-// --shard, everything without either. `null` is "no filter", which is what the base fixture below
+// --shard, every unit's but the skipped ones' under a skip alone, everything without any. `null` is "no filter", which is what the base fixture below
 // and the step loop ask about.
 const willRun: ReadonlySet<string> | null = plan
   ? new Set(plan.run)
@@ -445,6 +459,13 @@ if (plan) {
   for (const sk of plan.skipped)
     console.log(`SKIP  ${sk.module} — ${laneModules.has(sk.module) && !REPO ? "the worktree-lane block needs FLEET_E2E_REPO, which is unset" : sk.why}`);
 }
+
+// THE SKIP, ONE LINE, before the first step for the same reason as the plan above: a log of a run
+// that left a unit out says so from its head, whatever the run then does. Not a PASS/FAIL/SKIP line
+// either — it names units, not checks, and nothing counts it.
+if (skip)
+  console.log(`skip-units: [${SHARD_UNITS.filter((u) => skip.has(u.unit)).map((u) => u.unit).join(" ")}]`
+    + " not run (FLEET_E2E_SKIP_UNITS) — their checks are unmeasured in this run, not passed");
 
 const unitMs = new Map<string, number>();
 let completed = false;

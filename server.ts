@@ -30418,13 +30418,15 @@ const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL
 // is what closes the window a remote claim could slip through, and helperJobsView, which is a pure
 // projection. The note stays the durable, human-readable record of the same fact; this is the same
 // fact on the queue, and verify-proportion.ts remains the single place that classifies anything.
-interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true; deploy?: true }
+interface AuditCover { branch: string; mainAfter: string; at: number; proportional?: true; deploy?: true;
+  nightly?: true; tip?: true }
 // `deploy` marks a cover that is not a land: POST /api/deploy found its target tip without a
 // full audit and queued one for exactly that tip (deployAuditOf). Its branch is the label
 // DEPLOY_AUDIT_BRANCH, its mainAfter the tip the deploy wants live, and it releases the cadence at
 // once (auditCadenceOf) — the deploy is waiting on it, so the quiet window has nothing left to buy.
-// The one other non-land cover is AUDIT_TIP_BRANCH, the owner's audit-tip door (auditTipVerb): it
-// carries no `deploy`, because nothing waits on it, and so keeps the cadence a land's cover keeps.
+// The other non-land covers: AUDIT_TIP_BRANCH, the owner's audit-tip door (auditTipVerb), marked
+// `tip` — a direct commit passed no land gate, so it releases its own run (trigger `audit-tip`); and
+// NIGHTLY_AUDIT_BRANCH, marked `nightly`, which the clock writes once a night (auditClockTick).
 // …and its identity AS A VALUE. The drain can consume its own frozen slice positionally, because
 // it holds the machine for the whole run and never lets go of the objects. Nothing else may: a
 // remote claim outlives a `kill-session -t srv`, and both sides of it — the queue file and the
@@ -30632,6 +30634,12 @@ interface PostLandAuditRow {
   // for; `deploy` — a deploy asked for this tree. Absent where no cadence applies: a deployment
   // without a helper, and every row written before it existed.
   trigger?: AuditTrigger;
+  // Present ONLY on a `nightly` row (withNightlyFacts): every land since the previous nightly — the
+  // span the one run with the dom unit answers for — and the undo stack as it stood when the row was
+  // written. The 4 h cadence can cover more lands than UNDO_STACK_MAX; this says which a red night can
+  // still undo, and how many aged out.
+  nightly?: { lands: { branch: string; mainAfter: string; at: number }[]; landsTotal: number;
+    undo: { max: number; lands: { branch: string; mainAfter: string; at: number }[]; dropped: number } };
   // Present ONLY on a row a SHARDED run produced (FLEET_AUDIT_SHARDS, see AuditShardRun): one entry per
   // shard, in `k` order, including the ones that produced nothing — `result:"unknown"` with `ms`,
   // `ran`, `failed` and `exitCode` null is a shard that lapsed or never ran; its own `unmeasured`
@@ -30683,6 +30691,7 @@ function auditQueueGroups(q: AuditQueueEntry): AuditQueueGroup[] {
 }
 // the land path's one write: the cover joins the group of ITS integration branch, never another's
 function enqueueAuditCover(repo: string, main: string, cover: AuditCover): void {
+  auditKnownRepos.set(repoCanon(repo), { repo, main }); // the nightly tick's repos (auditClockTick)
   const q = auditQueue.get(repo);
   if (!q) { auditQueue.set(repo, { main, covers: [cover] }); return; }
   if (q.main === main) { q.covers.push(cover); return; }
@@ -30779,32 +30788,92 @@ const HELPER_SWEEP_MS = Math.max(500, Number(process.env.FLEET_HELPER_SWEEP_MS ?
 // source against a fixture that declares exactly this identifier.
 const AUDIT_HELPER_GRACE_MS = Math.max(0, Number(process.env.FLEET_AUDIT_HELPER_GRACE_MS ?? 0) | 0);
 const AUDIT_HELPER_ONLY = AUDIT_HELPER_GRACE_MS > 0;
-// THE CADENCE — exactly two numbers, and the owner's fear above is the reason it is not one. A
-// helper deployment's audit starts once the repo has been QUIET for AUDIT_QUIET_MS since its
-// newest unmeasured land, or AUDIT_MAX_WAIT_MS after its OLDEST one, whichever comes first.
-//   · the quiet window BUNDLES a burst: the suite measures a TREE, so the newest tip of a burst
-//     subsumes every land in it (the coalescing contract at schedulePostLandAudit), and the
-//     helper's wall time is spent once instead of once per land.
-//   · the ceiling is what makes a busy day safe: on a day that is never quiet for 20 minutes the
-//     quiet window alone would postpone tier 2 forever. With it every land is MEASURED-OR-RUNNING
-//     at most AUDIT_MAX_WAIT_MS after it landed, plus the claim and the run itself.
-// No third rule (no daily cap, no night run) — the owner's „[Zitat entfernt]“. Zero on either knob
-// releases at once, which is the drain's behaviour before 2026-10-08 and what the harnesses set.
-// …AND BOTH NUMBERS ONLY BOUND A WAIT FOR A LAND THAT IS ON ITS WAY (2026-10-09, auditLandsInFlight).
-// The quiet window guessed when a burst is over; the land reservations SAY it. With no further land
-// of the repo reserved or running, the entry is due at once (`trigger: "no-land"`); while one is, the
-// window and the ceiling apply exactly as before. Measured the night before: 1 206–1 220 s from land
-// to audit on every quiet-released row, and since 83c93145 every deploy waited for it.
-// Applies to a helper deployment ONLY (AUDIT_HELPER_ONLY): without a helper the local drain is the
-// runner and runs on the land, as before — every suite that lands into a tier-2 instance relies on
-// it. The trigger that released a run is stamped on its ledger row (`trigger`), so the ledger says
-// which of the two numbers decided.
-const AUDIT_QUIET_MS = Math.max(0, Number(process.env.FLEET_AUDIT_QUIET_MS ?? 1_200_000) | 0);
+// THE CADENCE — THE CLOCK, NOT THE LAND (Z1 619a5000, MAIN answer f4dde6e8, 2026-10-11). Measured over
+// the 7 days before: 169 full audits, 80 helper hours, 37 % red, 0 of 35 deploys audit-stamped, and one
+// audit for six lands starved 109 min behind lane jobs (note 12dba626) — the whole suite ran once per
+// land burst while the question it answers ("does the whole still hold?") is a question about TIME.
+// So a land only writes its cover (the bookkeeping of which lands the next run stands for — the land's
+// audit state, the deploy gate and the board read it); it starts and releases NOTHING. A helper
+// deployment's audit is released by exactly four things, and the trigger is stamped on its row:
+//   · `quiet` — the repo has unaudited lands AND its last MEASURED full audit (green or red; a run
+//     that ran nothing is no audit, unmeasuredGreenIsUnknown) lies AUDIT_QUIET_MS (4 h) back — without
+//     one, the oldest cover counts. Never inside AUDIT_QUIET_DAY (08–22 local): the helper's day belongs
+//     to the gate jobs and the lanes, a quiet run due at 15:00 starts at 22:00. Runs without the dom unit.
+//   · `deploy` — a deploy asked for this tree (AuditCover.deploy), at once; runs without the dom unit.
+//   · `nightly` — once per night at AUDIT_NIGHTLY_AT (02:00), only if main moved since the last nightly:
+//     the one run of the whole suite with the dom unit and its mutants (FLEET_E2E_DOM_MUTANTS=1).
+//   · `audit-tip` — the owner's direct commit (`./ctl.sh commit main` → auditTipVerb), at once: a commit
+//     that passed no land gate keeps its own trigger. Runs without the dom unit.
+// The day window and the nightly hour are local time, read by Date — this process's TZ, which is the
+// owner's. Applies to a helper deployment ONLY (AUDIT_HELPER_ONLY), as the cadence always did: without
+// a helper the local drain is the runner and runs on the land — every suite that lands into a tier-2
+// instance relies on it. `max-wait` and `no-land` (2026-10-08/09) are gone as triggers; they stay in
+// the type because rows written before carry them.
+const AUDIT_QUIET_MS = Math.max(0, Number(process.env.FLEET_AUDIT_QUIET_MS ?? 14_400_000) | 0);
+// NOT A TRIGGER ANY MORE: the age at which a released entry's job is listed `overdue`, the daemon's
+// ranking reading (helper-daemon/daemon.ts#jobsToStart, auditPastMaxWait below). Nothing waits for it.
 const AUDIT_MAX_WAIT_MS = Math.max(0, Number(process.env.FLEET_AUDIT_MAX_WAIT_MS ?? 3_600_000) | 0);
-// …and how often a held entry asks again whether the land it waits for has ended. Not a third
-// number of the cadence: it decides nothing, it only bounds how late the drain notices. The helper's
-// job list re-reads the cadence on every poll (15 s) by itself; this is the local drain's half.
-const AUDIT_LAND_RECHECK_MS = 30_000;
+// "HH-HH", from inclusive, until exclusive; empty = no day window (what a harness sets). A value this
+// server cannot read keeps the owner's 08–22 and says so — a typo must never open the day to quiet runs.
+function parseAuditQuietDay(raw: string | undefined): { from: number; until: number } | null {
+  const t = (raw ?? "08-22").trim();
+  if (t === "") return null;
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(t);
+  if (m && Number(m[1]) <= 23 && Number(m[2]) <= 24 && Number(m[1]) < Number(m[2])) return { from: Number(m[1]), until: Number(m[2]) };
+  console.log(`[fleet] FLEET_AUDIT_QUIET_DAY=${JSON.stringify(t.slice(0, 40))} is not HH-HH — quiet audits keep out of 08-22`);
+  return { from: 8, until: 22 };
+}
+const AUDIT_QUIET_DAY = parseAuditQuietDay(process.env.FLEET_AUDIT_QUIET_DAY);
+// "HH:MM" local; a value this server cannot read keeps 02:00 and says so
+function parseAuditNightlyAt(raw: string | undefined): { h: number; m: number } {
+  const t = (raw ?? "02:00").trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+  if (m && Number(m[1]) <= 23 && Number(m[2]) <= 59) return { h: Number(m[1]), m: Number(m[2]) };
+  console.log(`[fleet] FLEET_AUDIT_NIGHTLY_AT=${JSON.stringify(t.slice(0, 40))} is not HH:MM — the nightly audit stays at 02:00`);
+  return { h: 2, m: 0 };
+}
+const AUDIT_NIGHTLY_AT = parseAuditNightlyAt(process.env.FLEET_AUDIT_NIGHTLY_AT);
+// the nightly run's cover: not a land, like DEPLOY_AUDIT_BRANCH; its mainAfter is the tip it measures
+const NIGHTLY_AUDIT_BRANCH = "(nightly)";
+// the newest local NIGHTLY_AT at or before `now`, and the one after it
+function auditNightlySlot(now: number): number {
+  const d = new Date(now);
+  d.setHours(AUDIT_NIGHTLY_AT.h, AUDIT_NIGHTLY_AT.m, 0, 0);
+  if (d.getTime() > now) d.setDate(d.getDate() - 1);
+  return d.getTime();
+}
+function auditNextNightly(now: number): number {
+  const d = new Date(auditNightlySlot(now));
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+// …and the day window: the first moment at or after `at` that lies outside it
+function auditQuietFreeAt(at: number): number {
+  if (!AUDIT_QUIET_DAY) return at;
+  const d = new Date(at);
+  if (d.getHours() < AUDIT_QUIET_DAY.from || d.getHours() >= AUDIT_QUIET_DAY.until) return at;
+  d.setHours(AUDIT_QUIET_DAY.until, 0, 0, 0);
+  return d.getTime();
+}
+// WHAT THE CLOCK KNOWS, per repo (repoCanon). Rehydrated from the ledger at boot (the block after the
+// board's last row) and kept by every writer through noteAuditClock — never a second reading of the
+// ledger on the cadence's path.
+//   · auditLastFull — `at` of the newest MEASURED full row (green or red, not proportional);
+//   · auditLastNightly — the newest nightly: its tip, and when it was queued or written. Booked at the
+//     ENQUEUE too, so a night queues its run once, whatever that run then answers;
+//   · auditKnownRepos — the repos the nightly tick asks, with their integration branch: every repo a
+//     cover or a row named. A repo nobody ever audited has no night to keep.
+const auditLastFull = new Map<string, number>();
+const auditLastNightly = new Map<string, { at: number; mainSha: string }>();
+const auditKnownRepos = new Map<string, { repo: string; main: string }>();
+function noteAuditClock(row: PostLandAuditRow): void {
+  const canon = repoCanon(row.repo);
+  auditKnownRepos.set(canon, { repo: row.repo, main: row.main });
+  if (row.proportional === true) return;
+  if (measuredGreen(row) || row.result === "red") auditLastFull.set(canon, Math.max(auditLastFull.get(canon) ?? 0, row.at));
+  if (row.trigger === "nightly" && row.at >= (auditLastNightly.get(canon)?.at ?? 0))
+    auditLastNightly.set(canon, { at: row.at, mainSha: row.mainSha });
+}
 // the last QUIET line the drain printed — see the wait lines in drainPostLandAudits
 let auditQuietLine = "";
 // WHEN AN ENTRY LAST BECAME CLAIMABLE AGAIN — repo toplevel -> the moment a blocker on it ended: a
@@ -30821,50 +30890,69 @@ function markAuditClaimable(repo: string, now = Date.now()): void {
   if (!auditQueue.has(repo)) { auditClaimableSince.delete(repo); return; }
   auditClaimableSince.set(repo, now);
 }
-type AuditTrigger = "quiet" | "max-wait" | "deploy" | "no-land";
-type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number; lands: string[] };
-// THE LANDS THE QUIET WINDOW WAITS FOR — every land of this repo that is reserved (mergeStart) or
-// running (mergeInflight), plus a land intent on disk (landPending), named by branch. The window
-// exists to bundle a burst, and a burst is over when no further land of the repo is on its way: the
-// 20 minutes were a guess at that moment, this list is the moment itself. Measured in the night
-// 08./09.10.: every helper audit waited 1 206–1 220 s after its land (ledger `trigger: "quiet"`), and
-// since 83c93145 a deploy waits for that audit — owner 2026-10-09: „[Zitat entfernt]“.
-// A land whose branch the entry already covers is NOT another land: its ref has moved and its cover
-// is queued; what is left of its job (note, bundle, verdict delivery) adds nothing to the tree.
-// A reserved land on a slot with no worktree cannot be placed in a repo, so it counts for every repo
-// — the direction that waits, never the one that measures a burst half-way.
-function auditLandsInFlight(repo: string, q: AuditQueueEntry): string[] {
-  const covered = new Set(auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.branch)));
-  const out: string[] = [];
-  for (const id of new Set([...mergeStart, ...mergeInflight.keys()])) {
-    const s = slotFrom(id);
-    if (!s?.worktree) { out.push(`slot ${id}`); continue; }
-    if (!inRepo(s, repo) || covered.has(s.worktree.branch)) continue;
-    out.push(s.worktree.branch);
-  }
-  const p = landPending.get(repo);
-  if (p && !covered.has(p.branch) && !out.includes(p.branch)) out.push(p.branch);
-  return out;
-}
+// `max-wait` and `no-land`: history only, rows before 2026-10-11 — no code path stamps them now
+type AuditTrigger = "quiet" | "deploy" | "nightly" | "audit-tip" | "max-wait" | "no-land";
+type AuditCadence = { due: true; trigger: AuditTrigger } | { due: false; releaseAt: number; why: string };
 // ONE READING for every door that asks "may this entry start now?" — the drain, the job list, both
-// claim doors, the wake rail and the live view. Over the WHOLE entry (every group), because both
-// numbers are about the repo: "since the last land of the repo", "after its oldest unmeasured land".
-// A function of (covers, lands in flight, now), so a land that arrives after the release but before
-// a claim re-closes the window — the burst was not over — and the ceiling still bounds it.
-// THE WINDOW APPLIES ONLY WHILE ANOTHER LAND IS ON ITS WAY (auditLandsInFlight, 2026-10-09). With
-// none, the entry is due at once — trigger `no-land` — and the two numbers bound the wait for one.
+// claim doors, the wake rail and the live view. Over the WHOLE entry (every group): the four triggers
+// are about the repo. A function of (covers, the repo's last measured audit, now) — the land path is
+// not an input, so no land can release anything.
+// THE ORDER, when one entry holds several: nightly first (the only run with dom — a deploy that rides
+// along gets the longer run, never the nightly a shorter one), then deploy, then audit-tip, then quiet.
 function auditCadenceOf(repo: string, q: AuditQueueEntry, now = Date.now()): AuditCadence {
-  // …save ONE exception, and the only one: a deploy waiting on this tree (AuditCover.deploy) releases
-  // it now — the owner's „[Zitat entfernt]“ (2026-10-08), not a third number
-  if (auditQueueGroups(q).some((g) => g.covers.some((c) => c.deploy))) return { due: true, trigger: "deploy" };
-  const ats = auditQueueGroups(q).flatMap((g) => g.covers.map((c) => c.at));
-  if (!ats.length) return { due: true, trigger: "quiet" };
-  const lands = auditLandsInFlight(repo, q);
-  if (!lands.length) return { due: true, trigger: "no-land" };
-  const youngest = Math.max(...ats), oldest = Math.min(...ats);
-  if (now - youngest >= AUDIT_QUIET_MS) return { due: true, trigger: "quiet" };
-  if (auditPastMaxWait(oldest, now)) return { due: true, trigger: "max-wait" };
-  return { due: false, releaseAt: Math.min(youngest + AUDIT_QUIET_MS, oldest + AUDIT_MAX_WAIT_MS), lands };
+  const covers = auditQueueGroups(q).flatMap((g) => g.covers);
+  if (covers.some((c) => c.nightly)) return { due: true, trigger: "nightly" };
+  if (covers.some((c) => c.deploy)) return { due: true, trigger: "deploy" };
+  if (covers.some((c) => c.tip)) return { due: true, trigger: "audit-tip" };
+  if (!covers.length) return { due: true, trigger: "quiet" };
+  const last = auditLastFull.get(repoCanon(repo));
+  const from = last ?? Math.min(...covers.map((c) => c.at));
+  const free = auditQuietFreeAt(Math.max(from + AUDIT_QUIET_MS, now));
+  if (free <= now) return { due: true, trigger: "quiet" };
+  return { due: false, releaseAt: free, why: `${last ? "last measured audit" : "oldest unaudited land"} ${
+    new Date(from).toISOString()}, ${Math.round(AUDIT_QUIET_MS / 60_000)} min${AUDIT_QUIET_DAY
+      ? `, never ${AUDIT_QUIET_DAY.from}–${AUDIT_QUIET_DAY.until} h` : ""}` };
+}
+// WHAT EACH TRIGGER RUNS (MAIN answer f4dde6e8): quiet, deploy and audit-tip leave the dom unit out
+// (FLEET_E2E_SKIP_UNITS=dom), nightly runs the whole suite with the dom unit's mutants
+// (FLEET_E2E_DOM_MUTANTS=1). Handed to a helper ONLY on a claim from a device whose heartbeat declared
+// AUDIT_SKIP_UNITS_FEATURE (helper-daemon/daemon.ts#auditScopeEnv). A device without it gets the FULL
+// run of a quiet/deploy/audit-tip trigger — larger than asked, never smaller — and is never offered a
+// nightly at all: the full run without mutants would be a nightly that silently measured less.
+// `{}` for no trigger (no helper deployment) and for a legacy one.
+const AUDIT_SKIP_UNITS_FEATURE = "audit-skip-units";
+function auditScopeOf(trigger: AuditTrigger | undefined): { skipUnits?: string[]; domMutants?: true } {
+  if (trigger === "nightly") return { domMutants: true };
+  if (trigger === "quiet" || trigger === "deploy" || trigger === "audit-tip") return { skipUnits: ["dom"] };
+  return {};
+}
+const helperTakesSkipUnits = (deviceId: string | undefined): boolean =>
+  !!(deviceId && helperDevices.get(deviceId)?.features?.includes(AUDIT_SKIP_UNITS_FEATURE));
+// THE NIGHTLY TICK — the one timer the cadence owns (armAuditCadenceKick) calls it, and so does boot.
+// Not a second scheduler: it decides nothing but "is tonight's run of this repo queued yet", writes
+// at most one cover per repo per night, and hands everything else to auditCadenceOf through the drain.
+// Per known repo with an audit command: the newest slot has passed, no nightly was queued or written
+// since it, and the integration tip is not the last nightly's tip (main moved). A missed slot (the
+// server was down at 02:00) is caught up at the next tick — once.
+async function auditClockTick(now = Date.now()): Promise<void> {
+  if (!AUDIT_HELPER_ONLY) return;
+  const slot = auditNightlySlot(now);
+  let queued = false;
+  for (const [canon, { repo, main }] of auditKnownRepos) {
+    if (!auditCmdFor(repo)) continue;
+    const last = auditLastNightly.get(canon);
+    if (last && last.at >= slot) continue;
+    const head = await git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${main}^{commit}`);
+    if (head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(head.out)) continue;
+    if (last?.mainSha === head.out) continue;
+    enqueueAuditCover(repo, main, { branch: NIGHTLY_AUDIT_BRANCH, mainAfter: head.out, at: now, nightly: true });
+    auditLastNightly.set(canon, { at: now, mainSha: head.out });
+    audit("postland_audit", undefined, `nightly ${basename(repo)} ${main}@${head.out.slice(0, 8)}: main moved since the last nightly — queued the full run with dom and its mutants`);
+    queued = true;
+  }
+  if (queued) savePostLandAuditQueue();
+  armAuditCadenceKick(auditNextNightly(now));
+  kickAuditDrain();
 }
 // …the ceiling on its own, because it is also the one thing the helper's job list says about an
 // entry's AGE (helperJobsView, `overdue`). The cadence RELEASES an entry at the ceiling but reserves
@@ -31059,6 +31147,12 @@ interface AuditShardRun {
   bundle: string;        // ONE bundle for all n shards — the reason they cannot measure different trees
   shards: AuditShardSlot[];
   trigger?: AuditTrigger; // stamped at the first claim, as an unsharded claim stamps it
+  // WHAT EVERY SHARD OF THIS RUN RUNS (auditScopeOf), FROZEN at the first claim like the tree: n shards
+  // only add up to the suite when all n plan over the SAME units. A shard planned without dom beside
+  // one planned with it would leave units unrun and run others twice, and the merge would call it
+  // green. So the first claimant decides — `{}` when it did not declare AUDIT_SKIP_UNITS_FEATURE —
+  // and a later claim from a device that cannot honour a non-empty scope is refused.
+  scope?: { skipUnits?: string[]; domMutants?: true };
 }
 const auditShardRuns = new Map<string, AuditShardRun>(); // repo toplevel -> its open sharded run
 // the first claim's bundle build, shared: a daemon with three free slots POSTs three claims in one
@@ -31948,9 +32042,9 @@ function savePostLandAuditQueue(): void {
 // into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
 // land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
 // successor or by the run it triggered.
-// …and on a helper deployment the burst is bundled BEFORE the first run too: the entry waits for
-// the repo's quiet window or its ceiling (auditCadenceOf), so "the run it triggered" starts when
-// the burst is over, or AUDIT_MAX_WAIT_MS after its first land, on the newest tip of all of them.
+// …and on a helper deployment the land RELEASES NOTHING (Z1, 2026-10-11): its cover waits in the
+// queue for the clock (auditCadenceOf — quiet after 4 h outside the day, the nightly, a deploy or an
+// audit-tip), and the run that clock releases covers every land queued by then, on the newest tip.
 async function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string,
   proportional: boolean): Promise<void> {
   if (!auditCmdFor(repo)) {
@@ -32022,7 +32116,7 @@ async function drainPostLandAudits(): Promise<void> {
         const cadence = auditCadenceOf(r, q, now);
         if (!cadence.due) {
           cadenceUntil = cadenceUntil ? Math.min(cadenceUntil, cadence.releaseAt) : cadence.releaseAt;
-          cadenceHeld.push(`${basename(r)} (behind ${cadence.lands.join(", ")})`);
+          cadenceHeld.push(`${basename(r)} (${cadence.why})`);
           return false;
         }
         // THE OWNER'S RULE (2026-10-08): a helper's work never falls back onto this box. The entry
@@ -32041,16 +32135,14 @@ async function drainPostLandAudits(): Promise<void> {
           // once per change, not once per pass: the re-check below runs this every 30 s while a land
           // is in flight, and the same sentence twenty times says nothing the first one did not
           const line = `post-land audit QUIET: ${cadenceHeld.join(", ")} until ${new Date(cadenceUntil).toISOString()}`
-            + " — released as soon as no further land of the repo is reserved or running, or"
-            + ` ${Math.round(AUDIT_QUIET_MS / 60_000)} min after the newest land,`
-            + ` at the latest ${Math.round(AUDIT_MAX_WAIT_MS / 60_000)} min after the oldest`;
+            + " — a land releases nothing; the clock does (quiet, nightly), and a deploy or an audit-tip at once";
           if (line !== auditQuietLine) console.log(line);
           auditQuietLine = line;
           // NOTHING ELSE WOULD EVER WAKE THIS: the land that queued it already kicked, and the land it
           // waits for ends in the merge job's own frame, which knows nothing of tier 2 (and the land
           // path is not this region's to change). So a held entry arms its own return — at the
           // window's end, or at the next re-check of the lands in flight, whichever comes first.
-          armAuditCadenceKick(Math.min(cadenceUntil, now + AUDIT_LAND_RECHECK_MS));
+          armAuditCadenceKick(cadenceUntil);
         }
         if (helperWork.length)
           console.log(`post-land audit WAITING: ${helperWork.join(", ")} — waiting for helper; this box runs no`
@@ -32628,6 +32720,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     covers: counted, ...(trigger ? { trigger } : {}),
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
   };
+  unmeasuredGreenIsUnknown(row);
+  await withNightlyFacts(row);
+  noteAuditClock(row);
   lastPostLandAudit = row;
   recordAuditDuration(row);
   // NOT `runningPostLandAudit = null` here, deliberately. The frozen covers are still on the queue
@@ -33277,6 +33372,8 @@ function armAuditCadenceKick(releaseAt: number): void {
   auditCadenceAt = releaseAt;
   auditCadenceTimer = setTimeout(() => {
     auditCadenceTimer = null;
+    // the nightly tick first (it re-arms the next night and kicks after its enqueue), then the drain
+    void auditClockTick();
     kickAuditDrain();
   }, Math.max(50, releaseAt - Date.now()));
 }
@@ -33479,6 +33576,11 @@ function helperJobsView(forDevice?: string): {
     // opened was released when it started and keeps its job; only a fresh offer waits for the quiet
     // window or the ceiling — the list is where a helper learns there is work, so this is the gate.
     if (!c && !shardRun && auditCadenceHolds(repo, q)) continue;
+    // NOT OFFERED TO A DEVICE THAT WOULD RUN LESS (auditScopeOf): a nightly before its run opens, a
+    // sharded run whose frozen scope that device cannot honour. The claim doors refuse the same.
+    const scopeCapable = helperTakesSkipUnits(forDevice);
+    if (!scopeCapable && (shardRun ? Object.keys(shardRun.scope ?? {}).length > 0
+      : !c && auditTriggerNow(repo, q) === "nightly")) continue;
     if (!c && (shardRun || AUDIT_SHARDS > 1)) {
       if (shardCapable) jobs.push(...auditShardJobViews(repo, q, shardRun));
       continue;
@@ -34154,6 +34256,9 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   // its shape) must not run the tree whole beside, or instead of, its shards
   if (AUDIT_SHARDS > 1 || auditShardRuns.has(repo))
     return json({ error: `this audit is offered as ${auditShardRuns.get(repo)?.n ?? auditShardCount()} shards — claim a shard job, not the whole suite` }, 409);
+  if (auditTriggerNow(repo, q) === "nightly" && !helperTakesSkipUnits(deviceId))
+    return json({ error: `this is the nightly audit (the whole suite with the dom unit's mutants), and this device's last`
+      + ` heartbeat did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — it would run the suite without them` }, 409);
   const id = helperJobId(repo);
   const file = `${HELPER_BUNDLE_DIR}/${id}-${randomBytes(4).toString("hex")}.bundle`;
   const built = await buildHelperBundle(repo, q.main, file);
@@ -34182,12 +34287,53 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   await saveStateNow();
   return json({ job: { id, kind: "audit", repo: basename(repo), main: q.main, mainSha: built.sha,
     branches: claim.covers.map((c) => c.branch), covers: claim.covers.length,
-    claimedAt: now, expiresAt: claim.expiresAt, name: claim.name } });
+    claimedAt: now, expiresAt: claim.expiresAt, name: claim.name,
+    ...(helperTakesSkipUnits(deviceId) ? auditScopeOf(trigger) : {}) } });
 }
 // The exit-code classification, shared by both kinds and extracted for exactly that reason: a
 // remote green and a local green mean the same thing only if ONE function decides what green is.
 // Tri-state, and the third state is load-bearing (A4, unknown ≠ zero) — a command that declined
 // (VERIFY_SKIP_EXIT) or could not be started (126/127) measured NOTHING, which is never a red.
+// A GREEN THAT RAN NOTHING IS NOT A MEASUREMENT (Charge 3 condition 4, 2026-10-11). A suite that exits
+// 0 without a single PASS line (`checks.ran === 0`) said nothing about the tree — an empty module
+// list, a runner that returned early, a wrapper that never reached its runner. Until now every reader
+// took the exit code's word: deployAuditOf stamped it, deployGateOnlyOf anchored on it, the cadence
+// counted it as the repo's last full audit. One rule at the row, so no reader has to repeat it: such
+// a row is `unknown` with its reason. Applied by all three writers (the local drain, helperResult,
+// the sharded merge) before the row becomes the board's or the ledger's. A row with `checks: null`
+// is untouched — that is an output this server could not count, a different statement.
+// …and the same rule for a reader of OLDER rows (written before the writers applied it): a green that
+// ran nothing is not green. Used by every reader that turns a row into a stamp, an anchor or a clock.
+const measuredGreen = (r: PostLandAuditRow): boolean => r.result === "green" && !(r.checks && r.checks.ran === 0);
+function unmeasuredGreenIsUnknown(row: PostLandAuditRow): PostLandAuditRow {
+  if (row.result !== "green" || row.checks === null || row.checks.ran !== 0) return row;
+  row.result = "unknown";
+  row.reason = "exit 0, but not one check ran (checks.ran = 0) — nothing was measured, no verdict";
+  return row;
+}
+// THE NIGHT EVENT (Charge 3 condition 3): a nightly row names every land since the previous nightly
+// and the undo stack (UNDO_STACK_MAX), on the row itself and in one `postland_audit` line opening
+// `nightly` (the event kind every audit line already has — no new kind for the board to learn).
+// The ledger is read once here — once a night — for the covers of the rows in between.
+const NIGHTLY_LANDS_KEEP = 200;
+async function withNightlyFacts(row: PostLandAuditRow): Promise<void> {
+  if (row.trigger !== "nightly") return;
+  const canon = repoCanon(row.repo);
+  const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+  const mine = rows.map(validAuditRow).filter((r): r is PostLandAuditRow => !!r && repoCanon(r.repo) === canon);
+  const prevAt = mine.filter((r) => r.trigger === "nightly").at(-1)?.at ?? 0;
+  const seen = new Set<string>();
+  const lands = [...mine.filter((r) => r.at > prevAt).flatMap((r) => r.covers), ...row.covers]
+    .filter((c) => !c.branch.startsWith("(") && !seen.has(coverKey(c)) && !!seen.add(coverKey(c)))
+    .map((c) => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at }));
+  const undo = (undoStack.get(row.repo) ?? []).map((l) => ({ branch: l.branch, mainAfter: l.mainAfter, at: l.at }));
+  row.nightly = { lands: lands.slice(-NIGHTLY_LANDS_KEEP), landsTotal: lands.length,
+    undo: { max: UNDO_STACK_MAX, lands: undo, dropped: undoDropped.get(row.repo)?.n ?? 0 } };
+  audit("postland_audit", undefined, `nightly ${basename(row.repo)} ${row.main}@${row.mainSha.slice(0, 8)} ${row.result}: `
+    + `${lands.length} land(s) since the last nightly (${lands.map((l) => l.branch).join(", ") || "none"}); `
+    + `undo stack ${undo.length}/${UNDO_STACK_MAX} (${undo.map((l) => l.branch).join(", ") || "empty"})`
+    + `${row.nightly.undo.dropped ? `, ${row.nightly.undo.dropped} aged out` : ""}`);
+}
 function remoteVerdictOf(exitCode: number | null): { result: "green" | "red" | "unknown"; reason?: string } {
   if (exitCode === null) return { result: "unknown", reason: "the helper reported no exit code — no verdict" };
   if (exitCode === VERIFY_SKIP_EXIT) return { result: "unknown", reason: `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})` };
@@ -34466,6 +34612,9 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode), jobId: claim.id },
   };
+  unmeasuredGreenIsUnknown(row);
+  await withNightlyFacts(row);
+  noteAuditClock(row);
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
   // consume by VALUE, and neither by position nor by reference. Position is the drain's privilege
@@ -34625,12 +34774,20 @@ async function claimAuditShard(repo: string, k: number, n: number, deviceId: str
   if (held) return json({ error: `already claimed whole by ${held.name} — it expires ${new Date(held.expiresAt).toISOString()}` }, 409);
   if (auditRunningRepo === repo || runningPostLandAudit?.repo === repo)
     return json({ error: "the local drain is already auditing this tree — nothing to take over" }, 409);
+  const takesScope = helperTakesSkipUnits(deviceId);
+  if (!auditShardRuns.has(repo) && !takesScope && auditTriggerNow(repo, q) === "nightly")
+    return json({ error: `this is the nightly audit (the whole suite with the dom unit's mutants), and this device's last`
+      + ` heartbeat did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — it would run the suite without them` }, 409);
   if (!auditShardRuns.has(repo)) {
     const opened = await (auditShardOpening.get(repo) ?? openAuditShardRun(repo, q.main, n));
     if ("error" in opened) return json({ error: opened.error }, opened.status);
   }
   const run = auditShardRuns.get(repo);
   if (!run || run.n !== n) return json({ error: "the sharded run for this tree changed while the claim waited — try again" }, 409);
+  run.scope ??= takesScope ? auditScopeOf(run.trigger) : {};
+  if (Object.keys(run.scope).length && !takesScope)
+    return json({ error: `this run's shards are planned with ${JSON.stringify(run.scope)}, and this device's last heartbeat`
+      + ` did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — its shard would plan over other units` }, 409);
   const now = Date.now();
   closeOpenShards(run, now);
   const slot = run.shards[k - 1];
@@ -34648,7 +34805,7 @@ async function claimAuditShard(repo: string, k: number, n: number, deviceId: str
   await saveStateNow();
   return json({ job: { id: slot.jobId, kind: "audit", repo: basename(repo), main: run.main, mainSha: run.mainSha,
     branches: run.covers.map((c) => c.branch), covers: run.covers.length,
-    claimedAt: now, expiresAt: slot.claim.expiresAt, name, shard: `${k}/${n}` } });
+    claimedAt: now, expiresAt: slot.claim.expiresAt, name, shard: `${k}/${n}`, ...run.scope } });
 }
 // One shard's verdict. Classified by the SHARED classifier, stored on the slot, and turned into a row
 // only when the last shard of the run is terminal. A lapsed claim is refused for the unsharded
@@ -34872,7 +35029,9 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
 // run dropped together, so the drain can never see a consumed run with its covers still queued.
 async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise<PostLandAuditRow> {
   const now = Date.now();
-  const row = shardedAuditRowOf(run, now, jobId);
+  const row = unmeasuredGreenIsUnknown(shardedAuditRowOf(run, now, jobId));
+  await withNightlyFacts(row);
+  noteAuditClock(row);
   lastPostLandAudit = row;
   recordAuditDuration(row); // a no-op for a remote row by contract — see auditCounts
   const q = auditQueue.get(run.repo);
@@ -45134,7 +45293,9 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
       && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number")
       .map((c): AuditCover => ({ branch: c.branch, mainAfter: c.mainAfter, at: c.at,
         ...(c.proportional === true ? { proportional: true as const } : {}),
-        ...(c.deploy === true ? { deploy: true as const } : {}) }));
+        ...(c.deploy === true ? { deploy: true as const } : {}),
+        ...(c.nightly === true ? { nightly: true as const } : {}),
+        ...(c.tip === true ? { tip: true as const } : {}) }));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       for (const [repo, v] of Object.entries(parsed as Record<string, unknown>)) {
         const e = v as { main?: unknown; covers?: unknown; behind?: unknown };
@@ -45204,6 +45365,24 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   } catch (e) {
     console.log(`post-land audit queue unreadable — pending audits are lost, the trail is unaffected: ${e instanceof Error ? e.message : e}`);
   }
+}
+// THE CLOCK'S MEMORY, rebuilt (auditCadenceOf, auditClockTick): every readable ledger row books its
+// repo, its last measured full audit and its last nightly, and a nightly cover still queued from
+// before the restart counts as that night's run — so a boot neither re-queues a night nor forgets
+// when the repo was last measured. Then the first tick: it queues a night the server slept through
+// and arms the next one. Helper deployments only, like everything the clock does.
+if (AUDIT_HELPER_ONLY) {
+  try {
+    const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+    for (const raw of rows) { const r = validAuditRow(raw); if (r) noteAuditClock(r); }
+  } catch (e) {
+    console.log(`post-land audit clock: the ledger is unreadable — quiet counts from the oldest cover: ${e instanceof Error ? e.message : e}`);
+  }
+  for (const [repo, q] of auditQueue)
+    for (const c of auditQueueGroups(q).flatMap((g) => g.covers))
+      if (c.nightly && c.at >= (auditLastNightly.get(repoCanon(repo))?.at ?? 0))
+        auditLastNightly.set(repoCanon(repo), { at: c.at, mainSha: c.mainAfter });
+  void auditClockTick();
 }
 
 // The row the state snapshot tick writes. Every source is one the process already keeps: the lane
@@ -47566,7 +47745,7 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
   const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
   const full = rows.map(validAuditRow).filter((r): r is PostLandAuditRow => !!r && repoCanon(r.repo) === canon
     && r.mainSha === target && r.proportional !== true);
-  const green = full.filter((r) => r.result === "green").at(-1);
+  const green = full.filter(measuredGreen).at(-1);
   if (green) return { state: "seen", stamp: { at: green.at, result: "green" } };
   const red = full.filter((r) => r.result === "red").at(-1);
   if (red) {
@@ -47599,14 +47778,14 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
     next: `resolve the repo's integration branch, then POST ${deploy ? "/api/deploy" : "/api/repos/audit-tip"} again`,
     why: `no full audit of this tip exists, and ${basename(repo)}'s integration branch could not be resolved to queue one` };
   enqueueAuditCover(repo, main, deploy ? { branch: DEPLOY_AUDIT_BRANCH, mainAfter: target, at: Date.now(), deploy: true }
-    : { branch: AUDIT_TIP_BRANCH, mainAfter: target, at: Date.now() });
+    : { branch: AUDIT_TIP_BRANCH, mainAfter: target, at: Date.now(), tip: true });
   savePostLandAuditQueue();
   if (deploy) audit("deploy", undefined, `refused ${target.slice(0, 7)}: tip not audited — queued its full audit now`);
   else audit("postland_audit", undefined, `audit-tip ${basename(repo)} ${main}@${target.slice(0, 8)}: no full audit of the tip — queued one now`);
   kickAuditDrain();
   return { state: "unseen", repo, queued: true, next: watch,
-    why: deploy ? "no full audit of this tip exists — its audit was queued now, past the cadence's quiet window"
-      : "no full audit of this tip exists — its audit was queued now, under the cadence a land's audit keeps" };
+    why: deploy ? "no full audit of this tip exists — its audit was queued now, released at once (trigger deploy)"
+      : "no full audit of this tip exists — its audit was queued now, released at once (trigger audit-tip)" };
 }
 
 // THE DEPLOY'S SECOND WAY PAST AN UNAUDITED TIP (owner-Ja 2026-10-09 21:2x via the orchestrator: the
@@ -47648,7 +47827,7 @@ async function deployGateOnlyOf(repo: string, target: string): Promise<DeployGat
     lands.push(at);
     at = before;
     const here = full.filter((r) => r.mainSha === at);
-    const green = here.filter((r) => r.result === "green").at(-1);
+    const green = here.filter(measuredGreen).at(-1);
     if (green) return { ancestor: at, auditAt: green.at, lands };
     const red = here.filter((r) => r.result === "red").at(-1);
     if (red && !(adjudicated ??= await adjudicationsByAudit()).has(red.at)) return null;
@@ -47740,6 +47919,12 @@ async function deployRun(by: DeployPrincipal, force: boolean): Promise<Response>
   const gateOnly = !force && probe.state === "unseen" && probe.redAt === undefined
     ? await deployGateOnlyOf(probe.repo, target) : null;
   const tip = gateOnly || force || probe.state !== "unseen" ? probe : await deployAuditOf(target, true);
+  // …AND A TIP THAT GOES OUT UNAUDITED STARTS ITS AUDIT NOW (Charge 3 condition 1, Orchestratorin-Ja
+  // 2026-10-11, gate-only stays): the deploy is stamped `unaudited: gate-only` (or `forced`) and does
+  // not wait, but the tip it puts live is queued as a deploy cover in the same request — released at
+  // once (trigger deploy), so the clock cadence never leaves a live tree unmeasured until the night.
+  // A tip already queued or running answers queued:true and queues nothing twice (deployAuditOf).
+  const startedAudit = tip.state === "unseen" && (gateOnly || force) ? await deployAuditOf(target, true) : null;
   if (tip.state === "unseen" && !force && !gateOnly)
     return json({ ok: false, stage: "preflight", target, reason: `tip not audited — ${tip.why}`,
       audit: { repo: tip.repo, mainAfter: target, queued: tip.queued, ...(tip.redAt ? { redAt: tip.redAt } : {}) },
@@ -47750,7 +47935,8 @@ async function deployRun(by: DeployPrincipal, force: boolean): Promise<Response>
     : tip.state === "not-applicable" ? { unaudited: "no-audit-command" }
     : gateOnly ? { unaudited: "gate-only", gateOnly } : { unaudited: "forced" };
   if (gateOnly)
-    audit("deploy", undefined, `${target.slice(0, 7)} gate-only: ${gateOnly.lands.length} full-gated land(s) above ${gateOnly.ancestor.slice(0, 7)}, its full audit green (row at ${gateOnly.auditAt})`);
+    audit("deploy", undefined, `${target.slice(0, 7)} gate-only: ${gateOnly.lands.length} full-gated land(s) above ${gateOnly.ancestor.slice(0, 7)}, its full audit green (row at ${gateOnly.auditAt})`
+      + (startedAudit?.state === "unseen" ? ` — the tip's deploy audit ${startedAudit.queued ? "is queued" : "could not be queued"}: ${startedAudit.why}` : ""));
   if (auditStamp.unaudited === "forced")
     audit("deploy", undefined, `${target.slice(0, 7)} FORCED past an unaudited tip by the owner — ${tip.state === "unseen" ? tip.why : ""}`.slice(0, 240));
   const id = randomBytes(4).toString("hex");
@@ -50836,7 +51022,8 @@ Bun.serve<WSData>({
           hold: h?.hold ?? null, ...(h?.hold === "quiet" ? { releaseAt: h.releaseAt } : {}) };
       });
       return json({ audits: withAdj, total, malformed, configured: auditConfiguredAnywhere(), pending,
-        cadence: AUDIT_HELPER_ONLY ? { quietMs: AUDIT_QUIET_MS, maxWaitMs: AUDIT_MAX_WAIT_MS } : null,
+        cadence: AUDIT_HELPER_ONLY ? { quietMs: AUDIT_QUIET_MS, maxWaitMs: AUDIT_MAX_WAIT_MS,
+          quietDay: AUDIT_QUIET_DAY, nightlyAt: `${String(AUDIT_NIGHTLY_AT.h).padStart(2, "0")}:${String(AUDIT_NIGHTLY_AT.m).padStart(2, "0")}` } : null,
         quarantine: await quarantineView() });
     }
     // ...and the write that puts a judgement there. Owner-only by POSITION (below tokenGate), the

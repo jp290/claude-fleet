@@ -38,7 +38,7 @@ import {
 } from "../capability-map";
 import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
 import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../land-log";
-import { SHARD_UNITS, shardPlan } from "./ctx";
+import { SHARD_UNITS, selectSkipUnits, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
 // re-derived below and compared against the map.
@@ -53,7 +53,7 @@ import {
 } from "../lane-signals";
 // the allowlist is IMPORTED, never re-spelled: a pin that copied the list would pin its own copy
 import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX, remoteControlName, codexPermissionsFrom, CODEX_PERMISSIONS_DEFAULT } from "../server/types";
-import { modulesEnv } from "../helper-daemon/daemon";
+import { auditScopeEnv, modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
@@ -8265,8 +8265,9 @@ export default function (pi) {
         && /const AUDIT_SHARD_FEATURE = "audit-shard";/.test(server)
         && /reported\.features = Array\.isArray\(body\?\.features\)[\s\S]*?: undefined;/.test(heartbeat!)
         // the exact list, not "contains": a feature the daemon declares is a promise about its code, and
-        // the second entry (`lane-suite-modules`) has its own handshake pin in §S10c below
-        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard", "lane-suite-modules"\];/.test(daemonSrc)
+        // the second entry (`lane-suite-modules`) has its own handshake pin in §S10c below, the third
+        // (`audit-skip-units`, an audit's scope) its daemon fork pin beside the FLEET_E2E_SKIP_UNITS pins
+        && /export const DAEMON_FEATURES: readonly string\[\] = \["audit-shard", "lane-suite-modules", "audit-skip-units"\];/.test(daemonSrc)
         && /features: DAEMON_FEATURES,/.test(daemonSrc),
       `view=${/shardCapable/.test(shardViewFn!)} claim=${/AUDIT_SHARD_FEATURE/.test(shardClaimFn!)} daemon=${/DAEMON_FEATURES/.test(daemonSrc)}`);
     pin(`${RULE_SHARDS} (c) the merge is green only with all n green, and red outranks unknown`,
@@ -8381,7 +8382,8 @@ export default function (pi) {
         // …and a shard job's FLEET_E2E_SHARD beside them (the sharded audit, shardEnv), then a narrowed
         // preview's FLEET_E2E_MODULES (modulesEnv, §S10c) — the two cuts spread after the lock
         // …and the run's port band FLEET_E2E_BAND (portBand, 2026-10-10 EADDRINUSE) between lock and cuts
-        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.bandEnv\(band\), \.\.\.shardVars, \.\.\.modulesVars \};/.test(workFn)
+        // …and an audit's scope (auditScopeEnv: FLEET_E2E_SKIP_UNITS, FLEET_E2E_DOM_MUTANTS) after the cuts
+        && /const suiteEnv: Record<string, string> = \{ TMPDIR: scratch, \.\.\.lockEnv, \.\.\.bandEnv\(band\), \.\.\.shardVars, \.\.\.modulesVars, \.\.\.scopeVars \};/.test(workFn)
         && /const scratch = `\$\{runDir\}\/tmp`;/.test(workFn)
         // the trailing `ctl.signal` is the withdrawal switch (7e601e57) — the lock still travels with the run
         // …and the `scope` after it names which processes belong to the run, for its reap (5d56f628)
@@ -9510,6 +9512,105 @@ export default function (pi) {
   // a unit with no weight silently rides along wherever the tie-break puts it
   pin(`${RULE_SHARD} — every unit carries a non-negative measured weight and a non-empty module list`,
     SHARD_UNITS.every((u) => Number.isFinite(u.seconds) && u.seconds >= 0 && u.modules.length > 0));
+}
+
+// --- FLEET_E2E_SKIP_UNITS: A UNIT SKIP CUTS THE TABLE, NOT THE RUN (2026-10-12) ------------------
+// A `quiet`/`deploy` audit runs every unit but `dom`; the helper daemon turns the claim's `skipUnits`
+// into FLEET_E2E_SKIP_UNITS (helper-daemon/daemon.ts#auditScopeEnv) and the runner takes those units
+// out of the table its shard plan is made from (e2e/ctx.ts#shardPlan, #selectSkipUnits). What this
+// block holds is the part a sharded audit's MERGE depends on and no instance can show: that every
+// shard computes the same reduced plan on its own, that no shard holds a skipped unit, that the
+// union is the rest of the table — and that the unskipped plan is the one every earlier audit ran.
+{
+  const RULE_SKIP = "a unit skip removes exactly its units from every shard's plan and refuses every value it cannot honour";
+  // THE OLD ALGORITHM, copied here on purpose: (b) holds `shardPlan(n)` to the plan it made before
+  // `skip` existed, and a pin comparing the function only with itself would pass any change to it.
+  const legacyPlan = (n: number): Map<string, number> => {
+    const load = Array.from({ length: n }, () => 0);
+    const plan = new Map<string, number>();
+    const byWeight = SHARD_UNITS.map((u, i) => ({ u, i })).sort((a, b) => b.u.seconds - a.u.seconds || a.i - b.i);
+    for (const { u } of byWeight) {
+      let best = 0;
+      for (let s = 1; s < n; s++) if (load[s]! < load[best]!) best = s;
+      load[best] = load[best]! + u.seconds;
+      plan.set(u.unit, best + 1);
+    }
+    return plan;
+  };
+  const entries = (m: Map<string, number>): string => JSON.stringify([...m]);
+  const rest = SHARD_UNITS.map((u) => u.unit).filter((u) => u !== "dom");
+  const skipBad: string[] = [];
+  const plainBad: string[] = [];
+  for (let n = 1; n <= 4; n++) {
+    const p = shardPlan(n, new Set(["dom"]));
+    const union = [...new Set([...p.keys()])].sort();
+    if (p.has("dom") || JSON.stringify(union) !== JSON.stringify([...rest].sort())
+      || [...p.values()].some((s) => !Number.isInteger(s) || s < 1 || s > n)
+      || entries(p) !== entries(shardPlan(n, new Set(["dom"]))))
+      skipBad.push(`n=${n}:${entries(p)}`);
+    if (entries(shardPlan(n)) !== entries(legacyPlan(n)) || entries(shardPlan(n, new Set())) !== entries(legacyPlan(n))
+      || !shardPlan(n).has("dom"))
+      plainBad.push(`n=${n}`);
+  }
+  pin(`${RULE_SKIP} — (a) for n=1..4, shardPlan(n, {dom}) gives every unit but dom a shard in 1..n, the same plan each time, and none holds dom`,
+    skipBad.length === 0, `bad=[${skipBad.join(" ")}]`);
+  pin(`${RULE_SKIP} — (b) without a skip (or with an empty one) shardPlan(n) is the plan the algorithm made before skip existed, dom included`,
+    plainBad.length === 0, `bad=[${plainBad}]`);
+  // (c) THE DECISION, run. Every refusal is a value the runner would otherwise have turned into a
+  // smaller run or a full one under a skip's name.
+  const sk = (raw: string | undefined, modulesGiven = false): string => {
+    const r = selectSkipUnits({ raw, modulesGiven });
+    return r.refusal !== null ? `no:${r.refusal}` : r.skip === null ? "none" : `skip:${[...r.skip].join(",")}`;
+  };
+  const skipCases: [string, boolean][] = [
+    ["unset is no skip", sk(undefined) === "none"],
+    ["one unit is that unit, whitespace and repeats folded", sk(" dom , dom") === "skip:dom" && sk("dom,ctl") === "skip:dom,ctl"],
+    ["together with --modules is refused by name", sk("dom", true).startsWith("no:FLEET_E2E_SKIP_UNITS and --modules together")],
+    ["an unknown unit is refused and named", sk("bogus").startsWith("no:FLEET_E2E_SKIP_UNITS names no unit") && sk("dom,bogus").includes("bogus")],
+    ["a value naming nothing is refused", sk(",,").startsWith("no:FLEET_E2E_SKIP_UNITS wants")],
+    ["skipping every unit is refused", sk(SHARD_UNITS.map((u) => u.unit).join(",")).startsWith("no:FLEET_E2E_SKIP_UNITS skips every unit")],
+  ];
+  pin(`${RULE_SKIP} — (c) selectSkipUnits: no skip when unset, a refusal for --modules alongside, an unknown unit, a value naming nothing and a skip of everything`,
+    skipCases.every(([, ok]) => ok), skipCases.filter(([, ok]) => !ok).map(([n]) => n).join("; "));
+  // (d) the runner asks THAT decision and plans with ITS answer — the two lines without which (a)-(c)
+  // describe a function nothing calls. willRun and the NO_BROWSER switch read `myUnits`, so a skip of
+  // `dom` reaches the browser env by the existing path.
+  const runnerCode = read("fleet-e2e.ts").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+  pin(`${RULE_SKIP} — (d) the runner reads FLEET_E2E_SKIP_UNITS only through selectSkipUnits, throws its refusal, and plans every shard with its skip`,
+    /selectSkipUnits\(\{ raw: process\.env\.FLEET_E2E_SKIP_UNITS \|\| undefined, modulesGiven: modulesArg !== undefined \}\)/.test(runnerCode)
+      && /if \(skipped\.refusal\) throw new Error\(skipped\.refusal\);/.test(runnerCode)
+      && /shardPlan\(shard\.n, skip \?\? undefined\)/.test(runnerCode)
+      && !/shardPlan\(shard\.n\)/.test(runnerCode)
+      && (runnerCode.match(/FLEET_E2E_SKIP_UNITS/g) ?? []).length === 2,
+    `reads=${(runnerCode.match(/FLEET_E2E_SKIP_UNITS/g) ?? []).length} planned=${/shardPlan\(shard\.n, skip/.test(runnerCode)}`);
+  // (e) the one writer is the daemon: a wrapper or watchdog line that exported a skip would take a
+  // unit out of every audit on this machine, and the nightly run with it.
+  const skipSetters = ["watchdog.sh", ...readdirSync(ROOT).filter((f) => /\.sh$/.test(f))]
+    .filter((f) => /FLEET_E2E_SKIP_UNITS=/.test(read(f)));
+  pin(`${RULE_SKIP} — (e) no *.sh wrapper and no watchdog line assigns FLEET_E2E_SKIP_UNITS`,
+    skipSetters.length === 0, `setters=[${skipSetters}]`);
+  // (f) THE DAEMON'S FORK, run here too: e2e/helper-daemon.ts holds it inside the suite, and this is
+  // the half that costs milliseconds and no instance.
+  const scope = (kind: string | undefined, su: unknown, dm: unknown): string => JSON.stringify(auditScopeEnv(kind, su, dm));
+  const scopeCases: [string, boolean][] = [
+    ["neither field is {} on every kind", scope(undefined, undefined, undefined) === "{}" && scope("lane-suite", undefined, undefined) === "{}"],
+    ["an audit's skipUnits is FLEET_E2E_SKIP_UNITS", scope("audit", ["dom"], undefined) === '{"FLEET_E2E_SKIP_UNITS":"dom"}'
+      && scope(undefined, ["dom", "ctl"], undefined) === '{"FLEET_E2E_SKIP_UNITS":"dom,ctl"}'],
+    ["an audit's domMutants is FLEET_E2E_DOM_MUTANTS=1", scope("audit", undefined, true) === '{"FLEET_E2E_DOM_MUTANTS":"1"}'],
+    ["lane-suite and command refuse either field", scope("lane-suite", ["dom"], undefined) === "null" && scope("command", undefined, true) === "null"],
+    ["a bad value is refused", ["x", [], ["DOM"], ["a,b"], ["a b"], [1]].every((v) => scope("audit", v, undefined) === "null")
+      && [false, 1, "true", null].every((v) => scope("audit", undefined, v) === "null")],
+  ];
+  pin(`${RULE_SKIP} — (f) auditScopeEnv: an audit's skipUnits/domMutants become their env vars, any other kind or a bad value is null, neither is {}`,
+    scopeCases.every(([, ok]) => ok), scopeCases.filter(([, ok]) => !ok).map(([n]) => n).join("; "));
+  const daemonCode = exists("helper-daemon/daemon.ts") ? read("helper-daemon/daemon.ts") : "";
+  const work = /async function work\(cfg: HelperConfig, job: JobView\)[\s\S]*?\n\}/.exec(daemonCode)?.[0] ?? "";
+  pin(`${RULE_SKIP} — (f) the daemon reads the scope only through auditScopeEnv, and reports an unrunnable one 127 before downloading`,
+    /const scopeVars = auditScopeEnv\(j\.kind, j\.skipUnits, j\.domMutants\);/.test(work)
+      && /if \(scopeVars === null\) \{\s*await report\(cfg, j, 127,/.test(work)
+      && work.indexOf("auditScopeEnv(") >= 0 && work.indexOf("auditScopeEnv(") < work.indexOf("downloadBundle(")
+      && /\.\.\.modulesVars, \.\.\.scopeVars \}/.test(work),
+    `auditScopeEnv@${work.indexOf("auditScopeEnv(")} download@${work.indexOf("downloadBundle(")}`);
 }
 
 

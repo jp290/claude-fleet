@@ -540,14 +540,33 @@ export async function run(): Promise<void> {
     // section queues is offered only if the deploy released it past the cadence; nothing runs it
     // here, and this suite plays the helper over the portal routes WITHOUT registering a device (no
     // heartbeat, so no presence reading leaks into the modules after this one).
+    // Since Z1 (2026-10-11, server.ts#auditCadenceOf) a land releases nothing and the quiet window
+    // counts from the repo's last MEASURED audit, so the hour holds every tip this section measures
+    // seconds apart: what releases a run here is the deploy (`deploy`) or the direct commit's door
+    // (`audit-tip`), and the row's `trigger` says which. FLEET_AUDIT_QUIET_DAY "" makes that the same
+    // reading at 15:00 and at 03:00.
+    // …AND THE CLOCK'S OTHER HALF IS KEPT OUT, deliberately: a helper boot queues one `(nightly)` run per
+    // night for every repo its ledger knows (server.ts#auditClockTick), and no knob turns that off —
+    // FLEET_AUDIT_NIGHTLY_AT only moves the hour. The nightly is never offered to a device without
+    // "audit-skip-units" (this section has no device at all), and it would ride on FIX's entry from the
+    // first reboot on. So the section starts from a ledger that knows only FIX, with tonight's nightly
+    // already on it (a fixture row: result unknown, no covers, measures nothing), under a NIGHTLY_AT
+    // two minutes back — one slot spans the whole section. The ledger is restored at the end anyway.
+    // The nightly itself is measured in e2e/helper-portal.ts (T.night).
     {
+      const hhmm = (t: number): string => {
+        const d = new Date(t);
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      };
       const AUD = { FLEET_REPO_DIR: FIX, FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_AUDIT_HELPER_GRACE_MS: "60000",
-        FLEET_AUDIT_QUIET_MS: "3600000", FLEET_AUDIT_MAX_WAIT_MS: "7200000", FLEET_AUDIT_SHARDS: "1" };
+        FLEET_AUDIT_QUIET_MS: "3600000", FLEET_AUDIT_MAX_WAIT_MS: "7200000", FLEET_AUDIT_SHARDS: "1",
+        FLEET_AUDIT_QUIET_DAY: "", FLEET_AUDIT_NIGHTLY_AT: hhmm(Date.now() - 120_000) };
       const headNow = (): string => spawnSync("git", ["-C", FIX, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       interface DeployAnswer { ok?: unknown; stage?: string; id?: string; reason?: string; next?: string;
         audit?: { mainAfter?: string; queued?: boolean; redAt?: number }; unaudited?: string }
       interface AuditJob { id: string; kind?: string; repo: string; claim: unknown; covers: number; branches: string[] }
-      interface LedgerRow { at: number; mainSha: string; result: string; remote?: unknown }
+      interface LedgerRow { at: number; mainSha: string; result: string; remote?: unknown; trigger?: string;
+        reason?: string; checks?: { ran: number; failed: number } | null }
       interface DeployRowX extends Row { audit?: { at: number; result: string; adjudication?: string }; unaudited?: string }
       // THE LEDGERS THIS SECTION WRITES INTO, snapshotted: its audits are REAL rows (one per measured
       // tip, plus an adjudication), and later modules count those files — e2e/steward-core.ts asserts
@@ -556,6 +575,12 @@ export async function run(): Promise<void> {
       // deploy-facts and core in one shard: steward-core read three §7g rows. Restored below.
       const LEDGERS = ["post-land-audits.jsonl", "audit-adjudications.jsonl"].map((f) => `${ROOT}/${f}`);
       const ledgersBefore = LEDGERS.map((f) => existsSync(f) ? readFileSync(f, "utf8") : null);
+      const fixGit = (...args: string[]): string => spawnSync("git", ["-C", FIX, ...args], { encoding: "utf8" }).stdout.trim();
+      const seededAt = Date.now();
+      writeFileSync(`${ROOT}/post-land-audits.jsonl`, `${JSON.stringify({ at: seededAt, startedAt: seededAt, ms: 0,
+        repo: fixGit("rev-parse", "--show-toplevel"), main: fixGit("symbolic-ref", "--short", "HEAD"), mainSha: headNow(),
+        result: "unknown", reason: "e2e deploy-facts §7 fixture: tonight's nightly is on the ledger already", cmd: "e2e fixture",
+        exitCode: null, out: "", checks: null, covers: [], trigger: "nightly" })}\n`);
       await restartSrv(AUD);
       const helperToken = ((await (await get("/api/helper/token")).json()) as { token?: string }).token ?? "";
       const HH = { "x-fleet-helper-token": helperToken, "content-type": "application/json" };
@@ -575,12 +600,18 @@ export async function run(): Promise<void> {
         } catch { return []; }
       };
       // the helper's half: claim the offered job, report its exit — the row is written by that POST
-      const measure = async (jobId: string, exitCode: number): Promise<number> => {
+      // `tail` overrides the stand-in's output — (b2) reports a green that ran nothing
+      const measure = async (jobId: string, exitCode: number, tail?: string): Promise<number> => {
         const c = await post("/api/helper/claim", { jobId, deviceId: DEV }, HH);
         const r = await post("/api/helper/result", { jobId, exitCode,
-          tail: exitCode === 0 ? "PASS  deploy tip (e2e)\nALL PASS" : "FAIL  deploy tip (e2e)\n1 failed" }, HH);
+          tail: tail ?? (exitCode === 0 ? "PASS  deploy tip (e2e)\nALL PASS" : "FAIL  deploy tip (e2e)\n1 failed") }, HH);
         return c.ok && r.ok ? 200 : c.ok ? r.status : c.status;
       };
+      // every cover queued for `sha`, whatever the cadence says — the live view's `waiting`
+      interface Waiting { repo: string; branch: string; mainAfter: string }
+      const waitingFor = async (sha: string): Promise<Waiting[]> =>
+        ((((await (await get("/api/sessions")).json()) as { postLandAuditLive?: { waiting?: Waiting[] } | null })
+          .postLandAuditLive?.waiting) ?? []).filter((w) => w.repo === fixRepo && w.mainAfter === sha);
       // a 202 kills this srv 250 ms later: wait for that, then play the watchdog
       const rebootAfterDeploy = async (): Promise<void> => {
         for (let i = 0; i < 80; i++) {
@@ -602,9 +633,9 @@ export async function run(): Promise<void> {
           && a.b.audit.queued === true && (a.b.next ?? "").includes(`"kind":"audit"`) && (a.b.next ?? "").includes(tipA),
         `${a.status} ${JSON.stringify(a.b).slice(0, 400)}`);
       if (a.status === 202) await rebootAfterDeploy();
-      // (b) …at once: the quiet window is an hour, and the job is on the helper's list now.
-      // Since 2026-10-09 the `no-land` arm releases it here too (no other land of FIX is in flight), so
-      // this check no longer isolates the `deploy` arm; it proves the deploy's tree is offered at once.
+      // (b) …at once: the quiet window is an hour, and the job is on the helper's list now. Since Z1 the
+      // `deploy` arm is again the ONLY thing that can release it (the 2026-10-09 `no-land` arm is gone).
+      // MUTATION: drop the `deploy` arm of server.ts#auditCadenceOf ⇒ the entry waits the hour ⇒ red.
       const again = await deployAsk();
       const jobA = (await auditJobs())[0];
       check("§7b the queued audit is offered NOW, past the hour-long quiet window — one cover, the deploy's own",
@@ -613,8 +644,28 @@ export async function run(): Promise<void> {
       check("§7b a second deploy while it is queued is refused again and queues nothing twice",
         again.status === 409 && again.b.audit?.queued === true && /already queued/.test(again.b.reason ?? ""),
         `${again.status} ${JSON.stringify(again.b).slice(0, 300)}`);
-      // (c) the helper measures it green ⇒ the deploy goes, and its ledger row names that audit
-      const measuredA = jobA ? await measure(jobA.id, 0) : 0;
+      // (b2) A GREEN THAT RAN NOTHING IS NO AUDIT (Charge 3 condition 4, server.ts#unmeasuredGreenIsUnknown):
+      // the helper reports exit 0 and not one PASS line — a runner that returned early, an empty module
+      // list. The row is `unknown` with its reason, and the deploy of that tip is NOT stamped: it stays
+      // refused and queues the tip's audit once more. MUTATION: return the row unchanged from
+      // unmeasuredGreenIsUnknown ⇒ the row reads green ⇒ the first check is red. (The deploy stays 409
+      // even then — server.ts#measuredGreen guards the reader as well, which the second check holds.)
+      const emptyA = jobA ? await measure(jobA.id, 0, "the runner returned before its first module\n") : 0;
+      const emptyRow = ledgerFor(tipA).at(-1);
+      check("§7b2 a helper result with exit 0 and NO PASS line writes an `unknown` row naming checks.ran = 0 — never a green",
+        emptyA === 200 && emptyRow?.result === "unknown" && (emptyRow.reason ?? "").includes("checks.ran = 0")
+          && emptyRow.checks?.ran === 0 && emptyRow.trigger === "deploy" && !ledgerFor(tipA).some((r) => r.result === "green"),
+        `measure=${emptyA} row=${String(JSON.stringify(emptyRow)).slice(0, 400)}`);
+      const b2 = await deployAsk();
+      if (b2.status === 202) await rebootAfterDeploy();
+      const jobA2 = (await auditJobs())[0];
+      check("§7b2 …and the deploy of that tip is not stamped by it: 409 tip not audited, the audit queued again and offered at once",
+        b2.status === 409 && /^tip not audited — /.test(b2.b.reason ?? "") && b2.b.audit?.queued === true
+          && /queued now/.test(b2.b.reason ?? "") && !!jobA2 && JSON.stringify(jobA2.branches) === JSON.stringify(["(deploy)"]),
+        `${b2.status} ${JSON.stringify(b2.b).slice(0, 300)} job=${JSON.stringify(jobA2)}`);
+      // (c) the helper measures it green ⇒ the deploy goes, and its ledger row names that audit — and the
+      // audit row names what released it: `deploy`
+      const measuredA = jobA2 ? await measure(jobA2.id, 0) : 0;
       const greenA = ledgerFor(tipA).find((r) => r.result === "green");
       const c = await deployAsk();
       if (c.status === 202) await rebootAfterDeploy();
@@ -623,6 +674,9 @@ export async function run(): Promise<void> {
         measuredA === 200 && !!greenA && c.status === 202 && rowC?.ok === true && rowC.target === tipA
           && rowC.audit?.result === "green" && rowC.audit.at === greenA.at && rowC.unaudited === undefined,
         `measure=${measuredA} green=${JSON.stringify(greenA)} deploy=${c.status} row=${JSON.stringify(rowC).slice(0, 300)}`);
+      // MUTATION: stamp nothing on the helperResult row ⇒ red
+      check("§7c …and that audit row says the DEPLOY released it (`trigger: deploy`)",
+        greenA?.trigger === "deploy", JSON.stringify(greenA));
       // (d) RED: the refusal names the adjudication door and re-queues nothing; an adjudicated red goes
       commit("server.ts", "// v9 — a tip whose audit comes back red");
       const tipB = headNow();
@@ -644,31 +698,37 @@ export async function run(): Promise<void> {
         judged?.ok === true && d3.status === 202 && rowD?.target === tipB && rowD.audit?.result === "red"
           && rowD.audit.adjudication === "flake" && rowD.audit.at === redB?.at,
         `judge=${judged?.status} deploy=${d3.status} row=${JSON.stringify(rowD).slice(0, 300)}`);
-      // (e) FORCE, the owner's: past an unmeasured tip, stamped, and no audit queued behind the restart
+      // (e) FORCE, the owner's: past an unmeasured tip, stamped — and, since Charge 3 condition 1
+      // (2026-10-11), the tip it put live gets its full audit queued in the same request, released at
+      // once: a forced deploy does not wait for it, but it never leaves the live tree unmeasured until
+      // the night. MUTATION: drop the `startedAudit` line of server.ts#deployRun ⇒ nothing queued ⇒ red.
       commit("server.ts", "// v10 — forced live unaudited");
       const tipC = headNow();
       const e = await deployAsk({ force: true });
-      const queuedOnForce = (await auditJobs()).length;
+      const queuedOnForce = await waitingFor(tipC);
       if (e.status === 202) await rebootAfterDeploy();
       const rowE = await deployRow(e.b.id);
       check("§7e force with the owner token deploys an unaudited tip and the ledger row says `unaudited: forced`",
-        e.status === 202 && e.b.unaudited === "forced" && queuedOnForce === 0
+        e.status === 202 && e.b.unaudited === "forced"
           && rowE?.target === tipC && rowE.unaudited === "forced" && rowE.audit === undefined,
-        `${e.status} ${JSON.stringify(e.b).slice(0, 200)} queued=${queuedOnForce} row=${JSON.stringify(rowE).slice(0, 300)}`);
+        `${e.status} ${JSON.stringify(e.b).slice(0, 200)} row=${String(JSON.stringify(rowE)).slice(0, 300)}`);
+      const jobC = (await auditJobs())[0];
+      const measuredC = jobC ? await measure(jobC.id, 0) : 0;
+      check("§7e …and the forced tip's full audit was queued in the same request, as (deploy), offered at once after the restart and stamped `deploy`",
+        queuedOnForce.length === 1 && queuedOnForce[0]?.branch === "(deploy)"
+          && !!jobC && JSON.stringify(jobC.branches) === JSON.stringify(["(deploy)"]) && measuredC === 200
+          && ledgerFor(tipC).some((r) => r.result === "green" && r.trigger === "deploy"),
+        `queued=${JSON.stringify(queuedOnForce)} job=${JSON.stringify(jobC)} measure=${measuredC} rows=${JSON.stringify(ledgerFor(tipC)).slice(0, 300)}`);
       // (f) THE DIRECT COMMIT'S DOOR (2026-10-09): POST /api/repos/audit-tip queues the full audit of
       // the integration tip with no deploy attempt — once — and its guard sha queues nothing for a
       // commit that is not the tip. Counted off the live view's `waiting`, which lists every queued
       // cover whatever the cadence says. MUTATION: drop the `queuedFor` arm of
       // server.ts#deployAuditOf ⇒ the second call answers "queued now" and the tip holds two covers.
       interface TipAnswer { queued?: unknown; why?: string; state?: string; target?: string }
-      interface Waiting { repo: string; branch: string; mainAfter: string }
       const tipAsk = async (body: unknown = {}): Promise<{ status: number; b: TipAnswer }> => {
         const r = await post("/api/repos/audit-tip", body);
         return { status: r.status, b: (await r.json().catch(() => ({}))) as TipAnswer };
       };
-      const waitingFor = async (sha: string): Promise<Waiting[]> =>
-        ((((await (await get("/api/sessions")).json()) as { postLandAuditLive?: { waiting?: Waiting[] } | null })
-          .postLandAuditLive?.waiting) ?? []).filter((w) => w.repo === fixRepo && w.mainAfter === sha);
       commit("server.ts", "// v11 — a direct commit no land carried");
       const tipD = headNow();
       const guard = await tipAsk({ sha: tipC });
@@ -687,10 +747,18 @@ export async function run(): Promise<void> {
       check("§7f a second audit-tip while that audit is queued answers queued:true and queues nothing twice",
         f2.status === 200 && f2.b.queued === true && /already queued/.test(f2.b.why ?? "") && afterF2.length === 1,
         `${f2.status} ${JSON.stringify(f2.b).slice(0, 300)} waiting=${JSON.stringify(afterF2)}`);
-      // …and once the helper measured that tip green there is nothing left to queue — which also
-      // leaves the queue empty for every module after this one
+      // …RELEASED AT ONCE, under the hour (Charge 3 condition 2): FIX's last measured audit is tipC's,
+      // seconds old, so the quiet window holds anything else for an hour — a direct commit passed no
+      // land gate and keeps its own trigger. MUTATION: drop `tip: true` from the audit-tip cover in
+      // server.ts#deployAuditOf ⇒ the cover keeps the quiet window, nothing is offered ⇒ red.
       const jobD = (await auditJobs())[0];
       const measuredD = jobD ? await measure(jobD.id, 0) : 0;
+      check("§7f the audit-tip run is offered AT ONCE under the hour-long quiet window, and its row says `trigger: audit-tip`",
+        !!jobD && JSON.stringify(jobD.branches) === JSON.stringify(["(audit-tip)"]) && measuredD === 200
+          && ledgerFor(tipD).some((r) => r.result === "green" && r.trigger === "audit-tip"),
+        `job=${JSON.stringify(jobD)} measure=${measuredD} rows=${JSON.stringify(ledgerFor(tipD)).slice(0, 300)}`);
+      // …and once the helper measured that tip green there is nothing left to queue — which also
+      // leaves the queue empty for every module after this one
       const f3 = await tipAsk();
       check("§7f once the tip's full audit is green audit-tip answers queued:false and nothing waits for it",
         measuredD === 200 && f3.status === 200 && f3.b.queued === false && f3.b.state === "seen"
@@ -699,11 +767,14 @@ export async function run(): Promise<void> {
 
       // (g) GATE-ONLY (owner-Ja 2026-10-09 21:2x): the audit never catches a tip that moves 41 times a
       // day, so a tip whose every land since the youngest GREEN-audited ancestor (tipD, just above)
-      // passed a FULL land gate goes out stamped `unaudited: "gate-only"` with that ancestor — and
-      // queues nothing, the tip's audit keeps its cadence. The notes are written here the way
+      // passed a FULL land gate goes out stamped `unaudited: "gate-only"` with that ancestor. Since
+      // Charge 3 condition 1 (2026-10-11) it no longer leaves the tip to the cadence: the same request
+      // queues the tip's own `(deploy)` audit, released at once — the deploy does not wait for it, the
+      // clock never leaves the live tree unmeasured until the night. The notes are written here the way
       // writeLandNote writes them. Every refusal after it keeps TODAY's text, byte for byte.
       // MUTATIONS, one per refusal, each turns its 409 into a 202 over a green anchor below it:
       // drop the red arm of server.ts#deployGateOnlyOf ⇒ (g2); drop its `class` test ⇒ (g3).
+      // …and drop the `startedAudit` line of server.ts#deployRun ⇒ (g1)'s audit check is red.
       const gitIn = (...args: string[]): string =>
         spawnSync("git", ["-C", FIX, "-c", "user.email=e2e@local", "-c", "user.name=e2e", ...args], { encoding: "utf8" }).stdout.trim();
       const landNote = (after: string, before: string, cls: string): void => {
@@ -712,13 +783,13 @@ export async function run(): Promise<void> {
           verify: { cmd: "e2e", ok: true, out: "ALL PASS", at: Date.now(), mainSha: before, class: cls },
           confirmedByHuman: false, at: Date.now() }), after);
       };
-      const TODAY_UNSEEN = "tip not audited — no full audit of this tip exists — its audit was queued now, past the cadence's quiet window";
+      const TODAY_UNSEEN = "tip not audited — no full audit of this tip exists — its audit was queued now, released at once (trigger deploy)";
       const drain = async (): Promise<number> => {
         let n = 0;
         for (const j of await auditJobs()) if (await measure(j.id, 0) === 200) n++;
         return n;
       };
-      // (g1) two full-gated lands above the green tipD ⇒ 202, stamped, nothing queued
+      // (g1) two full-gated lands above the green tipD ⇒ 202, stamped — and the tip's audit queued
       commit("server.ts", "// v12 — landed through a full gate");
       const g1 = headNow();
       landNote(g1, tipD, "full");
@@ -726,20 +797,28 @@ export async function run(): Promise<void> {
       const g2 = headNow();
       landNote(g2, g1, "full");
       const g = await deployAsk();
-      const queuedOnGate = (await waitingFor(g2)).length + (await auditJobs()).length;
+      const queuedOnGate = await waitingFor(g2);
       if (g.status === 202) await rebootAfterDeploy();
       const rowG = await deployRow(g.b.id);
       const gb = g.b as DeployAnswer & { gateOnly?: { ancestor?: string; lands?: string[] } };
       const rg = rowG as (DeployRowX & { gateOnly?: { ancestor?: string; auditAt?: number; lands?: string[] } }) | undefined;
-      check("§7g a tip whose lands since the youngest green-audited ancestor all passed a FULL gate deploys without force: 202, `unaudited: gate-only` + the ancestor, nothing queued",
-        g.status === 202 && gb.unaudited === "gate-only" && gb.gateOnly?.ancestor === tipD && queuedOnGate === 0
+      check("§7g a tip whose lands since the youngest green-audited ancestor all passed a FULL gate deploys without force: 202, `unaudited: gate-only` + the ancestor",
+        g.status === 202 && gb.unaudited === "gate-only" && gb.gateOnly?.ancestor === tipD
           && rg?.ok === true && rg.target === g2 && rg.unaudited === "gate-only" && rg.audit === undefined
           && rg.gateOnly?.ancestor === tipD && typeof rg.gateOnly.auditAt === "number"
           && JSON.stringify(rg.gateOnly.lands) === JSON.stringify([g2, g1]),
-        `${g.status} ${JSON.stringify(g.b).slice(0, 300)} queued=${queuedOnGate} row=${JSON.stringify(rowG).slice(0, 400)}`);
-      // (g2) a RED full audit without a verdict on a land in between ⇒ today's 409
+        `${g.status} ${JSON.stringify(g.b).slice(0, 300)} row=${String(JSON.stringify(rowG)).slice(0, 400)}`);
+      // …the audit it started: one (deploy) cover on the tip in the same request, offered at once after
+      // the restart, and audit-tip on that tip finds it queued rather than queueing a second
       const auditG2 = await tipAsk({ sha: g2 });
       const jobG2 = (await auditJobs())[0];
+      check("§7g …and the gate-only deploy QUEUED THE TIP'S OWN AUDIT in the same request: one (deploy) cover, offered at once, audit-tip finds it queued",
+        queuedOnGate.length === 1 && queuedOnGate[0]?.branch === "(deploy)"
+          && !!jobG2 && JSON.stringify(jobG2.branches) === JSON.stringify(["(deploy)"])
+          && auditG2.b.queued === true && /already queued as \(deploy\)/.test(auditG2.b.why ?? ""),
+        `queued=${JSON.stringify(queuedOnGate)} job=${JSON.stringify(jobG2)} audit-tip=${JSON.stringify(auditG2.b).slice(0, 200)}`);
+      // (g2) a RED full audit without a verdict on a land in between ⇒ today's 409. The red is that very
+      // deploy audit, measured red here.
       const redG2 = jobG2 ? await measure(jobG2.id, 1) : 0;
       commit("server.ts", "// v14 — full-gated, above a red nobody judged");
       const g3 = headNow();
@@ -747,7 +826,7 @@ export async function run(): Promise<void> {
       const h = await deployAsk();
       if (h.status === 202) await rebootAfterDeploy();
       check("§7g a red, unadjudicated full audit between the tip and its green ancestor stays 409 with today's text",
-        auditG2.b.queued === true && redG2 === 200 && ledgerFor(g2).some((r) => r.result === "red")
+        redG2 === 200 && ledgerFor(g2).some((r) => r.result === "red" && r.trigger === "deploy")
           && h.status === 409 && h.b.reason === TODAY_UNSEEN && h.b.audit?.queued === true && h.b.unaudited === undefined,
         `audit-tip=${JSON.stringify(auditG2.b).slice(0, 160)} red=${redG2} ${h.status} ${JSON.stringify(h.b).slice(0, 300)}`);
       const drainedG3 = await drain(); // g3 is now green-audited: the anchor of the next two

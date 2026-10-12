@@ -156,6 +156,61 @@ time.sleep(120)
     r.status === 0 && /2 reaped · 1 within the 48h window · 2 held by a live run/.test(out),
     `status=${r.status} tail=${out}`);
 
+  // ===== §e15 THE OTHER PID-NAMED FAMILIES, under the same gate (2026-10-11) =====
+  // The six wrapper instance families, the runner's scratch and a red run's .worktrees, in a root of
+  // their own so the §e1–§e5 tally above stays the tally of the original table. Per family: a dir
+  // whose pid is alive survives however old, a dead one past the window is reaped, a dead one inside
+  // it survives. The live pid is this process's, as in §e1.
+  const FAMROOT = `${FIXROOT}/families`;
+  mkdirSync(FAMROOT, { recursive: true });
+  const families = ["gate-instance", "harness-instance", "unprobed-instance", "cleanreview-instance",
+    "postland-instance", "security-instance", "standin", "stagelock", "ratelimit", "gaprepo", "fifo", "fifo-order"];
+  interface FamFixture { name: string; path: string; ageH: number }
+  const famFixtures: FamFixture[] = [];
+  const famMk = (name: string, ageH: number, file = false): FamFixture => {
+    const path = `${FAMROOT}/fleet-e2e-${name}`;
+    if (file) writeFileSync(path, "fixture\n");
+    else { mkdirSync(path, { recursive: true }); writeFileSync(`${path}/server.log`, "listening\n"); }
+    const t = new Date(Date.now() - ageH * HOURS);
+    utimesSync(path, t, t);
+    const f = { name, path, ageH };
+    famFixtures.push(f);
+    return f;
+  };
+  const famLive = families.map((fam) => famMk(`${fam}-${process.pid}`, 72));
+  const famDeadOld = families.map((fam) => famMk(`${fam}-${DEAD + 10}`, 72));
+  const famDeadFresh = families.map((fam) => famMk(`${fam}-${DEAD + 11}`, 1));
+  // the suffixed shapes the runner writes: stagelock-<pid>.<n>, fifo-<pid>.owner (a file)
+  const suffixed = [famMk(`stagelock-${DEAD + 10}.1`, 72), famMk(`fifo-${DEAD + 10}.owner`, 72, true)];
+  // a red run's instance and its worktrees, both old: they go together; an orphaned worktrees dir
+  // (its instance already gone) goes on its own; a live run's worktrees stays
+  const redInst = famMk(`instance-${DEAD + 12}`, 72);
+  const redWt = famMk(`instance-${DEAD + 12}.worktrees`, 72);
+  const orphanWt = famMk(`instance-${DEAD + 13}.worktrees`, 72);
+  const liveWt = famMk(`instance-${process.pid}.worktrees`, 72);
+  // a dead gate-family pid whose OWN socket (fleetgatetest, not fleettest) still exists
+  const gateSocketed = famMk(`gate-instance-${DEAD + 14}`, 72);
+  const FAMSOCKS = `${FAMROOT}/tmux-${process.getuid?.() ?? 0}`;
+  mkdirSync(FAMSOCKS, { recursive: true });
+  writeFileSync(`${FAMSOCKS}/fleetgatetest${DEAD + 14}`, "");
+  const rf = spawnSync(reaper, [FAMROOT], {
+    encoding: "utf8",
+    env: { ...process.env, TMUX_TMPDIR: FAMROOT, FLEET_E2E_SCRATCH_RETENTION_H: "48", FLEET_TI_ROOT: TI_NONE },
+  });
+  const famOut = `${rf.stdout ?? ""}${rf.stderr ?? ""}`.trim().split("\n").slice(-1)[0] ?? "";
+  const lost = (fs: FamFixture[]) => fs.filter((f) => !existsSync(f.path)).map((f) => f.name);
+  const kept = (fs: FamFixture[]) => fs.filter((f) => existsSync(f.path)).map((f) => f.name);
+  check("host-hygiene §e15 a dir of every pid-named family whose pid is ALIVE survives, however old — the liveness gate holds for all of them",
+    lost([...famLive, liveWt]).length === 0, `removed: ${lost([...famLive, liveWt]).join(", ") || "none"} · ${famOut}`);
+  check("host-hygiene §e15 …and a DEAD one past the window is reaped in every family, its suffixed shapes and a red run's worktrees with it",
+    kept([...famDeadOld, ...suffixed, redInst, redWt, orphanWt]).length === 0,
+    `left: ${kept([...famDeadOld, ...suffixed, redInst, redWt, orphanWt]).join(", ") || "none"} · ${famOut}`);
+  check("host-hygiene §e15 …while a dead one INSIDE the window survives, and a dead gate-family pid with its own socket survives",
+    lost([...famDeadFresh, gateSocketed]).length === 0, `removed: ${lost([...famDeadFresh, gateSocketed]).join(", ") || "none"} · ${famOut}`);
+  check("host-hygiene §e15 the family sweep exits clean and counts what it did",
+    rf.status === 0 && new RegExp(`^\\[scratch-reap\\] ${families.length + suffixed.length + 3} reaped · ${families.length} within the 48h window · ${families.length + 2} held by a live run$`).test(famOut),
+    `status=${rf.status} tail=${famOut} fixtures=${famFixtures.length}`);
+
   // ===== §e10–§e13 THE TTL, END TO END: tick → hand → socket, processes, directory =====
   // The tick is spawned as e2e-isolated.sh spawns it — `<checkout>/scratch-reap.sh <tmpdir>`, with
   // testinstanz.sh beside it — against a scratch root that holds an expired testinstanz DECOY (the

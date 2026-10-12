@@ -171,6 +171,14 @@ const killSrv = async (): Promise<void> => {
   await Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]).exited;
   await Bun.sleep(500);
 };
+// THE NIGHTLY HOUR EVERY BOOT OF THIS RUN SHARES: two minutes before the runner started, local. The
+// server queues a `(nightly)` run per known repo once per slot — the newest NIGHTLY_AT at or before
+// now (server.ts#auditNightlySlot) — so with the production 02:00 a run that crosses 02:00 would get a
+// second round of nightlies half-way through. Pinned here, one slot spans the run, and a repo whose
+// nightly was taken once (e2e/helper-portal.ts#settleNightlies) is never queued one again by a later
+// boot. Only (T.night) moves it, on purpose.
+const NIGHTLY_SLOT = ((d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`)(
+  new Date(Date.now() - 120_000));
 // `extra` is appended LAST and therefore wins over the inherited value — the same shape
 // e2e/harness.ts's restartSrv uses, and the way the helper-portal section boots one server with a
 // 10-minute claim timeout and the next with a few seconds without touching the wrapper.
@@ -183,9 +191,13 @@ const startSrv = async (opts: { audit: boolean; auditPing?: boolean; extra?: Rec
     + (opts.audit ? "" : "FLEET_POSTLAND_AUDIT_CMD='' ")
     // THE CADENCE IS OFF unless a section asks for it (`extra` comes after and wins). It only ever
     // applies on a helper deployment (FLEET_AUDIT_HELPER_GRACE_MS > 0), and its production numbers
-    // are 20 and 60 MINUTES — every section that boots a helper deployment to test something else
-    // would otherwise wait them out. Section (T) in e2e/helper-portal.ts sets its own.
-    + "FLEET_AUDIT_QUIET_MS=0 FLEET_AUDIT_MAX_WAIT_MS=0 "
+    // are 4 HOURS outside 08–22 local (server.ts#auditCadenceOf, Z1 2026-10-11) — every section that
+    // boots a helper deployment to test something else would otherwise wait them out, and during the
+    // day forever. QUIET_DAY "" lifts the day window: a quiet run is due the moment it is quiet.
+    // Section (T) in e2e/helper-portal.ts sets its own.
+    // …AND ONE NIGHTLY SLOT FOR THE WHOLE RUN (NIGHTLY_SLOT above): the clock's other trigger cannot be
+    // switched off, only moved — see e2e/helper-portal.ts#settleNightlies for what that costs a fixture.
+    + `FLEET_AUDIT_QUIET_MS=0 FLEET_AUDIT_MAX_WAIT_MS=0 FLEET_AUDIT_QUIET_DAY='' FLEET_AUDIT_NIGHTLY_AT=${NIGHTLY_SLOT} `
     + Object.entries(opts.extra ?? {}).map(([k, v]) => envArg(k, v)).join("");
   const pingEnv = opts.auditPing
     ? "FLEET_AUDIT_PING_MS=250 FLEET_BACKLOG_NUDGE_IDLE_MS=100 "
@@ -356,8 +368,9 @@ check("the red result is on the audit trail too, naming result + branch",
   auditTrail.events.some((x) => x.event === "postland_audit" && (x.detail ?? "").startsWith("red")
     && (x.detail ?? "").includes(echoLane.branch)),
   JSON.stringify(auditTrail.events.filter((x) => x.event === "postland_audit").slice(0, 3)));
+// read with bodies: since a land is one commit on main (5a2cd07d) the lane's own subject is in its body
 check("a red audit does NOT undo the land — rollback stays the owner's ↩ undo-land",
-  spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("echo lane work"),
+  spawnSync("git", ["-C", REPO, "log", "--format=%B", "-3"]).stdout.toString().includes("echo lane work"),
   spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().trim());
 
 // ===== (C) AN AUDIT THAT CANNOT PRODUCE A VERDICT RECORDS UNKNOWN — NEVER GREEN =================

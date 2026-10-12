@@ -491,6 +491,27 @@ running or declared on disk (the branches it already covers excepted) is due at 
 helpers' FREE suite slots minus one kept for a lane preview (`server.ts#auditShardCount`: per fresh
 shard-capable box `maxParallelSuites − running`; below three free slots `FLEET_AUDIT_SHARDS`, which
 also stays the on-switch).
+
+**The clock, not the land, added 2026-10-11 (Z1 `619a5000`, Kern-MAIN answer `f4dde6e8`, Orchestratorin-Ja
+13:5x, gate-only stays).** The two paragraphs above describe the cadence before it; `no-land` and
+`max-wait` are gone as triggers and `auditLandsInFlight` with them. On a helper deployment a land writes
+its cover and releases nothing (`server.ts#auditCadenceOf`); four triggers start a full audit, each
+stamped on its row: `quiet` — covers queued and the repo's last MEASURED full audit at least
+`FLEET_AUDIT_QUIET_MS` (now 4 h) back, never inside `FLEET_AUDIT_QUIET_DAY` (08–22 local); `nightly` —
+once per night at `FLEET_AUDIT_NIGHTLY_AT` (02:00), only when main moved since the last nightly
+(`server.ts#auditClockTick`), the one run with the dom unit and its mutants (`FLEET_E2E_DOM_MUTANTS=1`),
+its row naming every land since the previous nightly and the undo stack (`withNightlyFacts`); `deploy` —
+a deploy's tip, at once, and a gate-only or forced deploy now queues it in the same request; `audit-tip`
+— `./ctl.sh commit main`, at once. `quiet`, `deploy` and `audit-tip` leave the dom unit out
+(`FLEET_E2E_SKIP_UNITS=dom`, `server.ts#auditScopeOf`; a daemon without `audit-skip-units` runs them
+whole and is never handed a nightly). A row whose suite exited 0 with `checks.ran = 0` is `unknown`, not
+green (`server.ts#unmeasuredGreenIsUnknown`): no deploy stamp, no gate-only anchor, no quiet clock.
+Without a helper the local drain still runs on the land.
+
+| Audits per 7 days | full runs | per run | shard hours | source |
+|---|---|---|---|---|
+| before, 7 days to 2026-10-11 | 219 audits, of them 190 full | ~24 min | 141 | Red-Team finding 7, estimate |
+| after, first week of the clock | | | | |
 **And a helper's audit no longer falls back onto this Mac** (`server.ts#AUDIT_HELPER_ONLY`): an
 offerable entry waits for a helper however long that takes — visible as `hold: "waiting for helper"`
 in `GET /api/post-land-audits` → `pending` and in the land's memory view, and as a

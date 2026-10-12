@@ -38,16 +38,26 @@
 # reads as alive, the dir is skipped, and it survives to the next run. Keeping litter costs disk;
 # deleting a live run's instance costs the run.
 #
-# SCOPE IS TWO GLOBS, deliberately. `fleet-e2e-instance-*` is e2e-isolated.sh's family alone;
-# `fleet-testinstanz-*` is testinstanz.sh's family of standing per-worktree instances (2026-09-24).
-# The six other wrapper families carry their own infix (gate-, harness-, unprobed-, cleanreview-,
-# postland-, security-instance) and are disjoint from both globs, so a post-land audit running
-# concurrently cannot have its instance removed by this sweep. THE TWO FAMILIES SHARE A
-# PHILOSOPHY, NOT A RULE: the fleet-e2e sweep kills NOTHING — a suite instance is its wrapper's
-# child, and the wrapper reaps its own. The testinstanz sweep DOES kill, because a standing
-# instance has no wrapper — and it is not done HERE: this file only calls `testinstanz.sh reap`
-# (see the testinstanz block below), which reaps through each instance's own state file and
-# refuses one with an open connection. Nothing in this file kills a process.
+# SCOPE IS THE PID-NAMED fleet-e2e-* FAMILIES, and the liveness gate is what makes that safe.
+# Until 2026-10-11 this sweep read two globs and kept the six other wrapper families (gate-,
+# harness-, unprobed-, cleanreview-, postland-, security-instance) out, so that a concurrent post-land
+# audit could not lose its instance. MEASURED that day: all six carry their wrapper's pid in the name
+# (`$$`, e.g. e2e-claude-gate.sh: DIR2=…/fleet-e2e-harness-instance-$$), 196 dirs / ~350M that nobody
+# reaped. A live wrapper's pid is alive by definition, so the gate below protects a concurrent run of
+# ANY family exactly as it protects e2e-isolated.sh's own; the socket half reads every wrapper's socket
+# (`*test<pid>`: fleettest, fleetgatetest, fleetcrtest, fleetplatest, fleetsectest). The same holds for
+# the RUNNER's scratch (standin-, stagelock-, ratelimit-, gaprepo-, fifo-, fifo-order-<pid>*): named by
+# `bun fleet-e2e.ts`'s pid, which e2e-isolated.sh removes after its own run since 2026-10-11 — what is
+# left is the heap of runs before that and of runs killed before their wrapper got that far (690
+# standin, 290 stagelock, 95 ratelimit, 51 gaprepo measured that day). Runner scratch holds no verdict,
+# so it has no "never booted" class: it goes once the gate holds and it is past the window. A red
+# run's `fleet-e2e-instance-<pid>.worktrees` goes WITH its instance, and on its own under the same gate
+# once the instance is gone. `fleet-testinstanz-*` is testinstanz.sh's family of standing per-worktree
+# instances (2026-09-24). THE TWO SHARE A PHILOSOPHY, NOT A RULE: the fleet-e2e sweep kills NOTHING —
+# a suite instance is its wrapper's child, and the wrapper reaps its own. The testinstanz sweep DOES
+# kill, because a standing instance has no wrapper — and it is not done HERE: this file only calls
+# `testinstanz.sh reap` (see the testinstanz block below), which reaps through each instance's own
+# state file and refuses one with an open connection. Nothing in this file kills a process.
 set -u
 
 ROOT="${1:?usage: scratch-reap.sh <root> [--dry-run]}"
@@ -103,40 +113,69 @@ else
 fi
 
 reaped=0; kept=0; held=0
-for _d in "$ROOT"/fleet-e2e-instance-*; do
-  [ -d "$_d" ] || continue                              # no glob match → the pattern itself
-  _pid="${_d##*/fleet-e2e-instance-}"
-  case "$_pid" in ''|*[!0-9]*) continue ;; esac         # only fleet-e2e-instance-<pid>
+# --- the gate: either half alive means hands off. -e, not -S: a fixture cannot mint a real socket,
+# and any entry under the name is reason enough to leave the dir alone. Wider than the truth, in the
+# safe direction — `*test<pid>` also matches a stranger's socket that happens to end in that number.
+_held() {
+  kill -0 "$1" 2>/dev/null && return 0
+  for _s in "$SOCKDIR"/*test"$1"; do [ -e "$_s" ] && return 0; done
+  return 1
+}
+# …the window: prints the age line and succeeds when $1 is past it; fails (and counts it kept) when
+# it is inside, or when its mtime cannot be read — skipped, but said, see _mtime
+_past_window() {
+  if ! _m="$(_mtime "$1")"; then
+    echo "[scratch-reap] cannot read mtime of $1 — skipped" >&2
+    return 1
+  fi
+  _age_h=$(( (NOW - _m) / 3600 ))
+  [ "$_age_h" -ge "$RETENTION_H" ] || return 1
+  _why="${_age_h}h old, past the ${RETENTION_H}h evidence window"
+}
+_remove() {
+  if [ -n "$DRY" ]; then
+    echo "[scratch-reap] would remove $1 — $_why"
+  else
+    rm -rf "$1" 2>/dev/null && echo "[scratch-reap] removed $1 — $_why"
+  fi
+  reaped=$((reaped+1))
+}
 
-  # --- the gate: either half alive means hands off -------------------------------------------
-  if kill -0 "$_pid" 2>/dev/null; then held=$((held+1)); continue; fi
-  # -e, not -S: a fixture cannot mint a real socket, and any entry under this name is reason
-  # enough to leave the dir alone. Wider than the truth, in the safe direction.
-  if [ -e "$SOCKDIR/fleettest$_pid" ]; then held=$((held+1)); continue; fi
+# THE INSTANCES — e2e-isolated.sh's and the six other wrappers' (see SCOPE above)
+for _d in "$ROOT"/fleet-e2e-instance-* "$ROOT"/fleet-e2e-*-instance-*; do
+  [ -d "$_d" ] || continue                              # no glob match → the pattern itself
+  _pid="${_d##*-instance-}"
+  case "$_pid" in ''|*[!0-9]*) continue ;; esac         # only <family>-instance-<pid>, no .worktrees
+  if _held "$_pid"; then held=$((held+1)); continue; fi
 
   # --- the class ------------------------------------------------------------------------------
   _why=""
   if [ ! -f "$_d/server.log" ]; then
     _why="never booted (no server.log)"
-  else
-    if ! _m="$(_mtime "$_d")"; then
-      echo "[scratch-reap] cannot read mtime of $_d — skipped" >&2
-      kept=$((kept+1)); continue
-    fi
-    _age_h=$(( (NOW - _m) / 3600 ))
-    if [ "$_age_h" -ge "$RETENTION_H" ]; then
-      _why="${_age_h}h old, past the ${RETENTION_H}h evidence window"
-    else
-      kept=$((kept+1)); continue
-    fi
+  elif ! _past_window "$_d"; then
+    kept=$((kept+1)); continue
   fi
+  _remove "$_d"
+  # a red run's worktrees dir goes with the instance it belongs to (e2e-isolated.sh keeps both)
+  if [ -e "$_d.worktrees" ]; then _remove "$_d.worktrees"; fi
+done
 
-  if [ -n "$DRY" ]; then
-    echo "[scratch-reap] would remove $_d — $_why"
-  else
-    rm -rf "$_d" 2>/dev/null && echo "[scratch-reap] removed $_d — $_why"
-  fi
-  reaped=$((reaped+1))
+# …a worktrees dir whose instance is already gone, and THE RUNNER'S SCRATCH: no verdict in either,
+# so the gate and the window alone decide
+for _d in "$ROOT"/fleet-e2e-instance-*.worktrees "$ROOT"/fleet-e2e-standin-* "$ROOT"/fleet-e2e-stagelock-* \
+    "$ROOT"/fleet-e2e-ratelimit-* "$ROOT"/fleet-e2e-gaprepo-* "$ROOT"/fleet-e2e-fifo-*; do
+  [ -e "$_d" ] || continue
+  _rest="${_d##*/fleet-e2e-}"
+  case "$_rest" in
+    instance-*.worktrees) _pid="${_rest#instance-}"; _pid="${_pid%.worktrees}" ;;
+    fifo-order-*) _pid="${_rest#fifo-order-}" ;;
+    *) _pid="${_rest#*-}"; _pid="${_pid%%.*}" ;;      # <family>-<pid> or <family>-<pid>.<suffix>
+  esac
+  case "$_pid" in ''|*[!0-9]*) continue ;; esac
+  if _held "$_pid"; then held=$((held+1)); continue; fi
+  _why=""
+  if ! _past_window "$_d"; then kept=$((kept+1)); continue; fi
+  _remove "$_d"
 done
 
 echo "[scratch-reap] ${reaped} reaped · ${kept} within the ${RETENTION_H}h window · ${held} held by a live run"

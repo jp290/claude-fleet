@@ -219,8 +219,11 @@ export interface JobView {
 // daemon without the `shardEnv` fork below would run the whole suite and file it under one shard.
 // `lane-suite-modules` is the same contract for a NARROWED lane preview (`modules: [...]`): without
 // the `modulesEnv` fork a daemon would run the full suite and file it as the narrowed answer.
+// `audit-skip-units` is the same contract for an audit's SCOPE (`skipUnits: [...]`, `domMutants: true`):
+// without the `auditScopeEnv` fork a daemon would run the browser unit a `quiet`/`deploy` audit leaves
+// out, or the `nightly` one without its mutants, and file either as the run that was asked for.
 // A tree that predates this list sends none, and the fleet stops offering on that beat.
-export const DAEMON_FEATURES: readonly string[] = ["audit-shard", "lane-suite-modules"];
+export const DAEMON_FEATURES: readonly string[] = ["audit-shard", "lane-suite-modules", "audit-skip-units"];
 // THE SHARD FORK, pure and exported (e2e/helper-daemon.ts HD.1): the env a shard job's suite gets.
 // `{}` for a job with no shard; `null` for a shard string this daemon cannot read — that job is
 // reported unrunnable (127 → unknown), never run whole in its place. The shape is the runner's own
@@ -251,6 +254,30 @@ export function modulesEnv(kind: string | undefined, modules: unknown): Record<s
   if (!Array.isArray(modules) || modules.length === 0
     || !modules.every((m) => typeof m === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m))) return null;
   return { FLEET_E2E_MODULES: (modules as string[]).join(",") };
+}
+// THE AUDIT SCOPE FORK, pure and exported (e2e/helper-daemon.ts HD.scope): the env an AUDIT's suite
+// gets for the two scope fields of its claim — `skipUnits` → FLEET_E2E_SKIP_UNITS (the runner leaves
+// those units out of its table, e2e/ctx.ts#selectSkipUnits) and `domMutants: true` →
+// FLEET_E2E_DOM_MUTANTS=1 (e2e/dom.ts runs its mutants). `{}` for a claim with neither; `null` for a
+// pair this daemon will not turn into env values — that job is reported unrunnable (127 → unknown),
+// never run whole in its place. The refusals, each a case where running would answer a different
+// question than the one asked:
+//   · either field on any kind but an audit (`audit`, or no kind — the older audit claim's shape):
+//     a lane preview's scope is `modules`, and a command job runs argv;
+//   · `skipUnits` that is not a non-empty array of names in the charset unit names have, so a comma,
+//     a space, an `=` or a newline can never make one entry into two words. WHICH units exist is the
+//     runner's to know, and it refuses an unknown one out loud;
+//   · `domMutants` that is anything but absent or exactly `true`.
+export function auditScopeEnv(kind: string | undefined, skipUnits: unknown, domMutants: unknown): Record<string, string> | null {
+  if (skipUnits === undefined && domMutants === undefined) return {};
+  if (kind !== undefined && kind !== "audit") return null;
+  if (skipUnits !== undefined && (!Array.isArray(skipUnits) || skipUnits.length === 0
+    || !skipUnits.every((u) => typeof u === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(u)))) return null;
+  if (domMutants !== undefined && domMutants !== true) return null;
+  return {
+    ...(skipUnits === undefined ? {} : { FLEET_E2E_SKIP_UNITS: (skipUnits as string[]).join(",") }),
+    ...(domMutants === true ? { FLEET_E2E_DOM_MUTANTS: "1" } : {}),
+  };
 }
 // THE PORT BAND FORK, pure and exported (e2e/helper-daemon.ts#bandChecks): which port band a run
 // gets. Measured 2026-10-10 06:59 (post-land audit e900ed30, work-horse): two runs side by side each
@@ -286,6 +313,9 @@ export interface ClaimedJob {
   // for nothing else. Absent on every other job and on a full preview.
   modules?: string[];
   shard?: string; // `k/n` on a sharded audit claim — see shardEnv
+  // AN AUDIT'S SCOPE — FLEET_E2E_SKIP_UNITS and FLEET_E2E_DOM_MUTANTS by `auditScopeEnv`, offered only
+  // to a daemon that declares `audit-skip-units`. Absent on every other job and on a plain audit.
+  skipUnits?: string[]; domMutants?: boolean;
 }
 
 // THE ONLY PLACE A REQUEST IS MADE, so that "the token is a header" and "every request is logged as
@@ -477,9 +507,10 @@ const liveGroups = new Set<number>();
 // (`installCmd`, `suiteCmd`) — a string an owner wrote here, where a shell is the point. A command
 // JOB's line came over the wire, so it arrives pre-split as argv and is exec'd directly: no quoting,
 // no glob, no `&&`, no substitution, and nothing for a crafted string to escape out of.
-// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for four
+// `extraEnv` is the ONE way anything FLEET_-prefixed gets back into a child, and it exists for these
 // values: this run's own suite lock, its scratch TMPDIR, its port band FLEET_E2E_BAND, a shard job's
-// FLEET_E2E_SHARD and a narrowed preview's FLEET_E2E_MODULES (see `suiteEnv` in `work`). It is applied AFTER
+// FLEET_E2E_SHARD, a narrowed preview's FLEET_E2E_MODULES and an audit's FLEET_E2E_SKIP_UNITS /
+// FLEET_E2E_DOM_MUTANTS (see `suiteEnv` in `work`). It is applied AFTER
 // `childEnv()`, so it can only add what this process deliberately puts there — never re-admit
 // something the strip above removed by accident.
 export async function runArgv(argv: string[], cwd: string, logPath: string, timeoutMs: number,
@@ -903,7 +934,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   const logPath = `${runDir}/suite.log`;
   mkdirSync(runDir, { recursive: true });
   log(`claimed ${j.kind ?? "audit"} ${j.repo} ${j.main}@${j.mainSha.slice(0, 8)}${j.shard ? ` shard ${j.shard}` : ""}`
-    + `${Array.isArray(j.modules) ? ` modules ${j.modules.length}` : ""} → ${runDir}`
+    + `${Array.isArray(j.modules) ? ` modules ${j.modules.length}` : ""}`
+    + `${Array.isArray(j.skipUnits) ? ` skip ${j.skipUnits.join(",").slice(0, 80)}` : ""}${j.domMutants === true ? " dom-mutants" : ""} → ${runDir}`
     + ` (slot ${runningJobs} of ${cfg.maxParallelSuites})`);
   // A shard string this daemon cannot read fails as ITSELF, before a byte is downloaded: running the
   // whole suite in its place would file a full run under one shard of the fleet's merge.
@@ -917,6 +949,14 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   if (modulesVars === null) {
     await report(cfg, j, 127, `the claim named modules on a ${j.kind ?? "audit"} job this daemon will not narrow`
       + " (only a lane-suite takes them, as a non-empty list of module names) — this daemon cannot run that job");
+    return;
+  }
+  // …and an audit's scope the same way: the full suite in its place would be filed as the scoped run,
+  // and a scope on another kind would quietly change what that kind measures.
+  const scopeVars = auditScopeEnv(j.kind, j.skipUnits, j.domMutants);
+  if (scopeVars === null) {
+    await report(cfg, j, 127, `the claim named skipUnits/domMutants on a ${j.kind ?? "audit"} job this daemon will not scope`
+      + " (only an audit takes them: skipUnits as a non-empty list of unit names, domMutants as true) — this daemon cannot run that job");
     return;
   }
 
@@ -948,6 +988,8 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
   // …and FLEET_E2E_MODULES, the other one, for a narrowed lane preview (modulesEnv): the runner runs
   // that selection's fixture closure. Absent on every other job. The fleet never sends both cuts on
   // one job, and the runner refuses them together by name.
+  // …and an audit's scope (auditScopeEnv): FLEET_E2E_SKIP_UNITS, which the runner takes out of its
+  // shard table, and FLEET_E2E_DOM_MUTANTS. Absent on every other job and on a plain audit.
   // …and FLEET_E2E_BAND, at every cap and for every kind: a command job may be ./e2e-isolated.sh
   // itself, and a wrapper that does not read it is untouched by it. No await between the pick and the
   // add, so two runs of this process can never be handed the same index.
@@ -957,7 +999,7 @@ async function work(cfg: HelperConfig, job: JobView): Promise<void> {
     return;
   }
   heldBands.add(band);
-  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...bandEnv(band), ...shardVars, ...modulesVars };
+  const suiteEnv: Record<string, string> = { TMPDIR: scratch, ...lockEnv, ...bandEnv(band), ...shardVars, ...modulesVars, ...scopeVars };
   // what proves a process belongs to THIS run when its reap comes (reapRun)
   const scope: RunScope = { tree: clone, tmp: scratch };
   // registered from here to the `finally`; `tick` pulls the switch (see withdrawnRuns). A withdrawn

@@ -75,6 +75,9 @@ export interface HelperConfig {
   // be fooled that way. The load cap keeps its own job and is the SECOND condition, never the
   // replacement: it is what says "this machine is busy with something else entirely".
   maxParallelSuites: number;
+  // SLOTS A MERGE CHECK HOLDS (docs/neuaufbau/plan.md K2, mergeCheckHeld). Default 0: none.
+  mergeCheckSlots: number;
+  mergeCheckPidFile: string;
   capabilities: string[];
   installCmd: string;
   suiteCmd: string;
@@ -166,6 +169,9 @@ export function loadConfig(path: string, raw: unknown, mode: number): HelperConf
     // this machine claim nothing, forever and silently); the floor of the whole VALUE is an
     // integer, because "1.5 slots" is a number this rail has no reading for.
     maxParallelSuites: Math.max(1, Math.floor(num(c.maxParallelSuites, "maxParallelSuites", 1))),
+    mergeCheckSlots: Math.max(0, Math.floor(num(c.mergeCheckSlots, "mergeCheckSlots", 0))),
+    mergeCheckPidFile: typeof c.mergeCheckPidFile === "string" && isAbsolute(c.mergeCheckPidFile)
+      ? c.mergeCheckPidFile : join(homedir(), "ci", "active"),
     capabilities: caps.slice(0, 8),
     installCmd: typeof c.installCmd === "string" ? c.installCmd : "bun install --frozen-lockfile",
     suiteCmd: typeof c.suiteCmd === "string" ? c.suiteCmd : "./e2e-isolated.sh",
@@ -823,6 +829,24 @@ let runningJobs = 0;
 export function freeSuiteSlots(cfg: HelperConfig, running: number): number {
   return Math.max(0, cfg.maxParallelSuites - running);
 }
+// A MERGE CHECK RUNS BESIDE THIS DAEMON, not through it (ci/merge-check-run.sh writes its pid to
+// `mergeCheckPidFile` while it runs). It stands in front of a merge and answers within 5 min; an
+// audit shard gates nothing. So while that pid lives, `mergeCheckSlots` of this machine's slots start
+// nothing new — runs already going keep going. A file older than MERGE_CHECK_STALE_MS is a run that
+// died without its cleanup, and its pid may belong to someone else by now: no hold.
+const MERGE_CHECK_STALE_MS = 30 * 60_000;
+export function mergeCheckHeld(cfg: HelperConfig, now = Date.now()): number {
+  if (cfg.mergeCheckSlots <= 0) return 0;
+  try {
+    if (now - statSync(cfg.mergeCheckPidFile).mtimeMs > MERGE_CHECK_STALE_MS) return 0;
+    const pid = Number(readFileSync(cfg.mergeCheckPidFile, "utf8").trim());
+    if (!Number.isInteger(pid) || pid <= 1) return 0;
+    process.kill(pid, 0);
+    return cfg.mergeCheckSlots;
+  } catch {
+    return 0; // no file, or no such process: nothing holds a slot
+  }
+}
 // LAUNCHED, NOT AWAITED — that is the whole of "two at once", and the reservation is what makes it
 // safe: `runningJobs` is incremented SYNCHRONOUSLY here, before the first await inside `work`, so
 // the rest of this tick and every tick after it already sees the slot as taken. Reserving around
@@ -1419,7 +1443,8 @@ export async function tick(cfg: HelperConfig, st: LoopState): Promise<void> {
   // it can learn that the fleet took a job back (withdrawnRuns). Before 2026-09-13 a full machine
   // returned here without asking, which is exactly the state — both slots busy — in which a lane's
   // land left a preview running for 37 minutes nobody could read.
-  const free = mode === "quiet" ? 0 : freeSuiteSlots(cfg, runningJobs);
+  // …and a running merge check holds its slots (mergeCheckHeld).
+  const free = mode === "quiet" ? 0 : Math.max(0, freeSuiteSlots(cfg, runningJobs) - mergeCheckHeld(cfg));
   if (free <= 0 && inFlight.size === 0) return;
   const askedAt = Date.now();
   const listRes = await api(cfg, `/api/helper/jobs?deviceId=${cfg.deviceId}`);

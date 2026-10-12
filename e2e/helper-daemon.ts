@@ -26,7 +26,7 @@ import { HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk } from "../src/protocol"
 // STAGE helper-daemon/ into the throwaway instance. The copy list is derived from the entry files'
 // transitive relative imports, so a daemon reached by an import rides along with no wrapper edit
 // and no hand-kept list — the failure mode that killed two harnesses in this repo.
-import { artifactsOf, auditScopeEnv, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
+import { artifactsOf, auditScopeEnv, downloadBundle, runArgv, ABORT_KILL_GRACE_MS, RUN_REAP_MARGIN_MS, endAfterSwap, failNamesOf, freeSuiteSlots, mergeCheckHeld, inQuietHours, instanceOf, jobsToStart, loadConfig, localMode,
   pointsAt, portBand, bandEnv, PORT_BANDS, pruneRuns, pruneTrees, shardEnv, stricter, tailOf, tick, trailIdOf, withdrawnRuns, DAEMON_FEATURES, EXIT_CONFIG,
   EXIT_UPDATED, type ClaimedJob, type HelperConfig, type JobView } from "../helper-daemon/daemon";
 
@@ -306,6 +306,29 @@ export async function run(h: {
     freeSuiteSlots(cap(2), 0) === 2 && freeSuiteSlots(cap(2), 1) === 1 && freeSuiteSlots(cap(2), 2) === 0
       && freeSuiteSlots(cap(2), 3) === 0,
     `free@0..3=${[0, 1, 2, 3].map((n) => freeSuiteSlots(cap(2), n)).join(",")}`);
+  // A MERGE CHECK HOLDS ITS SLOTS (docs/neuaufbau/plan.md K2): it runs beside the daemon, and while
+  // the pid in its file lives the daemon starts nothing new on `mergeCheckSlots` of them. A dead pid,
+  // a file older than 30 min (a run that never cleaned up — its pid may be someone else's by now) or
+  // no reservation configured hold nothing.
+  {
+    const dir = mkdtempSync(`${tmpdir()}/fleet-hd-mc-`);
+    const pidFile = `${dir}/active`;
+    const mc = (slots: number): HelperConfig => ({ ...cap(5), mergeCheckSlots: slots, mergeCheckPidFile: pidFile });
+    const none = mergeCheckHeld(mc(5));
+    writeFileSync(pidFile, `${process.pid}\n`);
+    const live = mergeCheckHeld(mc(5));
+    const off = mergeCheckHeld(mc(0));
+    const old = Date.now() / 1000 - 31 * 60;
+    utimesSync(pidFile, old, old);
+    const stale = mergeCheckHeld(mc(5));
+    const dead = spawnSync("true").pid;
+    writeFileSync(pidFile, `${dead}\n`);
+    const gone = mergeCheckHeld(mc(5));
+    rmSync(dir, { recursive: true, force: true });
+    check("(HD) a running merge check holds its slots: a live pid holds mergeCheckSlots, no file / a dead pid / a stale file / no reservation hold none",
+      none === 0 && live === 5 && off === 0 && stale === 0 && gone === 0,
+      `none=${none} live=${live} off=${off} stale=${stale} dead=${gone}`);
+  }
   // THE WITHDRAWAL READING (7e601e57). A run ends when a job list asked for AFTER its claim no
   // longer carries it under THAT claim — and on nothing weaker. The four negatives are the half that
   // keeps a healthy run alive: a job still held by me, an unreadable claim time on either side, and

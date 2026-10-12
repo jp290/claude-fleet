@@ -449,7 +449,7 @@ const programBudget = async (id: string): Promise<ProgramBudgetRow | undefined> 
   (((await (await get("/api/programs")).json()) as { programs: ProgramBudgetRow[] }).programs)
     .find((p) => p.id === id);
 interface AuditRow { event?: string; slot?: number; detail?: string; ts?: number;
-  path?: string; bytes?: number; reason?: string;
+  path?: string; bytes?: number; reason?: string; deliveryClass?: string; paths?: string;
   // the machine-readable half `audit()` offers beside the prose detail. `fleet_event_held` uses it
   // for the hold backoff (server.ts#noteComposerHold): which phase this row is, how many refusals
   // this row/occupant pair has collected, the silence the server just promised itself, and how
@@ -2277,10 +2277,8 @@ export async function run(): Promise<void> {
         const beforePaste = auditRows().slice(busyStart).filter((r) => r.event === "send" && r.slot === slot && r.path === "owner");
         const heldSafely = reached.phase === "before-paste" && reached.slot === slot
           && reached.openedAt === busyOpenedAt && reached.paneId === busyPane
-          && auditRows().slice(busyStart).some((r) => r.event === "delivery_bundle_refused" && r.slot === slot
-            && r.reason === "gate=busy — nothing typed")
           && beforePaste.length === 0 && stateText() === "" && count(ownerText) === 0 && count(machine) === 0;
-        check("owner send fixture: the single owner request is held before any paste after the real busy gate", heldSafely,
+        check("owner send fixture: the single owner request reaches the pre-paste latch on the busy pane", heldSafely,
           JSON.stringify({ reached, ownerAuditRows: beforePaste.length, composerBytes: stateText().length,
             owner: count(ownerText), machine: count(machine) }));
         if (!heldSafely) throw new Error("owner send fixture: the pre-paste latch did not hold the bound empty pane");
@@ -2315,22 +2313,141 @@ export async function run(): Promise<void> {
           .map((r) => r.bytes) };
       if (busyError !== null) throw busyError;
       if (!ownerResponse) throw new Error("owner send fixture: no response for the single busy request");
-      const busyReason = auditRows().slice(busyStart).find((r) => r.event === "delivery_bundle_refused" && r.slot === slot)?.reason;
-      check("owner send: busy machine stays queued, safe owner is typed exactly once",
-        ownerResponse.ok && count(ownerText) === 1 && count(machine) === 0
-        && busyReason === "gate=busy — nothing typed" && await replay(ownerResponse, null),
-        JSON.stringify({ ...ownerDetail, reason: busyReason }));
-      await machineRelease(machine, busyStart, "the same machine bundle after the busy gate opens");
+      // THE OWNER'S WORDS (12.10., docs/neuaufbau/maengel.md #1): a waiting Fleet delivery goes out
+      // WITH his message. A session at work is no reason to hold it back — it stayed queued behind
+      // gate=busy until its window ran out (docs/neuaufbau/befunde/03-zustellung.md (A)).
+      const busyRows = auditRows().slice(busyStart).filter((r) => r.slot === slot);
+      const refusedWithOwner = busyRows.filter((r) => r.event === "delivery_bundle_refused" && r.deliveryClass === "sofort");
+      const carried = busyRows.filter((r) => r.event === "delivery_bundle_sent" && r.deliveryClass === "sofort");
+      check("owner send: the waiting machine delivery rides the owner's send into the busy pane, both typed exactly once",
+        ownerResponse.ok && count(ownerText) === 1 && count(machine) === 1 && refusedWithOwner.length === 0
+        && carried.length === 1 && carried[0]!.paths === "auto,owner" && await replay(ownerResponse, null),
+        JSON.stringify({ ...ownerDetail, refused: refusedWithOwner.map((r) => r.reason), carried: carried.map((r) => r.paths) }));
       // "exactly once, never repastes" is an ABSENCE claim: no observable positive proof that the
       // NEXT delivery tick ran exists on the API (needs a delivery-tick counter/latch), so the
       // fixed window stays at its old length — see the measurement note's server-sensor line.
       await Bun.sleep(AUTOS_TICK_MS * 3);
-      check("owner send: gate release delivers the retained machine exactly once, never repastes the owner",
+      check("owner send: the machine delivery taken along is never typed again, the owner never repasted",
         count(machine) === 1 && count(ownerText) === 1, JSON.stringify({ owner: count(ownerText), machine: count(machine) }));
       await post(`/api/autos/${autoId}/delete`, {});
-      const busyBody = { error: busyReason, receipt: { delivery: "refused" } };
-      check("owner formatter: observed busy reason is a gate, never a draft",
+      const busyBody = { error: "gate=busy — nothing typed", receipt: { delivery: "refused" } };
+      check("owner formatter: a busy gate reason is a gate, never a draft",
         sendFailureMessage(409, busyBody) === "send refused — delivery gate=busy; nothing was typed");
+
+      // THE SAME SEND TO AN ORCHESTRATORIN AT WORK (befunde/03 (B)): the owner addresses her by role, so
+      // a deploy event she subscribed to waits under "orchestrator", while her self-Auto waits under her
+      // own slot (tickAutos, cbd6f2dd). The send takes both along in one paste. The kill switch still
+      // holds both back, each in its own bundle, until it is on again.
+      const renamed = await post(`/api/slots/${slot}/rename`, { label: "Orchestratorin owner-send fixture" });
+      const roleToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "";
+      const roleState = async (): Promise<{ held?: { count: number; paths: string[] }; roleConflict?: unknown }> => {
+        const body = await (await get("/api/sessions")).json() as {
+          slots: { id: number; heldDeliveries?: { count: number; paths: string[] } }[]; roleConflict?: unknown;
+        };
+        return { held: body.slots.find((s) => s.id === slot)?.heldDeliveries, roleConflict: body.roleConflict };
+      };
+      // a bundle paste is unobservable on this stand-in (send-uncertain, not delivered): what it typed is
+      // read off the turns ledger, where each event stands under its own "[event <id>]" head
+      const eventOf = async (watchId: string | undefined): Promise<{ id?: string; status?: string; typed: number }> => {
+        const row = ((await (await get("/api/events")).json()) as
+          { events: { id: string; watchId: string | null; status: string }[] }).events.find((e) => e.watchId === watchId);
+        return { id: row?.id, status: row?.status, typed: row ? count(`[event ${row.id}]`) : 0 };
+      };
+      let deploySeq = 0;
+      // one self-Auto under slot:N and one green deploy event under "orchestrator", both behind a 1 s idle gate
+      const roleWaiting = async (tag: string): Promise<{ autoText: string; autoId: string; watchId?: string }> => {
+        const autoText = `owner-send-machine-orchestrator-${tag}-once`;
+        const autoId = await queuedAuto(autoText);
+        const deployId = (((Date.now() >>> 0) + ++deploySeq) >>> 0).toString(16).padStart(8, "0");
+        appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify({ at: Date.now(), id: deployId, by: "owner",
+          stage: "boot", ok: true, target: "1".repeat(40), bootHead: "1".repeat(40), head: "1".repeat(40),
+          hitTarget: true, bundleStale: false })}\n`);
+        const from = auditRows().length;
+        const sub = await fetch(`${BASE}/api/self/watch`, { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": roleToken },
+          body: JSON.stringify({ kind: "deploy", deployId, idleSec: 1 }) });
+        const watchId = (await sub.json() as { watch?: { id: string } }).watch?.id;
+        await until(() => auditRows().slice(from).some((r) => r.event === "delivery_bundle_queued" && r.slot === slot
+          && r.path === "fleet-event" && r.detail?.startsWith("orchestrator ") === true), {
+          timeoutMs: 5000, what: `the ${tag} deploy event waits under the role address`,
+          last: () => JSON.stringify({ sub: sub.status, watchId,
+            queued: auditRows().slice(from).filter((r) => r.slot === slot && r.event?.startsWith("delivery_bundle_"))
+              .map((r) => [r.event, r.path, r.detail]) }),
+        });
+        return { autoText, autoId, watchId };
+      };
+
+      const busyRole = await roleWaiting("busy");
+      const roleText = "owner-send-orchestrator-busy-once";
+      let roleBusy = true;
+      const roleKeeper = (async () => {
+        while (roleBusy) {
+          await tmuxOut("send-keys", "-t", busyPane, "BSpace");
+          await Bun.sleep(50);
+        }
+      })();
+      const outputAge = async (): Promise<number> => {
+        const body = await (await get("/api/sessions")).json() as {
+          now?: number; slots: { id: number; lastOutput?: number }[];
+        };
+        const row = body.slots.find((s) => s.id === slot);
+        return typeof body.now === "number" && typeof row?.lastOutput === "number" && row.lastOutput > 0
+          ? body.now - row.lastOutput : Infinity;
+      };
+      try {
+        await until(async () => await outputAge() < 500 && stateText() === "",
+          { timeoutMs: 3000, what: "the Orchestratorin's pane at work with an empty composer" });
+      } finally {
+        roleBusy = false;
+        await roleKeeper;
+      }
+      // the keeper's keys would land in the paste; it stops first, and the send follows while the
+      // pane's last output is still younger than the 1 s idle gate both entries carry
+      const ageAtSend = await outputAge();
+      const roleStart = auditRows().length;
+      const roleResponse = await post("/send", { slot, text: roleText });
+      const roleRows = auditRows().slice(roleStart).filter((r) => r.slot === slot);
+      const roleCarried = roleRows.filter((r) => r.event === "delivery_bundle_sent" && r.deliveryClass === "sofort");
+      const rolePaths = roleCarried[0]?.paths?.split(",") ?? [];
+      const afterBusy = await roleState();
+      const busyEvent = await eventOf(busyRole.watchId);
+      check("owner send: an Orchestratorin at work gets her waiting deploy event and self-Auto with the owner's message in one paste, nothing stays held",
+        renamed.ok && ageAtSend < 1000 && roleResponse.ok && count(roleText) === 1 && count(busyRole.autoText) === 1
+        && roleCarried.length === 1 && rolePaths.includes("auto") && rolePaths.includes("fleet-event")
+        && rolePaths.at(-1) === "owner" && afterBusy.held === undefined && busyEvent.typed === 1
+        && !roleRows.some((r) => r.event === "delivery_bundle_refused" && r.deliveryClass === "sofort"),
+        JSON.stringify({ renamed: renamed.status, ageAtSend, http: roleResponse.status, owner: count(roleText),
+          machine: count(busyRole.autoText), event: busyEvent, carried: roleCarried.map((r) => [r.detail, r.paths]),
+          held: afterBusy.held ?? null, roleConflict: afterBusy.roleConflict ?? null }));
+
+      const killRole = await roleWaiting("kill-switch");
+      await post("/api/autos/switch", { on: false });
+      const killStart = auditRows().length;
+      const killText = "owner-send-orchestrator-kill-switch-once";
+      const killResponse = await post("/send", { slot, text: killText });
+      const killHeld = await roleState();
+      const killRefused = auditRows().slice(killStart).filter((r) => r.event === "delivery_bundle_refused"
+        && r.slot === slot && r.deliveryClass === "sofort").map((r) => r.reason);
+      check("owner send: the kill switch still holds an Orchestratorin's waiting deliveries back, only the owner's message is typed",
+        killResponse.ok && count(killText) === 1 && count(killRole.autoText) === 0
+        && killHeld.held?.count === 2 && killHeld.held.paths.includes("auto") && killHeld.held.paths.includes("fleet-event")
+        && JSON.stringify(killRefused) === JSON.stringify(["gate=kill-switch — nothing typed"]),
+        JSON.stringify({ http: killResponse.status, owner: count(killText), machine: count(killRole.autoText),
+          held: killHeld.held ?? null, refused: killRefused }));
+      await post("/api/autos/switch", { on: true });
+      await machineRelease(killRole.autoText, killStart, "the kill switch released, the Orchestratorin's self-Auto arrives");
+      let killEvent = await eventOf(killRole.watchId);
+      await until(async () => (killEvent = await eventOf(killRole.watchId)).typed >= 1,
+        { timeoutMs: 15000, what: "the kill switch released, the Orchestratorin's deploy event arrives",
+          last: () => JSON.stringify({ machine: count(killRole.autoText), event: killEvent }) });
+      const released = await roleState();
+      check("owner send: released, each held delivery arrives exactly once and the owner's message is never repasted",
+        count(killRole.autoText) === 1 && killEvent.typed === 1 && count(killText) === 1 && released.held === undefined,
+        JSON.stringify({ machine: count(killRole.autoText), event: killEvent, owner: count(killText), held: released.held ?? null }));
+      await post(`/api/autos/${busyRole.autoId}/delete`, {});
+      await post(`/api/autos/${killRole.autoId}/delete`, {});
+      await post(`/api/slots/${slot}/rename`, { label: "" });
 
       for (const gate of ["quiet-hours", "kill-switch"] as const) {
         const pending = `owner-send-machine-${gate}-once`;

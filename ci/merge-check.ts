@@ -36,13 +36,19 @@ function mustGit(args: string[], input?: string, dir = REPO_DIR): string {
 // main plus <base>..<branch>, Commit für Commit wie ein Cherry-Pick; Merge-Commits fallen weg (ein
 // hereingemergtes bau/neuaufbau soll nicht mit nach main). Ein Commit, dessen Patch schon auf main
 // liegt (die Bauleitung merged per Cherry-Pick, der Branch behält das Original), wird übersprungen:
-// noch einmal angewendet gäbe er Konflikte mit späteren Änderungen derselben Datei. `git cherry`
-// markiert ihn mit „-“ und lässt Merge-Commits selbst weg.
+// noch einmal angewendet gäbe er Konflikte mit späteren Änderungen derselben Datei. Verglichen wird
+// die Patch-ID mit den letzten MAIN_WINDOW Commits von main, nicht per `git cherry`: das sieht nur
+// main-Commits, die dem Branch fehlen, und hat ein Branch die main-Kopien per merge hereingeholt,
+// blieben die Originale stehen.
+const MAIN_WINDOW = 300;
 export function candidateOf(main: string, base: string, branch: string, dir = REPO_DIR):
   { sha: string; commits: string[]; onMain: string[] } | { conflict: string } {
-  const marked = mustGit(["cherry", main, branch, base], undefined, dir).split("\n").filter(Boolean);
-  const commits = marked.filter((l) => l.startsWith("+ ")).map((l) => l.slice(2));
-  const onMain = marked.filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
+  const onMainIds = new Set(patchIds(["-n", String(MAIN_WINDOW), main], dir).values());
+  const ids = patchIds([`${base}..${branch}`], dir);
+  const all = mustGit(["rev-list", "--reverse", "--topo-order", "--no-merges", `${base}..${branch}`], undefined, dir)
+    .split("\n").filter(Boolean);
+  const onMain = all.filter((c) => onMainIds.has(ids.get(c) ?? ""));
+  const commits = all.filter((c) => !onMain.includes(c));
   let cur = main;
   for (const c of commits) {
     const t = git(["merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c], undefined, dir);
@@ -50,6 +56,20 @@ export function candidateOf(main: string, base: string, branch: string, dir = RE
     cur = mustGit(["commit-tree", t.out.split("\n")[0]!, "-p", cur, "-F", "-"], mustGit(["log", "-1", "--format=%B", c], undefined, dir), dir);
   }
   return { sha: cur, commits, onMain };
+}
+// Commit → Patch-ID (`git patch-id --stable`) für die Commits ohne Merges in `git log <args>`; ein
+// leerer Commit hat keine. Die Ausgabe von git log geht ungekürzt hinein, sonst ändert sich die ID.
+function patchIds(args: string[], dir: string): Map<string, string> {
+  const log = Bun.spawnSync(["git", "-C", dir, "log", "-p", "--no-color", "--no-ext-diff", "--no-merges", ...args]);
+  if (log.exitCode !== 0) throw new Error(`git log ${args.join(" ")}: ${log.stderr.toString().trim()}`);
+  const pid = Bun.spawnSync(["git", "-C", dir, "patch-id", "--stable"], { stdin: log.stdout });
+  if (pid.exitCode !== 0) throw new Error(`git patch-id: ${pid.stderr.toString().trim()}`);
+  const ids = new Map<string, string>();
+  for (const l of pid.stdout.toString().split("\n").filter(Boolean)) {
+    const [id, c] = l.split(" ");
+    ids.set(c!, id!);
+  }
+  return ids;
 }
 
 function helperHost(): string {

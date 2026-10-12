@@ -113,6 +113,28 @@ describe("candidateOf: der Baum nach dem Merge", () => {
     expect(tree).toBe("v2");
   });
 
+  test("gepickte Commits werden auch übersprungen, wenn der Strang die main-Kopien per merge hereinholte", () => {
+    const { dir, g, commit } = repo();
+    const c1 = commit("ci.txt", "v1\n");
+    const c2 = commit("ci.txt", "v2\n");
+    g("checkout", "-q", "main");
+    g("cherry-pick", c1, c2);
+    g("checkout", "-q", "neu");
+    g("merge", "-q", "--no-edit", "main");
+    g("checkout", "-q", "strang");
+    g("merge", "-q", "--no-edit", "neu");
+    commit("y.txt", "danach\n");
+    const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
+    const tree = "conflict" in c ? [] : filesOf(g, c.sha);
+    const ci = "conflict" in c ? "" : g("show", `${c.sha}:ci.txt`);
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(c.onMain).toEqual([c1, c2]);
+    expect(c.commits.length).toBe(1);
+    expect(tree.sort()).toEqual(["a.txt", "ci.txt", "y.txt"]);
+    expect(ci).toBe("v2");
+  });
+
   test("ein echter Konflikt mit main wird gemeldet, nicht überdeckt", () => {
     const { dir, g, commit } = repo();
     commit("a.txt", "strang\n");

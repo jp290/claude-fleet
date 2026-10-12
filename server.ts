@@ -38247,8 +38247,11 @@ async function holdSuiteLock(budgetMs: number, owner: symbol | null = null): Pro
 // the reapable shape, which is the accepted residue that section names.
 // `process.exit` after releasing: these handlers replace the default terminate, so not exiting
 // would turn a kill into a server that ignores it.
+// START (only as entry point, `bun server.ts`; an import loads the logic and starts nothing)
+if (import.meta.main) {
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const)
   process.on(sig, () => { releaseSuiteLock(); process.exit(0); });
+}
 // Never removes a lock that is no longer ours: if a contender reaped us (a recycled pid, a torn
 // write) and took it, the dir belongs to them and this must not touch it.
 function releaseSuiteLock(owner: symbol | null = null): void {
@@ -44231,6 +44234,8 @@ async function claimInstanceLock(): Promise<void> {
     await Bun.sleep(100);
   }
 }
+// START (only as entry point): the boot, up to the audit clock below
+if (import.meta.main) {
 await claimInstanceLock();
 // A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
 // live peer can be writing one, and a credential-bearing temp must not be left lying around.
@@ -45639,6 +45644,7 @@ if (AUDIT_HELPER_ONLY) {
         auditLastNightly.set(repoCanon(repo), { at: c.at, mainSha: c.mainAfter });
   void auditClockTick();
 }
+}
 
 // The row the state snapshot tick writes. Every source is one the process already keeps: the lane
 // facts are laneSignalView, the view laneWatchSignal gets; `ev.held` is composerHolds, the map
@@ -45937,6 +45943,8 @@ async function produceOperationalData(now: number): Promise<OperationalData> {
 
 // THE SCHEDULER TICKS: every one names itself to logError, because a tick that throws has skipped
 // its whole round and an empty catch hid that. The `p.kill()` and pty-chain catches stay empty on purpose.
+// START (only as entry point)
+if (import.meta.main) {
 withAuditActor({ kind: "machine", why: "tick" }, () => {
 operationalView = makeOperationalView({ bootEpoch: SERVER_BOOT_AT, now: Date.now, schedule: queueMicrotask,
   observe: operationalSources, produce: produceOperationalData, diskSpace: () => hostDiskSpace });
@@ -46053,6 +46061,7 @@ setInterval(() => {
   }
 }, 2000);
 });
+}
 
 type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
 // static suffix every intervention template carries (steward-autonomy.md joint 5's
@@ -48249,9 +48258,12 @@ async function deploysRoute(url: URL): Promise<Response> {
 
 // rule 2's boot half, fired at module load — before Bun.serve, so no request can observe a
 // resolved deploy still sitting in the marker.
+// START (only as entry point)
+if (import.meta.main) {
 await resolveDeployMarker().catch((e: unknown) => {
   console.log(`deploy marker: not resolved (${e instanceof Error ? e.message : e}) — the deploy stays unaccounted for`);
 });
+}
 
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
 // The server computes ONE deterministic per-lane fact — {head, base, landed, repo} keyed by
@@ -48953,6 +48965,8 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
 
 
 auditActorScope.enterWith({ kind: "unknown", why: "no-credential" });
+// START (only as entry point): the HTTP server and the start lines, to the end of the file
+if (import.meta.main) {
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
@@ -54622,3 +54636,8 @@ if (process.stdout.isTTY) {
 } else {
   console.log(`login: http://${HOST}:${PORT}/?token=<token> — not printed to a non-TTY; read it from ${STATE_FILE} (mode 600)`);
 }
+}
+
+// What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
+// e2e lifts find functions by `^(?:async )?function name`.
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS };

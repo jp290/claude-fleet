@@ -28253,8 +28253,13 @@ async function tickWatches(): Promise<void> {
       // agent-liveness and busy/observed gates remain: a dead pane's bare shell executes text.
       const receiverOpenedAt = s.openedAt;
       const receiverSessionId = s.sessionId;
+      // A green event that goes into the bundle waits THERE for its receiver's quiet (bundleGate in
+      // deliverFleetEventBundle), held on the row and taken along by the owner's next send (K1); here
+      // it only asks whether the receiver lives. Every other event is typed directly and waits here.
+      const bundled = DELIVERY_BUNDLE_SEC > 0 && fleetEventDeliveryClass(event) === "buendelbar"
+        && !!event.receiverAddress;
       const verdict = await canDeliver(s, {
-        now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
+        now: Date.now(), harness: false, quietHours: false, idleMs: bundled ? 0 : event.receiverIdleSec * 1000,
       });
       if (event.status !== "pending" || s.openedAt !== receiverOpenedAt
         || s.sessionId !== receiverSessionId || pendingFleetEventReceiver(event) !== s) continue;
@@ -28318,10 +28323,19 @@ async function tickWatches(): Promise<void> {
       const ready = live.filter((e) => e.status === "pending");
       if (ready.length > 1) {
         if (DELIVERY_BUNDLE_SEC > 0 && ready.every((event) => fleetEventDeliveryClass(event) === "buendelbar")) {
-          for (const event of ready) queuedFleetEvents.add(event.id);
-          void deliverFleetEventBundle(s, ready).finally(() => {
-            for (const event of ready) queuedFleetEvents.delete(event.id);
-          });
+          // one bundle per receiver address: a set of mixed addresses would be typed at once
+          // (deliverFleetEventBundle's sameAddress), past the quiet the bundle keeps for it
+          const byAddress = new Map<string, FleetEvent[]>();
+          for (const event of ready) {
+            const k = JSON.stringify(event.receiverAddress ?? null);
+            byAddress.set(k, [...(byAddress.get(k) ?? []), event]);
+          }
+          for (const part of byAddress.values()) {
+            for (const event of part) queuedFleetEvents.add(event.id);
+            void deliverFleetEventBundle(s, part).finally(() => {
+              for (const event of part) queuedFleetEvents.delete(event.id);
+            });
+          }
         } else await deliverFleetEventBundle(s, ready);
         dirty = true;
         continue;

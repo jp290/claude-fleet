@@ -866,6 +866,76 @@ export async function run(): Promise<void> {
             hints, after: after ?? null }));
         await dropMain(slot, programId);
       }
+
+      // 2 · A GREEN EVENT FOR A MAIN AT WORK stands held and rides the owner's next message: its quiet
+      // (idleSec) is the bundle's gate, not a wait in front of it. Counterprobe: with no agent left in
+      // the pane, a green event still ends receiver-gone, and a red one (sofort, typed directly, so
+      // still gated in front) ends receiver-gone with the Program escalation named — only a sofort
+      // event escalates (server.ts#lostProgramEventNotice).
+      {
+        const slot = await openBusyFixture("busy event MAIN fixture");
+        const programId = "c".repeat(24);
+        const stop = keepBusy(slot);
+        let deploySeq = 0;
+        const subscribe = async (green = true): Promise<string | undefined> => {
+          const deployId = (((Date.now() >>> 0) + ++deploySeq) >>> 0).toString(16).padStart(8, "0");
+          appendFileSync(`${ROOT}/deploys.jsonl`, `${JSON.stringify(green
+            ? { at: Date.now(), id: deployId, by: "owner", stage: "boot", ok: true, target: "1".repeat(40),
+              bootHead: "1".repeat(40), head: "1".repeat(40), hitTarget: true, bundleStale: false }
+            : { at: Date.now(), id: deployId, by: "owner", stage: "build", ok: false, target: "1".repeat(40),
+              bootHead: "0".repeat(40), head: "1".repeat(40), hitTarget: false, bundleStale: true,
+              reason: "build failed deterministically" })}\n`);
+          const response = await fetch(`${BASE}/api/self/watch`, { method: "POST",
+            headers: { "content-type": "application/json", "x-fleet-self-token": currentSelfToken(slot) },
+            body: JSON.stringify({ kind: "deploy", deployId, idleSec: 1 }) });
+          return ((await response.json()) as { watch?: { id: string } }).watch?.id;
+        };
+        let held: Held | undefined;
+        let watchId: string | undefined;
+        try {
+          await plantMain(slot, programId, 0, { FLEET_DELIVERY_BUNDLE_SEC: "30", FLEET_HARNESS_AUTOMATION: "1" });
+          watchId = await subscribe();
+          held = await until(async () => {
+            const h = await heldOf(slot);
+            return h?.paths.includes("fleet-event") ? h : null;
+          }, { timeoutMs: 5_000, what: "the green event for the busy MAIN stands held" })
+            .catch((error: unknown) => { if (error instanceof UntilTimeout) return heldOf(slot); throw error; });
+        } finally { await stop(); }
+        const from = auditRows().length;
+        const response = await post("/send", { slot, text: `${marker}: Owner-Nachricht trifft ein wartendes Ereignis` });
+        const carried = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
+          && r.slot === slot && r.deliveryClass === "sofort");
+        const paths = carried[0]?.paths?.split(",") ?? [];
+        const status = (await eventRows()).find((e) => e.watchId === watchId)?.status;
+        const after = await heldOf(slot);
+        check("a green event for a MAIN at work stands held on its row and rides the owner's next message in one paste",
+          held?.paths.includes("fleet-event") === true && response.ok && carried.length === 1
+            && paths.includes("fleet-event") && paths.at(-1) === "owner"
+            && (status === "delivered" || status === "send-uncertain") && after === undefined,
+          JSON.stringify({ held: held ?? null, http: response.status, carried: carried.map((r) => [r.detail, r.paths]),
+            status: status ?? null, after: after ?? null }));
+
+        await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, "exec cat");
+        const goneFrom = auditRows().length;
+        const greenWatch = await subscribe(true);
+        const redWatch = await subscribe(false);
+        const terminal = await until(async () => {
+          const rows = await eventRows();
+          const green = rows.find((e) => e.watchId === greenWatch);
+          const red = rows.find((e) => e.watchId === redWatch);
+          return green && red && green.status !== "pending" && red.status !== "pending" ? { green, red } : null;
+        }, { timeoutMs: 8_000, what: "both events for a receiver without an agent go terminal" })
+          .catch((error: unknown) => { if (error instanceof UntilTimeout) return null; throw error; });
+        const goneDetail = (id: string | undefined): string | null => auditRows().slice(goneFrom)
+          .find((r) => r.event === "fleet_event_receiver_gone" && r.detail?.startsWith(`${id} `))?.detail ?? null;
+        const greenGone = goneDetail(terminal?.green.id), redGone = goneDetail(terminal?.red.id);
+        check("counterprobe: with no agent left, a green event still ends receiver-gone and a red one receiver-gone with the Program escalation named",
+          terminal?.green.status === "receiver-gone" && terminal.red.status === "receiver-gone"
+            && greenGone?.endsWith("no agent running in pane") === true
+            && redGone?.includes("no agent running in pane escalation ") === true,
+          JSON.stringify({ green: terminal?.green.status ?? null, red: terminal?.red.status ?? null, greenGone, redGone }));
+        await dropMain(slot, programId);
+      }
     }
   } finally {
     if (composerMode) writeFileSync(composerMode, "normal\n");

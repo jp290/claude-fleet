@@ -11664,21 +11664,31 @@ function refreshDeliveryBundles(): void {
 // for an earlier occupant of a slot address is dropped at the flush, never typed here, so it does
 // not count. Omitted (undefined) when nothing is held.
 function heldDeliveriesView(s: Slot): { count: number; dueAt: number | null; paths: SendPath[] } | undefined {
-  if (!s.cwd || !deliveryBundles.size) return undefined;
   let count = 0, dueAt = Infinity;
   const paths = new Set<SendPath>();
-  for (const bundle of deliveryBundles.values()) {
-    if (!bundle.entries.length) continue;
-    const r = deliveryRecipient(bundle.address);
-    if (r?.id !== s.id || r.openedAt !== s.openedAt) continue;
-    const held = bundle.entries.filter((entry) => bundle.address.kind !== "slot"
-      || (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt));
-    if (!held.length) continue;
+  for (const { bundle, held } of heldBundlesFor(s)) {
     count += held.length;
     dueAt = Math.min(dueAt, bundle.dueAt);
     for (const entry of held) paths.add(entry.options.path);
   }
   return count ? { count, dueAt: Number.isFinite(dueAt) ? dueAt : null, paths: [...paths] } : undefined;
+}
+// EVERY BUNDLE THAT WAITS FOR THIS OCCUPANT, whatever address it was queued under: its role address,
+// a Program it still answers for, its own slot (a self-Auto, tickAutos). The board's count above
+// and the owner's send (sendText) ask the same question, so what the row shows as held is exactly
+// what „[Zitat entfernt]“ takes along (docs/neuaufbau/befunde/03-zustellung.md (B)).
+function heldBundlesFor(s: Slot): { key: string; bundle: DeliveryBundle; held: QueuedDelivery[] }[] {
+  if (!s.cwd || !deliveryBundles.size) return [];
+  const found: { key: string; bundle: DeliveryBundle; held: QueuedDelivery[] }[] = [];
+  for (const [key, bundle] of deliveryBundles) {
+    if (!bundle.entries.length) continue;
+    const r = deliveryRecipient(bundle.address);
+    if (r?.id !== s.id || r.openedAt !== s.openedAt) continue;
+    const held = bundle.entries.filter((entry) => bundle.address.kind !== "slot"
+      || (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt));
+    if (held.length) found.push({ key, bundle, held });
+  }
+  return found;
 }
 // One entry is no bundle: it is typed as itself, under its own path's header (flushDeliveryBundle).
 // Two or more share the `bundle` header, so each mark carries its entry's own sentence.
@@ -11711,6 +11721,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     await bundle.inflight;
     return flushDeliveryBundle(key, immediate);
   }
+  // THE OWNER'S SEND TAKES WHAT WAITS UNDER THE OCCUPANT'S OTHER ADDRESSES ALONG (heldBundlesFor):
+  // those bundles stand in flight with this one, so their own timers wait for this paste. Their
+  // entries ride it and, refused, go back to the bundle they came from — a self-Auto stays bound to
+  // its slot (cbd6f2dd), a role entry keeps its role.
+  const riding = immediate?.options.path === "owner"
+    ? heldBundlesFor(immediate.slot).filter((rider) => rider.bundle !== bundle && !rider.bundle.inflight) : [];
   const run = async (): Promise<{ acceptance: Acceptance } | void> => {
     if (bundle.timer) clearTimeout(bundle.timer);
     bundle.timer = null;
@@ -11763,12 +11779,18 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       bundle.entries.splice(0, entries.length);
     }
+    const homes = new Map<QueuedDelivery, (typeof riding)[number]>();
+    for (const rider of riding) {
+      rider.bundle.entries = rider.bundle.entries.filter((entry) => !rider.held.includes(entry));
+      for (const entry of rider.held) homes.set(entry, rider);
+      entries.push(...rider.held);
+    }
     try {
       for (const entry of entries) {
         if (entry.origin.slot !== s.id || entry.origin.openedAt !== s.openedAt) {
-          if (bundle.address.kind === "slot") continue;
+          if ((homes.get(entry)?.bundle ?? bundle).address.kind === "slot") continue;
           audit("delivery_bundle_rerouted", s.id,
-            `${key} from slot=${entry.origin.slot} openedAt=${entry.origin.openedAt} to slot=${s.id} openedAt=${s.openedAt}`,
+            `${homes.get(entry)?.key ?? key} from slot=${entry.origin.slot} openedAt=${entry.origin.openedAt} to slot=${s.id} openedAt=${s.openedAt}`,
             { fromSlot: entry.origin.slot, toSlot: s.id, reason: "unattempted bundle resolved at delivery",
               deliveryClass: "buendelbar",
               ...deliveryAuditCache(s) });
@@ -11788,10 +11810,14 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (immediate) await immediate.options.beforeSend?.(s);
       if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
+      // The owner's text is typed now either way, so a turn in progress is no reason to hold back
+      // what waits for the same session: no busy gate beside an owner send (befunde/03 (A)). Kill
+      // switch, quiet hours, harness policy, the fresh alive probe and a blocking screen still hold.
       const gate = entries.length ? await canDeliver(s, { now: Date.now(),
         harness: entries.every((entry) => entry.options.bundleGate?.harness === false) ? false : true,
         quietHours: entries.every((entry) => entry.options.bundleGate?.quietHours === false) ? false : true,
-        idleMs: Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0)) }) : { ok: true } as const;
+        idleMs: immediate?.options.path === "owner" ? 0
+          : Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0)) }) : { ok: true } as const;
       if (bundle.address.kind === "slot") {
         for (const entry of [...entries]) {
           if (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt) continue;
@@ -11857,8 +11883,15 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
           { count: entries.length, reason, deliveryClass: immediate ? "sofort" : "buendelbar",
             ...deliveryAuditCache(s) });
       } else if (error instanceof SendRefused) {
-        bundle.entries.unshift(...entries);
+        bundle.entries.unshift(...entries.filter((entry) => !homes.has(entry)));
         bundle.retryAt = Date.now() + 5000;
+        for (const rider of riding) {
+          const back = entries.filter((entry) => homes.get(entry) === rider);
+          if (!back.length) continue;
+          rider.bundle.entries.unshift(...back);
+          rider.bundle.retryAt = bundle.retryAt;
+          if (Number.isFinite(rider.bundle.dueAt)) rider.bundle.dueAt = rider.bundle.retryAt;
+        }
         for (const entry of entries) {
           try { await entry.options.onRefused?.(s); }
           catch (rollbackError) { logError("bundleRefusalRollback", rollbackError); }
@@ -11892,8 +11925,22 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     else deliveryBundles.delete(key);
     return sent;
   };
-  bundle.inflight = run().finally(() => { bundle.inflight = null; });
-  return bundle.inflight;
+  const flight = run().finally(() => {
+    bundle.inflight = null;
+    for (const rider of riding) {
+      rider.bundle.inflight = null;
+      if (deliveryBundles.get(rider.key) !== rider.bundle) continue;
+      if (rider.bundle.entries.length) scheduleDeliveryBundle(rider.key, rider.bundle);
+      else {
+        if (rider.bundle.timer) clearTimeout(rider.bundle.timer);
+        rider.bundle.timer = null;
+        deliveryBundles.delete(rider.key);
+      }
+    }
+  });
+  bundle.inflight = flight;
+  for (const rider of riding) rider.bundle.inflight = flight;
+  return flight;
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
   if (SNAPSHOT_MIRROR) throw new DeliveryCancelled("snapshot-mirrored-read-only: Pane-Zustellung in einer Spiegel-Instanz");
@@ -11919,8 +11966,13 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     // command (Slot 9, 2026-09-28: „[Zitat entfernt]“ typed after a path=bundle header ran as a prompt).
     // It goes alone and first, headerless (deliveryHeader); the bundle keeps its own window.
     const ownerCommand = options.path === "owner" && given.trimStart().startsWith("/");
-    if (submit && !ownerCommand && deliveryBundles.has(key)) {
-      const sent = await flushDeliveryBundle(key, { slot: s, text: given, submit,
+    // The owner's send asks by RECIPIENT, the way the board's held count does: a self-Auto waits
+    // under slot:N while the owner addresses an Orchestratorin or a MAIN by role (befunde/03 (B)).
+    // Its own address leads when it holds a bundle; flushDeliveryBundle takes the others along.
+    const lead = deliveryBundles.has(key) ? key
+      : options.path === "owner" ? heldBundlesFor(s)[0]?.key : undefined;
+    if (submit && !ownerCommand && lead) {
+      const sent = await flushDeliveryBundle(lead, { slot: s, text: given, submit,
         options: { ...options, address }, origin });
       if (sent) return sent;
     }

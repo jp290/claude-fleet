@@ -6747,14 +6747,20 @@ Eine abgewiesene Zustellung an den lebenden Insassen bleibt im Buendel. Ein bere
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown`) und `cache` (`warm` oder
 `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung, Umleitung und Drop.
 
-Ein sofortiger Owner-Send übernimmt keine Sperre eines wartenden Maschinenbündels. Verweigert
-dessen Gate die gemeinsame Zustellung, bleiben die Maschinenentries mit ihren Promises und
-Empfängerbindungen im bestehenden Retrypfad; nur der Ownerpayload geht separat durch `sendText`.
-Draft-, Agent-, Occupant- und Readinessprüfungen gelten dabei weiterhin. Ein sendbares Bündel
-benutzt weiterhin die gemeinsame Zustellung. Der Owner-Send hebt keine Automatikgate auf.
+Ein sofortiger Owner-Send nimmt mit, was für seinen Empfänger wartet, unter welcher Adresse es
+auch eingereiht ist: Rollen-Adresse (`orchestrator`, `program:<id>`) und eigener Slot (`slot:N`,
+etwa ein Self-Auto). Gesucht wird nach Empfänger, wie für `heldDeliveries`; alles geht in einem
+Paste hinaus, die Owner-Nachricht zuerst. Dass die Session gerade arbeitet, hält dabei nichts
+zurück: neben einem Owner-Send gilt das Busy-Gate der Einträge nicht. Kill-Switch, Quiet Hours,
+Harness-Policy, der frische Agenten-Nachweis und ein Blockschirm gelten weiter. Verweigert eines
+davon die gemeinsame Zustellung, bleiben die Maschinenentries mit ihren Promises und
+Empfängerbindungen in ihrem eigenen Bündel und im bestehenden Retrypfad; nur der Ownerpayload geht
+separat durch `sendText`. Draft-, Agent-, Occupant- und Readinessprüfungen gelten dabei weiterhin.
+Ein Owner-`/`-Befehl geht weiterhin allein.
 Der Flush prueft die Gates fuer den aktuellen Empfaenger erneut, mit der strengsten Policy aller
 enthaltenen Eintraege, und verlangt bei etablierter Pane einen frischen Agenten-Nachweis vor dem
-Paste. Busy, Kill-Switch und Quiet Hours halten das Buendel fuer einen spaeteren Versuch.
+Paste. Busy (nur ohne Owner-Send), Kill-Switch und Quiet Hours halten das Buendel fuer einen
+spaeteren Versuch.
 No-Agent, No-Pane und Blockschirm verwerfen es vor dem Paste; `delivery_bundle_dropped` nennt
 das Gate und die Aufrufer erhalten den bestehenden Reject.
 

@@ -3093,7 +3093,8 @@ await import(pathToFileURL(process.argv[2]).href);
       && /const bound = boundProgramForMain\(s, t\.programId \?\? null\);/.test(sharpenBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(sharpenBody)
       && /repoCanon\(target\) !== mainRepo/.test(sharpenBody)
-      && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text" && k !== "review"\)/.test(sharpenBody)
+      // 5a515516 3b: the card the brief is read into is the third field the closed body names
+      && /Object\.keys\(body \?\? \{\}\)\.filter\(\(k\) => k !== "text" && k !== "review" && k !== "card"\)/.test(sharpenBody)
       && /t\.brief\?\.edited && t\.brief\.by === "owner"/.test(sharpenBody)
       && /t\.brief\?\.edited && t\.brief\.by === undefined/.test(sharpenBody)
       && /audit\("main_brief", s\.id/.test(sharpenBody),

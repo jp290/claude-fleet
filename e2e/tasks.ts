@@ -5970,9 +5970,11 @@ export async function run(ctx: Ctx): Promise<void> {
       `post=${s7Post.status} heads=${s7HeadCount} ${s7Sent.prompt.slice(0, 500)}`);
     check("(s7a-live-role) sent bytes omit ROLLE while the dispatch receipt keeps role metadata",
       !/(^|\n)ROLLE\s*:/i.test(s7Sent.prompt)
+      // 5a515516 3b · dispatchAndRead posts s7Brief through the brief door, which reads the card off
+      // that brief — its ROLLE included — so the lane spawns on the brief's role and the receipt says so
       && s7Sent.receipt?.harness === null
-      && s7Sent.receipt.model === FLEET_DEFAULT_MODEL && s7Sent.receipt.modelOrigin === "default"
-      && s7Sent.receipt.effort === null,
+      && s7Sent.receipt.model === "claude-opus-5-5[1m]" && s7Sent.receipt.modelOrigin === "spawn"
+      && s7Sent.receipt.effort === "high",
       JSON.stringify({ receipt: s7Sent.receipt ?? null, prompt: s7Sent.prompt.slice(0, 300) }));
     const longDone = `${"d".repeat(887)} DONE-END-900`;
     const longVerify = `bun e2e/pins.ts ${"v".repeat(369)} VERIFY-END-400`;
@@ -10165,7 +10167,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && JSON.stringify(vbCard.verboten) === JSON.stringify(["nichts an code.txt", "kein Auto-Dispatch"]),
       JSON.stringify(vbCard ?? null));
     const vbFirstAt = vbCard?.at ?? 0;
-    const vbBrief = await post(`/api/tasks/${vbRow.id}/brief`, { text: "Der geschaerfte Brief, der den Re-Read ausloest." });
+    // 5a515516 3b · the card follows the NEW brief, so the sharpened brief carries the filing headers
+    // itself (a rebrief starts from .brief.text): the re-read off it must still lose neither field
+    const vbBrief = await post(`/api/tasks/${vbRow.id}/brief`,
+      { text: vbText.replace("[FLEET-BETRIEB · VERBOTEN-PROBE]", "[FLEET-BETRIEB · VERBOTEN-PROBE · GESCHAERFT]") });
     let vbAgain: CRow["card"];
     for (let i = 0; i < 40; i++) {
       vbAgain = await cardOf(vbRow.id);
@@ -12541,7 +12546,9 @@ export async function run(ctx: Ctx): Promise<void> {
       return id;
     };
     const emptyId = await emptyFile("EMPTY-CARD-MEASURE", emptyCard);
-    const emptyBrief = await post(`/api/tasks/${emptyId}/brief`, { text: "Nur lesen: code.txt" });
+    // the brief carries its card (5a515516 3b): a rebrief is read for a card at the door, and a prose
+    // brief without one would leave this card stale — the release below refuses that
+    const emptyBrief = await post(`/api/tasks/${emptyId}/brief`, { text: "Nur lesen: code.txt", card: emptyCard });
     const newPath = "author-surface-new.txt";
     const newId = await emptyFile(`Nur code.txt lesen und ${newPath} neu anlegen`,
       { ...emptyCard, surface: { ...emptyCard.surface, creates: [newPath] } });
@@ -13822,14 +13829,15 @@ export async function run(ctx: Ctx): Promise<void> {
       const aoReread = async (): Promise<AoTask[] | null> => {
         const all = await aoTasks();
         const rows = aoBriefed.map((id) => all.find((t) => t.id === id));
-        return rows.every((t) => !!t?.brief && !!t.card && (t.card.at ?? 0) > t.brief.at
+        // 5a515516 3b · a brief with the filing headers IS the card, read at the door at the brief's own time
+        return rows.every((t) => !!t?.brief && !!t.card && t.card.at === t.brief.at
           && (t.card.at ?? 0) > (aoCards0?.get(t.id)?.at ?? 0)) ? rows as AoTask[] : null;
       };
       let aoFresh: AoTask[] | null = null;
       try { aoFresh = await until(aoReread, { timeoutMs: 20_000, stepMs: 250, what: "every briefed ao row carries a card re-read after its brief" }); }
       catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
       const aoFreshOf = (id: string): AoTask | undefined => aoFresh?.find((t) => t.id === id);
-      check("(ao1) the brief doors stamp their authors honestly and the sweep re-reads each card off the brief: after = [the three new ids] (INLINE: the two of its header), INVALID refused on its path",
+      check("(ao1) the brief doors stamp their authors honestly and read each card off the brief at its own time: after = [the three new ids] (INLINE: the two of its header), INVALID refused on its path",
         aoBriefStatuses.every((s) => s === 200) && !!aoFresh
           && aoFreshOf(aoMain)?.brief?.by === "main" && aoFreshOf(aoMain)?.brief?.edited === true
           && aoFreshOf(aoOwner)?.brief?.by === "owner" && aoFreshOf(aoOwner)?.brief?.edited === true
@@ -13854,8 +13862,9 @@ export async function run(ctx: Ctx): Promise<void> {
       await restartSrv();
       await post("/api/dispatch", { on: false });
       const aoToken = await aoMainToken();
-      // STALE: an authored MAIN brief with no sweep to re-read it — the card now speaks for an older text
-      const aoStaleRes = await aoBriefMain(aoToken, aoStale, aoHead("STALE", aoNew));
+      // STALE: an authored MAIN brief without the filing headers, and no sweep to re-read it — the door
+      // reads no card from it (5a515516 3b), so the card now speaks for an older text; its NACH is an order
+      const aoStaleRes = await aoBriefMain(aoToken, aoStale, `[ACP23 AO · STALE]\nNACH: ${aoNew.join(", ")}\n\nDie Zeile, neu ohne Kopf.`);
       const aoAfterPlant = await aoTasks();
       const aoBriefOf = (id: string): AoTask["brief"] => aoAfterPlant.find((t) => t.id === id)?.brief;
       mPre.need("(ao1b) the plant is read back as planted: legacy is pinned without an author, compiled is unpinned and authorless; the STALE brief is the MAIN's",
@@ -14617,7 +14626,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const nBlank = await nSharpen(nToken, nClosedId, { text: "   " });
     check("ACP-25 (6): by/model/edited in the body are 400 as a closed set — even naming the value the server writes itself — and a missing or blank text never mints a brief",
       nBodyBy.status === 400 && nBodyByText.includes("[by]")
-        && nBodyByText.includes("this door reads text and review only")
+        && nBodyByText.includes("this door reads text, review and card only")
         && nBodyMain.status === 400
         && nBodyModel.status === 400 && nBodyModelText.includes("model") && nBodyModelText.includes("edited")
         && nNoText.status === 400 && nBlank.status === 400

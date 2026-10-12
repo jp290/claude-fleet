@@ -3489,15 +3489,18 @@ export async function run(lc: LaneCtx): Promise<void> {
           count: git2("rev-list", "--count", `${from}..${sha}`) } };
     };
     const c1 = await charge(1, "charge1.txt", "BETREFF: perf(host): Charge eins haelt die Box unter Last.\n\nCHARGE-1-REPORT: Bremse und Watchdog.");
-    const c2 = await charge(2, "charge2.txt", "BETREFF: feat(inbox): Charge zwei parkt Zustellungen\n\nCHARGE-2-REPORT: Composer und Migration.");
+    // 5a515516 3b · the second report obeys the reporting rule (STATUS in line 1), so its BETREFF stands
+    // in line 2 — BREAKS IF squashReportSubject reads line 1 only again
+    const c2 = await charge(2, "charge2.txt", "COMPLETE · Charge zwei steht · ENTSCHEID NÖTIG: keiner\nBETREFF: feat(inbox): Charge zwei parkt Zustellungen\n\nCHARGE-2-REPORT: Composer und Migration.");
     check("charge subjects setup: a green-only MAIN and a live lane in REPO2",
       programR.ok && confirmR?.ok === true && activateR?.ok === true && bootR?.ok === true && promotionR?.ok === true
         && /^[0-9a-f]{32}$/.test(mainToken) && dispatchR?.ok === true && cwd !== "",
       JSON.stringify({ program: programR.status, boot: bootR?.status, bootError: boot?.error, dispatch: dispatchR?.status, cwd }));
-    check("charge subjects: two kept lands of one row take type and goal from their accepted report's BETREFF line — two subjects, one commit each, the line not in the body",
+    check("charge subjects: two kept lands of one row take type and goal from their accepted report's BETREFF line (line 1, or line 2 below STATUS) — two subjects, one commit each, the line not in the body",
       c1.subject === `perf(host): ${rowId} — Charge eins haelt die Box unter Last`
         && c2.subject === `feat(inbox): ${rowId} — Charge zwei parkt Zustellungen`
-        && c1.body.startsWith("CHARGE-1-REPORT: Bremse und Watchdog.") && c2.body.startsWith("CHARGE-2-REPORT: Composer und Migration.")
+        && c1.body.startsWith("CHARGE-1-REPORT: Bremse und Watchdog.")
+        && c2.body.startsWith("COMPLETE · Charge zwei steht · ENTSCHEID NÖTIG: keiner\n\nCHARGE-2-REPORT: Composer und Migration.")
         && !c1.body.includes("BETREFF:") && !c2.body.includes("BETREFF:")
         && git2("rev-list", "--count", `${mainBefore}..main`) === "2",
       JSON.stringify({ c1: { subject: c1.subject, body: c1.body.slice(0, 200), facts: c1.facts },
@@ -3506,6 +3509,197 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (cwd) await post("/api/worktrees/remove", { repo: REPO2, path: cwd });
     if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
     if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
+  }
+
+  // 5a515516 3b · THE CARD FOLLOWS ITS BRIEF, also on a kept lane's row (725b5caa: the first card's
+  // VERBOTEN "server.ts nicht aendern" judged a later batch, and the land d281c40c broke it unseen).
+  // One live lane in REPO2, rebriefed by its MAIN between kept lands:
+  //   (3b-sent)   a sent row whose lane no keep-land holds keeps its brief closed (409);
+  //   (3b-card)   after the keep-land the rebrief with filing headers IS the card: read at the door,
+  //               stamped with the brief's own time — BREAKS IF applyRebriefCard stops writing it;
+  //   (3b-note)   the report's outsideSurface and the land note measure the batch against that card,
+  //               and the note carries its VERBOTEN verbatim — BREAKS IF landCardNote answers null;
+  //   (3b-stale)  a prose rebrief leaves the card stale with its reason, and the land answers 409 with
+  //               the reason and both timestamps — BREAKS IF landCardRefusal answers null;
+  //   (3b-author) the owner door validates a body card as the create doors do (invalid = 400, nothing
+  //               written), and a DONE of 1000 characters survives a restart whole — BREAKS IF the card
+  //               loader cuts at 400 again;
+  //   (3b-release) a pending row rebriefed in prose is refused at both release doors with both
+  //               timestamps — BREAKS IF releaseCardRefusal stops asking cardBehindBrief.
+  {
+    const git2 = (...args: string[]): string => spawnSync("git", ["-C", REPO2, ...args]).stdout.toString().trim();
+    const programR = await post("/api/programs", {
+      title: "Rebrief card", intent: "A kept lane's card follows its brief.",
+      successCriterion: "Every batch is judged by its own card.", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const programId = ((await programR.json()) as { program?: { id: string } }).program?.id ?? "";
+    const confirmR = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
+    const activateR = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+    const bootR = programId ? await post(`/api/programs/${programId}/bootstrap-main`, { cwd: REPO2 }) : null;
+    const boot = bootR ? (await bootR.json()) as { slot?: number; error?: string } : null;
+    const promotionR = programId ? await post(`/api/programs/${programId}/promotion`,
+      { policy: { v: 1, selfLand: "green-only" } }) : null;
+    const tokenOf = (slot: number | undefined): string => !slot ? "" : ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken ?? "");
+    const mainToken = tokenOf(boot?.slot);
+    const taskR = await post("/api/tasks", { repo: REPO2, programId, queue: false,
+      text: "Eine Live-Lane, Charge um Charge, je Charge ein Rebrief ihrer Zeile." });
+    const rowId = ((await taskR.json()) as { task?: { id: string } }).task?.id ?? "";
+    const dispatchR = rowId ? await post(`/api/tasks/${rowId}/dispatch`, {}) : null;
+    const laneSlot = dispatchR ? ((await dispatchR.json()) as { slot?: number }).slot ?? 0 : 0;
+    type RbSlot = { id: number; cwd: string | null; lastOutput: number; git: { dirty: number; ahead: number } | null };
+    const laneNow = async (): Promise<{ now: number; slot: RbSlot | undefined }> => {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: RbSlot[] };
+      return { now: sx.now, slot: sx.slots.find((x) => x.id === laneSlot) };
+    };
+    const cwd = (await laneNow()).slot?.cwd ?? "";
+    const laneToken = tokenOf(laneSlot);
+    const self = (token: string, path: string, body?: unknown): Promise<Response> => fetch(`${BASE}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "x-fleet-self-token": token, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    // the card VERIFY of a REPO2 row is REPO2's own configured command, read from the gate the lane sees
+    const gateCmd = ((await (await self(laneToken, "/api/self/gate")).json()) as { verify?: { cmd?: string } | null }).verify?.cmd ?? "";
+    type RbCard = { at: number; ziel: string; done: string; verboten: string[]; model: string; valid: boolean;
+      surface: { files: string[] }; stale?: { reason: string; briefAt: number } };
+    type RbRow = { id: string; status: string; brief?: { text: string; at: number }; card?: RbCard };
+    const rowOf = async (id: string): Promise<RbRow | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: RbRow[] }).tasks.find((r) => r.id === id);
+    const rebrief = (text: string): Promise<Response> => self(mainToken, `/api/self/tasks/${rowId}/brief`, { text });
+    const commitIn = (file: string, content: string, msg: string): void => {
+      writeFileSync(`${cwd}/${file}`, content);
+      spawnSync("git", ["-C", cwd, "add", file]);
+      spawnSync("git", ["-C", cwd, "commit", "-qm", msg]);
+    };
+    const reportAccept = async (text: string): Promise<{ status: number; accept: number | null; outsideSurface: string[] | null | undefined }> => {
+      const r = await self(laneToken, "/api/self/fleet-report", { status: "complete", text });
+      const rec = r.ok ? (await r.json()) as { report?: { id?: string; outsideSurface?: string[] | null } } : {};
+      const id = rec.report?.id ?? "";
+      const a = id ? await self(mainToken, `/api/self/fleet-report/${id}/accept`, {}) : null;
+      return { status: r.status, accept: a?.status ?? null, outsideSurface: rec.report?.outsideSurface };
+    };
+    const readyFor = async (ahead: number, what: string): Promise<boolean> => {
+      try {
+        return await until(async () => {
+          const brief = (await plogRead()).some((e) => e.cwd === cwd && e.source === "auto");
+          const { now, slot } = await laneNow();
+          return brief && !!slot?.lastOutput && slot.git?.dirty === 0 && slot.git.ahead === ahead && now - slot.lastOutput >= 1500;
+        }, { timeoutMs: 30_000, stepMs: 100, what });
+      } catch { return false; }
+    };
+    const keepLand = async (what: string): Promise<{ land: number; settled: boolean; sha: string }> => {
+      const from = git2("rev-parse", "main");
+      const r = await self(mainToken, `/api/self/tasks/${rowId}/land`, { keep: true });
+      let settled = false;
+      try {
+        settled = await until(async () => {
+          const m = (await (await get(`/api/slots/${laneSlot}/merge`)).json()) as { running?: boolean };
+          return m.running === false && git2("rev-parse", "main") !== from;
+        }, { timeoutMs: 20_000, stepMs: 100, what });
+      } catch { /* checked below */ }
+      try { await until(async () => (await laneNow()).slot?.git?.ahead === 0,
+        { timeoutMs: 10_000, stepMs: 100, what: `${what}: git tick` }); } catch { /* the next step names it */ }
+      return { land: r.status, settled, sha: git2("rev-parse", "main") };
+    };
+    // (3b-sent) before any keep-land: the running row's brief is the order its lane was founded on
+    const sentRefusal = await rebrief("ZWEITE FASSUNG vor dem Keep-Land");
+    const sentText = await sentRefusal.text();
+    check("(3b-sent) a sent row whose lane no keep-land holds keeps its brief closed — 409 naming the kept-lane rule",
+      programR.ok && bootR?.ok === true && promotionR?.ok === true && dispatchR?.ok === true && cwd !== "" && gateCmd !== ""
+        && sentRefusal.status === 409 && sentText.includes("only a lane a keep-land holds"),
+      JSON.stringify({ program: programR.status, confirm: confirmR?.status, activate: activateR?.status, boot: bootR?.status,
+        bootError: boot?.error, dispatch: dispatchR?.status, cwd, gateCmd, refusal: [sentRefusal.status, sentText.slice(0, 200)] }));
+    // charge 1 lands with keep — the lane is held from here
+    if (cwd) commitIn("rebrief1.txt", "rebrief1\n", "feat(rebrief): erste Charge");
+    const r1 = await reportAccept("REBRIEF-CHARGE-1");
+    const ready1 = await readyFor(1, "rebrief charge 1 done-looking");
+    const land1 = await keepLand("rebrief charge 1 land");
+    // (3b-card) the next batch, as a rebrief with the filing headers
+    const headers = ["ROLLE: claude/claude-opus-5-5[1m]/high", "GROESSE: klein", "FLAECHE: code.txt",
+      `VERIFY: ${gateCmd}`, "DONE: die zweite Charge aendert code.txt",
+      "VERBOTEN: kein server.ts in dieser Charge · kein launchd", "",
+      "Die zweite Charge aendert code.txt und sonst nichts."].join("\n");
+    const cardR = await rebrief(headers);
+    const cardBody = (await cardR.json()) as { brief?: { at: number }; card?: { at: number; valid: boolean; stale?: unknown } };
+    const row2 = await rowOf(rowId);
+    check("(3b-card) after the keep-land the MAIN's rebrief with filing headers is the row's card — read at the door, stamped with the brief's time, its VERBOTEN as written",
+      r1.accept === 200 && ready1 && land1.land === 200 && land1.settled && cardR.status === 200
+        && row2?.status === "sent" && row2.card?.at === row2.brief?.at && cardBody.card?.at === cardBody.brief?.at
+        && row2.card?.model === "format" && row2.card.valid && row2.card.stale === undefined
+        && row2.card.ziel.startsWith("Die zweite Charge aendert code.txt")
+        && JSON.stringify(row2.card.verboten) === JSON.stringify(["kein server.ts in dieser Charge", "kein launchd"])
+        && JSON.stringify(row2.card.surface.files) === JSON.stringify(["code.txt"]),
+      JSON.stringify({ report1: r1, ready1, land1, rebrief: cardR.status, body: cardBody, card: row2?.card ?? null, briefAt: row2?.brief?.at ?? null }));
+    // (3b-note) charge 2: one path on the card's surface, one beside it
+    if (cwd) { commitIn("code.txt", "root\nzweite Charge\n", "feat(rebrief): zweite Charge"); commitIn("stray3b.txt", "stray\n", "feat(rebrief): daneben"); }
+    const r2 = await reportAccept("REBRIEF-CHARGE-2");
+    const ready2 = await readyFor(2, "rebrief charge 2 done-looking");
+    const land2 = await keepLand("rebrief charge 2 land");
+    type RbNote = { card?: { taskId: string; at: number; briefAt: number | null; verboten: string[]; outsideSurface: string[] | null } };
+    let note2: RbNote | null = null;
+    try { note2 = JSON.parse(git2("notes", "--ref=fleet/land", "show", land2.sha)) as RbNote; } catch { /* checked below */ }
+    check("(3b-note) the report's outsideSurface and the land note measure the batch against the CURRENT card, and the note carries its VERBOTEN verbatim",
+      JSON.stringify(r2.outsideSurface) === JSON.stringify(["stray3b.txt"]) && ready2 && land2.land === 200 && land2.settled
+        && note2?.card?.taskId === rowId && note2.card.at === row2?.card?.at && note2.card.briefAt === row2?.brief?.at
+        && JSON.stringify(note2.card.verboten) === JSON.stringify(row2?.card?.verboten)
+        && JSON.stringify(note2.card.outsideSurface) === JSON.stringify(["stray3b.txt"]),
+      JSON.stringify({ report2: r2, ready2, land2, note: note2?.card ?? null }));
+    // (3b-stale) the next batch in prose: no headers, no card the door can read
+    const staleR = await rebrief("Die dritte Charge, nur als Prosa beschrieben.");
+    const staleBody = (await staleR.json()) as { brief?: { at: number }; card?: { at: number; stale?: { reason: string; briefAt: number } } };
+    if (cwd) commitIn("rebrief3.txt", "rebrief3\n", "feat(rebrief): dritte Charge");
+    const r3 = await reportAccept("REBRIEF-CHARGE-3");
+    const land3 = await self(mainToken, `/api/self/tasks/${rowId}/land`, { keep: true });
+    const land3Body = (await land3.json()) as { error?: string; taskId?: string; cardAt?: number; briefAt?: number };
+    check("(3b-stale) a prose rebrief of a kept lane leaves the card stale with its reason, the report measures nothing against it, and the land answers 409 with the reason and both timestamps",
+      staleR.status === 200 && staleBody.card?.stale?.briefAt === staleBody.brief?.at
+        && (staleBody.card?.stale?.reason ?? "").includes("without the filing headers")
+        && r3.status === 200 && r3.outsideSurface === null
+        && land3.status === 409 && land3Body.taskId === rowId && land3Body.cardAt === row2?.card?.at
+        && land3Body.briefAt === staleBody.brief?.at && (land3Body.error ?? "").includes("no card could be read from it")
+        && (land3Body.error ?? "").includes(new Date(land3Body.briefAt ?? 0).toISOString()),
+      JSON.stringify({ rebrief: staleR.status, body: staleBody, report3: r3, land: land3.status, landBody: land3Body }));
+    // (3b-author) the owner door, with a body card: invalid refuses and writes nothing, valid is the card
+    const briefBefore = (await rowOf(rowId))?.brief?.at ?? null;
+    const authorCard = (done: string, verify: string) => ({ ziel: "Die dritte Charge als Autorenkarte",
+      surface: { files: ["code.txt"], symbols: [] }, done, verify, verboten: ["kein server.ts"] });
+    const badR = await post(`/api/tasks/${rowId}/brief`, { text: "Die dritte Charge, mit Karte.", card: authorCard("d", "bogus-verify") });
+    const briefAfterBad = (await rowOf(rowId))?.brief?.at ?? null;
+    const longDone = `${"d".repeat(986)} DONE-END-1000`;
+    const goodR = await post(`/api/tasks/${rowId}/brief`, { text: "Die dritte Charge, mit Karte.", card: authorCard(longDone, gateCmd) });
+    const goodBody = (await goodR.json()) as { brief?: { at: number }; card?: { at: number; model: string; stale?: unknown } };
+    await restartSrv();
+    const afterRestart = (await rowOf(rowId))?.card;
+    check("(3b-author) the owner door validates a body card as the create doors do — invalid is 400 and writes nothing, valid is the card — and its DONE of 1000 characters comes back from a restart whole",
+      badR.status === 400 && briefAfterBad === briefBefore && goodR.status === 200
+        && goodBody.card?.model === "author" && goodBody.card.at === goodBody.brief?.at && goodBody.card.stale === undefined
+        && afterRestart?.done === longDone && afterRestart.stale === undefined,
+      JSON.stringify({ bad: badR.status, briefBefore, briefAfterBad, good: goodR.status, body: goodBody,
+        doneLen: afterRestart?.done.length ?? null, stale: afterRestart?.stale ?? null }));
+    // (3b-release) a pending row of the same program, filed with an author card, rebriefed in prose
+    const pendR = await self(mainToken, "/api/self/tasks", { text: "Eine wartende Zeile mit Karte.", kind: "auftrag",
+      card: authorCard("die wartende Zeile ist fertig", gateCmd) });
+    const pendId = ((await pendR.clone().json()) as { task?: { id: string } }).task?.id ?? "";
+    const pendRebrief = pendId ? await self(mainToken, `/api/self/tasks/${pendId}/brief`, { text: "Die wartende Zeile, neu als Prosa." }) : null;
+    const pendRow = pendId ? await rowOf(pendId) : undefined;
+    const mainRel = pendId ? await self(mainToken, `/api/self/tasks/${pendId}/release`, {}) : null;
+    const mainRelBody = mainRel ? (await mainRel.json()) as { error?: string; cardAt?: number; briefAt?: number } : null;
+    const ownerRel = pendId ? await post(`/api/tasks/${pendId}/queue`, {}) : null;
+    const ownerRelBody = ownerRel ? (await ownerRel.json()) as { error?: string; cardAt?: number; briefAt?: number } : null;
+    check("(3b-release) a pending row rebriefed in prose is refused at the MAIN and the owner release door, each 409 with the reason and both timestamps",
+      pendR.status === 200 && pendRebrief?.status === 200 && !!pendRow?.card?.stale && (await rowOf(pendId))?.status === "pending"
+        && mainRel?.status === 409 && mainRelBody?.cardAt === pendRow.card.at && mainRelBody.briefAt === pendRow.brief?.at
+        && (mainRelBody.error ?? "").includes("no card could be read from it")
+        && ownerRel?.status === 409 && ownerRelBody?.cardAt === pendRow.card.at && ownerRelBody.briefAt === pendRow.brief?.at
+        && (ownerRelBody.error ?? "").includes("no card could be read from it"),
+      JSON.stringify({ file: pendR.status, fileBody: pendR.ok ? null : await pendR.text(), rebrief: pendRebrief?.status ?? null,
+        card: pendRow?.card ?? null, main: [mainRel?.status ?? null, mainRelBody], owner: [ownerRel?.status ?? null, ownerRelBody] }));
+    if (laneSlot) await post(`/api/slots/${laneSlot}/kill`, {});
+    if (cwd) await post("/api/worktrees/remove", { repo: REPO2, path: cwd });
+    if (boot?.slot) await post(`/api/slots/${boot.slot}/kill`, {});
+    if (rowId) await post(`/api/tasks/${rowId}/delete`, {});
+    if (pendId) await post(`/api/tasks/${pendId}/delete`, {});
     if (programId) await post(`/api/programs/${programId}/complete`, { force: true });
   }
 

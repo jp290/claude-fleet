@@ -1651,6 +1651,10 @@ interface TaskCard extends TaskCardBody {
   // CARD_VALIDATOR_VERSION the card was checked with; absent = before it was recorded (server.ts#cardDue)
   validatorVersion?: number;
   gaps: string[];
+  // 5a515516 3b · THE BRIEF MOVED AND NO CARD COULD BE READ FROM IT AT THE DOOR (server.ts#rebriefCard):
+  // why, and the brief it no longer speaks for. Absent on every card that was read from its brief;
+  // a new reading replaces the card and with it this marker. Release and land refuse while it stands.
+  stale?: { reason: string; briefAt: number };
 }
 // THE HOLD, the counter-act to a program's release policy (Schnitt 3). While it stands the tick starts
 // the row under NO policy — `queued` included — and says so on the row; a release lifts it

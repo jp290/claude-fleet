@@ -2677,9 +2677,12 @@ weder terminal noch programmübergreifend, und eine ungebundene Session lehnt di
 **Der Rahmen ist der seiner Nachbarn, wörtlich:** das Program kommt aus der BINDUNG (nie aus dem
 Body), das Repo aus dem eigenen Checkout, die Zeile muss ein `auftrag` dieses Programs sein und
 `pending` oder `queued` — ab `sent` stehen die Bytes schon in einer Pane, und ein späterer Umschrieb
-hieße, der Datensatz widerspräche der Lane, die er gegründet hat.
+hieße, der Datensatz widerspräche der Lane, die er gegründet hat. **Eine Ausnahme (5a515516 3b):**
+die `sent`-Zeile einer Lane, die ein keep-Land hält (`worktree.keptAt`, `server.ts#keptLaneRow`) —
+deren nächste Charge IST ein neuer Auftrag auf derselben Zeile. Jede andere `sent`-Zeile bleibt 409.
+Der Rebrief stellt nichts in die Pane zu; die Nachricht an die Lane schickt die MAIN selbst.
 
-**Der Body ist GESCHLOSSEN:** nur `text` und — seit 2026-09-14 — `review` (`"advisory"` | `"none"`,
+**Der Body ist GESCHLOSSEN:** nur `text`, `card` (seit 5a515516 3b, Absatz unten) und — seit 2026-09-14 — `review` (`"advisory"` | `"none"`,
 die Review-Bitte der Zeile, `docs/queue-analyst.md` §3c; das Verdikt kommt dann als FleetEvent
 `lane-review` in DEINE Pane und wird wie jedes Event über `POST /api/self/events/:id/ack` quittiert —
 es ist beratend und gated deine Landung nicht). `by`, `model`, `edited` werden mit 400 abgelehnt statt
@@ -2719,6 +2722,18 @@ gegründet wird, sind zwei Akte.
 Die OWNER-Tür daneben bleibt **unverändert**: `POST /api/tasks/:id/brief`, jetzt zusätzlich mit
 `by:"owner"` gestempelt, damit die Aussage positiv im Datensatz steht und nicht aus einer Abwesenheit
 erschlossen werden muss.
+
+**Die Karte folgt dem Brief, an beiden Türen (5a515516 3b, `server.ts#rebriefCard`).** Vor dem
+Schreiben wird die Karte aus dem NEUEN Text gelesen, mit den Produzenten der Create-Türen: ein
+Body-`card` wie dort validiert (ungültig = 400, nichts geschrieben), sonst die Filing-Köpfe
+(`formatCardOf`; ein Hand-Brief ohne Köpfe liest dabei NICHT die Köpfe des Originaltexts). Die neue
+Karte trägt den Zeitstempel des Briefs. Gelingt keins von beiden, bleibt die alte Karte mit
+`card.stale {reason, briefAt}` stehen, und der Kartensweep liest den Brief (auch die gehaltene
+`sent`-Zeile). Solange eine Karte älter als ihr Brief ist (`server.ts#cardBehindBrief`), antworten
+beide Release-Türen und beide Land-Routen 409 mit Grund, `cardAt` und `briefAt`; der `outsideSurface`
+eines Reports ist dann `null`. Die Antwort der Tür nennt `card {at, valid, model, gaps?, stale?}`.
+Die Land-Note trägt `card {taskId, at, briefAt, ziel, verboten, outsideSurface}`: die Karte, gegen
+die die gelandete Charge gemessen wurde, VERBOTEN wörtlich (Fall d281c40c).
 
 **Kommentare auf der Zeile erreichen die Lane (S3, seit 2026-09-19).** Der 409-Satz oben empfiehlt
 seit langem, eine Anmerkung statt als Brief-Umschrieb als Kommentar auf die Zeile zu stellen

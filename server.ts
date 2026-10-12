@@ -80,7 +80,7 @@ import {
   type SymbolRange, type TaskSurface,
 } from "./task-metadata";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardSurfaceValid, cardValid, cardAdvisoryGap, cardUncheckedSymbols, cardAnswerForLedger, CARD_MARK, CARD_KEY,
-  CARD_VALIDATOR_VERSION, buildNeighborIndex, renderNeighborLines, type TaskCardBody, type CardValidationContext, type RawCard,
+  CARD_VALIDATOR_VERSION, CARD_FIELD_MAX, buildNeighborIndex, renderNeighborLines, type TaskCardBody, type CardValidationContext, type RawCard,
   type CardNeighbors, type NeighborIndex } from "./card-extract";
 import { notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict, NOTE_HUB_FILES,
   type NoteInput, type NoteRow, type KeyedUpsert } from "./task-notes";
@@ -15357,9 +15357,12 @@ function closeSupersededReports(report: FleetReport): Promise<void>[] {
 // `creates` counts as surface — a planned NEW file is not a stray one. Only a surface-valid card
 // measures: a card with a surface gap does not state what the surface is, and a comparison against
 // it would name its gaps as the lane's strays. Every unmeasurable case is null.
+// 5a515516 3b · …and only the CURRENT card measures: one older than its brief speaks for the batch
+// before, and naming its surface's strays would judge this batch by that one (d281c40c) — null.
 async function laneOutsideSurface(s: Slot): Promise<string[] | null> {
-  const card = s.taskId ? tasks.find((t) => t.id === s.taskId)?.card : undefined;
-  if (!card?.surfaceValid || !s.cwd || !s.worktree) return null;
+  const row = s.taskId ? tasks.find((t) => t.id === s.taskId) : undefined;
+  const card = row?.card;
+  if (!row || !card?.surfaceValid || cardBehindBrief(row) || !s.cwd || !s.worktree) return null;
   const base = await laneBaseRef(s);
   if (!base) return null;
   const diff = await gitReadRaw(s.cwd, "diff", "--name-only", "--no-renames", "-z", `${base}...HEAD`, "--");
@@ -17540,10 +17543,8 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
     return json({ error: `task belongs to no program of this MAIN — a Program-MAIN sharpens only the briefs of rows of ${ownProgramsPhrase(binding.programs)}` }, 409);
   const { program, sessionIdMatch } = bound;
   // the owner door's own two sentences, so one question keeps one answer wherever it is asked
-  if (t.kind !== "auftrag")
-    return json({ error: `${t.kind} is never sent to a lane — it has no brief` }, 409);
-  if (t.status !== "pending" && t.status !== "queued")
-    return json({ error: `task is ${t.status} — its brief has already been sent` }, 409);
+  const closed = briefDoorRefusal(t);
+  if (closed) return json({ error: closed }, 409);
   // Two refusals, not one, because they send the caller to two different places: a brief the owner
   // demonstrably wrote is theirs to change, and a brief nobody's name is on cannot be told apart
   // from one.
@@ -17562,23 +17563,32 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
   // A CLOSED BODY, like the filing door's: `by`, `model` and `edited` are refused rather than
   // dropped, because a field silently ignored is a field the caller believes was honoured — and
   // these three are exactly the ones whose whole point is that a caller cannot nominate them.
-  const extra = Object.keys(body ?? {}).filter((k) => k !== "text" && k !== "review");
+  const extra = Object.keys(body ?? {}).filter((k) => k !== "text" && k !== "review" && k !== "card");
   if (extra.length)
-    return json({ error: `this door reads text and review only — [${extra.join(", ")}] is not read: the author is stamped from this session's own slot and can never be named in a request` }, 400);
+    return json({ error: `this door reads text, review and card only — [${extra.join(", ")}] is not read: the author is stamped from this session's own slot and can never be named in a request` }, 400);
   const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
   if (!text) return json({ error: "bad text" }, 400);
   const mainReview = taskReviewFromBody(body);
   if (!mainReview.ok) return json({ error: mainReview.error }, 400);
+  const derived = await rebriefCard(t, text, body?.card);
+  if (!derived.ok) return json({ error: derived.error }, derived.status);
+  // the awaits above (repo, card) let a dispatch, a kill or a recycle in: the row and the caller are
+  // asked again before the first write
+  const stillOpen = tasks.includes(t) ? briefDoorRefusal(t) : "unknown task";
+  if (stillOpen) return json({ error: `${stillOpen} — the row changed while its card was read; nothing written` }, 409);
+  if (!mainBindingOf(s).ok || !boundProgramForMain(s, t.programId ?? null).ok)
+    return json({ error: "this session's MAIN binding moved while the card was read — nothing written" }, 409);
   if (mainReview.review !== undefined) setTaskReview(t, mainReview.review, "main", s.id);
   // `edited:true` is the PIN (briefDue: a row carrying a brief is never recompiled) and `by:"main"`
   // is the authorship — the two facts that rode on one boolean until now. `model` carries the
   // author here for the same reason it carries the literal "owner" on the door next door: on a
   // hand-written brief that field has never named a model.
   t.brief = { text, at: Date.now(), model: "main", edited: true, by: "main" };
-  audit("main_brief", s.id, `${t.id} program=${program.id}`);
+  applyRebriefCard(t, derived.read);
+  audit("main_brief", s.id, `${t.id} program=${program.id}${t.status === "sent" ? " kept-lane" : ""}${t.card?.stale ? " card=stale" : ""}`);
   await saveStateNow();
   // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, as at every neighbouring door.
-  return json({ ok: true, sessionIdMatch, brief: t.brief,
+  return json({ ok: true, sessionIdMatch, brief: t.brief, ...rebriefCardReceipt(t),
     task: { id: t.id, kind: t.kind, status: t.status, programId: t.programId, ...(t.review ? { review: t.review } : {}) } });
 }
 
@@ -17676,10 +17686,49 @@ async function confirmCardsForMain(s: Slot, body: Record<string, unknown> | null
 function releaseCardRefusal(t: Task): string | null {
   const card = t.card;
   if (!card) return "the row has no card yet (the card sweep reads a row that opens with the filing headers, or file it with an author card)";
+  const behind = cardBehindBrief(t);
+  if (behind) return behind.reason;
   if (!card.valid)
     return `its card is not valid: ${card.gaps.filter((g) => !cardAdvisoryGap(g)).join("; ").slice(0, 300)}`;
-  if (t.brief && t.brief.at > card.at) return "the brief changed after the card was read — wait for the card sweep to re-read it";
   return namedAfterRefusal(t);
+}
+
+// 5a515516 3b · A CARD OLDER THAN ITS BRIEF SPEAKS FOR A WORK ORDER THAT NO LONGER STANDS. A kept lane
+// lands batch after batch on one row, and until this the first card judged every later one (725b5caa:
+// VERBOTEN "server.ts nicht aendern" from batch 1, the land d281c40c +28 lines in server.ts). Release
+// and land refuse while it holds, with both timestamps, and a brief door re-reads the card at once
+// (rebriefCard), so the window is the card sweep's, never silent. Null when the row has no card or no
+// brief — then there is no reading to be older than anything.
+function cardBehindBrief(t: Task): { reason: string; cardAt: number; briefAt: number } | null {
+  const card = t.card;
+  if (!card || !t.brief || card.at >= t.brief.at) return null;
+  const when = `card ${new Date(card.at).toISOString()}, brief ${new Date(t.brief.at).toISOString()}`;
+  return { cardAt: card.at, briefAt: t.brief.at,
+    reason: card.stale
+      ? `the brief changed after the card was read and no card could be read from it: ${card.stale.reason} (${when})`
+      : `the brief changed after the card was read — wait for the card sweep to re-read it (${when})` };
+}
+
+// …and the land's half: the first row the lane carries (its head, then its wave) whose card is older
+// than its brief, as the 409 body both land routes answer with. Null = every card speaks for its brief.
+function landCardRefusal(lane: Slot): { error: string; taskId: string; cardAt: number; briefAt: number } | null {
+  const rows = [...(lane.taskId ? tasks.filter((t) => t.id === lane.taskId) : []),
+    ...waveRowsOf(lane.id).filter((row) => row.id !== lane.taskId)];
+  for (const t of rows) {
+    const behind = cardBehindBrief(t);
+    if (behind) return { error: `the card of ${t.id} is older than its brief — a land is judged against the card of the batch it lands: ${behind.reason}`,
+      taskId: t.id, cardAt: behind.cardAt, briefAt: behind.briefAt };
+  }
+  return null;
+}
+
+// THE ONE SENT ROW A BRIEF DOOR TAKES: a row whose lane a keep-land holds (LaneRef.keptAt). Its next
+// batch is a new work order on the same row, and the card has to follow it; every other sent row's
+// brief is the order its running lane was founded on and stays closed.
+function keptLaneRow(t: Task): boolean {
+  if (t.status !== "sent" || typeof t.slot !== "number") return false;
+  const lane = slotFrom(t.slot);
+  return !!lane?.worktree?.keptAt && (lane.taskId === t.id || waveRowsOf(lane.id).some((row) => row.id === t.id));
 }
 
 // THE ONE ORDER REFUSAL ALL THREE RELEASE DOORS SHARE (Schnitt 1, dispatch-flaechen-buendeln §c):
@@ -17808,7 +17857,9 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // releases a row whose card is valid, speaks for the current brief, and carries every queue row
   // the text orders it after — each refusal names which of the three it hit and the way out.
   const cardRefusal = releaseCardRefusal(t);
-  if (cardRefusal) return json({ error: `a release needs a valid card — ${cardRefusal}` }, 409);
+  const behind = cardBehindBrief(t);
+  if (cardRefusal) return json({ error: `a release needs a valid card — ${cardRefusal}`,
+    ...(behind ? { cardAt: behind.cardAt, briefAt: behind.briefAt } : {}) }, 409);
   // E4 · A GROUP RELEASE COSTS ITS n VARIANTS, not one row (4b02bd09). The bracket itself is
   // excluded from the count on purpose (it is not a start), and the pending variants it would
   // release with itself are not in the count either — they are still `pending`. Counting them
@@ -18254,6 +18305,10 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     || waveRowsOf(lane.id).some((row) => row.id === t.id));
   if (!lane?.cwd || !lane.worktree || !laneCarriesRow)
     return json({ error: "this row names no live lane slot — the lane it ran in is gone, so nothing can be landed for it" }, 409);
+  // (4b) 5a515516 3b · THE CARD OF THE BATCH BEING LANDED. A rebrief of a kept lane moves the brief;
+  // until its card is read from it, the land would be judged against the batch before.
+  const cardRefused = landCardRefusal(lane);
+  if (cardRefused) return json(cardRefused, 409);
   // (5) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper and the same rule as the
   // release door: a MAIN bound in one repository never reaches into another. Failing to derive it
   // fails as ITSELF rather than silently reading as "matches".
@@ -20967,7 +21022,10 @@ const CARD_TIMEOUT_MS = 120_000; // one prose paragraph in, one JSON object out
 function cardDue(t: Task, now: number): boolean {
   if (!CARD_ON) return false;
   if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
-  if (t.status !== "pending" && t.status !== "queued") return false;
+  // 5a515516 3b · a kept lane's row is rebriefed batch by batch (briefDoorRefusal), and its card has
+  // to follow the brief there as well — only when it moved, never a first reading of a running row
+  if (t.status !== "pending" && t.status !== "queued"
+    && !(keptLaneRow(t) && !!t.card && (t.brief?.at ?? 0) > t.card.at)) return false;
   // a VARIANT carries no reading of its own — its group's card is the one every reader takes
   // (variantSourceOf), so a model call per variant would buy n readings of one text
   if (t.variantOf) return false;
@@ -21158,9 +21216,12 @@ function labeledFormatCard(text: string): { raw: RawCard; zielGap?: string } | n
     : { raw };
 }
 
+// 5a515516 3b · A BRIEF WRITTEN BY HAND REPLACES THE ORDER — start-plan.ts#orderTextOf's reading: its
+// headers are the card, and when it has none the original request's headers are NOT read in its place
+// (they would give the new brief the card of the order it replaced); the extractor reads it instead.
 function formatCardOf(t: Task, snapshot: TrackedSnapshot | null, index: SymbolIndexSnapshot | null): TaskCard | null {
   const source = [t.brief?.text, t.text].filter((x): x is string => !!x).join("\n\n");
-  const parsed = (t.brief?.text ? labeledFormatCard(t.brief.text) : null) ?? labeledFormatCard(t.text);
+  const parsed = (t.brief?.text ? labeledFormatCard(t.brief.text) : null) ?? (t.brief?.edited ? null : labeledFormatCard(t.text));
   if (!parsed) return null;
   const checked = validateCard(parsed.raw, cardValidationContext(source, snapshot, index, cardVerifyCommandOf(snapshot)));
   const gaps = parsed.zielGap
@@ -21245,6 +21306,51 @@ const adoptSpawnFromCard = (t: Task): boolean => {
   t.spawn = role.spawn;
   return true;
 };
+
+// 5a515516 3b · THE CARD FOLLOWS ITS BRIEF, AT THE DOOR. Both brief doors (owner and MAIN) read the
+// card from the NEW text before they write it, with the filing doors' own two producers: a body
+// `card` through authorCardFrom (invalid = 400, nothing written — the create doors' rule), else the
+// filing headers through formatCardOf. A brief neither yields a card for marks the card it leaves
+// behind STALE with the reason; release and land refuse it (cardBehindBrief) until the sweep's
+// extractor has read the brief. Never the old card kept silently: d281c40c landed a batch the
+// first card's VERBOTEN forbade.
+type RebriefCard = { card: TaskCard | null; staleReason: string | null };
+async function rebriefCard(t: Task, text: string, rawCard: unknown):
+  Promise<{ ok: true; read: RebriefCard } | { ok: false; status: 400 | 409; error: string }> {
+  const repo = taskRepoOf(t);
+  if (rawCard !== undefined) {
+    const made = await authorCardFrom(rawCard, text, repo, t.programId, t.base);
+    return made.ok ? { ok: true, read: { card: made.card, staleReason: null } } : made;
+  }
+  const snapshot = repo ? taskBaseSnapshotFor(repo, t.base) : null;
+  if (!snapshot)
+    return { ok: true, read: { card: null, staleReason: `the tracked tree of ${repo ?? "(no repo)"} could not be read, so no card was read from the new brief` } };
+  await cardForeignVerifyCommand(snapshot.repo);
+  const card = formatCardOf({ ...t, brief: { text, at: Date.now(), model: "rebrief", edited: true } },
+    snapshot, symbolIndexFor(snapshot));
+  return { ok: true, read: card ? { card, staleReason: null } : { card: null,
+    staleReason: `the new brief opens without the filing headers (ZIEL, FLAECHE, DONE, VERIFY, VERBOTEN), so ${CARD_ON ? "the card extractor reads it on its next sweep" : "only the card extractor could read it, and the card sweep is off (FLEET_CARD_MS)"}` } };
+}
+// …and the write, at the brief's own timestamp: a card read from this brief is exactly as new as it.
+function applyRebriefCard(t: Task, read: RebriefCard): void {
+  const at = t.brief!.at;
+  if (read.card) t.card = { ...read.card, at };
+  else if (t.card && read.staleReason) t.card = { ...t.card, stale: { reason: read.staleReason, briefAt: at } };
+  if (read.card) liftCardSurface(t);
+}
+// What a brief door answers about the row's card: when it was read, whether it is valid, and why not
+// current. Absent card = no field (the row never had one).
+const rebriefCardReceipt = (t: Task) => t.card ? { card: { at: t.card.at, valid: t.card.valid, model: t.card.model,
+  ...(t.card.gaps.length ? { gaps: t.card.gaps } : {}), ...(t.card.stale ? { stale: t.card.stale } : {}) } } : {};
+// THE STATUS EITHER BRIEF DOOR TAKES, asked before its awaits and again after them (a dispatch or a
+// kill can land in between): an unstarted row, or the row of a lane a keep-land holds.
+function briefDoorRefusal(t: Task): string | null {
+  if (t.kind !== "auftrag") return `${t.kind} is never sent to a lane — it has no brief`;
+  if (t.status === "pending" || t.status === "queued" || keptLaneRow(t)) return null;
+  return t.status === "sent"
+    ? "task is sent — its brief has already been sent, and only a lane a keep-land holds takes its next batch as a rebrief of its row"
+    : `task is ${t.status} — its brief has already been sent`;
+}
 
 async function tickCardSweep(): Promise<void> {
   if (cardSweepBusy || !CARD_ON) return;
@@ -21334,6 +21440,10 @@ const normFileList = (v: unknown): string[] | undefined => {
     .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES);
   return f.length ? f : undefined;
 };
+// The loader's flood bound for VERIFY: above CARD_FIELD_MAX.verify, because a foreign repo's verbatim
+// command is exempt from that cap (card-extract.ts#validateCard), and a hand-edited fleet.json still
+// cannot grow a field without end.
+const CARD_LOAD_VERIFY_MAX = 4000;
 // THE CARD read back off disk. Degrades to ABSENT whole, like every record here — but with one
 // extra property that is worth more than the parse: `valid` is DERIVED from `gaps`, never read —
 // and so is `surfaceValid` (no `surface.*` gap), for the same reason one field narrower.
@@ -21371,7 +21481,7 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const raw = v as Record<string, unknown>;
   if (typeof raw.model !== "string" || !raw.model) return undefined;
-  const str = (x: unknown): string => (typeof x === "string" ? x : "").slice(0, 400);
+  const str = (x: unknown, max = 400): string => (typeof x === "string" ? x : "").slice(0, max);
   const strs = (x: unknown): string[] => (Array.isArray(x) ? x : [])
     .filter((e): e is string => typeof e === "string" && !!e.trim()).map((e) => e.slice(0, 300)).slice(0, 20);
   const role = (raw.rolle && typeof raw.rolle === "object" ? raw.rolle : {}) as Record<string, unknown>;
@@ -21387,7 +21497,11 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
   // field existed says it too (card-extract.ts#cardUncheckedSymbols)
   const unchecked = cardUncheckedSymbols({ symbols, ranges });
   return {
-    ziel: str(raw.ziel), done: str(raw.done), verify: str(raw.verify), verboten: strs(raw.verboten),
+    // 5a515516 (c) · read back at the bound the validator stores, never at the 400 the old cut used: a
+    // DONE of 1200 characters filed today must not come back from a restart shortened. VERIFY keeps
+    // the verbatim foreign command whole too (card-extract.ts#validateCard compares it before the cap).
+    ziel: str(raw.ziel, CARD_FIELD_MAX.ziel), done: str(raw.done, CARD_FIELD_MAX.done),
+    verify: str(raw.verify, CARD_LOAD_VERIFY_MAX), verboten: strs(raw.verboten),
     ...(str(raw.delegation) ? { delegation: str(raw.delegation) } : {}),
     ...(raw.web === "search" ? { web: "search" as const } : {}),
     ...(field(raw.klasse) ? { klasse: field(raw.klasse)! } : {}),
@@ -21403,6 +21517,10 @@ const normTaskCard = (v: unknown): TaskCard | undefined => {
     ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
     ...(Number.isInteger(validatorVersion) && validatorVersion > 0 ? { validatorVersion } : {}),
     valid: cardValid(gaps), surfaceValid: cardSurfaceValid(gaps), gaps,
+    ...(raw.stale && typeof raw.stale === "object" && typeof (raw.stale as Record<string, unknown>).reason === "string"
+      && Number.isFinite((raw.stale as Record<string, unknown>).briefAt)
+      ? { stale: { reason: ((raw.stale as Record<string, unknown>).reason as string).slice(0, 400),
+        briefAt: (raw.stale as Record<string, unknown>).briefAt as number } } : {}),
   };
 };
 // The DERIVED surface read back off disk. It degrades to ABSENT whole — and unlike the proposal
@@ -29977,7 +30095,13 @@ interface LandProvenance {
   // land call carried {"squash":false}; "merge-in-series" = the series holds a merge commit, whose
   // second parent a squash would cut off main (Program-MAIN, 261011), so it landed as it was.
   squashOff?: SquashOff;
+  // 5a515516 3b · …and the CARD the landed batch is judged against: the row's current card (a land
+  // over a card older than its brief is refused before this, landCardRefusal), its VERBOTEN verbatim,
+  // and the landed paths its surface does not name. Absent when the lane's row has no card.
+  card?: LandCardNote;
 }
+// `outsideSurface: null` = not measured (a card with a surface gap, or an unreadable diff), never "none".
+interface LandCardNote { taskId: string; at: number; briefAt: number | null; ziel: string; verboten: string[]; outsideSurface: string[] | null }
 // a9629daa · THE ONE RECORD OF A SQUASH LAND, on the note, the intent and the outcome's facts alike.
 interface LandSquash { from: string; commits: number; ref: string }
 type SquashOff = "switch" | "merge-in-series";
@@ -30108,6 +30232,7 @@ async function writeLandNote(repo: string, base: string, branch: string, mainBef
       ...(prov.bundleBuild ? { bundleBuild: prov.bundleBuild } : {}),
       ...(prov.squash ? { squash: prov.squash } : {}),
       ...(prov.squashOff ? { squashOff: prov.squashOff } : {}),
+      ...(prov.card ? { card: prov.card } : {}),
       confirmedByHuman: prov.confirmedByHuman,
       actor: prov.actor,
       at: Date.now(),
@@ -39226,19 +39351,23 @@ function squashGoalSentence(t: Task | undefined): string {
   return first.length > SQUASH_GOAL_MAX ? `${first.slice(0, SQUASH_GOAL_MAX - 1).trimEnd()}…` : first;
 }
 
-// A REPORT NAMES ITS LAND: an accepted report whose first line is `BETREFF: <typ>(<bereich>): <Satz>`
+// A REPORT NAMES ITS LAND: an accepted report with a line `BETREFF: <typ>(<bereich>): <Satz>`
 // gives the subject its type and goal. A kept lane lands charge after charge on ONE row, so the
 // row's ZIEL repeats and the type is whichever lane commit came last (e13a98fc was "fix(timeline)"
 // for a host-stability charge); only the report knows what THIS charge was. The line leaves the
 // body. Without it, or with a line of another form, the rules below and above stand as they were.
 const SQUASH_REPORT_SUBJECT = /^BETREFF:\s*([a-z][a-z0-9-]*)\(([^)\n]+)\)!?:\s*(\S.*)$/i;
+// 5a515516 3b · IN LINE 1, 2 OR 3: the reporting rule puts `STATUS · …` in line 1 (AGENTS.md §Reporting),
+// so a report that obeys it carries BETREFF below; the first BETREFF line of the three counts.
+const SQUASH_REPORT_SUBJECT_LINES = 3;
 function squashReportSubject(report: LandReadyReport | null): { head: string; goal: string; body: string } | null {
-  const [first = "", ...rest] = (report?.text.trim() ?? "").split("\n");
-  const m = SQUASH_REPORT_SUBJECT.exec(first.trim());
-  if (!m) return null;
+  const lines = (report?.text.trim() ?? "").split("\n");
+  const at = lines.slice(0, SQUASH_REPORT_SUBJECT_LINES).findIndex((line) => SQUASH_REPORT_SUBJECT.test(line.trim()));
+  if (at < 0) return null;
+  const m = SQUASH_REPORT_SUBJECT.exec(lines[at]!.trim())!;
   const goal = m[3]!.replace(/\s+/g, " ").trim().replace(/\.$/, "");
   return { head: `${m[1]}(${m[2]})`, goal: goal.length > SQUASH_GOAL_MAX ? `${goal.slice(0, SQUASH_GOAL_MAX - 1).trimEnd()}…` : goal,
-    body: rest.join("\n").trim() };
+    body: lines.filter((_, i) => i !== at).join("\n").trim() };
 }
 
 // <typ>(<bereich>) from the NEWEST lane subject that has that form and whose type is not a
@@ -39322,6 +39451,25 @@ async function planSquashLand(s: Slot, cwd: string, root: string, branch: string
   if (made.code !== 0 || !/^[0-9a-f]{40,64}$/.test(made.out))
     return { error: `the squash commit could not be written: ${(made.err || made.out).slice(0, 200)}` };
   return { sha: made.out, squash: { from: gated, commits, ref: `${prefix}${Math.max(0, ...taken) + 1}` } };
+}
+
+// 5a515516 3b · THE NOTE'S CARD: measured on the series this round lands (mainBefore...tip), against
+// the card of the lane's row as it stands now — the batch's own card, since a rebrief re-reads it.
+async function landCardNote(s: Slot, cwd: string, mainBefore: string, tip: string): Promise<LandCardNote | null> {
+  const t = s.taskId ? tasks.find((x) => x.id === s.taskId) : undefined;
+  const card = t?.card;
+  if (!t || !card) return null;
+  let outsideSurface: string[] | null = null;
+  if (card.surfaceValid && !cardBehindBrief(t)) {
+    // three dots: the lane side since its merge base, so a round retried onto a moved main never
+    // names main's own new files as the batch's
+    const diff = await gitReadRaw(cwd, "diff", "--name-only", "--no-renames", "-z", `${mainBefore}...${tip}`, "--");
+    if (diff.code === 0) {
+      const surface = new Set([...card.surface.files, ...(card.surface.creates ?? [])]);
+      outsideSurface = [...new Set(diff.out.split("\0").filter((path) => path && !surface.has(path)))].sort();
+    }
+  }
+  return { taskId: t.id, at: card.at, briefAt: t.brief?.at ?? null, ziel: card.ziel, verboten: [...card.verboten], outsideSurface };
 }
 
 // THE MOVE, right before the hub push: H goes under its history ref (create-only), then the branch
@@ -40026,6 +40174,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const squashPlan: SquashPlan | null = planned && "sha" in planned ? planned : null;
               const squashOff: SquashOff | null = switches.squash === false ? "switch" : planned && "off" in planned ? planned.off : null;
               const squashNote = squashed ?? squashPlan?.squash ?? null;
+              const landCard = await landCardNote(s, cwd, mainBefore, squashPlan?.sha ?? gatedTip ?? "HEAD");
               // declare the land before making it — the marker is on disk before main moves, so a
               // restart in the advance→record window is finishable at boot instead of unrecoverable.
               // EVERY round, not just the first: a retry moves main from a different commit, so the
@@ -40033,7 +40182,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const prov: LandProvenance = { verify, confirmedByHuman: false, actor,
                 ...(ffRounds ? { ffRounds } : {}), ...(waitRounds ? { waitRounds } : {}),
                 ...(s.worktree?.baseSha ? { forkSha: s.worktree.baseSha } : {}),
-                ...(squashNote ? { squash: squashNote } : {}), ...(squashOff ? { squashOff } : {}) };
+                ...(squashNote ? { squash: squashNote } : {}), ...(squashOff ? { squashOff } : {}),
+                ...(landCard ? { card: landCard } : {}) };
               await markLandIntent(root, main, branch, mainBefore, squashPlan?.sha ?? await mergeRevParse(root, branch, "intent-tip"), prov);
               await waitForLandFfTestLatch(); // TEST-ONLY, inert in production (see LAND_FF_LATCH)
               // --- M3 · THE SECOND LOOK, and it is not a repetition of the first ---------------
@@ -52202,6 +52352,9 @@ Bun.serve<WSData>({
         // run on it, and with no override: the decision door is where the owner chooses, not here
         const variantRefusal = variantLandRefusal(s);
         if (variantRefusal) return json({ error: variantRefusal }, 409);
+        // 5a515516 3b · …and never against a card older than the brief of the batch it lands
+        const cardRefused = landCardRefusal(s);
+        if (cardRefused) return json(cardRefused, 409);
         const st = await git(cwd, "status", "--porcelain");
         if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
         if (st.out) return json({ status: "blocked",
@@ -53329,12 +53482,15 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskBrief) {
       const t = tasks.find((x) => x.id === taskBrief[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      if (t.kind !== "auftrag") return json({ error: `${t.kind} is never sent to a lane — it has no brief` }, 409);
-      if (t.status !== "pending" && t.status !== "queued")
-        return json({ error: `task is ${t.status} — its brief has already been sent` }, 409);
+      const closed = briefDoorRefusal(t);
+      if (closed) return json({ error: closed }, 409);
       const body = await readJson(req);
       const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
       if (!text) return json({ error: "bad text" }, 400);
+      const derived = await rebriefCard(t, text, body?.card);
+      if (!derived.ok) return json({ error: derived.error }, derived.status);
+      const stillOpen = tasks.includes(t) ? briefDoorRefusal(t) : "unknown task";
+      if (stillOpen) return json({ error: `${stillOpen} — the row changed while its card was read; nothing written` }, 409);
       // the review opt-in rides the brief door too: "how this row is said" and "whether its code is
       // read back" are both settled before the release, by the same hand
       const briefReview = taskReviewFromBody(body);
@@ -53347,8 +53503,9 @@ Bun.serve<WSData>({
       // so; a brief carrying no `by` is one written before the field, and every render still reads
       // that absence exactly as it did (server/types.ts, BriefAuthor).
       t.brief = { text, at: Date.now(), model: "owner", edited: true, by: "owner" };
+      applyRebriefCard(t, derived.read);
       saveState();
-      return json({ ok: true, brief: t.brief, ...(t.review ? { review: t.review } : {}) });
+      return json({ ok: true, brief: t.brief, ...rebriefCardReceipt(t), ...(t.review ? { review: t.review } : {}) });
     }
     // A COMMENT — the one text on this row the OWNER writes (everything else is machine output or the
     // original request). Allowed in EVERY status on purpose: the most useful remark is often about a row
@@ -53537,6 +53694,10 @@ Bun.serve<WSData>({
           // that may still release a row without a card at all.
           const order = namedAfterRefusal(t);
           if (order) return json({ error: `a release needs a valid card — ${order}` }, 409);
+          // 5a515516 3b · a card this door may do without, but never one OLDER than the brief it releases
+          const behind = cardBehindBrief(t);
+          if (behind) return json({ error: `a release needs a card that speaks for its brief — ${behind.reason}`,
+            cardAt: behind.cardAt, briefAt: behind.briefAt }, 409);
           // RELEASING IS THE DECISION — and until 2026-09-10 it could also be an OVERRIDE: a
           // release over the queue analyst's "needs-you" wrote the verdict into `note` and booked a
           // `task_override` audit line. With the analyst retired there is no objection to overrule,

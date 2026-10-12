@@ -776,7 +776,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const statics = [...transportSrc.slice(staticAt, staticEnd).matchAll(/^\s*"([^"]+)": \{ path/gm)].map((m) => m[1]);
   check("§1 the unauthenticated static map equals the reviewed set (no new file served without a token)",
     [...statics].sort().join(" ") === [...STATIC_ROUTES].sort().join(" "), statics.join(" "));
-  const stewSrc = src.slice(src.indexOf("async function handleStewardRoute"), src.indexOf("Bun.serve<WSData>"));
+  const stewSrc = src.slice(src.indexOf("async function handleStewardRoute"), src.indexOf("const serveOptions"));
   const stewStray = unrecognized(stewSrc);
   const stewFound = routeSet(stewSrc);
   const stewAlias = pathAliases(stewSrc);

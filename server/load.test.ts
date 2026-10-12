@@ -2,7 +2,7 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
@@ -51,18 +51,19 @@ describe("server.ts laden", () => {
   }, LOAD_DEADLINE_MS + 5_000);
 });
 
+// erst nachdem der Subprozess gezeigt hat, dass Laden nichts startet: sonst bootete hier ein Server
+// im Testprozess
+async function load() {
+  if (!loadProvenSafe) throw new Error("Laden ist nicht als startfrei bewiesen — Import im Testprozess unterbleibt");
+  Object.assign(process.env, isolation);
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+  const before = signals.map((sig) => process.listenerCount(sig));
+  const server = await import("../server");
+  expect(signals.map((sig) => process.listenerCount(sig))).toEqual(before);
+  return server;
+}
+
 describe("paneApiError, im Prozess importiert", () => {
-  // erst nachdem der Subprozess gezeigt hat, dass Laden nichts startet: sonst bootete hier ein Server
-  // im Testprozess
-  const load = async () => {
-    if (!loadProvenSafe) throw new Error("Laden ist nicht als startfrei bewiesen — Import im Testprozess unterbleibt");
-    Object.assign(process.env, isolation);
-    const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
-    const before = signals.map((sig) => process.listenerCount(sig));
-    const server = await import("../server");
-    expect(signals.map((sig) => process.listenerCount(sig))).toEqual(before);
-    return server;
-  };
   const at = 1_760_000_000_000;
 
   test("Codex: der Kapazitätsfehler direkt über dem Composer ist ein Stillstand", async () => {
@@ -93,4 +94,48 @@ describe("paneApiError, im Prozess importiert", () => {
     const { paneApiError, CLAUDE_HARNESS } = await load();
     expect(paneApiError(CLAUDE_HARNESS, "Selected model is at capacity.\n› ", at)).toBeNull();
   });
+});
+
+describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", () => {
+  async function request(path: string, headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
+    const { serveOptions } = await load();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    // der Handler liest vom Server nur die Peer-Adresse (finishHttp)
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const res = await fetch.call(server, new Request(`http://127.0.0.1:${isolation.FLEET_PORT}${path}`, { headers }), server);
+    if (!res) throw new Error(`${path}: der Handler gab keine Antwort`);
+    return { status: res.status, body: await res.json() };
+  }
+  const allowedHost = `127.0.0.1:${isolation.FLEET_PORT}`;
+
+  test("ein fremder Host-Header wird abgewiesen (DNS-Rebinding)", async () => {
+    const res = await request("/api/sessions", { host: "evil.example" });
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "host 'evil.example' not allowed — set FLEET_ALLOWED_HOSTS" });
+  });
+  test("eine fremde Origin wird abgewiesen, auch mit erlaubtem Host", async () => {
+    const res = await request("/api/sessions", { host: allowedHost, origin: "http://evil.example" });
+    expect(res).toEqual({ status: 403, body: { error: "cross-origin request blocked" } });
+  });
+  // tokenGate schreibt jeden Fehlversuch als owner_auth_fail ins audit.jsonl neben server.ts
+  // (server/audit-log.ts): nur in einem Baum ohne eigenes Audit-Log und danach wieder weg — im
+  // Verzeichnis eines laufenden Servers fälschte der Test dessen Ledger
+  async function withScratchAuditLog(run: () => Promise<void>): Promise<void> {
+    const file = join(ROOT, "audit.jsonl");
+    if (existsSync(file)) throw new Error(`${file} gibt es schon — der Test schriebe in ein echtes Audit-Log; im frischen Baum fahren`);
+    try {
+      await run();
+    } finally {
+      for (let i = 0; i < 100 && !existsSync(file); i++) await Bun.sleep(10); // audit() schreibt ohne await
+      rmSync(file, { force: true });
+    }
+  }
+  test("ohne Token keine Sitzungsliste", () => withScratchAuditLog(async () => {
+    expect(await request("/api/sessions", { host: allowedHost })).toEqual({ status: 401, body: { error: "unauthorized" } });
+  }));
+  test("ein falscher Token öffnet nichts", () => withScratchAuditLog(async () => {
+    expect(await request("/api/sessions", { host: allowedHost, authorization: "Bearer falsch" }))
+      .toEqual({ status: 401, body: { error: "unauthorized" } });
+  }));
 });

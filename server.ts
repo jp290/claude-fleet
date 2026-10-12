@@ -48965,9 +48965,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
 
 
 auditActorScope.enterWith({ kind: "unknown", why: "no-credential" });
-// START (only as entry point): the HTTP server and the start lines, to the end of the file
-if (import.meta.main) {
-Bun.serve<WSData>({
+const serveOptions: Bun.Serve.Options<WSData, never> = {
   hostname: HOST,
   port: PORT,
   // Bun's default is 10s per request — the ✨ summary POST legitimately holds the
@@ -54625,8 +54623,11 @@ Bun.serve<WSData>({
       s.inputChain = task.catch(() => {});
     },
   },
-});
+};
 
+// START (only as entry point): the HTTP server and the start lines, to the end of the file
+if (import.meta.main) {
+Bun.serve<WSData>(serveOptions);
 console.log(`claude-fleet: http://${HOST}:${PORT}  (tmux -L ${SOCK}, slots 1..${MAX_SLOTS})`);
 // only print the token to a real terminal — with stdout redirected (the documented
 // tmux `>> server.log` setup) it would land in a file created at the shell's default
@@ -54640,4 +54641,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions };

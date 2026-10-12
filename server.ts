@@ -11767,6 +11767,8 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
     if (!entries.length && !immediate) { deliveryBundles.delete(key); return; }
     const recipientOpenedAt = s.openedAt;
     let ownerGateBlocked = false;
+    // when a busy gate refused, the earliest moment it can open: the pane quiet for the idle threshold
+    let busyHorizon = 0;
     let sent: { acceptance: Acceptance } | undefined;
     if (!immediate) {
       bundle.entries.unshift(...entries);
@@ -11813,11 +11815,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       // The owner's text is typed now either way, so a turn in progress is no reason to hold back
       // what waits for the same session: no busy gate beside an owner send (befunde/03 (A)). Kill
       // switch, quiet hours, harness policy, the fresh alive probe and a blocking screen still hold.
+      const idleMs = immediate?.options.path === "owner" ? 0
+        : Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0));
       const gate = entries.length ? await canDeliver(s, { now: Date.now(),
         harness: entries.every((entry) => entry.options.bundleGate?.harness === false) ? false : true,
         quietHours: entries.every((entry) => entry.options.bundleGate?.quietHours === false) ? false : true,
-        idleMs: immediate?.options.path === "owner" ? 0
-          : Math.max(0, ...entries.map((entry) => entry.options.bundleGate?.idleMs ?? 0)) }) : { ok: true } as const;
+        idleMs }) : { ok: true } as const;
       if (bundle.address.kind === "slot") {
         for (const entry of [...entries]) {
           if (entry.origin.slot === s.id && entry.origin.openedAt === s.openedAt) continue;
@@ -11832,6 +11835,7 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
       }
       if (!gate.ok && entries.length) {
         const reason = `gate=${gate.gate}${gate.detail ? `: ${gate.detail}` : ""} — nothing typed`;
+        if (gate.gate === "busy") busyHorizon = s.lastOutput + idleMs;
         if (immediate?.options.path === "owner") {
           ownerGateBlocked = true;
           throw new SendRefused(reason);
@@ -11884,20 +11888,22 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
             ...deliveryAuditCache(s) });
       } else if (error instanceof SendRefused) {
         bundle.entries.unshift(...entries.filter((entry) => !homes.has(entry)));
-        bundle.retryAt = Date.now() + 5000;
+        // a busy pane is not asked again before it can have been quiet long enough (K1 1a), and the
+        // deadline the row shows as "gehalten bis" is that next try, never a time already passed
+        bundle.retryAt = Math.max(Date.now() + 5000, busyHorizon);
         for (const rider of riding) {
           const back = entries.filter((entry) => homes.get(entry) === rider);
           if (!back.length) continue;
           rider.bundle.entries.unshift(...back);
           rider.bundle.retryAt = bundle.retryAt;
-          if (Number.isFinite(rider.bundle.dueAt)) rider.bundle.dueAt = rider.bundle.retryAt;
+          if (Number.isFinite(rider.bundle.dueAt)) rider.bundle.dueAt = bundleDeadline(rider.bundle, s, Date.now());
         }
         for (const entry of entries) {
           try { await entry.options.onRefused?.(s); }
           catch (rollbackError) { logError("bundleRefusalRollback", rollbackError); }
         }
         if (immediate && !ownerGateBlocked) await immediate.options.onRefused?.(s);
-        if (Number.isFinite(bundle.dueAt)) bundle.dueAt = bundle.retryAt;
+        if (Number.isFinite(bundle.dueAt)) bundle.dueAt = bundleDeadline(bundle, s, Date.now());
         audit("delivery_bundle_refused", s.id, `${key} ${error.message}`,
           { count: entries.length, reason: error.message, deliveryClass: immediate ? "sofort" : "buendelbar",
             ...deliveryAuditCache(s) });

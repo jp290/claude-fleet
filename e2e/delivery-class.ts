@@ -4,7 +4,7 @@ import { AUTOS_TICK_MS, BASE, REPO, REPO2, ROOT, check, get, paneEnv, plogRead, 
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
   ts?: number; dueAt?: number; deliveryClass?: string; ttlSec?: number; ttlQuelle?: string;
-  cache?: string; eventId?: string; acceptance?: string; count?: number; paths?: string }
+  cache?: string; eventId?: string; acceptance?: string; count?: number; paths?: string; reason?: string }
 interface DeliveryEvent { id: string; watchId: string | null; status: string; kind: string;
   receiverSlot: number; receiverOpenedAt: number; payload?: { result?: string } }
 const auditRows = (): SendAudit[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n")
@@ -733,6 +733,71 @@ export async function run(): Promise<void> {
       `from=${vacant} to=${roleNext} acceptance=${roleSend.acceptance}`);
     await post(`/api/slots/${vacant}/kill`, {});
     await post(`/api/slots/${roleNext}/kill`, {});
+
+    // WHAT WAITS FOR A SESSION AT WORK (Owner 12.10., docs/neuaufbau/maengel.md #1): it waits in the
+    // bundle, where the row shows it as held and the owner's next message takes it along.
+    {
+      type Held = { count: number; dueAt: number | null; paths: string[] };
+      const heldOf = async (slot: number): Promise<Held | undefined> =>
+        ((await (await get("/api/sessions")).json()) as { slots: { id: number; heldDeliveries?: Held }[] })
+          .slots.find((s) => s.id === slot)?.heldDeliveries;
+      const openBusyFixture = async (label: string): Promise<number> => {
+        if (composerMode) writeFileSync(composerMode, "normal\n");
+        const slot = (await (await get("/api/sessions")).json() as { slots: { id: number; cwd: string | null }[] })
+          .slots.find((s) => !s.cwd)?.id ?? 0;
+        if (!slot) throw new Error(`${label}: no free slot`);
+        await post(`/api/slots/${slot}/open`, { cwd: REPO, label, harness: "pi" });
+        await until(async () => ((await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string }[] })
+          .slots.find((s) => s.id === slot)?.agent === "alive", { timeoutMs: 8_000, what: `${label}: the stand-in agent is alive` });
+        return slot;
+      };
+      // a BSpace into the stand-in's empty composer repaints it: fresh pane output, nothing typed
+      const keepBusy = (slot: number): (() => Promise<void>) => {
+        let busy = true;
+        const loop = (async () => {
+          while (busy) {
+            await tmuxOut("send-keys", "-t", `s${slot}`, "BSpace");
+            await Bun.sleep(50);
+          }
+        })();
+        return async () => { busy = false; await loop; };
+      };
+
+      // 1a · A BUSY REFUSAL WAITS FOR ITS HORIZON: the gate cannot open before the pane has been quiet
+      // for the entry's idle threshold, so the next try comes no earlier than lastOutput + idleMs, and
+      // "gehalten bis" names that moment instead of the next 5 s probe.
+      {
+        await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2", FLEET_HARNESS_AUTOMATION: "1" });
+        const slot = await openBusyFixture("busy horizon fixture");
+        const text = `${marker}: Check-in hinter acht Sekunden Ruhe`;
+        const from = auditRows().length;
+        const scheduled = await post(`/api/slots/${slot}/autos`, { text, everySec: 60, runs: 1, inSec: 1, idleSec: 8 });
+        const autoId = ((await scheduled.json()) as { auto?: { id: string } }).auto?.id;
+        await until(() => auditRows().slice(from).some((r) => r.event === "delivery_bundle_queued"
+          && r.slot === slot && r.path === "auto") || null,
+        { timeoutMs: 20_000, what: "the auto with an 8 s idle gate enters its 2 s bundle" });
+        const stop = keepBusy(slot);
+        let refused: SendAudit | undefined;
+        let held: Held | undefined;
+        let again: SendAudit[] = [];
+        try {
+          refused = await until(() => auditRows().slice(from).find((r) => r.event === "delivery_bundle_refused"
+            && r.slot === slot && r.reason === "gate=busy — nothing typed") ?? null,
+          { timeoutMs: 8_000, what: "the busy gate refuses the due bundle" });
+          held = await heldOf(slot);
+          await Bun.sleep(6_500);
+          again = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_refused"
+            && r.slot === slot && (r.ts ?? 0) > (refused?.ts ?? 0));
+        } finally { await stop(); }
+        check("a busy refusal retries no earlier than its idle horizon, and the held row names that horizon",
+          typeof refused?.ts === "number" && typeof held?.dueAt === "number"
+            && held.dueAt - refused.ts >= 7_000 && again.length === 0,
+          JSON.stringify({ refusedAt: refused?.ts ?? null, heldDueInMs: held?.dueAt != null && refused?.ts != null
+            ? held.dueAt - refused.ts : null, retriesWithin6500ms: again.length }));
+        if (autoId) await post(`/api/autos/${autoId}/delete`, {});
+        await post(`/api/slots/${slot}/kill`, {});
+      }
+    }
   } finally {
     if (composerMode) writeFileSync(composerMode, "normal\n");
     await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "0" });

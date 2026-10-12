@@ -13,8 +13,8 @@ import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDO
 import { check, ROOT } from "./harness";
 
 // The three tool profiles every throwaway agent is spawned with, read out of server.ts's SOURCE.
-// Importing server.ts would BOOT it (Bun.serve, tmux adoption, the whole state machine) and this is
-// the no-server family — so the profile is matched as the one-line literal it is declared as. The
+// Importing server.ts no longer boots it (server/load.test.ts), but this check predates that and
+// reads the source — so the profile is matched as the one-line literal it is declared as. The
 // match is anchored and requires the closing `';`: a profile rewritten as a `+` chain (which would
 // also silently widen ToolProfile back to `string`) resolves to "" here and turns the guard below
 // RED, rather than making the assertions vacuously green.

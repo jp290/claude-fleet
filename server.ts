@@ -44234,6 +44234,18 @@ async function claimInstanceLock(): Promise<void> {
     await Bun.sleep(100);
   }
 }
+// The owner token from FLEET_TOKEN or the state file, and the steward/helper tokens — the boot calls
+// it after the state is loaded; a test that imports server.ts calls it to get an owner token.
+function adoptTokens(): void {
+  if (process.env.FLEET_TOKEN) {
+    TOKEN = process.env.FLEET_TOKEN;
+  } else {
+    if (!persistedToken) persistedToken = randomBytes(24).toString("hex");
+    TOKEN = persistedToken;
+  }
+  if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
+  if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, same persistence
+}
 // START (only as entry point): the boot, up to the audit clock below
 if (import.meta.main) {
 await claimInstanceLock();
@@ -45341,14 +45353,7 @@ for (const s of slots) {
   if (s.cwd && await gitOpInProgress(s.cwd))
     console.log(`slot ${s.id}: an interrupted git merge/rebase is in progress in ${s.cwd} — resolve or abort it in the session; Fleet commit/land is blocked there until then`);
 }
-if (process.env.FLEET_TOKEN) {
-  TOKEN = process.env.FLEET_TOKEN;
-} else {
-  if (!persistedToken) persistedToken = randomBytes(24).toString("hex");
-  TOKEN = persistedToken;
-}
-if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
-if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, same persistence
+adoptTokens();
 const bootTmux = await observeTmuxSlots();
 if (bootTmux.known) {
   for (const [name, root] of bootTmux.sessions) {
@@ -54641,4 +54646,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens };

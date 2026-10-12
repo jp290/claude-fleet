@@ -2,8 +2,10 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { describe, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendEvent } from "./persist";
 
 const ROOT = join(import.meta.dir, "..");
 const SERVER = join(ROOT, "server.ts");
@@ -124,10 +126,14 @@ describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", ()
   async function withScratchAuditLog(run: () => Promise<void>): Promise<void> {
     const file = join(ROOT, "audit.jsonl");
     if (existsSync(file)) throw new Error(`${file} gibt es schon — der Test schriebe in ein echtes Audit-Log; im frischen Baum fahren`);
+    const barrier = mkdtempSync(join(tmpdir(), "fleet-load-"));
     try {
       await run();
     } finally {
-      for (let i = 0; i < 100 && !existsSync(file); i++) await Bun.sleep(10); // audit() schreibt ohne await
+      // audit() schreibt ohne await; alle Ledger-Zeilen teilen eine Schreibkette (persist.ts), also
+      // ist die Audit-Zeile samt chmod fertig, sobald eine danach eingereihte Zeile geschrieben ist
+      await appendEvent(join(barrier, "barrier.jsonl"), {});
+      rmSync(barrier, { recursive: true, force: true });
       rmSync(file, { force: true });
     }
   }
@@ -138,4 +144,23 @@ describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", ()
     expect(await request("/api/sessions", { host: allowedHost, authorization: "Bearer falsch" }))
       .toEqual({ status: 401, body: { error: "unauthorized" } });
   }));
+});
+
+describe("Route-Handler ohne Port, mit Owner-Token", () => {
+  test("der Token aus FLEET_TOKEN öffnet die Sitzungsliste mit allen Slots", async () => {
+    const { serveOptions, adoptTokens } = await load();
+    const owner = `test-${process.pid}-${Date.now()}`;
+    process.env.FLEET_TOKEN = owner;
+    adoptTokens();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const req = new Request(`http://127.0.0.1:${isolation.FLEET_PORT}/api/sessions`,
+      { headers: { host: `127.0.0.1:${isolation.FLEET_PORT}`, authorization: `Bearer ${owner}` } });
+    const res = await fetch.call(server, req, server);
+    if (!res) throw new Error("/api/sessions: der Handler gab keine Antwort");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { slots?: { id: number }[] };
+    expect(body.slots?.map((s) => s.id)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
+  });
 });

@@ -23,27 +23,33 @@ const HELPER_REPO = "~/ci/repo.git";
 interface Job { name: string; rc: number; ms: number }
 interface MainState { red: boolean; why: string }
 
-function git(args: string[], input?: string): { ok: boolean; out: string; err: string } {
-  const r = Bun.spawnSync(["git", "-C", REPO_DIR, ...args], { stdin: input === undefined ? "ignore" : Buffer.from(input) });
+function git(args: string[], input?: string, dir = REPO_DIR): { ok: boolean; out: string; err: string } {
+  const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdin: input === undefined ? "ignore" : Buffer.from(input) });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
-function mustGit(args: string[], input?: string): string {
-  const r = git(args, input);
+function mustGit(args: string[], input?: string, dir = REPO_DIR): string {
+  const r = git(args, input, dir);
   if (!r.ok) throw new Error(`git ${args.join(" ")}: ${r.err || r.out}`);
   return r.out;
 }
 
 // main plus <base>..<branch>, Commit für Commit wie ein Cherry-Pick; Merge-Commits fallen weg (ein
-// hereingemergtes bau/neuaufbau soll nicht mit nach main)
-function candidateOf(main: string, base: string, branch: string): { sha: string; commits: string[] } | { conflict: string } {
-  const commits = mustGit(["rev-list", "--reverse", "--no-merges", `${base}..${branch}`]).split("\n").filter(Boolean);
+// hereingemergtes bau/neuaufbau soll nicht mit nach main). Ein Commit, dessen Patch schon auf main
+// liegt (die Bauleitung merged per Cherry-Pick, der Branch behält das Original), wird übersprungen:
+// noch einmal angewendet gäbe er Konflikte mit späteren Änderungen derselben Datei. `git cherry`
+// markiert ihn mit „-“ und lässt Merge-Commits selbst weg.
+export function candidateOf(main: string, base: string, branch: string, dir = REPO_DIR):
+  { sha: string; commits: string[]; onMain: string[] } | { conflict: string } {
+  const marked = mustGit(["cherry", main, branch, base], undefined, dir).split("\n").filter(Boolean);
+  const commits = marked.filter((l) => l.startsWith("+ ")).map((l) => l.slice(2));
+  const onMain = marked.filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
   let cur = main;
   for (const c of commits) {
-    const t = git(["merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c]);
+    const t = git(["merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c], undefined, dir);
     if (!t.ok) return { conflict: `${c.slice(0, 8)} lässt sich nicht auf main setzen:\n${t.out.split("\n").slice(1).join("\n")}` };
-    cur = mustGit(["commit-tree", t.out.split("\n")[0]!, "-p", cur, "-F", "-"], mustGit(["log", "-1", "--format=%B", c]));
+    cur = mustGit(["commit-tree", t.out.split("\n")[0]!, "-p", cur, "-F", "-"], mustGit(["log", "-1", "--format=%B", c], undefined, dir), dir);
   }
-  return { sha: cur, commits };
+  return { sha: cur, commits, onMain };
 }
 
 function helperHost(): string {
@@ -112,14 +118,16 @@ async function main(): Promise<number> {
     git(["notes", "--ref=merge-check", "add", "-f", "-m",
       `merge-check ${verdict} · ${mergeable ? "mergebar" : "nicht mergebar"} · ${Math.round((Date.now() - t0) / 1000)} s · ${new Date(t0).toISOString()}\n`
       + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}\n${why}`
-      + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : ""), tip]);
+      + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
+      + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : ""), tip]);
     console.log(`\nmerge-check ${verdict} ${branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`);
     return code;
   };
 
   const cand = candidateOf(mainSha, base, branch);
   if ("conflict" in cand) return finish("conflict", false, cand.conflict, 3);
-  Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits });
+  Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits,
+    ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
   const host = helperHost();
   const push = Bun.spawnSync(["ssh", host, `test -d ${HELPER_REPO} || git init -q --bare ${HELPER_REPO}`]);
   const pushed = push.exitCode === 0 && git(["push", "-q", `ssh://${host}/${HELPER_REPO}`, `${cand.sha}:refs/mc/${cand.sha}`]).ok;

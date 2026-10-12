@@ -1,7 +1,11 @@
 // Owner 12.10.: „[Zitat entfernt]“ — der Merge-Check meldet bei rotem main nie
-// „[Zitat entfernt]“, außer ein Branch repariert es ausdrücklich (--repair).
+// „[Zitat entfernt]“, außer ein Branch repariert es ausdrücklich (--repair). Und er urteilt über den Baum,
+// den main nach dem Merge hätte (Bauleitung 12.10.: Branch-Arbeit per Rebase/Cherry-Pick auf main,
+// ohne bau/neuaufbau).
 import { describe, expect, test } from "bun:test";
-import { decide, mainVerdict } from "./merge-check";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { candidateOf, decide, mainVerdict } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -53,5 +57,69 @@ describe("decide: mergebar?", () => {
     expect(d.mergeable).toBe(true);
     expect(d.code).toBe(0);
     expect(d.why).toContain("--repair");
+  });
+});
+
+describe("candidateOf: der Baum nach dem Merge", () => {
+  // ein Wegwerf-Repo im Fluss der Bauleitung: main, bau/neu (Regeldatei, geht nie nach main), ein
+  // Strang darauf; die Bauleitung pickt Strang-Commits nach main, der Strang behält die Originale
+  const repo = (): { dir: string; g: (...a: string[]) => string; commit: (file: string, text: string) => string } => {
+    const dir = mkdtempSync(`${tmpdir()}/mc-test-`);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    const commit = (file: string, text: string): string => {
+      writeFileSync(`${dir}/${file}`, text);
+      g("add", file);
+      g("commit", "-q", "-m", `${file}: ${text}`);
+      return g("rev-parse", "HEAD");
+    };
+    g("init", "-q", "-b", "main");
+    commit("a.txt", "1\n");
+    g("checkout", "-q", "-b", "neu");
+    commit("regel.txt", "nur auf bau/*\n");
+    g("checkout", "-q", "-b", "strang");
+    return { dir, g, commit };
+  };
+  const filesOf = (g: (...a: string[]) => string, sha: string): string[] => g("ls-tree", "--name-only", sha).split("\n");
+
+  test("main + Strang-Commits, ohne die Commits der Basis", () => {
+    const { dir, g, commit } = repo();
+    commit("x.txt", "neu\n");
+    const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
+    const files = "conflict" in c ? [] : filesOf(g, c.sha);
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(c.commits.length).toBe(1);
+    expect(files.sort()).toEqual(["a.txt", "x.txt"]);
+  });
+
+  test("schon nach main gepickte Commits werden übersprungen, auch wenn ein späterer dieselbe Datei änderte", () => {
+    const { dir, g, commit } = repo();
+    const c1 = commit("ci.txt", "v1\n");
+    const c2 = commit("ci.txt", "v2\n");
+    g("checkout", "-q", "main");
+    g("cherry-pick", c1, c2);
+    g("checkout", "-q", "strang");
+    commit("y.txt", "danach\n");
+    const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
+    const tree = "conflict" in c ? "" : g("show", `${c.sha}:ci.txt`);
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(c.onMain).toEqual([c1, c2]);
+    expect(c.commits.length).toBe(1);
+    expect(tree).toBe("v2");
+  });
+
+  test("ein echter Konflikt mit main wird gemeldet, nicht überdeckt", () => {
+    const { dir, g, commit } = repo();
+    commit("a.txt", "strang\n");
+    g("checkout", "-q", "main");
+    commit("a.txt", "main\n");
+    const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
+    rmSync(dir, { recursive: true, force: true });
+    expect("conflict" in c).toBe(true);
   });
 });

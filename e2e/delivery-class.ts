@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { AUTOS_TICK_MS, BASE, REPO, REPO2, ROOT, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, REPO2, ROOT, UntilTimeout, check, get, paneEnv, plogRead, post, restartSrv, stopSrv, tmuxOut, until } from "./harness";
 
 interface SendAudit { event?: string; slot?: number; path?: string; detail?: string; file?: string;
   ts?: number; dueAt?: number; deliveryClass?: string; ttlSec?: number; ttlQuelle?: string;
@@ -796,6 +796,75 @@ export async function run(): Promise<void> {
             ? held.dueAt - refused.ts : null, retriesWithin6500ms: again.length }));
         if (autoId) await post(`/api/autos/${autoId}/delete`, {});
         await post(`/api/slots/${slot}/kill`, {});
+      }
+
+      // a Program bound to this slot as its live MAIN, planted while the server is down (no route
+      // binds one without a founding); `unread` are inbox entries the MAIN has not read
+      const plantMain = async (slot: number, programId: string, unread: number, env: Record<string, string>): Promise<void> => {
+        await stopSrv();
+        const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as {
+          slots: Record<string, { openedAt: number; sessionId: string | null }>; programs?: Record<string, unknown>[] };
+        const occupant = state.slots[String(slot)]!;
+        const at = Date.now() - 5000;
+        state.programs = [...(state.programs ?? []).filter((p) => p.id !== programId), {
+          id: programId, title: "Busy MAIN fixture", intent: "Hold what waits for a MAIN at work",
+          successCriterion: "The owner's send takes it along", nonGoals: [], decisions: [],
+          evidence: [], openQuestions: [], status: "active", createdAt: at - 1000,
+          proposedBy: { kind: "owner" }, confirmedAt: at - 900, activatedAt: at - 800,
+          main: { slot, openedAt: occupant.openedAt, sessionId: occupant.sessionId, boundAt: at - 700 },
+          inbox: { v: 1, dropped: 0, entries: Array.from({ length: unread }, (_, i) => ({
+            id: `${i}`.padStart(24, "f"), kind: "attention-answer", at: at - 500, ref: `busy-main-fixture-${i}`,
+            readBy: null, readAt: null })) },
+        }];
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+        await restartSrv(env);
+      };
+      const dropMain = async (slot: number, programId: string): Promise<void> => {
+        await post(`/api/slots/${slot}/kill`, {});
+        await stopSrv();
+        const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { programs?: { id?: string }[] };
+        state.programs = (state.programs ?? []).filter((p) => p.id !== programId);
+        writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+        await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      };
+
+      // 1 · AN INBOX HINT FOR A MAIN AT WORK stands on its row as held and rides the owner's next
+      // message. Before, it waited in front of the bundle for 300 s of quiet — a session the owner
+      // talks to never has them — unseen on the row and out of reach of the owner's send.
+      {
+        const slot = await openBusyFixture("busy inbox MAIN fixture");
+        const programId = "b".repeat(24);
+        const stop = keepBusy(slot);
+        let held: Held | undefined;
+        const ownerText = `${marker}: Owner-Nachricht an eine MAIN bei der Arbeit`;
+        try {
+          await plantMain(slot, programId, 1, { FLEET_DELIVERY_BUNDLE_SEC: "30", FLEET_HARNESS_AUTOMATION: "1",
+            FLEET_INBOX_NUDGE_MS: "100", FLEET_BACKLOG_NUDGE_IDLE_MS: "1000" });
+          held = await until(async () => {
+            const h = await heldOf(slot);
+            return h?.paths.includes("inbox-nudge") ? h : null;
+          }, { timeoutMs: 5_000, what: "the inbox hint for the busy MAIN stands held" })
+            .catch((error: unknown) => { if (error instanceof UntilTimeout) return heldOf(slot); throw error; });
+        } finally { await stop(); }
+        const from = auditRows().length;
+        const plBefore = (await plogRead()).length;
+        const response = await post("/send", { slot, text: ownerText });
+        const carried = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
+          && r.slot === slot && r.deliveryClass === "sofort");
+        const paths = carried[0]?.paths?.split(",") ?? [];
+        const hints = (await until(async () => {
+          const rows = (await plogRead()).slice(plBefore).filter((p) => p.slot === slot
+            && p.text.startsWith(`[fleet inbox] 1 ungelesene Eintraege in der Inbox deines Programs ${programId}`));
+          return rows.length ? rows : null;
+        }, { timeoutMs: 3_000, what: "the carried inbox hint is in the prompt log" })
+          .catch((error: unknown) => { if (error instanceof UntilTimeout) return []; throw error; })).length;
+        const after = await heldOf(slot);
+        check("an inbox hint for a MAIN at work stands held on its row and rides the owner's next message in one paste",
+          held?.paths.includes("inbox-nudge") === true && response.ok && carried.length === 1
+            && paths.includes("inbox-nudge") && paths.at(-1) === "owner" && hints === 1 && after === undefined,
+          JSON.stringify({ held: held ?? null, http: response.status, carried: carried.map((r) => [r.detail, r.paths]),
+            hints, after: after ?? null }));
+        await dropMain(slot, programId);
       }
     }
   } finally {

@@ -26274,7 +26274,11 @@ async function tickInboxNudge(): Promise<void> {
       const prior = inboxNudgeTried.get(s.id);
       if (prior?.key === key) continue;
       if (prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS) continue;
-      const verdict = await canDeliver(s, { now, idleMs: BACKLOG_IDLE_MS, quietHours: true });
+      // ONE PLACE TO WAIT (K1): with bundling on, the hint goes into the bundle at once and waits
+      // there for BACKLOG_IDLE_MS of quiet (bundleGate below), held on the row and taken along by the
+      // owner's next send. With bundling off sendText types it directly, so this gate is the wait.
+      const verdict = await canDeliver(s, { now, ...(DELIVERY_BUNDLE_SEC > 0 ? { quietHours: false }
+        : { idleMs: BACKLOG_IDLE_MS, quietHours: true }) });
       if (!verdict.ok) continue;
       const currentUnreadIds = nudgeableUnread(program);
       if (program.status !== "active" || programOccupancy(program) !== "live"
@@ -26351,9 +26355,11 @@ async function tickMessageNudge(): Promise<void> {
       const lane = !!s.worktree;
       if (prior?.key === key || (!lane && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
       // A MAIN's addressed lane message is direct traffic, like a report decision: short idle,
-      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle.
-      const verdict = await canDeliver(s, { now, idleMs: lane ? REPORT_DECISION_IDLE_MS : BACKLOG_IDLE_MS,
-        ...(lane ? { harness: false, quietHours: false } : { quietHours: true }) });
+      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle. Every other
+      // session's notice waits in the bundle, as the inbox hint does (tickInboxNudge).
+      const bundled = !lane && DELIVERY_BUNDLE_SEC > 0;
+      const verdict = await canDeliver(s, { now, idleMs: lane ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,
+        ...(lane ? { harness: false, quietHours: false } : { quietHours: !bundled }) });
       if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
       const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
         .map((m) => m.id).sort();

@@ -78,6 +78,8 @@ export async function messageDeliveryChecks(): Promise<void> {
       pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
       backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
       BACKLOG_IDLE_MS: 300_000, REPORT_DECISION_IDLE_MS: 3000, INBOX_NUDGE_COOLDOWN_MS: 600_000,
+      // this fixture's sendText types at once, as sendText does with bundling off
+      DELIVERY_BUNDLE_SEC: 0,
       get autosOn() { return autosOn; }, harnessAutomatable: () => automatable,
       inQuietHours: () => quiet, slotWakeInflight: new Map<number, unknown>(),
       claudeAlive: async () => { if (rotateAtProbe) slot.openedAt++; return alive; },

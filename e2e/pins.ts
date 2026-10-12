@@ -2066,7 +2066,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     registerSource.includes("/api/operational-view") && !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
 }
 
-pin("the backlog nudge is opt-in: unset means zero and exactly one positive-only timer can call it", /const BACKLOG_NUDGE_MS = [^;\n]*process\.env\.FLEET_BACKLOG_NUDGE_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickBacklogNudge")).length === 1 && /if \(BACKLOG_NUDGE_MS > 0\) setInterval\([^\n]*tickBacklogNudge/.test(server));
 pin("the audit ping is opt-in: unset means zero and exactly one positive-only timer can call it", /const AUDIT_PING_MS = [^;\n]*process\.env\.FLEET_AUDIT_PING_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickAuditPing")).length === 1 && /if \(AUDIT_PING_MS > 0\) setInterval\([^\n]*tickAuditPing/.test(server));
 
 // ContextPlan's first production consumer is the founding-brief seam. The import is the cheap
@@ -5925,7 +5924,7 @@ export default function (pi) {
   // Two rows on purpose. The first is the PROBE's own precondition: a renamed or moved sender must
   // fail as "this pin could not locate its subject", never as "that sender lost its rollback" —
   // and never silently as a body of "" whose `includes` are all trivially false.
-  const unattendedSenders = ["tickAuditPing", "tickFastProgramInbox", "tickInboxNudge", "tickBacklogNudge", "tickMigrate",
+  const unattendedSenders = ["tickAuditPing", "tickFastProgramInbox", "tickInboxNudge", "tickMigrate",
     "deliverMergeVerdict"] as const;
   const senderBodies = unattendedSenders.map((name) => ({
     name, body: serverU.span(`async function ${name}(`, "\n}\n", 2)?.text ?? "" }));

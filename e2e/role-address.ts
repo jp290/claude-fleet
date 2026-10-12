@@ -59,7 +59,7 @@ export async function messageDeliveryChecks(): Promise<void> {
     section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
     section("function messageInboundFor(", "function programMessageStatus("),
     section("async function canDeliver(", "let autoTickBusy ="),
-    section("let messageNudgeBusy =", "let backlogNudgeBusy =")].join("\n");
+    section("let messageNudgeBusy =", "interface MigrateAttempt")].join("\n");
   const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
   const now = Date.now();
   const make = (lane = true) => {

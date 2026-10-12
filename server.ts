@@ -47977,8 +47977,10 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
 // asks this function for the INTEGRATION TIP and differs from the deploy in three places only:
 //   · its cover is `(audit-tip)` WITHOUT `deploy` — nothing waits on it, so it keeps the cadence a
 //     land's cover keeps (auditCadenceOf) instead of being released past it;
-//   · "already queued" is ANY queued cover of this exact tip (a land's, the deploy's, its own): one
-//     more cover in the same group would cost no second run, but saying "queued now" would be false.
+//   · "already queued" is a queued cover of this exact tip that RELEASES AT ONCE (its own, the
+//     deploy's, a nightly): a land's cover waits for the quiet window (auditCadenceOf), so counting it
+//     left every landed tip held although the door answered "already queued" (09feee78, 12.10.: queued
+//     06:01, audit-tip 06:36, still waiting). One more cover in the same group costs no second run.
 //     The deploy still asks for ITS cover only — that one is what releases the cadence for it;
 //   · its texts name no second POST /api/deploy.
 // RUNNING counts a local run of this tip too (runningPostLandAudit, mainSha resolved). The drain
@@ -48023,7 +48025,7 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
     why: `its full audit is running on ${remote} — nothing was queued twice` };
   const queuedFor = [...auditQueue.entries()].filter(([r]) => repoCanon(r) === canon)
     .flatMap(([, q]) => auditQueueGroups(q).flatMap((g) => g.covers))
-    .filter((c) => c.mainAfter === target && (!deploy || c.deploy === true));
+    .filter((c) => c.mainAfter === target && (deploy ? c.deploy === true : !!(c.tip || c.deploy || c.nightly)));
   if (queuedFor.length) return { state: "unseen", repo, queued: true, next: watch,
     why: deploy ? "its full audit is already queued for this deploy — nothing was queued twice"
       : `its full audit is already queued as ${[...new Set(queuedFor.map((c) => c.branch))].join(", ")} — nothing was queued twice` };

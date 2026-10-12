@@ -764,9 +764,36 @@ export async function run(): Promise<void> {
         measuredD === 200 && f3.status === 200 && f3.b.queued === false && f3.b.state === "seen"
           && (await waitingFor(tipD)).length === 0,
         `measure=${measuredD} job=${JSON.stringify(jobD)} ${f3.status} ${JSON.stringify(f3.b).slice(0, 300)}`);
+      // (f2) …AND ON A LANDED TIP (Charge 4 E, 2026-10-12): every land queues a cover of its tip, and a
+      // land's cover keeps the quiet window. The door used to count that cover as "already queued" and
+      // released nothing — 09feee78 waited from 06:01 although audit-tip came at 06:36. The land's
+      // cover is planted the way savePostLandAuditQueue writes it and read back at boot; tipD's green is
+      // seconds old, so the hour holds it: WAITING. MUTATION: restore the old `queuedFor` filter of
+      // server.ts#deployAuditOf (any cover of the tip) ⇒ "already queued as fleet/e2e-landed", no job ⇒ red.
+      commit("server.ts", "// v11b — a tip a land carried");
+      const tipL = headNow();
+      writeFileSync(`${ROOT}/post-land-audit-queue.json`, JSON.stringify({ [fixGit("rev-parse", "--show-toplevel")]: {
+        main: fixGit("symbolic-ref", "--short", "HEAD"), covers: [{ branch: "fleet/e2e-landed", mainAfter: tipL, at: Date.now() }] } }));
+      await restartSrv(AUD);
+      const heldL = await waitingFor(tipL);
+      const jobsHeldL = await auditJobs();
+      check("§7f2 setup: a land's cover of the tip is queued and the quiet window holds it — WAITING, nothing offered",
+        heldL.length === 1 && heldL[0]?.branch === "fleet/e2e-landed" && jobsHeldL.length === 0,
+        `waiting=${JSON.stringify(heldL)} jobs=${JSON.stringify(jobsHeldL)}`);
+      const fL = await tipAsk({ sha: tipL });
+      const afterL = await waitingFor(tipL);
+      const jobL = (await auditJobs())[0];
+      const measuredL = jobL ? await measure(jobL.id, 0) : 0;
+      check("§7f2 audit-tip on a LANDED tip queues its own (audit-tip) cover beside the land's and the run is offered AT ONCE — RUNNING, row `trigger: audit-tip`",
+        fL.status === 200 && fL.b.queued === true && /queued now/.test(fL.b.why ?? "")
+          && JSON.stringify(afterL.map((w) => w.branch).sort()) === JSON.stringify(["(audit-tip)", "fleet/e2e-landed"])
+          && !!jobL && JSON.stringify([...jobL.branches].sort()) === JSON.stringify(["(audit-tip)", "fleet/e2e-landed"])
+          && measuredL === 200 && ledgerFor(tipL).some((r) => r.result === "green" && r.trigger === "audit-tip")
+          && (await waitingFor(tipL)).length === 0,
+        `${fL.status} ${JSON.stringify(fL.b).slice(0, 300)} waiting=${JSON.stringify(afterL)} job=${JSON.stringify(jobL)} measure=${measuredL}`);
 
       // (g) GATE-ONLY (owner-Ja 2026-10-09 21:2x): the audit never catches a tip that moves 41 times a
-      // day, so a tip whose every land since the youngest GREEN-audited ancestor (tipD, just above)
+      // day, so a tip whose every land since the youngest GREEN-audited ancestor (tipL, just above)
       // passed a FULL land gate goes out stamped `unaudited: "gate-only"` with that ancestor. Since
       // Charge 3 condition 1 (2026-10-11) it no longer leaves the tip to the cadence: the same request
       // queues the tip's own `(deploy)` audit, released at once — the deploy does not wait for it, the
@@ -789,10 +816,10 @@ export async function run(): Promise<void> {
         for (const j of await auditJobs()) if (await measure(j.id, 0) === 200) n++;
         return n;
       };
-      // (g1) two full-gated lands above the green tipD ⇒ 202, stamped — and the tip's audit queued
+      // (g1) two full-gated lands above the green tipL ⇒ 202, stamped — and the tip's audit queued
       commit("server.ts", "// v12 — landed through a full gate");
       const g1 = headNow();
-      landNote(g1, tipD, "full");
+      landNote(g1, tipL, "full");
       commit("server.ts", "// v13 — landed through a full gate as well");
       const g2 = headNow();
       landNote(g2, g1, "full");
@@ -803,9 +830,9 @@ export async function run(): Promise<void> {
       const gb = g.b as DeployAnswer & { gateOnly?: { ancestor?: string; lands?: string[] } };
       const rg = rowG as (DeployRowX & { gateOnly?: { ancestor?: string; auditAt?: number; lands?: string[] } }) | undefined;
       check("§7g a tip whose lands since the youngest green-audited ancestor all passed a FULL gate deploys without force: 202, `unaudited: gate-only` + the ancestor",
-        g.status === 202 && gb.unaudited === "gate-only" && gb.gateOnly?.ancestor === tipD
+        g.status === 202 && gb.unaudited === "gate-only" && gb.gateOnly?.ancestor === tipL
           && rg?.ok === true && rg.target === g2 && rg.unaudited === "gate-only" && rg.audit === undefined
-          && rg.gateOnly?.ancestor === tipD && typeof rg.gateOnly.auditAt === "number"
+          && rg.gateOnly?.ancestor === tipL && typeof rg.gateOnly.auditAt === "number"
           && JSON.stringify(rg.gateOnly.lands) === JSON.stringify([g2, g1]),
         `${g.status} ${JSON.stringify(g.b).slice(0, 300)} row=${String(JSON.stringify(rowG)).slice(0, 400)}`);
       // …the audit it started: one (deploy) cover on the tip in the same request, offered at once after

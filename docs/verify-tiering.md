@@ -502,10 +502,15 @@ once per night at `FLEET_AUDIT_NIGHTLY_AT` (02:00), only when main moved since t
 (`server.ts#auditClockTick`), the one run with the dom unit and its mutants (`FLEET_E2E_DOM_MUTANTS=1`),
 its row naming every land since the previous nightly and the undo stack (`withNightlyFacts`); `deploy` —
 a deploy's tip, at once, and a gate-only or forced deploy now queues it in the same request; `audit-tip`
-— `./ctl.sh commit main`, at once. `quiet`, `deploy` and `audit-tip` leave the dom unit out
+— `./ctl.sh commit main` or `POST /api/repos/audit-tip`, at once, also on a tip a land already queued
+(its own `(audit-tip)` cover beside the land's, since 2026-10-12: the land's cover alone waited for
+`quiet`, `e2e/deploy-facts.ts` §7f2). `quiet`, `deploy` and `audit-tip` leave the dom unit out
 (`FLEET_E2E_SKIP_UNITS=dom`, `server.ts#auditScopeOf`; a daemon without `audit-skip-units` runs them
 whole and is never handed a nightly). A row whose suite exited 0 with `checks.ran = 0` is `unknown`, not
 green (`server.ts#unmeasuredGreenIsUnknown`): no deploy stamp, no gate-only anchor, no quiet clock.
+On the helper deployment an audit never waits locally (`server.ts#drainPostLandAudits`), so a daemon
+update needs only empty merges (`./ctl.sh merges`), not an idle audit: an audit only the new daemon may
+claim (a nightly needs `audit-skip-units`) never goes idle before the update (Orchestratorin, 12.10.).
 Without a helper the local drain still runs on the land.
 
 | Audits per 7 days | full runs | per run | shard hours | source |

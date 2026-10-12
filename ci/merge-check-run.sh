@@ -23,7 +23,11 @@ T0=$(now_ms)
 # ein Merge-Check zur Zeit: zwei teilten sich sonst die Port-Bänder 7–9
 mkdir -p "$CI_HOME/runs"
 exec 9> "$CI_HOME/run.lock"
-flock 9
+# wer wartet, sagt es sofort (sonst sähe der Aufrufer bis zu einer Laufzeit lang nichts)
+if ! flock -n 9; then
+  echo "wartet auf den laufenden Merge-Check (pid $(cat "$CI_HOME/active" 2>/dev/null || echo ?))"
+  flock 9
+fi
 # solange diese Datei auf einen lebenden Prozess zeigt, startet der Helfer-Daemon auf
 # mergeCheckSlots seiner Plätze nichts Neues (helper-daemon/daemon.ts#mergeCheckHeld)
 echo $$ > "$CI_HOME/active"

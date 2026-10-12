@@ -58,7 +58,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     schicht: "AGENTS.md §Portable operating contract",
     autor: ["Owner-Promotion"],
     harness: {"art": "alle"},
-    lieferart: ["native Datei", "Session-Datei"],
+    lieferart: ["native Datei", "Session-Datei", "Prompt"],
     rollenDefault: {"lane": "an", "main": "an", "orchestratorin": "an", "nur-ordner": "aus"},
     source: "server.ts#openSlot",
     belege: ["server.ts#openSlot", "session-agents.ts#renderSessionAgents", "AGENTS.md#Portable operating contract"],
@@ -359,15 +359,15 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     satz: "Der Harness laedt die Regeln des gewaehlten Ordners.",
     funktion: ["vertrag"],
     grenze: {"art": "frei"},
-    schicht: "Native globale und Repo-Regeln, AGENTS.md/Override",
+    schicht: "Native Repo-Regeln, AGENTS.md/Override",
     autor: ["Repo-Autor"],
     harness: {"art": "alle"},
     lieferart: ["native Datei"],
     rollenDefault: {"lane": "an", "main": "an", "orchestratorin": "an", "nur-ordner": "an"},
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
-    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "session-agents.ts#renderSessionAgents"],
-    breaksWithout: "Die nativen Regeln fehlen; Laden und Dateiauswahl folgen dem Harness, nicht einem Fleet-Schalter.",
-    nichtSchaltbar: "Der Harness laedt den Ordner selbst; Fleet hat dafuer keinen Schalter.",
+    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "session-agents.ts#renderSessionAgents", "server.ts#agentCmd"],
+    breaksWithout: "Die nativen Regeln fehlen; Laden und Dateiauswahl folgen dem Harness, nur claudeMdExcludes im Start nimmt Dateien heraus.",
+    nichtSchaltbar: "Der Harness laedt den Ordner selbst; Fleet nimmt nur im Start einer Claude-MAIN oder -Orchestratorin Dateien per claudeMdExcludes heraus, im Plan ist das kein Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -380,11 +380,11 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     autor: ["Session selbst"],
     harness: {"art": "eingeschraenkt", "werte": ["claude"], "grund": "Nur Claude laedt CLAUDE.md und sein Auto-Memory; Codex und Pi haben diesen Loader nicht."},
     lieferart: ["native Datei"],
-    rollenDefault: {"lane": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}, "main": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}, "orchestratorin": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}, "nur-ordner": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}},
+    rollenDefault: {"lane": "aus", "main": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}, "orchestratorin": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}, "nur-ordner": {"zustand": "bedingt", "grund": "Claude-Auto-Memory vorhanden"}},
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
-    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe"],
+    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "server.ts#agentCmd"],
     breaksWithout: "Claudes eigener Notizblock fehlt; Fleet-Arbeitsstand und Self-Memory sind davon getrennt.",
-    nichtSchaltbar: "Claude laedt sein Auto-Memory selbst; Fleet hat dafuer keinen Schalter.",
+    nichtSchaltbar: "Claude laedt sein Auto-Memory selbst; Fleet schaltet es nur im Start einer Lane ab (autoMemoryEnabled:false), im Plan ist es kein Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -404,6 +404,60 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     fassung: "unknown", bytes: "unknown",
   },
 ];
+
+// --- WHAT CLAUDE CODE BRINGS ITSELF (Charge 5, MAIN-Entscheid 12.10.) --------------------------------
+// Not Bausteine: Fleet does not deliver these and nobody chooses them in a plan, so they carry no
+// zustand, no planHash share and no receipt row. The plan route shows them as one group beside the
+// plan (server.ts#claudeCodeStart), each row with its way into the start and the code that sets it.
+// docs/messungen/2026-10-10-kontext-bestandteile.md H/G1 measured them; F5 named the missing rows.
+export type ClaudeCodeRolle = "lane" | "main" | "orchestrator" | "generic";
+export interface ClaudeCodeZeile {
+  readonly id: "systemprompt" | "werkzeuge" | "listen" | "listenschnitt" | "gepflogenheiten" | "globale-regeln" | "mcp";
+  readonly wort: string;
+  readonly satz: string;
+  readonly quelle: SessionSource;
+}
+export const CLAUDE_CODE_ZEILEN: readonly ClaudeCodeZeile[] = [
+  { id: "systemprompt", wort: "Systemprompt", satz: "Claude Code schreibt Regeln, Umgebung und Modus selbst hinein.",
+    quelle: "docs/messungen/2026-10-10-kontext-bestandteile.md#H — Was Claude Code selbst hineinlegt (alle Rollen)" },
+  { id: "werkzeuge", wort: "Werkzeuge", satz: "Jedes Werkzeug der Liste bringt sein Schema mit.", quelle: "server.ts#SESSION_TOOLS" },
+  { id: "listen", wort: "Skills und Agenten", satz: "Claude Code listet Skills und Agenten, Fleet kuerzt die Liste je Rolle.", quelle: "server.ts#SESSION_LIST_CUT" },
+  { id: "listenschnitt", wort: "Listenschnitt", satz: "Eine Zeile nennt, was fehlt und wie es zurueckkommt.", quelle: "server.ts#sessionListCut" },
+  { id: "gepflogenheiten", wort: "Gepflogenheiten", satz: "Die Gepflogenheiten haengen am Systemprompt, wenn der Server sie einschaltet.", quelle: "server.ts#agentCmd" },
+  { id: "globale-regeln", wort: "Globale Regeln", satz: "Claude laedt die Regeln des Owners aus seinem Konfig-Ordner.", quelle: "server.ts#nativeLoaderBytes" },
+  { id: "mcp", wort: "MCP", satz: "Eine Text-Lane startet ohne MCP-Server, jede andere Session mit denen des Accounts.", quelle: "server.ts#agentCmd" },
+];
+// THE MEASURED START OF EACH SPAWN ROLE: input tokens of the first answer (input + cache_creation +
+// cache_read) of an interactive claude pane in an EMPTY scratch folder, private tmux socket, started
+// with the role's own line from server.ts#agentCmd at d266a070 (--dangerously-skip-permissions,
+// --model 'claude-opus-5-5[1m]', --effort high, the role's list cut, --tools where the role has a list,
+// --strict-mcp-config and autoMemoryEnabled:false for the lane), prompt "ok". Everything in it is
+// Claude Code's or the owner's global file — no repo, no rulebook, no session file, no brief.
+// `werkzeuge` is the list it ran with (null = no --tools): the route compares it with SESSION_TOOLS
+// and calls the number stale when they differ, rather than carrying a number for a list it never saw.
+export interface ClaudeCodeMessung {
+  readonly tokens: number;
+  readonly am: string;
+  readonly claude: string;
+  readonly modell: string;
+  readonly werkzeuge: readonly string[] | null;
+}
+export const CLAUDE_CODE_MESSUNG: Readonly<Record<ClaudeCodeRolle, ClaudeCodeMessung>> = {
+  lane: { tokens: 31_134, am: "2026-10-11T22:10Z", claude: "2.1.296", modell: "claude-opus-5-5[1m]",
+    werkzeuge: ["Bash", "Read", "Edit", "Write", "ToolSearch", "Agent", "WebFetch", "Skill", "TaskStop", "WebSearch",
+      "ScheduleWakeup", "Artifact", "Monitor", "SendFeedback"] },
+  main: { tokens: 33_596, am: "2026-10-11T22:10Z", claude: "2.1.296", modell: "claude-opus-5-5[1m]",
+    werkzeuge: ["Bash", "Read", "Write", "Edit", "Artifact", "ToolSearch", "TaskStop", "Agent", "WebFetch", "WebSearch",
+      "SendMessage", "SendFeedback", "Skill", "Monitor", "PushNotification"] },
+  orchestrator: { tokens: 36_985, am: "2026-10-11T22:10Z", claude: "2.1.296", modell: "claude-opus-5-5[1m]",
+    werkzeuge: ["Bash", "Read", "Write", "ToolSearch", "PushNotification", "Agent", "Artifact", "WebSearch", "Edit",
+      "WebFetch", "TaskStop", "Skill", "Workflow", "AskUserQuestion", "ScheduleWakeup"] },
+  generic: { tokens: 40_251, am: "2026-10-11T22:12Z", claude: "2.1.296", modell: "claude-opus-5-5[1m]", werkzeuge: null },
+};
+// Fleet's own part is measured in bytes; the window converts it with the ratio a regression over 89
+// Opus-5.5 starts measured (docs/messungen/2026-10-10-kontext-bestandteile.md, Lesart: 2,05-2,18 B/Tok,
+// the note itself divides by 2,1) and says that it is an estimate.
+export const FLEET_BYTES_JE_TOKEN = { wert: 2.1, quelle: "docs/messungen/2026-10-10-kontext-bestandteile.md#Lesart" } as const;
 
 // --- THE PLAN (Objektmodell Fassung 2 §1; Owner-Ja F1 via the Orchestratorin, 07.10.) ---------------
 // What THIS session gets: role, place, triple, and per Baustein one state an | aus | ersetzt:<id>. A

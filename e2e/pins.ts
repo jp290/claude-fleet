@@ -84,7 +84,7 @@ import { withCardHead, renderRowComments, renderCardHead, ROW_COMMENTS_MARK, ROW
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS, type ContextPackCapability, type ContextPackMode, type ContextPackSource, type ContextPackTrigger } from "../context-packs";
 import { planContext } from "../context-plan";
 import { SESSION_FILE_REF, renderSessionAgents, sessionFileRefMisses, type SessionAgents } from "../session-agents";
-import { SESSION_BLOCKS, resolveSessionPlan, type SessionBlock, type SessionPlanInput, type SessionPlanMessung, type SessionRole } from "../session-blocks";
+import { CLAUDE_CODE_MESSUNG, CLAUDE_CODE_ZEILEN, FLEET_BYTES_JE_TOKEN, SESSION_BLOCKS, resolveSessionPlan, type SessionBlock, type SessionPlanInput, type SessionPlanMessung, type SessionRole } from "../session-blocks";
 import { readContextManifest } from "../context-manifest";
 import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 // the lane-permission hook is IMPORTED for its pure decision and SPAWNED for its stdin/exit contract —
@@ -11000,6 +11000,26 @@ export default function (pi) {
       && answerCalls.every((at) => (at > routeAt && at < routeEnd) || (at > acceptDef && at < acceptEnd)),
     `readers=${readers.join(", ")}; foundingSessionPlan sites=${planCalls.length}; foundingPlanAnswer calls=${answerCalls.length}; route=${routeAt}..${routeEnd}`);
 
+  // WHAT CLAUDE CODE BRINGS ITSELF (session-blocks.ts#CLAUDE_CODE_ZEILEN, Charge 5): no Baustein, so no
+  // plan row — but every row names code or a measurement that is in this tree, and a measured start
+  // number belongs to exactly the tool list server.ts#SESSION_TOOLS gives its role today.
+  pin("S3 claude code: every row and the byte ratio name a source in this tree, and no row is a plan Baustein",
+    CLAUDE_CODE_ZEILEN.length > 0 && CLAUDE_CODE_ZEILEN.every((z) => z.wort.trim() && z.satz.trim() && !/[\n\r…]/.test(z.satz) && resolves(z.quelle))
+      && resolves(FLEET_BYTES_JE_TOKEN.quelle) && FLEET_BYTES_JE_TOKEN.wert > 0
+      && !CLAUDE_CODE_ZEILEN.some((z) => declared.includes(z.id)),
+    CLAUDE_CODE_ZEILEN.filter((z) => !resolves(z.quelle)).map((z) => z.quelle).join(", "));
+  const toolsBlock = /const SESSION_TOOLS[^=]*= \{([\s\S]*?)\n\};/.exec(serverSrc)?.[1] ?? "";
+  const toolsOf = (role: string): string[] | null => {
+    const m = new RegExp(`\\b${role}: \\[([^\\]]*)\\]`).exec(toolsBlock);
+    return m ? [...m[1]!.matchAll(/"([^"]+)"/g)].map((x) => x[1]!) : null;
+  };
+  const stale = (["lane", "main", "orchestrator", "generic"] as const).filter((role) =>
+    (CLAUDE_CODE_MESSUNG[role].werkzeuge ?? []).join() !== (role === "generic" ? [] : toolsOf(role) ?? ["<missing>"]).join()
+      || (role === "generic") !== (CLAUDE_CODE_MESSUNG[role].werkzeuge === null)
+      || !(CLAUDE_CODE_MESSUNG[role].tokens > 0) || Number.isNaN(Date.parse(CLAUDE_CODE_MESSUNG[role].am)));
+  pin("S3 claude code: each measured start ran with its role's SESSION_TOOLS list (generic: none) — re-measure when the list moves",
+    toolsBlock !== "" && stale.length === 0, stale.join(", "));
+
   // THE PLAN RESOLVER, pure: the same inputs give the same plan-hash, a switch moves it, and every
   // refusal names its rule. Measured bytes come from the caller; unknown stays unknown.
   const planInput = (rolle: SessionRole, harness: string, schalter: Record<string, string> = {}): SessionPlanInput => ({
@@ -11036,7 +11056,8 @@ export default function (pi) {
       && (typeof b.bytes === "number" || b.bytes === "unknown") && Array.isArray(b.ersatzKandidaten))
       && !lane.plan.bausteine.some((b) => b.id === "founding-packs" || b.id === "konzept"));
   pin("S3 plan: bytes before the task count measured rows once and NAME the unknown ones — never 0 for unknown",
-    lane.ok && lane.plan.bytesVorAuftrag.bytes === 100 + 50 + 400 + 1000 + 2000
+    // auto-memory's 2000 are not counted: a lane starts without it (register default aus, agentCmd)
+    lane.ok && lane.plan.bytesVorAuftrag.bytes === 100 + 50 + 400 + 1000 && laneRow("auto-memory")?.zustand === "aus"
       && lane.plan.bytesVorAuftrag.unknown.includes("source-pointers") && lane.plan.bytesVorAuftrag.unknown.includes("portable-contract")
       && !lane.plan.bytesVorAuftrag.unknown.includes("commit-expectation") && lane.plan.bytesVorAuftrag.auftrag.join() === "task-brief"
       && laneRow("task-brief")?.bytes === "unknown",
@@ -11055,7 +11076,7 @@ export default function (pi) {
     replaced.ok && lane.ok && replaced.plan.bausteine.find((b) => b.id === "lane-footer")?.zustand === "ersetzt:self-credential"
       && replaced.plan.planHash !== lane.plan.planHash, replaced.ok ? "" : replaced.error);
   pin("S3 plan: native rows are shown, not switched; a carried contract pack stays on",
-    errorOf(planInput("lane", "claude", { "auto-memory": "aus" })).includes("Fleet hat dafuer keinen Schalter")
+    errorOf(planInput("main", "claude", { "auto-memory": "aus" })).includes("im Plan ist es kein Schalter")
       && errorOf(planInput("lane", "codex", { "pack:portable-core": "aus" })).includes("traegt den Vertrag")
       && errorOf(planInput("lane", "claude", { "konzept": "an" })).includes("is a template"));
   const folderPlan = planOf(planInput("nur-ordner", "claude"));

@@ -100,7 +100,16 @@ interface Plan {
 }
 interface Answer extends Plan {
   plan: SessionPlan; rollen: RolleRow[]; start: { tuer: "lane" | "open"; startbar: boolean; refusals: string[] };
+  // what reaches the start row by row (the role's own door), what Claude Code brings itself, and the
+  // sum in tokens — optional: an older server omits them and the window then shows no start block
+  lieferung?: Lieferung; claudeCode?: ClaudeCode | null; startSumme?: StartSumme;
 }
+interface Lieferung { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] }
+interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string }
+interface CcMessung { rolle: string; tokens: number; am: string; claude: string; modell: string; quelle: string; gilt: boolean; grund?: string }
+interface ClaudeCode { rolle: string; zeilen: CcZeile[]; messung: CcMessung; danach?: CcMessung }
+interface StartSumme { fleetBytes: number; fleetUnbekannt: string[]; fleetTokens: number; bytesJeToken: { wert: number; quelle: string };
+  claudeCodeTokens: number | null; tokens: number | "unknown" }
 interface DirList { path: string; parent: string | null; dirs: string[]; repos?: string[]; capped?: boolean; total?: number }
 interface FindHit { path: string; name: string; repo: boolean }
 // one Program as the MAIN choice reads it off GET /api/programs. `state` is the server's own
@@ -136,6 +145,8 @@ interface State {
   note: string | null;                  // what the plan refused or moved, said under the field
   moved: string | null;                 // a start answered 409: the plan moved, the window shows the new one
   details: boolean;                     // the Details switch of Anpassen — off at every open, never stored
+  startShown: boolean;                  // the start sum's groups are shown (a click on the sum), off at open
+  startOpen: string | null;             // the one start group whose rows are open (Beim Start), none at open
   progs: ProgRow[] | null; progOther: number; progErr: string | null; progSeq: number;
   program: string | null;               // the Program the MAIN is founded for
   dir: string; list: DirList | null; listErr: string | null; listSeq: number;
@@ -235,7 +246,7 @@ function open(entry: Entry) {
     repos, view: repos.length ? "repos" : "folders", place: null,
     info: null, infoErr: null, infoSeq: 0, answer: null, answerFor: null, planFor: null, planErr: null, planSeq: 0,
     rollen: null, tripleFor: null, harness: "", model: "", effort: "", container: "", containerContext: "",
-    switches: new Map(), last: null, note: null, moved: null, details: false,
+    switches: new Map(), last: null, note: null, moved: null, details: false, startShown: false, startOpen: null,
     progs: null, progOther: 0, progErr: null, progSeq: 0, program: null,
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
     findTimer: null, paintFolders: null, task: { text: "", busy: false, receipt: null, error: null }, goFocus: !isMobile(),
@@ -339,7 +350,7 @@ function renderAll() {
 
 // A REPAINT THAT ANSWERS LATE (the plan, the Programs) keeps the keyboard where it was: the focused
 // control is found again by its data key after the window is rebuilt
-const FOCUS_KEYS = ["kind", "role", "row", "pop", "program", "wt", "act"];
+const FOCUS_KEYS = ["kind", "role", "row", "pop", "program", "wt", "act", "start"];
 function keepFocus(paint: () => void) {
   const a = document.activeElement;
   const key = a instanceof HTMLElement && S?.shell.root.contains(a) ? FOCUS_KEYS.find((k) => a.dataset[k] !== undefined) : undefined;
@@ -492,6 +503,9 @@ function sessionView(): HTMLElement {
   right.append(lab("Was die Session bekommt"), getsRow());
   if (s.note) right.append(el("div", "fdnote warn", s.note));
   cols.append(left, right);
+  // the groups under the sum span both columns: on a desktop the detail uses the window's width
+  const a = startAnswer();
+  if (a && s.startShown) cols.append(startView(a));
   if (needsPlan() && s.planFor !== planKey()) void loadPlan();
   return cols;
 }
@@ -699,6 +713,8 @@ function placeRow(): HTMLElement {
 function getsRow(): HTMLElement {
   const s = S!;
   if (s.role === "lane" && s.wt === "old") return el("div", "fdsay2 fdgetsnone", "Ein fortgesetzter Worktree behält, was er hat — er startet ohne neuen Plan.");
+  const sum = startAnswer();
+  if (sum) return sumRow(sum);
   const b = btn("fdopt fdgets");
   b.dataset.act = "anpassen";
   const a = fresh();
@@ -709,14 +725,18 @@ function getsRow(): HTMLElement {
   } else {
     words.append(el("span", "", getsWords(a.plan)), el("span", "fdsay2", getsBytes(a.plan)));
   }
-  const dev = deviations();
-  const right = el("span", "fdrm");
-  if (dev.length) right.append(el("i", "fddot2"));
-  right.append(document.createTextNode("Anpassen"));
-  b.append(words, right, icon("chevron"));
-  b.title = "Agent, Modell, Effort und die Bausteine dieser Session — gilt nur für diese Session.";
+  b.append(words, anpassenWord(), icon("chevron"));
+  b.title = ANPASSEN_TITLE;
   b.onclick = () => setLayer("anpassen");
   return b;
+}
+const ANPASSEN_TITLE = "Agent, Modell, Effort und die Bausteine dieser Session — gilt nur für diese Session.";
+// "Anpassen", with a dot while the plan deviates from the role's standard
+function anpassenWord(): HTMLElement {
+  const right = el("span", "fdrm");
+  if (deviations().length) right.append(el("i", "fddot2"));
+  right.append(document.createTextNode("Anpassen"));
+  return right;
 }
 // the words of what binds the session: every required Baustein that is on, in register order, once
 function getsWords(p: SessionPlan): string {
@@ -730,6 +750,158 @@ function getsBytes(p: SessionPlan): string {
   const unknown = v.unknown.length ? `${v.unknown.length} ${v.unknown.length === 1 ? "Größe" : "Größen"} unbekannt` : "";
   const size = v.bytes > 0 ? `${kb(v.bytes)} ${v.auftrag.length ? "vor dem Auftrag" : "beim Start"}` : v.unknown.length ? "Größe unbekannt" : `${kb(0)} beim Start`;
   return [size, v.bytes > 0 ? unknown : "", extra ? `${extra} weitere an` : ""].filter(Boolean).join(" · ");
+}
+
+// --- BEIM START: what really reaches this session, one line per way in (Charge 5) --------------------
+// Owner 29.09./01.10.: a view with many items is one line per group, its items on a click. ONE summary
+// (MAIN 4f7c331c, 12.10.): the start sum in tokens beside Anpassen; its groups only on a click on the
+// sum, then across the window's whole width. The groups are what Claude Code brings itself
+// (claudeCode), the WAYS Fleet's Bausteine take into the start (lieferung.geliefert[].weg) and what
+// stays out (lieferung.ausgelassen); a group line is its name and its tokens, nothing else. Claude
+// Code's tokens are measured (claudeCode.messung); Fleet's part is bytes, in tokens only at the
+// measured ratio (startSumme.bytesJeToken) and then always with ≈ — kB only inside a group.
+const WEG_GRUPPE: readonly { weg: string; name: string }[] = [
+  { weg: "native Datei", name: "Regelbuch im Ordner" },
+  { weg: "Session-Datei", name: "Session-Datei" },
+  { weg: "Prompt", name: "Erste Nachricht" },
+  { weg: "Zustellung", name: "Mit jeder Zustellung" },
+  { weg: "plan", name: "Nur Schalter" },
+];
+const tok = (n: number): string => `${n.toLocaleString("de-DE")} Tok`;
+const dayOf = (iso: string): string => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("de-DE"); };
+// the two native rows share the register word "Laedt nativ", which says their way, not what they are
+// (and three more share a word with a neighbour they are listed beside)
+const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordners", "auto-memory": "Auto-Memory",
+  "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort" };
+const packWord = (id: string): string => PACK_WORDS[id]?.name ?? id;
+const bausteinName = (b: Baustein): string => b.id.startsWith("pack:") ? `Pack · ${packWord(b.id.slice(5))}` : START_WORT[b.id] ?? b.wort;
+// below this a pack is its pointer only (lesen statt kopieren): several of them are one line
+const POINTER_PACK_BYTES = 1000;
+
+// the answer the start block reads — none while the plan is not this one, for a continued worktree,
+// and from a server that sends no start sum (then the row stays the plan's words and bytes)
+type StartAnswer = Answer & { lieferung: Lieferung; startSumme: StartSumme };
+const hasStart = (a: Answer): a is StartAnswer => !!a.lieferung && !!a.startSumme;
+function startAnswer(): StartAnswer | null {
+  const s = S!;
+  const a = fresh();
+  return a && !(s.role === "lane" && s.wt === "old") && hasStart(a) ? a : null;
+}
+
+// THE SUMMARY: the start sum in tokens (a click shows its groups) and Anpassen, one row
+function sumRow(a: StartAnswer): HTMLElement {
+  const s = S!;
+  const sum = a.startSumme;
+  const row = el("div", "fdsum");
+  const t = btn(`fdopt fdsumt${s.startShown ? " open" : ""}`);
+  t.dataset.start = "sum";
+  t.setAttribute("aria-expanded", String(s.startShown));
+  const words = el("span", "fdoptw fdpn");
+  words.append(el("span", "fdsumn", sum.tokens === "unknown" ? `≈ ${tok(sum.fleetTokens)} von Fleet` : `≈ ${tok(sum.tokens)}`),
+    el("span", "fdsay2", sum.tokens === "unknown" ? "beim Start · Claude Code selbst nicht gemessen" : "beim Start, ohne den Auftrag"));
+  t.append(words, icon("chevron"));
+  t.title = [
+    sum.claudeCodeTokens !== null ? `Claude Code selbst: ${tok(sum.claudeCodeTokens)}, gemessen.` : "Claude Code selbst: nicht gemessen für diesen Agenten.",
+    `Fleet: ${kb(sum.fleetBytes)}, ≈ ${tok(sum.fleetTokens)} geschätzt (Bytes ÷ ${String(sum.bytesJeToken.wert).replace(".", ",")}, ${sum.bytesJeToken.quelle}).`,
+    "Ohne den Text des Auftrags. Ein Klick zeigt, woraus die Summe besteht.",
+  ].join("\n");
+  t.onclick = () => { s.startShown = !s.startShown; s.startOpen = null; renderAll(); };
+  const p = btn("fdopt fdgets fdsuma");
+  p.dataset.act = "anpassen";
+  p.append(anpassenWord(), icon("chevron"));
+  p.title = ANPASSEN_TITLE;
+  p.onclick = () => setLayer("anpassen");
+  row.append(t, p);
+  return row;
+}
+
+// THE GROUPS of the sum, one line each (name left, tokens right), the rows of one group on a click
+function startView(a: StartAnswer): HTMLElement {
+  const s = S!;
+  const l = a.lieferung, ratio = a.startSumme.bytesJeToken.wert;
+  const box = el("div", "fdstart");
+  const group = (id: string, name: string, right: string, lines: HTMLElement[]) => {
+    const open = s.startOpen === id;
+    const b = btn(`fdsg${open ? " open" : ""}`);
+    b.dataset.start = id;
+    b.setAttribute("aria-expanded", String(open));
+    b.append(el("span", "fdsgn", name), el("span", "fdsgr", right), icon("chevron"));
+    b.onclick = () => { s.startOpen = open ? null : id; renderAll(); };
+    box.append(b);
+    if (open) { const d = el("div", "fdsgd"); d.append(...lines); box.append(d); }
+  };
+  // a row: its name (and, small under it, the switch or the names it sums up), its value right
+  const line = (name: string, value: string, opts: { sub?: string; names?: string; title?: string; inner?: boolean } = {}): HTMLElement => {
+    const r = el("div", `fdsgl${opts.inner ? " in" : ""}`);
+    const n = el("span", "fdsgln", name);
+    if (opts.sub) n.append(el("small", "fdsgk", opts.sub));
+    if (opts.names) n.append(el("small", "fdsgk names", opts.names));
+    r.append(n, el("span", "fdsgw", value));
+    if (opts.title) r.title = opts.title;
+    return r;
+  };
+  const cc = a.claudeCode;
+  if (cc) {
+    const m = cc.messung;
+    // the value in words ("14", "kein Server"), the switch Claude Code is started with small under the name
+    const lines = cc.zeilen.map((x) => line(x.wort, typeof x.bytes === "number" && x.bytes > 0 ? kb(x.bytes) : x.wert.replace(` ${x.wort}`, ""),
+      { sub: x.weg === "Claude Code" ? undefined : x.weg, title: `${x.satz} (${x.quelle})` }));
+    lines.push(el("div", `fdsgm${m.gilt ? "" : " warn"}`, `Gemessen am ${dayOf(m.am)} mit Claude Code ${m.claude}: erste Antwort einer leeren Session mit dieser Startzeile.${m.gilt ? "" : ` Veraltet: ${m.grund ?? ""}.`}`));
+    if (cc.danach) lines.push(el("div", "fdsgm", `Ab dem nächsten Start dieser MAIN mit ihrer Werkzeugliste: ${tok(cc.danach.tokens)}.`));
+    group("claude-code", "Claude Code selbst", tok(m.tokens), lines);
+  }
+  const delivered = new Set(l.geliefert.map((x) => x.id));
+  for (const g of WEG_GRUPPE) {
+    const rows = l.geliefert.filter((x) => x.weg === g.weg).map((x) => a.plan.bausteine.find((b) => b.id === x.id)).filter((b): b is Baustein => !!b);
+    if (!rows.length) continue;
+    const counted = rows.filter((b) => !(b.enthaltenIn && delivered.has(b.enthaltenIn)));
+    const bytes = counted.reduce((n, b) => n + (typeof b.bytes === "number" ? b.bytes : 0), 0);
+    const known = counted.some((b) => typeof b.bytes === "number" && b.bytes > 0);
+    const unknown = counted.some((b) => b.bytes === "unknown");
+    // "Größe unbekannt" once: on the group when nothing in it is known, else on the one row that is
+    // the plan's own rows act as switches only (agent, model, effort, self access): counted, never sized
+    const switches = g.weg === "plan";
+    const right = switches ? String(counted.length) : bytes > 0 ? `≈ ${tok(Math.round(bytes / ratio))}` : unknown ? "Größe unbekannt" : "kein Text";
+    const size = (b: Baustein): string => switches ? "" : b.bytes === "unknown" ? (known ? "Größe unbekannt" : "") : b.bytes === 0 ? "kein Text" : kb(b.bytes);
+    const lines: HTMLElement[] = [];
+    // a row inside a delivered container stands indented under it, its bytes "davon" — they are the
+    // container's already; a container that holds one row of its own size is that row (Grundregeln = Vertrag),
+    // and the pointer-only packs inside are one line
+    const add = (b: Baustein, inner: boolean) => {
+      const kids = rows.filter((c) => c.enthaltenIn === b.id);
+      const only = kids.length === 1 ? kids[0]! : null;
+      const same = only !== null && typeof only.bytes === "number" && typeof b.bytes === "number"
+        && Math.abs(only.bytes - b.bytes) <= Math.max(16, b.bytes / 100) ? only : null;
+      const name = inner && b.id.startsWith("pack:") ? packWord(b.id.slice(5)) : bausteinName(b);
+      const value = inner ? (b.bytes === "unknown" ? "darin" : `davon ${size(b)}`) : size(b);
+      lines.push(line(same ? `${name} (${bausteinName(same)})` : name, value, { title: b.satz, inner }));
+      const pointers = kids.filter((c) => c.id.startsWith("pack:") && typeof c.bytes === "number" && c.bytes < POINTER_PACK_BYTES
+        && !rows.some((x) => x.enthaltenIn === c.id));
+      for (const c of kids) if (c !== same && !(pointers.length > 1 && pointers.includes(c))) add(c, true);
+      if (same) for (const c of rows) if (c.enthaltenIn === same.id) add(c, true);
+      if (pointers.length > 1) {
+        const n = pointers.reduce((sum, c) => sum + (typeof c.bytes === "number" ? c.bytes : 0), 0);
+        lines.push(line(`${pointers.length} Verweise zum Nachlesen`, `davon ${kb(n)}`,
+          { names: pointers.map((c) => packWord(c.id.slice(5))).join(" · "), title: "Je Pack nur der Hinweis, wann und wo die Session nachliest — der Text selbst kommt nicht mit.", inner: true }));
+      }
+    };
+    // a row and what it holds are one block: the two columns of a wide window never split them
+    for (const b of counted) {
+      const from = lines.length;
+      add(b, false);
+      const block = el("div", "fdsgb");
+      block.append(...lines.splice(from));
+      lines.push(block);
+    }
+    for (const b of rows) if (!counted.includes(b) && !rows.some((x) => x.id === b.enthaltenIn))
+      lines.push(line(bausteinName(b), `${size(b) || "darin"} · steckt in ${bausteinName(a.plan.bausteine.find((x) => x.id === b.enthaltenIn) ?? b)}`, { title: b.satz, inner: true }));
+    group(`weg:${g.weg}`, g.name, right, lines);
+  }
+  if (l.ausgelassen.length) {
+    const rows = l.ausgelassen.map((x) => ({ x, b: a.plan.bausteine.find((b) => b.id === x.id) }));
+    group("aus", "Nicht dabei", String(rows.length), rows.map(({ x, b }) => line(b ? bausteinName(b) : x.id, x.grund)));
+  }
+  return box;
 }
 
 function setLayer(l: "rolle" | "anpassen") {
@@ -1492,7 +1664,29 @@ function validAnswer(j: unknown): j is Answer {
     && !!v && typeof v === "object" && isNum(v.bytes) && strs(v.unknown) && strs(v.auftrag)
     && Array.isArray(p.bausteine) && p.bausteine.every(validBaustein)
     && Array.isArray(r.rollen) && r.rollen.every((x: unknown) => !!x && typeof x === "object" && isRole((x as RolleRow).id) && isStr((x as RolleRow).wort))
-    && !!st && typeof st === "object" && (st.tuer === "lane" || st.tuer === "open") && typeof st.startbar === "boolean" && strs(st.refusals);
+    && !!st && typeof st === "object" && (st.tuer === "lane" || st.tuer === "open") && typeof st.startbar === "boolean" && strs(st.refusals)
+    && optional(r, "lieferung", validLieferung) && optional(r, "claudeCode", nullable(validClaudeCode)) && optional(r, "startSumme", validStartSumme);
+}
+const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
+const sizeOk = (v: unknown): boolean => isNum(v) || v === "unknown";
+function validLieferung(v: unknown): boolean {
+  const r = rec(v);
+  return !!r && isStr(r.tuer) && Array.isArray(r.geliefert) && r.geliefert.every((x) => isStr(rec(x)?.id) && isStr(rec(x)?.weg))
+    && Array.isArray(r.ausgelassen) && r.ausgelassen.every((x) => isStr(rec(x)?.id) && isStr(rec(x)?.grund));
+}
+function validMessung(v: unknown): boolean {
+  const r = rec(v);
+  return !!r && isNum(r.tokens) && isStr(r.am) && isStr(r.claude) && isStr(r.modell) && isStr(r.quelle) && typeof r.gilt === "boolean" && optional(r, "grund", isStr);
+}
+function validClaudeCode(v: unknown): boolean {
+  const r = rec(v);
+  return !!r && isStr(r.rolle) && validMessung(r.messung) && optional(r, "danach", validMessung) && Array.isArray(r.zeilen)
+    && r.zeilen.every((x) => { const z = rec(x); return !!z && isStr(z.id) && isStr(z.wort) && isStr(z.satz) && isStr(z.quelle) && isStr(z.weg) && isStr(z.wert) && sizeOk(z.bytes); });
+}
+function validStartSumme(v: unknown): boolean {
+  const r = rec(v), q = rec(r?.bytesJeToken);
+  return !!r && !!q && isNum(r.fleetBytes) && strs(r.fleetUnbekannt) && isNum(r.fleetTokens) && isNum(q.wert) && (q.wert as number) > 0 && isStr(q.quelle)
+    && nullable(isNum)(r.claudeCodeTokens) && sizeOk(r.tokens);
 }
 
 // the plan's omission reasons are a closed vocabulary (context-plan.ts CONTEXT_PLAN_OMISSION_REASONS);
@@ -1522,6 +1716,11 @@ const PACK_WORDS: Record<string, { name: string; say: string }> = {
   "jev-use": { name: "Jev", say: "Wie Jev verwendet wird." },
   "owner-instanzweg": { name: "Weg zum Owner", say: "Wie eine Session den Owner erreicht." },
   "gestaltungsgrammatik": { name: "Gestaltungsgrammatik", say: "docs/design, auf Abruf." },
+  "haltung-worker": { name: "Arbeitshaltung", say: "Ziel hinter der Karte, ganzes Ergebnis, Wirkung selbst sehen." },
+  "haltung-auftraggeber": { name: "Karten schreiben", say: "Wie eine Karte die beste Besetzung hervorholt." },
+  "projekt-aufnahme": { name: "Projekt aufnehmen", say: "Wie ein fremdes Repo ein Fleet-Projekt wird." },
+  "nachfolge-klug": { name: "Nachfolge", say: "Warm sichern und den Zeitpunkt der Nachfolge entscheiden." },
+  "testinstanz-abnahme": { name: "Testinstanz-Abnahme", say: "Sichtbares ist erst mit durchgeklickter Testinstanz, Link und Bild fertig." },
 };
 // a part whose source this plan could not cut cannot stand whole in the file — said in its Details
 const partFixed = (x: FoundingPlanPart): string | null =>

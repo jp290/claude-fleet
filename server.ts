@@ -1,7 +1,7 @@
 import { nearestRank, validPerfRecord, validFieldRow, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "./src/protocol";
 import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
-import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
+import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, CLAUDE_CODE_MESSUNG, CLAUDE_CODE_ZEILEN, FLEET_BYTES_JE_TOKEN, type ClaudeCodeRolle, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
@@ -7722,6 +7722,26 @@ function rulebookRenderForSession(sessionId: string, role: "main" | "orchestrato
   const arm = RULEBOOK_CUT_MODE === "ab" ? (parseInt(sessionId[0] ?? "0", 16) % 2 === 0 ? "A" : "B") : "cut";
   const render = roleRulebookRender(arm === "A" ? "voll" : role);
   return render ? { arm, render } : null;
+}
+
+// The bytes a MAIN's or the Orchestratorin's CLAUDE.md holds when this server spawns it — chosen as
+// rulebookRenderForSession chooses, measured without writing a file: the role cut, or the checkout's
+// own CLAUDE.md where roleRulebookRender refuses the cut (fragments unreadable, CLAUDE.md not their
+// render). The A/B arm hangs on the session id, which a plan does not have yet: unknown.
+function roleRulebookBytes(role: "main" | "orchestrator"): PlanBytes {
+  if (RULEBOOK_CUT_MODE === "ab") return "unknown";
+  const own = readPresent(`${import.meta.dir}/CLAUDE.md`);
+  const monolith: PlanBytes = own.ok ? own.bytes?.length ?? 0 : "unknown";
+  if (RULEBOOK_CUT_MODE === "voll") return monolith;
+  const fragments = readRulebookFragments(import.meta.dir);
+  if (!fragments) return monolith;
+  try {
+    const voll = renderRulebook("voll", fragments);
+    if (!own.ok || own.bytes?.toString("utf8") !== voll) return monolith;
+    const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
+    return Buffer.byteLength(renderRoleRulebook(role, fragments,
+      { repoRoot: import.meta.dir, anchorDir: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`, sourceHash }).text);
+  } catch { return "unknown"; }
 }
 
 // The bytes a lane's CLAUDE.md is SUPPOSED to hold, given this source checkout: the three lane
@@ -41088,6 +41108,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     bytes["portfolio-memory-pointer"] = Buffer.byteLength(memoryPortfolioPointer());
     if (o.rolle === "lane" || o.rolle === "main") bytes["memory-pointer"] = Buffer.byteLength(memoryPointer(o.rolle));
     if (laneRulebook !== null) bytes["private-rulebook"] = Buffer.byteLength(laneRulebook);
+    else if (ownRulebook && (o.rolle === "main" || o.rolle === "orchestratorin"))
+      bytes["private-rulebook"] = roleRulebookBytes(o.rolle === "main" ? "main" : "orchestrator");
     if (memory) { bytes["auto-memory"] = memory.bytes; details["auto-memory"] = { pfad: memory.pfad }; }
     if (native) { bytes["native-agents"] = native.bytes; details["native-agents"] = "grund" in native ? { grund: native.grund } : { dateien: native.dateien, nachgeladen: native.nachgeladen, regel: native.regel }; }
     if (!input) return { bytes, enthaltenIn, details };
@@ -41097,9 +41119,14 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     rendered = measured.agents;
     Object.assign(bytes, measured.bytes);
     Object.assign(details, measured.details);
+    // a MAIN's memory pointer is a line of its rail block (PROGRAM_MAIN_RAIL_BLOCK), not a text of its own
+    if (o.rolle === "main") enthaltenIn["memory-pointer"] = "main-rail";
     if (forced.size) enthaltenIn["portable-contract"] = "context-anchors";
-    // a Claude MAIN or Orchestratorin gets the contract as its pack's box part in the brief (startBoxParts)
-    const contract = o.rolle === "lane" ? undefined : startBoxParts(input).find((part) => part.id === "portable-core.contract");
+    // the contract is its pack's box part: in the lane's file (CONTRACT_BOX, every harness, read off the
+    // render with every selected pack so a switched-off pack still names what it carries), in the brief
+    // of a Claude MAIN or Orchestratorin (startBoxParts)
+    const contract = (o.rolle === "lane" ? renderSessionAgents(input).parts : startBoxParts(input))
+      .find((part) => part.id === "portable-core.contract" && part.ort === "box");
     if (contract?.bytes != null) { bytes["portable-contract"] = contract.bytes; enthaltenIn["portable-contract"] = "pack:portable-core"; }
     for (const pack of packs) enthaltenIn[`pack:${pack.packId}`] = "context-anchors";
     return { bytes, enthaltenIn, details };
@@ -41172,6 +41199,65 @@ function sealedPlanHash(decision: string, plan: ContextPlan, selection?: Readonl
   const fassungen = plan.selected.map((pack) => [pack.id, declaredSourceHash(pack) ?? null, ...(pack.anatomie ? [pack.anatomie] : [])]);
   const parts = selection ? Object.entries(selection).sort(([a], [b]) => a.localeCompare(b)) : null;
   return createHash("sha256").update(JSON.stringify([decision, SESSION_REGISTER_HASH, fassungen, parts])).digest("hex");
+}
+
+// WHAT CLAUDE CODE BRINGS ITSELF to this role's start (session-blocks.ts#CLAUDE_CODE_ZEILEN), beside the
+// plan and outside it: each row's way into the start as agentCmd sets it, its bytes where they are text
+// Fleet can read, and the measured first answer of a probe start with the same line. The spawn role is
+// ensureSlot's listRole: a MAIN founded in the window is bound only after its spawn, so it starts
+// "generic" and gets the MAIN list at its next spawn (`danach`). Only Claude: null for any other harness.
+function claudeCodeStart(rolle: SessionRole, harness: string): Record<string, unknown> | null {
+  if (harnessFamilie(harness) !== "claude") return null;
+  const spawn: ClaudeCodeRolle = rolle === "lane" ? "lane" : rolle === "orchestratorin" ? "orchestrator" : "generic";
+  const cut = sessionListCut(spawn === "generic" ? "main" : spawn);
+  const tools = spawn === "generic" ? null : SESSION_TOOLS[spawn];
+  const messung = (role: ClaudeCodeRolle) => {
+    const m = CLAUDE_CODE_MESSUNG[role];
+    const list = role === "generic" ? null : SESSION_TOOLS[role];
+    const gilt = (m.werkzeuge === null) === (list === null) && (m.werkzeuge ?? []).join() === (list ?? []).join();
+    return { rolle: role, tokens: m.tokens, am: m.am, claude: m.claude, modell: m.modell, quelle: "session-blocks.ts#CLAUDE_CODE_MESSUNG", gilt,
+      ...(gilt ? {} : { grund: "die Werkzeugliste in server.ts#SESSION_TOOLS ist eine andere als bei der Messung" }) };
+  };
+  const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
+  // the config dir's own files, as nativeLoaderBytes counts them for a folder with no ancestor
+  const global = nativeLoaderBytes("/", "claude");
+  const zeile = (id: string, weg: string, bytes: PlanBytes | null, wert: string, details?: unknown) => {
+    const z = CLAUDE_CODE_ZEILEN.find((entry) => entry.id === id)!;
+    return { ...z, weg, bytes, wert, ...(details !== undefined ? { details } : {}) };
+  };
+  return {
+    rolle: spawn,
+    zeilen: [
+      zeile("systemprompt", "Claude Code", "unknown", "nur in der Summe gemessen"),
+      zeile("werkzeuge", tools ? "--tools" : "kein --tools", "unknown",
+        tools ? `${tools.length} Werkzeuge` : "alle eingebauten", tools ? { namen: tools } : undefined),
+      zeile("listen", "--settings · --disallowedTools", "unknown",
+        `${cut ? Object.keys(cut.skillOverrides).length + cut.disallowed.split(",").filter(Boolean).length : 0} ausgeblendet`),
+      zeile("listenschnitt", "--append-system-prompt", cut ? Buffer.byteLength(cut.line) : 0, cut ? "eine Zeile" : "kein Schnitt"),
+      zeile("gepflogenheiten", "--append-system-prompt-file", habits === null ? 0 : habits.ok ? habits.bytes?.length ?? 0 : "unknown",
+        HABITS_PROMPT_ENABLED ? "an" : "aus"),
+      zeile("globale-regeln", "native Datei", global.bytes, "dateien" in global ? global.dateien.length ? `${global.dateien.length} Datei${global.dateien.length === 1 ? "" : "en"}` : "keine Datei" : global.grund,
+        "dateien" in global ? { dateien: global.dateien, nachgeladen: global.nachgeladen } : undefined),
+      zeile("mcp", rolle === "lane" ? "--strict-mcp-config" : "Konfiguration des Accounts", rolle === "lane" ? 0 : "unknown",
+        rolle === "lane" ? "kein Server" : "nicht von Fleet gewählt"),
+    ],
+    messung: messung(spawn),
+    ...(rolle === "main" ? { danach: messung("main") } : {}),
+  };
+}
+
+// THE START IN ONE NUMBER: Claude Code's measured tokens plus Fleet's delivered bytes at the measured
+// ratio (session-blocks.ts#FLEET_BYTES_JE_TOKEN). Fleet's part is what this role's door delivers, each
+// row once (a row inside a delivered container is counted there); an unmeasured row is named, never 0.
+function startSumme(plan: SessionPlan, lieferung: PlanDoorVerdict, claudeCode: Record<string, unknown> | null): Record<string, unknown> {
+  const geliefert = new Set(lieferung.geliefert.map((row) => row.id));
+  const rows = plan.bausteine.filter((b) => geliefert.has(b.id) && !(b.enthaltenIn !== undefined && geliefert.has(b.enthaltenIn)));
+  const fleetBytes = rows.reduce((sum, b) => sum + (typeof b.bytes === "number" ? b.bytes : 0), 0);
+  const fleetTokens = Math.round(fleetBytes / FLEET_BYTES_JE_TOKEN.wert);
+  const gemessen = claudeCode ? (claudeCode.messung as { tokens: number }).tokens : null;
+  return { fleetBytes, fleetUnbekannt: rows.filter((b) => b.bytes === "unknown").map((b) => b.id),
+    fleetTokens, bytesJeToken: FLEET_BYTES_JE_TOKEN, claudeCodeTokens: gemessen,
+    tokens: gemessen === null ? "unknown" : gemessen + fleetTokens };
 }
 
 // THE ONE PLAN ANSWER: GET /api/founding-plan reads its query into this, and a spawn door that is
@@ -41277,7 +41363,13 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // carries the Orchestratorin card only under her label — the window founds her under it.
   const tuer: PlanDoor = resolved.plan.ort.art === "worktree" ? "lane" : "open";
   const verdict = planDoorVerdict(resolved.plan, fp.value, tuer, tuer === "open" && rolle === "orchestratorin", chosen !== undefined);
-  return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals } },
+  // what really reaches THIS role's start, row by row with its way: the start door's verdict, except a
+  // MAIN, which the window founds over bootstrap-main ("main", display only) and not over /open
+  const lieferung = rolle === "main" ? planDoorVerdict(resolved.plan, fp.value, "main", false, false) : verdict;
+  const claudeCode = claudeCodeStart(rolle, resolveContextHarness(ho.harness));
+  return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
+    lieferung: { tuer: rolle === "main" ? "main" : tuer, geliefert: lieferung.geliefert, ausgelassen: lieferung.ausgelassen },
+    claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode) },
     fp: fp.value, plan: resolved.plan, sessionAgents, rolle, harness: ho.harness, selection, packs: resolved.packs, ownerHeft: resolved.ownerHeft };
 }
 
@@ -41287,7 +41379,8 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
 // cannot start exactly is refused by name before anything exists; a row on by default that this door
 // does not carry is no silence either — the receipt names it under `ausgelassen` with its reason.
 // Without `plan` the door is the old one, and its answer says `plan: "none"`.
-type PlanDoor = "lane" | "open";
+// "main" is bootstrap-main, which takes no plan: only the window's `lieferung` asks it (foundingPlanAnswer).
+type PlanDoor = "lane" | "open" | "main";
 type PlanWeg = "Session-Datei" | "Prompt" | "native Datei" | "plan" | "Zustellung";
 // folgt: the door delivers it exactly when the plan says an · immer: the door delivers it whatever the
 // plan says · nie: the door has no way to deliver it here
@@ -41320,8 +41413,10 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
     case "spawn-profile": case "self-credential": return { immer: "plan" };
     case "portable-contract":
       // carried as pack:portable-core's box part (foundingSessionPlan): it crosses with that pack, or not at all
-      if (door === "open" && row.enthaltenIn === "pack:portable-core")
-        return ctx.contractPackOn ? { immer: "Prompt" } : { nie: "das Pack portable-core ist aus, und Claude laedt AGENTS.md hier nicht nativ (server.ts#agentCmd)" };
+      if (row.enthaltenIn === "pack:portable-core")
+        return ctx.contractPackOn ? { immer: door === "lane" ? "Session-Datei" : "Prompt" }
+          : { nie: door === "lane" ? "das Pack portable-core ist aus, und nur mit ihm steht der Vertrag in der Lane-Datei"
+            : "das Pack portable-core ist aus, und Claude laedt AGENTS.md hier nicht nativ (server.ts#agentCmd)" };
       return door === "lane" && familie !== "claude" ? { immer: "Session-Datei" } : { immer: "native Datei" };
     case "native-agents": return { immer: "native Datei" };
     case "auto-memory": return claude && door !== "lane" && row.bedingung?.erfuellt !== false ? { immer: "native Datei" }
@@ -41330,6 +41425,16 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
     case "delivery-header": return claude ? { immer: "Zustellung" } : { nie: "nur der Claude-Adapter traegt den Zustellkopf" };
     case "task-brief": case "source-pointers": case "source-code": case "lane-notes": return { nie: PLAN_NUR_DISPATCH };
     case "studio-block": return { nie: "nur eine Studio-Bindung liefert das" };
+  }
+  // THE MAIN'S FOUNDING (bootstrap-main → buildProgramMainBrief) takes no plan yet: this door only tells
+  // the window which way each row really goes. The brief carries card, rail (memory pointer inside it),
+  // owner heft and the anchor block (railBlockFor, renderContextAnchorBlock).
+  if (door === "main") switch (row.id) {
+    case "role-card": case "main-rail": case "owner-heft": case "memory-pointer": return { immer: "Prompt" };
+    case "context-anchors": return ctx.packsOn ? { folgt: "Prompt" } : { nie: "kein Pack ist an" };
+    case "private-rulebook": return claude && resolve(ctx.repoRoot) === import.meta.dir ? { immer: "native Datei" }
+      : { nie: "nur eine Claude-Session im Fleet-Checkout laedt das private Regelbuch" };
+    default: return { nie: "der MAIN-Brief traegt das nicht" };
   }
   if (door === "lane") switch (row.id) {
     case "role-card": case "owner-heft": case "lane-footer": case "memory-pointer": case "context-anchors": return { folgt: "Session-Datei" };
@@ -41353,7 +41458,7 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
 
 const isPlainBody = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-async function acceptFoundingPlan(body: Record<string, unknown>, door: PlanDoor, place: string, label: string | null):
+async function acceptFoundingPlan(body: Record<string, unknown>, door: Exclude<PlanDoor, "main">, place: string, label: string | null):
   Promise<{ ok: true; accepted: AcceptedFoundingPlan | null } | { ok: false; status: number; body: Record<string, unknown> }> {
   if (body.plan === undefined) return { ok: true, accepted: null };
   const bad = (error: string) => ({ ok: false as const, status: 400, body: { error } });

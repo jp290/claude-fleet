@@ -5126,7 +5126,7 @@ async function runFoundingPlanProbe(scratch: string): Promise<void> {
   if (!ready) return;
   type PlanRow = { id: string; wort: string; satz: string; grenze: { art: string }; zustand: string; quelle: string;
     rollenDefault: unknown; harness: { gueltig: boolean; grund: string | null }; bytes: number | "unknown";
-    ersatzKandidaten: string[]; details?: { dateien?: { pfad: string; bytes: number }[] } };
+    ersatzKandidaten: string[]; enthaltenIn?: string; details?: { dateien?: { pfad: string; bytes: number }[] } };
   type Plan = { planHash: string; planSatz: string; bytesVorAuftrag: { bytes: number; unknown: string[] }; bausteine: PlanRow[] };
   const plan = async (query: string): Promise<{ status: number; plan: Plan | null; file: { bytes: number; text: string } | null; error: string }> => {
     const res = await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=claude&${query}`);
@@ -5173,6 +5173,41 @@ async function runFoundingPlanProbe(scratch: string): Promise<void> {
         .reduce<number>((sum, b) => sum + (typeof b === "number" ? b : Number.NaN), 0)
       && base.file.text.includes("OWNER-KORREKTUREN") && base.file.text.includes("/api/self/memory"),
     `file=${base.file?.bytes} ${fileRows.map((id) => `${id}=${bytesOf(base.plan, id)}`).join(" ")}`);
+  // BEIM START (server.ts#claudeCodeStart, #startSumme, Charge 5): per role the way each delivered row
+  // takes, what Claude Code brings itself, and the sum — Fleet's part counts every delivered row once
+  type Start = { plan?: Plan; lieferung?: { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] };
+    claudeCode?: { rolle: string; zeilen: { id: string; weg: string; bytes: number | "unknown" }[]; messung: { tokens: number; gilt: boolean }; danach?: { tokens: number } } | null;
+    startSumme?: { fleetBytes: number; fleetTokens: number; bytesJeToken: { wert: number }; claudeCodeTokens: number | null; tokens: number | "unknown" } };
+  const startOf = async (query: string, harness = "claude"): Promise<Start> =>
+    await (await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=${harness}&${query}`)).json() as Start;
+  const sumHolds = (b: Start): boolean => {
+    if (!b.plan || !b.lieferung || !b.startSumme) return false;
+    const on = new Set(b.lieferung.geliefert.map((r) => r.id));
+    const rows = b.plan.bausteine.filter((x) => on.has(x.id) && !(x.enthaltenIn !== undefined && on.has(x.enthaltenIn)));
+    const bytes = rows.reduce((n, x) => n + (typeof x.bytes === "number" ? x.bytes : 0), 0);
+    return b.startSumme.fleetBytes === bytes && b.startSumme.fleetTokens === Math.round(bytes / b.startSumme.bytesJeToken.wert)
+      && b.startSumme.tokens === (b.startSumme.claudeCodeTokens ?? Number.NaN) + b.startSumme.fleetTokens;
+  };
+  const [laneStart, mainStart, orchStart, codexStart] = [await startOf("role=lane"), await startOf("role=main"),
+    await startOf("role=orchestratorin"), await startOf("role=lane", "codex")];
+  const zeile = (b: Start, id: string) => b.claudeCode?.zeilen.find((z) => z.id === id);
+  check("founding plan: Beim Start — a lane's file rows go Session-Datei, every delivered row is on in the plan, the sum counts each row once",
+    laneStart.lieferung?.tuer === "lane"
+      && ["role-card", "owner-heft", "lane-footer", "memory-pointer", "context-anchors"].every((id) => laneStart.lieferung!.geliefert.some((r) => r.id === id && r.weg === "Session-Datei"))
+      && laneStart.lieferung.geliefert.every((r) => laneStart.plan?.bausteine.find((b) => b.id === r.id)?.zustand === "an") && sumHolds(laneStart),
+    JSON.stringify({ lieferung: laneStart.lieferung?.geliefert, summe: laneStart.startSumme }).slice(0, 500));
+  check("founding plan: Beim Start — a MAIN goes by bootstrap-main's brief: card, rail and heft as Prompt, its memory pointer inside the rail",
+    mainStart.lieferung?.tuer === "main" && ["role-card", "main-rail", "owner-heft"].every((id) => mainStart.lieferung!.geliefert.some((r) => r.id === id && r.weg === "Prompt"))
+      && mainStart.plan?.bausteine.find((b) => b.id === "memory-pointer")?.enthaltenIn === "main-rail" && sumHolds(mainStart),
+    JSON.stringify({ lieferung: mainStart.lieferung?.geliefert, summe: mainStart.startSumme }).slice(0, 500));
+  check("founding plan: Claude Code selbst — each role's spawn list (a fresh MAIN generic, its list afterwards), measured with today's tools, the lane without MCP; none for Codex",
+    laneStart.claudeCode?.rolle === "lane" && mainStart.claudeCode?.rolle === "generic" && !!mainStart.claudeCode.danach && orchStart.claudeCode?.rolle === "orchestrator"
+      && [laneStart, mainStart, orchStart].every((b) => b.claudeCode!.messung.gilt && b.claudeCode!.messung.tokens > 0 && b.startSumme?.claudeCodeTokens === b.claudeCode!.messung.tokens)
+      && zeile(laneStart, "werkzeuge")?.weg === "--tools" && zeile(mainStart, "werkzeuge")?.weg === "kein --tools"
+      && zeile(laneStart, "mcp")?.weg === "--strict-mcp-config" && zeile(laneStart, "mcp")?.bytes === 0
+      && typeof zeile(laneStart, "listenschnitt")?.bytes === "number" && (zeile(laneStart, "listenschnitt")!.bytes as number) > 0
+      && codexStart.claudeCode === null && codexStart.startSumme?.tokens === "unknown",
+    JSON.stringify([laneStart.claudeCode, mainStart.claudeCode?.rolle, orchStart.claudeCode?.rolle, codexStart.claudeCode]).slice(0, 500));
   const replaced = await plan("role=lane&bausteine=lane-footer=ersetzt:self-credential");
   const [required, locked] = [await plan("role=lane&bausteine=lane-footer=aus"), await plan("role=lane&bausteine=owner-heft=ersetzt:portable-contract")];
   check("founding plan: a replaced footer leaves the file, a required row refuses aus, a locked one refuses replacement",
@@ -6121,7 +6156,8 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
           quelle: r.id in sw ? 'schalter' : 'default', rollenDefault: r.rd[role],
           harness: { gueltig, grund: gueltig ? null : 'nur Claude lädt den Rollenschnitt' },
           schaltbar: r.ns ? { ja: false, grund: r.ns } : nurOrdner ? { ja: false, grund: 'Nur Ordner liefert nur native-agents und auto-memory.' } : { ja: true },
-          bytes: r.bytes, ersatzKandidaten: r.kand || [], ...(r.vorlage ? { vorlage: r.vorlage } : {}) };
+          bytes: r.bytes, ersatzKandidaten: r.kand || [], ...(r.vorlage ? { vorlage: r.vorlage } : {}),
+          ...(window.fixtureStart && r.id === 'pack:fixture-alpha' ? { enthaltenIn: 'context-anchors' } : {}) };
       });
       const an = bausteine.filter(b => b.zustand === 'an');
       const counted = an.filter(b => !b.funktion.includes('auftrag'));
@@ -6137,7 +6173,16 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
         // Nur Ordner writes no session file: the server says so with an explicit null, never by leaving it out
         ...(role === 'nur-ordner' ? { sessionAgents: null } : {}),
         start: { tuer: ort === 'worktree' ? 'lane' : 'open', startbar: role !== 'nur-ordner' || window.fixtureOrdnerStartbar,
-          refusals: role === 'nur-ordner' && !window.fixtureOrdnerStartbar ? ['spawn-profile ist im Plan aus, diese Tuer liefert es trotzdem (plan)', 'self-credential ist im Plan aus, diese Tuer liefert es trotzdem (plan)'] : [] } };
+          refusals: role === 'nur-ordner' && !window.fixtureOrdnerStartbar ? ['spawn-profile ist im Plan aus, diese Tuer liefert es trotzdem (plan)', 'self-credential ist im Plan aus, diese Tuer liefert es trotzdem (plan)'] : [] },
+        // BEIM START (server.ts#claudeCodeStart, #startSumme): only where a case asks for it
+        ...(window.fixtureStart && role === 'lane' ? {
+          lieferung: { tuer: 'lane', geliefert: ['role-card', 'lane-footer', 'context-anchors', 'pack:fixture-alpha'].map(id => ({ id, weg: 'Session-Datei' })),
+            ausgelassen: [{ id: 'source-code', grund: 'Plan: aus' }] },
+          claudeCode: { rolle: 'lane', messung: { rolle: 'lane', tokens: 31000, am: '2026-10-11T22:10Z', claude: '2.1.296', modell: 'fixture', quelle: 'session-blocks.ts#CLAUDE_CODE_MESSUNG', gilt: true },
+            zeilen: [{ id: 'werkzeuge', wort: 'Werkzeuge', satz: 'Jedes Werkzeug bringt sein Schema mit.', quelle: 'server.ts#SESSION_TOOLS', weg: '--tools', bytes: 'unknown', wert: '14 Werkzeuge' },
+              { id: 'mcp', wort: 'MCP', satz: 'Eine Text-Lane startet ohne MCP-Server.', quelle: 'server.ts#agentCmd', weg: '--strict-mcp-config', bytes: 0, wert: 'kein Server' }] },
+          startSumme: { fleetBytes: 476, fleetUnbekannt: [], fleetTokens: 227, bytesJeToken: { wert: 2.1, quelle: 'fixture' }, claudeCodeTokens: 31000, tokens: 31227 },
+        } : {}) };
     };
     export const api = async path => {
       if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
@@ -6248,7 +6293,7 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       build.onLoad({ filter: /\/src\/founding\.ts$/ }, args => ({
         contents: readFileSync(args.path, 'utf8') + `\nwindow.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases = []; window.fixturePlanReads = 0;
 window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureQueries = [];
-window.fixtureHead = 'fixture-head'; window.fixtureMove = false; window.fixtureRefuse = false; window.fixtureOrch = false; window.fixtureParked = false; window.fixtureOrdnerStartbar = false;
+window.fixtureHead = 'fixture-head'; window.fixtureMove = false; window.fixtureRefuse = false; window.fixtureOrch = false; window.fixtureParked = false; window.fixtureOrdnerStartbar = false; window.fixtureStart = false;
 window.fixtureReload = () => { if (S) { S.planFor = null; renderAll(); } };
 window.fixtureHash = () => S?.answer?.plan.planHash ?? null;
 window.fixtureClose = closeFounding; window.fixtureSettled = () => !!S && !S.busy && !S.task.busy;
@@ -6389,7 +6434,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         await evaluate(`document.querySelector('#shell-found')?.remove(); window.fixtureRequests = []; window.fixturePlan = 'ok'; window.fixtureHold = false; window.fixturePostHold = false; window.fixtureReleases.splice(0).forEach(r => r());
           window.fixtureMode = null; window.fixtureShown = null; window.fixtureReceiptReads = 0; window.fixtureReceiptHold = false;
           window.fixturePrograms = 'ok'; window.fixtureProgramReads = 0; window.fixtureBootstrap = null; window.fixtureNoMainAgent = false; window.fixtureQueries = [];
-          window.fixtureHead = 'fixture-head'; window.fixtureMove = false; window.fixtureRefuse = false; window.fixtureOrch = false; window.fixtureParked = false; window.fixtureOrdnerStartbar = false; ${extra}; window.fixtureResetSlots();`);
+          window.fixtureHead = 'fixture-head'; window.fixtureMove = false; window.fixtureRefuse = false; window.fixtureOrch = false; window.fixtureParked = false; window.fixtureOrdnerStartbar = false; window.fixtureStart = false; ${extra}; window.fixtureResetSlots();`);
         await evaluate(open);
         await wait(ready);
       };
@@ -6415,6 +6460,40 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['Was die Session bekommt is one line: the required words, the bytes before the Auftrag, an unknown size as a word'] = await evaluate<boolean>(`(() => {
         const t = document.querySelector('[data-act="anpassen"]').textContent;
         return t.includes('Vertrag · Rolle · Auftrag · Rückweg und Ende') && t.includes('2,0 kB vor dem Auftrag · 2 Größen unbekannt · 4 weitere an') && t.includes('Anpassen'); })()`);
+      // --- BEIM START (Charge 5, MAIN 4f7c331c): ONE summary — the start sum in tokens beside Anpassen; its groups
+      // on a click on the sum, across both columns, one line each (name, tokens); the rows of one group on a click
+      g['Beim Start stays away while the server sends no start sum'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdstart, #shell-found [data-start="sum"]')`);
+      await reset('window.fixtureStart = true');
+      g['with a start sum, Was die Session bekommt is one row: the sum in tokens beside Anpassen, no kB, no groups until the sum is clicked'] = await evaluate<boolean>(`(() => {
+        const row = document.querySelector('#shell-found .fdsum'), sum = row?.querySelector('[data-start="sum"]');
+        return !!sum && sum.querySelector('.fdsumn').textContent === '≈ 31.227 Tok' && sum.getAttribute('aria-expanded') === 'false'
+          && row.querySelector('[data-act="anpassen"]')?.textContent === 'Anpassen' && !/kB/.test(row.textContent)
+          && document.querySelectorAll('#shell-found [data-act="anpassen"]').length === 1 && !document.querySelector('#shell-found .fdstart'); })()`);
+      await click('[data-start="sum"]');
+      g['a click on the sum shows its groups across both columns: a group line is its name and its tokens, nothing else'] = await evaluate<boolean>(`(() => {
+        const box = document.querySelector('#shell-found .fdstart'), rows = Array.from(document.querySelectorAll('#shell-found .fdstart .fdsg'));
+        return !!box && box.parentElement === document.querySelector('#shell-found .fdk3') && box.getBoundingClientRect().width >= document.querySelector('#shell-found .fdk3').getBoundingClientRect().width - 1
+          && rows.map(b => b.dataset.start).join() === 'claude-code,weg:Session-Datei,aus'
+          && rows.every(b => b.querySelectorAll('span').length === 2 && b.getAttribute('aria-expanded') === 'false')
+          && rows[0].querySelector('.fdsgr').textContent === '31.000 Tok' && rows[1].querySelector('.fdsgr').textContent === '≈ 227 Tok'
+          && rows[2].querySelector('.fdsgr').textContent === '1' && !document.querySelector('#shell-found .fdsgd')
+          && document.querySelector('[data-start="sum"]').getAttribute('aria-expanded') === 'true'; })()`);
+      await click('.fdsg[data-start="claude-code"]');
+      g['a click opens the group: each Claude Code row says its value in words, the switch only small under the name, and the date of the measurement'] = await evaluate<boolean>(`(() => {
+        const d = document.querySelectorAll('#shell-found .fdsgd'), l = Array.from(d[0]?.querySelectorAll('.fdsgl') ?? []);
+        const at = (name) => l.find(r => r.querySelector('.fdsgln').firstChild.textContent === name);
+        return d.length === 1 && at('Werkzeuge')?.querySelector('.fdsgw').textContent === '14' && at('Werkzeuge').querySelector('.fdsgk').textContent === '--tools'
+          && at('MCP')?.querySelector('.fdsgw').textContent === 'kein Server' && at('MCP').querySelector('.fdsgk').textContent === '--strict-mcp-config'
+          && !l.some(r => r.querySelector('.fdsgw').textContent.includes('--')) && d[0].textContent.includes('Gemessen am')
+          && document.querySelector('.fdsg[data-start="claude-code"]').getAttribute('aria-expanded') === 'true'; })()`);
+      await click('.fdsg[data-start="weg:Session-Datei"]');
+      g['one group is open at a time; a row inside a delivered container stands indented in its block, "darin" rather than a second "Größe unbekannt"'] = await evaluate<boolean>(`(() => {
+        const d = document.querySelectorAll('#shell-found .fdsgd'), inner = d[0]?.querySelector('.fdsgl.in');
+        return d.length === 1 && document.querySelector('.fdsg[data-start="claude-code"]').getAttribute('aria-expanded') === 'false'
+          && !!inner && inner.querySelector('.fdsgln').textContent === 'fixture-alpha' && inner.querySelector('.fdsgw').textContent === 'darin'
+          && inner.parentElement.classList.contains('fdsgb') && inner.parentElement.firstElementChild.textContent.startsWith('Lesehinweise')
+          && !d[0].textContent.includes('Größe unbekannt'); })()`);
+      await reset();
       g['should-reject: no numbered steps, no Ort field on top, no pack tree, no byte block per part'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdstepn, #shell-found .fdtree, #shell-found .fdplace, #shell-found .fdsec2, #shell-found .fdtot') && !document.querySelector('#shell-found').textContent.includes('Was der Agent liest')`);
       let h = await hash();
       await click('.fdgo');

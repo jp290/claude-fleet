@@ -4,7 +4,7 @@
 # Der Commit liegt schon in $CI_HOME/repo.git (merge-check.ts schiebt ihn per git push dorthin).
 # Fährt die Teile des Urteils parallel, jedes mit eigenem TMPDIR, eigenem Suite-Lock und eigenem
 # Port-Band (FLEET_E2E_BAND 7–9; der Helfer-Daemon nimmt die kleinsten freien, 0–4 bei fünf Plätzen):
-#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build
+#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci
 #   gate    ./e2e-claude-gate.sh
 #   review  ./e2e-clean-review.sh, danach ./e2e-security.sh
 #   s1–s3   die kleinen Units in drei Shards; die großen laufen nachts und vor jedem Deploy
@@ -55,7 +55,7 @@ job() {
   ) &
 }
 : > "$RUN/jobs"
-job local 9 "bun e2e/pins.ts && $TSC && bun run build"
+job local 9 "bun e2e/pins.ts && $TSC && bun run build && bun test ./ci"
 job gate 9 "./e2e-claude-gate.sh"
 job review 9 "./e2e-clean-review.sh && ./e2e-security.sh"
 for k in 1 2 3; do

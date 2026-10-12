@@ -66,9 +66,11 @@ function mainState(main: string): MainState {
   } catch {
     return { red: true, why: "Audit-Stand von main nicht lesbar (./ctl.sh get /api/post-land-audits)" };
   }
+  return mainVerdict(audits, (sha) => git(["merge-base", "--is-ancestor", sha, main]).ok);
+}
+export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: (sha: string) => boolean): MainState {
   const measured = audits
-    .filter((a) => (a.result === "green" || a.result === "red") && typeof a.mainSha === "string"
-      && git(["merge-base", "--is-ancestor", a.mainSha as string, main]).ok)
+    .filter((a) => (a.result === "green" || a.result === "red") && typeof a.mainSha === "string" && onMain(a.mainSha))
     .sort((a, b) => Number(b.at) - Number(a.at));
   const last = measured[0];
   if (!last) return { red: true, why: "kein gemessener Audit auf einem Stand von main unter den letzten 50" };
@@ -132,9 +134,16 @@ async function main(): Promise<number> {
   Object.assign(row, { jobs, modules, helperMs: runLine ? Number(runLine[2]) : null,
     run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
   if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (ssh exit ${run.exit})`, 3);
-  if (runLine[1] === "red") return finish("red", false, `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}`, 1);
-  if (state.red && !repair) return finish("green", false, state.why, 2);
-  return finish("green", true, state.red ? `${state.why}; --repair: der Branch repariert es` : state.why, 0);
+  const verdict = runLine[1] === "green" ? "green" : "red";
+  const d = decide(verdict, state, repair);
+  return finish(verdict, d.mergeable,
+    verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
+}
+// Rot ist nie mergebar; grün bei rotem main nur mit --repair
+export function decide(run: "green" | "red", main: MainState, repair: boolean): { mergeable: boolean; code: number; why: string } {
+  if (run === "red") return { mergeable: false, code: 1, why: "rot" };
+  if (main.red && !repair) return { mergeable: false, code: 2, why: main.why };
+  return { mergeable: true, code: 0, why: main.red ? `${main.why}; --repair: der Branch repariert es` : main.why };
 }
 
-process.exit(await main());
+if (import.meta.main) process.exit(await main());

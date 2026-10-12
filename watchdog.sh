@@ -43,7 +43,9 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # total-ENOUGH, not total; the slow full audit (e2e-isolated) stays a post-land check, undo-land the
 # rollback. Deterministic (own $$ socket/dir, no known flake) and exit-codes correctly, so it hard-gates.
 # e2e-claude-gate.sh itself was validated 2026-07-24 to run WITHOUT node_modules (server.ts imports
-# only node:/bun:/local): ALL PASS from a node_modules-less tree in ~46s — that is the per-land cost.
+# only node:/bun:/local): ALL PASS from a node_modules-less tree in ~46s on this Mac that day. On the
+# work-horse it takes ~3 min today (176 s in the merge check of 2026-10-12; helper p50 190 s,
+# docs/neuaufbau/befunde/02-ci.md §2) — that is the per-land cost now.
 # NOT added: e2e-isolated.sh — it carries the known ~600ms pane-capture flake; a deterministic gate
 # cannot sit on a flaky suite, so it graduates in only once that flake is fixed.
 # The `bun install` prelude is the FIRST step, and it is what makes this gate deterministic (F9,
@@ -75,8 +77,9 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # git knows of; a file it does not reach must be listed here or exempted by name in the pin.
 # ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
 # drives tryScriptRebase → runVerify → advanceIntegration → recordLand → landLane end to end and
-# is the only suite exercising runCleanReview, which is live in shadow mode on this fleet. It is
-# ordered cheapest-first so the gate fails fast.
+# is the only suite exercising runCleanReview, which this fleet runs with FLEET_CLEAN_REVIEW=off (the
+# srv-spawn line below), so its reviewer half guards a feature that is off. It is ordered
+# cheapest-first so the gate fails fast.
 # ./e2e-security.sh IS in the chain (§8 Step 2b): it graduated after its burn-in, and this comment
 # claimed the opposite until 2026-07-28, having outlived the change by weeks.
 # THE PUBLIC DEMO IS NOT IN THIS LIST AND CANNOT BE (2026-07-31): it left this repository for
@@ -86,6 +89,9 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # lane on a file that is not there. The consequence to KNOW rather than to fix here: that demo reads
 # public/index.html and imports src/client.ts, so a change to either can break it, and nothing in
 # this repo will say so. It has its own `bun run typecheck` and `bun run build`, seconds each.
+# BEFORE THE MERGE, outside this line: ci/merge-check.ts (docs/neuaufbau/plan.md K2) runs this chain's
+# suites plus the small units of the isolated suite on the helper, against the tree main would have
+# after the merge; the six large units run nightly and before every deploy.
 # The exclusion clause is LAST in this block by convention, because that is how the pins step reads
 # it: everything after "NOT here:" is taken as denied, and a denied suite that the line below runs
 # fails the gate. Keep it last, and keep it to suite names.
@@ -96,8 +102,11 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------
 # The gate above is the FAST tier and is partial on purpose. Tier 2 is the slow half the tiered
-# design always named and never had: after every land that moves main, the server runs this command
-# against a scratch snapshot of the integration tip, off the land path — one run at a time, bursts
+# design always named and never had. It runs on a CLOCK, not per land (server.ts#auditCadenceOf, live
+# in GET /api/post-land-audits → cadence): quiet = 4 h without a land and never between 08 and 22,
+# nightly 02:00, a deploy, audit-tip — and on the helper deployment only a helper runs it (server.ts,
+# grep AUDIT_HELPER_ONLY). A merge done with git in the main checkout queues nothing: the server
+# sees no land. The server runs this command against a scratch snapshot of the integration tip, off the land path — one run at a time, bursts
 # coalesced, result green/red/unknown on post-land-audits.jsonl (GET /api/post-land-audits) plus a
 # loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING; ↩ undo-land stays the
 # rollback. Unset = the tier does not exist, which is today's behaviour.
@@ -105,8 +114,8 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 # srv-spawn line carries FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'. Takes effect only on
 # `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
 # keeps the old spawn line, exactly as with VERIFY_CMD.
-# Cost, so the decision is made with it in view: ~2+ min of a full e2e-isolated run per land burst,
-# on the same box the fleet's sessions live on. Repo-guarded like VERIFY_CMD — exit 42 in a foreign
+# Cost, so the decision is made with it in view: 15–19 min of a full e2e-isolated run in four shards
+# on the work-horse (docs/neuaufbau/befunde/02-ci.md §2), not on this box. Repo-guarded like VERIFY_CMD — exit 42 in a foreign
 # repo records UNKNOWN (a non-measurement), never a false green and never a false red.
 AUDIT_CMD='[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "audit skipped: could not establish node_modules"; exit 42; }; ./e2e-isolated.sh'
 AUDIT_Q=$(printf '%s' "$AUDIT_CMD" | sed "s/'/'\\\\''/g")
@@ -161,17 +170,19 @@ while true; do
     #
     # FLEET_DISPATCH_REPO makes the dispatcher AVAILABLE, it does not switch it on: `dispatchOn`
     # (server.ts, grep `let dispatchOn`) is a separate persisted runtime flag, default false, and
-    # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
-    # this is a watched first run (docs/attic/autonomy-trial-1.md), not maximum throughput.
+    # the owner flips it with one API call. MAX_LANES=1 (the line below) instead of the default 3 is
+    # deliberate — first a watched run (docs/attic/autonomy-trial-1.md), not maximum throughput.
     #
     # The verify gate has TWO budgets and they are not interchangeable. FLEET_VERIFY_TIMEOUT_MS is
     # what the gate may spend WORKING; FLEET_VERIFY_WAIT_MS is what it may spend queued behind the
     # machine-wide suite mutex before it starts. One number was what killed a land on 2026-08-06
     # with a `verify.ok:false` over an output holding zero failures — ~255s of its 300s had gone to
-    # somebody else's suite (server.ts, grep VERIFY_WAIT_MS). 900000 is the server's own default,
-    # written out here because a budget nobody can see is a budget nobody chose; the honest failure
-    # it permits ("waited 15 min, never started") is a true sentence about the machine, and the one
-    # it replaces was a false sentence about a lane's work.
+    # somebody else's suite (server.ts, grep VERIFY_WAIT_MS). The line below writes both out because a
+    # budget nobody can see is a budget nobody chose: FLEET_VERIFY_WAIT_MS 2700000 (45 min; the
+    # server's own default is 900000) and FLEET_VERIFY_TIMEOUT_MS 480000 unless .env sets it (live
+    # 2026-10-12: 900000; the server's own default is 120000) — GET /api/machine-settings shows both.
+    # The honest failure the wait permits ("waited, never started") is a true sentence about the
+    # machine, and the one it replaces was a false sentence about a lane's work.
     #
     # FLEET_HARNESS_AUTOMATION=1 — owner decision 2026-08-07. It admits UNATTENDED paths to a slot
     # running a non-default harness (scheduled autos, dispatch, steward sends, done-looking →
@@ -228,14 +239,15 @@ while true; do
     # suite mutex 75 min instead of 45.
     #
     # THE AUDIT CADENCE — two knobs, NOT on this line on purpose: the server's own defaults are the
-    # owner's numbers (2026-10-08), and like FLEET_VERIFY_WAIT_MS above a value here would only
-    # restate them. Both bind ONLY on a helper deployment, i.e. with FLEET_AUDIT_HELPER_GRACE_MS > 0
+    # owner's numbers (2026-10-08), and a value here would only restate them. Both bind ONLY on a helper deployment, i.e. with FLEET_AUDIT_HELPER_GRACE_MS > 0
     # in .env (live: 60000) — which since that day is an on-switch: its number is no longer read, and
     # a helper's audit never falls back onto this Mac (server.ts, grep AUDIT_HELPER_ONLY).
-    #   FLEET_AUDIT_QUIET_MS    default 1200000 (20 min) — the audit starts once the repo has had no
-    #                           land for this long, one run on the newest tip covering the whole burst
-    #   FLEET_AUDIT_MAX_WAIT_MS default 3600000 (60 min) — …and at the latest this long after the
-    #                           OLDEST unmeasured land, so a day that is never quiet is still measured
+    #   FLEET_AUDIT_QUIET_MS    default 14400000 (4 h) — the audit starts once the repo has had no
+    #                           land for this long, one run on the newest tip covering the whole burst,
+    #                           and never inside FLEET_AUDIT_QUIET_DAY (default 08-22)
+    #   FLEET_AUDIT_MAX_WAIT_MS default 3600000 (60 min) — releases NO run (auditCadenceOf does not read
+    #                           it); past it a waiting entry is `overdue` and the helper daemon ranks
+    #                           it right behind command jobs (server.ts#auditPastMaxWait)
     # Either at 0 releases at once (the harnesses do this). Set them in .env, never in this line —
     # the line is the deploy path. Rule and proof: docs/verify-tiering.md §6.0b, server.ts#auditCadenceOf.
     strikes=0

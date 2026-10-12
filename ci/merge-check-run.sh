@@ -4,11 +4,12 @@
 # Der Commit liegt schon in $CI_HOME/repo.git (merge-check.ts schiebt ihn per git push dorthin).
 # Fährt die Teile des Urteils parallel, jedes mit eigenem TMPDIR, eigenem Suite-Lock und eigenem
 # Port-Band (FLEET_E2E_BAND 7–9; der Helfer-Daemon nimmt die kleinsten freien, 0–4 bei fünf Plätzen):
-#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci
+#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci (falls vorhanden)
 #   gate    ./e2e-claude-gate.sh
 #   review  ./e2e-clean-review.sh, danach ./e2e-security.sh
 #   s1–s3   die kleinen Units in drei Shards; die großen laufen nachts und vor jedem Deploy
-# Ausgabe: je Teil eine Zeile `job <name> rc=<rc> ms=<ms>`, dazu die `module`/`shard-unit`-Zeilen
+# Ausgabe: je Teil eine Zeile `job <name> rc=<rc> ms=<ms>`, `na <was> — <warum>` für Nicht-Anwendbares,
+# dazu die `module`/`shard-unit`-Zeilen
 # der Shards und als letzte Zeile `merge-check green|red <ms>`. Exit 0 nur, wenn jeder Teil 0 war.
 set -u
 SHA="${1:?commit fehlt}"
@@ -42,6 +43,10 @@ if ! bun install --frozen-lockfile > "$RUN/install.log" 2>&1; then
 fi
 TSC=$(grep -o "bunx tsc [^&]*" watchdog.sh | head -n 1)
 [ -n "$TSC" ] || { echo "merge-check red $(( $(now_ms) - T0 )) — keine tsc-Zeile in watchdog.sh"; exit 3; }
+# die Unit-Tests gehören zum Kandidaten: ein Baum ohne ci/*.test.ts hat keine, und das ist „nicht
+# anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
+TESTS="bun test ./ci"
+if ! ls ci/*.test.ts > /dev/null 2>&1; then TESTS="true"; echo "na tests — der Kandidat hat keine ci/*.test.ts"; fi
 
 # job <name> <band> <command line>: im Hintergrund, mit eigener Prozessgruppe (timeout tötet sie ganz)
 job() {
@@ -55,7 +60,7 @@ job() {
   ) &
 }
 : > "$RUN/jobs"
-job local 9 "bun e2e/pins.ts && $TSC && bun run build && bun test ./ci"
+job local 9 "bun e2e/pins.ts && $TSC && bun run build && $TESTS"
 job gate 9 "./e2e-claude-gate.sh"
 job review 9 "./e2e-clean-review.sh && ./e2e-security.sh"
 for k in 1 2 3; do

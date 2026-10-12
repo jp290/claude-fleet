@@ -111,7 +111,8 @@ async function main(): Promise<number> {
     appendFileSync(join(mustGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "merge-checks.jsonl"), `${JSON.stringify(row)}\n`);
     git(["notes", "--ref=merge-check", "add", "-f", "-m",
       `merge-check ${verdict} · ${mergeable ? "mergebar" : "nicht mergebar"} · ${Math.round((Date.now() - t0) / 1000)} s · ${new Date(t0).toISOString()}\n`
-      + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}\n${why}`, tip]);
+      + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}\n${why}`
+      + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : ""), tip]);
     console.log(`\nmerge-check ${verdict} ${branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`);
     return code;
   };
@@ -131,7 +132,8 @@ async function main(): Promise<number> {
   const modules: Record<string, number> = {};
   for (const m of run.out.matchAll(/^s\d module (\S+) (\d+) ms$/gm)) modules[m[1]!] = Number(m[2]);
   const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(run.out);
-  Object.assign(row, { jobs, modules, helperMs: runLine ? Number(runLine[2]) : null,
+  const notApplicable = [...run.out.matchAll(/^na (\S+) — (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`);
+  Object.assign(row, { jobs, modules, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
     run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
   if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (ssh exit ${run.exit})`, 3);
   const verdict = runLine[1] === "green" ? "green" : "red";

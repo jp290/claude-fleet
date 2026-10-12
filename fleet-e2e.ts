@@ -468,6 +468,7 @@ if (skip)
     + " not run (FLEET_E2E_SKIP_UNITS) — their checks are unmeasured in this run, not passed");
 
 const unitMs = new Map<string, number>();
+const moduleMs = new Map<string, number>();
 let completed = false;
 try {
 
@@ -495,6 +496,7 @@ for (const step of steps) {
   const t0 = Date.now();
   await step.run();
   unitMs.set(owner, (unitMs.get(owner) ?? 0) + (Date.now() - t0));
+  moduleMs.set(step.module, (moduleMs.get(step.module) ?? 0) + (Date.now() - t0));
 }
 
 // --- the run's own per-check trail. Last on purpose: it compares its row count against every
@@ -520,6 +522,8 @@ if (shard) {
   console.log(`shard ${shard.k}/${shard.n}: units=[${ran.join(" ")}]`);
   for (const u of ran) console.log(`shard-unit ${u} ${unitMs.get(u) ?? 0} ms`);
 }
+// every run, sharded or not, so the next full run measures each module without an extra run
+for (const [m, ms] of moduleMs) console.log(`module ${m} ${ms} ms`);
 console.log(results.join("\n"));
 // a quarantined failure is named right above the tail, never only far up in the list: it does not
 // decide the verdict below, and a reader of the tail must still meet it (e2e/harness.ts#check)

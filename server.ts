@@ -44246,26 +44246,12 @@ function adoptTokens(): void {
   if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
   if (!helperToken) helperToken = randomBytes(16).toString("hex"); // same width, same persistence
 }
-// START (only as entry point): the boot, up to the audit clock below
-if (import.meta.main) {
-await claimInstanceLock();
-// A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
-// live peer can be writing one, and a credential-bearing temp must not be left lying around.
-for (const name of readdirSync(import.meta.dir)) {
-  if (name !== "fleet.json.tmp" && !/^fleet\.json\.\d+\.\d+\.tmp$/.test(name)) continue;
-  unlinkSync(`${import.meta.dir}/${name}`);
-}
-// release only what is still OURS — a lock we lost must not be unlinked out from under its owner
-process.on("exit", () => {
-  try { if (readPidFile() === process.pid) unlinkSync(PID_FILE); } catch { /* nothing left to release */ }
-});
-
-mkdirSync(STREAM_DIR, { recursive: true });
-chmodSync(STREAM_DIR, 0o700);
-await tmux("start-server");
-if (existsSync(STATE_FILE)) {
+// The persisted state from `file` into the module's state — the boot calls it with STATE_FILE; a test
+// that imports server.ts calls it with a planted file. Body unindented, like the entry-point guards.
+async function loadPersistedState(file: string): Promise<void> {
+if (existsSync(file)) {
   try {
-    const persisted = (await Bun.file(STATE_FILE).json()) as {
+    const persisted = (await Bun.file(file).json()) as {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
     Object.assign(modelScanState, modelScanStateFrom((persisted as { modelScan?: unknown }).modelScan));
@@ -45327,12 +45313,31 @@ if (existsSync(STATE_FILE)) {
     // the last file that PARSED, so one save with the damaged file still at STATE_FILE would destroy
     // the only good copy. The log line names the recovery file because a fresh token kills every
     // bookmark, share link and lane selfToken at once. Narrativ: server-narrativ-archiv.md#boot-state-restore
-    try { renameSync(STATE_FILE, `${STATE_FILE}.corrupt`); } catch { /* fleet.json gone entirely */ }
+    try { renameSync(file, `${file}.corrupt`); } catch { /* fleet.json gone entirely */ }
     console.log(`fleet.json unreadable — starting with empty state and a NEW owner token.`
-      + ` The damaged file is kept as ${STATE_FILE}.corrupt; the last state that parsed is ${STATE_FILE}.bak —`
-      + ` stop the server and copy that over ${STATE_FILE} to recover the existing tokens and shares.`);
+      + ` The damaged file is kept as ${file}.corrupt; the last state that parsed is ${file}.bak —`
+      + ` stop the server and copy that over ${file} to recover the existing tokens and shares.`);
   }
 }
+}
+// START (only as entry point): the boot, up to the audit clock below
+if (import.meta.main) {
+await claimInstanceLock();
+// A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
+// live peer can be writing one, and a credential-bearing temp must not be left lying around.
+for (const name of readdirSync(import.meta.dir)) {
+  if (name !== "fleet.json.tmp" && !/^fleet\.json\.\d+\.\d+\.tmp$/.test(name)) continue;
+  unlinkSync(`${import.meta.dir}/${name}`);
+}
+// release only what is still OURS — a lock we lost must not be unlinked out from under its owner
+process.on("exit", () => {
+  try { if (readPidFile() === process.pid) unlinkSync(PID_FILE); } catch { /* nothing left to release */ }
+});
+
+mkdirSync(STREAM_DIR, { recursive: true });
+chmodSync(STREAM_DIR, 0o700);
+await tmux("start-server");
+await loadPersistedState(STATE_FILE);
 if (startupStateRefusal !== null) {
   console.log(`REFUSING TO START: ${startupStateRefusal}. The safety marker was left on disk for owner inspection.`);
   throw new Error(startupStateRefusal);
@@ -54646,4 +54651,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState };

@@ -2,7 +2,7 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendEvent } from "./persist";
@@ -65,6 +65,24 @@ async function load() {
   return server;
 }
 
+// tokenGate schreibt jeden Fehlversuch als owner_auth_fail ins audit.jsonl neben server.ts
+// (server/audit-log.ts): nur in einem Baum ohne eigenes Audit-Log und danach wieder weg — im
+// Verzeichnis eines laufenden Servers fälschte der Test dessen Ledger
+async function withScratchAuditLog(run: () => Promise<void>): Promise<void> {
+  const file = join(ROOT, "audit.jsonl");
+  if (existsSync(file)) throw new Error(`${file} gibt es schon — der Test schriebe in ein echtes Audit-Log; im frischen Baum fahren`);
+  const barrier = mkdtempSync(join(tmpdir(), "fleet-load-"));
+  try {
+    await run();
+  } finally {
+    // audit() schreibt ohne await; alle Ledger-Zeilen teilen eine Schreibkette (persist.ts), also
+    // ist die Audit-Zeile samt chmod fertig, sobald eine danach eingereihte Zeile geschrieben ist
+    await appendEvent(join(barrier, "barrier.jsonl"), {});
+    rmSync(barrier, { recursive: true, force: true });
+    rmSync(file, { force: true });
+  }
+}
+
 describe("paneApiError, im Prozess importiert", () => {
   const at = 1_760_000_000_000;
 
@@ -120,23 +138,6 @@ describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", ()
     const res = await request("/api/sessions", { host: allowedHost, origin: "http://evil.example" });
     expect(res).toEqual({ status: 403, body: { error: "cross-origin request blocked" } });
   });
-  // tokenGate schreibt jeden Fehlversuch als owner_auth_fail ins audit.jsonl neben server.ts
-  // (server/audit-log.ts): nur in einem Baum ohne eigenes Audit-Log und danach wieder weg — im
-  // Verzeichnis eines laufenden Servers fälschte der Test dessen Ledger
-  async function withScratchAuditLog(run: () => Promise<void>): Promise<void> {
-    const file = join(ROOT, "audit.jsonl");
-    if (existsSync(file)) throw new Error(`${file} gibt es schon — der Test schriebe in ein echtes Audit-Log; im frischen Baum fahren`);
-    const barrier = mkdtempSync(join(tmpdir(), "fleet-load-"));
-    try {
-      await run();
-    } finally {
-      // audit() schreibt ohne await; alle Ledger-Zeilen teilen eine Schreibkette (persist.ts), also
-      // ist die Audit-Zeile samt chmod fertig, sobald eine danach eingereihte Zeile geschrieben ist
-      await appendEvent(join(barrier, "barrier.jsonl"), {});
-      rmSync(barrier, { recursive: true, force: true });
-      rmSync(file, { force: true });
-    }
-  }
   test("ohne Token keine Sitzungsliste", () => withScratchAuditLog(async () => {
     expect(await request("/api/sessions", { host: allowedHost })).toEqual({ status: 401, body: { error: "unauthorized" } });
   }));
@@ -163,4 +164,85 @@ describe("Route-Handler ohne Port, mit Owner-Token", () => {
     const body = await res.json() as { slots?: { id: number }[] };
     expect(body.slots?.map((s) => s.id)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
   });
+});
+
+describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden über die Routen zurück", () => {
+  const plantedAt = 1_790_000_000_000;
+  const programId = "4b5c".padEnd(24, "0");
+  const taskId = `gepflanzt-${process.pid}`;
+  const ownerToken = `planted-${process.pid}-${Date.now()}`;
+  const gitStatus = () => Bun.spawnSync(["git", "status", "--porcelain", "--ignored", "--untracked-files=all"], { cwd: ROOT }).stdout.toString();
+
+  async function get(path: string, token: string): Promise<{ status: number; body: unknown }> {
+    const { serveOptions } = await load();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const req = new Request(`http://127.0.0.1:${isolation.FLEET_PORT}${path}`,
+      { headers: { host: `127.0.0.1:${isolation.FLEET_PORT}`, authorization: `Bearer ${token}` } });
+    const res = await fetch.call(server, req, server);
+    if (!res) throw new Error(`${path}: der Handler gab keine Antwort`);
+    return { status: res.status, body: await res.json() };
+  }
+
+  test("Token, Slot, Program und Auftrag aus der Datei stehen in /api/sessions, /api/programs und /api/tasks", () => withScratchAuditLog(async () => {
+    const { loadPersistedState, adoptTokens } = await load();
+    const dir = mkdtempSync(join(tmpdir(), "fleet-state-"));
+    const before = gitStatus();
+    try {
+      const file = join(dir, "fleet.json");
+      await Bun.write(file, JSON.stringify({
+        token: ownerToken,
+        slots: { "3": { cwd: dir, label: "Gepflanzter Slot", openedAt: plantedAt } },
+        programs: [{ id: programId, title: "Gepflanztes Program", intent: "Zeigen, dass der Zustand zurückkommt",
+          successCriterion: "Die Routen zeigen das Program", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+          status: "active", createdAt: plantedAt - 1000, proposedBy: { kind: "owner" },
+          confirmedAt: plantedAt - 900, activatedAt: plantedAt - 800 }],
+        tasks: [{ id: taskId, text: "Gepflanzter Auftrag", source: "owner", kind: "auftrag", status: "pending",
+          programId, created: plantedAt - 500, slot: null, note: null }],
+      }));
+      delete process.env.FLEET_TOKEN;
+      await loadPersistedState(file);
+      adoptTokens();
+
+      const sessions = await get("/api/sessions", ownerToken);
+      expect(sessions.status).toBe(200);
+      const slot = (sessions.body as { slots: { id: number; cwd: string | null; label: string | null }[] }).slots
+        .find((s) => s.id === 3);
+      expect({ cwd: slot?.cwd, label: slot?.label }).toEqual({ cwd: dir, label: "Gepflanzter Slot" });
+
+      const programs = await get("/api/programs", ownerToken);
+      expect(programs.status).toBe(200);
+      expect((programs.body as { programs: { id: string; title: string; status: string }[] }).programs
+        .map((p) => ({ id: p.id, title: p.title, status: p.status })))
+        .toEqual([{ id: programId, title: "Gepflanztes Program", status: "active" }]);
+
+      const tasks = await get("/api/tasks", ownerToken);
+      expect(tasks.status).toBe(200);
+      expect((tasks.body as { tasks: { id: string; text: string; status: string; programId?: string }[] }).tasks
+        .map((t) => ({ id: t.id, text: t.text, status: t.status, programId: t.programId })))
+        .toEqual([{ id: taskId, text: "Gepflanzter Auftrag", status: "pending", programId }]);
+
+      expect(readdirSync(dir)).toEqual(["fleet.json"]);
+      expect(gitStatus()).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }));
+
+  test("eine kaputte Datei wird neben sich selbst zu .corrupt, neben server.ts entsteht nichts", () => withScratchAuditLog(async () => {
+    const { loadPersistedState } = await load();
+    const dir = mkdtempSync(join(tmpdir(), "fleet-state-"));
+    const before = gitStatus();
+    try {
+      await Bun.write(join(dir, "fleet.json"), "{ kaputt");
+      await loadPersistedState(join(dir, "fleet.json"));
+      expect(readdirSync(dir)).toEqual(["fleet.json.corrupt"]);
+      expect(gitStatus()).toBe(before);
+      // der Token aus der vorigen Ladung bleibt: eine kaputte Datei setzt nichts zurück
+      expect((await get("/api/sessions", ownerToken)).status).toBe(200);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }));
 });

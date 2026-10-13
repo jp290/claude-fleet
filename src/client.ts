@@ -2114,9 +2114,9 @@ class Pane {
         // Esc took this prompt back before any answer (server/live-state.ts#foldLine): the terminal shows
         // no such turn, so neither does this view — a bubble of ours waiting for it retires with it
         if (this.live?.withdrawn.includes(e.n)) { this.settlePending(raw); continue; }
-        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)).dataset.n = String(e.n); continue; }
+        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)); continue; }
         for (const part of parts) {
-          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text)).dataset.n = String(e.n);
+          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text));
           else this.addFleetLine(part, header);
         }
       } else {
@@ -2126,6 +2126,7 @@ class Pane {
   }
   private addMessage(e: TEntry, text: string, header: string | null, mark: string | null, arrived: boolean): HTMLElement {
     const msg = el("div", `msg ${e.role}`);
+    if (e.role === "user" && e.n > 0) msg.dataset.n = String(e.n); // the line dropWithdrawn finds a prompt Esc took back by
     // only YOUR prompt names drops (the composer appends them); an agent quoting the line stays text
     const drops = e.role === "user" ? splitDropImages(text) : { rest: text, images: [] };
     const body = el("div", "mbody");

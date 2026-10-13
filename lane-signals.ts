@@ -691,14 +691,13 @@ export function fleetReportDecisionMessage(
   reportId: string,
   disposition: "accepted" | "rejected",
   reason: string | null,
-  by?: "owner" | { slot: number } | { delegate: { slot: number } } | { rule: string },
+  by?: "owner" | { slot: number } | { rule: string },
   status?: "complete" | "needs-main" | "failed" | "handoff",
 ): string {
   const head = `[fleet] YOUR REPORT WAS ${disposition.toUpperCase()} [fleet-report ${reportId}]`;
   const actor = by === "owner" ? "Owner"
-    : by && "delegate" in by ? `ReportDelegate in slot ${by.delegate.slot}`
-      : by && "rule" in by ? `rule ${by.rule}`
-        : by && "slot" in by ? `receiving MAIN in slot ${by.slot}` : "report decider";
+    : by && "rule" in by ? `rule ${by.rule}`
+      : by && "slot" in by ? `receiving MAIN in slot ${by.slot}` : "report decider";
   if (disposition === "accepted")
     return `${head}${reason ? `\n${reason}` : ""}\nThe ${actor} recorded this decision. Nothing is `
       + `landed or deployed by this message.`;

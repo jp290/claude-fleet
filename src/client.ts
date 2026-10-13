@@ -6,7 +6,7 @@ import { initFieldPerf } from "./fieldperf";
 import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
-import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, setReportsAwaitingDelegate, closeAttnDlg, closeOpsDlg } from "./attention";
+import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -7670,8 +7670,6 @@ export async function refresh() {
       attentionOpen?: number;
       programsStale?: number;
       reportsAwaitingOwner?: number;
-      // present only while a report delegate is in force and holds unjudged rows; absent reads as zero
-      reportsAwaitingDelegate?: number;
       // the owner poll's CUT and PROJECTION of the trail (src/opsevents.ts#opsPollRow); full rows: GET /api/events
       events?: OpsPollRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null;
@@ -7748,7 +7746,6 @@ export async function refresh() {
     setAttentionOpen(data.attentionOpen ?? 0);
     setProgramsStale(typeof data.programsStale === "number"
       && Number.isInteger(data.programsStale) && data.programsStale > 0 ? data.programsStale : 0);
-    setReportsAwaitingDelegate(data.reportsAwaitingDelegate ?? 0);
     setReportsAwaitingOwner(data.reportsAwaitingOwner ?? 0);
     // the operations inbox reads the events the poll already carries — no extra request, and the
     // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)

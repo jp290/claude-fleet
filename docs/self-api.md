@@ -4836,7 +4836,7 @@ plus deine `reason` wörtlich. Wer auf einen `needs-main`-Report antwortet, schr
 also in `reason` (≤ 500 Zeichen) — eine zweite Nachrichtenklasse gibt es nicht, und die
 Clarification-Tür bleibt für Fragen VOR dem terminalen Bericht. Das Ergebnis steht als
 `decisionDelivery: {state, at, reason}` an der Report-Zeile:
-Der Zustelltext nennt den Entscheider aus `decision.by` (MAIN, Owner, ReportDelegate oder Regel).
+Der Zustelltext nennt den Entscheider aus `decision.by` (MAIN, Owner oder Regel).
 Ein abgelehntes `needs-main` ist eine Antwort auf die Frage und fordert nicht pauschal zum
 Reparieren und erneuten Filen auf. Abgelehnte Urteile werden sofort zugestellt; angenommene
 bleiben bündelbar, jeweils unter den bestehenden Zustell-Gates.
@@ -4937,7 +4937,7 @@ exakt wie „niemand hat hingesehen". Darum:
   nennt die Report-id und die bereits offene Tür. Die `send`-Audit-Zeile trägt die Report-id;
   sie verhindert eine Wiederholung beim nächsten Tick und nach einem Neustart. Ohne eindeutig
   lebende Orchestratorin bleibt die Zeile in `reportsAwaitingOwner`. Der Hinweis erteilt kein
-  Urteilsrecht: ohne `ReportDelegate` steht der Orchestratorin keine Self-Entscheidungstür offen.
+  Urteilsrecht.
 - **Die Retention hält eine wartende Zeile fest.** `pruneFleetReports` schneidet den terminalen
   Schwanz auf `FLEET_REPORT_KEEP`, und das Event einer verwaisten Zeile wurde genau in dem Moment
   terminal, in dem der Owner zuständig wurde — sie wegzupruen hätte das einzige Objekt gelöscht, auf
@@ -4962,56 +4962,6 @@ exakt wie „niemand hat hingesehen". Darum:
 Die Lane-Fußzeile (`LANE_EXIT_FOOTER`) bleibt **unverändert**: sie sagt der LANE, wie sie endet —
 committen, einen getypten Report filen, idle gehen. Was die MAIN danach mit dem Report tut, ist
 nicht ihr Wissen und gehört nicht in ihren Brief.
-
-### Der Report-DELEGIERTE — `PATCH /api/slots/:id/report-delegate` · `POST /api/self/fleet-report/:id/delegate/accept|reject|escalate` (seit 2026-09-24)
-
-Owner 2026-09-24 wörtlich, auf die Frage, ob die Orchestratorin die 96 `reportsAwaitingOwner`
-selbst beurteilen darf: „[Zitat entfernt]“ — und direkt danach
-„[Zitat entfernt]". Vorher gab es für eine verwaiste
-Zeile nur die Owner-Tür oben; wer dort mit dem Owner-Token urteilte, stand im Ledger als
-`by:"owner"`, was nicht stimmte. Die Delegation ist jetzt eine BENANNTE, widerrufbare Berechtigung
-(`server/types.ts#ReportDelegate`, Muster `MemoryGrant`):
-
-```
-# Owner: setzen / widerrufen / lesen (Owner-Gate; ein Self-Token ist hier 401)
-PATCH /api/slots/<id>/report-delegate   {"expectedOpenedAt":…, "expectedRevision":N}
-PATCH /api/slots/<id>/report-delegate   {"expectedOpenedAt":…, "expectedRevision":N, "revoke":true}
-GET   /api/slots/<id>/report-delegate   → {delegate, inForce, holder:{slot, openedAt}|null}
-
-# der Delegierte (Self-Token, NIE eine Lane)
-GET  /api/self/fleet-report/delegated              → {delegate, reports:[… mit liveness], escalated}
-POST /api/self/fleet-report/<id>/delegate/accept   {"reason":"ERFUELLT: ja — …"}
-POST /api/self/fleet-report/<id>/delegate/reject   {"reason":"…"}
-POST /api/self/fleet-report/<id>/delegate/escalate {"reason":"warum das deine Entscheidung ist"}
-```
-
-- **Genau ein Occupant, fleet-weit höchstens einer in Kraft.** Gebunden an `occupant` (slot +
-  openedAt) UND `lineageId`; ein Label, ein Modell oder eine Rolle berechtigt nichts (409
-  `not-delegate`, bei Orchestrator-Label mit „a role label grants nothing"). Ein Setzen, während ein
-  ANDERER Occupant hält, ist 409 `delegate-held` mit `holder` — erst dort widerrufen. Eine Lane ist an
-  beiden Türen 409 `lane-scope`. `revision` zählt jedes Setzen, Widerrufen und Übertragen; ein
-  widerrufener Record bleibt stehen, damit die Zählung überlebt.
-- **Der Delegierte urteilt genau die Zeilen, für die `server.ts#reportAwaitsOwner` gilt** — unbeurteilt,
-  kein lebender Empfänger. Lebt der Empfänger, bleibt das Urteil dessen (409 `receiver-live`, die
-  Grenze der Owner-Tür aus derselben Funktion). Bereits beurteilt: 409 wie an den anderen Türen.
-- **`decision.by` ist `{delegate: {slot, openedAt, sessionId}}`** — nie `"owner"`, nie die nackte
-  Occupant-Form. Ledger (`fleet-reports.jsonl`), Lane-Zustellung und Event-Settle laufen über
-  dieselben Schreiber wie bei den anderen Türen. Wie ein Owner- oder Regel-Urteil bewaffnet ein
-  Delegierten-Urteil weder den automatischen Lane-Schluss noch den Review-Park: beide lesen ein
-  Urteil als „die MAIN hat gelesen", und das trägt es nicht. Die Land-Vorbedingung liest es wie
-  jedes geschriebene Urteil.
-- **`escalate` ist KEIN Urteil.** Es verlangt einen Grund (400 ohne), schreibt `escalation: {at, by,
-  reason}` auf die Zeile und eine Ledger-Zeile `kind:"escalation"`, lässt `decision` leer und das
-  Event unberührt. Ab dann urteilt nur noch der Owner (Delegierten-Tür 409 `escalated`).
-- **Die Zählung auf `/api/sessions`:** mit einem Delegierten in Kraft zählt `reportsAwaitingOwner`
-  nur noch eskalierte wartende Zeilen, `reportsAwaitingDelegate` den Rest (bei 0 weggelassen). Ohne
-  Delegierten ist beides byte-gleich zum Stand davor: das neue Feld erscheint nie, und keine Zeile
-  trägt `escalation`.
-- **Nachfolge:** die generische Schiene (`POST /api/self/succeed` ohne Program-Bindung)
-  trägt die Delegation ganz zur Nachfolgerin derselben Linie (`issuedBy:"succession"`,
-  `transferredFrom`); die Program-MAIN-Schiene beendet sie. Ein Widerruf wirkt sofort,
-  schon während er geschrieben wird.
-- **Kein Tick, kein Automat** ruft die Delegierten-Tür — sie ist ein Session-Akt wie die anderen beiden.
 
 ### Regelentscheide — wer entscheidet was (seit 2026-09-13, keine Route)
 
@@ -6933,7 +6883,7 @@ curl -s -H "authorization: Bearer $FLEET_TOKEN" "http://<fleet-host>:<port>/api/
 **Quellen:** `audit.jsonl` in ALLEN DREI Generationen (`.archive`, `.1`, aktiv — `readLedger` liest nur
 zwei, deshalb war die Zeit vor der zweiten Rotation für den Dossier unsichtbar, K5 Ä1),
 `lane-outcomes.jsonl`, `post-land-audits.jsonl`, `fleet-reports.jsonl` (je Report ein Ereignis mit seiner
-Art im `kind`, die Entscheidung und die Eskalation je ein eigenes), `tasks-archive.jsonl` (die Zeile, wenn
+Art im `kind`, die Entscheidung ein eigenes), `tasks-archive.jsonl` (die Zeile, wenn
 sie `fleet.json` verlassen hat), die Land-Notizen `git notes --ref=fleet/land` und `git log base..head`
 der Lane (mit Dateiliste). Eine Rotation zwischen zwei Generationslesungen wiederholt den Lesevorgang
 (Inode vorher/nachher), statt eine Generation zu verlieren.

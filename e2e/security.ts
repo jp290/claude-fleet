@@ -155,17 +155,8 @@ const PRE_AUTH_ROUTES = [
   // requires the self token (otherwise 401); a lane other than the steward is 409, and the handler
   // requires a live bound MAIN of the report's own Program. It prechecks every landed, ended
   // needs-main/complete row before calling decideFleetReport for each ordinary verdict; no body
-  // field grants a foreign Program, Owner, Delegate, land, deploy or Task.status authority.
+  // field grants a foreign Program, Owner, land, deploy or Task.status authority.
   '= /api/self/fleet-report/batch',
-  // THE REPORT DELEGATE's pair (2026-09-24, server.ts#delegateDecideFleetReport): non-lane-only, and
-  // then refused (409 not-delegate) unless the owner named THIS exact occupant and line through the
-  // owner-gated PATCH /api/slots/:id/report-delegate — no label, model or role grants it. It reaches
-  // only rows no living receiver can judge (reportAwaitsOwner; a live receiver is 409), writes the
-  // same verdict row, ledger line, event settle and lane carry as the two doors above, or on
-  // `escalate` only an escalation record; GET lists those rows. No foreign slot is reached, no task
-  // status, land, dispatch or tick moves.
-  String.raw`~ /^\/api\/self\/fleet-report\/([0-9a-f]{24})\/delegate\/(accept|reject|escalate)$/`,
-  '= /api/self/fleet-report/delegated',
   // The owner-facing twin of the fleet-report pair above, and it is the QUIETEST entry on this list: it writes
   // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
   // caller to be the current bound MAIN of an active program (programId is derived from that

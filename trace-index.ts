@@ -241,11 +241,10 @@ function deciderActor(by: unknown, door: string): TraceActor {
   if (by && typeof by === "object") {
     const b = by as Record<string, unknown>;
     if (typeof b.rule === "string") return { kind: "server", via: `rule ${b.rule}` };
-    const occ = (b.delegate && typeof b.delegate === "object" ? b.delegate : b) as Record<string, unknown>;
-    const slot = num(occ.slot);
-    if (slot !== null) return { kind: "occupant", via: b.delegate ? "report delegate door" : door, slot,
-      ...(num(occ.openedAt) !== null ? { openedAt: occ.openedAt as number } : {}),
-      ...(str(occ.sessionId) ? { session: occ.sessionId as string } : {}) };
+    const slot = num(b.slot);
+    if (slot !== null) return { kind: "occupant", via: door, slot,
+      ...(num(b.openedAt) !== null ? { openedAt: b.openedAt as number } : {}),
+      ...(str(b.sessionId) ? { session: b.sessionId as string } : {}) };
   }
   return { kind: "unknown" };
 }
@@ -392,8 +391,8 @@ export async function buildTrace(input: TraceInput): Promise<TraceResult> {
     else if (repo) caveat(`git-log:${repo}`, `the ${branch} outcome at ${iso(at)} names no fork point — its commits cannot be separated from the base`);
   }
 
-  // fleet-reports.jsonl (T5): one event per report, its status in the kind; the decision and the
-  // escalation are their own events, joined by the report id
+  // fleet-reports.jsonl (T5): one event per report, its status in the kind; the decision is its own
+  // event, joined by the report id
   const opened = new Map<string, Record<string, unknown>>();
   for (const l of rows(reports)) {
     const r = l.row;
@@ -407,17 +406,14 @@ export async function buildTrace(input: TraceInput): Promise<TraceResult> {
         files: [], detailRef: lineRef(l, reports.name),
         edge: { from: { kind: branch ? "lane" : "occupant", ...(slot !== null ? { slot } : {}), ...(branch ? { branch, task: id } : {}) },
           to: receiverActor(str(r.basis), program), channel: "fleet-report" } });
-    } else if ((r.kind === "decision" || r.kind === "escalation") && at !== null && opened.has(String(r.id))) {
+    } else if (r.kind === "decision" && at !== null && opened.has(String(r.id))) {
       const open = opened.get(String(r.id))!;
       const filer: TraceActor = { kind: str(open.branch) ? "lane" : "occupant", ...(num(open.slot) !== null ? { slot: open.slot as number } : {}),
         ...(str(open.branch) ? { branch: open.branch as string } : {}) };
-      const decision = r.kind === "decision";
-      events.push({ source: reports.name, kind: decision ? `report.decided.${str(r.disposition) ?? "unknown"}` : "report.escalated", at,
+      events.push({ source: reports.name, kind: `report.decided.${str(r.disposition) ?? "unknown"}`, at,
         refs: { task: id, ...(str(open.branch) ? { branch: open.branch as string } : {}), ...(str(open.programId) ? { program: open.programId as string } : {}) },
         files: [], detailRef: lineRef(l, reports.name),
-        edge: decision
-          ? { from: deciderActor(r.by, "receiver door"), to: filer, channel: "fleet-report.decision" }
-          : { from: deciderActor(r.by, "delegate escalation door"), to: { kind: "owner", via: "escalation" }, channel: "fleet-report.escalation" } });
+        edge: { from: deciderActor(r.by, "receiver door"), to: filer, channel: "fleet-report.decision" } });
     }
   }
 

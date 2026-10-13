@@ -224,23 +224,14 @@ interface OwnerReportRow {
     reason: string | null } | null;
   // server/types.ts#FleetReport.outsideSurface — null/absent = not measured, [] = nothing outside
   outsideSurface?: string[] | null;
-  // server/types.ts#FleetReport.escalation — set only by a report delegate handing the row back
-  escalation?: { at: number; by: { slot: number; openedAt: number; sessionId: string | null };
-    reason: string } | null;
 }
 let reportsAwaitingOwner = 0;
-// WITH A REPORT DELEGATE IN FORCE the poll's owner number counts only the rows the delegate
-// escalated; the rest are the delegate's to judge. GET /api/fleet-report still returns them all, so
-// the list filters on the same fact — otherwise the badge and the list disagree, and the owner reads
-// the delegate's queue as his own. At zero (no delegate, or nothing left for one) nothing is filtered.
-let reportsAwaitingDelegate = 0;
 export let ownerReportRows: OwnerReportRow[] = [];
 let ownerReportErr: string | null = null;
 // typed-but-unsent reasons survive a repaint, for attnDraft's reason: the rows are rebuilt whenever
 // the count moves, and losing a half-written reason to an unrelated arrival is its own deterrent.
 const ownerReportDraft = new Map<string, string>();
-const ownerReportAwaiting = (r: OwnerReportRow): boolean =>
-  !r.decision && r.liveness !== "live" && (reportsAwaitingDelegate === 0 || !!r.escalation);
+const ownerReportAwaiting = (r: OwnerReportRow): boolean => !r.decision && r.liveness !== "live";
 
 // EVERY inbox row EXCEPT a worker report. The report rail counts its own rows and renders them in
 // its own section below, and it counts BOTH carriers — the owner-inbox row that arrives here as an
@@ -277,13 +268,6 @@ export function setReportsAwaitingOwner(n: number) {
   reportsAwaitingOwner = n;
   renderOpsBtn();
   if (moved && opsdlg.style.display === "flex") void loadOwnerReports();
-}
-
-// no fetch of its own: the rows already carry `escalation`, so a change here only re-filters them
-export function setReportsAwaitingDelegate(n: number) {
-  const moved = n !== reportsAwaitingDelegate;
-  reportsAwaitingDelegate = n;
-  if (moved && opsdlg.style.display === "flex") renderOpsDlg();
 }
 
 export async function loadOwnerReports() {

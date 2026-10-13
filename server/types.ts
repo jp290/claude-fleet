@@ -623,19 +623,12 @@ type FleetReportFulfilled = typeof FLEET_REPORT_FULFILLED[number];
 //     has spoken again, and its older UNDECIDED owner-inbox rows on the same branch are closed as
 //     moot — the newest row is the live one. `supersededBy` is present EXACTLY on this verdict:
 //     the id of the report that replaced this one, the same evidence rule.
-//
-// THE FOURTH PRINCIPAL is the owner's named REPORT DELEGATE (owner 2026-09-24, „[Zitat entfernt]“
-// ; ReportDelegate): `{delegate: occupant}` on a row no living
-// receiver can judge, taken through the delegate door by the one occupant the owner named. It is
-// deliberately NOT the bare occupant shape — every reader that reads `by.slot` as "the receiving MAIN
-// judged this" (the auto-close, the review park, the outcome join) must be made to meet it as its
-// own case, and a nested key is what the compiler forces them to.
 type FleetReportRuleName = "accepted-by-land" | "landed" | "superseded";
 type FleetReportDecider = { slot: number; openedAt: number; sessionId: string | null };
 interface FleetReportDecision {
   disposition: FleetReportDisposition;
   at: number;
-  by: FleetReportDecider | "owner" | { rule: FleetReportRuleName } | { delegate: FleetReportDecider };
+  by: FleetReportDecider | "owner" | { rule: FleetReportRuleName };
   reason: string | null;
   // THE TYPED READING of a leading `ERFUELLT: ja|teilweise|nein` on `reason`, never a second prose
   // field: the reason stays VERBATIM and this is what the doors read out of it. `null` is the
@@ -687,7 +680,6 @@ interface FleetReportDecisionDelivery {
   at: number;
   reason: string | null;
 }
-interface FleetReportEscalation { at: number; by: FleetReportDecider; reason: string }
 
 // A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
 // its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
@@ -729,11 +721,6 @@ interface FleetReport {
   // fact — a decision is carried EXACTLY once, and the deliverer refuses a second attempt on the
   // strength of this key rather than on the door's refusal, so the pair cannot drift apart.
   decisionDelivery?: FleetReportDecisionDelivery | null;
-  // THE DELEGATE'S "NOT MINE" (ReportDelegate): the owner's named delegate handed this row back to
-  // the owner with a reason. It is NOT a verdict — `decision` stays absent and the row keeps awaiting
-  // the owner, who judges it through his own door; the delegate door refuses it from then on. Absent
-  // on every row no delegate ever escalated, so a fleet that never named one carries no such key.
-  escalation?: FleetReportEscalation | null;
   // THE LANE'S COMMITTED PATHS OUTSIDE ITS CARD'S WRITE SURFACE, measured at filing
   // (server.ts#laneOutsideSurface): `git diff --name-only <base>...HEAD` minus
   // `card.surface.files ∪ card.surface.creates`, sorted. A FACT for the reader, never a gate — the
@@ -1281,11 +1268,6 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
       || !(d.reason === null || (typeof d.reason === "string" && !!d.reason.trim()
         && d.reason.length <= MAX_FLEET_REPORT_DECISION_REASON))) return null;
     const rule = typeof d.by === "object" && d.by !== null && "rule" in d.by;
-    // a DELEGATE verdict names its occupant under the one key and nothing else; it is not compared
-    // with the receiver, because it exists exactly where that receiver could no longer judge
-    const delegate = typeof d.by === "object" && d.by !== null && "delegate" in d.by;
-    if (delegate && (Object.keys(d.by as object).length !== 1
-      || !occupant((d.by as { delegate: unknown }).delegate, false))) return null;
     // a rule verdict is `accepted` and names the ONE piece of evidence it read, and nothing else;
     // any other verdict carries neither field at all, so the shapes can never be mixed on
     // hydration: accepted-by-land names the land it read (mainAfter), superseded names the report
@@ -1308,21 +1290,12 @@ function fleetReportFrom(raw: unknown): FleetReport | null {
     // row claiming a rule had read a criterion would be a judgement the rule never makes.
     if (d.fulfilled !== undefined && d.fulfilled !== null
       && (rule || !FLEET_REPORT_FULFILLED.includes(d.fulfilled as FleetReportFulfilled))) return null;
-    if (d.by !== "owner" && !rule && !delegate) {
+    if (d.by !== "owner" && !rule) {
       if (!occupant(d.by, false)) return null;
       const by = d.by as { slot: number; openedAt: number; sessionId: string | null };
       if (r.basis !== "program" && (r.receiver === null || r.receiver === undefined
         || by.slot !== r.receiver.slot || by.openedAt !== r.receiver.openedAt)) return null;
     }
-  }
-  // The escalation half: complete or absent, a non-empty bounded reason, an occupant as the escalator.
-  const escalation = r.escalation;
-  if (escalation !== undefined && escalation !== null) {
-    if (typeof escalation !== "object" || Array.isArray(escalation)) return null;
-    const e = escalation as Partial<FleetReportEscalation>;
-    if (Object.keys(e).length !== 3 || typeof e.at !== "number" || !Number.isFinite(e.at) || e.at <= 0
-      || !occupant(e.by, false) || typeof e.reason !== "string" || !e.reason.trim()
-      || e.reason.length > MAX_FLEET_REPORT_DECISION_REASON) return null;
   }
   // The delivery half, default-deny and BOUND TO THE DECISION: absent and null are the same
   // not-yet-carried fact and both pass, a present record must be complete and must name one of the
@@ -1972,39 +1945,6 @@ function loadMemoryGrant(v: unknown): MemoryGrant | null {
     lineageId: g.lineageId as string | null, occupant, projectKeys: [...keys as string[]], views: [...views as MemoryGrantView[]],
     revokedAt: g.revokedAt as number | null, transferredFrom: from };
 }
-// THE REPORT DELEGATION (owner 2026-09-24: „[Zitat entfernt]“
-// ; docs/self-api.md §fleet-report). The owner names
-// ONE occupant — fleet-wide at most one in force — that may judge every report no living receiver can
-// (server.ts#reportAwaitsOwner) through POST /api/self/fleet-report/:id/delegate/accept|reject|escalate.
-// MemoryGrant's shape and its rules: no label, model or role line grants it, a lane never holds it,
-// it is bound to `occupant` AND `lineageId`, `revision` counts every set, revoke and transfer, and a
-// revoked record is kept so the count survives. The generic succession rail alone carries it.
-interface ReportDelegate {
-  v: 1; delegateId: string; revision: number; issuedBy: "owner-principal" | "succession"; issuedAt: number;
-  lineageId: string | null; occupant: MemoryGrantOccupant; revokedAt: number | null; transferredFrom: MemoryGrantOccupant | null;
-}
-const REPORT_DELEGATE_KEYS = ["v", "delegateId", "revision", "issuedBy", "issuedAt", "lineageId", "occupant",
-  "revokedAt", "transferredFrom"];
-// fails CLOSED like loadMemoryGrant: any key outside the record, any malformed field → null
-function loadReportDelegate(v: unknown): ReportDelegate | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !REPORT_DELEGATE_KEYS.includes(k))) return null;
-  const occ = (o: unknown): MemoryGrantOccupant | null => o && typeof o === "object" && !Array.isArray(o)
-    && Object.keys(o).length === 2 && Number.isSafeInteger((o as { slot?: unknown }).slot)
-    && typeof (o as { openedAt?: unknown }).openedAt === "number"
-    ? { slot: (o as MemoryGrantOccupant).slot, openedAt: (o as MemoryGrantOccupant).openedAt } : null;
-  const occupant = occ(g.occupant);
-  const from = g.transferredFrom === null || g.transferredFrom === undefined ? null : occ(g.transferredFrom);
-  if (g.v !== 1 || typeof g.delegateId !== "string" || !MEMORY_GRANT_ID_RE.test(g.delegateId)
-    || !Number.isSafeInteger(g.revision) || (g.revision as number) < 1
-    || (g.issuedBy !== "owner-principal" && g.issuedBy !== "succession") || typeof g.issuedAt !== "number"
-    || !(g.lineageId === null || (typeof g.lineageId === "string" && LINEAGE_ID_RE.test(g.lineageId)))
-    || !occupant || (g.transferredFrom != null && !from)
-    || !(g.revokedAt === null || typeof g.revokedAt === "number")) return null;
-  return { v: 1, delegateId: g.delegateId, revision: g.revision as number, issuedBy: g.issuedBy, issuedAt: g.issuedAt,
-    lineageId: g.lineageId as string | null, occupant, revokedAt: g.revokedAt as number | null, transferredFrom: from };
-}
 // THE OWNER'S HANDOVER SETTING on one occupant (Slot.handover; server.ts#patchHandover, the
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
 // HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
@@ -2221,10 +2161,6 @@ interface Slot {
   // granted one. Reset by openSlot and the teardown with the occupant; the generic succession rail
   // alone carries it to its successor (same or narrower scope), persisted in fleet.json.
   memoryGrant: MemoryGrant | null;
-  // THE REPORT DELEGATION on this occupant (ReportDelegate), null for every session the owner never
-  // named. Same lifetime as memoryGrant: reset with the occupant, carried by the generic succession
-  // rail alone, persisted in fleet.json.
-  reportDelegate: ReportDelegate | null;
   // THE ROLE LINE this session holds (LineageHandover): minted by the first generic
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
@@ -3613,7 +3549,7 @@ export type {
   HelperCmdCheck, HarnessBlockFleetEvent, AnsatzReview, LaneReviewFleetEvent, SuccessionDebtFleetEvent, MessageFleetEvent, SuccessionDebtEventPayload, SuccessionDebt, TaskReviewMode,
   FleetEvent, ClarificationStatus,
   ClarificationRequest, FleetReportDisposition, FleetReportFulfilled, FleetReportDecision, FleetReportBasis,
-  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportEscalation, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
+  FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
   LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, SlotCompaction, LaneStandNudged, SlotPlan, Slot,
@@ -3632,11 +3568,11 @@ export type {
   ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, CodexPermissions, SlotPermissions, SlotStreamOccupant,
   ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageAutoTarget, LineageObligationRef, LineageHandover,
-  LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, ReportDelegate, HandoverSetting,
+  LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, HandoverSetting,
 };
 export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
-  MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant, loadReportDelegate,
+  MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
   KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk,

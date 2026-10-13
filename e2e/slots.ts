@@ -11040,7 +11040,9 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
 // hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
 // The same rig then carries the session's queue (card "wartet in der Chat-Ansicht"): the live
 // route's `queued` (GET /api/slots/:id/live, Neuaufbau K10 S1) names a terminal-typed prompt, a
-// reload, a composer send the queue adopts, the dequeue, and an Esc marker arriving as meta.
+// reload, a composer send the queue adopts, the dequeue, and an Esc marker arriving as meta. Then Esc and ↑
+// from the chat (Neuaufbau K10 S3): the recall route answers what server/recall.ts would, the claims read
+// the composer and the bubbles.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runBundleChatDom(sourceRoot: string, artifacts?: string, widths?: readonly (1200 | 390)[]): Promise<BundleChatDomResult[]> {
@@ -11059,7 +11061,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
   const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
   const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
-  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[] };
+  const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[],
+    recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -11104,6 +11107,13 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
         // answered like a delivered prompt; the transcript does not have it until the probe says so
         if (p === "/send") { fx.sends.push(String(body?.text ?? "")); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        // what server/recall.ts answers; a recall that took the queue leaves it empty
+        if (p === "/api/slots/1/recall") {
+          const kind = String((body as { kind?: unknown } | null)?.kind ?? "");
+          fx.recalls.push(kind);
+          if (kind !== "send-now") fx.queued = [];
+          return void json(requestId, fx.recallReply ?? { result: "refused", why: "nothing waits in the queue" });
+        }
         return void json(requestId, { ok: true });
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
@@ -11116,6 +11126,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
           source: "/fixture/orch.jsonl", ttlSec: 300, queued: fx.queued });
       }
       // the chat view reads the session's queue here since K10 S1; a held prompt means a running turn
+      if (p === "/api/slots/1/history") return void json(requestId, { history: fx.history });
       if (p === "/api/slots/1/live")
         return void json(requestId, { turn: "working", detail: null, queued: fx.queued, composer: "", withdrawn: [], at: Date.now() });
       return void json(requestId, { error: "fixture: not served" }, 404);
@@ -11170,6 +11181,9 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
       fx.sends = [];
       fx.queued = [];
+      fx.recalls = [];
+      fx.recallReply = null;
+      fx.history = [];
       if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
       targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -11296,6 +11310,55 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         q4.sys.filter((x) => x.who === "esc").length === 1 && !q4.sys.find((x) => x.who === "esc")!.inBubble
         && /^interrupted/.test(q4.sys.find((x) => x.who === "esc")!.text) && !q4.own.some((m) => m.text.includes("Request interrupted"));
       await shot(`${width}-7-esc`);
+
+      // --- 10. Esc in the composer while the session works (owner 13.10.: „[Zitat entfernt]“
+      // ). Way B: the interrupted
+      // prompt first, the waiting one below, a blank line between
+      const key = (k: string) => evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus();
+        ta.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true })); })()`);
+      const composer = () => evaluate<string>(`document.querySelector('#input').value`);
+      const escA = "Schreib den Aufsatz über Igel.", escB = "Und danach die Liste.";
+      fx.recalls = [];
+      fx.recallReply = { result: "recalled", texts: [ownerHead + escA, ownerHead + escB], lines: [], interrupted: true };
+      await key("Escape");
+      const escBack = await wait(`document.querySelector('#input').value !== ''`);
+      facts.escComposer = await composer();
+      claims["esc: Esc in the composer while the session works sends ONE recall, and the prompt stands in the composer"] =
+        escBack && JSON.stringify(fx.recalls) === JSON.stringify(["esc"]) && (await composer()).startsWith(escA);
+      claims["esc: the interrupted prompt first, the waiting one below, a blank line between, no Fleet head"] =
+        (await composer()) === `${escA}\n\n${escB}`;
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      // --- 11. ↑ with a waiting message: it comes back into the composer, its bubble goes
+      const upQ = "im Terminal eingereiht, gleich zurückgeholt";
+      fx.queued = [{ text: upQ, at: at(59) }];
+      await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(upQ)})`);
+      fx.recalls = [];
+      fx.recallReply = { result: "recalled", texts: [upQ], lines: [], interrupted: false };
+      await key("ArrowUp");
+      const upBack = await wait(`document.querySelector('#input').value === ${JSON.stringify(upQ)}`);
+      await settle(300);
+      const q5 = await evaluate<Read>(READ);
+      claims["↑ with a waiting message: ONE recall, the text stands in the composer, and its \"wartet\" bubble is gone"] =
+        upBack && JSON.stringify(fx.recalls) === JSON.stringify(["queued"]) && !q5.own.some((m) => m.text === upQ && m.pending);
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      // --- 12. ↑ with nothing waiting: the previous input, as before — no recall
+      fx.recalls = [];
+      fx.history = [{ text: "die vorherige Eingabe", ts: Date.parse(at(58)), source: "owner" }];
+      await key("ArrowUp");
+      const prev = await wait(`document.querySelector('#input').value === 'die vorherige Eingabe'`);
+      claims["↑ with nothing waiting: the previous input comes into the composer, and no recall is sent"] = prev && fx.recalls.length === 0;
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      // --- 13. "jetzt senden" on a waiting bubble
+      const nowQ = "bitte sofort";
+      fx.queued = [{ text: nowQ, at: at(59) }];
+      const nowBtn = await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(nowQ)} && m.querySelector('.msendnow'))`);
+      fx.recalls = [];
+      fx.recallReply = { result: "sent-now" };
+      await shot(`${width}-8-jetzt-senden`);
+      await evaluate(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(nowQ)})?.querySelector('.msendnow')?.click()`);
+      for (let i = 0; i < 40 && !fx.recalls.length; i++) await Bun.sleep(25);
+      claims["jetzt senden: the waiting bubble carries it, and a click asks the session to send now"] =
+        nowBtn && JSON.stringify(fx.recalls) === JSON.stringify(["send-now"]);
       results.push({ width, height, claims, facts });
     }
     return results;

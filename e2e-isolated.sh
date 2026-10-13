@@ -325,9 +325,9 @@ static int has_arg(int argc, char **argv, const char *needle) {
 static void consume(void) {
   char *start, *end;
   buf[len] = '\0';
-  start = strstr(buf, "printf 'envprobe-");
+  start = strstr(buf, "printf '\\nenvprobe-");
   if (start) {
-    start += strlen("printf '");
+    start += strlen("printf '\\n");
     end = strstr(start, "=[%s]");
     if (end) {
       *end = '\0';

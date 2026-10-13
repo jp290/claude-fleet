@@ -653,7 +653,7 @@ while True:
           "null is no binding; object and string source bindings are both rejected");
         const routes = [
           ["/api/slots/1/merge", {}], ["/api/tasks/snapshot-task/land", {}],
-          ["/api/deploy", {}], ["/api/repos/undo-land", { repo: snapDir }],
+          ["/api/deploy", {}],
         ] as const;
         for (const [route, body] of routes) {
           let status = 0;

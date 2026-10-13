@@ -1735,12 +1735,12 @@ export async function run(h: {
   await hpost("/api/helper/result", { jobId: tJobId, exitCode: 0, tail: "PASS  the nightly\nALL PASS" });
   const tnRow = await tRowOn(tqDTip);
   // THE NIGHT EVENT (Charge 3 condition 3, server.ts#withNightlyFacts): the row names every land since
-  // the previous nightly and the undo stack as it stood. Both are recomputed here from the sources the
-  // server reads — the ledger before this row, and the undo stack fleet.json persists — so the check
-  // says WHICH lands, not how many. MUTATION: drop `undo` from withNightlyFacts ⇒ red.
+  // the previous nightly. They are recomputed here from the source the
+  // server reads — the ledger before this row — so the check
+  // says WHICH lands, not how many.
   interface NightLand { branch: string; mainAfter: string; at: number }
   interface NightRow { at: number; repo: string; trigger?: string; covers: NightLand[];
-    nightly?: { lands: NightLand[]; landsTotal: number; undo: { max: number; lands: NightLand[]; dropped: number } } }
+    nightly?: { lands: NightLand[]; landsTotal: number } }
   const tnLedger = readFileSync(`${ROOT}/post-land-audits.jsonl`, "utf8").split("\n").filter(Boolean)
     .flatMap((l) => { try { return [JSON.parse(l) as NightRow]; } catch { return []; } })
     .filter((r) => base(r.repo) === base(REPO));
@@ -1753,28 +1753,20 @@ export async function run(h: {
       && !!tnSeen.add(`${c.branch}\u0000${c.mainAfter}\u0000${c.at}`))
     .map((c) => `${c.branch}@${c.mainAfter}`);
   const tnNight = tnLedger[tnIdx]?.nightly;
-  const tnState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-    { undoLands?: Record<string, NightLand[]>; undoDrops?: Record<string, { n?: number }> };
-  const tnUndoWant = (tnState.undoLands?.[tnRow?.repo ?? ""] ?? []).map((l) => `${l.branch}@${l.mainAfter}@${l.at}`);
   check("(T.night) THE NIGHTLY ROW: trigger nightly, and `nightly.lands` names exactly the lands since the previous nightly, by branch — this section's among them",
     tnRow?.result === "green" && tnRow.trigger === "nightly" && tnIdx >= 0 && tnPrevAt > 0 && !!tnNight
       && JSON.stringify(tnNight.lands.map((l) => `${l.branch}@${l.mainAfter}`)) === JSON.stringify(tnWant.slice(-200))
       && tnNight.landsTotal === tnWant.length
       && [tqA, tqB, tqC1, tqC2, tqH.ln].every((ln) => tnNight.lands.some((l) => l.branch === ln.branch)),
     `row=${tnRow?.result}/${tnRow?.trigger} prev=${tnPrevAt} want=${tnWant.length} got=${String(JSON.stringify(tnNight?.lands.map((l) => l.branch))).slice(0, 300)} total=${tnNight?.landsTotal}`);
-  check("(T.night) …and `nightly.undo` is the undo stack as it stood: max 3, the lands fleet.json holds for the repo, the number aged out",
-    !!tnNight?.undo && tnNight.undo.max === 3 && tnNight.undo.lands.length >= 1 && tnNight.undo.lands.length <= 3
-      && JSON.stringify(tnNight.undo.lands.map((l) => `${l.branch}@${l.mainAfter}@${l.at}`)) === JSON.stringify(tnUndoWant)
-      && tnNight.undo.dropped === (tnState.undoDrops?.[tnRow?.repo ?? ""]?.n ?? 0),
-    `undo=${String(JSON.stringify(tnNight?.undo)).slice(0, 300)} want=${String(JSON.stringify(tnUndoWant)).slice(0, 200)}`);
   // …and once in the event trail, as the `postland_audit` line that opens with `nightly`
   const tnLine = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
     .flatMap((l) => { try { return [JSON.parse(l) as { ts?: number; event?: string; detail?: string }]; } catch { return []; } })
     .filter((e) => e.event === "postland_audit" && (e.ts ?? 0) >= tnFrom && (e.detail ?? "").startsWith(`nightly ${base(REPO)} `))
     .at(-1)?.detail ?? "";
-  check("(T.night) …and audit.jsonl gets ONE `postland_audit` line opening `nightly`, naming the tip, the verdict, the lands and the undo stack",
+  check("(T.night) …and audit.jsonl gets ONE `postland_audit` line opening `nightly`, naming the tip, the verdict and the lands",
     tnLine.includes(`@${tqDTip.slice(0, 8)} green: ${tnWant.length} land(s) since the last nightly (`)
-      && tnLine.includes(tqH.ln.branch) && tnLine.includes(`undo stack ${tnNight?.undo?.lands.length ?? -1}/3`),
+      && tnLine.includes(tqH.ln.branch),
     tnLine.slice(0, 400));
   // every OTHER repo the ledger knows was asked by the same boot: the short-chain repo, whose tip the
   // docs-only land of (T.q4) moved, got its nightly — taken here; the decoy, untouched since its (K7)

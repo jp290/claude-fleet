@@ -1,4 +1,4 @@
-// One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
+// One-gesture land, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -22,8 +22,8 @@ async function selfTokenOf(slot: number): Promise<string> {
 }
 
 export async function run(): Promise<void> {
-  // === Lane A: one-gesture land (commit-if-dirty → land) + ↩ undo-last-land ===
-  // Isolated fresh repos so main-mutation + undo never touch the shared REPO later tests use.
+  // === Lane A: one-gesture land (commit-if-dirty → land) ===
+  // Isolated fresh repos so main-mutation never touches the shared REPO later tests use.
   {
     const madeRepos: string[] = [];
     const freshRepo = async (suffix: string): Promise<{ repo: string; main: string; sha: string }> => {
@@ -57,8 +57,6 @@ export async function run(): Promise<void> {
       ogCommit.committed === true && ogCommit.subject === "feat: stand-in commit message", JSON.stringify(ogCommit));
     check("one-gesture land: direct /land refuses the committed-but-unmerged lane (→ /merge fallback)",
       (await post(`/api/slots/${lane.slot}/land`, {})).status === 409);
-    // a second lane on the SAME repo, kept open, so the undoable land is observable on the board
-    const probe = (await (await post("/api/lanes", { repo: og.repo })).json()) as { slot: number; branch: string };
     const ogBefore = headOf(og.repo, og.main);
     await landClean(lane.slot);
     check("one-gesture land: committed work then landed (landed slot torn down)",
@@ -69,208 +67,6 @@ export async function run(): Promise<void> {
     const ogOne = landedAsOne(og.repo, og.main);
     check("one-gesture land: the committed work reached main with the expected message",
       ogOne.ok && ogOne.subjects.includes("feat: stand-in commit message"), JSON.stringify(ogOne));
-    // the undoable land surfaces to the board via GET /merge on any live lane of the same repo
-    const probeMg = (await (await get(`/api/slots/${probe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
-    check("undo: the landed lane is exposed as undoable on the repo's board",
-      probeMg.undoable?.branch === lane.branch, JSON.stringify(probeMg.undoable));
-
-    // --- undo resets main to the EXACT pre-land SHA; keeps the branch; is one-shot ---
-    const undo = await post("/api/repos/undo-land", { repo: og.repo });
-    const undoJ = (await undo.json()) as { ok?: boolean; to?: string };
-    check("undo-land resets main to the exact pre-land SHA",
-      undo.ok === true && headOf(og.repo, og.main) === ogBefore, `${JSON.stringify(undoJ)} now=${headOf(og.repo, og.main)} want=${ogBefore}`);
-    check("undo-land keeps the landed branch (work recoverable by reopening the lane)",
-      spawnSync("git", ["-C", og.repo, "rev-parse", "--verify", "-q", `refs/heads/${lane.branch}`]).status === 0);
-    check("undo-land clears the undoable record from the board",
-      (((await (await get(`/api/slots/${probe.slot}/merge`)).json()) as { undoable?: unknown }).undoable ?? null) === null);
-    check("undo-land is one-shot — a second undo has nothing left to undo",
-      (await post("/api/repos/undo-land", { repo: og.repo })).status === 404);
-    await post(`/api/slots/${probe.slot}/kill`, {});
-
-    // --- undo REFUSES when main moved since the land (a new commit landed on top) ---
-    const mv = await freshRepo("undomoved");
-    const mvLane = (await (await post("/api/lanes", { repo: mv.repo })).json()) as { slot: number; cwd: string };
-    await Bun.write(`${mvLane.cwd}/f.txt`, "work\n");
-    spawnSync("git", ["-C", mvLane.cwd, "add", "f.txt"]);
-    spawnSync("git", ["-C", mvLane.cwd, "commit", "-qm", "lane work"]);
-    await landClean(mvLane.slot);
-    const mvAfterLand = headOf(mv.repo, mv.main);
-    await Bun.write(`${mv.repo}/onmain.txt`, "later\n"); // main moves on top of the land
-    spawnSync("git", ["-C", mv.repo, "add", "onmain.txt"]);
-    spawnSync("git", ["-C", mv.repo, "commit", "-qm", "later main work"]);
-    const mvMoved = headOf(mv.repo, mv.main);
-    const mvUndo = await post("/api/repos/undo-land", { repo: mv.repo });
-    const mvUndoJ = (await mvUndo.json()) as { error?: string };
-    check("undo REFUSES when main moved since the land",
-      mvUndo.status === 409 && (mvUndoJ.error ?? "").includes("moved"), `${mvUndo.status} ${JSON.stringify(mvUndoJ)}`);
-    check("refused undo (moved) leaves main exactly where it was",
-      headOf(mv.repo, mv.main) === mvMoved && mvMoved !== mvAfterLand, `now=${headOf(mv.repo, mv.main)}`);
-
-    // --- undo REFUSES when the landed commit is already on a remote (would rewrite shared history) ---
-    const rm = await freshRepo("undoremote");
-    spawnSync("git", ["init", "--bare", "-q", `${rm.repo}.remote.git`]);
-    spawnSync("git", ["-C", rm.repo, "remote", "add", "origin", `${rm.repo}.remote.git`]);
-    const rmLane = (await (await post("/api/lanes", { repo: rm.repo })).json()) as { slot: number; cwd: string };
-    await Bun.write(`${rmLane.cwd}/f.txt`, "work\n");
-    spawnSync("git", ["-C", rmLane.cwd, "add", "f.txt"]);
-    spawnSync("git", ["-C", rmLane.cwd, "commit", "-qm", "lane work"]);
-    await landClean(rmLane.slot);
-    const rmAfterLand = headOf(rm.repo, rm.main);
-    spawnSync("git", ["-C", rm.repo, "push", "-q", "origin", rm.main]); // land now on a remote
-    spawnSync("git", ["-C", rm.repo, "fetch", "-q", "origin"]);
-    const rmUndo = await post("/api/repos/undo-land", { repo: rm.repo });
-    const rmUndoJ = (await rmUndo.json()) as { error?: string };
-    check("undo REFUSES when the landed commit is already on a remote",
-      rmUndo.status === 409 && (rmUndoJ.error ?? "").includes("remote"), `${rmUndo.status} ${JSON.stringify(rmUndoJ)}`);
-    check("refused undo (remote) leaves main exactly where it was", headOf(rm.repo, rm.main) === rmAfterLand);
-
-    // --- THE UNDO STACK: a pointer with a SHORT MEMORY (UNDO_STACK_MAX = 3) ------------------
-    // One record per repo was only sufficient while the doctrine forbade a second land before the
-    // post-land audit reported. That doctrine was retired on 2026-08-08 and `drainPostLandAudits`
-    // states in its own contract that ONE audit may cover N lands — so a collective red could name
-    // lands the single record had already forgotten. What follows pins the whole of the widened
-    // shape: it stacks, it is capped, it breaks at a gap, it writes one ledger row per record, and
-    // its remote gate covers every commit it would discard rather than only the tip.
-    //
-    // land a fresh lane carrying one commit per given file, and report the SHAs it moved main over
-    const landWork = async (repo: string, files: string[], body: Record<string, unknown> = {}): Promise<{ branch: string; before: string; after: string }> => {
-      const l = (await (await post("/api/lanes", { repo })).json()) as { slot: number; cwd: string; branch: string };
-      for (const f of files) {
-        await Bun.write(`${l.cwd}/${f}`, `${f} work\n`);
-        spawnSync("git", ["-C", l.cwd, "add", f]);
-        spawnSync("git", ["-C", l.cwd, "commit", "-qm", `work ${f}`]);
-      }
-      const before = headOf(repo, "main");
-      await landClean(l.slot, body);
-      return { branch: l.branch, before, after: headOf(repo, "main") };
-    };
-    const undoOnce = async (repo: string): Promise<{ status: number; error?: string; ok?: boolean }> => {
-      const r = await post("/api/repos/undo-land", { repo });
-      const j = (await r.json().catch(() => ({}))) as { error?: string; ok?: boolean };
-      return { status: r.status, ...j };
-    };
-    // the ledger is appended through a promise chain — poll for the rows rather than race the write
-    const revertedRows = async (branches: string[]): Promise<{ branch?: string; disposition?: string }[]> => {
-      for (let i = 0; i < 40; i++) {
-        const all = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
-          { outcomes: { branch?: string; disposition?: string }[] }).outcomes
-          .filter((o) => o.disposition === "reverted" && branches.includes(o.branch ?? ""));
-        if (all.length >= branches.length) return all;
-        await Bun.sleep(100);
-      }
-      return ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
-        { outcomes: { branch?: string; disposition?: string }[] }).outcomes
-        .filter((o) => o.disposition === "reverted" && branches.includes(o.branch ?? ""));
-    };
-
-    // (S1) POSITIVE CONTROL: two lands, two undos, main back at the FIRST land's mainBefore —
-    // and the board offers the older land the moment the newer one is undone (a stack, not a
-    // record that merely survived).
-    const st = await freshRepo("undostack");
-    const st1 = await landWork(st.repo, ["s1.txt"]);
-    const st2 = await landWork(st.repo, ["s2.txt"]);
-    const stProbe = (await (await post("/api/lanes", { repo: st.repo })).json()) as { slot: number };
-    const undoableOf = async (slot: number): Promise<string | null> =>
-      ((await (await get(`/api/slots/${slot}/merge`)).json()) as { undoable?: { branch: string } | null }).undoable?.branch ?? null;
-    check("undo stack: setup — two lands in a row, each advancing main",
-      st1.after === st2.before && st1.before !== st1.after && st2.before !== st2.after,
-      `${st1.before.slice(0, 8)} -> ${st1.after.slice(0, 8)} -> ${st2.after.slice(0, 8)}`);
-    check("undo stack: the board offers the NEWEST land first", await undoableOf(stProbe.slot) === st2.branch);
-    const stU1 = await undoOnce(st.repo);
-    check("undo stack: the first undo reverses the newest land only (main back at its mainBefore)",
-      stU1.ok === true && headOf(st.repo, st.main) === st2.before,
-      `${JSON.stringify(stU1)} now=${headOf(st.repo, st.main)} want=${st2.before}`);
-    check("undo stack: …and the land UNDER it becomes the next ↩ (the memory is a stack, not one record)",
-      await undoableOf(stProbe.slot) === st1.branch);
-    const stU2 = await undoOnce(st.repo);
-    check("undo stack: the second undo reaches the FIRST land's mainBefore",
-      stU2.ok === true && headOf(st.repo, st.main) === st1.before,
-      `${JSON.stringify(stU2)} now=${headOf(st.repo, st.main)} want=${st1.before}`);
-    check("undo stack: both landed branches still exist (two rewinds, nothing destroyed)",
-      spawnSync("git", ["-C", st.repo, "rev-parse", "--verify", "-q", `refs/heads/${st1.branch}`]).status === 0
-      && spawnSync("git", ["-C", st.repo, "rev-parse", "--verify", "-q", `refs/heads/${st2.branch}`]).status === 0);
-    check("undo stack: an emptied stack has nothing left to undo", (await undoOnce(st.repo)).status === 404);
-    // …and the LEDGER counted both. One `reverted` row per record undone — two lands back must
-    // read as two reverts, or the trail understates what was taken off main.
-    const stRows = await revertedRows([st1.branch, st2.branch]);
-    check("undo stack: EXACTLY ONE reverted ledger row per record undone (two lands back = two rows)",
-      stRows.length === 2 && stRows.filter((r) => r.branch === st1.branch).length === 1
-      && stRows.filter((r) => r.branch === st2.branch).length === 1,
-      JSON.stringify(stRows));
-    await post(`/api/slots/${stProbe.slot}/kill`, {});
-
-    // (S2) THE CAP HOLDS, and the refusal says why. Four lands on a 3-deep stack: the oldest is
-    // gone, and the refusal must name the cap rather than read like "this repo never landed".
-    const cp = await freshRepo("undocap");
-    const cp1 = await landWork(cp.repo, ["c1.txt"]);
-    await landWork(cp.repo, ["c2.txt"]);
-    await landWork(cp.repo, ["c3.txt"]);
-    await landWork(cp.repo, ["c4.txt"]);
-    const cpU = [await undoOnce(cp.repo), await undoOnce(cp.repo), await undoOnce(cp.repo)];
-    check("undo cap: the three newest lands are all reversible",
-      cpU.every((r) => r.ok === true), JSON.stringify(cpU));
-    check("undo cap: three undos rewind exactly to the OLDEST KEPT land's mainBefore, not further",
-      headOf(cp.repo, cp.main) === cp1.after && cp1.after !== cp1.before,
-      `now=${headOf(cp.repo, cp.main)} want=${cp1.after} (first land's mainBefore=${cp1.before})`);
-    const cpU4 = await undoOnce(cp.repo);
-    check("undo cap: the 4th land back is NOT reversible — it aged out of the stack",
-      cpU4.status === 404 && headOf(cp.repo, cp.main) !== cp1.before, `${JSON.stringify(cpU4)} main=${headOf(cp.repo, cp.main)}`);
-    check("undo cap: …and the refusal SAYS SO (names the cap, never a bare 'nothing recorded')",
-      /at most 3 lands/.test(cpU4.error ?? "") && /left this repo's undo stack/.test(cpU4.error ?? ""), cpU4.error);
-
-    // (S3) A GAP BREAKS THE CHAIN. The stack is a rewind path only while each record starts
-    // exactly where the one below it ended — CHECKED (`stack[n].mainBefore === stack[n-1].mainAfter`
-    // in pushUndo), never assumed. A commit fleet did not land sits between these two, so the older
-    // record is unreachable and must be dropped WITH ITS REASON, not discovered as a confusing
-    // "main moved" one refusal later.
-    const gp = await freshRepo("undogap");
-    const gp1 = await landWork(gp.repo, ["g1.txt"]);
-    await Bun.write(`${gp.repo}/byhand.txt`, "not landed by fleet\n"); // the gap
-    spawnSync("git", ["-C", gp.repo, "add", "byhand.txt"]);
-    spawnSync("git", ["-C", gp.repo, "commit", "-qm", "hand commit on main"]);
-    const gpHand = headOf(gp.repo, gp.main);
-    const gp2 = await landWork(gp.repo, ["g2.txt"]);
-    check("undo gap: setup — the hand commit really sits between the two lands",
-      gp1.after !== gpHand && gp2.before === gpHand, `${gp1.after.slice(0, 8)} | ${gpHand.slice(0, 8)} | ${gp2.before.slice(0, 8)}`);
-    const gpU1 = await undoOnce(gp.repo);
-    check("undo gap: the land above the gap is still reversible (down to the hand commit, not past it)",
-      gpU1.ok === true && headOf(gp.repo, gp.main) === gpHand,
-      `${JSON.stringify(gpU1)} now=${headOf(gp.repo, gp.main)} want=${gpHand}`);
-    const gpU2 = await undoOnce(gp.repo);
-    check("undo gap: the land BELOW the gap was dropped at land time — refused as a gap, not as 'main moved'",
-      gpU2.status === 404 && /did not start where the previous land ended/.test(gpU2.error ?? ""), `${gpU2.status} ${gpU2.error}`);
-    check("undo gap: …and the hand commit is untouched by the refusal",
-      headOf(gp.repo, gp.main) === gpHand && spawnSync("git", ["-C", gp.repo, "cat-file", "-e", gpHand]).status === 0);
-
-    // (S4) THE SAFETY GATE COVERS EVERY RECORD, AND EVERY COMMIT OF IT. The remote probe asks
-    // about the whole range an undo would discard, not just its tip: a remote branch parked on an
-    // INTERMEDIATE commit of an older land leaves that land's tip contained by nothing, so a
-    // tip-only probe would rewind past shared history. The newer land here is on NO remote and
-    // undoes fine — the refusal comes from the older record's own commits, when its turn arrives.
-    const rr = await freshRepo("undorange");
-    spawnSync("git", ["init", "--bare", "-q", `${rr.repo}.remote.git`]);
-    spawnSync("git", ["-C", rr.repo, "remote", "add", "origin", `${rr.repo}.remote.git`]);
-    // {"squash":false}: the premise is a land of TWO commits on main, which a default land squashes into one
-    const rr1 = await landWork(rr.repo, ["r1a.txt", "r1b.txt"], { squash: false }); // TWO commits — the tip is not the whole land
-    const rr2 = await landWork(rr.repo, ["r2.txt"], { squash: false });
-    const rrMid = spawnSync("git", ["-C", rr.repo, "rev-parse", `${rr1.after}^`]).stdout.toString().trim(); // r1a: inside rr1's range, not its tip
-    spawnSync("git", ["-C", rr.repo, "push", "-q", "origin", `${rrMid}:refs/heads/keep`]);
-    spawnSync("git", ["-C", rr.repo, "fetch", "-q", "origin"]);
-    // the CONTROL that makes this a test of the range and not of the tip: the record's own
-    // mainAfter is on no remote at all, so the tip-only probe this replaces would have allowed it
-    check("undo remote-range: control — the older land's TIP is on no remote (a tip-only probe would pass it)",
-      spawnSync("git", ["-C", rr.repo, "branch", "-r", "--contains", rr1.after]).stdout.toString().trim() === ""
-      && spawnSync("git", ["-C", rr.repo, "branch", "-r", "--contains", rrMid]).stdout.toString().includes("origin/keep"),
-      `tip=${rr1.after.slice(0, 8)} mid=${rrMid.slice(0, 8)}`);
-    const rrU1 = await undoOnce(rr.repo);
-    check("undo remote-range: the newer land, on no remote, still undoes",
-      rrU1.ok === true && headOf(rr.repo, rr.main) === rr2.before, `${JSON.stringify(rrU1)} now=${headOf(rr.repo, rr.main)}`);
-    const rrU2 = await undoOnce(rr.repo);
-    check("undo remote-range: the older land is REFUSED — one of ITS commits is on a remote, tip or not",
-      rrU2.status === 409 && (rrU2.error ?? "").includes(rrMid.slice(0, 8)) && /remote/.test(rrU2.error ?? ""),
-      `${rrU2.status} ${rrU2.error}`);
-    check("undo remote-range: the refusal moved nothing — main still sits on the older land's tip",
-      headOf(rr.repo, rr.main) === rr1.after, `now=${headOf(rr.repo, rr.main)} want=${rr1.after}`);
 
     // --- REGRESSION GUARD: a CONFLICTING one-gesture land still PAUSES for review (human gate) ---
     const cf = await freshRepo("conflict");
@@ -287,16 +83,15 @@ export async function run(): Promise<void> {
     const cfV = await waitMerge(cfLane.slot);
     check("regression guard: a conflicting land PAUSES (resolved, NOT landed, lane kept)",
       !cfV.gone && cfV.last?.status === "resolved" && cfV.last.landed === false && exists(cfLane.cwd), JSON.stringify(cfV.last));
-    check("regression guard: the human gate held — nothing reached main, no undoable land recorded",
-      headOf(cf.repo, cf.main) === cfMainBefore
-      && (((await (await get(`/api/slots/${cfLane.slot}/merge`)).json()) as { undoable?: unknown }).undoable ?? null) === null,
+    check("regression guard: the human gate held — nothing reached main",
+      headOf(cf.repo, cf.main) === cfMainBefore,
       `main=${headOf(cf.repo, cf.main)} before=${cfMainBefore}`);
     await post(`/api/slots/${cfLane.slot}/kill`, {});
 
     // --- V2: server-written git-note provenance at land ("own your work", design note §4).
     // On every land that MOVES main, the SERVER attaches the review story to the landed tip
     // as a note under refs/notes/fleet/land — server-authored (never the agent), best-effort
-    // (a note-write failure never fails the land), never deleted (survives undo-land). ---
+    // (a note-write failure never fails the land), never deleted. ---
     const readNote = (repo: string, sha: string): { ok: boolean; json: Record<string, unknown> | null } => {
       const r = spawnSync("git", ["-C", repo, "notes", "--ref=fleet/land", "show", sha]);
       if (r.status !== 0) return { ok: false, json: null };
@@ -696,7 +491,7 @@ export async function run(): Promise<void> {
 
     // --- W3 · A WAVE LANDS ONCE ----------------------------------------------------------------
     // The hard half of the ▸ start wave done-sentence (docs/queue-wellen-2026-09-06.md §5 S3): n
-    // queue rows founded into ONE lane must leave exactly ONE fleet/land note, ONE undo record and
+    // queue rows founded into ONE lane must leave exactly ONE fleet/land note and
     // ONE audit cover behind, and all n rows must go to `done` together. Every one of those is a
     // property of the LAND, so this is where it is measured — the door's own refusals, the N:1
     // binding and the self-split are checked in e2e/tasks.ts, where the queue lives.
@@ -718,7 +513,7 @@ export async function run(): Promise<void> {
       const wvProposed = (await (await post("/api/programs", {
         title: "Wave land provenance program",
         intent: "Two rows of one program that land together in one lane.",
-        successCriterion: "One land leaves one note, one undo record and both rows done.",
+        successCriterion: "One land leaves one note and both rows done.",
         nonGoals: [], decisions: [], evidence: [], openQuestions: [],
       })).json()) as { program?: { id?: string } };
       const wvProg = wvProposed.program?.id ?? "";
@@ -742,31 +537,8 @@ export async function run(): Promise<void> {
         (await (await get("/api/sessions")).json()) as {
           slots: { id: number; cwd: string | null }[];
           tasks: { id: string; status: string; note?: string | null }[] };
-      // THE UNDO STACK IS PERSISTED STATE, not poll payload: `/api/sessions` carries no `undoLands`
-      // key at all, so reading it there returned 0 before AND 0 after and reported "no undo record
-      // was written" for a land that had written one.
-      //
-      // AND A DELTA OVER THE STACK IS THE WRONG MEASUREMENT ANYWAY — the second thing this probe
-      // got wrong. The stack is CAPPED at UNDO_STACK_MAX (3) per repo, so a land into a full stack
-      // pushes one record and drops one, and the count does not move. The claim being tested is
-      // "ONE record for the whole wave", so count the records that NAME this land: a `mainAfter`
-      // is unique per land, and the count of records carrying it is exactly the claim, cap or no
-      // cap. `null` stays the unreadable answer and keeps its own check below.
-      const wvUndoRecords = async (): Promise<{ mainAfter?: string }[] | null> => {
-        for (let i = 0; i < 40; i++) {
-          try {
-            const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-              { undoLands?: Record<string, { mainAfter?: string }[]> };
-            // the key is absent while nothing is undoable — an empty list, not an unreadable one
-            return Object.values(st.undoLands ?? {}).flat();
-          } catch { /* saveState writes tmp+rename; a read landing mid-write throws */ }
-          await Bun.sleep(100);
-        }
-        return null;
-      };
       const wvNotes = (): number => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "list"])
         .stdout.toString().split("\n").filter(Boolean).length;
-      const wvUndoBefore = await wvUndoRecords();
       const wvNotesBefore = wvNotes();
 
       const wvSince1 = Date.now();
@@ -817,16 +589,6 @@ export async function run(): Promise<void> {
         check("(w3) ONE fleet/land note for the whole wave — not one per row",
           wvNotes() === wvNotesBefore + 1 && wvNote.ok,
           `${wvNotesBefore} → ${wvNotes()} note(s), note readable=${wvNote.ok}`);
-        const wvUndoAfter = await wvUndoRecords();
-        check("(w3) probe: the undo stack was readable on BOTH sides of the land (a count over an absence is not a measurement)",
-          wvUndoBefore !== null && wvUndoAfter !== null,
-          `${wvUndoBefore?.length ?? "unreadable"} → ${wvUndoAfter?.length ?? "unreadable"}`);
-        const wvForThisLand = (wvUndoAfter ?? []).filter((r) => r.mainAfter === wvMainAfter);
-        check("(w3) ONE undo-land record for the whole wave — the wave costs the undo stack what one land costs it",
-          wvUndoBefore !== null && wvUndoAfter !== null
-          && wvForThisLand.length === 1
-          && !(wvUndoBefore).some((r) => r.mainAfter === wvMainAfter),
-          `${wvForThisLand.length} record(s) naming ${wvMainAfter.slice(0, 8)}; stack ${wvUndoBefore?.length ?? "?"} → ${wvUndoAfter?.length ?? "?"} (capped at UNDO_STACK_MAX)`);
         // …and the field the audit cover is built from. `proportional` is true because the ACTUAL
         // diff is docs-only, which is also true of every row in this wave — the two coincide here,
         // and the mixed/code cases above are what prove the gate reads the diff and not the class.
@@ -1011,14 +773,6 @@ export async function run(): Promise<void> {
       && typeof (pnNote.json?.verify as { mainSha?: string } | undefined)?.mainSha === "string",
       JSON.stringify(pnNote.json?.verify));
 
-    // (2) the note SURVIVES undo-land — it is the record THAT the land happened, never deleted.
-    const pnUndo = await post("/api/repos/undo-land", { repo: pn.repo });
-    check("V2 setup: undo-land succeeds on the clean-path land", pnUndo.ok === true,
-      `${pnUndo.status} main=${headOf(pn.repo, pn.main)} before=${pnBefore}`);
-    const pnNoteAfterUndo = readNote(pn.repo, pnAfter);
-    check("V2: the provenance note survives undo-land (the record of THAT it happened is never deleted)",
-      pnNoteAfterUndo.ok && pnNoteAfterUndo.json?.mainAfter === pnAfter, JSON.stringify(pnNoteAfterUndo));
-
     // (3) confirm-land → confirmedByHuman:true, carrying the reviewed conflicted files + resolver detail.
     const pc = await freshRepo("provconfirm");
     const pcLane = (await (await post("/api/lanes", { repo: pc.repo })).json()) as { slot: number; cwd: string; branch: string };
@@ -1067,20 +821,19 @@ export async function run(): Promise<void> {
 
     // --- G1: land provenance survives teardown failure. recordLand must couple to the
     // MAIN-MOVE (advanceIntegration), not the teardown: a landLane failure after a
-    // successful advance previously left main ff'd with NO note and NO undo record while
+    // successful advance previously left main ff'd with NO note while
     // the owner read „[Zitat entfernt]“ — a silent provenance hole on the human-gated action.
     // Lever: chmod the lane worktree dir read-only — every pre-land step is a read
     // (status/rebase-up-to-date/verify/advance-in-repo) and passes, but `git worktree
     // remove` cannot unlink the entries and fails deterministically.
 
     // (a1) CLEAN path (mergeJob): advance ok, landLane fails → verdict carries a distinct
-    // landError, and note + undo record exist anyway.
+    // landError, and the note exists anyway.
     const tf = await freshRepo("teardownfail");
     const tfLane = (await (await post("/api/lanes", { repo: tf.repo })).json()) as { slot: number; cwd: string; branch: string };
     await Bun.write(`${tfLane.cwd}/tf.txt`, "teardown-fail lane work\n");
     spawnSync("git", ["-C", tfLane.cwd, "add", "tf.txt"]);
     spawnSync("git", ["-C", tfLane.cwd, "commit", "-qm", "teardown-fail lane work"]);
-    const tfProbe = (await (await post("/api/lanes", { repo: tf.repo })).json()) as { slot: number }; // board observer for undoable
     const tfBefore = headOf(tf.repo, tf.main);
     spawnSync("chmod", ["555", tfLane.cwd]); // the teardown obstacle
     await setMergeMode("blocked"); // clean rebase — agent must not be consulted
@@ -1100,11 +853,7 @@ export async function run(): Promise<void> {
       tfNote.ok && tfNote.json?.mainBefore === tfBefore && tfNote.json?.mainAfter === tfAfter
       && tfNote.json?.branch === tfLane.branch && tfNote.json?.confirmedByHuman === false,
       JSON.stringify(tfNote.json));
-    const tfUndoable = (await (await get(`/api/slots/${tfProbe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
-    check("G1a: the undo record exists despite the failed teardown (the land stays undoable)",
-      tfUndoable.undoable?.branch === tfLane.branch, JSON.stringify(tfUndoable.undoable));
     await post(`/api/slots/${tfLane.slot}/kill`, {});
-    await post(`/api/slots/${tfProbe.slot}/kill`, {});
 
     // (a2) CONFIRM-land path: same invariant on the human-gated route — the response
     // reports the teardown failure distinctly instead of a bare "not landed" error.
@@ -1114,7 +863,6 @@ export async function run(): Promise<void> {
     spawnSync("git", ["-C", tcLane.cwd, "commit", "-aqm", "tc lane work"]);
     await Bun.write(`${tc.repo}/base.txt`, "base\ntc-main\n");
     spawnSync("git", ["-C", tc.repo, "commit", "-aqm", "tc main work"]);
-    const tcProbe = (await (await post("/api/lanes", { repo: tc.repo })).json()) as { slot: number };
     await setMergeMode("do");
     await settleForMerge(tcLane.slot);
     await post(`/api/slots/${tcLane.slot}/merge`, {});
@@ -1136,11 +884,7 @@ export async function run(): Promise<void> {
     check("G1b: the confirm-land note exists despite the failed teardown, owned by the human",
       tcNote.ok && tcNote.json?.mainBefore === tcBefore && tcNote.json?.mainAfter === tcAfter
       && tcNote.json?.confirmedByHuman === true, JSON.stringify(tcNote.json));
-    const tcUndoable = (await (await get(`/api/slots/${tcProbe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
-    check("G1b: the undo record exists despite the failed teardown",
-      tcUndoable.undoable?.branch === tcLane.branch, JSON.stringify(tcUndoable.undoable));
     await post(`/api/slots/${tcLane.slot}/kill`, {});
-    await post(`/api/slots/${tcProbe.slot}/kill`, {});
 
     // (b) STALE-VERIFY guard: main moves between the verify (at resolve time) and the
     // owner's confirm; the replay lands cleanly — but the recorded verify never saw the

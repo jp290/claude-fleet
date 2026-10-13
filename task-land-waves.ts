@@ -77,9 +77,7 @@ export interface LandWaveProjection {
 // a seventh brief section and a seventh row to hand back on a split do not get cheaper because
 // each row is small. It also caps what FLEET_LAND_WAVE_BUDGET can widen.
 //
-// IT IS NOT COUPLED TO UNDO_STACK_MAX. The undo stack counts LANDS, and a wave of n rows is ONE
-// land with ONE undo record — so a wave of five costs the undo stack exactly what a wave of one
-// costs it, and raising either bound says nothing about the other. The default is pinned in
+// The default is pinned in
 // e2e/pins.ts so a change to it is deliberate rather than a silent widening.
 export const LAND_WAVE_BUDGET_DEFAULT = 5;
 export const LAND_WAVE_ROWS_MAX = 6;

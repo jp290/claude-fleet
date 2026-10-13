@@ -263,9 +263,7 @@ export interface MergeState { running: boolean;
   lastIs?: "verdict" | "intent" | "interrupted" | null;
   // …and WHO the answer is about. A slot is a reusable seat, so the lane that was asked about and
   // the lane the answer describes are not the same question. Optional for the same reason.
-  lane?: { repo: string; branch: string };
-  // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
-  undoable?: { branch: string; at: number } | null }
+  lane?: { repo: string; branch: string } }
 export function failedLandVerdict(last: MergeState["last"]): boolean {
   return !!last && !last.landed && ["blocked", "error", "interrupted"].includes(last.status);
 }
@@ -450,20 +448,6 @@ export async function doShelve(slot: number, review = false) {
     return;
   }
   for (const p of panes) if (p.slot === slot) p.assign(0);
-  await refresh();
-}
-
-// ↩ undo the last land on a repo — reset main back to where THAT land found it. One press
-// reverses one land off the top of the server's capped undo stack; press again for the one
-// below it. The server decides with git (only if main hasn't moved since and no commit of the
-// land is on a remote) and refuses safely otherwise. The landed branch survives, so the work is
-// recoverable either way.
-export async function doUndoLand(repo: string, branch: string): Promise<void> {
-  if (!confirm(`Undo the last land (${branch}) — reset main back to before it? The '${branch}' branch is kept, so the work stays recoverable.`)) return;
-  const r = await post("/api/repos/undo-land", { repo });
-  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; note?: string; error?: string };
-  if (!r.ok) { alert(j.error ?? "undo failed"); await refresh(); return; }
-  alert(j.note ?? "main reset to before the last land");
   await refresh();
 }
 
@@ -1974,7 +1958,7 @@ function belongsLinks(c: BoardCtx): HTMLElement[] {
 }
 
 // --- 3 CHANGES: the uncommitted tree, Commit, Land lane as THE action, Rebase only when behind, and
-// Shelve · Park for review · Undo last land behind the ⋯ beside it (G4.2, danger last)
+// Shelve · Park for review behind the ⋯ beside it (G4.2)
 function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   const { s, slot, mg, ahead, behind } = c;
   const work = el("div", "bsec bchanges");
@@ -2113,11 +2097,11 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     lb.onclick = () => void doLand(slot);
     crow.appendChild(lb);
   }
-  // ⋯ — the rarer exits of a lane: set aside with a note, park for a later review, and undo the
-  // repo's last land (danger, last). Shelve stays reachable on a follower fleet too.
+  // ⋯ — the rarer exits of a lane: set aside with a note, park for a later review. Shelve stays
+  // reachable on a follower fleet too.
   const more = el("button", "bib bland") as HTMLButtonElement;
   more.appendChild(icon("dots"));
-  more.title = "Weitere Lane-Aktionen — zurückstellen, zur Prüfung parken, letztes Land zurücknehmen";
+  more.title = "Weitere Lane-Aktionen — zurückstellen, zur Prüfung parken";
   more.setAttribute("aria-label", "Weitere Lane-Aktionen");
   more.disabled = running;
   crow.appendChild(popTrigger("land", slot, more));
@@ -2131,15 +2115,6 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
       popItem("Park for review", "park this finished lane for a later review — frees the slot, keeps worktree, task ids, head, base and the accepted report; the tasks do not start again, reopening binds them back (verify then counts as stale)",
         () => { boardPop = null; void doShelve(slot, true); }, "Slot frei, später prüfen"),
     ];
-    // undo — only when the server still holds an undoable land for THIS repo (main not moved since,
-    // not pushed). Reverses the one action that mutates main.
-    if (mg?.undoable && brief.worktree.repo) {
-      const repo = brief.worktree.repo;
-      const landedBranch = mg.undoable.branch;
-      items.push(el("div", "sep"), popItem(`Undo last land (${laneNameOfBranch(landedBranch)})`,
-        "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way",
-        () => { boardPop = null; void doUndoLand(repo, landedBranch); }, "", true));
-    }
     crow.append(...popPanel("land", items));
   }
   work.appendChild(crow);
@@ -4907,7 +4882,7 @@ export function drawRankeLines(root: HTMLElement): void {
 // alarm is the FIRST card of the board's machine zone — the same place as the deploy-due line,
 // above "is what you are looking at even the code that is running". A phone shows the same card
 // at the top of its Info window (the island's ℹ) and nothing above the island: no strip, no dot
-// (owner 2026-10-07). Ack (PLA_ACK_KEY) and the adjudicate paths (undo-land, suite.log) stay.
+// (owner 2026-10-07). Ack (PLA_ACK_KEY) and the adjudicate path (suite.log) stay.
 export let postLandAudit: PostLandAuditInfo | null = null;
 export let plaCard: HTMLElement | null = null;
 
@@ -4977,10 +4952,10 @@ export function plaStateWord(h: PlaHolder): { word: string; title: string; kind:
     default: return { word: "Braucht dich", kind: "owner", title: "Keine Session hat diesen Check — er wartet auf dich." };
   }
 }
-// the consequence, opened by "Ansehen": what this means for the reader, and the ways back out
+// the consequence, opened by "Ansehen": what this means for the reader
 export function plaOwnerNote(tone: "red" | "unknown"): string {
   return tone === "red"
-    ? "Nichts wurde blockiert, nichts zurückgenommen. „Undo last land“ (im ⋯ neben Land lane einer Lane) nimmt die neuesten Lands zurück, eines je Druck, höchstens 3 tief — welches es kaputt gemacht hat, findest du selbst."
+    ? "Nichts wurde blockiert, nichts zurückgenommen."
     : "Ein Check, der nicht lief, ist kein Bestehen. An diesem Land ist nichts gemessen.";
 }
 

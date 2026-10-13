@@ -12655,7 +12655,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           dirtyFiles: [], unpushedCommits: l.ahead ? [{ hash: hex(l.branch).slice(0, 7), subject: "feat: fixture" }] : [], note: null,
           notepad: l.slot === 9 ? noteOf(st) : null, review: null })) });
         if (m[2] === "merge") return void json(requestId, st === "land" && slot === 9 ? { running: true, last: null }
-          : { running: false, last: null, undoable: { branch: UNDO_BRANCH, at: fx.now - 40 * 60_000 } });
+          : { running: false, last: null });
         const prompts = slot === 9 || slot === 3 ? ["Baue die dritte Fassung", "Zeig mir die Bilder bei 390", "Der Abstand ist zu groß", "Mach die Übergabe lesbar", "Jetzt die Reiter", "Gut so, landen"] : [];
         // incremental like the server: only what comes after the reader's cursor
         const after = Number(url.searchParams.get("after") ?? 0) || 0;
@@ -13824,7 +13824,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}Changes' row: ${want.join(" · ")}${isLane ? " — Land lane the one primary, ⋯ beside it" : ""}`] =
               JSON.stringify(btns.map((b) => b.label ?? b.text)) === JSON.stringify(want)
               && (!isLane || (ownLanded ? btns.every((b) => b.disabled) : btns.filter((b) => b.primary).map((b) => b.text).join() === "Land lane"));
-            if (st !== "menue") claims[`${it}Shelve, Park for review and Undo last land are not on the surface — they are behind ⋯`] = !/Shelve|Park for review|Undo last land/.test(n.work.text ?? "");
+            if (st !== "menue") claims[`${it}Shelve and Park for review are not on the surface — they are behind ⋯`] = !/Shelve|Park for review/.test(n.work.text ?? "");
             if (isLane && !ownLanded) claims[`${it}the uncommitted files are listed: 2`] = n.work.files === 2 && n.work.state === "2 uncommitted files · 3 commits ready";
             if (ownLanded) claims[`${it}under Landing… it says how far: "wird geprüft · m:ss von üblich 4:10"`] = /^wird geprüft · \d+:\d\d von üblich 4:10$/.test(n.work.landnote ?? "");
           }
@@ -13877,13 +13877,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
             await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
             n = await info();
-            claims[`${it}"Ansehen" opens the raw values — repo, tip, the land before — when, and the way back ("Undo last land" in the ⋯ beside Land lane)`] =
-              /Undo last land/.test(n.alarm.card?.detail ?? "") && /im ⋯ neben Land lane/.test(n.alarm.card?.detail ?? "")
-              && (n.alarm.card?.detail ?? "").startsWith(`claude\u2011fleet · main@${MAIN.slice(0, 8)} · nach `);
+            claims[`${it}"Ansehen" opens the raw values — repo, tip, the land before`] =
+              (n.alarm.card?.detail ?? "").startsWith(`claude\u2011fleet · main@${MAIN.slice(0, 8)} · nach `);
             await shot(`info-${st}-${width}`);
             // THE ALARM LIVES IN INFO, on the phone too (card "Du kennst mobile Web-Oberflaechen"): the strip
             // above the island is gone, so everything it led to is read and pressed here — the whole log
-            // the helper uploaded (suite.log) and the undo behind ⋯ beside Land lane
+            // the helper uploaded (suite.log)
             const logLink = await evaluate<{ text: string; href: string; target: string; hit: boolean } | null>(`(() => { const a = document.querySelector('#boardbody .plasec .plalog'); if (!a) return null;
               a.scrollIntoView({ block: 'nearest' }); const r = a.getBoundingClientRect();
               return { text: a.textContent, href: a.getAttribute('href'), target: a.target, hit: a.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
@@ -13896,28 +13895,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               facts.alarmTop = top;
               claims[`${it}while the alarm is due nothing stands above the top island: no #mhead strip, no dot, the app and the island start at 0`] =
                 !top.mhead && !top.dot && top.app === 0 && top.mtop === 0;
-              fx.writes = [];
-              await evaluate(`(() => { window.confirm = (m) => { (window.__asked = window.__asked || []).push(String(m)); return true; }; window.alert = (m) => { (window.__told = window.__told || []).push(String(m)); }; })()`);
-              await evaluate(`document.querySelector('#boardbody .bchangeacts button[data-pop="land"]')?.click()`);
-              await wait(`document.querySelector('#boardbody .bpop[data-pop="land"]')`, 3000);
-              await settle(150);
-              const UNDO_ITEM = `[...document.querySelectorAll('#boardbody .bpop[data-pop="land"] .bmenuitem')].find((x) => /^Undo last land/.test(x.querySelector('.t')?.textContent ?? ''))`;
-              const undoAt = await evaluate<{ t: string } | null>(`(() => { const b = ${UNDO_ITEM}; if (!b) return null;
-                const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) ? { t: b.querySelector('.t').textContent } : null; })()`);
-              if (undoAt) {
-                await evaluate(`${UNDO_ITEM}.click()`);
-                await wait(`(window.__told || []).length > 0`, 3000);
-              }
-              const asked = await evaluate<string[]>("window.__asked || []");
-              const undo = fx.writes.filter((w) => w.path === "/api/repos/undo-land");
-              facts.undo = { item: undoAt, asked, undo };
-              claims[`${it}on the phone ⋯ beside Land lane offers Undo last land under a finger, and pressing it asks and posts /api/repos/undo-land for the repo`] = !!undoAt
-                && asked.length === 1 && asked[0].includes(UNDO_BRANCH) && undo.length === 1 && (undo[0].body as { repo?: string } | null)?.repo === REPO;
-              await wait(`document.querySelector('#boardbody .plasec .plaack')`, 4000);
-              if (!await evaluate<boolean>("!!document.querySelector('#boardbody .plasec .pladetail')")) {
-                await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
-                await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
-              }
             }
             await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Gesehen')?.click()`);
             claims[`${it}"Gesehen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
@@ -14060,10 +14037,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             n = await info();
             facts.menue = n.pop;
             const items = n.pop?.items ?? [];
-            claims[`${it}⋯ beside Land lane: Shelve · Park for review · — · Undo last land (its lane), the danger last and red, on screen`] = n.pop?.kind === "land"
+            claims[`${it}⋯ beside Land lane: Shelve · Park for review, on screen`] = n.pop?.kind === "land"
               && JSON.stringify(items.slice(0, 2).map((x) => x.t)) === JSON.stringify(["Shelve", "Park for review"])
-              && /^Undo last land \((3C|1b2c)\)$/.test(items[2]?.t ?? "") && items.length === 3 && n.pop.seps === 1
-              && items[2]?.danger === true && items[2]?.color === r.danger && items.slice(0, 2).every((x) => !x.danger) && sheetOk(n.pop?.box)
+              && items.length === 2 && n.pop.seps === 0
+              && items.slice(0, 2).every((x) => !x.danger) && sheetOk(n.pop?.box)
               && (n.pop?.box.b ?? Infinity) <= n.vh;
             await shot(`info-${st}-${width}`);
             await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);

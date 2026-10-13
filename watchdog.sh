@@ -40,8 +40,8 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # fast behavior tier: it boots the whole server.ts and drives real routes (open slot, autos, dispatch,
 # model-pin, steward sends), so anything that breaks module-load or server boot is caught here that tsc
 # misses. Honest scope boundary — it does NOT assert the share/guest or audit paths, so it is
-# total-ENOUGH, not total; the slow full audit (e2e-isolated) stays a post-land check, undo-land the
-# rollback. Deterministic (own $$ socket/dir, no known flake) and exit-codes correctly, so it hard-gates.
+# total-ENOUGH, not total; the slow full audit (e2e-isolated) stays a post-land check.
+# Deterministic (own $$ socket/dir, no known flake) and exit-codes correctly, so it hard-gates.
 # e2e-claude-gate.sh itself was validated 2026-07-24 to run WITHOUT node_modules (server.ts imports
 # only node:/bun:/local): ALL PASS from a node_modules-less tree in ~46s on this Mac that day. On the
 # work-horse it takes ~3 min today (176 s in the merge check of 2026-10-12; helper p50 190 s,
@@ -108,8 +108,8 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 # grep AUDIT_HELPER_ONLY). A merge done with git in the main checkout queues nothing: the server
 # sees no land. The server runs this command against a scratch snapshot of the integration tip, off the land path — one run at a time, bursts
 # coalesced, result green/red/unknown on post-land-audits.jsonl (GET /api/post-land-audits) plus a
-# loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING; ↩ undo-land stays the
-# rollback. Unset = the tier does not exist, which is today's behaviour.
+# loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING.
+# Unset = the tier does not exist, which is today's behaviour.
 # TURNED ON 2026-07-25 (docs/attic/autonomy-trial-1.md, Q3): the two lines below are live and the
 # srv-spawn line carries FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'. Takes effect only on
 # `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart

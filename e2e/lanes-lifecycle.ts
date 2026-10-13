@@ -225,7 +225,7 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       ["/api/slots/1/testinstanz", { action: "down" }],
       ["/api/slots/16/open", { cwd: tree, harness: "claude", packs: [] }],
       ["/api/slots/16/open-worktree", { repo, path: tree }],
-      ["/api/repos/undo-land", { repo }], ["/api/self/tasks/fixture/land", {}],
+      ["/api/self/tasks/fixture/land", {}],
       ["/send", { slot: 26, text: "mirror delivery canary", openedAt }],
       ["/api/tasks/fixturetask/brief", { text: "mirror brief canary" }],
       ["/api/self/tasks/fixturetask/release", {}],
@@ -2087,7 +2087,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   await settleForMerge(landedBranch.slot);
   const landedStart = await post(`/api/slots/${landedBranch.slot}/merge`, {});
   const landedDone = await waitMerge(landedBranch.slot);
-  check("teardown branch mutation: a branch with work since fork survives its successful land for undo-land",
+  check("teardown branch mutation: a branch with work since fork survives its successful land",
     landedCommit.status === 0 && landedStart.ok && landedDone.gone
       && spawnSync("git", ["-C", REPO, "branch", "--list", landedBranch.branch]).stdout.toString().trim() !== "",
     `${landedCommit.status}/${landedStart.status} ${JSON.stringify(landedDone)}`);

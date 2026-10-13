@@ -253,10 +253,9 @@ type AuditEvent =
   // unattended EXECUTION — every other per-repo entry changes what a lane does, this one changes
   // how many claude sessions the machine starts by itself. Detail names the repo and the number.
   | "repo_lane_cap"
-  | "repo_undo_land"
   | "land_note_fail"
   // a land that was interrupted between "main moved" and "the land is recorded", settled at boot:
-  // recovered (note + undo record + tier-2 audit written late) or unaccountable (audited, dropped)
+  // recovered (note + tier-2 audit written late) or unaccountable (audited, dropped)
   | "land_recovered" | "land_recover_fail"
   | "postland_audit"
   // THE REMOTE HELPER PORTAL (stage 1). Three events, and each names a boundary the local machine

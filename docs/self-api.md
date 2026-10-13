@@ -5158,7 +5158,7 @@ Kopie, aus demselben Grund, aus dem `stalled` eine ist):
 
 `removeWorktreeSafe` löscht beim erfolgreichen Teardown den Branch nur, wenn `git rev-list
 <Fork-SHA>..<Branch>` null Commits ergibt. Fehlt der gespeicherte Fork-Punkt, bleibt der Branch.
-Ein gelandeter Branch mit eigener Arbeit bleibt für `undo-land` erhalten. Der Dispatch-Tail zählt
+Ein gelandeter Branch mit eigener Arbeit bleibt erhalten. Der Dispatch-Tail zählt
 jeden gleichen Ablehnungsgrund pro Task-Zeile; beim
 dritten gleichen Versuch setzt er sie auf `pending` und schreibt den Grund in die Note.
 

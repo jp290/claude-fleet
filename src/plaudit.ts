@@ -40,7 +40,7 @@ export function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): Pla
         headline: a.proportional
           ? "POST-LAND AUDIT FAILED — the docs-only proportional chain (install+pins) is failing on the integration tip"
           : "POST-LAND AUDIT FAILED — the full suite is failing on the integration tip",
-        note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses the newest lands, one press per land, at most 3 deep — and which of them broke it is still yours to find." }
+        note: "This audit gates nothing and nothing was rolled back." }
     : { tone, where, headline: unknownHeadline(a),
         note: "A measurement that did not happen is not a pass. Nothing about the integration tip has been checked." };
 }

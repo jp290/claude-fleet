@@ -257,9 +257,7 @@ Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
   Docs-Datei, bekamen je ein volles `./e2e-isolated.sh` — 1562 s bzw. 1530 s, beide ROT, 9 bzw. 1
   von 3633 Checks gefallen, beide als Flake adjudiziert. Beide liefen zufaellig auf dem Helfer, es
   kostete also 52 Minuten der ANDEREN Maschine plus Claim-Fenster; lokal waere es dieselbe Zeit am
-  Suite-Mutex dieser Maschine gewesen. Achtung: `undo-land`, der als Rollback dazu genannt
-  wird, gilt für genau EIN Land und nur bis zum nächsten (`server.ts`, grep `undoableFor`) — im Burst ist er
-  beim Alarm schon weg. **Seit `0b98fdb` ist ein rotes Ergebnis beurteilbar**:
+  Suite-Mutex dieser Maschine gewesen. **Seit `0b98fdb` ist ein rotes Ergebnis beurteilbar**:
   `POST /api/post-land-audits/adjudicate {at, verdict, note}` (Owner,
   `verdict ∈ real|flake|stale-test|unknowable`, Urteile auf `audit-adjudications.jsonl`, neuestes gewinnt).
   Das Rot bleibt dabei rot — die Adjudikation sagt nur, dass jemand geurteilt hat, und genau das unterscheidet

@@ -369,7 +369,7 @@ check("the red result is on the audit trail too, naming result + branch",
     && (x.detail ?? "").includes(echoLane.branch)),
   JSON.stringify(auditTrail.events.filter((x) => x.event === "postland_audit").slice(0, 3)));
 // read with bodies: since a land is one commit on main (5a2cd07d) the lane's own subject is in its body
-check("a red audit does NOT undo the land — rollback stays the owner's ↩ undo-land",
+check("a red audit does NOT undo the land",
   spawnSync("git", ["-C", REPO, "log", "--format=%B", "-3"]).stdout.toString().includes("echo lane work"),
   spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().trim());
 

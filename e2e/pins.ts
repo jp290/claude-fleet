@@ -3495,12 +3495,10 @@ await import(pathToFileURL(process.argv[2]).href);
       !server.includes(ROW_COMMENTS_MARK),
       server.includes(ROW_COMMENTS_MARK) ? "server.ts re-spells the marker" : "absent");
   }
-  // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION, A PINNED DEFAULT, AND IS NOT THE UNDO
-  // DEPTH. The door bounds on IDENTIFIERS — the live budget (env over the default) and the row
+  // (2) THE WAVE BUDGET (S7, 5ac5565d) HAS ONE DEFINITION AND A PINNED DEFAULT. The door bounds on
+  // IDENTIFIERS — the live budget (env over the default) and the row
   // ceiling — so no literal can drift from the sensor's cut; the defaults are pinned by VALUE, so a
-  // widening is a deliberate edit here and not a silent one there; and the constant's comment still
-  // says in writing that a wave is ONE undo record, because the old cap agreed with UNDO_STACK_MAX
-  // on 3 by coincidence and the new budget must not be read as a statement about it either.
+  // widening is a deliberate edit here and not a silent one there.
   const landWaves = ((): string | null => { try { return read("task-land-waves.ts"); } catch { return null; } })();
   const capDoorAt = server.indexOf('url.pathname === "/api/wave/dispatch"');
   const capDoor = capDoorAt < 0 ? "" : server.slice(capDoorAt, capDoorAt + 4000);
@@ -3508,17 +3506,15 @@ await import(pathToFileURL(process.argv[2]).href);
   const rowsMax = /export const LAND_WAVE_ROWS_MAX = (\d+);/.exec(landWaves ?? "")?.[1] ?? null;
   const units = /LAND_WAVE_SIZE_UNITS[^=]*= \{ klein: 1, mittel: 2, gross: 3 \}/.test(landWaves ?? "");
   const envRead = /const LAND_WAVE_BUDGET = \(\(\): number => \{\n\s+const raw = Number\(process\.env\.FLEET_LAND_WAVE_BUDGET\);[\s\S]{0,160}: LAND_WAVE_BUDGET_DEFAULT;/.test(server);
-  pin("the wave budget: default 5, ceiling 6 rows, klein/mittel/gross = 1/2/3, env over default, and it is not UNDO_STACK_MAX",
+  pin("the wave budget: default 5, ceiling 6 rows, klein/mittel/gross = 1/2/3, env over default",
     landWaves !== null && capDoorAt > 0
       && budgetDefault === "5" && rowsMax === "6" && units && envRead
       && /wIds\.length > LAND_WAVE_ROWS_MAX/.test(capDoor)
       && /wUnits > LAND_WAVE_BUDGET\)/.test(capDoor)
       && !/wIds\.length > \d/.test(capDoor) && !/wUnits > \d/.test(capDoor)
-      && !/LAND_WAVE_MAX_DEFAULT/.test(server + (landWaves ?? ""))
-      && /IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? ""),
+      && !/LAND_WAVE_MAX_DEFAULT/.test(server + (landWaves ?? "")),
     `door=${capDoorAt > 0} default=${budgetDefault} rowsMax=${rowsMax} units=${units} env=${envRead}`
-      + ` rowsIdent=${/wIds\.length > LAND_WAVE_ROWS_MAX/.test(capDoor)} budgetIdent=${/wUnits > LAND_WAVE_BUDGET\)/.test(capDoor)}`
-      + ` disclaimer=${/IT IS NOT COUPLED TO UNDO_STACK_MAX/.test(landWaves ?? "")}`);
+      + ` rowsIdent=${/wIds\.length > LAND_WAVE_ROWS_MAX/.test(capDoor)} budgetIdent=${/wUnits > LAND_WAVE_BUDGET\)/.test(capDoor)}`);
 
   // (2b) R2'S PREDICATE IS FASTENED TO THE FILES ON DISK (2026-09-12). `isGateMachinery` is what
   // makes a row land alone, and its other side is a SHELL SCRIPT and a directory listing — nothing

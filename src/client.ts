@@ -8389,7 +8389,7 @@ const AUDIT_CAT: Record<string, string> = {
   steward_send_capped: "steward", steward_journal_capped: "steward",
   owner_auth_fail: "security", share_auth_ok: "security", share_create: "security", share_revoke: "security",
   guest_ws_connect: "security", guest_ws_disconnect: "security",
-  land_note_fail: "repo", repo_undo_land: "repo",
+  land_note_fail: "repo",
 };
 const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate", "slot_restart"]);
 // Generic decode = show the raw detail. A per-kind formatter for the kinds whose raw string is
@@ -8999,8 +8999,7 @@ function kProgress(rows: OutcomeRow[]): KProgress {
   const after = asc.slice(anchor + 1);
   let k1 = 0, noConfirmStep = 0, unknown = 0, undos = 0;
   for (const o of after) {
-    // an undo is `disposition:"reverted"` — the only thing /api/repos/undo-land writes (server.ts,
-    // buildRevertedOutcome). It breaks the CONSECUTIVE streak the criterion asks for, and is also
+    // an undo is `disposition:"reverted"`. It breaks the CONSECUTIVE streak the criterion asks for, and is also
     // reported on its own, so a reset streak never silently reads as "no undo ever happened".
     if (o.disposition === "reverted") { undos++; k1 = 0; noConfirmStep = 0; unknown = 0; }
     else if (o.disposition === "landed") {
@@ -9092,8 +9091,8 @@ function renderOutcomes() {
         "lands in the streak whose row carries no confirmedByHuman value at all. Unknown is not"
         + " zero: they are excluded from the sub-count rather than counted as needing no confirm."));
       kel.appendChild(chip(`Undos ${k.undos}`, k.undos ? "warn" : "ok",
-        "owner undos since the anchor, counted as disposition:\"reverted\" rows — the only thing"
-        + " /api/repos/undo-land writes. §1 requires 0 across the 20."));
+        "owner undos since the anchor, counted as disposition:\"reverted\" rows."
+        + " §1 requires 0 across the 20."));
     }
     // OUTSIDE the anchored branch on purpose: §2 has no anchor requirement, so a shadow verdict
     // counts whether or not §1's deploy boundary can be placed.
@@ -9798,9 +9797,7 @@ async function switchLens(k: ActLens) {
     return;
   }
   shell.foot.textContent = k === "lands"
-    ? "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
-      + " not offered per row here: rendering it on every row would imply a capability the land spine"
-      + " does not have."
+    ? ""
     : k === "commits"
       ? "The ledger records what FLEET landed. This records what is in the repo — a commit made by"
         + " hand in a terminal session appears here and in no ledger. Pick one to read its change."

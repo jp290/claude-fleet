@@ -139,7 +139,7 @@ this is one seam rather than a rewrite: the root gets `refs/heads/<branch>` at t
 clone gets its local base branch at the root's tip, and **every existing caller is unchanged**.
 
 Forced in both directions, each for its own reason: a rebase rewrites the lane branch (so the
-push-back is not a fast-forward) and `undo-land` rewinds main (so the pull-down is not one either).
+push-back is not a fast-forward) and main can be rewound (so the pull-down is not one either).
 Neither ref is ever committed to on the side it is written. Objects travel clone → root only, the
 trusted direction — the clone never gains a path to the root's hooks, config or object database,
 and the fetch runs from the host, so that stays true even when the clone is mounted into a sandbox

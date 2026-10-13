@@ -436,9 +436,7 @@ export async function run(): Promise<void> {
     rmSync(projectRoot, { recursive: true, force: true });
     await restartSrv();
 
-    // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
-    // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo
-    // record (no live slot) — model/briefHash are honestly null there.
+    // (5) a conflict-free lane lands via the server script path (ADVANCES main).
     const oc5 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
     await Bun.write(`${oc5.cwd}/reverted.txt`, "lands then reverts\n");
     spawnSync("git", ["-C", oc5.cwd, "add", "reverted.txt"]);
@@ -447,16 +445,7 @@ export async function run(): Promise<void> {
     await settleForMerge(oc5.slot);
     await post(`/api/slots/${oc5.slot}/merge`, {});
     const vRev = await waitMerge(oc5.slot);
-    check("outcome: revert setup — conflict-free lane lands via the script (advances main)", vRev.gone, JSON.stringify(vRev));
-    const undo = await post("/api/repos/undo-land", { repo: oRepo });
-    check("outcome: undo-land succeeds", undo.ok, await undo.text());
-    const rec5 = forBranch(await readOutcomes(), oc5.branch);
-    check("outcome: reverted land → reverted disposition, commitCount 1, correct file",
-      rec5?.disposition === "reverted" && rec5?.commitCount === 1 && (rec5?.filesTouched ?? []).includes("reverted.txt"),
-      JSON.stringify(rec5));
-    check("outcome: reverted row has no live-slot provenance to invent and records adapter pins as null",
-      !!rec5 && !("taskId" in rec5) && !("originId" in rec5) && !("programId" in rec5)
-      && rec5.harness === null && rec5.effort === null, JSON.stringify(rec5));
+    check("outcome: conflict-free lane lands via the script (advances main)", vRev.gone, JSON.stringify(vRev));
 
     // (6) LANDED after a REPAIRED conflict resolution, confirm-landed by the owner — the full
     // autonomy-calibration record: resolvedConflict:true, repairRounds>=1 (verify went red→green via
@@ -549,8 +538,6 @@ export async function run(): Promise<void> {
     check("forkSha counter-proof: a land with main UNMOVED during the lane carries forkSha === base (and so does its note)",
       /^[0-9a-f]{40}$/.test(rec5Landed?.forkSha ?? "") && rec5Landed?.forkSha === rec5Landed?.base
       && noteOf(rec5Landed?.mainAfter)?.forkSha === rec5Landed?.base, JSON.stringify({ forkSha: rec5Landed?.forkSha, base: rec5Landed?.base }));
-    check("forkSha: a reverted row (no live slot) states no forkSha rather than inventing one",
-      !!rec5 && !("forkSha" in rec5), JSON.stringify(rec5?.forkSha ?? null));
     check("forkSha: the owner confirm-land of a conflict (main moved) records forkSha != base on row and note",
       !!recR?.forkSha && recR.forkSha !== recR.base && noteOf(recR.mainAfter)?.forkSha === recR.forkSha,
       JSON.stringify({ forkSha: recR?.forkSha, base: recR?.base }));
@@ -1549,7 +1536,7 @@ export async function run(): Promise<void> {
     check("criteria: K2 counts recorded shadow verdicts; verdict null (failed measurement) is not one",
       k.k2 === 2, JSON.stringify(k));
     check("criteria: no undo in this ledger reads as 0 undos", k.undos === 0, JSON.stringify(k));
-    // an undo is disposition:"reverted" (server.ts buildRevertedOutcome) — it breaks the CONSECUTIVE
+    // an undo is disposition:"reverted" — it breaks the CONSECUTIVE
     // streak §1 asks for, and is reported separately so a reset never reads as "nothing happened".
     const kUndo = kProgress([...kLedger, kRow({ ts: 650, branch: "confirm-land", disposition: "reverted" })]);
     check("criteria: an undo (disposition reverted) resets the K1 streak and is counted on its own",
@@ -1840,7 +1827,7 @@ export async function run(): Promise<void> {
     // branch: it is the deliberately hand-written pre-review-field shape, and its whole point is
     // that the key is missing — asserting it here would contradict the check it exists for.
     const written = (await readOutcomes()).filter((o) => o.branch !== "legacy/pre-review-field").slice(0, 12);
-    check("outcome: every disposition the server wrote carries the review relation, including reverted",
+    check("outcome: every disposition the server wrote carries the review relation",
       written.every((o) => typeof o.review?.state === "string"),
       JSON.stringify(written.map((o) => o.review?.state)));
 
@@ -1849,8 +1836,8 @@ export async function run(): Promise<void> {
     // the trail returns a total count alongside the (limited) window, newest-first
     const finalRead = (await (await get("/api/lane-outcomes?limit=1000")).json()) as
       { outcomes: Outcome[]; total: number; malformed: number };
-    check("lane-outcomes returns { outcomes, total } with all five dispositions present",
-      finalRead.total >= 5 && ["landed", "killed-dirty", "killed-empty", "shelved", "reverted"]
+    check("lane-outcomes returns { outcomes, total } with all four dispositions present",
+      finalRead.total >= 4 && ["landed", "killed-dirty", "killed-empty", "shelved"]
         .every((d) => finalRead.outcomes.some((o) => o.disposition === d)),
       JSON.stringify({ total: finalRead.total, seen: [...new Set(finalRead.outcomes.map((o) => o.disposition))] }));
     // the counts must be separable even on a HEALTHY file: `total` is what parsed, `malformed` is

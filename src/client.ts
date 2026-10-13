@@ -8226,6 +8226,9 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
   };
 
   void load();
+  // a window opened ON a commit (a History row of the board) reads it as a click inside does: the pick
+  // alone left its detail on "loading…" with no request ever sent (owner 13.10. on the Testinstanz)
+  if (startAt?.k === "commit") open(startAt);
   // same failure class as the picker's detail pane: a commit list that cannot load must SAY so.
   // Left silent, a 404 from a server older than this page renders as "this lane has no commits" —
   // a positive claim about the repo, produced from a failed request.
@@ -8239,6 +8242,7 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
       if ("c" in res && res.c) commits = res.c;
       else if ("err" in res && res.err) commitsErr = res.err;
       renderList();
+      if (pickCommit(pick)) renderDetail(); // the open commit's head names its subject from this list
     });
 }
 

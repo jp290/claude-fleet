@@ -14537,16 +14537,19 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
 // --- THE ACTIVITY WINDOW'S TYPE AND ITS LOADING STATES (card 8aff0861, Grammatik G0.3) -----------
 // The real client bundle behind a fixture origin (the rig of e2e/timeline-ui.ts#runTimelineDom): every
 // lens of #shell-outcomes opened on fixture ledgers, its list and its first row's detail read at
-// 1200×900 and 390×844. Three DOM claims, each with a mutant (ACTIVITY_MUTANTS) that must turn it red:
+// 1200×900 and 390×844. Four DOM claims, each with a mutant (ACTIVITY_MUTANTS) that must turn it red:
 //   prose  — every text node that reads as words (two words of letters side by side) is set in sans,
 //            outside the verbatim blocks one copies (a command and its output, a raw record, a diff)
 //   tokens — a branch, a slot, a time, a path, a pack id and a verify command stand in mono
 //   live   — each of the window's nine loading states, held open by a route that has not answered,
 //            is on screen and carries aria-live="polite"
+//   history — (1200 only) a History row of the board opens the review window on its commit, and the
+//            window asks for that commit and shows its change (owner 13.10.: „[Zitat entfernt]“)
 export const ACT_CLAIM = {
   prose: "every text a person reads as words is set in --chat-sans, in every lens, list and detail",
   tokens: "what one copies stands in --chat-mono: branch, slot, time, path, sha, model, pack id, verify command — in a meta line too",
   live: "each of the nine loading states is shown while its route is held, and carries aria-live=polite",
+  history: "a History row opens its commit: the review window asks for that commit and shows its subject and its change",
 } as const;
 export interface ActivityMutant { name: string; claim: string; file: "src/client.ts" | "public/index.html"; needle: string; with: string }
 export const ACTIVITY_MUTANTS: readonly ActivityMutant[] = [
@@ -14569,6 +14572,10 @@ export const ACTIVITY_MUTANTS: readonly ActivityMutant[] = [
     with: "if (!rows.length)" },
   { name: "the timeline paints before its load starts", claim: ACT_CLAIM.live, file: "src/client.ts",
     needle: "const loading = loadLens(k);\n    renderActivity();\n    await loading;", with: "renderActivity();\n    await loadLens(k);" },
+  { name: "a window opened on a commit only sets the pick", claim: ACT_CLAIM.history, file: "src/client.ts",
+    needle: "  if (startAt?.k === \"commit\") open(startAt);\n", with: "" },
+  { name: "the open commit's head stays 'commit' when the list arrives", claim: ACT_CLAIM.history, file: "src/client.ts",
+    needle: "      if (pickCommit(pick)) renderDetail();", with: "      void 0;" },
 ];
 export interface ActivityDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runActivityDom(sourceRoot: string, artifacts?: string,
@@ -14629,6 +14636,16 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
       // an absent column: the line where a pack id would stand holds a sentence
       delivered: { state: "absent", why: "no context receipt names this lane's branch" },
       borrowed: { state: "read", total: 1, rows: [{ at: at + 300, id: "haltung-worker", bytes: 2048, origin: null, head: null }] } } };
+  // slot 1's own commit, for the board's History (claim history)
+  const OWN = "5e55c0de", OWN_SUBJECT = "Vorher-Messung festgehalten";
+  const brief = { branch: "main", head: OWN, worktree: null, sessionStart: at, uncommitted: 0, uncommittedFiles: [], files: [], filesTotal: 0,
+    shortstat: "", commits: [{ hash: OWN, ts: at, subject: OWN_SUBJECT }], repoCommits: [], laneScoped: false, laneBase: null, commitsCap: 200,
+    ahead: 0, behind: 0 };
+  const slotCommits = { scope: "recent", base: null, branch: "main", capped: false,
+    commits: [{ hash: OWN, ts: at, subject: OWN_SUBJECT, stat: "1 file changed, 1 insertion(+)" }] };
+  const slotCommitDiff = { hash: OWN, files: ["messung.txt"],
+    diff: "diff --git a/messung.txt b/messung.txt\n--- /dev/null\n+++ b/messung.txt\n@@ -0,0 +1 @@\n+Vorher: Info-Spalte 1.8 s bis voll\n" };
+  const askedCommits: string[] = [];
   const wire = await timelineWireFixture();
   // a held route answers only when released — the loading state it causes stands on screen meanwhile
   const held = new Map<string, (() => void)[]>();
@@ -14673,11 +14690,14 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
         slots: [{ id: 1, cwd: REPO_FX, label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
       if (p === "/api/slots/1/transcript") return void json(requestId, { entries: [], total: 0, source: "/fixture/orch.jsonl", ttlSec: 300 });
       const key = p === "/api/lane" && url.searchParams.has("branch") ? "/api/lane?branch" : p;
+      if (key === "/api/slots/1/commit-diff") askedCommits.push(url.searchParams.get("hash") ?? "");
       const body = key === "/api/lane-outcomes" ? { outcomes, total: outcomes.length, malformed: 0 }
         : key === "/api/audit" ? { events: audit, total: audit.length, malformed: 0 }
           : key === "/api/commits" ? commits : key === "/api/commit-diff" ? commitDiff
             : key === "/api/lane" ? lanes : key === "/api/lane?branch" ? dossier
-              : key === "/api/timeline" ? wire : key === "/api/dispositions" ? { dispositions: [] } : null;
+              : key === "/api/timeline" ? wire : key === "/api/dispositions" ? { dispositions: [] }
+                : key === "/api/slots/1/brief" ? brief : key === "/api/slots/1/commits" ? slotCommits
+                  : key === "/api/slots/1/commit-diff" ? slotCommitDiff : null;
       if (body === null) return void json(requestId, { error: "fixture: not served" }, 404);
       const answer = () => void json(requestId, body);
       if (holding.has(key)) held.set(key, [...(held.get(key) ?? []), answer]); else answer();
@@ -14830,6 +14850,22 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
       facts.tokens = tokens;
       claims[ACT_CLAIM.tokens] = Object.values(tokens).every((t) => t?.mono === true)
         && tokens.akteEventPath?.text === WT.slice(0, 60) && tokens.briefModel?.text === "claude-opus-5-5";
+
+      // --- 3. a History row of the board opens ITS commit: the review window opened on it said "loading…"
+      // and never asked for it (owner 13.10. on the Testinstanz). The Info column is a desktop preference.
+      if (width === 1200) {
+        await evaluate(`localStorage.setItem('fleet.board', '1')`);
+        await navigate("http://fleet.fixture/");
+        const row = `[...document.querySelectorAll('.bhist .brow')].find((b) => b.textContent.includes(${JSON.stringify(OWN_SUBJECT)}))`;
+        const drawn = await wait(row, 12000);
+        if (drawn) await click(row, "the History row");
+        const R = "document.querySelector('#shell-review .shelldetail')";
+        const shown = drawn && await wait(`${R}.querySelector('.difftxt').textContent.includes('Vorher: Info-Spalte')`, 6000);
+        const named = shown && await wait(`${R}.querySelector('.rvhead').textContent === ${JSON.stringify(OWN_SUBJECT)}`, 3000);
+        facts.history = { drawn, shown, named, asked: [...askedCommits], detail: await evaluate<string>(`(${R}?.innerText ?? '').slice(0, 160)`) };
+        claims[ACT_CLAIM.history] = drawn && shown && named && askedCommits.includes(OWN);
+        await shot(`${width}-history-commit`);
+      }
       results.push({ width, height, claims, facts });
     }
     return results;

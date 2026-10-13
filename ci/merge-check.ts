@@ -72,6 +72,14 @@ function patchIds(args: string[], dir: string): Map<string, string> {
   return ids;
 }
 
+// Zwei gleichzeitige Checks desselben Kandidaten schieben denselben Ref, und einer wird abgewiesen;
+// dann genügt es, dass der Kandidat drüben liegt (wie ci/band-run.sh)
+export function pushCandidate(host: string, sha: string): boolean {
+  if (Bun.spawnSync(["ssh", host, `test -d ${HELPER_REPO} || git init -q --bare ${HELPER_REPO}`]).exitCode !== 0) return false;
+  return git(["push", "-q", `ssh://${host}/${HELPER_REPO}`, `${sha}:refs/mc/${sha}`]).ok
+    || Bun.spawnSync(["ssh", host, `git --git-dir ${HELPER_REPO} cat-file -e ${sha}^{commit}`]).exitCode === 0;
+}
+
 function helperHost(): string {
   if (process.env.MERGE_CHECK_HOST) return process.env.MERGE_CHECK_HOST;
   const m = /^ssh:\/\/([^/]+)\//.exec(mustGit(["remote", "get-url", "hub"]));
@@ -149,9 +157,7 @@ async function main(): Promise<number> {
   Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits,
     ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
   const host = helperHost();
-  const push = Bun.spawnSync(["ssh", host, `test -d ${HELPER_REPO} || git init -q --bare ${HELPER_REPO}`]);
-  const pushed = push.exitCode === 0 && git(["push", "-q", `ssh://${host}/${HELPER_REPO}`, `${cand.sha}:refs/mc/${cand.sha}`]).ok;
-  if (!pushed) return finish("error", false, `Kandidat ließ sich nicht zum Helfer ${host} schieben`, 3);
+  if (!pushCandidate(host, cand.sha)) return finish("error", false, `Kandidat ließ sich nicht zum Helfer ${host} schieben`, 3);
   const state = mainState(mainSha);
   row.mainState = state.why;
 

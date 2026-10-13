@@ -11062,9 +11062,9 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
 // (owner 2026-10-03: „[Zitat entfernt]“
 // ). The owner sends from the composer, /send is intercepted, and the transcript route
 // hands back the bundle the server would have typed (bundleFixtures). Every claim reads the DOM.
-// The same rig then carries the session's queue (card "wartet in der Chat-Ansicht"): the transcript
-// route's `queued` names a terminal-typed prompt, a reload, a composer send the queue adopts, the
-// dequeue, and an Esc marker arriving as meta.
+// The same rig then carries the session's queue (card "wartet in der Chat-Ansicht"): the live
+// route's `queued` (GET /api/slots/:id/live, Neuaufbau K10 S1) names a terminal-typed prompt, a
+// reload, a composer send the queue adopts, the dequeue, and an Esc marker arriving as meta.
 // Exported so a lane can drive it with an artefact folder and against a mutated copy of the tree.
 export interface BundleChatDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runBundleChatDom(sourceRoot: string, artifacts?: string, widths?: readonly (1200 | 390)[]): Promise<BundleChatDomResult[]> {
@@ -11139,6 +11139,9 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
           source: "/fixture/orch.jsonl", ttlSec: 300, queued: fx.queued });
       }
+      // the chat view reads the session's queue here since K10 S1; a held prompt means a running turn
+      if (p === "/api/slots/1/live")
+        return void json(requestId, { turn: "working", detail: null, queued: fx.queued, composer: "", withdrawn: [], at: Date.now() });
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
     const evaluate = async <T>(expression: string): Promise<T> => {
@@ -11173,7 +11176,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
           inBubble: !!d.closest('.msg'), right: r.right, left: r.left, h: s.getBoundingClientRect().height,
           fs: getComputedStyle(d).fontSize, color: getComputedStyle(d).color }; });
       const meta = chat.querySelector('.mmeta');
-      const last = chat.lastElementChild;
+      // the quiet end lines (status line, held bundle) close the view like the terminal's spinner and never arrived
+      const last = [...chat.children].filter((n) => !n.matches('.mlive, .mheld')).at(-1) ?? null;
       return { own, sys, lastOwn: last && last.matches('.msg.user') ? last.querySelector('.mbody').innerText.trim() : null, raw: [...chat.querySelectorAll('.msg')].some((m) => /\\[fleet-(buendel|ereignis|zustellung) /.test(m.innerText)),
         chatRight: chat.getBoundingClientRect().right, chatLeft: chat.getBoundingClientRect().left,
         pageScroll: document.documentElement.scrollWidth - innerWidth, metaFs: meta ? getComputedStyle(meta).fontSize : null,

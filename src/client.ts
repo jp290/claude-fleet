@@ -7987,7 +7987,7 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
   let commits: RvCommits | null = null;
   let commitsErr: string | null = null;
   // one entry per commit whose diff has been fetched — a commit is immutable, so this never goes stale
-  const commitDiffs = new Map<string, { files: DiffFile[]; diff: string; truncated: boolean; failed?: boolean }>();
+  const commitDiffs = new Map<string, { files: DiffFile[]; diff: string; body: string; truncated: boolean; failed?: boolean }>();
 
   const shell = openShell({
     id: "review",
@@ -8062,6 +8062,8 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
           "couldn't load this commit's diff — pick it again to retry"));
         return;
       }
+      // what the commit REPORTS stands above what it changed, as in the Commits lens
+      if (pick.k === "commit" && cd.body) shell.detail.appendChild(el("div", "cmbody", cd.body));
       if (pick.k === "file") {
         // into a const first: `pick` is a mutable binding another closure writes, so TS drops its
         // narrowing inside the callback below
@@ -8110,13 +8112,13 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
       const hash = p.hash;
       void api(`/api/slots/${slotId}/commit-diff?hash=${encodeURIComponent(hash)}`)
         .then(async (r) => (r.ok
-          ? (await r.json()) as { diff?: string; truncated?: boolean }
+          ? (await r.json()) as { diff?: string; body?: string; truncated?: boolean }
           : { failed: true } as const))
         .catch(() => ({ failed: true } as const))
         .then((j) => {
           const diff = "failed" in j ? "" : j.diff ?? "";
           commitDiffs.set(hash, {
-            diff, files: splitDiff(diff),
+            diff, files: splitDiff(diff), body: "failed" in j ? "" : j.body ?? "",
             truncated: "failed" in j ? false : !!j.truncated,
             failed: "failed" in j,
           });
@@ -8548,13 +8550,13 @@ let cmErr: string | null = null;
 // The board's SECOND commit list opens this lens on one hash. Held as a want, not as a selection:
 // until the list has actually loaded there is no way to know whether that commit is in it, and a
 // selection that turns out not to exist must render as a stated miss, never as a blank pane.
-let cmWant: { repo: string | null; hash: string } | null = null;
+let cmWant: { repo: string | null; hash: string; branch?: string | null } | null = null;
 // set when the wanted repo is not one Fleet has open at all — a different sentence from
 // "that commit is not in this repo's recent history", and the reader needs to know which.
 let cmRepoMiss: string | null = null;
 
-async function loadCommitsLens(repo: string | null) {
-  const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+async function loadCommitsLens(repo: string | null, branch: string | null = null) {
+  const q = repo ? `?repo=${encodeURIComponent(repo)}${branch ? `&branch=${encodeURIComponent(branch)}` : ""}` : "";
   const res = await api(`/api/commits${q}`).catch(() => null);
   if (!res) { cmErr = "couldn't reach the server"; return; }
   if (res.status === 404) { cmErr = SKEW_NOTE; return; }
@@ -8609,9 +8611,10 @@ function renderCommits() {
   // silent no-op would leave the reader on "Pick a row on the left" after clicking a named commit,
   // which reads as "that click does nothing" rather than as the measured fact it is.
   const want = cmWant;
+  // the list holds abbreviated hashes; a branch card hands the full one
+  const hit = want ? cmData.commits.find((c) => want.hash.startsWith(c.hash)) : undefined;
   if (want) {
     cmWant = null;
-    const hit = cmData.commits.find((c) => c.hash === want.hash);
     if (hit) cmPick = hit.hash;
     else {
       shell.detail.replaceChildren();
@@ -8641,10 +8644,7 @@ function renderCommits() {
   }
   shell.setRows(rows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
-  if (want && cmPick === want.hash) {
-    const hit = cmData.commits.find((c) => c.hash === want.hash);
-    if (hit) { renderCommitDetail(hit); shell.showDetail(true); }
-  }
+  if (hit) { renderCommitDetail(hit); shell.showDetail(true); }
 }
 
 let cmDiffSeq = 0; // latest-wins: arrow-keying down the commit list outruns the fetches it starts
@@ -8664,9 +8664,9 @@ function renderCommitDetail(c: RvCommit) {
   shell.detail.appendChild(body);
   const seq = ++cmDiffSeq;
   void (async () => {
-    const repo = cmData?.repo;
+    const repo = cmData?.repo, branch = cmData?.branch;
     const res = repo
-      ? await api(`/api/commit-diff?repo=${encodeURIComponent(repo)}&hash=${encodeURIComponent(c.hash)}`)
+      ? await api(`/api/commit-diff?repo=${encodeURIComponent(repo)}&hash=${encodeURIComponent(c.hash)}${branch ? `&branch=${encodeURIComponent(branch)}` : ""}`)
         .catch(() => null)
       : null;
     // a superseded fetch must not paint over the commit the cursor has since moved to
@@ -8676,11 +8676,13 @@ function renderCommitDetail(c: RvCommit) {
     if (!res) { body.appendChild(el("div", "diffstat err", "couldn't reach the server")); return; }
     if (res.status === 404) { body.appendChild(el("div", "diffstat err", SKEW_NOTE)); return; }
     const d = (await res.json().catch(() => null)) as
-      { files?: string[]; diff?: string; truncated?: boolean; error?: string } | null;
+      { body?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string } | null;
     if (!d || d.error) {
       body.appendChild(el("div", "diffstat err", d?.error ?? "the server's answer was not readable JSON"));
       return;
     }
+    // what the commit REPORTS (a measurement, the commits of a charge) stands above what it changed
+    if (d.body) body.appendChild(el("div", "cmbody", d.body));
     const files = d.files ?? [];
     if (files.length) {
       const fsec = el("div", "shellsec");
@@ -9723,9 +9725,10 @@ async function loadLens(k: ActLens) {
     // open, and asking for an unknown one directly answers 400 — a refusal this window would then
     // have to render as if the repo were broken. Two cheap GETs buy an honest sentence.
     await loadCommitsLens(null);
-    const want = cmWant?.repo;
-    if (want && cmData && cmData.repo !== want) {
-      if (cmData.repos.includes(want)) await loadCommitsLens(want);
+    const want = cmWant?.repo, branch = cmWant?.branch ?? null;
+    // a branch card opens a commit on ITS branch: that history, in a repo GET /api/branches shows
+    if (want && cmData && (cmData.repo !== want || branch)) {
+      if (cmData.repos.includes(want) || branch) await loadCommitsLens(want, branch);
       else cmRepoMiss = want;
     }
   } else if (k === "akte") {
@@ -9750,7 +9753,7 @@ async function loadLens(k: ActLens) {
   actLoaded.add(k);
 }
 
-export async function openActivity(lens: ActLens, at?: { repo: string | null; hash: string }) {
+export async function openActivity(lens: ActLens, at?: { repo: string | null; hash: string; branch?: string | null }) {
   setDrawer(false);
   ocShell?.close();
   outcomeDispo = "all";

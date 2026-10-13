@@ -6770,6 +6770,15 @@ async function commitRows(cwd: string, range: string | null): Promise<SlotCommit
   }
   return out;
 }
+// a commit's text below its subject — what the commit reports (a measurement, the commits of a charge);
+// "" when it has none or git cannot read it
+async function commitBody(cwd: string, hash: string): Promise<string> {
+  const b = await gitRead(cwd, "show", "-s", "--format=%b", hash);
+  return b.code === 0 ? b.out : "";
+}
+// the Commits lens reads a repo Fleet has open, or one whose board branches GET /api/branches shows
+const commitsRepoOpen = async (repos: readonly string[], repo: string): Promise<boolean> =>
+  repos.includes(repo) || (await branchRepos()).includes(repo);
 // the repos Fleet is actually working in: the dispatch repo, plus every active slot's repo. A lane
 // contributes the repo it forked FROM, not its own worktree — the interesting history is the one
 // lands arrive on, and sixteen lanes of one repo would otherwise be sixteen entries.
@@ -8770,7 +8779,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     gitRead(repo, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(committerdate:unix)", "refs/heads"),
     listWorktrees(repo), integrationBranch(repo)]);
   if (refsRead.code !== 0)
-    return { repo, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }] };
+    return { repo, integration, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }] };
   const refs: BranchRef[] = refsRead.out.split("\n").flatMap((line) => {
     const [ref, head, at] = line.split("\0");
     return ref?.startsWith("refs/heads/") && head && at ? [{ branch: ref.slice("refs/heads/".length), head, at: Number(at) * 1000 }] : [];
@@ -8795,7 +8804,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
       chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
       check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
-  return { repo, branches, others: v.others, othersTotal: v.othersTotal, reasons };
+  return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons };
 }
 async function branchesView(): Promise<BranchesView> {
   return { repos: await Promise.all((await branchRepos()).map((repo) => branchesOfRepo(repo))) };
@@ -53201,7 +53210,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const diff = d.code === 0 ? d.out : "";
       const ns = await gitRead(s.cwd, "show", "--no-color", "--format=", "--name-only", hash);
       return json({
-        hash,
+        hash, body: await commitBody(s.cwd, hash),
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
         truncated: diff.length > DIFF_CAP,
@@ -53314,12 +53323,15 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const want = url.searchParams.get("repo");
       const repo = want ?? repos[0] ?? "";
       if (!repo) return json({ repos, repo: null, commits: [], error: "Fleet has no git repo open" });
-      if (!repos.includes(repo)) return json({ error: "not a repo Fleet has open" }, 400);
-      const br = await gitRead(repo, "rev-parse", "--abbrev-ref", "HEAD");
-      const rows = await commitRows(repo, null);
+      if (!(await commitsRepoOpen(repos, repo))) return json({ error: "not a repo Fleet has open" }, 400);
+      // ?branch=: that branch's history — a branch card opens a commit that is not on the checkout's HEAD yet
+      const branch = url.searchParams.get("branch");
+      if (branch && !(await branchExists(repo, branch))) return json({ error: `no such branch: ${branch}` }, 404);
+      const br = branch ? null : await gitRead(repo, "rev-parse", "--abbrev-ref", "HEAD");
+      const rows = await commitRows(repo, branch ? `refs/heads/${branch}` : null);
       return json({
         repos, repo,
-        branch: br.code === 0 && br.out && br.out !== "HEAD" ? br.out : null,
+        branch: branch ?? (br?.code === 0 && br.out && br.out !== "HEAD" ? br.out : null),
         commits: rows ?? [],
         capped: (rows?.length ?? 0) >= MAX_COMMIT_ROWS,
       });
@@ -53602,15 +53614,17 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const repos = knownRepos();
       const repo = url.searchParams.get("repo") ?? repos[0] ?? "";
       const hash = url.searchParams.get("hash") ?? "";
-      if (!repos.includes(repo)) return json({ error: "not a repo Fleet has open" }, 400);
+      const branch = url.searchParams.get("branch");
+      if (!(await commitsRepoOpen(repos, repo))) return json({ error: "not a repo Fleet has open" }, 400);
       if (!/^[0-9a-f]{4,40}$/.test(hash)) return json({ error: "bad hash" }, 400);
-      const listed = await commitRows(repo, null);
+      if (branch && !(await branchExists(repo, branch))) return json({ error: `no such branch: ${branch}` }, 404);
+      const listed = await commitRows(repo, branch ? `refs/heads/${branch}` : null);
       if (!listed?.some((c) => c.hash === hash)) return json({ error: "not a commit this repo listed" }, 404);
       const d = await gitRead(repo, "show", "--no-color", "--format=", hash);
       const diff = d.code === 0 ? d.out : "";
       const ns = await gitRead(repo, "show", "--no-color", "--format=", "--name-status", hash);
       return json({
-        hash,
+        hash, body: await commitBody(repo, hash),
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
         truncated: diff.length > DIFF_CAP,

@@ -55,7 +55,10 @@ export function askRisk(spec: {
       if (trigger?.isConnected) trigger.focus();
     };
     const finish = (ok: boolean) => { dismiss(); resolve(ok); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
+    // a window opened ABOVE this dialog (a commit from its list) takes its own Escape; this one stays
+    const onTop = () => [...document.querySelectorAll<HTMLElement>("body > .overlay")]
+      .filter((o) => getComputedStyle(o).display !== "none").at(-1) === overlay;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && onTop()) { e.stopPropagation(); finish(false); } };
     document.addEventListener("keydown", onKey, true);
     for (const b of spec.buttons) {
       const btn = el("button", `riskbtn${b.danger ? " danger" : ""}${b.primary ? " primary" : ""}`, b.label) as HTMLButtonElement;

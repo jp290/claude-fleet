@@ -14537,7 +14537,7 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
 // --- THE ACTIVITY WINDOW'S TYPE AND ITS LOADING STATES (card 8aff0861, Grammatik G0.3) -----------
 // The real client bundle behind a fixture origin (the rig of e2e/timeline-ui.ts#runTimelineDom): every
 // lens of #shell-outcomes opened on fixture ledgers, its list and its first row's detail read at
-// 1200×900 and 390×844. Four DOM claims, each with a mutant (ACTIVITY_MUTANTS) that must turn it red:
+// 1200×900 and 390×844. Five DOM claims, each with a mutant (ACTIVITY_MUTANTS) that must turn it red:
 //   prose  — every text node that reads as words (two words of letters side by side) is set in sans,
 //            outside the verbatim blocks one copies (a command and its output, a raw record, a diff)
 //   tokens — a branch, a slot, a time, a path, a pack id and a verify command stand in mono
@@ -14545,11 +14545,14 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
 //            is on screen and carries aria-live="polite"
 //   history — (1200 only) a History row of the board opens the review window on its commit, and the
 //            window asks for that commit and shows its change (owner 13.10.: „[Zitat entfernt]“)
+//   body   — (1200 only) a commit opens with its text above its change, in that window and in the Commits lens
+//            (owner 13.10.: „[Zitat entfernt]“)
 export const ACT_CLAIM = {
   prose: "every text a person reads as words is set in --chat-sans, in every lens, list and detail",
   tokens: "what one copies stands in --chat-mono: branch, slot, time, path, sha, model, pack id, verify command — in a meta line too",
   live: "each of the nine loading states is shown while its route is held, and carries aria-live=polite",
   history: "a History row opens its commit: the review window asks for that commit and shows its subject and its change",
+  body: "a commit opens with its text above its change — in the review window and in the Commits lens",
 } as const;
 export interface ActivityMutant { name: string; claim: string; file: "src/client.ts" | "public/index.html"; needle: string; with: string }
 export const ACTIVITY_MUTANTS: readonly ActivityMutant[] = [
@@ -14576,6 +14579,10 @@ export const ACTIVITY_MUTANTS: readonly ActivityMutant[] = [
     needle: "  if (startAt?.k === \"commit\") open(startAt);\n", with: "" },
   { name: "the open commit's head stays 'commit' when the list arrives", claim: ACT_CLAIM.history, file: "src/client.ts",
     needle: "      if (pickCommit(pick)) renderDetail();", with: "      void 0;" },
+  { name: "the review window drops the commit's text", claim: ACT_CLAIM.body, file: "src/client.ts",
+    needle: `if (pick.k === "commit" && cd.body) shell.detail.appendChild(el("div", "cmbody", cd.body));`, with: "void cd;" },
+  { name: "the Commits lens drops the commit's text", claim: ACT_CLAIM.body, file: "src/client.ts",
+    needle: `if (d.body) body.appendChild(el("div", "cmbody", d.body));`, with: "void d;" },
 ];
 export interface ActivityDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export async function runActivityDom(sourceRoot: string, artifacts?: string,
@@ -14616,7 +14623,8 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
     { ts: at + 1000, event: "slot_open", slot: 9, detail: WT }];
   const commits = { repos: [REPO_FX], repo: REPO_FX, branch: "main",
     commits: [{ hash: SHA.slice(0, 8), ts: at, subject: "fix(activity): the window reads in sans", stat: "2 files changed, 29 insertions(+), 13 deletions(-)" }] };
-  const commitDiff = { files: ["M\tsrc/client.ts"], diff: "diff --git a/src/client.ts b/src/client.ts\n--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,2 +1,2 @@\n-// the old line reads in mono\n+// the new line reads in sans\n" };
+  const LENS_BODY = "Lesetext in Sans, nur was man kopiert in Mono.\nGemessen: 12 Zeilen im Fenster.";
+  const commitDiff = { body: LENS_BODY, files: ["M\tsrc/client.ts"], diff: "diff --git a/src/client.ts b/src/client.ts\n--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,2 +1,2 @@\n-// the old line reads in mono\n+// the new line reads in sans\n" };
   const lanes = { lanes: [{ branch: BRANCH, repo: REPO_FX, ts: at, disposition: "landed", live: null }], total: 1 };
   const read = <T>(value: T) => ({ state: "read", value });
   const dossier = { branch: BRANCH, repo: REPO_FX, worktree: null, slot: 9, liveSlot: null,
@@ -14643,7 +14651,8 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
     ahead: 0, behind: 0 };
   const slotCommits = { scope: "recent", base: null, branch: "main", capped: false,
     commits: [{ hash: OWN, ts: at, subject: OWN_SUBJECT, stat: "1 file changed, 1 insertion(+)" }] };
-  const slotCommitDiff = { hash: OWN, files: ["messung.txt"],
+  const OWN_BODY = "Info-Spalte am Telefon: 1.8 s bis voll, drei Läufe.";
+  const slotCommitDiff = { hash: OWN, body: OWN_BODY, files: ["messung.txt"],
     diff: "diff --git a/messung.txt b/messung.txt\n--- /dev/null\n+++ b/messung.txt\n@@ -0,0 +1 @@\n+Vorher: Info-Spalte 1.8 s bis voll\n" };
   const askedCommits: string[] = [];
   const wire = await timelineWireFixture();
@@ -14865,6 +14874,19 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
         facts.history = { drawn, shown, named, asked: [...askedCommits], detail: await evaluate<string>(`(${R}?.innerText ?? '').slice(0, 160)`) };
         claims[ACT_CLAIM.history] = drawn && shown && named && askedCommits.includes(OWN);
         await shot(`${width}-history-commit`);
+        // the text a commit reports, above its change: here, and in the Commits lens
+        const textAbove = (root: string) => evaluate<{ text: string | null; above: boolean }>(`(() => { const r = ${root};
+          const b = r?.querySelector('.cmbody'), d = r?.querySelector('.difftxt');
+          return { text: b ? b.textContent : null, above: !!(b && d && (b.compareDocumentPosition(d) & Node.DOCUMENT_POSITION_FOLLOWING)) }; })()`);
+        const inReview = await textAbove(R);
+        await click(`document.querySelector('#shell-review .shellclose')`, "the review window's close");
+        await click(`[...document.querySelectorAll('#morepanel button')].find((b) => b.textContent.includes('Commits'))`, "⋯ Commits");
+        await wait(`${W}.querySelector('.shelllist .shellrow')`);
+        await firstRow();
+        await wait(`${W}.querySelector('.shelldetail .difftxt')`);
+        const inLens = await textAbove(`${W}.querySelector('.shelldetail')`);
+        facts.body = { inReview, inLens };
+        claims[ACT_CLAIM.body] = inReview.text === OWN_BODY && inReview.above && inLens.text === LENS_BODY && inLens.above;
       }
       results.push({ width, height, claims, facts });
     }

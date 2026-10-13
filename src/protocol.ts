@@ -947,7 +947,8 @@ export interface BranchView {
 }
 export interface BranchOtherView { branch: string; head: string; at: number; path: string | null }
 export interface BranchesRepoView {
-  repo: string; branches: BranchView[]; others: BranchOtherView[]; othersTotal: number; reasons: FactReason[];
+  // integration: the branch charges land on (main), null when the repo has none readable
+  repo: string; integration: string | null; branches: BranchView[]; others: BranchOtherView[]; othersTotal: number; reasons: FactReason[];
 }
 export interface BranchesView { repos: BranchesRepoView[] }
 export interface DeployLand {

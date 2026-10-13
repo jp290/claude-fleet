@@ -2513,6 +2513,9 @@
   .cmfile { color: #9a9a9a; padding: 1px 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   .cmdiff { margin-top: 10px; }
+  /* a commit's text below its subject — what it reports, read as prose, its line breaks kept */
+  .cmbody { margin: 6px 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-prose, #c8c8c8);
+    font-size: 12.5px; line-height: 1.5; }
   .cmfile.open { cursor: pointer; border-radius: 5px; padding: 2px 6px; margin-left: -6px; }
   .cmfile.open:hover { background: #232a3a; color: #cfe0ff; }
   /* the file view — one pane, reached from four different file lists */

@@ -4,7 +4,7 @@
 // Der Stand kommt aus GET /api/branches; die Punkte sind derselbe Text wie der Notizblock der Session,
 // also eine Liste. Geschrieben wird gegen den gelesenen Stand (rev): Hat ein anderes Gerät inzwischen
 // geschrieben, wird der Klick auf dessen Text noch einmal angewandt, statt ihn zu überschreiben.
-import { api, el, post, renderDiffInto, revealStartedSlot, showSlot } from "./client";
+import { api, el, openActivity, post, renderDiffInto, revealStartedSlot, showSlot } from "./client";
 import { askRisk } from "./dialog";
 import type { BranchesView, BranchView } from "./protocol";
 
@@ -90,7 +90,7 @@ async function showDiff(repo: string, b: BranchView): Promise<void> {
   else {
     const n = d.files?.length ?? 0, c = d.commits?.length ?? 0;
     body.push(el("div", "diffstat", `${b.branch} gegen ${d.base ?? "die Basis"} · ${c} ${c === 1 ? "Commit" : "Commits"} · ${n} ${n === 1 ? "Datei" : "Dateien"}${d.truncated ? " · gekürzt" : ""}`));
-    for (const x of d.commits ?? []) body.push(el("div", "diffstat brc-commit", `${x.sha.slice(0, 7)} ${x.subject}`));
+    for (const x of d.commits ?? []) body.push(commitLine(repo, b.branch, x.sha, x.subject));
     if (d.diff) { const box = el("div", "difftxt"); renderDiffInto(box, d.diff); body.push(box); }
     else body.push(el("div", "diffstat", "Noch keine Änderung gegen die Basis."));
   }
@@ -167,7 +167,7 @@ async function mergeCharge(repo: string, b: BranchView, repaint: () => void): Pr
   if (unchecked) body.push(el("div", "brc-k warn", "Dieses Repo hat keinen Merge-Check — die Charge geht ohne Merge-Check nach main."));
   if (d.error) body.push(el("div", "diffstat err", `Der Diff kam nicht: ${d.error}`));
   else {
-    for (const c of d.commits ?? []) body.push(el("div", "diffstat brc-commit", `${c.sha.slice(0, 7)} ${c.subject}`));
+    for (const c of d.commits ?? []) body.push(commitLine(repo, b.branch, c.sha, c.subject));
     if (d.diff) { const box = el("div", "difftxt"); renderDiffInto(box, d.diff); body.push(box); }
   }
   const ok = await askRisk({ title: `Charge mergen · ${b.name}`, body, panelClass: "riskpanel landreviewpanel",
@@ -202,6 +202,16 @@ async function restartSession(repo: string, b: BranchView, slot: number, repaint
 }
 
 const sha7 = (h: string): string => h.slice(0, 7);
+// EINEN COMMIT ÖFFNEN (Owner 13.10.: „[Zitat entfernt]“
+// ): die Zeile öffnet ihn in der Commit-Ansicht mit Betreff, Text und
+// Änderung, in der Geschichte von `branch`. Über einem Dialog öffnet sie darüber; der Dialog bleibt.
+function commitLine(repo: string, branch: string | null, sha: string, subject: string): HTMLElement {
+  const line = el("button", "diffstat brc-commit brc-open", `${sha7(sha)} ${subject}`) as HTMLButtonElement;
+  line.type = "button";
+  line.title = "Commit öffnen: Betreff, Text und Änderung";
+  line.onclick = (e) => { e.stopPropagation(); void openActivity("commits", { repo, hash: sha, branch }); };
+  return line;
+}
 function seenWords(b: BranchView): string {
   if (!b.seen) return "passt · noch nicht gesehen";
   const day = new Date(b.seen.at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -275,7 +285,9 @@ export function branchCard(repo: string, b: BranchView, slot: number | null, rep
   // CHARGE: what the next charge carries, its merge check, and the one button that merges it
   const n = b.chargeCommits ?? 0, last = b.lands.at(-1);
   box.appendChild(el("div", "brc-k", `Charge · ${b.chargeCommits === null ? "Stand unbekannt" : n ? `${n} ${n === 1 ? "Commit" : "Commits"} seit der letzten Charge` : "nichts Neues seit der letzten Charge"}`
-    + (last ? ` · ${b.lands.length} ${b.lands.length === 1 ? "Charge" : "Chargen"} auf main, zuletzt ${last.sha.slice(0, 7)} „${last.subject}“` : "")));
+    + (last ? ` · ${b.lands.length} ${b.lands.length === 1 ? "Charge" : "Chargen"} auf main, zuletzt:` : "")));
+  // the charge commit stands on the integration branch, not on this one
+  if (last) box.appendChild(commitLine(repo, view?.repos.find((r) => r.repo === repo)?.integration ?? null, last.sha, `„${last.subject}“`));
   const chk = b.check;
   if (chk) box.appendChild(el("div", `brc-k brc-check ${chk.state}`, chk.state === "running" ? "Merge-Check läuft …"
     : chk.state === "green" ? "Merge-Check grün auf diesem Stand" : chk.state === "red" ? `Merge-Check rot: ${chk.why ?? "ohne Grund"}`
@@ -328,6 +340,10 @@ const BRANCH_CSS = `
   .landreviewpanel .brc-k { margin: 4px 0; white-space: normal; }
   .landreviewpanel .brc-k.warn { color: var(--danger); }
   .landreviewpanel .brc-commit { font-family: var(--mono, monospace); }
+  .brc-open { display: block; width: 100%; padding: 2px 0; border: 0; background: none; color: inherit; font: inherit; text-align: left;
+    cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .brc-open:hover, .brc-open:focus-visible { color: var(--chat-ink); text-decoration-style: solid; }
+  #board .zd.brc > .brc-open { color: var(--chat-prose); white-space: normal; overflow-wrap: anywhere; }
 `;
 let cssIn = false;
 function injectCss(): void {

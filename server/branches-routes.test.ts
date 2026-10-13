@@ -190,3 +190,45 @@ describe("Session auf dem Branch: ohne Rolle, im Worktree, mit dem Board-Namen",
     expect(fresh).toMatchObject({ status: 200, body: { resumed: null } });
   }, LIFE_DEADLINE_MS * 2);
 });
+
+// Owner 13.10. auf der Testinstanz: „[Zitat entfernt]“
+// . Ein Commit öffnet sich mit Betreff, Text und Änderung — aus der
+// Branch-Karte auch dann, wenn er noch nicht auf main liegt.
+describe("Einen Commit öffnen: Betreff, Text und Änderung, auch auf einem Branch", () => {
+  function measured(path: string): void {
+    writeFileSync(join(path, "messung.txt"), "Vorher: 1.8 s\n");
+    sh(path, "add", "messung.txt");
+    sh(path, "commit", "-q", "-m", "Vorher-Messung festgehalten", "-m", "Info-Spalte am Telefon: 1.8 s bis voll, drei Läufe.");
+  }
+  test("die Commit-Ansicht liest die Geschichte des Branches und gibt den Text mit; ohne Branch fehlt der Commit", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Messen" })]);
+    measured(String(made?.body.path));
+    const short = sh(f.repo, "rev-parse", "--short", "branch/messen");
+    const q = (route: string, extra: string) => `/api/${route}?repo=${encodeURIComponent(f.repo)}${extra}`;
+    const [list, onHead, diff, offBranch, noSuch] = await life(f, [
+      get(q("commits", "&branch=branch/messen")),
+      get(q("commits", "")),
+      get(q("commit-diff", `&hash=${short}&branch=branch/messen`)),
+      get(q("commit-diff", `&hash=${short}`)),
+      get(q("commit-diff", `&hash=${short}&branch=branch/gibt-es-nicht`))]);
+    expect(list?.body).toMatchObject({ repo: f.repo, branch: "branch/messen",
+      commits: [{ hash: short, subject: "Vorher-Messung festgehalten" }, { subject: "start" }] });
+    expect((onHead?.body.commits as { hash: string }[]).map((c) => c.hash)).not.toContain(short);
+    expect(diff).toMatchObject({ status: 200,
+      body: { hash: short, body: "Info-Spalte am Telefon: 1.8 s bis voll, drei Läufe.", files: ["A\tmessung.txt"] } });
+    expect(String(diff?.body.diff)).toContain("+Vorher: 1.8 s");
+    expect(offBranch).toEqual({ status: 404, body: { error: "not a commit this repo listed" } });
+    expect(noSuch).toEqual({ status: 404, body: { error: "no such branch: branch/gibt-es-nicht" } });
+  }, LIFE_DEADLINE_MS);
+
+  test("das Review-Fenster einer Session bekommt den Text des Commits mit", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Bericht" })]);
+    measured(String(made?.body.path));
+    const short = sh(f.repo, "rev-parse", "--short", "branch/bericht");
+    const [opened] = await life(f, [post("/api/branches/open", { repo: f.repo, branch: "branch/bericht" })]);
+    const [cd] = await life(f, [get(`/api/slots/${Number(opened?.body.slot)}/commit-diff?hash=${short}`)]);
+    expect(cd).toMatchObject({ status: 200, body: { hash: short, body: "Info-Spalte am Telefon: 1.8 s bis voll, drei Läufe.", files: ["messung.txt"] } });
+  }, LIFE_DEADLINE_MS);
+});

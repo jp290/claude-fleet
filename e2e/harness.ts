@@ -422,6 +422,12 @@ export const readText = async (p: string): Promise<string> => {
 // dormant only because every value probed here used to be short or empty. `-J` joins wrapped
 // lines back into one logical line, which is what the caller means by "the line the pane printed"
 // (and it trims trailing whitespace, closing the same hole for a `$`-anchored match).
+//
+// …AND `-J` HAS ITS OWN EDGE: when prompt plus the typed command is EXACTLY as wide as the pane,
+// readline wraps at the margin, tmux marks the echo row as wrapped, and `-J` glues the answer onto
+// the echo — the anchored match never fires and the probe reads null (measured 2026-10-13: 21 of 49
+// FAIL lines in the workhorse scratch runs, whose prompt carries the run path; a 200-column lane pane).
+// The leading `\n` puts the answer on a row of its own after any echo, wrapped or not.
 let probeSeq = 1;
 export function paneEnv(target: string, varName: string, timeoutMs = 20_000): Promise<string | null> {
   return timed("tmux", () => paneEnvUntimed(target, varName, timeoutMs));
@@ -432,7 +438,7 @@ async function paneEnvUntimed(target: string, varName: string, timeoutMs: number
   const line = new RegExp(`^${marker}=\\[([0-9a-zA-Z._/:-]*)\\]$`, "m");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    await tmuxOut("send-keys", "-t", target, `printf '${marker}=[%s]\\n' "$${varName}"`, "Enter");
+    await tmuxOut("send-keys", "-t", target, `printf '\\n${marker}=[%s]\\n' "$${varName}"`, "Enter");
     for (let i = 0; i < 30 && Date.now() < deadline; i++) {
       const m = line.exec((await tmuxOut("capture-pane", "-t", target, "-p", "-J")).out);
       if (m) return m[1];

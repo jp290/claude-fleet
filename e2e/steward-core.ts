@@ -604,7 +604,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   }
   // paneEnv retries the send-keys until the marked line renders, so no fixed sleep has to
   // guess how long the just-respawned shell needs before it will accept input
-  const bakedStewTok = (await paneEnv(`s${lnStew.slot}`, "FLEET_STEWARD_TOKEN")) ?? "";
+  const bakedStewTok = await paneEnv(`s${lnStew.slot}`, "FLEET_STEWARD_TOKEN");
   check("FLEET_STEWARD_TOKEN is baked into a steward-labeled pane's spawn env and equals the steward token",
     bakedStewTok === STEW && STEW.length === 32, `baked=[${bakedStewTok}] steward=[${STEW}]`);
 

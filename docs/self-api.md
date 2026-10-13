@@ -685,9 +685,10 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `nudgeOn` und `sessionPct` (der gesetzte eigene Wert, auch solange ein Tor `thresholdPct` auf `null`
   hält), und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
   (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung. Die Einstellung gehört der
-  LINIE auf dem Slot: eine Nachfolge über die Owner-Tür (`server.ts#handleOwnerSucceed`, auch die von
-  keepCache ausgelöste) trägt sie unverändert zur Nachfolgerin (`server.ts#carryHandoverSetting`); jede
-  andere neue Belegung — auch die Nachfolgerin einer Lane — beginnt auf den Fleet-Werten. Fleet-Werte
+  LINIE auf dem Slot: jede Nachfolge im selben Slot trägt sie unverändert zur Nachfolgerin — Owner-Tür
+  (`server.ts#handleOwnerSucceed`, auch die von keepCache ausgelöste), Self-Tür auf jeder Schiene und der
+  Harness-Wechsel einer Lane (`server/succession.ts`, gesetzt in `server.ts#respawnInPlace` und
+  `server.ts#restartLaneSession`); nur ein frisches Öffnen beginnt auf den Fleet-Werten. Fleet-Werte
   selbst sind keine Einstellung: `null` + Hinweis an + keepCache aus speichert nichts. Ablehnungen: jede
   Self-Credential (Header oder Bearer) 401 wie an jeder Owner-Route, ein Wert außerhalb der 5er-Schritte
   oder vom falschen Typ 400 (`bad-threshold`, `bad-nudge`, `bad-keep-cache`, `bad-keep-cache-idle`,
@@ -858,8 +859,13 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   `busy` (409, Pane-Ausgabe binnen `MERGE_IDLE_MS` — dasselbe Prädikat wie `sleep`; zuletzt
   NACH dem Brief-Bau unmittelbar vor `respawnInPlace` erneut gefragt, `server.ts#succeedGeneric`
   `beforeKill`), `asleep`, `slot-changing` (auch: die Program-Bindung hat sich während der Vorbereitung
-  bewegt), `steward`, `lane`, `game-maker`, `in-flight`, `pointer-uncommitted` (alle 409). Audit
-  `main_succession` mit `owner-triggered`.
+  bewegt), `steward`, `lane`, `game-maker`, `in-flight`, `pointer-uncommitted` (alle 409). Ein Body
+  `{expectedOpenedAt}` (optional, so sendet ihn der Knopf „Neue Session jetzt“ im Übergabe-Popover) nennt
+  die Belegung, für die gedrückt wurde: steht dort inzwischen eine andere, 409 `occupant-changed`, bevor
+  irgendetwas geprüft wird. `GET` dieselbe Route ist die Vorschau des Knopfs (`server.ts#ownerSucceedPreview`):
+  `ready`, `refusal`, Alter der stehenden Übergabe, Umfang des Rests und `says`, ein Satz, was die
+  Nachfolgerin bekommt (`server/succession.ts#successorSentence`). Audit `main_succession` mit
+  `owner-triggered`.
   **Program-Schiene (seit 2026-10-07):** ist die ruhende Session exakt gebundene MAIN Standard-Programs
   (`server.ts#boundProgramsForMain`, Slot + `openedAt`), fährt die Tür `server.ts#succeedProgramMain` —
   dieselbe Schiene wie `succeed` der Session: Founding-Marker, Program-Record (`captureProgramHandover`)

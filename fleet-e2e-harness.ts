@@ -607,6 +607,8 @@ export async function checkCodexSpawnFixtures(source: string,
           // the closures' MCP hand-over (card a8bc6c54): the generic rail carries the predecessor's
           // selection, the Program rail its plan's — none here, a codex fixture spawns without one
           carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
+          // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
+          ownSetting: () => null,
         });
         const at = source.indexOf("async function respawnInPlace(");
         const end = source.indexOf("\n}\n", at);
@@ -714,7 +716,7 @@ export async function checkCodexSpawnFixtures(source: string,
       slotTeardownInflight: new Map(), slotSpawnInflight: new Map(), laneSpawn: new Set([17]), restarting: new Set(),
       killSlot: async () => { effects.push("kill"); Object.assign(slot, { cwd: null, openedAt: 0 }); },
       SUCCESSION_RESPAWN_FAIL_LATCH: null, SUCCESSION_AFTER_KILL_OCCUPANT_LATCH: null,
-      audit: () => {}, rebindLaneAnchors: () => {},
+      audit: () => {}, rebindLaneAnchors: () => {}, ownSetting: () => null,
     };
     const respawn = new Function("scope", `with (scope) { ${respawnCode}; return respawnInPlace; }`)(scope) as
       (s: unknown, predecessor: unknown, rail: string, stranded: unknown, target: unknown,
@@ -765,7 +767,7 @@ export async function checkCodexSpawnFixtures(source: string,
         if (race === "slot-spawn") spawns.set(17, Promise.resolve());
         endedState = JSON.stringify(slot);
       },
-      audit: () => {}, rebindLaneAnchors: () => {}, logError: () => {}, saveStateNow: async () => {},
+      audit: () => {}, rebindLaneAnchors: () => {}, logError: () => {}, saveStateNow: async () => {}, ownSetting: () => null,
       recordSuccessionDebt: (_s: unknown, _rail: string, _pred: unknown, _successor: unknown, _reason: string, debt: unknown) => {
         retained = debt; return { id: "fixture-debt", at: 99 };
       },

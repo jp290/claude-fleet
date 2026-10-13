@@ -18,6 +18,7 @@ import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./dev
 import { compTray, serverClock } from "./composer";
 import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
+import { OFF_WHY, freshSuccession, handoverRows } from "./handover";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
 // poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
@@ -1710,13 +1711,15 @@ export let boardPop: { kind: BoardPopKind; slot: number } | null = null;
 // one just closed by Escape: its button takes the focus back once the column is repainted
 let popScroll = false;
 let popFocus: BoardPopKind | null = null;
-function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement): HTMLButtonElement {
+// `paint` redraws the trigger's own line where it stands (the handover popover, paintContextRow); a
+// line that is not on screen falls back to the column render
+function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement, paint?: () => boolean): HTMLButtonElement {
   const open = boardPop?.kind === kind && boardPop.slot === slot;
   btn.dataset.pop = kind;
   btn.classList.toggle("on", open);
   btn.setAttribute("aria-haspopup", kind === "ueb" ? "dialog" : "menu");
   btn.setAttribute("aria-expanded", String(open));
-  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; void renderBoard(); };
+  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; if (!paint?.()) void renderBoard(); };
   return btn;
 }
 // the panel: a menu at its button on the desktop, a sheet from the bottom on the phone (G4.1 mobil)
@@ -1899,19 +1902,9 @@ const landBall = (slot: number): MeterBall | null => meterModel().balls.find((b)
 // with the threshold on its face. Whether the hint was given shows only when it was (§3a); the hint
 // switched off is a state of its own and says so.
 const tok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
-const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
-  fleet: "auf dieser Fleet nicht eingeschaltet",
-  rail: "für diese Art Session auf 0 gestellt",
-  harness: "dieser Agent hat kein Übergabeband",
-  steward: "die Planungs-Session wird nicht erinnert",
-  waiting: "sie wartet auf dich",
-  unpinned: "kein festgehaltenes Gespräch zum Messen",
-};
-// the answer of the last write, shown at once while the brief is read again
-const succNow = new Map<number, { openedAt: number | undefined; sc: BriefSuccession; at: number }>();
 function successionOf(c: BoardCtx): BriefSuccession | null {
-  const fresh = succNow.get(c.slot);
-  if (fresh && fresh.openedAt === c.s.openedAt && Date.now() - fresh.at < 15_000) return fresh.sc;
+  const fresh = freshSuccession(c.slot, c.s.openedAt);
+  if (fresh) return fresh;
   const raw = c.facts?.succession;
   if (!raw) return null;
   return { ...raw, pctFrom: raw.pctFrom ?? "fleet", nudgeOn: raw.nudgeOn ?? true, defaultPct: raw.defaultPct ?? raw.thresholdPct ?? 0 };
@@ -1926,7 +1919,7 @@ function contextRow(c: BoardCtx): HTMLElement {
   sw.title = `Übergabe-Einstellungen dieser Session — ${sc.thresholdPct === null ? `aus: ${OFF_WHY[sc.thresholdOff ?? "rail"]}`
     : sc.pctFrom === "session" ? `eigene Schwelle dieser Session (Fleet: ${sc.defaultPct} %)` : "die Schwelle der Fleet"}`
     + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`;
-  popTrigger("ueb", c.slot, sw);
+  popTrigger("ueb", c.slot, sw, () => paintContextRow(c));
   const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
   // the hint is only news where a threshold can fire — "Übergabe aus" already says the rest
   if (sc.thresholdPct !== null) {
@@ -1939,108 +1932,23 @@ function contextRow(c: BoardCtx): HTMLElement {
   if (fillEl) fillEl.title = sc.fill
     ? `${sc.fill.usedTokens} von ${sc.fill.windowTokens} Tokens im Fenster (${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)}) — gegen diese Zahl misst der Server, wann die Session weitergeben soll.`
     : "Fleet kann diesen Kontext nicht messen: kein festgehaltenes Gespräch, noch kein Nutzungsrecord oder kein benennbares Fenster — das ist kein leerer Kontext.";
-  if (boardPop?.kind === "ueb" && boardPop.slot === c.slot) r.append(...popPanel("ueb", handoverRows(c, sc), "ubpop"));
+  if (boardPop?.kind === "ueb" && boardPop.slot === c.slot) r.append(...popPanel("ueb", handoverRows({ slot: c.slot, openedAt: c.s.openedAt, sc,
+    repaint: () => paintContextRow(c), succeeded: () => { boardPop = null; void renderBoard(); } }), "ubpop"));
   return r;
 }
-// THE HANDOVER SETTINGS (§4): readable words for every fact of the former four rows, and the owner's
-// two controls — the threshold in 5-steps and the hint on/off — written per session over
-// PATCH /api/slots/:id/handover (server.ts#patchHandover). The env value stays the default.
-const ubErr = new Map<number, string>();
-const ubBusy = new Set<number>();
-async function writeHandover(c: BoardCtx, body: { thresholdPct?: number | null; nudge?: boolean }): Promise<void> {
-  if (ubBusy.has(c.slot)) return;
-  ubBusy.add(c.slot);
-  ubErr.delete(c.slot);
-  void renderBoard();
-  try {
-    const r = await api(`/api/slots/${c.slot}/handover`, { method: "PATCH", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedOpenedAt: c.s.openedAt, ...body }) });
-    const j = (await r.json().catch(() => ({}))) as { error?: string; succession?: BriefSuccession | null };
-    if (!r.ok || !j.succession) throw new Error(j.error ?? `HTTP ${r.status}`);
-    succNow.set(c.slot, { openedAt: c.s.openedAt, sc: j.succession, at: Date.now() });
-  } catch (error) {
-    ubErr.set(c.slot, error instanceof Error ? error.message : String(error));
-  } finally {
-    ubBusy.delete(c.slot);
-    void renderBoard();
-  }
-}
-const RAIL_WAY: Record<BriefSuccession["rail"], [string, string]> = {
-  lane: ["neue Session im selben Worktree", "Gleicher Branch, gleicher Slot; sie committet und schreibt einen Übergabebericht."],
-  "standard-main": ["über das Program", "Die gebundene Program-MAIN gibt über ihren Program-Eintrag weiter — kein Übergabe-Commit nötig."],
-  "game-maker-main": ["über den Spielstand in HANDOFF.md", "Der committete Abschnitt „Current game checkpoint“ ist der einzige Weg."],
-  handoff: ["mit Übergabebericht", "Watches, geplante Prompts und Berichte ziehen mit; die Nachfolgerin bekommt eine Absicht oder einen Zeiger."],
-};
-function handoverRows(c: BoardCtx, sc: BriefSuccession): HTMLElement[] {
-  const row = (k: string, v: (Node | string)[], h = ""): HTMLElement => {
-    const r = el("div", "pr");
-    r.appendChild(el("span", "k", k));
-    const vv = el("span", "pv");
-    vv.append(...v);
-    r.appendChild(vv);
-    if (h) r.appendChild(el("span", "h", h));
-    return r;
-  };
-  const busy = ubBusy.has(c.slot);
-  // a gate that cannot fire takes no setting: the band is claude's, and without the fleet's master
-  // switch no tick runs at all — the reason says which, the controls stay visible but quiet
-  const locked = sc.thresholdOff === "fleet" || sc.thresholdOff === "harness" || sc.thresholdOff === "steward";
-  const rows: HTMLElement[] = [];
-  rows.push(row("Kontext", [sc.fill ? `${tok(sc.fill.usedTokens)} von ${tok(sc.fill.windowTokens)} · ` : "nicht messbar",
-    ...(sc.fill ? [el("b", "", `${Math.round(sc.fill.pct)} %`)] : [])]));
-  // the effective threshold; while a gate keeps it null, the owner's own value, else the rail's
-  const cur = sc.thresholdPct ?? sc.sessionPct ?? sc.defaultPct;
-  const step = el("span", "stepper");
-  const minus = el("button", "", "−") as HTMLButtonElement;
-  minus.type = "button";
-  minus.setAttribute("aria-label", "Schwelle senken");
-  minus.title = `Auf ${cur - 5} % senken — nur diese Session`;
-  minus.disabled = busy || locked || cur - 5 < 5;
-  minus.onclick = () => void writeHandover(c, { thresholdPct: cur - 5 });
-  // a gate that cannot fire has no number to step: it says "aus" instead of a 0 % nobody set
-  const val = el("span", "val", locked || cur <= 0 ? "aus" : `${cur} %`);
-  const plus = el("button", "", "+") as HTMLButtonElement;
-  plus.type = "button";
-  plus.setAttribute("aria-label", "Schwelle heben");
-  plus.title = `Auf ${cur + 5} % heben — nur diese Session`;
-  plus.disabled = busy || locked || cur + 5 > 95;
-  plus.onclick = () => void writeHandover(c, { thresholdPct: cur + 5 });
-  if (locked) minus.title = plus.title = "Hier wirkt keine Schwelle — der Grund steht darunter";
-  step.append(minus, val, plus);
-  const thV: (Node | string)[] = [step];
-  if (sc.pctFrom === "session" && !locked) {
-    const back = el("button", "lk", `zurück auf ${sc.defaultPct} %`) as HTMLButtonElement;
-    back.type = "button";
-    back.title = "Die Schwelle der Fleet für diese Session wieder übernehmen";
-    back.disabled = busy;
-    back.onclick = () => void writeHandover(c, { thresholdPct: null });
-    thV.push(back);
-  }
-  rows.push(row("Übergabe bei", thV, sc.thresholdOff && sc.thresholdOff !== "rail"
-    ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
-    : sc.pctFrom === "session" ? `Ab hier soll sie an eine frische Session weitergeben. Nur für diese Session — die Fleet steht auf ${sc.defaultPct} %.`
-    : `Ab hier soll sie an eine frische Session weitergeben. Die Fleet-Schwelle für ${sc.rail === "lane" ? "alle Lanes" : "alle Sessions dieser Art"} — hier nur für diese änderbar.`));
-  const seg = el("span", "seg");
-  for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
-    const b = el("button", sc.nudgeOn === on ? "on" : "", word) as HTMLButtonElement;
-    b.type = "button";
-    b.setAttribute("aria-pressed", String(sc.nudgeOn === on));
-    b.disabled = busy || locked;
-    b.title = on ? "Fleet schreibt dieser Session bei der Schwelle einen Hinweis" : "Fleet schreibt dieser Session keinen Hinweis — sie gibt nur weiter, wenn sie selbst entscheidet";
-    b.onclick = () => { if (sc.nudgeOn !== on) void writeHandover(c, { nudge: on }); };
-    seg.appendChild(b);
-  }
-  const given = sc.gaveUp ? `Aufgehört nach ${sc.nudges}.` : sc.nudges ? `Bisher ${sc.nudges}, zuletzt ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "zu unbekannter Zeit"}.` : "Bisher keiner.";
-  rows.push(row("Hinweis", [seg], `Fleet schreibt der Session bei der Schwelle einen Hinweis, höchstens ${sc.maxNudges}-mal. ${given}`));
-  const [way, wayH] = RAIL_WAY[sc.rail];
-  rows.push(row("Weg", [way], wayH));
-  rows.push(row("Diese Session", [sc.rail === "lane" ? `die ${sc.session}. dieser Lane` : `die ${sc.session}. dieser Linie`],
-    sc.cap !== null ? `${sc.taken ?? 0} von ${sc.cap} Übergaben genutzt — danach verlangt Fleet einen Bericht statt einer weiteren.`
-      : sc.taken !== null ? `${sc.taken} Übergaben genutzt, ohne Deckel.`
-      : sc.rail === "lane" ? "Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Deckel." : "Ohne Deckel — nur Lanes mit Aufgaben-Zeile haben einen."));
-  const err = ubErr.get(c.slot);
-  if (err) rows.push(el("div", "perr", `Nicht gespeichert — ${err}`));
-  return rows;
+// THE KONTEXT LINE REDRAWN WHERE IT STANDS (K9 S1, owner 13.10.: „[Zitat entfernt]“): opening the handover popover
+// and every write in it rebuild this one row from what the client holds — no /brief, no column render
+// per click. The board's next tick rebuilds it with the rest. False = the row is not on screen.
+function paintContextRow(c: BoardCtx): boolean {
+  const old = boardBody.querySelector<HTMLElement>(".bkv.ctx");
+  if (!old || panes[focused]?.slot !== c.slot) return false;
+  const a = document.activeElement;
+  const key = a instanceof HTMLElement && old.contains(a) ? a.dataset.uk ?? (a.dataset.pop ? "pop" : null) : null;
+  const next = contextRow(c);
+  old.replaceWith(next);
+  if (key) next.querySelector<HTMLElement>(key === "pop" ? "button[data-pop]" : `[data-uk="${key}"]`)?.focus({ preventScroll: true });
+  if (popScroll && !isMobile()) { popScroll = false; next.querySelector<HTMLElement>(".bpop")?.scrollIntoView({ block: "nearest" }); }
+  return true;
 }
 // GEHÖRT ZU — the order, the Program and the lane's file as links (they were chips with a frame)
 function belongsLinks(c: BoardCtx): HTMLElement[] {

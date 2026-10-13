@@ -3306,11 +3306,13 @@
   #board .ubpop .pr > .pv b { font-weight: 500; color: var(--chat-ink); }
   #board .ubpop .pr > .h { grid-column: 2; font-size: 10.5px; line-height: 1.35; color: var(--chat-faint); }
   #board .ubpop .perr { margin-top: 4px; font-size: var(--chat-ui-fs); color: var(--danger); }
-  #board .stepper { display: inline-flex; align-items: center; border: 1px solid var(--chat-edge); border-radius: var(--r1); }
-  #board .stepper button { width: 22px; min-height: 20px; padding: 0; border: 0; background: transparent; color: var(--chat-mute); cursor: pointer; font: 500 12px var(--chat-sans); }
-  #board .stepper button:hover:not(:disabled) { color: var(--chat-ink); }
-  #board .stepper button:disabled { color: var(--chat-faint); cursor: default; }
-  #board .stepper .val { min-width: 42px; text-align: center; font: var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
+  /* a wide row (the threshold values, the successor button): its value and sentence under the label */
+  #board .ubpop .pr.wide > .pv, #board .ubpop .pr.wide > .h { grid-column: 1 / -1; }
+  #board .ubpop .pr.wide + .pr { margin-top: 2px; }
+  #board .ubpop .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .seg.pcts button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+  /* the fleet's own value: marked, so a session's own threshold reads as a choice beside it */
+  #board .seg.pcts button.dflt { text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .seg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
   #board .seg button { min-height: 20px; padding: 0 9px; border: 0; border-radius: 0; background: transparent; color: var(--chat-mute);
     font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; }
@@ -3373,7 +3375,7 @@
     #board .bpopscrim { display: block; position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--chat-void) 55%, transparent); }
     #board .bpop .bmenuitem { min-height: 44px; font-size: 14px; }
     #board .ubpop .pr { grid-template-columns: 110px minmax(0, 1fr); font-size: 13px; }
-    #board .stepper button { width: 44px; min-height: 40px; }
+    #board .seg.pcts button { min-width: 38px; }
     #board .seg button { min-height: 40px; padding: 0 14px; }
   }
 

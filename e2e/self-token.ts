@@ -1786,13 +1786,33 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
     (await plogRead()).filter((e) => e.slot === free && e.openedAt === oldOpenedAt).length;
   const oldPromptsBefore = await promptsOfOld();
 
-  const pressed = await post(`/api/slots/${free}/succeed`, {});
+  // THE SETTING IS THE LINE'S (K9 S1, server/succession.ts): what the owner set for the session rides on
+  // to the successor of BOTH doors — the owner's here, the session's own further down. Mutation: drop
+  // the carry in server.ts#respawnInPlace (the successor starts on the fleet's values).
+  type HView = { setting?: { thresholdPct?: number | null; nudge?: boolean; occupant?: { openedAt?: number } } | null };
+  const handoverOf = async (): Promise<HView> => (await (await get(`/api/slots/${free}/handover`)).json().catch(() => ({}))) as HView;
+  const setHandover = (expectedOpenedAt: number | undefined, body: Record<string, unknown>): Promise<Response> =>
+    fetch(`${BASE}/api/slots/${free}/handover`, { method: "PATCH", headers: H, body: JSON.stringify({ expectedOpenedAt, ...body }) });
+  const setOld = await setHandover(oldOpenedAt, { thresholdPct: 45 });
+
+  const pressed = await post(`/api/slots/${free}/succeed`, { expectedOpenedAt: oldOpenedAt });
   const pressedBody = (await pressed.json()) as { ok?: boolean; slot?: number; briefBytes?: number; lineage?: { lineageId?: string } };
   const successor = (await sessions()).slots.find((x) => x.id === free);
   check("owner succession door: a resting session is succeeded on the SAME slot and cwd as a new occupation",
     pressed.ok && pressedBody.ok === true && pressedBody.slot === free && successor?.cwd === repo
       && (successor.openedAt ?? 0) > oldOpenedAt && typeof pressedBody.briefBytes === "number",
     `${pressed.status} ${JSON.stringify(pressedBody)} row=${JSON.stringify(successor)}`);
+  const heirSetting = (await handoverOf()).setting;
+  check("owner succession door: the threshold the owner set for the session rides on to its successor — the setting is the line's",
+    setOld.ok && heirSetting?.thresholdPct === 45 && heirSetting.occupant?.openedAt === successor?.openedAt,
+    `${setOld.status} ${JSON.stringify(heirSetting)}`);
+  // the board's button names the occupant it was drawn for: a second press of it must not hand over the successor
+  const stale = await post(`/api/slots/${free}/succeed`, { expectedOpenedAt: oldOpenedAt });
+  const staleBody = (await stale.json().catch(() => ({}))) as { reason?: string };
+  check("owner succession door: a press naming the occupant that already left is refused 409 `occupant-changed`, and the successor stays",
+    stale.status === 409 && staleBody.reason === "occupant-changed"
+      && (await sessions()).slots.find((x) => x.id === free)?.openedAt === successor?.openedAt,
+    `${stale.status} ${JSON.stringify(staleBody)}`);
   const recorded = existsSync(rec) ? readFileSync(rec, "utf8") : null;
   check("owner succession door: the predecessor got NO turn — its byte recorder stayed empty and the prompt log holds no row for its occupation",
     recorded === "" && (await promptsOfOld()) === oldPromptsBefore,
@@ -1834,6 +1854,7 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
     ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": t } })).json()) as
       { lineage?: { record?: { intent?: string | null; pointer?: string | null } } | null }).lineage?.record;
   const STAND = `self-door standing intent ${process.pid}`;
+  const setHeir = await setHandover(successor?.openedAt, { thresholdPct: 55, nudge: false });
   const standWrote = await selfPost(heirTok, "/api/self/handover", { intent: STAND });
   const selfEmpty = await selfPost(heirTok, "/api/self/succeed", { effort: "high" });
   const third = await nextTok(heirTok);
@@ -1848,6 +1869,11 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
     standWrote.ok && selfEmpty.ok && thirdRecord?.intent === STAND && thirdRecord.pointer === null
       && thirdBrief.includes("die stehende Übergabe deiner Vorgängerin vom ") && thirdBrief.includes("(POST /api/self/handover)"),
     `${standWrote.status} ${selfEmpty.status} record=${JSON.stringify(thirdRecord)} brief=${JSON.stringify(thirdBrief.slice(-300))}`);
+  // K9 S1 (owner 13.10.): the threshold survives the session's OWN succession, not only the owner door's
+  const thirdSetting = (await handoverOf()).setting;
+  check("self succession door: the owner's threshold and hint ride on to the session's own successor — the setting belongs to the line on the slot",
+    setHeir.ok && thirdSetting?.thresholdPct === 55 && thirdSetting.nudge === false && thirdSetting.occupant?.openedAt === third.openedAt,
+    `${setHeir.status} ${JSON.stringify(thirdSetting)}`);
   const BODY = `self-door body intent ${process.pid}`;
   const stand2 = await selfPost(third.tok, "/api/self/handover", { intent: `${STAND} (zweite)` });
   const selfBody = await selfPost(third.tok, "/api/self/succeed", { intent: BODY });

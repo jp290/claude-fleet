@@ -2014,8 +2014,8 @@ function loadReportDelegate(v: unknown): ReportDelegate | null {
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
 // HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
 // FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
-// its hint at all. Bound to `occupant` like a read grant; the owner door's succession re-binds it to
-// the successor (server.ts#carryHandoverSetting), every other new occupant starts on the fleet's values.
+// its hint at all. Bound to `occupant` like a read grant; every succession on the slot re-binds it to
+// the successor (server/succession.ts), a freshly opened occupant starts on the fleet's values.
 // `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
 // session above its effective threshold whose last model call is `keepCacheIdleMin` minutes old is
 // succeeded through the owner door (no turn of its own) or, while further work is foreseeable, kept

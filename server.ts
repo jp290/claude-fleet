@@ -212,6 +212,7 @@ import { createLiveReader, sessionQueue, type QueuedPrompt } from "./server/live
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
+import { ownSetting, settingForSuccessor, successorSentence } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
@@ -13107,6 +13108,9 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   if (slotTeardownInflight.has(s.id) || restarting.has(s.id))
     return refused(json({ error: "the predecessor is already being ended or restarted by another act — nothing was handed over and nothing is reopened" }, 409));
   const ownLaneReservation = laneSpawn.has(s.id); // the caller holds this reservation through the respawn
+  // THE OWNER'S SETTING IS THE LINE'S (server/succession.ts): read in the last synchronous step before
+  // the kill, so an owner PATCH that landed while the brief was built is the one that rides on
+  const lineSetting = ownSetting(s.handover, predecessor);
   let ownEndedSlot = false;
   try {
     await killSlot(s, "handoff");
@@ -13145,6 +13149,12 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
       () => onLost(new Error(reason)), 409, true, candidate) };
   }
   audit("main_succession", s.id, `${rail} respawned in place (predecessor openedAt ${predecessor.openedAt} → ${s.openedAt})`);
+  // ...and onto the successor it goes, unchanged, on the same cwd; its keepCache bookkeeping starts
+  // empty, so it is not handed over again at once — its newest model call is its own
+  if (lineSetting && s.cwd === predecessor.cwd) {
+    s.handover = settingForSuccessor(lineSetting, { slot: s.id, openedAt: s.openedAt }, Date.now());
+    keepCacheRuns.delete(s.id);
+  }
   // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
   // binds or saves — so the rail's own state cut persists them. Only a SUCCESSFUL open reaches this
   // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
@@ -13932,6 +13942,9 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
     releasedBy: s.releasedBy };
   const successions = r.succession?.successions ?? s.laneSuccessions;
   const priorOpenedAt = s.openedAt; // the predecessor occupation, read before openSlot rotates it
+  // the owner's setting is the line's (server/succession.ts) — a lane's baton and its harness switch
+  // keep it like every other succession; openSlot clears it, the restamp below puts it back
+  const lineSetting = ownSetting(s.handover, { slot: s.id, openedAt: priorOpenedAt });
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
   const seats: LaneSeat[] = [...s.laneSeats,
     { openedAt: priorOpenedAt, handedAt: Date.now(), sessionId: seatSessionId(s.sessionId), cwd }].slice(-LANE_SEATS_MAX);
@@ -13958,6 +13971,10 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
     s.releasedBy = provenance.releasedBy;
     s.laneSuccessions = successions;
     s.laneSeats = seats;
+    if (lineSetting) {
+      s.handover = settingForSuccessor(lineSetting, { slot: s.id, openedAt: s.openedAt }, Date.now());
+      keepCacheRuns.delete(s.id);
+    }
     // A RUNNING PREVIEW RIDES THE BATON. The successor is the same lane on the same branch, so an
     // open or claimed offer keeps its identity (slot + openedAt) under the successor's occupation.
     // Without this the sweep reaps the job mid-run at its next tick — measured 2026-09-18, job
@@ -14544,7 +14561,10 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null, observed: s.lastOutput > 0, idleThresholdMs: MERGE_IDLE_MS,
     standingHandover: standing ? { at: standing.at, ageMs: now - standing.at,
       channel: standing.intent !== null ? "intent" : "pointer", pointer: standing.pointer } : null,
-    tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null };
+    tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null,
+    // the button's one sentence: what the successor gets, or why the door does not open now
+    says: successorSentence({ refusal, rail: bound.length ? "program" : "generic",
+      standingHandover: standing ? { ageMs: now - standing.at } : null, tail }) };
 }
 
 // `stillWanted` is the unattended caller's own last question (tickKeepCache: is the switch still on,
@@ -14563,9 +14583,8 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
   if (!sameSuccessionOccupant(s, predecessorIdentity) || successionInflight.has(identity))
     return no(ownerSucceedNo(409, "in-flight", "a succession of this session is already in flight"));
   // THE OWNER'S HANDOVER SETTING BELONGS TO THE LINE ON THIS SLOT (MAIN, row 4e5ab4bb, 08.10.: the
-  // owner sets keepCache for the line, not for one session) — read in the LAST question before the kill
-  // (beforeKill below), so an owner PATCH that lands while the brief is built is the one carried
-  let lineSetting: HandoverSetting | null = null;
+  // owner sets keepCache for the line, not for one session): respawnInPlace carries it, read after
+  // beforeKill below, so an owner PATCH that lands while the brief is built is the one carried
   successionInflight.add(identity);
   try {
     // THE RAIL, fixed here and re-asked before the kill: a binding that moves while the brief is built
@@ -14606,7 +14625,6 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     const beforeKill = async (): Promise<Response | null> => {
       await waitForKeepCacheTestLatch(`kill:${s.id}`);
       const refused = await lastQuestion();
-      if (!refused) lineSetting = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
       if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
         + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
       return refused;
@@ -14622,22 +14640,10 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
         channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
         spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, memoryGrant: undefined,
         appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
-    carryHandoverSetting(s, lineSetting, predecessorIdentity);
     return done;
   } finally {
     successionInflight.delete(identity);
   }
-}
-
-// …and onto the successor it goes, unchanged (threshold, hint, keepCache and its duration), once a NEW
-// occupant stands on the same slot and cwd — also when its founding brief was not delivered, because
-// the successor stands either way. Its keepCache bookkeeping starts empty, and it is not handed over
-// again at once: its newest model call is its own, so the duration counts from there.
-function carryHandoverSetting(s: Slot, setting: HandoverSetting | null, pred: SuccessionPredecessorIdentity): void {
-  if (!setting || !s.cwd || s.openedAt === pred.openedAt || s.cwd !== pred.cwd || s.handover) return;
-  s.handover = { ...setting, setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt } };
-  keepCacheRuns.delete(s.id);
-  saveState();
 }
 
 // THE SESSION'S HALF: write (or overwrite) the standing handover, in a turn it runs anyway. Same
@@ -26725,7 +26731,7 @@ const keepCacheVersion = (h: HandoverSetting | null): string | null =>
 // to; it only ever WARMS (no threshold, no succeed, no foreseeable-work read: a bound MAIN is the
 // session the next owner or lane turn lands in); and it is capped per hour on top of the warm cap.
 // The owner switches it off per occupant with PATCH /api/slots/:id/handover {warmBound:false}, which
-// rides on to an owner-door successor with the rest of the setting (carryHandoverSetting).
+// rides on to every successor on the slot with the rest of the setting (server/succession.ts).
 // WHY 50 MIN IS EARLY ENOUGH: on this host Claude compacted 12 of 12 idle sessions 53–54 min after their
 // last model call ("Compacted while idle, before the prompt cache expired", 14 transcripts, 2026-10-11);
 // the warm turn at the default 50 min plus one 60 s tick is planned before that (a busy or held pane can push it later). A session whose cache tier
@@ -54716,7 +54722,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         return json({ ok: true, sleeping: r.sleeping, composer: r.composer });
       }
       // ⏭ a fresh session on the same slot and cwd WITHOUT a turn of the resting one (handleOwnerSucceed)
-      if (slotMatch[2] === "succeed") return await handleOwnerSucceed(s);
+      // `expectedOpenedAt` (optional) names the occupant the board's button was drawn for: a second
+      // press, or one on a row a succession already moved on, must not hand over the successor
+      if (slotMatch[2] === "succeed") {
+        const body = await readJson(req);
+        if (body?.expectedOpenedAt !== undefined && body.expectedOpenedAt !== s.openedAt)
+          return json({ error: "the slot holds another session now — nothing was handed over", reason: "occupant-changed" }, 409);
+        return await handleOwnerSucceed(s);
+      }
       if (slotMatch[2] === "wake") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         if (!s.sleeping && !slotWakeInflight.has(s.id)) return json({ error: "slot is not asleep", reason: "awake" }, 409);

@@ -2091,22 +2091,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "reshapeSurface settle / Pane.setView in src/client.ts");
 
   // --- G0.5 OWNER VOCABULARY (owner 2026-09-22, card K9): the four surfaces this lane re-worded
-  // — the Info-Tab's succession block, the suite meter's stretch, the deploy-due lines, the
-  // .slotact strip — plus tray and founding window. Per surface ONE check whose anchors are the
+  // — the suite meter's stretch, the deploy-due lines, the .slotact strip — plus tray and founding
+  // window (the succession block's popover is measured by its behaviour in runArbeitsorteDom). Per surface ONE check whose anchors are the
   // visible words themselves: the owner word PRESENT, the old jargon ABSENT, and the German
   // one-sentence tooltip that explains it. "Rail"→"Kind", "Suites"→"Checks", „[Zitat entfernt]“→
   // "offered check run", "queued suite"→"queued check run", "suite gate · held by pid N"→
   // "check run busy · pid N" are MAIN-derived (Slot 13, aus audit→check) — owner sighting open.
-  // Since card R3 the succession block is ONE line with a popover, and its words went further than
-  // K9's: no "Kind"/"Handoff"/"Rail" at all — Kontext, Übergabe bei, Hinweis, Weg, Diese Session.
-  check("G0.5 succession block: the handover line and its popover speak owner words, the tooltips explain in German",
-    cliSrc.includes('row("Weg", [way], wayH)') && !cliSrc.includes('srow("Rail"') && !cliSrc.includes('srow("Kind"')
-    && cliSrc.includes('rail: "für diese Art Session auf 0 gestellt"') && !cliSrc.includes("this rail's own threshold is 0")
-    && cliSrc.includes("gegen diese Zahl misst der Server, wann die Session weitergeben soll.")
-    && !cliSrc.includes("the measurement the succession threshold is compared against")
-    && cliSrc.includes('lane: ["neue Session im selben Worktree", "Gleicher Branch, gleicher Slot;')
-    && !cliSrc.includes("watches, autos and reports carry by id"),
-    "contextRow + handoverRows in src/board.ts");
   // since 2026-10-08 the strip's head and its panel are gone: the block head says "Prüfungen", a run
   // speaks one German sentence, the lock gets a row only when it needs someone (src/board.ts#runRows)
   check("G0.5 suite stretch: the block reads Prüfungen, its run lines and the lock's words carry no suite/audit/gate",
@@ -2369,17 +2359,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
   // THE SUCCESSION NUMBERS, one line since card R3 (rechter-tab-notiz.md §4): the fill and a switch
-  // with the threshold on its face; the four former facts (fill, threshold + hint, kind, handoff)
-  // live in its popover in readable words (G0.5 — no "Fill", "Handover", "Kind", "Handoff"). The two
-  // traps stay asserted: a board that prints a threshold nobody armed, and one that draws an
-  // unmeasurable context as 0 %. The served numbers are measured live in e2e/watch.ts, the route
-  // that sets them per session in e2e/self-token.ts, the DOM in runArbeitsorteDom's info claims.
+  // with the threshold on its face. The two traps stay asserted: a board that prints a threshold
+  // nobody armed, and one that draws an unmeasurable context as 0 %. The popover (src/handover.ts,
+  // K9 S1) is measured by its behaviour in runArbeitsorteDom's info claims, the served numbers live
+  // in e2e/watch.ts, the route that sets them per session in e2e/self-token.ts.
   const succSrc = boardSrc.slice(boardSrc.indexOf("function contextRow("), boardSrc.indexOf("// GEHÖRT ZU"));
-  check("client: the handover is ONE line, and its popover names the four facts in readable words",
-    /kvRow\("Kontext", v, "ctx"\)/.test(succSrc) && /row\("Kontext", \[/.test(succSrc) && /row\("Übergabe bei", thV,/.test(succSrc)
-    && /row\("Hinweis", \[seg\],/.test(succSrc) && /row\("Weg", \[way\], wayH\)/.test(succSrc) && /row\("Diese Session", \[/.test(succSrc)
-    && !/srow\("(Fill|Handover|Kind|Handoff)"/.test(boardSrc),
-    "contextRow + handoverRows in src/board.ts");
   check("client: an unmeasurable fill reads \"nicht messbar\" — the percentage exists only inside the sc.fill branch",
     /const fill = sc\.fill \? `\$\{Math\.round\(sc\.fill\.pct\)\} %` : "nicht messbar";/.test(succSrc),
     "the Kontext row in src/board.ts");
@@ -2387,14 +2371,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /sc\.thresholdPct !== null \? `Übergabe bei \$\{sc\.thresholdPct\} %` : "Übergabe aus"/.test(succSrc)
     && /aus: \$\{OFF_WHY\[sc\.thresholdOff \?\? "rail"\]\}/.test(succSrc),
     "the handover switch in src/board.ts");
-  check("client: the cap is drawn only where one exists — without one the popover says so, never 0 of 5",
-    /sc\.cap !== null \? `\$\{sc\.taken \?\? 0\} von \$\{sc\.cap\} Übergaben genutzt/.test(succSrc)
-    && /Diese Lane trägt keine Aufgaben-Zeile, also begrenzt sie kein Deckel\./.test(succSrc), "the handover popover in src/board.ts");
-  check("client: the threshold and the hint are written per session over the handover route, the env value stays the default",
-    /api\(`\/api\/slots\/\$\{c\.slot\}\/handover`, \{ method: "PATCH"/.test(succSrc) && /expectedOpenedAt: c\.s\.openedAt/.test(succSrc)
-    && /writeHandover\(c, \{ thresholdPct: cur - 5 \}\)/.test(succSrc) && /writeHandover\(c, \{ thresholdPct: cur \+ 5 \}\)/.test(succSrc)
-    && /writeHandover\(c, \{ nudge: on \}\)/.test(succSrc) && /writeHandover\(c, \{ thresholdPct: null \}\)/.test(succSrc),
-    "writeHandover + handoverRows in src/board.ts");
   // THE SPACE CUT (owner, 2026-09-20: „[Zitat entfernt]“
   // ). Three lines left the column, and each of them was a REPETITION or a non-event, never
   // a fact: the setup block's `Type` row said what the head's own state line says word for word,
@@ -12027,6 +12003,10 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     claim: ["a closed lane carries no row of points and no flag", "no closed lane carries a flag"],
     needle: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  row.appendChild(rt);",
     with: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  if (WAY.some(({ key }) => w.checks?.[key]?.state === \"green\" || w.checks?.[key]?.state === \"red\")) { const f = el(\"span\", \"lflag ok\"); f.appendChild(icon(\"flag\")); rt.appendChild(f); }\n  row.appendChild(rt);" })),
+  // K9 S1 (owner 13.10.: „[Zitat entfernt]“): the handover popover opens in place, without a column render and its /brief
+  { name: "the handover popover opens through the column render again", state: "uebergabe",
+    claim: "the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Nachfolge, nothing else",
+    needle: "popScroll = !open; if (!paint?.()) void renderBoard(); };", with: "popScroll = !open; void renderBoard(); };" },
   { name: "a tap on a lane jumps to its session", state: "tippen", claim: "a tap on 3B opens it in place",
     needle: "rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });",
     with: "rowTarget(row, () => { if (s) jumpTo(s.id); else { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); } });" },
@@ -12312,6 +12292,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   // for it — so a claim can say what the line does BEFORE the next read answers; `holdOpen` the same for
   // the answer to Öffnen
   const fx = { state: "lane" as State, now: Date.now(), writes: [] as { path: string; body: unknown }[], opened: [] as string[], pla: {} as Record<string, unknown>, plaAt: 0,
+    // when each /brief was asked: the handover popover's clicks must read none (K9 S1, owner 13.10.: „[Zitat entfernt]“)
+    briefAt: [] as number[],
     tiUntil: 0, holdWorktrees: null as Promise<void> | null, holdOpen: null as Promise<void> | null,
     // THE LIVE SESSION (state `live`): which of its three steps the fixture refuses, and the lanes it made
     liveFail: null as null | "lane" | "send" | "ti", liveMade: [] as Lane[],
@@ -12460,6 +12442,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   const noteOf = (st: State) => st === "land" || st === "mehr" || st === "alarm" ? NOTE : null;
   const UNDO_BRANCH = "fleet/261005-insel-am-telefon-1b2c";
   const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean } };
+  const SUCC_READY = "Die Nachfolgerin bekommt die stehende Übergabe von vor 12 min und 9 Einträge Transkript-Rest.";
+  const SUCC_LANE = "Geht gerade nicht: eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht.";
   const succession = (slot: number) => slot === 3
     ? { rail: "standard-main", fill: { usedTokens: 520_000, windowTokens: 1_000_000, pct: 52 }, thresholdPct: null, thresholdOff: "fleet",
       nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true }
@@ -12575,12 +12559,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       if (st === "live" && p === "/api/slots/12/risk") return void json(requestId, { dirtyFiles: [], unpushedCommits: [{ hash: "6c94a84", subject: "feat: Zeitleiste springt zur Stunde" }], shortstat: null, empty: false });
       if (st === "live" && p === "/api/slots/12/merge-diff") return void json(requestId, { main: "main", branch: liveLane.branch, files: ["src/zeitleiste.ts"],
         diff: "diff --git a/src/zeitleiste.ts b/src/zeitleiste.ts\n--- a/src/zeitleiste.ts\n+++ b/src/zeitleiste.ts\n@@ -1 +1,2 @@\n export const zeitleiste = 1;\n+export const springtZurStunde = true;\n", truncated: false });
+      // the owner door's preview (server.ts#ownerSucceedPreview): a lane is refused by name, a main rests
+      const sp = /^\/api\/slots\/(\d+)\/succeed$/.exec(p);
+      if (sp) return void json(requestId, sp[1] === "9"
+        ? { slot: 9, ready: false, refusal: { reason: "lane", error: "a lane hands over by its own report" }, says: SUCC_LANE }
+        : { slot: Number(sp[1]), ready: true, refusal: null, says: SUCC_READY });
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
         const lane = lanesOf(st).find((l) => l.slot === slot);
         const repo = lane ? lane.repo ?? REPO : slot === 6 ? REPO2 : REPO;
         if (m[2] === "brief") {
+          fx.briefAt.push(Date.now());
           const ownSlot = slot === 9 && st !== "land";
           const mainFiles = ["M  docs/design/grammatik.md", "M  docs/programs/oberflaeche.md", "?? docs/design/neu.md"];
           const commits = slot === 9 ? OWN_COMMITS : slot === 3
@@ -12740,7 +12730,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const facts: Record<string, unknown> = {};
         const claims = claimsUntil(only.until, (c) => ({ width, height, state: st, claims: c, facts }));
-        fx.state = st; fx.writes = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false;
+        fx.state = st; fx.writes = []; fx.briefAt = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank", ...(contextId ? { browserContextId: contextId } : {}) })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -13654,7 +13644,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                 buttons: [...work.querySelectorAll('.bchangeacts > button')].map((b) => ({ text: b.textContent.trim(), label: b.getAttribute('aria-label'), primary: b.classList.contains('primary'), disabled: b.disabled })) } : null,
               pop: pop ? { kind: pop.dataset.pop, items: [...pop.querySelectorAll('.bmenuitem')].map((b) => ({ t: txt(b.querySelector('.t')), danger: b.classList.contains('danger'), color: getComputedStyle(b).color })),
                 seps: pop.querySelectorAll('.sep').length, rows: [...pop.querySelectorAll('.pr')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .pv')), h: txt(r.querySelector(':scope > .h')) })),
-                stepper: [...pop.querySelectorAll('.stepper button')].map((b) => b.disabled), box: box(pop) } : null,
+                pcts: [...pop.querySelectorAll('.pcts button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
+                go: (() => { const b = pop.querySelector('button[data-uk="succeed"]'); return b ? { t: b.textContent.trim(), d: b.disabled } : null; })(), box: box(pop) } : null,
               focusPop: document.activeElement?.dataset?.pop ?? null,
               note: (() => { const n = body.querySelector('.bnotesec'); if (!n) return null; const ta = n.querySelector('textarea'), save = n.querySelector('.bnotesave'), foot = n.querySelector('.bnotefoot');
                 return { rows: ta?.rows ?? 0, h: Math.round(ta?.getBoundingClientRect().height ?? 0), value: ta?.value ?? '', save: !!save && !save.hidden, foot: foot && !foot.hidden ? txt(foot.querySelector('.m')) : '' }; })(),
@@ -13682,7 +13673,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           type Info = { title: string | null; shellInfo: boolean; kids: string[];
             sess: { name: string | null; glyphs: { label: string | null; title: string; text: string }[]; meta: string | null; kv: { k: string | null; v: string | null; title: string; sw: string | null }[] } | null;
             work: { text: string | null; state: string | null; files: number; landnote: string | null; buttons: { text: string; label: string | null; primary: boolean; disabled: boolean }[] } | null;
-            pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[]; stepper: boolean[];
+            pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[];
+              pcts: { t: string; on: boolean; dflt: boolean; d: boolean }[]; go: { t: string; d: boolean } | null;
               box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
             note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
             hist: { rows: number; files: number; folds: number; more: string | null } | null;
@@ -13913,37 +13905,89 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const sheetOk = (b: { x: number; r: number; b: number; w: number } | undefined) => !!b && (phone
             ? !!n.boardBox && Math.abs(b.x - n.boardBox.x) <= 1 && Math.abs(b.r - n.boardBox.r) <= 1 && Math.abs(b.b - n.vh) <= 2 : b.w >= 200);
           if (st === "uebergabe" || st === "main") {
+            // THE HANDOVER POPOVER (K9 S1, owner 13.10.: „[Zitat entfernt]“
+            // , „[Zitat entfernt]“): three rows — the threshold
+            // one click away, the hint, „Neue Session jetzt“ with what the successor gets. Opening it and
+            // each click in it read NO /brief: every window starts right after a board tick asked one, so
+            // the next tick (3 s) cannot fall into it. Mutation: renderBoard() in popTrigger or in the write
+            // (the old path asked /brief twice per click).
+            const afterTick = async (): Promise<void> => {
+              const seen = fx.briefAt.length;
+              for (let i = 0; i < 80 && fx.briefAt.length === seen; i++) await Bun.sleep(50);
+              await Bun.sleep(80);
+            };
+            const briefsSince = (t: number): number => fx.briefAt.filter((x) => x >= t).length;
+            const lastH = `[...document.querySelectorAll('#boardbody .bpop .pr')].at(-1)?.querySelector('.h')?.textContent ?? ''`;
+            await afterTick();
+            let t0 = Date.now();
             await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
             await wait(`document.querySelector('#boardbody .bpop[data-pop="ueb"]')`, 3000);
+            const openBriefs = briefsSince(t0), openMs = Date.now() - t0;
+            // the door's preview arrives a moment after the popover
+            await wait(`/^(Die Nachfolgerin|Geht gerade nicht)/.test(${lastH})`, 3000);
             await settle(150);
             n = await info();
-            facts.ueb = n.pop;
-            const rows = n.pop?.rows ?? [];
-            claims[`${it}the switch opens the handover settings in readable words: Kontext · Übergabe bei · Hinweis · Weg · Diese Session`] = n.pop?.kind === "ueb"
-              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Kontext", "Übergabe bei", "Hinweis", "Weg", "Diese Session"])
-              && (isLane ? rows[0]?.v === "370k von 1M · 37 %" && rows[1]?.v === "− 40 % +" && rows[3]?.v === "neue Session im selben Worktree"
-                && rows[4]?.v === "die 3. dieser Lane" && /2 von 5 Übergaben genutzt/.test(rows[4]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[2]?.h ?? "")
-                : rows[3]?.v === "über das Program" && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[1]?.h ?? "") && n.pop?.stepper.every((d) => d) === true)
+            facts.ueb = { pop: n.pop, openBriefs, openMs };
+            const rows = n.pop?.rows ?? [], pcts = n.pop?.pcts ?? [];
+            claims[`${it}the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Nachfolge, nothing else`] = n.pop?.kind === "ueb"
+              && openBriefs === 0 && openMs < 2500
+              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Übergabe bei", "Hinweis", "Nachfolge"])
+              && JSON.stringify(pcts.map((x) => x.t)) === JSON.stringify(["25", "30", "35", "40", "45", "50", "55", "60"])
+              && (isLane ? pcts.find((x) => x.on)?.t === "40" && pcts.find((x) => x.dflt)?.t === "40" && pcts.every((x) => !x.d)
+                  && /die Fleet steht auf 40 %/.test(rows[0]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[1]?.h ?? "")
+                  && n.pop?.go?.d === true && rows[2]?.h === SUCC_LANE
+                : pcts.every((x) => x.d && !x.on) && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[0]?.h ?? "")
+                  && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows[2]?.h === SUCC_READY)
               && sheetOk(n.pop?.box);
             await shot(`info-${st}-${width}`);
             if (st === "uebergabe") {
+              const line = `document.querySelector('#boardbody .bhead .bkv.ctx > .v')?.innerText ?? ''`;
               fx.writes = [];
-              await evaluate(`document.querySelector('#boardbody .bpop .stepper button[aria-label="Schwelle heben"]')?.click()`);
-              await wait(`document.querySelector('#boardbody .bpop .stepper .val')?.textContent === '45 %'`, 3000);
+              await afterTick();
+              t0 = Date.now();
+              await evaluate(`[...document.querySelectorAll('#boardbody .bpop .pcts button')].find((b) => b.textContent.trim() === '60')?.click()`);
+              await wait(`(${line}).includes('Übergabe bei 60 %') && document.querySelector('#boardbody .bpop .pcts button.on')?.textContent.trim() === '60'`, 2000);
+              const clickBriefs = briefsSince(t0), clickMs = Date.now() - t0;
+              await settle(100);
+              await afterTick();
+              t0 = Date.now();
               await evaluate(`[...document.querySelectorAll('#boardbody .bpop .seg button')].find((b) => b.textContent === 'Aus')?.click()`);
-              await wait(`document.querySelector('#boardbody .bpop .seg button.on')?.textContent === 'Aus'`, 3000);
+              await wait(`document.querySelector('#boardbody .bpop .seg:not(.pcts) button.on')?.textContent === 'Aus'`, 2000);
+              const offBriefs = briefsSince(t0);
+              await settle(100);
               n = await info();
-              facts.uebWrites = fx.writes;
-              claims[`${it}+ writes 45 % and Aus writes the hint off — for THIS occupant, over the handover route`] =
-                fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: 45 }))
+              facts.uebWrites = { writes: fx.writes, clickBriefs, clickMs, offBriefs };
+              claims[`${it}40 → 60 is one click and reads no /brief, Aus writes the hint off — for THIS occupant, over the handover route`] =
+                clickBriefs === 0 && clickMs < 2500 && offBriefs === 0
+                && fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: 60 }))
                 && fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), nudge: false }))
-                && (n.sess?.kv.find((r) => r.k === "Kontext")?.v ?? "").startsWith("37 % · Übergabe bei 45 % Hinweis aus")
-                && /zurück auf 40 %/.test(n.pop?.rows[1]?.v ?? "");
+                && (n.sess?.kv.find((r) => r.k === "Kontext")?.v ?? "").startsWith("37 % · Übergabe bei 60 % Hinweis aus");
+              // the fleet's own value (marked) takes the session back to the fleet: no own record is kept
+              fx.writes = [];
+              await evaluate(`[...document.querySelectorAll('#boardbody .bpop .pcts button')].find((b) => b.textContent.trim() === '40')?.click()`);
+              await wait(`(${line}).includes('Übergabe bei 40 %')`, 2000);
+              await settle(100);
+              claims[`${it}the fleet's own value returns the session to the fleet — the write is thresholdPct null`] =
+                fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: null }));
             }
             await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
             await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
             n = await info();
             claims[`${it}Escape closes the popover and hands the focus back to its switch`] = !n.pop && n.focusPop === "ueb";
+            if (st === "main") {
+              // „Neue Session jetzt“ on a resting main: ONE post to the owner door, naming the occupant the
+              // button was drawn for — a press on a row a succession already moved on is the server's 409
+              fx.writes = [];
+              await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="succeed"]:not(:disabled)')`, 3000);
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="succeed"]')?.click()`);
+              await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
+              await settle(100);
+              const pressed = fx.writes.filter((w) => w.path === "/api/slots/3/succeed");
+              facts.succeedWrites = fx.writes;
+              claims[`${it}„Neue Session jetzt“ posts ONE owner-door succession for this occupant and closes the popover`] =
+                pressed.length === 1 && JSON.stringify(pressed[0]?.body) === JSON.stringify({ expectedOpenedAt: openedAt(3) });
+            }
           }
           if (st === "menue") {
             await evaluate(`document.querySelector('#boardbody .bchangeacts button[data-pop="land"]')?.click()`);

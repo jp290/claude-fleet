@@ -365,7 +365,7 @@ ti_serve() {
     echo FLEET_HARNESS_RESUME >> "$DIR/env-names"
   fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
-              FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT; do
+              FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT FLEET_MIGRATE_PCT; do
     echo "$TI_V" >> "$DIR/env-names"
   done
   if grep -Eq '^(FLEET_HUB_REMOTE|FLEET_HELPER_|FLEET_SHARE_)' "$DIR/env-names"; then
@@ -403,6 +403,9 @@ ti_serve() {
   # view has a root and `down` removes it with the rest; FLEET_TI_KONZEPT_ROOT points it at a fixture
   TI_KONZ="${FLEET_TI_KONZEPT_ROOT:-$DIR/konzepte}"
   mkdir -p "$TI_KONZ"
+  # THE HANDOVER THRESHOLD as the live fleet arms it (.env FLEET_MIGRATE_PCT 40, owner 29.09.): at the
+  # code default 0 every session reads „[Zitat entfernt]“, and the popover (src/handover.ts) has nothing to
+  # set; FLEET_TI_MIGRATE_PCT=0 shows that state on purpose
   # the band at the top of the instance: the stand recorded BEFORE the copy (ti_measure). Always set
   # here — this is a test instance by construction — and "{}" when no record exists, which the
   # instance reads as "Stand unbekannt" instead of showing no band at all.
@@ -412,7 +415,8 @@ ti_serve() {
       LANG=en_US.UTF-8 \
       FLEET_HOST="$(ti_addr)" FLEET_PORT="$PORT" FLEET_SOCK="$SOCK" FLEET_CMD="$TI_AGENT_CMD" \
       FLEET_INSTANCE="$TI_NAME" FLEET_INSTANCES="$TI_INST" FLEET_INSTANCE_SOURCE="$TI_SHOWN" FLEET_LANE_SUCCEED_MAX=5 \
-      FLEET_SNAPSHOT_MIRROR="$TI_MIRROR" FLEET_KONZEPT_ROOT="$TI_KONZ" "$@" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
+      FLEET_SNAPSHOT_MIRROR="$TI_MIRROR" FLEET_KONZEPT_ROOT="$TI_KONZ" FLEET_MIGRATE_PCT="${FLEET_TI_MIGRATE_PCT:-40}" \
+      "$@" FLEET_TOKEN="$(cat "$TOKF")" bun server.ts >> "$DIR/server.log" 2>&1 ) &
   echo $! > "$PIDF"
   i=0
   until curl -sf "http://$(ti_addr):$PORT/api/sessions" -H "authorization: Bearer $(cat "$TOKF")" >/dev/null 2>&1; do

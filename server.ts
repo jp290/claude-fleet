@@ -8719,12 +8719,15 @@ function branchNoteOf(repo: string, branch: string): string | null {
   if (branch === "(detached)") return null;
   return findBranch(branchBook, repoCanon(repo), branch)?.text || null;
 }
+const primaryOf = async (top: string): Promise<string> => repoCanon((await listWorktrees(top)).find((w) => w.primary)?.path ?? top);
+// the workplace repos by their primary checkout (a server started from a linked worktree lists that path)
+const branchRepos = async (): Promise<string[]> => [...new Set(await Promise.all(workplaceRepoList().map(primaryOf)))];
 async function branchRepoOf(raw: unknown): Promise<{ ok: true; repo: string } | { ok: false; error: string }> {
   if (typeof raw !== "string" || !raw.trim()) return { ok: false, error: "expected repo" };
   let top: string;
   try { top = await repoRootOf(raw); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "not a git repository" }; }
-  const repo = repoCanon((await listWorktrees(top)).find((w) => w.primary)?.path ?? top);
-  if (!workplaceRepoList().includes(repo)) return { ok: false, error: `${repo} is not a workplace repo — GET /api/branches would not show it` };
+  const repo = await primaryOf(top);
+  if (!(await branchRepos()).includes(repo)) return { ok: false, error: `${repo} is not a workplace repo — GET /api/branches would not show it` };
   return { ok: true, repo };
 }
 const branchExists = async (repo: string, branch: string): Promise<boolean> =>
@@ -8777,7 +8780,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
   return { repo, branches, others: v.others, othersTotal: v.othersTotal, reasons };
 }
 async function branchesView(): Promise<BranchesView> {
-  return { repos: await Promise.all(workplaceRepoList().map((repo) => branchesOfRepo(repo))) };
+  return { repos: await Promise.all((await branchRepos()).map((repo) => branchesOfRepo(repo))) };
 }
 // An existing branch without a worktree gets one at the path Fleet derives for it (worktreePathFor),
 // with the same scaffold createWorktree gives a new one.
@@ -54868,4 +54871,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow };

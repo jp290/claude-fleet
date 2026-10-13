@@ -3906,10 +3906,36 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     const qOpened = qFree !== undefined && (await post(`/api/slots/${qFree}/open`, { cwd: qCwd })).ok;
     check("session queue fixture: a free slot opens on a throwaway cwd with a planted transcript", qOpened, `slot=${qFree}`);
     if (qOpened) {
-      type QRead = { entries: { role: string; meta?: boolean; blocks: { text: string }[] }[]; total: number; queued?: { text: string; at: string | null }[] };
+      type QRead = { entries: { role: string; meta?: boolean; blocks: { text: string }[] }[]; total: number };
+      // the queue rides with the live state (GET /live, the chat's status line, K10 S1); the transcript route
+      // stopped carrying it in S2. /live answers an empty queue for a pane that is not Claude Code's, so the
+      // slot's adapter is read first: an empty queue there would pass every check below without a reader
+      const qHarness = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness: string | null }[] })
+        .slots.find((s) => s.id === qFree)?.harness;
+      check("session queue fixture: the slot runs the Claude Code adapter (harness null), the one /live reads a queue for",
+        qHarness === null, `harness=${JSON.stringify(qHarness)}`);
+      const live = async () => ((await (await get(`/api/slots/${qFree}/live`)).json()) as { queued?: { text: string; at: string | null }[] }).queued;
+      // the chat hears when the transcript grew (server/transcript-push.ts, K10 S2; owner 13.10.: „[Zitat entfernt]“
+      // ): a pane socket that asked on connect (push=1) gets the count of complete
+      // lines as a text frame once seeded and again when it moves; one that did not ask gets terminal bytes only
+      const heard: number[] = [], plainText: string[] = [];
+      const asking = new WebSocket(`${wsUrl(qFree)}&push=1`), plain = new WebSocket(wsUrl(qFree));
+      asking.binaryType = "arraybuffer";
+      plain.binaryType = "arraybuffer";
+      asking.onmessage = (e) => { if (typeof e.data === "string") heard.push((JSON.parse(e.data) as { lines: number }).lines); };
+      plain.onmessage = (e) => { if (typeof e.data === "string") plainText.push(e.data); };
+      const heardWithin = async (n: number, ms: number): Promise<number | null> => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) { if (heard.includes(n)) return Date.now() - t0; await Bun.sleep(20); }
+        return null;
+      };
+      const linesNow = () => readFileSync(`${qProj}/queue.jsonl`, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+      const firstLines = linesNow();
+      const firstHeard = await heardWithin(firstLines, 5000);
       const q1 = (await (await get(`/api/slots/${qFree}/transcript`)).json()) as QRead;
-      check("session queue: the open entries ride with the transcript — only B, stamped when it was queued",
-        JSON.stringify(q1.queued) === JSON.stringify([{ text: qb, at: at(5) }]), JSON.stringify(q1.queued));
+      const l1 = await live();
+      check("session queue: the open entries ride with the live state — only B, stamped when it was queued",
+        JSON.stringify(l1) === JSON.stringify([{ text: qb, at: at(5) }]), JSON.stringify(l1));
       const stops = q1.entries.filter((e) => e.blocks.some((b) => b.text.startsWith("[Request interrupted by user")));
       check("session queue: both Esc markers come as meta:true (a folded note), and neither is a user bubble any more",
         stops.length === 2 && stops.every((e) => e.meta === true)
@@ -3920,13 +3946,21 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           && q1.entries.filter((e) => e.role === "user" && !e.meta && e.blocks.some((b) => b.text === qc)).length === 1,
         JSON.stringify(q1.entries.map((e) => [e.role, e.meta ?? false, e.blocks[0]?.text.slice(0, 40)])));
       appendFileSync(`${qProj}/queue.jsonl`, turn("user", "the next real turn", 20));
-      const q2 = (await (await get(`/api/slots/${qFree}/transcript?after=${q1.total}`)).json()) as QRead;
+      const grownHeard = await heardWithin(firstLines + 1, 3000);
+      check("push: a pane socket that asked hears the transcript's complete-line count once seeded, and the next count when a line is appended",
+        firstHeard !== null && grownHeard !== null && q1.total === firstLines,
+        `heard=${JSON.stringify(heard)} lines=${firstLines}→${linesNow()} total=${q1.total} first=${firstHeard}ms grown=${grownHeard}ms`);
+      check("push: a pane socket that did not ask (a guest, a tool, these checks) gets no text frame",
+        plainText.length === 0, JSON.stringify(plainText).slice(0, 300));
+      asking.close();
+      plain.close();
+      const l2 = await live();
       check("session queue: a later real user turn means the queue was drained — nothing waits, the field still answers",
-        Array.isArray(q2.queued) && q2.queued.length === 0, JSON.stringify(q2.queued));
+        Array.isArray(l2) && l2.length === 0, JSON.stringify(l2));
       appendFileSync(`${qProj}/queue.jsonl`, op("enqueue", 21, { content: "D" }) + op("enqueue", 22, { content: "E" }) + op("dequeue", 23));
-      const q3 = (await (await get(`/api/slots/${qFree}/transcript?after=${q2.total}`)).json()) as QRead;
+      const l3 = await live();
       check("session queue: a dequeue takes the OLDEST open entry (D), E still waits",
-        JSON.stringify(q3.queued?.map((q) => q.text)) === JSON.stringify(["E"]), JSON.stringify(q3.queued));
+        JSON.stringify(l3?.map((q) => q.text)) === JSON.stringify(["E"]), JSON.stringify(l3));
       await post(`/api/slots/${qFree}/kill`, {});
     }
     rmSync(qProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
@@ -10737,7 +10771,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
   const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
   const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[],
-    recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[] };
+    recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[],
+    reads: [] as number[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -10797,8 +10832,9 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
+        fx.reads.push(Date.now());
         return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
-          source: "/fixture/orch.jsonl", ttlSec: 300, queued: fx.queued });
+          source: "/fixture/orch.jsonl", ttlSec: 300 });
       }
       // the chat view reads the session's queue here since K10 S1; a held prompt means a running turn
       if (p === "/api/slots/1/history") return void json(requestId, { history: fx.history });
@@ -10864,7 +10900,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
       await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
       await send("Page.enable"); await send("Runtime.enable");
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      // the pane socket never opens here; scenario 14 speaks through it (window.__ws) the way the server pushes
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__ws = []; window.WebSocket = class { constructor() { this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
@@ -11034,6 +11071,30 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       for (let i = 0; i < 40 && !fx.recalls.length; i++) await Bun.sleep(25);
       claims["jetzt senden: the waiting bubble carries it, and a click asks the session to send now"] =
         nowBtn && JSON.stringify(fx.recalls) === JSON.stringify(["send-now"]);
+      // --- 14. the pane socket says the transcript grew (owner 13.10.: „[Zitat entfernt]“
+      // , K10 S2, server/transcript-push.ts): the chat reads at once instead of at
+      // its next second, and asks nothing while the socket pushes; when the socket drops it asks every second again
+      fx.queued = [];
+      const push = (lines: number) => evaluate(`window.__ws.at(-1).onmessage({ data: ${JSON.stringify(JSON.stringify({ t: "transcript", lines }))} })`);
+      const shows = (t: string) => `[...document.querySelectorAll('.pane .panechat .msg.assistant')].some((m) => m.innerText.includes(${JSON.stringify(t)}))`;
+      await push(fx.entries.length);
+      await settle(1300); // a read the old chain had armed still runs once
+      const quietFrom = fx.reads.length;
+      await settle(2200);
+      const quietReads = fx.reads.length - quietFrom;
+      const pushedText = "Die zweite Messung ist da.";
+      fx.entries = [...fx.entries, text("assistant", pushedText, 60)];
+      const pushedAt = Date.now();
+      await push(fx.entries.length);
+      const atOnce = await wait(shows(pushedText), 400);
+      facts.push = { quietReads, readAfterPushMs: (fx.reads.find((t) => t >= pushedAt) ?? Number.NaN) - pushedAt };
+      claims["push: while the pane socket pushes, the chat does not ask the transcript every second"] = quietReads === 0;
+      claims["push: a new line count from the pane socket brings the new answer into the chat at once, not at the next second"] = atOnce;
+      await evaluate(`window.__ws.at(-1).onclose?.({})`);
+      const droppedText = "Die dritte Messung ist da.";
+      fx.entries = [...fx.entries, text("assistant", droppedText, 61)];
+      claims["push: when the socket drops, the chat asks every second again and the next answer arrives without a push"] =
+        await wait(shows(droppedText), 2500);
       results.push({ width, height, claims, facts });
     }
     return results;
@@ -14093,12 +14154,17 @@ export async function runSessionRollover(ids: readonly [number, number, number],
     check("session rollover: an audit line names the rollover, old id and new",
       rolled.includes(line), `${JSON.stringify(rolled)} after=${lineAfter ?? ">5000"}ms`);
     const tr = (await (await get(`/api/slots/${A}/transcript`)).json()) as
-      { source: string | null; entries: { role: string; blocks: { text: string }[] }[]; queued?: { text: string }[] };
+      { source: string | null; entries: { role: string; blocks: { text: string }[] }[] };
     const through = tr.entries.some((e) => e.role === "user" && e.blocks.some((b) => b.text === PROBE));
-    const waiting = (tr.queued ?? []).some((q) => q.text === PROBE);
-    check("session rollover: the chat view reads the continued file, and its queue shows the prompt consumed there as through",
-      tr.source === `${Q}.jsonl` && through && !waiting && Array.isArray(tr.queued),
-      `source=${tr.source} through=${through} waiting=${waiting} queued=${JSON.stringify(tr.queued ?? null)}`);
+    // the queue rides with the live state (GET /live) since K10 S2; it answers an empty queue for a pane
+    // that is not Claude Code's, so the slot's adapter is read with it
+    const aHarness = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness: string | null }[] })
+      .slots.find((s) => s.id === A)?.harness;
+    const lv = (await (await get(`/api/slots/${A}/live`)).json()) as { queued?: { text: string }[] };
+    const waiting = (lv.queued ?? []).some((q) => q.text === PROBE);
+    check("session rollover: the chat view reads the continued file, and its live queue shows the prompt consumed there as through",
+      tr.source === `${Q}.jsonl` && through && aHarness === null && Array.isArray(lv.queued) && !waiting,
+      `source=${tr.source} through=${through} harness=${JSON.stringify(aHarness)} waiting=${waiting} queued=${JSON.stringify(lv.queued ?? null)}`);
     const row = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; ctx?: { usedTokens: number } | null }[] }).slots.find((s) => s.id === A);
     check("session rollover: ctx comes from the continued file",

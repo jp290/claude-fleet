@@ -114,9 +114,12 @@ describe("Charge mergen mit Merge-Check: genau der geprüfte Baum", () => {
   function plantCheck(f: { repo: string }, row: Record<string, unknown>): void {
     appendFileSync(join(sh(f.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "merge-checks.jsonl"), `${JSON.stringify(row)}\n`);
   }
-  function candidate(repo: string, main: string, tip: string): { candidate: string; tree: string } {
-    const tree = sh(repo, "merge-tree", "--write-tree", "--merge-base", `${tip}^`, main, tip).split("\n")[0]!;
-    return { candidate: sh(repo, "commit-tree", tree, "-p", main, "-m", "kandidat"), tree };
+  // main plus die Commits, einer nach dem anderen, wie ci/merge-check.ts#candidateOf
+  function candidate(repo: string, main: string, ...commits: string[]): { candidate: string; tree: string; commits: string[] } {
+    let cur = main;
+    for (const c of commits)
+      cur = sh(repo, "commit-tree", sh(repo, "merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c).split("\n")[0]!, "-p", cur, "-m", "kandidat");
+    return { candidate: cur, tree: sh(repo, "rev-parse", `${cur}^{tree}`), commits };
   }
 
   test("grün auf diesem Tip gegen diese Basis: main trägt genau den Baum des Kandidaten; rot oder veraltet: 409", async () => {
@@ -140,6 +143,52 @@ describe("Charge mergen mit Merge-Check: genau der geprüfte Baum", () => {
     expect(sh(f.repo, "rev-parse", "main^{tree}")).toBe(c.tree);
     expect(sh(f.repo, "log", "-1", "--format=%s", "main")).toBe("Geprüft: x");
     expect(rowsOf(after!, f.repo).branches[0]?.check).toMatchObject({ state: "stale" }); // die nächste Charge zählt ab dem Tip
+  }, LIFE_DEADLINE_MS);
+
+  // Bauleitung 13.10.: was der Owner sieht, wird gemergt. Die Basis ist ein Ref-Name; wandert er nach dem
+  // Merge-Check (die Bauleitung holt einen Teil des Branches in die Basis), zählt der Live-Bereich anders,
+  // als der Kandidat gebaut wurde. Mit einer verwendbaren Zeile zählen Diff, Anzahl und Body deren Commits.
+  test("die Basis wandert nach dem Merge-Check: Diff, Anzahl und Charge-Commit nennen genau die geprüften Commits", async () => {
+    const f = checkedFixture();
+    sh(f.repo, "branch", "basis");
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Gewandert", base: "basis" })]);
+    const path = String(made?.body.path);
+    const k1 = commitIn(path, "k1.txt", "erster geprüfter Commit");
+    const k2 = commitIn(path, "k2.txt", "zweiter geprüfter Commit");
+    const main = sh(f.repo, "rev-parse", "main");
+    const c = candidate(f.repo, main, k1, k2);
+    sh(f.repo, "branch", "-f", "basis", k1);
+    const diffOf = get(`/api/branches/diff?repo=${encodeURIComponent(f.repo)}&branch=branch/gewandert&charge=1`);
+    const [liveDiff, live] = await life(f, [diffOf, get("/api/branches")]);
+    expect(liveDiff?.body).toMatchObject({ files: ["k2.txt"], commits: [{ sha: k2 }] }); // ohne Zeile: was ein neuer Check prüfen würde
+    expect(rowsOf(live!, f.repo).branches[0]?.chargeCommits).toBe(1);
+    plantCheck(f, { at: 1, branch: "branch/gewandert", base: "basis", tip: k2, main, ...c, verdict: "green", mergeable: true, why: "main grün" });
+    const [diff, list, landed] = await life(f, [diffOf, get("/api/branches"), land(f.repo, "branch/gewandert", "Gewandert")]);
+    expect(diff?.body).toMatchObject({ files: ["k1.txt", "k2.txt"],
+      commits: [{ sha: k1, subject: "erster geprüfter Commit" }, { sha: k2, subject: "zweiter geprüfter Commit" }] });
+    expect(String(diff?.body.diff)).toContain("+erster geprüfter Commit");
+    expect(rowsOf(list!, f.repo).branches[0]?.chargeCommits).toBe(2);
+    expect(landed).toMatchObject({ status: 200, body: { commits: 2, checked: true } });
+    expect(sh(f.repo, "rev-parse", "main^{tree}")).toBe(c.tree);
+    expect(sh(f.repo, "log", "-1", "--format=%b", "main").split("\n").filter((l) => l.startsWith("- ")))
+      .toEqual([`- ${k1.slice(0, 8)} erster geprüfter Commit`, `- ${k2.slice(0, 8)} zweiter geprüfter Commit`]);
+  }, LIFE_DEADLINE_MS);
+
+  test("alles schon per Cherry-Pick auf main, der Check nennt keine Commits: nichts zu zeigen, nichts zu mergen, main bleibt", async () => {
+    const f = checkedFixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Schon drin" })]);
+    const k1 = commitIn(String(made?.body.path), "k1.txt", "schon gepflückt");
+    sh(f.repo, "cherry-pick", k1);
+    const main = sh(f.repo, "rev-parse", "main");
+    plantCheck(f, { at: 1, branch: "branch/schon-drin", base: "main", tip: k1, main, ...candidate(f.repo, main),
+      alreadyOnMain: [k1], verdict: "green", mergeable: true, why: "main grün" });
+    const [diff, list, refused] = await life(f, [get(`/api/branches/diff?repo=${encodeURIComponent(f.repo)}&branch=branch/schon-drin&charge=1`),
+      get("/api/branches"), land(f.repo, "branch/schon-drin", "Leer")]);
+    expect(diff?.body).toMatchObject({ files: [], commits: [], diff: "" });
+    expect(rowsOf(list!, f.repo).branches[0]?.chargeCommits).toBe(0);
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.error)).toContain("nichts zu mergen");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(main);
   }, LIFE_DEADLINE_MS);
 
   test("„Merge-Check starten“ ruft ci/merge-check.ts des Repos mit Branch und Basis der Charge", async () => {

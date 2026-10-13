@@ -225,12 +225,18 @@ describe("Chargen: jede zählt ab dem Tip der letzten", () => {
 });
 
 describe("Merge-Check-Zeile: nur genau dieser Tip, diese Basis, dieser main", () => {
-  const T = "1".repeat(40), M = "2".repeat(40), C = "3".repeat(40), TR = "4".repeat(40);
+  const T = "1".repeat(40), M = "2".repeat(40), C = "3".repeat(40), TR = "4".repeat(40), K1 = "5".repeat(40);
   const want = { branch: "bau/x", base: "main", tip: T, main: M };
   const row = (o: Record<string, unknown> = {}) => ({ at, branch: "bau/x", base: "main", tip: T, main: M, candidate: C, tree: TR,
-    verdict: "green", mergeable: true, why: "main grün", ...o });
-  test("grün auf diesem Tip gegen diese Basis bei diesem main: verwendbar, mit Kandidat und Baum", () => {
-    expect(usableCheck([row()], want)).toEqual({ ok: true, row: { tip: T, base: "main", main: M, candidate: C, tree: TR, at } });
+    commits: [K1, T], verdict: "green", mergeable: true, why: "main grün", ...o });
+  test("grün auf diesem Tip gegen diese Basis bei diesem main: verwendbar, mit Kandidat, Baum und den geprüften Commits", () => {
+    expect(usableCheck([row()], want)).toEqual({ ok: true, row: { tip: T, base: "main", main: M, candidate: C, tree: TR, at, commits: [K1, T] } });
+    expect(usableCheck([row({ commits: [] })], want)).toMatchObject({ ok: true, row: { commits: [] } });
+  });
+  // was der Owner sieht, wird gemergt: die Liste der Zeile ist die einzige, die zum Baum des Kandidaten passt
+  test("eine Zeile ohne die Liste ihrer Commits, oder mit einer kaputten, ist nicht verwendbar", () => {
+    for (const commits of [undefined, "x", [K1, "kurz"], [K1, 7]])
+      expect(usableCheck([row({ commits })], want)).toEqual({ ok: false, why: expect.stringContaining("neu prüfen") });
   });
   test("die jüngste Zeile zählt: ein späteres Rot sticht ein früheres Grün", () => {
     expect(usableCheck([row(), row({ verdict: "red", mergeable: false, why: "rot: s1" })], want))

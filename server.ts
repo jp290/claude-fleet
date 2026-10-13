@@ -8785,12 +8785,14 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     if (!m) reasons.push({ field: `${record.branch}.distance`, reason: base ? "base-unreadable" : "integration-branch-unknown" });
     const holder = path ? workplaceHolder(path) : null;
     const cb = chargeBase(record, integration);
-    const charge = cb && integration ? await gitRead(repo, "rev-list", "--count", ...chargeRange(cb, ref.head, `refs/heads/${integration}`)) : null;
+    const mainHead = refs.find((r) => r.branch === integration)?.head;
+    const checked = cb && mainHead ? await checkedCommits(repo, record.branch, cb, ref.head, mainHead) : null;
+    const charge = !checked && cb && integration ? await gitRead(repo, "rev-list", "--count", ...chargeRange(cb, ref.head, `refs/heads/${integration}`)) : null;
     return { branch: record.branch, name: record.name, base, head: ref.head, text: record.text, rev: record.rev,
       seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
       distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null,
       lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, checked: l.checked })),
-      chargeBase: cb, chargeCommits: charge?.code === 0 ? Number(charge.out) : null,
+      chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
       check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
   return { repo, branches, others: v.others, othersTotal: v.othersTotal, reasons };
@@ -8849,6 +8851,19 @@ const CHARGE_REWRITTEN = "Branch seit der letzten Charge umgeschrieben, Basis ne
 // commits left out. A branch that took main per `git merge main` holds main's commits — the last charge
 // among them — and they are not this charge's (ci/merge-check.ts skips them by patch-id instead).
 const chargeRange = (base: string, tip: string, main: string): string[] => ["--no-merges", tip, `^${base}`, `^${main}`];
+// WHAT THE OWNER SEES IS WHAT GETS MERGED: a usable merge check on this tip names the commits its
+// candidate carries, and the diff, the view's count and the charge commit list those, even when a base
+// ref moved since the check. Without one, the live range: what a new check would test.
+async function checkedCommits(repo: string, branch: string, base: string, tip: string, mainSha: string): Promise<string[] | null> {
+  if (!hasMergeCheck(repo)) return null;
+  const use = usableCheck(await mergeCheckRows(repo), { branch, base, tip, main: mainSha });
+  return use.ok ? use.row.commits : null;
+}
+// `git log <args>` over a charge's commits, oldest first: the checked ones if given, else the live range
+async function chargeLog(repo: string, checked: readonly string[] | null, base: string, tip: string, main: string, ...args: string[]): Promise<GitResult> {
+  if (checked?.length === 0) return { out: "", err: "", code: 0 }; // `git log --no-walk` without revs would read HEAD
+  return gitRead(repo, "log", ...args, ...(checked ? ["--no-walk=unsorted", ...checked] : ["--reverse", ...chargeRange(base, tip, main)]));
+}
 // the tree of main + the charge's commits, commit by commit like ci/merge-check.ts#candidateOf
 async function chargeTree(repo: string, main: string, base: string, tip: string): Promise<{ tree: string } | { conflict: string }> {
   const list = await gitRead(repo, "rev-list", "--reverse", "--topo-order", ...chargeRange(base, tip, main));
@@ -52521,15 +52536,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const range = `${base}...refs/heads/${branch}`;
       const charge = url.searchParams.get("charge") === "1";
       // a charge carries its own commits only (merge commits left out, like the build of its tree), so
-      // its diff is their patches — a `git merge main` in the branch does not show main's changes here
+      // its diff is their patches — a `git merge main` in the branch does not show main's changes here.
+      // A usable merge check on this head fixes which commits those are (chargeLog).
       const main = await integrationBranch(ro.repo) ?? base;
-      const own = ["--reverse", "--no-color", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`)];
-      const [d, ns, log, head] = await Promise.all([
-        charge ? gitRead(ro.repo, "log", "-p", "--format=%n### %h %s", ...own) : gitRead(ro.repo, "diff", "--no-color", range),
-        charge ? gitRead(ro.repo, "log", "--name-only", "--format=", ...own) : gitRead(ro.repo, "diff", "--name-only", range),
-        charge ? gitRead(ro.repo, "log", "--reverse", "--format=%H%x00%s", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`))
-          : gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`),
-        gitRead(ro.repo, "rev-parse", `refs/heads/${branch}`)]);
+      const [head, mainSha] = await Promise.all([gitRead(ro.repo, "rev-parse", `refs/heads/${branch}`), gitRead(ro.repo, "rev-parse", `refs/heads/${main}`)]);
+      const checked = charge && head.code === 0 && mainSha.code === 0 ? await checkedCommits(ro.repo, branch, base, head.out, mainSha.out) : null;
+      const own = (...args: string[]) => chargeLog(ro.repo, checked, base, `refs/heads/${branch}`, `refs/heads/${main}`, "--no-color", ...args);
+      const [d, ns, log] = await Promise.all([
+        charge ? own("-p", "--format=%n### %h %s") : gitRead(ro.repo, "diff", "--no-color", range),
+        charge ? own("--name-only", "--format=") : gitRead(ro.repo, "diff", "--name-only", range),
+        charge ? own("--format=%H%x00%s") : gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`)]);
       if (d.code !== 0 || log.code !== 0) return json({ error: `diff against ${base} failed` }, 400);
       return json({ repo: ro.repo, branch, base, head: head.out,
         files: ns.code === 0 ? [...new Set(ns.out.split("\n").filter(Boolean))] : [],
@@ -52645,20 +52661,20 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (await chargeRewritten(repo, record, tip)) return json({ error: CHARGE_REWRITTEN }, 409);
         const base = chargeBase(record, main);
         if (!base) return json({ error: "cannot resolve the charge's base" }, 400);
-        const log = await gitRead(repo, "log", "--reverse", "--format=%H%x00%s", ...chargeRange(base, tip, mainSha));
+        const checked = hasMergeCheck(repo);
+        const use = checked ? usableCheck(await mergeCheckRows(repo), { branch: body.branch, base, tip, main: mainSha }) : null;
+        if (use && !use.ok) return json({ error: use.why }, 409);
+        if (!checked && body.unchecked !== true)
+          return json({ error: "dieses Repo hat keinen Merge-Check — mergen nur ausdrücklich „ohne Merge-Check“ (unchecked: true)" }, 409);
+        const log = await chargeLog(repo, use?.row.commits ?? null, base, tip, mainSha, "--format=%H%x00%s");
         const commits = log.out.split("\n").filter(Boolean).map((line) => { const [sha, s2] = line.split("\0"); return { sha: sha ?? "", subject: s2 ?? "" }; });
         if (log.code !== 0 || !commits.length) return json({ error: `nichts zu mergen: keine Commits seit ${base.slice(0, 12)}` }, 409);
-        const checked = hasMergeCheck(repo);
         let tree: string;
-        if (checked) {
-          const use = usableCheck(await mergeCheckRows(repo), { branch: body.branch, base, tip, main: mainSha });
-          if (!use.ok) return json({ error: use.why }, 409);
+        if (use) {
           const ct = await gitRead(repo, "rev-parse", `${use.row.candidate}^{tree}`);
           if (ct.code !== 0 || ct.out !== use.row.tree) return json({ error: "der Kandidat des Merge-Checks fehlt hier oder hat einen anderen Baum — neu prüfen" }, 409);
           tree = use.row.tree;
         } else {
-          if (body.unchecked !== true)
-            return json({ error: "dieses Repo hat keinen Merge-Check — mergen nur ausdrücklich „ohne Merge-Check“ (unchecked: true)" }, 409);
           const built = await chargeTree(repo, mainSha, base, tip);
           if ("conflict" in built) return json({ error: built.conflict }, 409);
           tree = built.tree;

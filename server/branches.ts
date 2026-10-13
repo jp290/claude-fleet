@@ -149,8 +149,10 @@ export function chargeMessage(subject: string, o: { branch: string; tip: string;
     o.passt ? `Owner hat diesen Stand gesehen: passt (${o.tip.slice(0, 8)}).` : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
 }
 // Ist die jüngste Merge-Check-Zeile dieses Branches eine, auf die eine Charge bauen darf? Sie muss
-// genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen.
-export interface MergeCheckRow { tip: string; base: string; main: string; candidate: string; tree: string; at: number }
+// genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen. Ihre
+// `commits` sind die, die der Kandidat trägt: Was der Owner sieht und was gemergt wird, zählt sie, nicht
+// die Basis von jetzt, die als Ref-Name seit dem Check gewandert sein kann.
+export interface MergeCheckRow { tip: string; base: string; main: string; candidate: string; tree: string; at: number; commits: string[] }
 export function usableCheck(rows: readonly unknown[], want: { branch: string; base: string; tip: string; main: string }):
   { ok: true; row: MergeCheckRow } | { ok: false; why: string } {
   const mine = rows.filter((x): x is Record<string, unknown> => !!x && typeof x === "object"
@@ -161,7 +163,11 @@ export function usableCheck(rows: readonly unknown[], want: { branch: string; ba
   if (last.mergeable !== true) return { ok: false, why: `der Merge-Check auf ${want.tip.slice(0, 8)} ist nicht mergebar: ${String(last.why ?? last.verdict ?? "rot")}` };
   if (last.main !== want.main) return { ok: false, why: "main ist seit dem Merge-Check weitergelaufen — neu prüfen" };
   if (!str(last.candidate) || !str(last.tree) || !num(last.at)) return { ok: false, why: "die Merge-Check-Zeile nennt keinen Kandidaten" };
-  return { ok: true, row: { tip: want.tip, base: want.base, main: want.main, candidate: last.candidate, tree: last.tree, at: last.at } };
+  const commits = last.commits;
+  if (!Array.isArray(commits) || !commits.every((c): c is string => str(c) && SHA_RE.test(c)))
+    return { ok: false, why: "die Merge-Check-Zeile nennt die geprüften Commits nicht — neu prüfen" };
+  return { ok: true, row: { tip: want.tip, base: want.base, main: want.main, candidate: last.candidate, tree: last.tree, at: last.at,
+    commits: [...commits] } };
 }
 
 export function dropBranch(book: BranchBook, repo: string, branch: string): BranchBook {

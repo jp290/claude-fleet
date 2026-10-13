@@ -1,5 +1,5 @@
-// The scratch-reap check family — §e of e2e/host-hygiene.ts, in a module of its own for the same
-// reason its decision table lives in one: it must be runnable WITHOUT e2e/harness.ts (the harness
+// The scratch-reap check family — §e of e2e/host-hygiene.ts, in a module of its own because
+// it must be runnable WITHOUT e2e/harness.ts (the harness
 // refuses to import outside a wrapper — no fleet.json, live-port refusal). The recorder is a
 // PARAMETER, not an import: the suite passes harness.ts#check so every row lands in the results
 // and the trail, and the §MUTATION proof passes a two-line counter of its own.
@@ -16,7 +16,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { connect } from "node:net";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { CheckFn } from "./host-hygiene-table";
+
+// exactly e2e/harness.ts#check's shape — the harness passes its own, the mutation proof a counter
+export type CheckFn = (name: string, ok: boolean, detail?: string) => void;
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const ROOT = resolve(import.meta.dir, "..");

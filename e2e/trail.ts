@@ -89,8 +89,8 @@ export async function run(): Promise<void> {
   // an OUTERMOST call books ms to its phase, and a fine-grained shard can hold units that touch tmux
   // solely through restartSrv, whose time is booked under `boot` — then zero tmux ms is the CORRECT
   // value and this probe, unasked, reported a regress that was not one (measured 2026-09-16 on
-  // `FLEET_E2E_SHARD=10/16`, 114 PASS / 1 FAIL, with `8/16` green as the control — e2e/host-hygiene.ts
-  // names it in its own header). So a phase with no outermost call in THIS process is reported
+  // `FLEET_E2E_SHARD=10/16`, 114 PASS / 1 FAIL, with `8/16` green as the control). So a phase with
+  // no outermost call in THIS process is reported
   // UNMEASURED, in the check's own name, and never counted against the tree. The assertion is not
   // weakened: a phase that DID have such a unit must still show booked time, and in a full run all
   // three do — the row then carries the old name verbatim. What cannot be measured must fail as

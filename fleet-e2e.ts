@@ -387,10 +387,8 @@ const steps: Step[] = [
     await errors.run();
   } },
 
-  // --- host hygiene: the idle-simulator reap. In this neighbourhood for the same reason as its
-  // three predecessors — it arms the server with its own env (stand-ins for every host command) for
-  // four restarts and leaves it on the wrapper's env afterwards, so it must not sit between two
-  // sections sharing a live fixture. It creates and kills no slot.
+  // --- host hygiene: the disk-space admission, the host brake and the scratch reap. It creates and
+  // kills no slot.
   { unit: "host-hygiene", module: "host-hygiene", run: async () => {
     await hostHygiene.run();
   } },

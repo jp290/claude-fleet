@@ -5,8 +5,9 @@
 // abgewiesen; K4: genau eine Punkteliste, kein Punkt geht verloren.
 import { describe, expect, test } from "bun:test";
 import {
-  adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchRecord, dropBranch, findBranch,
-  markSeen, openBranch, pruneBook, repoBranches, restoreBook, writeText,
+  adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchLand, type BranchRecord, chargeBase,
+  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand, repoBranches, restoreBook,
+  usableCheck, writeText,
 } from "./branches";
 
 const REPO = "/r/fleet";
@@ -174,14 +175,73 @@ describe("Persistenz", () => {
     expect(restoreBook(JSON.parse(JSON.stringify(s.book)))).toEqual(s.book);
   });
   test("Kaputtes fällt beim Laden heraus, Gültiges bleibt", () => {
-    const good: BranchRecord = { repo: REPO, branch: "a", name: "A", base: "main", text: "", rev: 1, seen: null, createdAt: at, updatedAt: at };
+    const good: BranchRecord = { repo: REPO, branch: "a", name: "A", base: "main", text: "", rev: 1, seen: null, lands: [], createdAt: at, updatedAt: at };
     expect(restoreBook("kaputt")).toEqual([]);
     expect(restoreBook([good, { ...good, branch: 7 }, null, { ...good, branch: "c", seen: { at, head: "x", via: "cookie" } },
       { ...good, branch: "d", rev: -1 }])).toEqual([good]);
   });
   test("zwei Einträge für denselben Branch: der erste gilt", () => {
-    const good: BranchRecord = { repo: REPO, branch: "a", name: "A", base: null, text: "", rev: 1, seen: null, createdAt: at, updatedAt: at };
+    const good: BranchRecord = { repo: REPO, branch: "a", name: "A", base: null, text: "", rev: 1, seen: null, lands: [], createdAt: at, updatedAt: at };
     expect(restoreBook([good, { ...good, name: "B" }])).toEqual([good]);
+  });
+});
+
+describe("Chargen: jede zählt ab dem Tip der letzten", () => {
+  const T1 = "1".repeat(40), T2 = "2".repeat(40), M1 = "c".repeat(40);
+  const land = (tip: string, points: string[]): BranchLand =>
+    ({ sha: M1, at, tip, base: "main", subject: "Charge", points, passt: false, checked: true });
+  test("die erste Charge zählt ab der Basis des Branches, sonst ab dem Integrationszweig; jede weitere ab dem letzten Tip", () => {
+    const book = opened([], "b", "Probe");
+    expect(chargeBase(findBranch(book, REPO, "b"), "main")).toBe("main");
+    const withBase = openBranch([], { repo: REPO, branch: "b", name: "Probe", base: "bau/neuaufbau", points: [], at });
+    expect(withBase.ok && chargeBase(withBase.record, "main")).toBe("bau/neuaufbau");
+    const landed = recordLand(book, REPO, "b", land(T1, []));
+    expect(chargeBase(landed.record, "main")).toBe(T1);
+    expect(chargeBase(recordLand(landed.book, REPO, "b", land(T2, [])).record, "main")).toBe(T2);
+    expect(chargeBase(undefined, null)).toBeNull();
+  });
+  test("eine Charge nennt nur die Punkte, die seit der letzten erledigt wurden", () => {
+    const w = writeText(opened([], "b", "Probe"), REPO, "b", "- [x] eins\n- [x] zwei\n- [ ] drei\nfreier Text", 0, at);
+    if (!w.ok) throw new Error(w.error);
+    expect(doneSinceLastLand(w.record)).toEqual(["eins", "zwei"]);
+    const landed = recordLand(w.book, REPO, "b", land(T1, ["eins", "zwei"]));
+    const later = writeText(landed.book, REPO, "b", "- [x] eins\n- [x] zwei\n- [x] drei", landed.record.rev, at);
+    expect(later.ok && doneSinceLastLand(later.record)).toEqual(["drei"]);
+  });
+  test("der Charge-Commit trägt den Betreff, die Commits des Branches und den passt-Stand", () => {
+    const msg = chargeMessage("  Snappiness: Messung vorher  ", { branch: "branch/snap", tip: T1, passt: true, checked: false,
+      commits: [{ sha: "a".repeat(40), subject: "Vorher-Messung" }, { sha: "b".repeat(40), subject: "Plan" }] });
+    expect(msg).toBe(["Snappiness: Messung vorher", "", "Charge aus branch/snap bis 11111111 (ohne Merge-Check):",
+      "- aaaaaaaa Vorher-Messung", "- bbbbbbbb Plan", "", "Owner hat diesen Stand gesehen: passt (11111111)."].join("\n"));
+    expect(chargeMessage("X", { branch: "b", tip: T1, passt: false, checked: true, commits: [] })).toContain("nicht als „passt“");
+  });
+  test("ein Land kommt mit dem Stand zurück, ein kaputtes fällt heraus", () => {
+    const landed = recordLand(opened([], "b", "Probe"), REPO, "b", land(T1, ["eins"])).book;
+    const raw = JSON.parse(JSON.stringify(landed)) as Record<string, unknown>[];
+    expect(restoreBook(raw)).toEqual(landed);
+    raw[0]!.lands = [{ ...land(T1, []), tip: "kurz" }, land(T2, [])];
+    expect(restoreBook(raw)[0]?.lands.map((l) => l.tip)).toEqual([T2]);
+  });
+});
+
+describe("Merge-Check-Zeile: nur genau dieser Tip, diese Basis, dieser main", () => {
+  const T = "1".repeat(40), M = "2".repeat(40), C = "3".repeat(40), TR = "4".repeat(40);
+  const want = { branch: "bau/x", base: "main", tip: T, main: M };
+  const row = (o: Record<string, unknown> = {}) => ({ at, branch: "bau/x", base: "main", tip: T, main: M, candidate: C, tree: TR,
+    verdict: "green", mergeable: true, why: "main grün", ...o });
+  test("grün auf diesem Tip gegen diese Basis bei diesem main: verwendbar, mit Kandidat und Baum", () => {
+    expect(usableCheck([row()], want)).toEqual({ ok: true, row: { tip: T, base: "main", main: M, candidate: C, tree: TR, at } });
+  });
+  test("die jüngste Zeile zählt: ein späteres Rot sticht ein früheres Grün", () => {
+    expect(usableCheck([row(), row({ verdict: "red", mergeable: false, why: "rot: s1" })], want))
+      .toEqual({ ok: false, why: expect.stringContaining("rot: s1") });
+  });
+  test("keine Zeile, anderer Tip, andere Basis, weitergelaufener main: nicht verwendbar", () => {
+    expect(usableCheck([], want).ok).toBe(false);
+    expect(usableCheck([row({ tip: "9".repeat(40) })], want).ok).toBe(false);
+    expect(usableCheck([row({ base: "bau/neuaufbau" })], want)).toEqual({ ok: false, why: expect.stringContaining("neu prüfen") });
+    expect(usableCheck([row({ main: "8".repeat(40) })], want)).toEqual({ ok: false, why: expect.stringContaining("main ist") });
+    expect(usableCheck([row({ branch: "bau/y" })], want).ok).toBe(false);
   });
 });
 
@@ -195,6 +255,7 @@ describe("keine Funktion verändert den Stand, den sie bekommt", () => {
       adoptNotes(book, { "/wt/b": "x" }, new Map([["/wt/b", { repo: REPO, branch: "neu" }]]), at);
       pruneBook(book, () => false);
       dropBranch(book, REPO, "b");
+      recordLand(book, REPO, "b", { sha: HEAD, at, tip: HEAD, base: "main", subject: "x", points: [], passt: false, checked: false });
     }).not.toThrow();
     expect(findBranch(book, REPO, "b")?.text).toBe("- [ ] eins");
   });

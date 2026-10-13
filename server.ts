@@ -1,5 +1,5 @@
 import { nearestRank, validPerfRecord, validFieldRow, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "./src/protocol";
-import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason, BranchesRepoView, BranchesView, BranchView } from "./src/protocol";
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason, BranchCheckView, BranchesRepoView, BranchesView, BranchView } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, CLAUDE_CODE_MESSUNG, CLAUDE_CODE_ZEILEN, FLEET_BYTES_JE_TOKEN, type ClaudeCodeRolle, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
@@ -208,8 +208,9 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRef, dropBranch, findBranch, markSeen,
-  openBranch, pruneBook, repoBranches, restoreBook, writeText } from "./server/branches";
+import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
+  doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
+  writeText } from "./server/branches";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
@@ -8783,9 +8784,14 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     const m = count?.code === 0 ? /^(\d+)\s+(\d+)$/.exec(count.out) : null;
     if (!m) reasons.push({ field: `${record.branch}.distance`, reason: base ? "base-unreadable" : "integration-branch-unknown" });
     const holder = path ? workplaceHolder(path) : null;
+    const cb = chargeBase(record, integration);
+    const charge = cb && integration ? await gitRead(repo, "rev-list", "--count", ...chargeRange(cb, ref.head, `refs/heads/${integration}`)) : null;
     return { branch: record.branch, name: record.name, base, head: ref.head, text: record.text, rev: record.rev,
       seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
-      distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null };
+      distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null,
+      lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, checked: l.checked })),
+      chargeBase: cb, chargeCommits: charge?.code === 0 ? Number(charge.out) : null,
+      check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
   return { repo, branches, others: v.others, othersTotal: v.othersTotal, reasons };
 }
@@ -8803,6 +8809,60 @@ async function checkoutBranchWorktree(repo: string, branch: string, harness: Har
   await excludeLaneScratch(path);
   await laneScaffoldFor(repo, path, harness);
   return path;
+}
+
+// --- K5 S3 · CHARGE MERGEN: one commit per charge on the integration branch, built from exactly the
+// tree a merge check judged (or, in a repo without ci/merge-check.ts, from the same per-commit
+// merge-tree the check does, behind the explicit „ohne Merge-Check“). main moves only through
+// advanceIntegration — ff-only in the checkout that holds it — never by a ref under a checked-out tree.
+const hasMergeCheck = (repo: string): boolean => existsSync(`${repo}/ci/merge-check.ts`);
+const branchCheckRuns = new Map<string, { tip: string; startedAt: number }>();
+const branchLanding = new Set<string>(); // repos with a charge in flight: one at a time per repo
+async function mergeCheckRows(repo: string): Promise<unknown[]> {
+  const common = await gitRead(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (common.code !== 0 || !common.out) return [];
+  try {
+    return readFileSync(`${common.out}/merge-checks.jsonl`, "utf8").split("\n").flatMap((line) => {
+      if (!line.trim()) return [];
+      try { return [JSON.parse(line) as unknown]; } catch { return []; }
+    });
+  } catch { return []; } // no ledger yet: no check ran in this repo
+}
+async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base: string | null): Promise<BranchCheckView | null> {
+  if (!hasMergeCheck(repo)) return null;
+  if (branchCheckRuns.get(`${repo}\n${r.branch}`)?.tip === tip) return { state: "running", at: null, why: null };
+  const rows = (await mergeCheckRows(repo)).filter((x): x is Record<string, unknown> => !!x && typeof x === "object"
+    && (x as Record<string, unknown>).branch === r.branch);
+  const last = rows.at(-1);
+  if (!last) return { state: "none", at: null, why: null };
+  const at = typeof last.at === "number" ? last.at : null, why = typeof last.why === "string" ? last.why : null;
+  if (last.tip !== tip || last.base !== base) return { state: "stale", at, why: `geprüft war ${String(last.tip).slice(0, 8)} gegen ${String(last.base)}` };
+  return { state: last.mergeable === true ? "green" : "red", at, why };
+}
+// a charge after a land must grow from that land's tip; a branch rewritten since has no base to count from
+async function chargeRewritten(repo: string, r: BranchRecord, tip: string): Promise<boolean> {
+  const last = r.lands.at(-1);
+  return !!last && (await gitRead(repo, "merge-base", "--is-ancestor", last.tip, tip)).code !== 0;
+}
+const CHARGE_REWRITTEN = "Branch seit der letzten Charge umgeschrieben, Basis neu wählen";
+// THE COMMITS OF A CHARGE: reachable from the tip, not from the charge's base and not from main, merge
+// commits left out. A branch that took main per `git merge main` holds main's commits — the last charge
+// among them — and they are not this charge's (ci/merge-check.ts skips them by patch-id instead).
+const chargeRange = (base: string, tip: string, main: string): string[] => ["--no-merges", tip, `^${base}`, `^${main}`];
+// the tree of main + the charge's commits, commit by commit like ci/merge-check.ts#candidateOf
+async function chargeTree(repo: string, main: string, base: string, tip: string): Promise<{ tree: string } | { conflict: string }> {
+  const list = await gitRead(repo, "rev-list", "--reverse", "--topo-order", ...chargeRange(base, tip, main));
+  if (list.code !== 0) return { conflict: `rev-list ${base}..${tip}: ${list.err.slice(0, 200)}` };
+  let cur = main;
+  for (const c of list.out.split("\n").filter(Boolean)) {
+    const t = await git(repo, "merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c);
+    if (t.code !== 0) return { conflict: `${c.slice(0, 8)} lässt sich nicht auf ${main.slice(0, 8)} setzen: ${t.out.split("\n").slice(1, 4).join(" · ").slice(0, 300)}` };
+    const step = await git(repo, "commit-tree", t.out.split("\n")[0] ?? "", "-p", cur, "-m", `charge step ${c.slice(0, 8)}`);
+    if (step.code !== 0) return { conflict: `commit-tree: ${step.err.slice(0, 200)}` };
+    cur = step.out;
+  }
+  const tree = await gitRead(repo, "rev-parse", `${cur}^{tree}`);
+  return tree.code === 0 ? { tree: tree.out } : { conflict: "der Baum der Charge ist nicht lesbar" };
 }
 
 // The newest conversation of a branch's worktree, by transcript mtime — whichever session, slot or
@@ -52453,16 +52513,26 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const ro = await branchRepoOf(url.searchParams.get("repo"));
       if (!ro.ok) return json({ error: ro.error }, 400);
       if (!branch || !(await branchExists(ro.repo, branch))) return json({ error: `no such branch: ${branch}` }, 404);
-      const base = findBranch(branchBook, ro.repo, branch)?.base ?? await integrationBranch(ro.repo);
+      const rec = findBranch(branchBook, ro.repo, branch);
+      // ?charge=1: what the next charge carries — since the last charge's tip, else since the base
+      const base = url.searchParams.get("charge") === "1" ? chargeBase(rec, await integrationBranch(ro.repo))
+        : rec?.base ?? await integrationBranch(ro.repo);
       if (!base) return json({ error: "cannot resolve the repo's integration branch" }, 400);
       const range = `${base}...refs/heads/${branch}`;
+      const charge = url.searchParams.get("charge") === "1";
+      // a charge carries its own commits only (merge commits left out, like the build of its tree), so
+      // its diff is their patches — a `git merge main` in the branch does not show main's changes here
+      const main = await integrationBranch(ro.repo) ?? base;
+      const own = ["--reverse", "--no-color", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`)];
       const [d, ns, log, head] = await Promise.all([
-        gitRead(ro.repo, "diff", "--no-color", range), gitRead(ro.repo, "diff", "--name-only", range),
-        gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`),
+        charge ? gitRead(ro.repo, "log", "-p", "--format=%n### %h %s", ...own) : gitRead(ro.repo, "diff", "--no-color", range),
+        charge ? gitRead(ro.repo, "log", "--name-only", "--format=", ...own) : gitRead(ro.repo, "diff", "--name-only", range),
+        charge ? gitRead(ro.repo, "log", "--format=%H%x00%s", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`))
+          : gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`),
         gitRead(ro.repo, "rev-parse", `refs/heads/${branch}`)]);
       if (d.code !== 0 || log.code !== 0) return json({ error: `diff against ${base} failed` }, 400);
       return json({ repo: ro.repo, branch, base, head: head.out,
-        files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
+        files: ns.code === 0 ? [...new Set(ns.out.split("\n").filter(Boolean))] : [],
         commits: log.out.split("\n").filter(Boolean).map((line) => { const [sha, subject] = line.split("\0"); return { sha, subject: subject ?? "" }; }),
         diff: d.out.length > DIFF_CAP ? `${d.out.slice(0, DIFF_CAP)}\n… truncated` : d.out, truncated: d.out.length > DIFF_CAP });
     }
@@ -52525,6 +52595,90 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           e instanceof TmuxNewSessionUnavailable ? 503 : 400);
       } finally {
         laneSpawn.delete(free.id);
+      }
+    }
+    // the merge check of a charge, from the board: <repo>/ci/merge-check.ts on the branch against the
+    // charge's base, in the background — GET /api/branches says running, then green or red
+    if (url.pathname === "/api/branches/check" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.branch !== "string") return json({ error: "expected { repo, branch }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      const record = findBranch(branchBook, ro.repo, body.branch);
+      if (!record?.name || !(await branchExists(ro.repo, body.branch))) return json({ error: `${body.branch} is no board branch here` }, 404);
+      if (!hasMergeCheck(ro.repo)) return json({ error: "dieses Repo hat keinen Merge-Check (ci/merge-check.ts)" }, 400);
+      const key = `${ro.repo}\n${body.branch}`;
+      if (branchCheckRuns.has(key)) return json({ error: "der Merge-Check dieses Branches läuft schon" }, 409);
+      const tip = (await gitRead(ro.repo, "rev-parse", `refs/heads/${body.branch}`)).out;
+      if (await chargeRewritten(ro.repo, record, tip)) return json({ error: CHARGE_REWRITTEN }, 409);
+      const base = chargeBase(record, await integrationBranch(ro.repo));
+      if (!base) return json({ error: "cannot resolve the repo's integration branch" }, 400);
+      branchCheckRuns.set(key, { tip, startedAt: Date.now() });
+      const run = Bun.spawn([process.execPath, `${ro.repo}/ci/merge-check.ts`, body.branch, "--base", base],
+        { cwd: ro.repo, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      void run.exited.then(() => { branchCheckRuns.delete(key); workplacesCache = null; });
+      return json({ ok: true, tip, base }, 202);
+    }
+    // CHARGE MERGEN: the commits since the last charge become ONE commit on the integration branch,
+    // with the subject from the board's question. Its tree is the merge check's candidate (or, without
+    // a merge check and only with unchecked:true, the same per-commit build here); main moves by
+    // advanceIntegration. Branch, worktree and session stay; the land is recorded on the branch.
+    if (url.pathname === "/api/branches/land" && req.method === "POST") {
+      const body = await readJson(req);
+      const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
+      if (!body || typeof body.branch !== "string" || !subject || subject.length > 200 || /[\r\n]/.test(subject)
+        || (body.unchecked !== undefined && typeof body.unchecked !== "boolean"))
+        return json({ error: "expected { repo, branch, subject (one line, ≤200), unchecked? }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      const repo = ro.repo;
+      const record = findBranch(branchBook, repo, body.branch);
+      if (!record?.name || !(await branchExists(repo, body.branch))) return json({ error: `${body.branch} is no board branch here` }, 404);
+      if (branchLanding.has(repo)) return json({ error: "in diesem Repo wird gerade eine Charge gemergt" }, 409);
+      branchLanding.add(repo);
+      try {
+        const main = await integrationBranch(repo);
+        if (!main) return json({ error: "cannot resolve the repo's integration branch" }, 400);
+        const [tipR, mainR] = await Promise.all([gitRead(repo, "rev-parse", `refs/heads/${body.branch}`), gitRead(repo, "rev-parse", `refs/heads/${main}`)]);
+        if (tipR.code !== 0 || mainR.code !== 0) return json({ error: "branch or integration branch unreadable" }, 400);
+        const tip = tipR.out, mainSha = mainR.out;
+        if (await chargeRewritten(repo, record, tip)) return json({ error: CHARGE_REWRITTEN }, 409);
+        const base = chargeBase(record, main);
+        if (!base) return json({ error: "cannot resolve the charge's base" }, 400);
+        const log = await gitRead(repo, "log", "--reverse", "--format=%H%x00%s", ...chargeRange(base, tip, mainSha));
+        const commits = log.out.split("\n").filter(Boolean).map((line) => { const [sha, s2] = line.split("\0"); return { sha: sha ?? "", subject: s2 ?? "" }; });
+        if (log.code !== 0 || !commits.length) return json({ error: `nichts zu mergen: keine Commits seit ${base.slice(0, 12)}` }, 409);
+        const checked = hasMergeCheck(repo);
+        let tree: string;
+        if (checked) {
+          const use = usableCheck(await mergeCheckRows(repo), { branch: body.branch, base, tip, main: mainSha });
+          if (!use.ok) return json({ error: use.why }, 409);
+          const ct = await gitRead(repo, "rev-parse", `${use.row.candidate}^{tree}`);
+          if (ct.code !== 0 || ct.out !== use.row.tree) return json({ error: "der Kandidat des Merge-Checks fehlt hier oder hat einen anderen Baum — neu prüfen" }, 409);
+          tree = use.row.tree;
+        } else {
+          if (body.unchecked !== true)
+            return json({ error: "dieses Repo hat keinen Merge-Check — mergen nur ausdrücklich „ohne Merge-Check“ (unchecked: true)" }, 409);
+          const built = await chargeTree(repo, mainSha, base, tip);
+          if ("conflict" in built) return json({ error: built.conflict }, 409);
+          tree = built.tree;
+        }
+        const passt = record.seen?.head === tip;
+        const commit = await git(repo, "commit-tree", tree, "-p", mainSha, "-m",
+          chargeMessage(subject, { branch: body.branch, tip, commits, passt, checked }));
+        if (commit.code !== 0 || !commit.out) return json({ error: `commit-tree: ${commit.err.slice(0, 200)}` }, 409);
+        const moved = await advanceIntegration(repo, main, commit.out);
+        if (moved) return json({ error: `main wurde nicht bewegt: ${moved.error}` }, 409);
+        const landed = recordBranchLand(branchBook, repo, body.branch, { sha: commit.out, at: Date.now(), tip, base, subject,
+          points: doneSinceLastLand(record), passt, checked });
+        if (landed.ok) branchBook = landed.book;
+        await saveStateNow();
+        workplacesCache = null;
+        void tickGit().catch(() => {});
+        return json({ ok: true, sha: commit.out, main, commits: commits.length, passt, checked,
+          ...(FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? { deploy: "nötig — der Server fährt den neuen Stand erst nach einem Deploy" } : {}) });
+      } finally {
+        branchLanding.delete(repo);
       }
     }
     if (url.pathname === "/api/testinstanzen" && req.method === "GET") {

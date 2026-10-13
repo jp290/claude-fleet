@@ -12,6 +12,7 @@
 export const BRANCH_TEXT_MAX = 20_000; // Zeichen, wie der Notizblock bisher (WORKTREE_NOTE_MAX)
 export const BRANCH_NAME_MAX = 80;
 const SHA_RE = /^[0-9a-f]{40}$/;
+const POINT_RE = /^\s*-\s*\[( |x|X)\]\s*(.*)$/; // ein Punkt: „- [ ] …“ offen, „- [x] …“ erledigt
 // C0-Steuerzeichen und DEL
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 
@@ -19,12 +20,17 @@ const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 // Owner-Token (eine Session oder ctl.sh). Einen Sprecher nennt Fleet nie (server.ts#LandActor).
 export type SeenVia = "cookie" | "bearer" | "query";
 export interface BranchSeen { at: number; head: string; via: SeenVia }
+// Eine Charge auf main: genau ein Commit `sha`, gebaut aus den Commits base..tip des Branches. Die
+// nächste Charge zählt ab `tip` (chargeBase). `points` sind die Punkte, die diese Charge erledigt hat;
+// `passt` sagt, ob der Owner genau diesen Tip gesehen hatte; `checked`, ob ein Merge-Check ihn prüfte.
+export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean }
 export interface BranchRecord {
   repo: string; branch: string;
   name: string | null; // Board-Name; null = ein Branch mit Punkten, den das Board nicht benannt hat
   base: string | null; // wovon er abzweigt und wogegen sein Diff läuft; null = Integrationszweig des Repos
   text: string; rev: number;
   seen: BranchSeen | null;
+  lands: BranchLand[];
   createdAt: number; updatedAt: number;
 }
 export type BranchBook = readonly BranchRecord[];
@@ -37,7 +43,7 @@ export function findBranch(book: BranchBook, repo: string, branch: string): Bran
 }
 
 function blank(repo: string, branch: string, at: number): BranchRecord {
-  return { repo, branch, name: null, base: null, text: "", rev: 0, seen: null, createdAt: at, updatedAt: at };
+  return { repo, branch, name: null, base: null, text: "", rev: 0, seen: null, lands: [], createdAt: at, updatedAt: at };
 }
 function put(book: BranchBook, record: BranchRecord): BranchChange {
   const i = book.findIndex((r) => r.repo === record.repo && r.branch === record.branch);
@@ -116,6 +122,48 @@ export function repoBranches(book: BranchBook, repo: string, refs: readonly Bran
   return { named, others: all.slice(0, BRANCH_OTHERS_MAX).map((r) => ({ ...r, path: pathOf(r.branch) })), othersTotal: all.length };
 }
 
+// CHARGEN. Eine Charge sind die Commits des Branches seit der letzten Charge; die erste zählt ab der
+// Basis des Branches, sonst ab dem Integrationszweig.
+export function chargeBase(r: BranchRecord | undefined, integration: string | null): string | null {
+  return r?.lands.at(-1)?.tip ?? r?.base ?? integration;
+}
+const donePoints = (text: string): string[] => text.split("\n").flatMap((l) => {
+  const m = POINT_RE.exec(l);
+  return m && m[1] !== " " && m[2]?.trim() ? [m[2].trim()] : [];
+});
+// erledigt und in keiner früheren Charge genannt
+export function doneSinceLastLand(r: BranchRecord): string[] {
+  const before = new Set(r.lands.flatMap((l) => l.points));
+  return donePoints(r.text).filter((p) => !before.has(p));
+}
+export function recordLand(book: BranchBook, repo: string, branch: string, land: BranchLand): BranchChange {
+  const prev = findBranch(book, repo, branch) ?? blank(repo, branch, land.at);
+  return put(book, { ...prev, lands: [...prev.lands, land], updatedAt: land.at });
+}
+// Der Commit einer Charge: der Betreff aus der Rückfrage, im Body die Commits des Branches (SHA und
+// Betreff), damit die Herkunft lesbar bleibt, und ob der Owner diesen Stand gesehen hatte.
+export function chargeMessage(subject: string, o: { branch: string; tip: string; commits: readonly { sha: string; subject: string }[];
+  passt: boolean; checked: boolean }): string {
+  const lines = o.commits.map((c) => `- ${c.sha.slice(0, 8)} ${c.subject}`);
+  return [subject.trim(), "", `Charge aus ${o.branch} bis ${o.tip.slice(0, 8)}${o.checked ? "" : " (ohne Merge-Check)"}:`, ...lines, "",
+    o.passt ? `Owner hat diesen Stand gesehen: passt (${o.tip.slice(0, 8)}).` : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
+}
+// Ist die jüngste Merge-Check-Zeile dieses Branches eine, auf die eine Charge bauen darf? Sie muss
+// genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen.
+export interface MergeCheckRow { tip: string; base: string; main: string; candidate: string; tree: string; at: number }
+export function usableCheck(rows: readonly unknown[], want: { branch: string; base: string; tip: string; main: string }):
+  { ok: true; row: MergeCheckRow } | { ok: false; why: string } {
+  const mine = rows.filter((x): x is Record<string, unknown> => !!x && typeof x === "object"
+    && (x as Record<string, unknown>).branch === want.branch && (x as Record<string, unknown>).tip === want.tip);
+  const last = mine.at(-1);
+  if (!last) return { ok: false, why: `kein Merge-Check auf ${want.tip.slice(0, 8)} — erst prüfen` };
+  if (last.base !== want.base) return { ok: false, why: `der Merge-Check prüfte gegen ${String(last.base)}, die Charge zählt ab ${want.base} — neu prüfen` };
+  if (last.mergeable !== true) return { ok: false, why: `der Merge-Check auf ${want.tip.slice(0, 8)} ist nicht mergebar: ${String(last.why ?? last.verdict ?? "rot")}` };
+  if (last.main !== want.main) return { ok: false, why: "main ist seit dem Merge-Check weitergelaufen — neu prüfen" };
+  if (!str(last.candidate) || !str(last.tree) || !num(last.at)) return { ok: false, why: "die Merge-Check-Zeile nennt keinen Kandidaten" };
+  return { ok: true, row: { tip: want.tip, base: want.base, main: want.main, candidate: last.candidate, tree: last.tree, at: last.at } };
+}
+
 export function dropBranch(book: BranchBook, repo: string, branch: string): BranchBook {
   return book.filter((r) => !(r.repo === repo && r.branch === branch));
 }
@@ -152,6 +200,17 @@ function seenOf(v: unknown): BranchSeen | null | undefined {
   return num(s.at) && str(s.head) && SHA_RE.test(s.head) && (s.via === "cookie" || s.via === "bearer" || s.via === "query")
     ? { at: s.at, head: s.head, via: s.via } : undefined;
 }
+// a land comes back whole or not at all; a record from before S3 has none
+function landsOf(v: unknown): BranchLand[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((x): BranchLand[] => {
+    if (!x || typeof x !== "object") return [];
+    const l = x as Record<string, unknown>;
+    return str(l.sha) && SHA_RE.test(l.sha) && num(l.at) && str(l.tip) && SHA_RE.test(l.tip) && str(l.base) && str(l.subject)
+      && Array.isArray(l.points) && l.points.every(str) && typeof l.passt === "boolean" && typeof l.checked === "boolean"
+      ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked }] : [];
+  });
+}
 // fleet.json → Stand. Was nicht die Form eines Datensatzes hat, fällt heraus; doppelte Einträge für
 // denselben Branch: der erste gilt.
 export function restoreBook(raw: unknown): BranchBook {
@@ -161,10 +220,11 @@ export function restoreBook(raw: unknown): BranchBook {
     if (!v || typeof v !== "object") continue;
     const r = v as Record<string, unknown>;
     const seen = seenOf(r.seen);
+    const lands = landsOf(r.lands);
     if (!str(r.repo) || !str(r.branch) || !(r.name === null || str(r.name)) || !(r.base === null || str(r.base))
       || !str(r.text) || !num(r.rev) || !Number.isInteger(r.rev) || seen === undefined || !num(r.createdAt) || !num(r.updatedAt)) continue;
     if (findBranch(out, r.repo, r.branch)) continue;
-    out.push({ repo: r.repo, branch: r.branch, name: r.name, base: r.base, text: r.text, rev: r.rev, seen,
+    out.push({ repo: r.repo, branch: r.branch, name: r.name, base: r.base, text: r.text, rev: r.rev, seen, lands,
       createdAt: r.createdAt, updatedAt: r.updatedAt });
   }
   return out;

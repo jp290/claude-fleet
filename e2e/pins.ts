@@ -4894,13 +4894,16 @@ export default function (pi) {
   // refresh would be asking for a copy of something that was never copied. The exemption is by
   // ARGUMENT, not by function name — a third argument that is not `branch` is not a lane advance —
   // and the exempt sites are COUNTED into the evidence line, so a second one cannot appear quietly.
+  // The second (Neuaufbau K5 S3, POST /api/branches/land) advances main to a CHARGE commit built from
+  // the repo's own object store — a board branch is a worktree, never a clone, so no mirror stands
+  // between them; counted here, not exempted by name.
   const advArg3 = (at: number): string =>
     (serverExec.slice(at, serverExec.indexOf(")", at)).split(",")[2] ?? "").trim();
   const laneAdvCalls = advCalls.filter((m) => advArg3(m.index) === "branch");
   const advUnsynced = laneAdvCalls.filter((m) =>
     !serverExec.slice(Math.max(0, fnStartBefore(m.index)), m.index).includes("syncLaneRefs("));
   pin("every advanceIntegration call site that lands a LANE refreshes the mirror first (a clone lands from the mirror, not from the tree)",
-    laneAdvCalls.length > 0 && advUnsynced.length === 0 && advCalls.length - laneAdvCalls.length <= 1,
+    laneAdvCalls.length > 0 && advUnsynced.length === 0 && advCalls.length - laneAdvCalls.length <= 2,
     `${laneAdvCalls.length} lane call sites, ${advUnsynced.length} without a syncLaneRefs earlier in the same function, ${advCalls.length - laneAdvCalls.length} non-lane advance(s)`);
   // --- THE PROMOTION RECORD HAS EXACTLY TWO WRITERS, and BOTH are owner acts on the owner route.
   // A self route that could write it would be a permission granting itself — the one shape this

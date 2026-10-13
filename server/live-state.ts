@@ -82,9 +82,11 @@ export interface TailState {
   // parentUuid → line number of the newest real prompt under it (the sibling test for `withdrawn`)
   prompts: Map<string, number>;
   withdrawn: number[];
+  // the newest real prompt as Claude Code stored it (a plain-text line only): what Esc puts back
+  last: { n: number; text: string } | null;
   lines: number;
 }
-export const emptyTail = (): TailState => ({ open: [], request: false, prompts: new Map(), withdrawn: [], lines: 0 });
+export const emptyTail = (): TailState => ({ open: [], request: false, prompts: new Map(), withdrawn: [], last: null, lines: 0 });
 
 const sharedTail = (a: string, b: string): number => {
   let n = 0;
@@ -161,8 +163,8 @@ export function foldLine(t: TailState, raw: string, n: number): TailState {
   const parent = typeof d.parentUuid === "string" ? d.parentUuid : null;
   const sibling = parent !== null ? t.prompts.get(parent) : undefined;
   const prompts = parent !== null ? new Map(t.prompts).set(parent, n) : t.prompts;
-  return { open, request, prompts, lines: n,
-    withdrawn: sibling !== undefined && sibling !== n ? [...t.withdrawn, sibling] : t.withdrawn };
+  return { open, request, prompts, lines: n, last: plain ? { n, text: first } : null,
+    withdrawn: sibling !== undefined && sibling !== n && !t.withdrawn.includes(sibling) ? [...t.withdrawn, sibling] : t.withdrawn };
 }
 
 const QUEUE_TEXT_MAX = 20_000;
@@ -252,6 +254,13 @@ export function createLiveReader(deps: LiveDeps, now: () => number = Date.now) {
         seat.frameAt = t;
       }
       return combine(seat.frame!, seat.tail, t);
+    },
+    // the tail as of the last read (server/recall.ts reads the whole queue and the newest prompt from it)
+    tailOf(slot: number): TailState | null { return seats.get(slot)?.tail ?? null; },
+    // a prompt the chat took back with Esc (server/recall.ts): withdrawn now, not only once a sibling follows
+    withdraw(slot: number, n: number): void {
+      const seat = seats.get(slot);
+      if (seat && !seat.tail.withdrawn.includes(n)) seat.tail = { ...seat.tail, withdrawn: [...seat.tail.withdrawn, n] };
     },
     forget(slot: number): void { seats.delete(slot); },
   };

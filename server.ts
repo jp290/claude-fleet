@@ -209,6 +209,7 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, sessionQueue, type QueuedPrompt } from "./server/live-state";
+import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
@@ -24038,6 +24039,35 @@ const liveReader = createLiveReader({
   paintMark: (id) => slots[id - 1]?.offset ?? 0,
   identity: (id) => { const s = slots[id - 1]; return s?.cwd ? `${s.openedAt}\0${s.sessionId ?? ""}` : null; },
 });
+
+// ESC AND ↑ FROM THE CHAT VIEW (server/recall.ts, Neuaufbau K10 S3): in the slot's inputChain like a /send,
+// so a key never lands between a send's paste and its Enter. The field is read and erased exactly as
+// rollbackOwnComposerPayload does it; recall.ts decides what may be erased.
+async function recallSlot(s: Slot, kind: RecallKind): Promise<RecallResult> {
+  const occupant = slotStreamOccupant(s);
+  const composer = harnessOf(s.harness).composer ?? null;
+  if (!occupant || slotTeardownInflight.has(s.id) || s.sleeping || !composer) return { result: "refused", why: "the session is not open" };
+  const target = await existingTmuxTarget(sess(occupant.slot));
+  if (!target || !sameSlotStreamOccupant(s, occupant)) return { result: "refused", why: "the session's pane is gone" };
+  const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms: commsFor(s), bootSettleMs: 0 };
+  const keys = async (...args: string[]): Promise<boolean> =>
+    sameBoundPane(s, bound) && (await tmux("send-keys", "-t", bound.paneId, ...args)).code === 0;
+  const res = await recall(kind, {
+    state: async () => {
+      const live = await liveReader.read(s.id);
+      const tail = liveReader.tailOf(s.id);
+      return { turn: live.turn, queued: (tail?.open ?? []).map((q) => q.text).filter((t) => t.trim() !== ""), last: tail?.last ?? null };
+    },
+    rows: async () => { const r = await readExactComposer(s, bound); return r.kind === "rows" ? r.rows : null; },
+    press: (...k) => keys(...k),
+    erase: (count) => keys("-N", String(count), "BSpace"),
+    sleep: (ms) => Bun.sleep(ms),
+  });
+  if (res.result === "recalled") for (const n of res.lines) liveReader.withdraw(s.id, n);
+  audit("slot_recall", s.id, `${kind} ${res.result}${"why" in res ? ` — ${res.why}` : ""}`,
+    { kind, result: res.result, ...(res.result === "recalled" ? { chars: res.texts.reduce((n, t) => n + [...t].length, 0) } : {}) });
+  return res;
+}
 
 // the model the conversation's newest assistant turn ran on (Claude writes message.model on every
 // assistant line; "<synthetic>" marks a locally made error turn, not a model). The composer shows
@@ -51381,6 +51411,19 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (harnessOf(s.harness).id !== "claude")
         return json({ turn: "unknown", detail: null, queued: [], composer: null, withdrawn: [], at: Date.now() });
       return json(await liveReader.read(s.id));
+    }
+    // Esc and ↑ from the chat view (server/recall.ts); Claude Code only, like /live
+    const recallMatch = /^\/api\/slots\/(\d+)\/recall$/.exec(url.pathname);
+    if (req.method === "POST" && recallMatch) {
+      const s = slotFrom(recallMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      if (harnessOf(s.harness).id !== "claude") return json({ error: "recall is for Claude Code sessions" }, 409);
+      const body = (await req.json().catch(() => null)) as { kind?: unknown } | null;
+      const kind = RECALL_KINDS.find((k) => k === body?.kind);
+      if (!kind) return json({ error: `kind must be one of ${RECALL_KINDS.join(", ")}` }, 400);
+      const task = s.inputChain.then(() => recallSlot(s, kind));
+      s.inputChain = task.catch(() => {});
+      return json(await task);
     }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {

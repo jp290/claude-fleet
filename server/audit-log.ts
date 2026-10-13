@@ -385,6 +385,9 @@ type AuditEvent =
   // a send found a Fleet-headed rest in the field and submitted it (server.ts#sendText): one row per
   // rest, with both hashes and whether it WAS the new message — then nothing is typed a second time
   | "send_residue"
+  // the chat took a prompt back with Esc or ↑, or sent the queue now (server/recall.ts): kind, result,
+  // and how many characters left Claude's field — never the text
+  | "slot_recall"
   // the field still held text after the acceptance window, but the session's transcript already had
   // the turn (server.ts#transcriptTookTurn) — a stale frame, booked observed instead of not accepted
   | "send_turn_in_transcript"

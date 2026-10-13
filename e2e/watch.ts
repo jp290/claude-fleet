@@ -2316,6 +2316,13 @@ export async function run(): Promise<void> {
       // THE OWNER'S WORDS (12.10., docs/neuaufbau/maengel.md #1): a waiting Fleet delivery goes out
       // WITH his message. A session at work is no reason to hold it back — it stayed queued behind
       // gate=busy until its window ran out (docs/neuaufbau/befunde/03-zustellung.md (A)).
+      // the ledger row and the stand-in's turns both land after the HTTP answer — the row behind
+      // server/persist.ts#queueEventWrite, the turns as the stand-in reads the paste: both are waited
+      // for, never read once right after the response; every row before the send row is in
+      await until(() => count(ownerText) >= 1 && count(machine) >= 1
+        && auditRows().slice(busyStart).some((r) => r.slot === slot && r.event === "delivery_bundle_sent"
+          && r.deliveryClass === "sofort"), { timeoutMs: 5000, what: "the owner send's paste and bundle row are in" })
+        .catch((error: unknown) => { if (!(error instanceof UntilTimeout)) throw error; });
       const busyRows = auditRows().slice(busyStart).filter((r) => r.slot === slot);
       const refusedWithOwner = busyRows.filter((r) => r.event === "delivery_bundle_refused" && r.deliveryClass === "sofort");
       const carried = busyRows.filter((r) => r.event === "delivery_bundle_sent" && r.deliveryClass === "sofort");
@@ -2407,6 +2414,11 @@ export async function run(): Promise<void> {
       const ageAtSend = await outputAge();
       const roleStart = auditRows().length;
       const roleResponse = await post("/send", { slot, text: roleText });
+      await until(async () => count(roleText) >= 1 && count(busyRole.autoText) >= 1
+        && (await eventOf(busyRole.watchId)).typed >= 1
+        && auditRows().slice(roleStart).some((r) => r.slot === slot && r.event === "delivery_bundle_sent"
+          && r.deliveryClass === "sofort"), { timeoutMs: 5000, what: "the Orchestratorin's paste and bundle row are in" })
+        .catch((error: unknown) => { if (!(error instanceof UntilTimeout)) throw error; });
       const roleRows = auditRows().slice(roleStart).filter((r) => r.slot === slot);
       const roleCarried = roleRows.filter((r) => r.event === "delivery_bundle_sent" && r.deliveryClass === "sofort");
       const rolePaths = roleCarried[0]?.paths?.split(",") ?? [];
@@ -2427,6 +2439,10 @@ export async function run(): Promise<void> {
       const killText = "owner-send-orchestrator-kill-switch-once";
       const killResponse = await post("/send", { slot, text: killText });
       const killHeld = await roleState();
+      await until(() => count(killText) >= 1
+        && auditRows().slice(killStart).some((r) => r.slot === slot && r.event === "delivery_bundle_refused"
+          && r.deliveryClass === "sofort"), { timeoutMs: 5000, what: "the owner's message and the kill switch's refusal row are in" })
+        .catch((error: unknown) => { if (!(error instanceof UntilTimeout)) throw error; });
       const killRefused = auditRows().slice(killStart).filter((r) => r.event === "delivery_bundle_refused"
         && r.slot === slot && r.deliveryClass === "sofort").map((r) => r.reason);
       check("owner send: the kill switch still holds an Orchestratorin's waiting deliveries back, only the owner's message is typed",

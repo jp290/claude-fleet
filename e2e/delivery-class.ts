@@ -849,8 +849,14 @@ export async function run(): Promise<void> {
         const from = auditRows().length;
         const plBefore = (await plogRead()).length;
         const response = await post("/send", { slot, text: ownerText });
-        const carried = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
-          && r.slot === slot && r.deliveryClass === "sofort");
+        // the ledger append is queued behind the HTTP answer (server/persist.ts#queueEventWrite): the
+        // send row is waited for, never read once right after the response
+        const carried = await until(() => {
+          const rows = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
+            && r.slot === slot && r.deliveryClass === "sofort");
+          return rows.length ? rows : null;
+        }, { timeoutMs: 5_000, what: "the owner send's bundle row is in the ledger" })
+          .catch((error: unknown) => { if (error instanceof UntilTimeout) return []; throw error; });
         const paths = carried[0]?.paths?.split(",") ?? [];
         const hints = (await until(async () => {
           const rows = (await plogRead()).slice(plBefore).filter((p) => p.slot === slot
@@ -903,8 +909,14 @@ export async function run(): Promise<void> {
         } finally { await stop(); }
         const from = auditRows().length;
         const response = await post("/send", { slot, text: `${marker}: Owner-Nachricht trifft ein wartendes Ereignis` });
-        const carried = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
-          && r.slot === slot && r.deliveryClass === "sofort");
+        // the ledger append is queued behind the HTTP answer (server/persist.ts#queueEventWrite): the
+        // send row is waited for, never read once right after the response
+        const carried = await until(() => {
+          const rows = auditRows().slice(from).filter((r) => r.event === "delivery_bundle_sent"
+            && r.slot === slot && r.deliveryClass === "sofort");
+          return rows.length ? rows : null;
+        }, { timeoutMs: 5_000, what: "the owner send's bundle row is in the ledger" })
+          .catch((error: unknown) => { if (error instanceof UntilTimeout) return []; throw error; });
         const paths = carried[0]?.paths?.split(",") ?? [];
         const status = (await eventRows()).find((e) => e.watchId === watchId)?.status;
         const after = await heldOf(slot);

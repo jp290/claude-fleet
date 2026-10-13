@@ -14111,7 +14111,8 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
     tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null,
     // what the successor continues FROM, for the button at a cold cache (K9 S2): the session's own
     // standing handover with the rest after it, or the raw transcript where it wrote none; null = neither
-    source: standing ? "handover" : tail?.state === "read" ? "transcript" : null,
+    // (a readable transcript without an entry is no source: the successor gets only its start brief)
+    source: standing ? "handover" : tail?.state === "read" && tail.entries > 0 ? "transcript" : null,
     // the button's one sentence: what the successor gets, or why the door does not open now
     says: successorSentence({ refusal, rail: bound.length ? "program" : "generic",
       standingHandover: standing ? { ageMs: now - standing.at } : null, tail }) };

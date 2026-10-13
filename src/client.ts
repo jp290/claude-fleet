@@ -1798,7 +1798,7 @@ class Pane {
     mountComposer(); // the one composer takes the size of the focused pane's view
     if (focused === this.index) renderIsland(); // the island's view word follows
     clearTimeout(this.chatTimer);
-    if (v === "chat") { this.applyChatMemo(); void this.pollChat(); }
+    if (v === "chat") { this.applyChatMemo(); void this.pollChat(); this.ensureLive(); }
     else { this.refit(); this.term.focus(); }
   }
 
@@ -2080,7 +2080,7 @@ class Pane {
     this.pastBar.replaceChildren();
     if (!this.unshelveChat(this.slot)) this.resetChat();
     if (this.view !== this.viewBeforePast) this.setView(this.viewBeforePast);
-    else if (this.view === "chat") void this.pollChat();
+    else if (this.view === "chat") { void this.pollChat(); this.ensureLive(); }
   }
   private paintPastBar(d: { session: number; startedAt: number | null; handedAt: number | null;
     ctx: { usedTokens: number; windowTokens: number; pct: number } | null }) {
@@ -2301,7 +2301,8 @@ class Pane {
   private dropWithdrawn(lines: readonly number[]): void {
     for (const n of lines) for (const m of this.chatEl.querySelectorAll<HTMLElement>(`:scope > .msg.user[data-n="${n}"]`)) m.remove();
   }
-  // the live chain runs whenever the chat chain does; it stops itself when the view leaves the running session
+  // started where the chat chain is started (view, slot, pump); it stops itself when the view leaves the
+  // running session, the tab hides, or the pane is reset
   private ensureLive(): void {
     if (this.liveTimer === undefined && !this.liveBusy && this.pastN === null && plan().liveMs) void this.pollLive();
   }
@@ -2381,7 +2382,6 @@ class Pane {
 
   private async pollChat() {
     if (!this.slot || this.view !== "chat" || this.chatBusy) return;
-    this.ensureLive();
     // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
     const slot = this.slot, past = this.pastN, gen = this.chatGen, askedAt = Date.now();
@@ -2535,6 +2535,9 @@ class Pane {
   chatPump() {
     clearTimeout(this.chatTimer);
     if (this.view === "chat" && plan().chatMs) void this.pollChat();
+    clearTimeout(this.liveTimer);
+    this.liveTimer = undefined;
+    this.ensureLive();
   }
 
   sendRaw(s: string) {
@@ -2653,7 +2656,7 @@ class Pane {
     this.boardBtn.style.display = slot ? "flex" : "none";
     this.reloadBtn.style.display = slot ? "flex" : "none";
     this.syncHarnessAffordances();
-    if (slot && this.view === "chat") void this.pollChat();
+    if (slot && this.view === "chat") { void this.pollChat(); this.ensureLive(); }
     this.hint.style.display = slot ? "none" : "flex";
     // size the terminal to its container before connecting — the WS URL carries
     // this size, and connecting at a stale default (e.g. 80x24) would seed scrollback

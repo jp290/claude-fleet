@@ -55,11 +55,11 @@ import type { WaitRow } from "../waits";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
-  WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
+  WS_INPUT_MAX_BYTES, INSTANCE_NAME_RE, INSTANCE_URL_RE, normalizeLaneAnchor,
   codexCliSnapshotFrom, codexCliUnknown, compareCodexCli, type CodexCliSnapshot,
   instanceSourceFrom, instanceBandText, type InstanceSource,
   type GitInfo, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo,
-  type DispositionWorker, type DispositionVerdict, type SuiteOfferRow, type SubscriptionUsage, type SubscriptionWindow,
+  type SuiteOfferRow, type SubscriptionUsage, type SubscriptionWindow,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
@@ -8595,44 +8595,9 @@ function renderAuditDetail(e: AuditEntry) {
 
 $("auditbtn").onclick = () => void openActivity("audit");
 
-// --- the owner disposition rail: the one label channel for every advisory worker output
-// (server.ts, grep `DISPOSITION rail`). The rule the UI must not break is that ABSENCE IS NOT
-// APPROVAL — an unlabeled ref renders as unlabeled, never as accepted, so no view may default a
-// missing label into a verdict. The map is a read cache of the append-only rail: newest wins,
-// which is exactly "the owner changed their mind" and needs no server-side mutation.
-interface DispoRow { at?: number; worker?: string; ref?: string; disposition?: string }
-const dispoByRef = new Map<string, DispositionVerdict>();
-// the join keys, mirroring the server's documented ref shapes. `land` is branch@ts because ts is
-// the only field EVERY outcome row carries; a row whose branch was never recorded still joins.
+// an outcome row's key, branch@ts: ts is the only field EVERY outcome row carries, so a row whose
+// branch was never recorded still has one.
 const landRef = (o: { branch?: string | null; ts: number }) => `${o.branch ?? "(branch not recorded)"}@${o.ts}`;
-const dispoKey = (worker: string, ref: string) => `${worker}\u0000${ref}`;
-function dispoOf(worker: DispositionWorker, ref: string | null | undefined): DispositionVerdict | null {
-  return ref ? dispoByRef.get(dispoKey(worker, ref)) ?? null : null;
-}
-async function loadDispositions(): Promise<void> {
-  const res = await api("/api/dispositions?limit=2000");
-  if (!res.ok) return;
-  const data = (await res.json().catch(() => ({}))) as { dispositions?: DispoRow[] };
-  dispoByRef.clear();
-  // newest-first from the server → the FIRST row for a ref is the current verdict; later
-  // (older) rows for the same ref are superseded history and must not overwrite it
-  for (const d of data.dispositions ?? []) {
-    if (typeof d.worker !== "string" || typeof d.ref !== "string" || !d.ref) continue;
-    if (!DISPOSITION_VERDICTS.includes(d.disposition as DispositionVerdict)) continue;
-    const k = dispoKey(d.worker, d.ref);
-    if (!dispoByRef.has(k)) dispoByRef.set(k, d.disposition as DispositionVerdict);
-  }
-}
-// one write. Returns whether it stuck: a failed label must never render as a label.
-async function labelDisposition(worker: DispositionWorker, ref: string, disposition: DispositionVerdict): Promise<boolean> {
-  const res = await post("/api/dispositions", { worker, ref, disposition });
-  if (!res.ok) { toast(`labeling failed (${res.status}) — nothing recorded`); return false; }
-  dispoByRef.set(dispoKey(worker, ref), disposition);
-  return true;
-}
-const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
-  accepted: "✓ accepted", edited: "✎ edited", ignored: "· ignored", wrong: "✗ wrong",
-};
 
 // --- outcome feed (docs/attic/perception-layer.md §6): the lane-outcome ledger rendered — what landed,
 // how, and what ③ said about it. A read-only lens over GET /api/lane-outcomes, same access model as
@@ -9309,29 +9274,6 @@ function renderOutcomeDetail(o: OutcomeRow) {
     if ((rel === "covered" || rel === "superseded") && o.review)
       for (const n of reviewBody(o.review)) rv.appendChild(n);
     row.appendChild(rv);
-
-    // the owner label for this land. Two actions, no third: ✓ this land was right, ✗ it was wrong.
-    // NO DEFAULT — an unlabeled row says "unlabeled", because the graduation criteria read a
-    // missing label as missing evidence, not as approval.
-    const ref = landRef(o);
-    const lab = el("div", "ocdispo-row");
-    const cur = dispoOf("land", ref);
-    lab.appendChild(el("span", "ocdispo-state" + (cur ? ` is-${cur}` : " is-none"),
-      cur ? `your label: ${DISPO_WORD_UI[cur]}` : "unlabeled"));
-    for (const [verdict, glyph, title] of [
-      ["accepted", "✓", "this outcome was right — records an owner `accepted` disposition"],
-      ["wrong", "✗", "this outcome was wrong — records an owner `wrong` disposition"],
-    ] as [DispositionVerdict, string, string][]) {
-      const b = el("button", `ocdispo-btn${cur === verdict ? " active" : ""}`, glyph) as HTMLButtonElement;
-      b.title = title;
-      b.onclick = async () => {
-        b.disabled = true;
-        if (await labelDisposition("land", ref, verdict)) { renderActivity(); renderOutcomeDetail(o); }
-        else b.disabled = false;
-      };
-      lab.appendChild(b);
-    }
-    row.appendChild(lab);
   }
 }
 
@@ -9831,7 +9773,6 @@ function actMeta(cls: string, parts: readonly (readonly [string, boolean])[]): H
 async function loadLens(k: ActLens) {
   if (actLoaded.has(k)) return;
   if (k === "lands") {
-    await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
     const res = await api("/api/lane-outcomes?limit=1000");
     if (res.ok) {
       const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number; malformed?: number };
@@ -11654,7 +11595,6 @@ initComposer();
 buildTray(); // the tray's entries are the functions that used to own an icon button of their own
 void (async () => {
   await refresh();
-  void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
   const view = prefJSON<{ layout?: number; panes?: number[]; focused?: number; chats?: boolean[] }>("fleet.view");
   const legacy = prefNumber("fleet.current");
   const n = !isMobile() && view.layout && LAYOUTS[String(view.layout)] ? view.layout : 1;

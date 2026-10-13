@@ -106,12 +106,10 @@ import { loadBlockerHistory, observeBlocker, finishBlockers, blockerTotals, type
 import {
   type HelperReposReading, HELPER_REPOS_BYTES_MAX,
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
-  DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
   FLEET_REPORT_STATUSES, normalizeLaneAnchor, instanceNameFrom, instanceLinksFrom, instanceSourceFrom, CODEX_CLI_VERSION_RE,
   INSTANCE_LINKS_MAX_BYTES,
   type CodexCliSnapshot, type CodexCliReason,
   type GitInfo, type InstanceIdentity, type InstanceLink, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
-  type DispositionWorker, type DispositionVerdict,
   type FleetReportStatus, type SuiteOfferRow,
   normalizeRolePresets, type RolePresets, type FoundingPlanOmission, type FoundingPlanPack,
 } from "./src/protocol";
@@ -270,9 +268,6 @@ const CONTEXT_ANCHOR_RENDERER = "v2";
 // The `snippet` of a receipt whose brief carried no source-package block (every founding brief, and
 // a clarify lane). Written, never omitted: an ABSENT field dates a row from before the count existed.
 const NO_SNIPPET_RECEIPT = { bytes: 0, hits: 0, omitted: [] } as const;
-// the owner disposition rail — one append-only label per advisory output the owner ruled on
-// (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
-const DISPOSITION_FILE = `${STATE_DIR}/dispositions.jsonl`;
 // A fourth trail stood here until 2026-09-10: `analysis-verdicts.jsonl`, one line per assignment
 // of the retired queue analyst's `Task.analysis`. The file on disk is left where it is — an
 // append-only trail is history, and deleting it would erase what the analyst actually produced.
@@ -284,9 +279,8 @@ const POSTLAND_AUDIT_FILE = `${STATE_DIR}/post-land-audits.jsonl`;
 // Read fresh per request, only to SHOW it: the suite applies it, this server never decides with it.
 const QUARANTINE_FILE = `${import.meta.dir}/e2e/quarantine.json`;
 // the ADJUDICATION rail for that trail — one append-only judgement per audit row somebody ruled on
-// (see the ADJUDICATION region below). A SIDE rail, exactly like DISPOSITION_FILE, and for the same
-// reason plus one: it makes "a judgement can never rewrite `result`" structural rather than a rule
-// the route has to keep. Same appendEvent discipline/rotation as the trails above.
+// (see the ADJUDICATION region below). A SIDE rail: it makes "a judgement can never rewrite `result`"
+// structural rather than a rule the route has to keep. Same appendEvent discipline/rotation as the trails above.
 const AUDIT_ADJUDICATION_FILE = `${STATE_DIR}/audit-adjudications.jsonl`;
 // the ARTEFACT rail for that same trail — one append-only line per helper suite.log that arrived
 // AFTER its audit row was written. A SIDE rail for the identical reason the adjudication rail is
@@ -35405,10 +35399,8 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
 //     `.1` generation. In-place editing would have to read both generations, rewrite whole files,
 //     and race an audit that finishes mid-rewrite (runs take minutes and land whenever they land) —
 //     a lost row, or a torn write that costs the entire history instead of one line.
-//   · it is this repo's existing answer to the identical problem: DISPOSITION_FILE, "one
-//     append-only label per advisory output the owner ruled on„[Zitat entfernt]“
-// 
-// 
+// What the owner asked for is preserved where it is observable: every read surface JOINS the rail in
+// and serves `adjudication` ON the row (the API trail and the steward's ledger projection below), so
 // a consumer sees the field the brief specified and never the plumbing.
 //
 // KEY = the row's `at`. Not `mainSha`: coalescing plus the drain's stated at-least-once residual
@@ -35627,7 +35619,7 @@ async function carryFlakeAdjudications(origin: "boot" | "audit", only?: number):
   if (origin === "boot" && carried > 0) console.log(`carried-flake: ${carried} red audit row(s) carried at boot`);
   return carried;
 }
-// the owner write. Mirrors writeDisposition: validate and append in one place, return the Response.
+// the owner write: validate and append in one place, return the Response.
 async function writeAuditAdjudication(body: Record<string, unknown> | null, req: Request): Promise<Response> {
   if (!body) return json({ error: "invalid json" }, 400);
   const auditAt = typeof body.at === "number" ? body.at : NaN;
@@ -35692,8 +35684,8 @@ async function writeAuditAdjudication(body: Record<string, unknown> | null, req:
 // line on the other machine and nothing here — no retry, no backoff, no effect on the row.
 //
 // WHICH MAKES THIS A SIDE RAIL, not a field written into the audit row, and the reasoning is not
-// re-derived here because this repo already did it twice (DISPOSITION_FILE, then
-// AUDIT_ADJUDICATION_FILE — see the ADJUDICATION region's comment). Copied, not re-invented:
+// re-derived here because this repo already did it (AUDIT_ADJUDICATION_FILE — see the
+// ADJUDICATION region's comment). Copied, not re-invented:
 //   · POSTLAND_AUDIT_FILE is append-only through appendEvent's serialized chain and rotates into a
 //     `.1` generation. Editing a row in place would have to read both generations, rewrite whole
 //     files, and race an audit finishing mid-rewrite — a lost row, or a torn write that costs the
@@ -37027,67 +37019,6 @@ async function resolveTaskLane(id: string): Promise<TaskResolution> {
         + "(or a wave follower, whose lane is recorded under its head's id)" };
   return { result: "unknown-task", task: id,
     searched: ["fleet.json tasks", "lane-outcomes.jsonl taskId", "tasks-archive.jsonl"] };
-}
-
-
-// --- DISPOSITION rail: the owner's label channel for advisory output (docs/attic/graduation-criteria.md
-// needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
-// record per ruling, same discipline as the audit/outcome logs it sits beside: appendEvent's write
-// chain, mode 600, one JSON line, single-generation rotation.
-//
-// Two properties this rail must keep, or the labels are worthless as evidence:
-//   · the OWNER is the only writer. A lane must never label its own work, so the per-slot
-//     FLEET_SELF_TOKEN is refused at the route (403, told apart from an unknown credential's 401)
-//     and `source` is hard-stamped "owner" — never read from the body.
-//   · absence is not approval. Nothing is written unless the owner acted; an unlabeled ref stays
-//     unlabeled forever, and the renderer says so rather than defaulting to accepted.
-//
-// `ref` shapes — chosen per worker so a label JOINS back to the thing it judges:
-//   · land    `<branch>@<ts>` of the outcome row. `ts` is the only field EVERY row carries
-//     (headSha is null on a legacy row and on a kill that could not resolve HEAD); branch
-//     disambiguates and stays readable. Never headSha alone.
-//   · review3 the review's `patchId` — CONTENT identity of the reviewed diff, the same key the
-//     outcome row's coverage relation uses. It survives the land-path rebase, which a sha does
-//     not. A review with a null patchId is deliberately NOT labelable (no honest join key).
-// Two more shapes are retired, their WRITE doors closed by DISPOSITION_WORKERS (src/protocol.ts):
-// `analysis`, keyed by the `taskId`, with the queue analyst on 2026-09-10; and `enhance`, keyed by
-// the `draftId` = sha256(enhanced prompt).slice(0,16) that POST /api/enhance stamped, with the ✨
-// compose-box rework on 2026-09-19 (the route is gone). The reader below validates no worker
-// name, so the labels already filed under either stay readable.
-// the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both.
-// No worker gets a ref EXISTENCE check here: the rail records an owner opinion, and a label for a
-// row that has since been deleted is still a fact about what a worker produced. The shape gate
-// below (non-empty, ≤200) is the whole contract.
-const MAX_DISPOSITION_REF = 200;
-interface DispositionRecord {
-  at: number; worker: DispositionWorker; ref: string; disposition: DispositionVerdict; source: "owner";
-}
-// async like the audit/outcome readers it sits beside — a request-path file read must not block
-// the event loop, however small this file is today
-async function readDispositions(limit: number): Promise<{ dispositions: Record<string, unknown>[]; total: number; malformed: number }> {
-  const { rows, total, malformed } = await readLedger<Record<string, unknown>>(DISPOSITION_FILE);
-  rows.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
-  return { dispositions: rows.slice(0, limit), total, malformed };
-}
-// the owner write. Returns the Response so both the validation and the append live in one place.
-function writeDisposition(body: Record<string, unknown> | null): Response {
-  if (!body) return json({ error: "invalid json" }, 400);
-  const worker = body.worker;
-  const disposition = body.disposition;
-  const ref = typeof body.ref === "string" ? body.ref.trim() : "";
-  if (typeof worker !== "string" || !DISPOSITION_WORKERS.includes(worker as DispositionWorker))
-    return json({ error: `worker must be one of ${DISPOSITION_WORKERS.join(", ")}` }, 400);
-  if (typeof disposition !== "string" || !DISPOSITION_VERDICTS.includes(disposition as DispositionVerdict))
-    return json({ error: `disposition must be one of ${DISPOSITION_VERDICTS.join(", ")}` }, 400);
-  if (!ref || ref.length > MAX_DISPOSITION_REF)
-    return json({ error: `ref must be a non-empty string ≤${MAX_DISPOSITION_REF} chars` }, 400);
-  const rec: DispositionRecord = {
-    at: Date.now(), worker: worker as DispositionWorker, ref,
-    disposition: disposition as DispositionVerdict,
-    source: "owner", // stamped, never read from the body — this route has exactly one principal
-  };
-  appendEvent(DISPOSITION_FILE, rec as unknown as Record<string, unknown>);
-  return json({ ok: true, record: rec });
 }
 
 // deterministic first attempt: most rebases don't conflict at all, and `git rebase` alone
@@ -48569,11 +48500,6 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       })).filter((e) => e.blocks.length),
     });
   }
-  // the disposition rail, READ-ONLY for this principal: the steward reasons about what the owner
-  // ruled on, and must never produce a label itself (a self-scored record is not evidence). A POST
-  // here is not matched, so it falls through to the caller's "route not in scope" 403.
-  if (url.pathname === "/api/dispositions" && req.method === "GET")
-    return json(await readDispositions(Math.min(2000, Math.max(1, Number(url.searchParams.get("limit") ?? 500) | 0))));
   if (url.pathname === "/api/steward/autos" && req.method === "POST") {
     const home = stewardSlot();
     if (!home) return json({ error: "no steward slot active" }, 404);
@@ -49670,8 +49596,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       // a plain session's credential is valid but the question is not askable: drift measures a
-      // LANE against its integration branch. 409 with the why, not a generic 401 (same distinction
-      // the disposition rail draws below: recognized credential, wrong scope, said plainly).
+      // LANE against its integration branch. 409 with the why, not a generic 401 (recognized
+      // credential, wrong scope, said plainly).
       const w = s.worktree;
       if (!w) return json({ error: "not a lane — drift measures a lane against its integration branch" }, 409);
       const main = await laneBaseRef(s);
@@ -50105,15 +50031,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // said out loud on every answer, because the one thing a lane could get wrong here is
       // believing the note is now closed.
       return json({ ok: true, comment: c, effective: verdict === "erledigt" ? "on this lane's land" : "never — read by the owner" });
-    }
-
-    // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a lane's
-    // credential with a generic 401 and hide WHY: a recognized FLEET_SELF_TOKEN on this path (own header
-    // or offered as the owner token) is a valid credential with the wrong scope → 403. This one path only.
-    if (url.pathname === "/api/dispositions") {
-      const offered = [req.headers.get("x-fleet-self-token") ?? "", tokenFrom(req) ?? ""].filter(Boolean);
-      if (!tokenOk(tokenFrom(req)) && offered.some((t) => slots.some((x) => x.cwd && x.selfToken && secretEq(t, x.selfToken))))
-        return json({ error: "self token: the disposition rail is owner-only — a lane cannot label its own work" }, 403);
     }
 
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
@@ -51225,14 +51142,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       }
       return json({ error: "method not allowed" }, 405);
     }
-    // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
-    // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's
-    // self token is rejected with 403 before the owner gate (see the block above /api/self/autos),
-    // and the steward token can only ever reach the GET (handleStewardRoute).
-    if (url.pathname === "/api/dispositions" && req.method === "GET")
-      return json(await readDispositions(Math.min(2000, Math.max(1, Number(url.searchParams.get("limit") ?? 500) | 0))));
-    if (url.pathname === "/api/dispositions" && req.method === "POST")
-      return writeDisposition(await readJson(req));
     // owner-only: read the steward's own scoped credential, to paste into the steward
     // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
     if (url.pathname === "/api/steward/token" && req.method === "GET")

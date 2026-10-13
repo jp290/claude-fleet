@@ -1474,22 +1474,16 @@ export async function run(): Promise<void> {
         && auditRender.includes("fails.map((name) => `FAIL  ${name}`)"),
       auditRender.slice(0, 240) || "no DossierAudit render block in src/client.ts");
 
-    // (9e) THE DISPOSITION RAIL, CLIENT HALF. Same method and same limits as (9d): asserted over
+    // (9e) Same method and same limits as (9d): asserted over
     // the client SOURCE because this suite has no DOM harness — weaker than a render test, named
-    // so, and it catches the two regressions that would silently corrupt the label evidence.
-    // First: an outcome row with no owner label must render as UNLABELED. If someone ever defaults
-    // the missing case to a verdict, every unjudged land silently becomes evidence.
-    check("client: an outcome row with no owner label renders \"unlabeled\", never a default verdict",
-      /const cur = dispoOf\("land", ref\)/.test(cliSrc)
-      && /cur \? `your label: \$\{DISPO_WORD_UI\[cur\]\}` : "unlabeled"/.test(cliSrc),
-      "the land label strip in renderOutcomes (src/client.ts)");
-    // Second: ✨ Rework is retired (owner, thirteenth cut) — the client carries no entry point and
+    // so.
+    // ✨ Rework is retired (owner, thirteenth cut) — the client carries no entry point and
     // writes no `enhance` label any more. The server route followed on 2026-09-19 (e2e/auth.ts); the
     // `enhance` worker stays; this pins that the CLIENT half did not half-survive.
     check("client: ✨ Rework is retired — no #enhbtn, no /api/enhance call, no enhance label written",
       !/enhbtn|pendingEnhance|"\/api\/enhance"|labelDisposition\("enhance"/.test(cliSrc),
       "src/client.ts still carries a piece of the ✨ flow");
-    // Third, the same method over the model chip: since 2026-09-17 a present model no longer means
+    // Then the same method over the model chip: since 2026-09-17 a present model no longer means
     // the lane pinned one, so the pane must SAY which it was. The regression this catches is the
     // silent one — dropping the origin and rendering a resolved default as a bare id, i.e. the
     // ledger fix arriving at the reader as a decision nobody made.
@@ -1850,10 +1844,6 @@ export async function run(): Promise<void> {
     check("audit trail reports malformed separately from total too (same reader, same contract)",
       auditShape.malformed === 0 && auditShape.total >= auditShape.events.length,
       JSON.stringify({ total: auditShape.total, malformed: auditShape.malformed, rows: auditShape.events.length }));
-    const dispoShape = (await (await get("/api/dispositions")).json()) as { dispositions: unknown[]; total: number; malformed: number };
-    check("disposition rail reports malformed separately from total too",
-      dispoShape.malformed === 0 && dispoShape.total === dispoShape.dispositions.length,
-      JSON.stringify({ total: dispoShape.total, malformed: dispoShape.malformed, rows: dispoShape.dispositions.length }));
   }
 
   // --- THE OWNER-INBOX PILE, MADE MECHANICAL (owner 2026-09-22 on the 47-entry measurement).

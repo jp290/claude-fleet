@@ -1529,7 +1529,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("audit route's total spans both generations after rotation",
     postRot.total >= auditAll.length, `${postRot.total} vs ${auditAll.length} pre-rotation lines`);
 
-  // The other three trails rotate through the SAME appendEvent and are read by the same kind of
+  // The other two trails rotate through the SAME appendEvent and are read by the same kind of
   // route, but driving each one over 5 MB inside the suite would cost minutes — so plant the .1
   // generation directly and assert the route reads it. Old timestamps keep the planted rows at the
   // BOTTOM of every newest-first response, so no later check that takes "the most recent row" can
@@ -1539,8 +1539,6 @@ export async function run(ctx: Ctx): Promise<void> {
       row: { ts: 1000, slot: 9, branch: "rotation-probe-outcome", disposition: "landed" } },
     { file: `${ROOT}/post-land-audits.jsonl`, route: "/api/post-land-audits", key: "audits", marker: "rotation-probe-audit",
       row: { at: 1000, repo: "rotation-probe-audit", result: "green" } },
-    { file: `${ROOT}/dispositions.jsonl`, route: "/api/dispositions", key: "dispositions", marker: "rotation-probe-disposition",
-      row: { at: 1000, worker: "land", ref: "rotation-probe-disposition", disposition: "accepted", source: "owner" } },
   ];
   for (const p of planted) writeFileSync(`${p.file}.1`, `${JSON.stringify(p.row)}\n`);
   for (const p of planted) {

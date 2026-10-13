@@ -50,7 +50,6 @@ async function selfTokenOf(slot: number, not = ""): Promise<string> {
 // this list is where that decision is recorded. `=` is an exact pathname, `~` a regex.
 const PRE_AUTH_ROUTES = [
   '= /',                  // login (?token=, tokenGate'd) AND the share-host landing page
-  '= /api/dispositions',  // pre-check only: 403s a self token, then falls through to the owner gate
   // Owner-only despite sitting before the shared gate: the handler performs its own owner check so
   // valid scoped credentials can get an existence-hiding 404. No credential and unknown tokens 401.
   '= /api/machine-settings',
@@ -495,7 +494,7 @@ const STEWARD_ROUTES = [
   // the same two functions the owner's routes call, reached by the principal that SEES the gap
   // (deployGap/bundleStale on /api/steward/sessions) and until now could only file a note about it.
   "= /api/deploy", "= /api/deploys",
-  "= /api/dispositions", "= /api/steward/autos", "= /api/steward/digest", "= /api/steward/journal",
+  "= /api/steward/autos", "= /api/steward/digest", "= /api/steward/journal",
   "= /api/steward/send", "= /api/steward/sessions",
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/brief$/`,
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/transcript$/`,
@@ -618,7 +617,6 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/repo-lane-cap", method: "POST", body: {}, owner: 400 },
   { path: "/api/autos/switch", method: "POST", body: {}, owner: 400 },
   { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, owner: 400 },
-  { path: "/api/dispositions", method: "POST", body: {}, owner: 400 },
   // the tier-2 adjudication rail's only writer. A judgement on a red audit is EVIDENCE that someone
   // looked, and evidence any principal can forge is worse than none — an empty body answers the
   // owner a side-effect-free 400 (no verdict), so it carries the positive control too.
@@ -674,8 +672,7 @@ const dangerous = (slot: number): Probe[] => [
 ];
 // The task-scoped + guest surface (2026-08-05): these routes sat outside the matrix and were
 // protected only by §1's structural pin (tokenGate last in the chain). §2 is the mechanism that
-// catches a handler regressing to its own weaker inline check — the way /api/dispositions already
-// special-cases one principal inline — and it was silent on exactly the newest clarify-adjacent
+// catches a handler regressing to its own weaker inline check — and it was silent on exactly the newest clarify-adjacent
 // surface. `fix` is a DONE fixture task: criterion-confirm / brief / dispatch answer a
 // side-effect-free 409 to the owner (proving the route exists) and must answer 401/403 to every
 // other principal. The mutating task actions and the guest routes ride matrix-only (no `owner`
@@ -945,7 +942,6 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       ownerProbes.length > 0 && injected.length === ownerProbes.length, `${injected.length}/${ownerProbes.length} rejected`);
   }
   const parityProbes: Probe[] = [...ownerProbes,
-    { path: "/api/dispositions", method: "GET", owner: 200 },
     { path: "/api/machine-settings", method: "GET", owner: 200 },
     { path: "/api/harnesses", method: "GET", owner: 200 },
     { path: "/api/konzepte", method: "GET", owner: 503 },
@@ -1137,8 +1133,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   await sweep("steward-readable", [["sessions", sc.stewGet("/api/steward/sessions")],
     ["brief", sc.stewGet(`/api/steward/slots/${ln.slot}/brief`)],
     ["transcript", sc.stewGet(`/api/steward/slots/${ln.slot}/transcript`)],
-    ["journal", sc.stewGet("/api/steward/journal?tail=5")],
-    ["dispositions", sc.stewGet("/api/dispositions?limit=50")]]);
+    ["journal", sc.stewGet("/api/steward/journal?tail=5")]]);
   await post(`/api/slots/${ln.slot}/unshare`, {});
 
   // ===== §3 continued: shelve kills the pane → the credential must die with it =====

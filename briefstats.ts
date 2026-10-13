@@ -58,7 +58,7 @@ export type BriefSource = (typeof BRIEF_SOURCES)[number];
 /** the six a LANE can be founded by. `founding` describes a Program-MAIN, never a lane. */
 export type LaneBriefSource = Exclude<BriefSource, "founding">;
 
-/** the five terminal shapes of a lane — LaneOutcome.disposition, NOT DispositionVerdict */
+/** the five terminal shapes of a lane — LaneOutcome.disposition */
 export const LANE_DISPOSITIONS = ["landed", "reverted", "shelved", "killed-dirty", "killed-empty"] as const;
 export type LaneDisposition = (typeof LANE_DISPOSITIONS)[number];
 

@@ -14816,7 +14816,7 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
         : key === "/api/audit" ? { events: audit, total: audit.length, malformed: 0 }
           : key === "/api/commits" ? commits : key === "/api/commit-diff" ? commitDiff
             : key === "/api/lane" ? lanes : key === "/api/lane?branch" ? dossier
-              : key === "/api/timeline" ? wire : key === "/api/dispositions" ? { dispositions: [] }
+              : key === "/api/timeline" ? wire
                 : key === "/api/slots/1/brief" ? brief : key === "/api/slots/1/commits" ? slotCommits
                   : key === "/api/slots/1/commit-diff" ? slotCommitDiff : null;
       if (body === null) return void json(requestId, { error: "fixture: not served" }, 404);

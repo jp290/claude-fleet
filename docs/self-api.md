@@ -4251,7 +4251,7 @@ Dateien reisen NICHT mit**; ihre Zahl steht als `untracked` im Job, damit ein gr
   SEITEN-SCHIENE (`helper-artifacts.jsonl`, Schlüssel `rowAt` = das `at` der Audit-Zeile bzw.
   `remote.reportedAt` der Vorschau; Zeilen von vor der Umbenennung tragen `auditAt` und werden
   weiter darunter gelesen) und wird an jeder Lesefläche auf die Zeile GEJOINT — dasselbe Muster wie
-  `adjudication` und davor `dispositions.jsonl`, kopiert statt neu erfunden. Konsequenz, die das Muster kauft: ein Upload kann `result` nicht bewegen, weil
+  `adjudication`, kopiert statt neu erfunden. Konsequenz, die das Muster kauft: ein Upload kann `result` nicht bewegen, weil
   der Schreiber die Audit-Datei gar nicht anfasst. Fehlt das Feld, ist keine Log-Datei angekommen —
   das ist eine andere Aussage als „der Lauf hat keine erzeugt", und keine wird als die andere
   gezeichnet. Die Bytes selbst holt `GET /api/post-land-audits/artifact?at=<n>` (Owner-Route; 410,

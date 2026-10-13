@@ -173,15 +173,6 @@ if (REPO) {
     { slots?: Record<string, { selfToken?: string }> };
   const selfTok = persisted.slots?.[String(ln.slot)]?.selfToken ?? "";
   check("§4 the lane's selfToken is persisted and 128-bit", /^[0-9a-f]{32}$/.test(selfTok), selfTok.slice(0, 8));
-  const dispBody = JSON.stringify({ draftId: "deadbeefdeadbeef", verdict: "kept" });
-  const asHeader = await fetch(BASE + "/api/dispositions", { method: "POST",
-    headers: { "content-type": "application/json", "x-fleet-self-token": selfTok }, body: dispBody });
-  check("§4 a lane cannot label its own work — self token on the disposition rail is 403",
-    asHeader.status === 403, String(asHeader.status));
-  const asBearer = await fetch(BASE + "/api/dispositions", { method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${selfTok}` }, body: dispBody });
-  check("§4 …and offering the self token AS the owner token on that route is 403 too, not 401",
-    asBearer.status === 403, String(asBearer.status));
   const asRead = await fetch(BASE + "/api/sessions", { headers: { authorization: `Bearer ${selfTok}` } });
   check("§4 the self token is not an owner credential anywhere else (401, unknown credential)",
     asRead.status === 401, String(asRead.status));

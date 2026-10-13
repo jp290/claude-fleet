@@ -30,7 +30,8 @@ import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
-import { isInterruptMark, pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
+import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
+import { isInterruptMark, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { askRisk, onDialogWillOpen } from "./dialog";
@@ -772,11 +773,6 @@ export interface TEntry { n: number; role: "user" | "assistant"; ts: string | nu
 
 // markdown rendering shared with the guest reader — see src/md.ts
 
-// Claude Code (2.1.278) stores a pasted prompt — every composer send is one — wrapped as
-// <pasted_content id="x">…</pasted_content id="x">. The bubble shows what you wrote, so only a
-// wrapper whose closing id matches its opening one is taken off; the text inside stays verbatim.
-const PASTED_RE = /<pasted_content id="([^"]+)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g;
-const unwrapPasted = (text: string): string => text.replace(PASTED_RE, "$2");
 
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -2226,13 +2222,13 @@ class Pane {
         if (this.pending.some((p) => p.key === key)) return;
         const mine = this.pending.find((p) => p.key === undefined && pendingSettledBy(p.text, part.text));
         if (mine) {
-          mine.el.querySelector(".msend")?.replaceWith(sendState("wait"));
+          mine.el.querySelector(".msend")?.replaceWith(this.queueState());
           this.pending = this.pending.map((p) => (p === mine ? { ...p, key } : p));
           return;
         }
         const msg = this.addMessage({ n: 0, role: "user", ts: q.at, blocks: [] }, part.text, header, part.mark, false);
         msg.classList.add("pending");
-        msg.insertBefore(sendState("wait"), msg.querySelector(".mmeta"));
+        msg.insertBefore(this.queueState(), msg.querySelector(".mmeta"));
         this.pending = [...this.pending, { text: part.text, el: msg, key }];
       });
     }
@@ -2293,9 +2289,59 @@ class Pane {
     if (!w) { line?.remove(); return; }
     line ??= liveLine();
     paintLiveLine(line, w);
+    const esc = line.querySelector(".mliveesc");
+    if (w.kind === "work" && isMobile()) { if (!esc) line.appendChild(recallButton(() => void this.recall("esc"))); }
+    else esc?.remove();
     if (line.parentNode !== this.chatEl || line.nextSibling !== null) {
       this.chatEl.appendChild(line);
       if (this.chatStuck) this.followEnd(false);
+    }
+  }
+  // a waiting bubble's state and, beside it, "jetzt senden" (src/recall.ts); .msend itself still reads "wartet"
+  private queueState(): HTMLElement {
+    const row = el("div", "msendrow");
+    row.append(sendState("wait"), sendNowButton(() => void this.recall("send-now")));
+    return row;
+  }
+  // ESC AND ↑ AS IN THE TERMINAL (src/recall.ts, server/recall.ts): true = the key is this pane's now
+  escKey(): boolean {
+    if (this.view !== "chat" || this.pastN !== null || this.live?.turn !== "working") return false;
+    void this.recall("esc");
+    return true;
+  }
+  upKey(): boolean {
+    if (this.view !== "chat" || this.pastN !== null || !this.live?.queued.length) return false;
+    void this.recall("queued");
+    return true;
+  }
+  private recalling = false;
+  async recall(kind: RecallKind): Promise<void> {
+    const slot = this.slot;
+    if (!slot || this.recalling) return;
+    this.recalling = true;
+    try {
+      const res = await post(`/api/slots/${slot}/recall`, { kind });
+      const r = res.ok ? ((await res.json()) as RecallResult) : null;
+      if (!r) { toast(`Zurückholen ging nicht (${res.status}).`); return; }
+      const texts = r.result === "recalled" ? r.texts : r.result === "kept" ? r.texts ?? [] : [];
+      if (texts.length && this.slot === slot) {
+        // the bubbles of what came back go: a withdrawn line, a composer bubble, a "wartet" bubble — the
+        // interrupted prompt keeps its "durch" bubble, it stays in the conversation
+        if (r.result === "recalled") this.dropWithdrawn(r.lines);
+        const bodies = recalledBodies(texts);
+        for (const p of [...this.pending]) if (bodies.some((b) => pendingSettledBy(p.text, b))) this.dropPending(p.el);
+        if (panes[focused] !== this) focusPane(this.index);
+        ta.value = recalledText(texts, ta.value);
+        ta.dispatchEvent(new Event("input"));
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = ta.value.length;
+      }
+      const note = recallNotice(r);
+      if (note) toast(note);
+    } catch {
+      toast("Zurückholen ging nicht — keine Verbindung.");
+    } finally {
+      this.recalling = false;
     }
   }
   // a prompt Esc took back: its bubble goes, wherever it stands
@@ -11250,9 +11296,17 @@ ta.addEventListener("keydown", (e) => {
     return;
   }
   if (e.isComposing) return;
+  // Esc while the session works: it stops, and the prompt comes back here (src/recall.ts)
+  if (e.key === "Escape" && panes[focused]?.escKey()) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   // only hijack ArrowUp when the box is empty or already cycling — mid-text it must
-  // keep its native "move the caret up a line" meaning
-  if (e.key === "ArrowUp" && (cyc || ta.value === "")) {
+  // keep its native "move the caret up a line" meaning. A waiting message comes back first.
+  if (e.key === "ArrowUp" && !cyc && ta.value === "" && panes[focused]?.upKey()) {
+    e.preventDefault();
+  } else if (e.key === "ArrowUp" && (cyc || ta.value === "")) {
     e.preventDefault();
     void cycleHist(-1);
   } else if (e.key === "ArrowDown" && cyc) {

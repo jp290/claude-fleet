@@ -278,7 +278,7 @@ export async function run(): Promise<void> {
       // hook_success, both measured shapes). ---
       const trQBase = ((await (await get(`/api/slots/${trFree}/transcript`)).json()) as { total: number }).total;
       const TQ = "2026-09-21T17:00:35.396Z";
-      // the paste envelope the chat-view composer puts around every send (client.ts#PASTED_RE) —
+      // the paste envelope the chat-view composer puts around every send (src/pendingsend.ts#PASTED_RE) —
       // a queued chat-view prompt carries it too (measured, orchestrator note on daccbb0e), and
       // the queued path must hand it to the client byte-for-byte like a type:user turn does
       const PASTED = `<pasted_content id="p-1">\npasted from the chat view mid-turn\n</pasted_content id="p-1">`;

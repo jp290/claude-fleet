@@ -11028,7 +11028,7 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
     ownerSecond: head + deliveryBundleText([part("fleet-event", events), part("owner", ownerB)]),
     // a receiver that is not a headed harness: no head, no sentence in the marks
     bare: deliveryBundleText([{ path: "owner", meaning: null, text: ownerA }, { path: "inbox-nudge", meaning: null, text: nudge }]),
-    // what the chat view reads once its envelope is off (src/client.ts#unwrapPasted): Claude Code 2.1.288
+    // what the chat view reads once its envelope is off (src/pendingsend.ts#unwrapPasted): Claude Code 2.1.288
     // keeps a head typed before a paste as `<head>\n\n<pasted_content …>` (every bundle of 2026-10-04)
     stored: (typed: string): string => typed.startsWith(head) ? `${head}\n\n${typed.slice(head.length)}` : typed,
   };
@@ -11193,7 +11193,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
 
       // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2, in the form
       // Claude Code 2.1.288 stores it (measured 2026-10-04): the head, its blank line, the paste in its
-      // wrapper (src/client.ts#unwrapPasted). The session's queue holds the same text first.
+      // wrapper (src/pendingsend.ts#unwrapPasted). The session's queue holds the same text first.
       const body = fixture.ownerFirst.slice(fixture.head.length);
       const stored = `${fixture.head}\n\n<pasted_content id="p1">\n${body}\n</pasted_content id="p1">`;
       fx.queued = [{ text: stored, at: at(54) }];

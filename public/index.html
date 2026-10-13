@@ -601,6 +601,14 @@
   .msend.wait .msenddot { background: var(--q-wait); }
   .msend.done { color: var(--chat-faint); }
   .msend.done .msenddot { background: var(--q-live); }
+  /* Esc and ↑ as in the terminal (src/recall.ts, Neuaufbau K10 S3): "jetzt senden" on a waiting bubble,
+     "abbrechen" on the phone's status line — quiet text buttons in the line they belong to */
+  .msendrow { display: flex; align-items: center; margin-top: 5px; }
+  .msendrow .msend { margin-top: 0; }
+  .msendnow, .mliveesc { font-family: var(--chat-sans); font-size: var(--chat-ui-fs); color: var(--chat-mute); background: transparent; border: 1px solid var(--chat-edge);
+    border-radius: 6px; padding: 0 8px; margin-left: 4px; cursor: pointer; line-height: 1.6; }
+  .msendnow:hover, .mliveesc:hover { color: var(--chat-ink); background: var(--chat-raised); }
+  .mliveesc { margin-left: auto; padding: 2px 12px; }
   .msg.user.pending .mbody, .msg.user.pending .mimgs { opacity: 0.7; }
   /* a sent drop as its picture (src/client.ts#dropStrip): one fixed-height row above YOUR bubble,
      right-aligned like the bubble, the bubble's edge and a softer radius. The height is set before

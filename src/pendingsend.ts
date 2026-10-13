@@ -8,6 +8,11 @@ import { deliveryParts } from "./delivery-format";
 
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
+// Claude Code (2.1.278) stores a pasted prompt — every composer send is one — wrapped as
+// <pasted_content id="x">…</pasted_content id="x">. The bubble shows what you wrote, so only a
+// wrapper whose closing id matches its opening one is taken off; the text inside stays verbatim.
+const PASTED_RE = /<pasted_content id="([^"]+)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g;
+export const unwrapPasted = (text: string): string => text.replace(PASTED_RE, "$2");
 // Head and body of a typed Fleet delivery. `header` is what stands between the prefix and the closing
 // bracket: the short owner form „[Zitat entfernt]“, or the long form of every other path
 // („[Zitat entfernt]“). Text with no head, or a head that never closes,

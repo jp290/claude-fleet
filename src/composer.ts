@@ -303,15 +303,21 @@ export function cacheAge(): number | null {
   // a request that just started counts as work too: the pane's first spinner frame reaches this
   // board one poll later, and in that gap the counter showed 0:00, 0:01 and then vanished
   const lastOutput = fleet.find((x) => x.id === p.slot)?.lastOutput ?? 0;
-  if (serverClock() - Math.max(lastOutput, p.lastTurnAt) < CACHE_BUSY_MS) return null; // working
+  // a Claude pane says itself whether it works (Pane#liveTurn, Neuaufbau K10 S1); the bytes are the
+  // fallback where no Claude input is on screen (codex, pi)
+  const turn = knownTurn(p.liveTurn);
+  if (turn !== null ? turn === "working" || serverClock() - p.lastTurnAt < CACHE_BUSY_MS
+    : serverClock() - Math.max(lastOutput, p.lastTurnAt) < CACHE_BUSY_MS) return null; // working
   const at = p.lastTurnAt;
   return at ? Math.max(0, serverClock() - at) : null;
 }
+const knownTurn = (t: string | null): string | null => (t === null || t === "unknown" ? null : t);
 export function tickCacheAge(): void {
   clearTimeout(ringTimer);
   const pane = panes[focused];
+  const turn = knownTurn(pane?.liveTurn ?? null);
   const active = !!pane?.slot && pane.isChat && pane.pastN === null && sessionActive(pane.slot)
-    && serverClock() - (fleet.find((s) => s.id === pane.slot)?.lastOutput ?? 0) < RECENT_MS;
+    && (turn !== null ? turn === "working" : serverClock() - (fleet.find((s) => s.id === pane.slot)?.lastOutput ?? 0) < RECENT_MS);
   mascotWorking = active;
   if (mascotEl) mascotEl.hidden = !active;
   if (!active || document.hidden || reduceMotion.matches) stopMascot();

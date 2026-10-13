@@ -29,6 +29,7 @@ import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, p
 import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
+import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { isInterruptMark, pendingSettledBy, splitDeliveryHeader } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
@@ -1331,6 +1332,8 @@ class Pane {
   private linkProvider: ReturnType<Terminal["registerLinkProvider"]> | null = null;
   private readonly toolsBox: HTMLElement;
   private view: "term" | "chat" = "term";
+  // what the session is doing, read from its pane (null = not read yet; "unknown" = no Claude input on screen)
+  get liveTurn(): LiveState["turn"] | null { return this.live?.turn ?? null; }
   private chatTotal = 0;
   // when the newest transcript entry this pane has loaded was written (its `ts`, any role — a tool
   // result or a harness-injected turn is an API round trip too), 0 until one with a time arrived.
@@ -1350,6 +1353,14 @@ class Pane {
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
+  // THE LIVE STATE (GET /api/slots/:id/live, server/live-state.ts, Neuaufbau K10 S1): the status line at
+  // the end of the view and Claude Code's own queue, every liveMs while the chat shows the running session
+  private live: LiveState | null = null;
+  private liveTimer: ReturnType<typeof setTimeout> | undefined;
+  private liveBusy = false;
+  // when the newest transcript read that brought entries was ASKED: a live answer asked before it may
+  // still list a prompt that read already showed as arrived, so its queue is not applied
+  private entriesAskedAt = 0;
   // bumped by every resetChat: a poll that started under an older one delivers nothing (a slot can
   // leave and come back while its fetch is in flight, so the slot id alone does not tell)
   private chatGen = 0;
@@ -1859,6 +1870,11 @@ class Pane {
     // un-stick the busy flag so the reassigned pane's next pollChat() isn't blocked; the
     // old slot's in-flight fetch bails on the chatGen guard in pollChat.
     this.chatBusy = false;
+    clearTimeout(this.liveTimer);
+    this.liveTimer = undefined;
+    this.liveBusy = false;
+    this.live = null;
+    this.entriesAskedAt = 0;
   }
 
   // Put this slot's running chat on the shelf and leave the pane empty (resetChat). A past session
@@ -2095,9 +2111,12 @@ class Pane {
         // A BUNDLE (src/delivery-format.ts) is several deliveries in one turn: each owner part is
         // its own bubble and retires its own pending send, every other part is a quiet Fleet line
         const parts = deliveryParts(body);
-        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)); continue; }
+        // Esc took this prompt back before any answer (server/live-state.ts#foldLine): the terminal shows
+        // no such turn, so neither does this view — a bubble of ours waiting for it retires with it
+        if (this.live?.withdrawn.includes(e.n)) { this.settlePending(raw); continue; }
+        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)).dataset.n = String(e.n); continue; }
         for (const part of parts) {
-          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text));
+          if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text)).dataset.n = String(e.n);
           else this.addFleetLine(part, header);
         }
       } else {
@@ -2246,9 +2265,81 @@ class Pane {
     const shown = sum.querySelector(".msystext")!;
     if (shown.textContent !== text) shown.textContent = text;
     if (sum.title !== title) sum.title = title;
+    const end = this.chatEl.querySelector<HTMLElement>(":scope > .mlive");
+    if (line.parentNode !== this.chatEl || line.nextSibling !== end) {
+      this.chatEl.insertBefore(line, end);
+      if (this.chatStuck) this.followEnd(false);
+    }
+  }
+  // nothing below this node but the quiet end lines and other waiting bubbles
+  private atEnd(node: Element): boolean {
+    for (let n = node.nextElementSibling; n; n = n.nextElementSibling) if (!n.matches(".mheld, .mlive, .msg.pending")) return false;
+    return true;
+  }
+  // the waiting bubbles, in their order, below every arrived entry and above the quiet end lines —
+  // moved only when one of them is out of place
+  private settleTail(): void {
+    const end = this.chatEl.querySelector(":scope > .mheld, :scope > .mlive");
+    const here = this.pending.filter((p) => p.el.parentNode === this.chatEl);
+    const below = (n: Element) => end !== null && !!(end.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (here.some((p) => !this.atEnd(p.el) || below(p.el))) for (const p of here) this.chatEl.insertBefore(p.el, end);
+  }
+  // THE STATUS LINE (src/livestate.ts): the very last thing in the view, where the terminal paints its
+  // spinner. Not a message: it never counts as new and never moves a released view.
+  private syncLive(): void {
+    let line = this.chatEl.querySelector<HTMLElement>(":scope > .mlive");
+    const w = this.live && this.pastN === null && this.view === "chat" ? liveWord(this.live) : null;
+    if (!w) { line?.remove(); return; }
+    line ??= liveLine();
+    paintLiveLine(line, w);
     if (line.parentNode !== this.chatEl || line.nextSibling !== null) {
       this.chatEl.appendChild(line);
       if (this.chatStuck) this.followEnd(false);
+    }
+  }
+  // a prompt Esc took back: its bubble goes, wherever it stands
+  private dropWithdrawn(lines: readonly number[]): void {
+    for (const n of lines) for (const m of this.chatEl.querySelectorAll<HTMLElement>(`:scope > .msg.user[data-n="${n}"]`)) m.remove();
+  }
+  // the live chain runs whenever the chat chain does; it stops itself when the view leaves the running session
+  private ensureLive(): void {
+    if (this.liveTimer === undefined && !this.liveBusy && this.pastN === null && plan().liveMs) void this.pollLive();
+  }
+  private async pollLive(): Promise<void> {
+    this.liveTimer = undefined;
+    if (!this.slot || this.view !== "chat" || this.pastN !== null || this.liveBusy) return;
+    const slot = this.slot, gen = this.chatGen, askedAt = Date.now();
+    const owns = () => this.slot === slot && this.chatGen === gen && this.pastN === null;
+    this.liveBusy = true;
+    try {
+      const res = await api(`/api/slots/${slot}/live`);
+      if (!owns() || !res.ok) return;
+      const s = (await res.json()) as LiveState;
+      if (!owns()) return;
+      const was = this.live?.turn;
+      this.live = s;
+      // every owner text the session holds stands as „[Zitat entfernt]“ — whoever sent it, after a reload too
+      const had = this.chatEl.childElementCount, first = this.chatTotal === 0;
+      this.chatFresh = !first;
+      if (askedAt >= this.entriesAskedAt) this.syncQueue(s.queued);
+      this.chatFresh = false;
+      this.settleTail();
+      if (this.chatEl.childElementCount > had) {
+        this.chatEl.querySelector(".chatempty")?.remove();
+        this.chatGrew(this.chatEl.childElementCount - had, first);
+      }
+      this.dropWithdrawn(s.withdrawn);
+      this.syncHeld();
+      this.syncLive();
+      if (was !== s.turn && focused === this.index) tickCacheAge();
+    } catch {
+      // transient fetch error — next tick retries
+    } finally {
+      if (this.slot === slot && this.chatGen === gen) {
+        this.liveBusy = false;
+        const ms = plan().liveMs;
+        if (this.view === "chat" && this.pastN === null && ms) this.liveTimer = setTimeout(() => void this.pollLive(), ms);
+      }
     }
   }
   // true = the entry retired a bubble this board put up: it is the same send, now DURCH
@@ -2290,9 +2381,10 @@ class Pane {
 
   private async pollChat() {
     if (!this.slot || this.view !== "chat" || this.chatBusy) return;
+    this.ensureLive();
     // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
     // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
-    const slot = this.slot, past = this.pastN, gen = this.chatGen;
+    const slot = this.slot, past = this.pastN, gen = this.chatGen, askedAt = Date.now();
     const chatPerf = this.perfChat, switchPerf = this.perfSwitch;
     const failPerf = (reason: "fetch-error" | "http-error"): void => {
       const owns = this.slot === slot && this.pastN === past && this.chatGen === gen;
@@ -2316,8 +2408,6 @@ class Pane {
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
-        // the session's own queue (claude, the owner's live route only — server.ts#sessionQueue)
-        queued?: { text: string; at: string | null }[];
         // the band's past session (GET /api/slots/:id/succession/:n/transcript)
         session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
         reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null };
@@ -2368,26 +2458,17 @@ class Pane {
           const at = startsRequest && e.ts ? Date.parse(e.ts) : NaN;
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
-        // what has not arrived yet stays below what has
-        // (a pending bubble already at the end stays put — no remove + re-add)
+        // what has not arrived yet stays below what has, above the quiet end lines (held bundle, status)
+        // (a pending bubble already there stays put — no remove + re-add)
         this.chatFresh = false;
-        for (const p of this.pending) if (p.el.nextSibling !== null) this.chatAdd(p.el);
+        this.settleTail();
+        this.entriesAskedAt = Math.max(this.entriesAskedAt, askedAt);
         tickCacheAge();
         this.chatGrew(this.chatEl.childElementCount - before, first);
       }
-      // after the entries: a send whose turn arrived in this read has retired its bubble already
-      if (past === null && data.queued) {
-        const had = this.chatEl.childElementCount, first = this.chatTotal === 0;
-        this.chatFresh = !first;
-        this.syncQueue(data.queued);
-        this.chatFresh = false;
-        if (this.chatEl.childElementCount > had) {
-          this.chatEl.querySelector(".chatempty")?.remove();
-          this.chatGrew(this.chatEl.childElementCount - had, first);
-        }
-      }
-      // the held line stays the last thing in the view, below what this read appended
-      if (past === null) this.syncHeld();
+      // the session's own queue comes with the live state (pollLive), every liveMs, not with this read
+      // the held line and the status line stay the last things in the view, below what this read appended
+      if (past === null) { this.syncHeld(); this.syncLive(); }
       // codex / pi: the file's own newest request record (server/conversation-read.ts) — codex its
       // newest token_usage_record, pi its newest assistant message's request start — and the
       // provider that sets the TTL. Read on every poll, not only when new entries arrived.
@@ -2930,6 +3011,7 @@ class Pane {
     clearTimeout(this.observedRefit);
     this.sizeObserver.disconnect();
     clearTimeout(this.chatTimer);
+    clearTimeout(this.liveTimer);
     // an in-flight pollChat() fetch resolving after dispose would otherwise re-arm its
     // own setTimeout forever (its finally-block re-checks view/slot, both still truthy) —
     // clearing them makes that guard fire and end the loop on a disposed instance

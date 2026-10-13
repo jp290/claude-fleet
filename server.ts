@@ -208,6 +208,7 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
+import { createLiveReader, sessionQueue, type QueuedPrompt } from "./server/live-state";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
@@ -23777,7 +23778,7 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
   // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
-  // sessionQueue below) and reaches the conversation in one of two measured forms
+  // server/live-state.ts#sessionQueue) and reaches the conversation in one of two measured forms
   // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
   // an ordinary type:user line; absorbed into a running tool turn it becomes an
   // attachment/queued_command (measured 2026-09-21, live transcript daccbb0e) — terminal typing
@@ -23914,49 +23915,9 @@ const timelineIndex = new TimelineIndex({
   },
 });
 
-// THE SESSION'S OWN QUEUE (docs/messungen/2026-10-03-terminal-vs-chat-warten.md, Fix 4). Claude Code
-// 2.1.288 writes every prompt it holds back as `{type:"queue-operation", operation:"enqueue",
-// content, timestamp}` and its leaving as `dequeue` (no content: the oldest goes, taken at the turn's
-// end) or `remove` (with content, reason absorbed_mid_turn / delivered_to_agent). Paired FIFO, what
-// is left open is what the session still holds — whoever sent it: the composer, the terminal, a
-// MAIN's /send, an auto. A `remove` whose content no longer matches (measured: a cross-session
-// message loses its hop-chain attribute in its opening tag between the two lines) takes the open
-// entry that ends the same way for longest, the oldest when none shares an ending. Two more rules keep
-// a prompt from waiting forever where Claude Code wrote no leaving line: a later real user turn
-// starts only after the queue was drained, and harness plumbing the chat view folds anyway
-// (task notifications, reminders) is never shown as waiting. Only the owner's live chat route asks.
-interface QueuedPrompt { text: string; at: string | null }
-function sharedTail(a: string, b: string): number {
-  let n = 0;
-  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
-  return n;
-}
-function sessionQueue(lines: readonly string[]): QueuedPrompt[] {
-  let open: QueuedPrompt[] = [];
-  for (const l of lines) {
-    const queueLine = l.includes('"queue-operation"');
-    if (!queueLine && !(open.length && l.includes('"user"'))) continue;
-    let d: { type?: unknown; operation?: unknown; content?: unknown; timestamp?: unknown; isMeta?: unknown; isSidechain?: unknown };
-    try { d = JSON.parse(l) as typeof d; } catch { continue; } // a torn last line — the next poll reads it whole
-    if (d.type === "queue-operation") {
-      const text = typeof d.content === "string" ? d.content : "";
-      if (d.operation === "enqueue") open = [...open, { text, at: typeof d.timestamp === "string" ? d.timestamp : null }];
-      else if (d.operation === "dequeue") open = open.slice(1);
-      else if (d.operation === "remove") {
-        const exact = open.findIndex((q) => q.text === text);
-        const tails = open.map((q) => sharedTail(q.text, text));
-        const hit = exact >= 0 ? exact : Math.max(0, tails.indexOf(Math.max(0, ...tails)));
-        open = open.filter((_, i) => i !== hit);
-      }
-    } else if (d.type === "user" && d.isMeta !== true && d.isSidechain !== true) {
-      // a real user turn (not a tool result, not a folded harness turn) means the queue was drained
-      const e = viewEntry(d, 0);
-      if (e && e.role === "user" && !e.meta) open = [];
-    }
-  }
-  return open.filter((q) => q.text.trim() !== "" && !q.text.startsWith("<system-reminder") && !q.text.startsWith("<task-notification"))
-    .map((q) => ({ text: trim(q.text, 20_000), at: q.at }));
-}
+// THE SESSION'S OWN QUEUE lives in server/live-state.ts#sessionQueue now (Neuaufbau K10 S1): the same
+// FIFO pairing of `queue-operation` lines, plus the `popAll` that ↑ in the input field writes (Claude Code
+// 2.1.296, measured 2026-10-13). The live reader below folds the same lines incrementally.
 
 // the conversation view's data source, shared by the owner chat view and the guest
 // reader — `after` = line count the client has already consumed, so entry numbering
@@ -24056,6 +24017,21 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
   }
   return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
 }
+
+// THE LIVE STATE of a claude pane (server/live-state.ts, Neuaufbau K10 S1): working, ready, asking,
+// interrupted, Claude Code's own queue and its input field. Read on demand by the chat view's live poll;
+// a pane that painted nothing since its last frame is not captured again.
+const liveReader = createLiveReader({
+  capture: async (id) => {
+    const s = slots[id - 1];
+    if (!s?.cwd) return null;
+    const cap = await tmux("capture-pane", "-p", "-e", "-t", paneTarget(sess(s.id)));
+    return cap.code === 0 ? cap.out : null;
+  },
+  transcript: (id) => { const s = slots[id - 1]; return s?.cwd ? transcriptFile(s) : null; },
+  paintMark: (id) => slots[id - 1]?.offset ?? 0,
+  identity: (id) => { const s = slots[id - 1]; return s?.cwd ? `${s.openedAt}\0${s.sessionId ?? ""}` : null; },
+});
 
 // the model the conversation's newest assistant turn ran on (Claude writes message.model on every
 // assistant line; "<synthetic>" marks a locally made error turn, not a model). The composer shows
@@ -51389,6 +51365,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const s = slotFrom(trMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0), false, { history: false }));
+    }
+    // the chat view's status line and queue (Neuaufbau K10 S1); Claude Code only — Codex and pi stay as they
+    // are (owner, 13.10.)
+    const liveMatch = /^\/api\/slots\/(\d+)\/live$/.exec(url.pathname);
+    if (req.method === "GET" && liveMatch) {
+      const s = slotFrom(liveMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      if (harnessOf(s.harness).id !== "claude")
+        return json({ turn: "unknown", detail: null, queued: [], composer: null, withdrawn: [], at: Date.now() });
+      return json(await liveReader.read(s.id));
     }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {

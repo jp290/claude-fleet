@@ -629,6 +629,18 @@
   .msys[open] .msystext { white-space: pre-wrap; overflow-wrap: anywhere; }
   .msysbody { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-mute); }
   .msys + .msg.assistant, .msys + .toolgroup, .msys + .notifgroup { margin-top: 18px; }
+  /* the session's live state (Pane#syncLive, src/livestate.ts, Neuaufbau K10 S1): the last line of the
+     view, where the terminal paints its spinner — the owner's word and a small dot, no seconds, no
+     tokens (13.10.). The dot breathes in --q-live while the session works and turns --q-wait when it
+     waits for you; idle it is faint ink. */
+  .mlive { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; padding: 0 2px;
+    font-family: var(--chat-sans); font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  .mlivedot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--chat-faint); }
+  .mlive[data-kind="work"] .mlivedot { background: var(--q-live); animation: mlivebreath 1.2s ease-in-out infinite; }
+  .mlive[data-kind="wait"] { color: var(--q-wait); }
+  .mlive[data-kind="wait"] .mlivedot { background: var(--q-wait); }
+  @keyframes mlivebreath { 0%, 100% { opacity: .35; transform: scale(.75); } 50% { opacity: 1; transform: scale(1); } }
+  @media (prefers-reduced-motion: reduce) { .mlive .mlivedot { animation: none; } }
   @media (pointer: coarse) { .mmeta { opacity: 1; } }
   .copybtn, .cbbtn { font: inherit; font-size: var(--chat-ui-fs); color: var(--chat-mute); background: transparent;
     border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; cursor: pointer; }

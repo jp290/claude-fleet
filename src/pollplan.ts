@@ -6,13 +6,15 @@
 // WebSocket, so they stay exactly as fast either way. What it slows are the metadata polls
 // (sidebar/queue, chat, session brief) and what it shrinks is the scrollback the server
 // seeds on reconnect. Per-number cost/gain is measured in the commit that added this.
-const SAVER = { pollMs: 10_000, chatMs: 3_000, boardMs: 10_000, seed: 500 };
-const NORMAL = { pollMs: 2_000, chatMs: 1_000, boardMs: 3_000, seed: 0 }; // seed 0 = server's SEED_LINES
+// liveMs: the chat view's status line and queue (GET /api/slots/:id/live, Neuaufbau K10 S1) — the server
+// captures the pane only when it painted since, so an idle pane costs a stat per poll
+const SAVER = { pollMs: 10_000, chatMs: 3_000, boardMs: 10_000, liveMs: 1_000, seed: 500 };
+const NORMAL = { pollMs: 2_000, chatMs: 1_000, boardMs: 3_000, liveMs: 250, seed: 0 }; // seed 0 = server's SEED_LINES
 // pure on purpose, and kept clear of the DOM/localStorage lines below it: the e2e suite has
 // no DOM harness, so it cuts this function out and runs it for real. pollMs/chatMs/boardMs
 // === 0 means "no timer at all" — a hidden tab polls NOTHING, in either mode. seed is
 // deliberately unaffected by hidden: it is read at connect time, which only happens visible.
-export function pollPlan(hidden: boolean, saver: boolean): { pollMs: number; chatMs: number; boardMs: number; seed: number } {
+export function pollPlan(hidden: boolean, saver: boolean): { pollMs: number; chatMs: number; boardMs: number; liveMs: number; seed: number } {
   const t = saver ? SAVER : NORMAL;
-  return hidden ? { pollMs: 0, chatMs: 0, boardMs: 0, seed: t.seed } : { ...t };
+  return hidden ? { pollMs: 0, chatMs: 0, boardMs: 0, liveMs: 0, seed: t.seed } : { ...t };
 }

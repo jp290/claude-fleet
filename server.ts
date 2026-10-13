@@ -52527,7 +52527,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const [d, ns, log, head] = await Promise.all([
         charge ? gitRead(ro.repo, "log", "-p", "--format=%n### %h %s", ...own) : gitRead(ro.repo, "diff", "--no-color", range),
         charge ? gitRead(ro.repo, "log", "--name-only", "--format=", ...own) : gitRead(ro.repo, "diff", "--name-only", range),
-        charge ? gitRead(ro.repo, "log", "--format=%H%x00%s", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`))
+        charge ? gitRead(ro.repo, "log", "--reverse", "--format=%H%x00%s", ...chargeRange(base, `refs/heads/${branch}`, `refs/heads/${main}`))
           : gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`),
         gitRead(ro.repo, "rev-parse", `refs/heads/${branch}`)]);
       if (d.code !== 0 || log.code !== 0) return json({ error: `diff against ${base} failed` }, 400);

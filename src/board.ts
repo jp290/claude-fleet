@@ -3,7 +3,8 @@ import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSel
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
-import { boardBranch, branchCard, loadBranches } from "./branchcard";
+import { boardBranch, branchCard, branchesWithoutTree, loadBranches, onPlacesChanged } from "./branchcard";
+import type { BranchView } from "./protocol";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
 import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
@@ -2579,6 +2580,7 @@ export const WORKPLACES_EVERY_MS = 10_000;
 // a forced read asked for while one runs is owed AFTER it: that read may have left before the write
 // the caller just made (a test instance's up), and dropping the ask kept its stale answer on screen
 let workplacesAgain = false;
+onPlacesChanged(() => loadWorkplaces(true));
 export function loadWorkplaces(force = false): void {
   loadBranches(force, () => void renderBoard()); // the branches of the board ride the same beat (K5)
   if (workplacesBusy && force) { workplacesAgain = true; return; }
@@ -4587,6 +4589,7 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
       rk.append(...laneRow(R, w, slotOf(w), d, parent, focusSlot, bands, hue, standOf, wts, words.get(w.path)));
   };
   branchRows(onMain, 1, `${R.repo}#main`);
+  for (const b of branchesWithoutTree(R.repo)) rk.append(...looseBranchRow(R, b, hue));
   for (const t of stems) {
     const tip = branchOf(t);
     const onT = lanes.filter((w) => targetOf(w) === t);
@@ -4710,6 +4713,29 @@ function wtLines(R: WorkplaceRepo, w: WorkplaceRow, wts: WtInfo | null): HTMLEle
   return out;
 }
 
+// A BOARD BRANCH WITHOUT A WORKTREE (K5): its points, charges and "passt" outlive the tree, so it keeps
+// its row; "Session starten" in its card checks it out again
+function looseBranchRow(R: WorkplaceRepo, b: BranchView, hue: number): HTMLElement[] {
+  const key = `br:${R.repo}\n${b.branch}`;
+  const open = rankeOpen === key;
+  const row = el("div", `zr zw${open ? " open" : ""}`);
+  row.dataset.id = key;
+  row.dataset.p = `${R.repo}#main`;
+  row.dataset.node = "still";
+  row.style.setProperty("--d", "1");
+  const name = el("span", "nm leer", b.name);
+  const tag = el("span", "livetag", "Branch");
+  tag.title = `Ein Branch des Boards (${b.branch}) ohne Worktree — „Session starten“ checkt ihn wieder aus`;
+  name.appendChild(tag);
+  rowCells(row, "leer", "", hue, name);
+  const rt = el("span", "lr");
+  rt.appendChild(el("span", "", "ohne Worktree"));
+  row.appendChild(rt);
+  row.title = `${b.branch} · ohne Worktree — ${open ? "Klick klappt zu" : "Klick klappt auf"}`;
+  rowTarget(row, () => { rankeOpen = open ? null : key; void renderBoard(); });
+  row.setAttribute("aria-expanded", String(open));
+  return open ? [row, branchCard(R.repo, b, null, () => void renderBoard())] : [row];
+}
 function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: number, parent: string,
   focusSlot: number | null, bands: Map<number, string>, hue: number, standOf: Map<string, WorkplaceStand>,
   wts: WtInfo | null, words?: string): HTMLElement[] {
@@ -4794,7 +4820,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
     if (err) out.push(err);
   }
   if (!open) return out;
-  if (bb) out.push(branchCard(R.repo, bb, s ? s.id : null, () => void renderBoard()));
+  if (bb) out.push(branchCard(R.repo, bb, s ? s.id : null, () => void renderBoard(), broken));
   // THE OPENED LANE: its checks as the four points (or the plain word that there is none yet — never
   // a row of empty points), each run of it as its sentence with its machine, its test instance as a
   // line with Öffnen or Starten, and for a worktree no session holds: its controls

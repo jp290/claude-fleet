@@ -14,9 +14,14 @@ let viewAt = 0;
 let viewBusy = false;
 const busy = new Set<string>();
 const errs = new Map<string, string>();
+const notes = new Map<string, string>(); // what a charge just did, until the next one
 const drafts = new Map<string, string>();
 
 const keyOf = (repo: string, branch: string): string => `${repo}\n${branch}`;
+// the board reads the worktrees on its own beat; a card that just created one (a session started, a
+// charge merged) asks it to read them now, or the branch stood in neither list for up to 10 s
+let refreshPlaces: () => void = () => {};
+export function onPlacesChanged(fn: () => void): void { refreshPlaces = fn; }
 
 export function loadBranches(force: boolean, repaint: () => void): void {
   if (viewBusy || (!force && Date.now() - viewAt < BRANCHES_EVERY_MS)) return;
@@ -25,6 +30,11 @@ export function loadBranches(force: boolean, repaint: () => void): void {
   void api("/api/branches").then(async (r) => { if (r.ok) view = (await r.json()) as BranchesView; })
     .catch(() => undefined)
     .finally(() => { viewBusy = false; repaint(); });
+}
+
+// the board branches of a repo that have no worktree: the branch and its points outlive the tree
+export function branchesWithoutTree(repo: string): BranchView[] {
+  return view?.repos.find((r) => r.repo === repo)?.branches.filter((b) => !b.path) ?? [];
 }
 
 export function boardBranch(repo: string, branch: string | null): BranchView | undefined {
@@ -110,11 +120,85 @@ async function startSession(repo: string, b: BranchView, repaint: () => void): P
   busy.delete(key);
   if (r?.ok && typeof j?.slot === "number") {
     loadBranches(true, repaint);
+    refreshPlaces();
     if (await revealStartedSlot(j.slot)) showSlot(j.slot);
     return;
   }
   errs.set(key, `Die Session startete nicht: ${j?.error ?? (r ? `Antwort ${r.status}` : "der Server war nicht erreichbar")}`);
   repaint();
+}
+
+// CHARGE MERGEN (K5 S3/S4b): the commits since the last charge become one commit on main. The
+// question shows what goes, in German: the subject (prefilled with the name and the points done since
+// the last charge), those points, the passt state, the diff of exactly these commits — and, in a repo
+// without a merge check, that it goes without one.
+const doneSince = (b: BranchView): string[] => {
+  const before = new Set(b.lands.flatMap((l) => l.points));
+  return pointsOf(b.text).filter((p) => p.done && !before.has(p.text)).map((p) => p.text);
+};
+async function startCheck(repo: string, b: BranchView, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch);
+  errs.delete(key);
+  const r = await post("/api/branches/check", { repo, branch: b.branch }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { error?: string } | null;
+  if (!r?.ok) errs.set(key, `Der Merge-Check startete nicht: ${j?.error ?? (r ? `Antwort ${r.status}` : "der Server war nicht erreichbar")}`);
+  loadBranches(true, repaint);
+}
+async function mergeCharge(repo: string, b: BranchView, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch);
+  const unchecked = b.check === null;
+  const done = doneSince(b);
+  const d = await api(`/api/branches/diff?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(b.branch)}&charge=1`)
+    .then(async (r) => (r.ok ? await r.json() : { error: `Antwort ${r.status}` }))
+    .catch(() => ({ error: "der Server war nicht erreichbar" })) as
+    { files?: string[]; commits?: { sha: string; subject: string }[]; diff?: string; truncated?: boolean; error?: string };
+  const subject = el("input", "brc-subject") as HTMLInputElement;
+  subject.value = `${b.name}${done.length ? `: ${done.join(", ")}` : ""}`.slice(0, 200);
+  subject.maxLength = 200;
+  subject.setAttribute("aria-label", "Betreff des Commits auf main");
+  const n = d.commits?.length ?? b.chargeCommits ?? 0;
+  const body: HTMLElement[] = [
+    el("div", "hint", `Die ${n} ${n === 1 ? "Commit" : "Commits"} seit der letzten Charge werden ein Commit auf main. Branch, Worktree und Session bleiben.`),
+    el("div", "brc-k", "Betreff"), subject,
+    el("div", "brc-k", done.length ? `Erledigt seit der letzten Charge: ${done.join(" · ")}` : "Seit der letzten Charge ist kein Punkt erledigt."),
+    el("div", `brc-k${b.seen?.head === b.head ? "" : " warn"}`, b.seen?.head === b.head ? `Owner hat diesen Stand gesehen: passt (${sha7(b.head)}).`
+      : "Owner hat diesen Stand noch nicht als „passt“ markiert."),
+  ];
+  if (unchecked) body.push(el("div", "brc-k warn", "Dieses Repo hat keinen Merge-Check — die Charge geht ohne Merge-Check nach main."));
+  if (d.error) body.push(el("div", "diffstat err", `Der Diff kam nicht: ${d.error}`));
+  else {
+    for (const c of d.commits ?? []) body.push(el("div", "diffstat brc-commit", `${c.sha.slice(0, 7)} ${c.subject}`));
+    if (d.diff) { const box = el("div", "difftxt"); renderDiffInto(box, d.diff); body.push(box); }
+  }
+  const ok = await askRisk({ title: `Charge mergen · ${b.name}`, body, panelClass: "riskpanel landreviewpanel",
+    buttons: [{ label: "Abbrechen", value: false }, { label: unchecked ? "Ohne Merge-Check mergen" : "Mergen", value: true, primary: true, disabled: !!d.error }] });
+  if (!ok) return;
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const r = await post("/api/branches/land", { repo, branch: b.branch, subject: subject.value.trim() || b.name, ...(unchecked ? { unchecked: true } : {}) }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { sha?: string; deploy?: string; error?: string } | null;
+  busy.delete(key);
+  if (r?.ok && j?.sha) notes.set(key, `Charge gemergt: ${j.sha.slice(0, 7)} auf main${j.deploy ? ` — ${j.deploy}` : ""}`);
+  else errs.set(key, `Die Charge wurde nicht gemergt: ${j?.error ?? (r ? `Antwort ${r.status}` : "der Server war nicht erreichbar")}`);
+  loadBranches(true, repaint);
+  refreshPlaces();
+}
+// NEU STARTEN (Critic B7): a session that hangs is ended and the branch continues in a new one, with
+// the same conversation where it has a transcript
+async function restartSession(repo: string, b: BranchView, slot: number, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch);
+  const ok = await askRisk({ title: `Neu starten · ${b.name}`, body: [el("div", "hint",
+    `Die Session in Slot ${slot} hängt. Sie wird beendet, und eine neue Session setzt das Gespräch auf diesem Branch fort. Worktree, Commits und Punkte bleiben.`)],
+    buttons: [{ label: "Abbrechen", value: false }, { label: "Neu starten", value: true, primary: true }] });
+  if (!ok) return;
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const k = await post(`/api/slots/${slot}/kill`, {}).catch(() => null);
+  busy.delete(key);
+  if (!k?.ok) { errs.set(key, `Die alte Session ließ sich nicht beenden (Antwort ${k?.status ?? "keine"}).`); repaint(); return; }
+  await startSession(repo, b, repaint);
 }
 
 const sha7 = (h: string): string => h.slice(0, 7);
@@ -124,7 +208,7 @@ function seenWords(b: BranchView): string {
   return b.seen.head === b.head ? `passt · an ${sha7(b.seen.head)}, ${day}` : `passt an ${sha7(b.seen.head)} (${day}) — seitdem neue Commits`;
 }
 
-export function branchCard(repo: string, b: BranchView, slot: number | null, repaint: () => void): HTMLElement {
+export function branchCard(repo: string, b: BranchView, slot: number | null, repaint: () => void, hung = false): HTMLElement {
   injectCss();
   const key = keyOf(repo, b.branch);
   const box = el("div", "zd brc");
@@ -157,7 +241,9 @@ export function branchCard(repo: string, b: BranchView, slot: number | null, rep
   };
   box.appendChild(add);
   const d = b.distance;
-  box.appendChild(el("div", "brc-k", `Stand · ${d ? `${d.ahead} ${d.ahead === 1 ? "Commit" : "Commits"} voraus, ${d.behind} hinter ${b.base ?? "der Basis"}` : "Abstand unbekannt"}`));
+  // after a charge the graph counts the branch's own charge commit on main as "behind" — the charge
+  // line below says what counts then
+  if (!b.lands.length) box.appendChild(el("div", "brc-k", `Stand · ${d ? `${d.ahead} ${d.ahead === 1 ? "Commit" : "Commits"} voraus, ${d.behind} hinter ${b.base ?? "der Basis"}` : "Abstand unbekannt"}`));
   box.appendChild(el("div", `brc-k brc-seen${b.seen && b.seen.head === b.head ? " ok" : ""}`, seenWords(b)));
   const acts = el("div", "brc-acts");
   const diff = el("button", "rk-btn", "Diff") as HTMLButtonElement;
@@ -176,7 +262,45 @@ export function branchCard(repo: string, b: BranchView, slot: number | null, rep
   go.title = slot ? `Zur Session in Slot ${slot}` : "Eine Session auf diesem Branch starten — sie setzt das letzte Gespräch fort";
   go.onclick = (e) => { e.stopPropagation(); if (slot) showSlot(slot); else void startSession(repo, b, repaint); };
   acts.append(diff, passt, go);
+  if (slot && hung) {
+    const again = el("button", "rk-btn", "Neu starten") as HTMLButtonElement;
+    again.type = "button";
+    again.dataset.act = "restart";
+    again.disabled = busy.has(key);
+    again.title = "Die hängende Session beenden und den Branch in einer neuen fortsetzen";
+    again.onclick = (e) => { e.stopPropagation(); void restartSession(repo, b, slot, repaint); };
+    acts.appendChild(again);
+  }
   box.appendChild(acts);
+  // CHARGE: what the next charge carries, its merge check, and the one button that merges it
+  const n = b.chargeCommits ?? 0, last = b.lands.at(-1);
+  box.appendChild(el("div", "brc-k", `Charge · ${b.chargeCommits === null ? "Stand unbekannt" : n ? `${n} ${n === 1 ? "Commit" : "Commits"} seit der letzten Charge` : "nichts Neues seit der letzten Charge"}`
+    + (last ? ` · ${b.lands.length} ${b.lands.length === 1 ? "Charge" : "Chargen"} auf main, zuletzt ${last.sha.slice(0, 7)} „${last.subject}“` : "")));
+  const chk = b.check;
+  if (chk) box.appendChild(el("div", `brc-k brc-check ${chk.state}`, chk.state === "running" ? "Merge-Check läuft …"
+    : chk.state === "green" ? "Merge-Check grün auf diesem Stand" : chk.state === "red" ? `Merge-Check rot: ${chk.why ?? "ohne Grund"}`
+    : chk.state === "stale" ? "Merge-Check auf einem älteren Stand — neu prüfen" : "Noch kein Merge-Check auf diesem Stand"));
+  const cacts = el("div", "brc-acts");
+  if (chk && chk.state !== "green" && chk.state !== "running" && n) {
+    const cb = el("button", "rk-btn", "Merge-Check starten") as HTMLButtonElement;
+    cb.type = "button";
+    cb.dataset.act = "check";
+    cb.title = `${b.branch} gegen ${b.chargeBase ?? "die Basis"} prüfen — der Baum, den main danach hätte`;
+    cb.onclick = (e) => { e.stopPropagation(); void startCheck(repo, b, repaint); };
+    cacts.appendChild(cb);
+  }
+  const mb = el("button", "rk-btn primary", busy.has(key) ? "mergt …" : "Charge mergen") as HTMLButtonElement;
+  mb.type = "button";
+  mb.dataset.act = "merge";
+  mb.disabled = busy.has(key) || !n || (!!chk && chk.state !== "green");
+  mb.title = !n ? "Nichts zu mergen: keine Commits seit der letzten Charge"
+    : chk && chk.state !== "green" ? "Erst ein grüner Merge-Check auf diesem Stand"
+    : "Die Commits seit der letzten Charge als einen Commit nach main — Branch, Worktree und Session bleiben";
+  mb.onclick = (e) => { e.stopPropagation(); void mergeCharge(repo, b, repaint); };
+  cacts.appendChild(mb);
+  box.appendChild(cacts);
+  const note = notes.get(key);
+  if (note) box.appendChild(el("div", "brc-k brc-note", note));
   const err = errs.get(key);
   if (err) box.appendChild(el("div", "err", err));
   return box;
@@ -197,6 +321,12 @@ const BRANCH_CSS = `
     background: var(--chat-surface); color: var(--chat-ink); font: inherit; }
   #board .zd.brc > .brc-acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 4px; }
   #board .zd.brc > .err { color: var(--danger); white-space: normal; }
+  #board .zd.brc > .brc-check.green, #board .zd.brc > .brc-note { color: var(--chat-ink); }
+  #board .zd.brc > .brc-check.red { color: var(--danger); }
+  .landreviewpanel .brc-subject { width: 100%; box-sizing: border-box; min-height: 32px; padding: 0 8px; margin: 2px 0 8px;
+    border: 1px solid var(--chat-edge); border-radius: var(--r1); background: var(--chat-surface); color: var(--chat-ink); font: inherit; }
+  .landreviewpanel .brc-k { margin: 4px 0; white-space: normal; }
+  .landreviewpanel .brc-k.warn { color: var(--danger); }
   .landreviewpanel .brc-commit { font-family: var(--mono, monospace); }
 `;
 let cssIn = false;

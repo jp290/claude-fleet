@@ -47,15 +47,20 @@ describe("whose text a recall may take", () => {
 
 // Claude Code's field as measured: a folded paste renders as its token and erases as one unit
 function fakePane(o: { turn: Turn; queued?: string[]; last?: { n: number; text: string } | null; field?: string;
-  escBeforeOutput?: boolean; queueGoneBeforeUp?: boolean }) {
+  escBeforeOutput?: boolean; queueGoneBeforeUp?: boolean; slowErase?: number }) {
   let field = o.field ?? "";
   let queued = [...(o.queued ?? [])];
+  let lag = 0; // reads until a BSpace burst shows (measured: the TUI works it off key by key)
+  let after = "";
   const pressed: string[] = [];
-  const shown = (t: string) => t.replace(/\n\n<pasted_content id="([^"]+)">\n[\s\S]*?\n<\/pasted_content id="\1">/g, "");
+  const shown = (t: string) => t.replace(/\n\n<pasted_content id="([^"]+)">\n[\s\S]*?\n<\/pasted_content id="\1">/g, "\uE000");
   const pane: RecallPane & { pressed: string[] } = {
     pressed,
     state: async () => ({ turn: o.turn, queued: [...queued], last: o.last ?? null }),
-    rows: async () => field.replace(//g, FOLD).split("\n"),
+    rows: async () => {
+      if (lag > 0 && --lag === 0) field = after;
+      return field.replace(/\uE000/g, FOLD).split("\n");
+    },
     press: async (...keys) => {
       pressed.push(keys.join(" "));
       if (keys[0] === "Up") field = o.queueGoneBeforeUp ? `${H}eine frühere Nachricht` : queued.map(shown).join("\n");
@@ -64,12 +69,17 @@ function fakePane(o: { turn: Turn; queued?: string[]; last?: { n: number; text: 
       if (keys[0] === "Escape" && o.escBeforeOutput && o.last) field = shown(o.last.text);
       return true;
     },
-    erase: async (n) => { pressed.push(`BSpace×${n}`); field = [...field].slice(0, Math.max(0, [...field].length - n)).join(""); return true; },
+    erase: async (n) => {
+      pressed.push(`BSpace×${n}`);
+      after = [...field].slice(0, Math.max(0, [...field].length - n)).join("");
+      if (o.slowErase) lag = o.slowErase; else field = after;
+      return true;
+    },
     sleep: async () => {},
   };
   return pane;
 }
-const QUICK = { settleMs: 300, stepMs: 100 };
+const QUICK = { settleMs: 300, eraseMs: 300, stepMs: 100 };
 
 describe("↑: the waiting prompts come back", () => {
   test("mid-turn, two waiting prompts: ↑, then exactly their BSpaces, and both texts come back", async () => {
@@ -77,6 +87,12 @@ describe("↑: the waiting prompts come back", () => {
     const pane = fakePane({ turn: "working", queued: q });
     expect(await recall("queued", pane, QUICK)).toEqual({ result: "recalled", texts: q, lines: [], interrupted: false });
     expect(pane.pressed).toEqual(["Up", "BSpace×117"]);
+  });
+  test("a slow TUI: the field empties a few reads after the BSpaces — still recalled, nothing pressed twice", async () => {
+    const q = [`${H}Q1 antworte nur OK-Q1`];
+    const pane = fakePane({ turn: "working", queued: q, slowErase: 3 });
+    expect((await recall("queued", pane, QUICK)).result).toBe("recalled");
+    expect(pane.pressed).toEqual(["Up", `BSpace×${eraseCount(q)}`]);
   });
   test("a Fleet delivery in the queue: nothing is pressed", async () => {
     const pane = fakePane({ turn: "working", queued: [`${H}Q1`, BUNDLE] });

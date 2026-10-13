@@ -34,7 +34,7 @@ export type RecallResult =
 const PASTE_IN_TRANSCRIPT = /\n\n<pasted_content id="([^"]+)">\n?[\s\S]*?\n?<\/pasted_content id="\1">/g;
 const PASTE_IN_FIELD = /\[Pasted text #\d+(?: \+\d+ lines)?\]/g;
 // one code point for one token: the field erases a folded paste with one BSpace
-const TOKEN = "";
+const TOKEN = "\uE000";
 
 // what Claude's field shows for these prompts, a folded paste as TOKEN
 export function fieldOf(prompts: readonly string[]): string {
@@ -64,25 +64,27 @@ export interface RecallPane {
   erase(count: number): Promise<boolean>;
   sleep(ms: number): Promise<void>;
 }
-export interface RecallTiming { settleMs: number; stepMs: number }
-// Esc restored the field within 0.8 s in every measured run
-export const RECALL_TIMING: RecallTiming = { settleMs: 1500, stepMs: 100 };
+export interface RecallTiming { settleMs: number; eraseMs: number; stepMs: number }
+// Esc restored the field within 0.8 s in every measured run. The TUI works off a burst of BSpaces key by
+// key: a read right after the burst still showed the whole text (measured 13.10., 80 BSpaces), so the
+// erase waits for the empty field like rollbackOwnComposerPayload (its acceptance window, 3 s live)
+export const RECALL_TIMING: RecallTiming = { settleMs: 1500, eraseMs: 3000, stepMs: 100 };
 
 const text = (rows: readonly string[] | null): string | null => (rows === null ? null : rows.join("\n"));
 const empty = (rows: readonly string[] | null): boolean => rows !== null && rows.join("") === "";
 
-async function until(pane: RecallPane, t: RecallTiming, done: (rows: string[] | null) => boolean): Promise<string[] | null> {
+async function until(pane: RecallPane, t: RecallTiming, done: (rows: string[] | null) => boolean, ms = t.settleMs): Promise<string[] | null> {
   let rows = await pane.rows();
-  for (let waited = 0; !done(rows) && waited < t.settleMs; waited += t.stepMs) {
+  for (let waited = 0; !done(rows) && waited < ms; waited += t.stepMs) {
     await pane.sleep(t.stepMs);
     rows = await pane.rows();
   }
   return rows;
 }
 
-async function takeBack(pane: RecallPane, prompts: readonly string[]): Promise<boolean> {
+async function takeBack(pane: RecallPane, t: RecallTiming, prompts: readonly string[]): Promise<boolean> {
   if (!(await pane.erase(eraseCount(prompts)))) return false;
-  return empty(await pane.rows());
+  return empty(await until(pane, t, empty, t.eraseMs));
 }
 
 // ↑ and exactly the field it filled. null = done; otherwise why the field was left as it is
@@ -90,7 +92,7 @@ async function pullQueue(pane: RecallPane, t: RecallTiming, queued: readonly str
   if (!(await pane.press("Up"))) return { result: "refused", why: "the key did not reach the pane" };
   const rows = await until(pane, t, (r) => r !== null && fieldHolds(r, queued));
   if (rows !== null && fieldHolds(rows, queued))
-    return (await takeBack(pane, queued)) ? null : { result: "kept", why: "the field did not empty", field: text(await pane.rows()) };
+    return (await takeBack(pane, t, queued)) ? null : { result: "kept", why: "the field did not empty", field: text(await pane.rows()) };
   // the turn ended first and Claude took the queue: ↑ then fetched the newest history entry. ↓ walks
   // back to the empty draft, as in the terminal
   if (rows !== null && !empty(rows)) {
@@ -135,6 +137,6 @@ export async function recall(kind: RecallKind, pane: RecallPane, t: RecallTiming
   if (last === null || rows === null || !fieldHolds(rows, [last.text]))
     return { result: "kept", why: "the field holds text Esc did not take back", field: text(rows), ...pulled };
   if (!back.length) return { result: "kept", why: "the prompt Esc took back is a Fleet delivery", field: text(rows), ...pulled };
-  return (await takeBack(pane, back)) ? { result: "recalled", texts: [...back, ...st.queued], lines: [last.n], interrupted: false }
+  return (await takeBack(pane, t, back)) ? { result: "recalled", texts: [...back, ...st.queued], lines: [last.n], interrupted: false }
     : { result: "kept", why: "the field did not empty", field: text(await pane.rows()), ...pulled };
 }

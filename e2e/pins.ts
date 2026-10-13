@@ -3935,6 +3935,12 @@ await import(pathToFileURL(process.argv[2]).href);
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(orchBody)
     && /await sendText\(s, brief, true, \{ path: "[a-z-]+" \}\);/.test(orchBody);
   const packsRailBody = railBody("async function deliverFoundingPacks(", "// THE REPO SHEET");
+  // …and the branch session's goal (Neuaufbau K5, server.ts#deliverBranchGoal): POST /api/branches/open
+  // has opened the pane, so it founds into the slot it holds — the same three lines, naming `s`
+  const branchRailBody = railBody("async function deliverBranchGoal(", "const BRANCH_GOAL_MAX");
+  const branchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(branchRailBody)
+    && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(branchRailBody)
+    && /await sendText\(s, text, true, \{ path: "founding" \}\);/.test(branchRailBody);
   const packsRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(packsRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(packsRailBody)
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "founding" \}\);/.test(packsRailBody);
@@ -3955,9 +3961,9 @@ await import(pathToFileURL(process.argv[2]).href);
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "[a-z-]+" \}\);/.test(b)
     && /await respawnInPlace\(s, /.test(b));
   pin("all SEVEN founding deliveries are gated — same count of sends, bounded waits and shared boot graces, and no naked 4 s sleep left",
-    foundingSends === 2 && foundingWaits === 2 && foundingGraces === 7 && laneRailGated && orchRailGated
-      && packsRailGated && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
-    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} packsRail=${packsRailGated} inPlace=${inPlaceGated.join(",")}`);
+    foundingSends === 2 && foundingWaits === 2 && foundingGraces === 8 && laneRailGated && orchRailGated
+      && packsRailGated && branchRailGated && inPlaceGated.every(Boolean) && !/await Bun\.sleep\(4000\);/.test(server),
+    `sends=${foundingSends} waits=${foundingWaits} graces=${foundingGraces} laneRail=${laneRailGated} orchRail=${orchRailGated} packsRail=${packsRailGated} branchRail=${branchRailGated} inPlace=${inPlaceGated.join(",")}`);
   // THE OWNER SUCCESSION DOOR asks „[Zitat entfernt]“ LAST, after the brief's awaits (MAIN review of
   // 8cffd3be, finding 1): server.ts#succeedGeneric runs its beforeKill after the brief is built and
   // before respawnInPlace, and server.ts#handleOwnerSucceed hands it the busy question. Moving the

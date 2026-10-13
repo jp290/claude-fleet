@@ -7,17 +7,35 @@
 // Jedes `life` ist ein Leben des Servers in einem eigenen Prozess (server/branches.drive.ts): Zustand
 // laden, Boot-Umschlüsselung, Anfragen. Zwei Leben nacheinander sind ein Neustart dazwischen.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const DRIVE = join(import.meta.dir, "branches.drive.ts");
 const LIFE_DEADLINE_MS = 30_000;
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "fleet-branches-")));
-afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+// Eine Pane startet hier nie einen Agenten: `claude` ist ein Ersatz in TMP/bin, der nur wartet, und PATH
+// enthält das echte nicht. Der Befehlsname muss `claude` sein, denn nur dann hält der Server die
+// Session-Id fest (server.ts#IS_CLAUDE, pinsSession), die „Fortsetzen“ braucht. Ein tmux-Socket je
+// Fixture; Transkripte liegen im Temp-Ordner.
+const PROJECTS = join(TMP, "claude-projects");
+const BIN = join(TMP, "bin");
+mkdirSync(BIN);
+writeFileSync(join(BIN, "claude"), "#!/bin/sh\nexec sleep 600\n", { mode: 0o755 });
+const TOOLS = ["git", "tmux"].map((tool) => Bun.which(tool)).map((found) => (found ? dirname(found) : null));
+const PANE_PATH = [BIN, ...new Set(TOOLS.filter((d): d is string => d !== null)), "/usr/bin", "/bin"].join(":");
+if (Bun.which("claude", { PATH: PANE_PATH }) !== join(BIN, "claude")) throw new Error(`PATH der Panes fände ein echtes claude: ${PANE_PATH}`);
+// tmux-Sockets in einem kurzen eigenen Ordner: ein Unix-Socket-Pfad darf höchstens 104 Zeichen haben
+const SOCKETS = mkdtempSync("/tmp/fbr-");
+const sockets: string[] = [];
+afterAll(() => {
+  for (const sock of sockets) Bun.spawnSync(["tmux", "-L", sock, "kill-server"], { env: { ...process.env, TMUX_TMPDIR: SOCKETS } });
+  rmSync(TMP, { recursive: true, force: true });
+  rmSync(SOCKETS, { recursive: true, force: true });
+});
 
 interface Answer { status: number; body: Record<string, unknown> }
-interface Fixture { repo: string; state: string; token: string }
+interface Fixture { repo: string; state: string; token: string; sock: string }
 let fixtures = 0;
 
 function sh(cwd: string, ...args: string[]): string {
@@ -43,7 +61,9 @@ function fixture(): Fixture {
   writeFileSync(join(repo, "README"), "fixture\n");
   sh(repo, "add", "README");
   sh(repo, "commit", "-q", "-m", "start");
-  return { repo, state, token: `owner-${process.pid}-${fixtures}` };
+  const sock = `fb${fixtures}`;
+  sockets.push(sock);
+  return { repo, state, token: `owner-${process.pid}-${fixtures}`, sock };
 }
 function commitIn(path: string, file: string, subject: string): string {
   writeFileSync(join(path, file), `${subject}\n`);
@@ -56,8 +76,8 @@ async function life(f: Fixture, steps: unknown[]): Promise<Answer[]> {
   for (const [key, value] of Object.entries(process.env))
     if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
   const proc = Bun.spawn([process.execPath, DRIVE, JSON.stringify(steps)], { cwd: f.state, stdout: "pipe", stderr: "pipe",
-    env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: `fleetbranch${process.pid}`,
-      FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo } });
+    env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude", PATH: PANE_PATH,
+      FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo } });
   const deadline = setTimeout(() => proc.kill("SIGKILL"), LIFE_DEADLINE_MS);
   const code = await proc.exited;
   clearTimeout(deadline);
@@ -68,6 +88,7 @@ async function life(f: Fixture, steps: unknown[]): Promise<Answer[]> {
 const post = (path: string, body: unknown, token?: string | null) => ({ method: "POST", path, body, ...(token === undefined ? {} : { token }) });
 const get = (path: string) => ({ method: "GET", path });
 type BranchRow = { branch: string; name: string; text: string; rev: number; path: string | null; head: string;
+  session: { slot: number; openedAt: number } | null;
   seen: { head: string; via: string } | null; distance: { ahead: number; behind: number } | null };
 function rowsOf(a: Answer, repo: string): { branches: BranchRow[]; others: { branch: string; path: string | null }[] } {
   const repos = (a.body as { repos?: { repo: string; branches: BranchRow[]; others: { branch: string; path: string | null }[] }[] }).repos ?? [];
@@ -206,4 +227,48 @@ describe("Altbestand: Notizblöcke je Pfad wandern auf ihren Branch, der alte Sc
     expect(persisted(f).branches).toBeUndefined();
     expect(persisted(f).worktreeNotes).toEqual(legacy);
   }, LIFE_DEADLINE_MS);
+});
+
+// projDir in server.ts: der Transkript-Ordner einer Session ist ihr cwd mit „-“ statt jedes Sonderzeichens
+const transcriptDir = (cwd: string): string => join(PROJECTS, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+
+describe("Session auf dem Branch: ohne Rolle, im Worktree, mit dem Board-Namen", () => {
+  test("die Session sitzt im Worktree und trägt den Namen; ein zweites Öffnen sagt, wo sie läuft", async () => {
+    const f = fixture();
+    const [made, opened, again, list, plain] = await life(f, [
+      post("/api/branches", { repo: f.repo, name: "Session Probe", points: ["eins"] }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/session-probe" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/session-probe" }),
+      get("/api/branches"),
+      post("/api/branches/open", { repo: f.repo, branch: "main" })]);
+    expect(opened).toMatchObject({ status: 200, body: { cwd: made?.body.path, label: "Session Probe", resumed: null } });
+    const slot = Number(opened?.body.slot);
+    expect(again).toMatchObject({ status: 409, body: { session: { slot } } });
+    expect(rowsOf(list!, f.repo).branches.map((r) => r.session?.slot)).toEqual([slot]);
+    expect(plain?.status).toBe(404);
+  }, LIFE_DEADLINE_MS);
+
+  test("Fortsetzen nimmt das jüngste Gespräch des Worktrees, auch ohne Worktree vorher; fresh beginnt neu", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Fortsetzen" })]);
+    const path = String(made?.body.path);
+    const older = "11111111-1111-4111-8111-111111111111", newer = "22222222-2222-4222-8222-222222222222";
+    mkdirSync(transcriptDir(path), { recursive: true });
+    for (const [id, age] of [[older, 600], [newer, 60]] as const) {
+      const file = join(transcriptDir(path), `${id}.jsonl`);
+      writeFileSync(file, "{}\n");
+      const at = new Date(Date.now() - age * 1000);
+      utimesSync(file, at, at);
+    }
+    sh(f.repo, "worktree", "remove", path);
+    const [resumed] = await life(f, [post("/api/branches/open", { repo: f.repo, branch: "branch/fortsetzen" })]);
+    expect(resumed).toMatchObject({ status: 200, body: { cwd: path, resumed: newer } });
+
+    const g = fixture();
+    const [made2] = await life(g, [post("/api/branches", { repo: g.repo, name: "Frisch" })]);
+    mkdirSync(transcriptDir(String(made2?.body.path)), { recursive: true });
+    writeFileSync(join(transcriptDir(String(made2?.body.path)), `${older}.jsonl`), "{}\n");
+    const [fresh] = await life(g, [post("/api/branches/open", { repo: g.repo, branch: "branch/frisch", fresh: true })]);
+    expect(fresh).toMatchObject({ status: 200, body: { resumed: null } });
+  }, LIFE_DEADLINE_MS * 2);
 });

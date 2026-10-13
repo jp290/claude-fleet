@@ -8795,6 +8795,45 @@ async function checkoutBranchWorktree(repo: string, branch: string, harness: Har
   return path;
 }
 
+// The newest conversation of a branch's worktree, by transcript mtime — whichever session, slot or
+// succession wrote it. "Fortsetzen" resumes it; null = nothing to continue.
+function lastConversationIn(cwd: string): string | null {
+  let newest: { id: string; at: number } | null = null;
+  try {
+    for (const f of readdirSync(projDir(cwd))) {
+      const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(f);
+      if (!m?.[1]) continue;
+      const at = statSync(`${projDir(cwd)}/${f}`).mtimeMs;
+      if (!newest || at > newest.at) newest = { id: m[1], at };
+    }
+  } catch { return null; } // no project directory: the tree never had a conversation
+  return newest?.id ?? null;
+}
+// The goal the owner gave a branch session, as its first message once the pane is ready — the same
+// boot grace, gates and readiness as a founding card. Not delivered is an answer, never a retry.
+async function deliverBranchGoal(s: Slot, text: string): Promise<{ delivered: boolean; reason?: string }> {
+  const openedAt = s.openedAt;
+  const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
+  await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
+  if (!stillCurrent()) return { delivered: false, reason: "the slot changed during boot" };
+  const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, killSwitch: false, quietHours: false, harness: false });
+  if (!gate.ok) return { delivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
+  const readiness = await waitForFoundingReadiness(s, stillCurrent);
+  if (!readiness.ok) return { delivered: false, reason: readiness.reason };
+  try {
+    await sendText(s, text, true, { path: "founding" });
+  } catch (e) {
+    logPrompt(s, text, "auto", Date.now(), undefined, "uncertain");
+    return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
+  }
+  const at = Date.now();
+  s.history = [...s.history, { text, ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, text, "auto", at);
+  return { delivered: true };
+}
+const BRANCH_GOAL_MAX = 4000;
+
 // the real risk behind a destructive action, computed once and shared by every surface
 // that needs to show it BEFORE the click (risk preview panels) and the
 // one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
@@ -10115,7 +10154,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   foundingPlan?: AcceptedFoundingPlan,
   // the founding plan's MCP servers (planMcpServers), stamped like every other spawn input below.
   // Absent = the accepted plan's own, else none; a lane without either re-plans in ensureSlot.
-  packMcp?: readonly ContextPackMcpServer[]): Promise<SlotOpenResult> {
+  packMcp?: readonly ContextPackMcpServer[],
+  // K5: the conversation a branch session continues (lastConversationIn); ensureSlot resumes it
+  // when its transcript exists, else it starts a new one as on every other open
+  resumeSessionId?: string): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10263,7 +10305,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // a lane door hands its accepted plan here; /open stamps its own after the open (no session file)
   s.plan = foundingPlan ? foundingPlan.request : null;
   onCandidate({ slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken });
-  s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
+  s.sessionId = resumeSessionId ?? null; // ensureSlot pins a new uuid when it creates the pane, or resumes this one
   s.sessionIdLearned = null; // ...and a new occupation has learned nothing yet
   s.codexPaneSpawnedAt = null;
   s.codexRecoveryState = null;
@@ -52332,6 +52374,67 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         commits: log.out.split("\n").filter(Boolean).map((line) => { const [sha, subject] = line.split("\0"); return { sha, subject: subject ?? "" }; }),
         diff: d.out.length > DIFF_CAP ? `${d.out.slice(0, DIFF_CAP)}\n… truncated` : d.out, truncated: d.out.length > DIFF_CAP });
+    }
+    // a SESSION on a board branch: a session without a role (like "Nur Ordner") in the branch's
+    // worktree, labelled with its Board-Name; a branch without a worktree is checked out first. It
+    // continues the worktree's newest conversation unless `fresh`; `goal` becomes its first message.
+    // A branch whose worktree a session already holds answers 409 with that slot.
+    if (url.pathname === "/api/branches/open" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.branch !== "string" || (body.goal !== undefined && typeof body.goal !== "string")
+        || (body.fresh !== undefined && typeof body.fresh !== "boolean"))
+        return json({ error: "expected { repo, branch, goal?, fresh?, model?, effort?, harness? }" }, 400);
+      const goal = typeof body.goal === "string" ? body.goal.trim() : "";
+      if (goal.length > BRANCH_GOAL_MAX) return json({ error: `goal has ${goal.length} characters — the cap is ${BRANCH_GOAL_MAX}` }, 400);
+      const ho = harnessIdOf(body);
+      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
+      const h = harnessOf(ho.harness);
+      const paused = harnessPausedError(h);
+      if (paused) return json({ error: paused }, 409);
+      const mo = modelOf(body, h);
+      if (!mo.ok) return json({ error: mo.error }, 400);
+      const eo = effortOf(body, h);
+      if (!eo.ok) return json({ error: effortErrFor(h) }, 400);
+      const pe = permissionsOf(body, h);
+      if (!pe.ok) return json({ error: pe.error }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      const record = findBranch(branchBook, ro.repo, body.branch);
+      if (!record?.name || !(await branchExists(ro.repo, body.branch)))
+        return json({ error: `${body.branch} is no board branch here — open it with POST /api/branches first` }, 404);
+      let path = (await listWorktrees(ro.repo)).find((w) => w.branch === body.branch)?.path ?? null;
+      const holder = path ? workplaceHolder(path) : null;
+      if (holder) return json({ error: `${record.name} läuft schon in Slot ${holder.slot}`, session: { slot: holder.slot, openedAt: holder.openedAt } }, 409);
+      const free = freeSessionSlot("main");
+      if (!free) return json({ error: sessionLimitError() ?? "no free slot — the branch stays with its points; open it again when a place is free" }, 409);
+      laneSpawn.add(free.id); // reserve before the first await — the same reservation /api/lanes takes
+      try {
+        if (!path) path = await checkoutBranchWorktree(ro.repo, body.branch, h);
+        if (attachBusy.has(path) || slots.some((x) => x.cwd === path)) return json({ error: "the worktree is being opened right now" }, 409);
+        attachBusy.add(path);
+        try {
+          const resumeId = body.fresh === true ? null : lastConversationIn(path);
+          const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
+            null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined);
+          if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
+            throw new Error("slot occupant changed during branch open");
+          void tickGit().catch(() => {});
+          // the goal follows once the pane is ready — the board has its slot at once; a goal that is
+          // held or uncertain is a server error the owner sees, never a silent loss
+          if (goal) void deliverBranchGoal(free, goal).then((d) => {
+            if (!d.delivered) logError("branch-goal", new Error(`slot ${free.id} (${record.name}): ${d.reason ?? "not delivered"}`));
+          });
+          return json({ ok: true, slot: free.id, openedAt: free.openedAt, cwd: free.cwd, label: free.label,
+            resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: goal ? "follows" : null });
+        } finally {
+          attachBusy.delete(path);
+        }
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "branch open failed" },
+          e instanceof TmuxNewSessionUnavailable ? 503 : 400);
+      } finally {
+        laneSpawn.delete(free.id);
+      }
     }
     if (url.pathname === "/api/testinstanzen" && req.method === "GET") {
       const script = `${import.meta.dir}/testinstanz.sh`;

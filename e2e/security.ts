@@ -608,6 +608,7 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/branches/note", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/seen", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/diff", method: "GET", owner: 400 },
+  { path: "/api/branches/open", method: "POST", body: {}, owner: 400 },
   { path: "/api/repos/undo-land", method: "POST", body: {}, owner: 400 },
   { path: "/api/repo-base", method: "POST", body: {}, owner: 400 },
   // the per-repo unattended lane cap: the one owner setting that WIDENS how many sessions the

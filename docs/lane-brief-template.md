@@ -20,8 +20,8 @@ padding it.
 A queue row whose text OPENS with these lines needs no card extractor: `card-extract.ts#parseFormattedCard`
 reads them, `card-extract.ts#validateCard` checks them against the tree like any other card, and
 `cards.jsonl` books the card as `source:"format"` (spec: `docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` §A).
-Every filing door takes it as plain row text — owner `POST /api/tasks`, the MAIN's self-filing, the
-steward — so there is one grammar, not three.
+Every filing door takes it as plain row text — owner `POST /api/tasks`, the MAIN's self-filing —
+so there is one grammar, not two.
 
 ```text
 [{optional title line}]

@@ -53349,7 +53349,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           return json({ error: `program ${program.id} is ${program.status}` }, 409);
         taskProgramId = program.id;
       }
-      // per-task target repo (owner-only — the steward route hard-sets null).
+      // per-task target repo (owner-only).
       // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
       // time by createWorktree, which fails loudly onto the task's note.
       let taskRepo: string | null = null;

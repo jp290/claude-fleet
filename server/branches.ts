@@ -94,6 +94,28 @@ export function markSeen(book: BranchBook, repo: string, branch: string, head: s
   return put(book, { ...prev, seen: { at, head, via }, updatedAt: at });
 }
 
+// Was GET /api/branches je Repo zeigt, aus den Refs und Worktrees, die server.ts gelesen hat: die
+// Board-Branches (Datensatz mit Namen, Branch lebt) und die übrigen für „Bestehend öffnen“. Übrig ist
+// jeder Branch ohne Board-Namen außer dem des Haupt-Checkouts, jüngster Commit zuerst, höchstens
+// BRANCH_OTHERS_MAX; `othersTotal` sagt, wie viele es sind.
+export const BRANCH_OTHERS_MAX = 50;
+export interface BranchRef { branch: string; head: string; at: number }
+export interface BranchPlace { path: string; branch: string; primary: boolean }
+export function repoBranches(book: BranchBook, repo: string, refs: readonly BranchRef[], places: readonly BranchPlace[]): {
+  named: { record: BranchRecord & { name: string }; ref: BranchRef; path: string | null }[];
+  others: (BranchRef & { path: string | null })[]; othersTotal: number;
+} {
+  const pathOf = (branch: string): string | null => places.find((p) => p.branch === branch)?.path ?? null;
+  const primary = places.find((p) => p.primary)?.branch;
+  const named = book.flatMap((record) => {
+    const ref = record.repo === repo && record.name !== null ? refs.find((r) => r.branch === record.branch) : undefined;
+    return ref && record.name !== null ? [{ record: { ...record, name: record.name }, ref, path: pathOf(ref.branch) }] : [];
+  });
+  const all = refs.filter((r) => r.branch !== primary && !named.some((n) => n.ref.branch === r.branch))
+    .toSorted((a, b) => b.at - a.at);
+  return { named, others: all.slice(0, BRANCH_OTHERS_MAX).map((r) => ({ ...r, path: pathOf(r.branch) })), othersTotal: all.length };
+}
+
 export function dropBranch(book: BranchBook, repo: string, branch: string): BranchBook {
   return book.filter((r) => !(r.repo === repo && r.branch === branch));
 }

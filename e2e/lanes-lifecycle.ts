@@ -3454,7 +3454,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       tasks?: RpRow[]; programs?: Record<string, unknown>[];
       fleetReports?: { id: string; worker: { sessionId: string | null }; decision?: unknown }[];
       shelved?: Record<string, { note: string; at?: number; review?: RpCandidate }>;
-      worktreeNotes?: Record<string, string>;
+      branches?: { branch: string; text: string }[];
     };
     type RpBoard = { path: string; slot: number | null; note: string | null; notepad?: string | null;
       review?: RpCandidate | null };
@@ -3555,11 +3555,12 @@ export async function run(lc: LaneCtx): Promise<void> {
         && (await rpRows(rpIds)).every((t) => t?.status === "sent" && t.slot === rpSlot) && !rpState().shelved?.[rpCwd],
       JSON.stringify((await rpRows(rpIds))));
 
-    // === THE OWNER'S NOTEPAD on this worktree (owner 2026-09-23/24): one free text per PATH that
-    // rides review park, resume and restart, capped with a named refusal, the owner's alone. What
-    // each check turns red on: a save the board cannot read back; a cap the server evicts or
-    // truncates instead of refusing; a text a lane's self token can read or write; a park, a
-    // restart or a resume that loses it; a discarded tree whose note stays behind as an orphan.
+    // === THE OWNER'S NOTEPAD on this worktree (owner 2026-09-23/24): one free text per BRANCH since
+    // Neuaufbau K5 (Punkte gehören zu Repo und Branch, nicht zum Worktree-Pfad) that rides review
+    // park, resume and restart, capped with a named refusal, the owner's alone. What each check turns
+    // red on: a save the board cannot read back; a cap the server evicts or truncates instead of
+    // refusing; a text a lane's self token can read or write; a park, a restart or a resume that loses
+    // it; a deleted branch whose note stays behind; a removed worktree that takes its branch's note along.
     const noteText = "NOTEPAD FIXTURE: langfristig arbeiten — bleibt über Park und Neustart";
     const notePost = (text: string): Promise<Response> =>
       post("/api/worktrees/note", { repo: REPO, path: rpCwd, text });
@@ -3637,11 +3638,13 @@ export async function run(lc: LaneCtx): Promise<void> {
       const added = spawnSync("git", ["-C", REPO, "worktree", "add", "-q", "-b", noteBranch, notePath, rpHead]);
       check("(notepad) setup: a second worktree exists for the discard probe", added.status === 0 && exists(notePath), String(added.status));
       const saved = await post("/api/worktrees/note", { repo: REPO, path: notePath, text: "discard notepad fixture" });
-      check("(notepad) the second worktree carries its own note", saved.ok && rpState().worktreeNotes?.[notePath] === "discard notepad fixture", String(saved.status));
+      check("(notepad) the second worktree carries its own note, on its branch",
+        saved.ok && rpState().branches?.find((b) => b.branch === noteBranch)?.text === "discard notepad fixture", String(saved.status));
       const discarded = await post("/api/worktrees/discard", { repo: REPO, path: notePath, branch: noteBranch });
       check("(notepad) discarding removes the second worktree", discarded.ok && !exists(notePath), String(discarded.status));
-      check("(notepad) discarding removes only that note and preserves the parked worktree's note",
-        rpState().worktreeNotes?.[notePath] === undefined && rpState().worktreeNotes?.[rpCwd] === noteText, String(discarded.status));
+      check("(notepad) discarding deletes the branch and only its note; the parked worktree's note stays",
+        !rpState().branches?.some((b) => b.branch === noteBranch)
+          && rpState().branches?.find((b) => b.branch === rpLane.branch)?.text === noteText, String(discarded.status));
     }
 
     await stopSrv();
@@ -3708,7 +3711,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("(review park) fixture cleanup: Program, report and rows are gone",
       !(rpState().programs ?? []).some((p) => p.id === rpProgramId)
         && ![...rpIds, rpForeignId].some((id) => rpState().tasks?.some((t) => t.id === id)));
-    check("(notepad) fixture cleanup: the removed worktree's note was swept at boot — no orphan entry",
-      rpState().worktreeNotes?.[rpCwd] === undefined, JSON.stringify(rpState().worktreeNotes ?? null));
+    check("(notepad) the removed worktree's note stays with its living branch across a boot (K5)",
+      rpState().branches?.find((b) => b.branch === rpLane.branch)?.text === noteText, JSON.stringify(rpState().branches ?? null));
   }
 }

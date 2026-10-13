@@ -5,8 +5,8 @@
 // abgewiesen; K4: genau eine Punkteliste, kein Punkt geht verloren.
 import { describe, expect, test } from "bun:test";
 import {
-  adoptNotes, BRANCH_NAME_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchRecord, dropBranch, findBranch,
-  markSeen, openBranch, pruneBook, restoreBook, writeText,
+  adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchRecord, dropBranch, findBranch,
+  markSeen, openBranch, pruneBook, repoBranches, restoreBook, writeText,
 } from "./branches";
 
 const REPO = "/r/fleet";
@@ -139,6 +139,31 @@ describe("Lebensdauer: der Datensatz endet nur mit dem Branch", () => {
   test("dropBranch nimmt genau diesen Branch heraus", () => {
     const book = opened(opened([], "a", "A"), "b", "B");
     expect(dropBranch(book, REPO, "a").map((r) => r.branch)).toEqual(["b"]);
+  });
+});
+
+describe("Sicht je Repo: Board-Branches und die übrigen", () => {
+  const ref = (branch: string, at_: number) => ({ branch, head: HEAD, at: at_ });
+  test("ein benannter Branch steht mit seinem Worktree bei den Board-Branches, auch ohne Worktree", () => {
+    const book = opened(opened([], "bau/k5", "Task = Branch"), "fleet/weg", "Ohne Worktree");
+    const v = repoBranches(book, REPO, [ref("main", 9), ref("bau/k5", 5), ref("fleet/weg", 4)],
+      [{ path: "/r/fleet", branch: "main", primary: true }, { path: "/wt/k5", branch: "bau/k5", primary: false }]);
+    expect(v.named.map((n) => [n.record.name, n.path])).toEqual([["Task = Branch", "/wt/k5"], ["Ohne Worktree", null]]);
+    expect(v.others).toEqual([]);
+  });
+  test("ein Datensatz ohne lebenden Branch und einer aus einem anderen Repo erscheinen nicht", () => {
+    const book = opened(opened([], "fleet/tot", "Tot"), "x", "Fremd", [], OTHER);
+    expect(repoBranches(book, REPO, [ref("main", 1)], []).named).toEqual([]);
+  });
+  test("übrig sind die Branches ohne Board-Namen außer dem Haupt-Checkout, jüngster zuerst, gedeckelt mit Gesamtzahl", () => {
+    const refs = [ref("main", 1000), ...Array.from({ length: BRANCH_OTHERS_MAX + 2 }, (_, i) => ref(`f${i}`, i))];
+    const migrated = adoptNotes([], { "/wt/f3": "- [ ] alt" }, new Map([["/wt/f3", { repo: REPO, branch: "f3" }]]), at).book;
+    const v = repoBranches(migrated, REPO, refs, [{ path: "/r/fleet", branch: "main", primary: true }, { path: "/wt/f3", branch: "f3", primary: false }]);
+    expect(v.othersTotal).toBe(BRANCH_OTHERS_MAX + 2);
+    expect(v.others.length).toBe(BRANCH_OTHERS_MAX);
+    expect(v.others[0]).toEqual({ ...ref(`f${BRANCH_OTHERS_MAX + 1}`, BRANCH_OTHERS_MAX + 1), path: null });
+    expect(v.others.find((o) => o.branch === "f3")?.path).toBe("/wt/f3");
+    expect(v.others.some((o) => o.branch === "main")).toBe(false);
   });
 });
 

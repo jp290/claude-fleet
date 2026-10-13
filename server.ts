@@ -1,5 +1,5 @@
 import { nearestRank, validPerfRecord, validFieldRow, PERF_BATCH_MAX, PERF_BODY_MAX, PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "./src/protocol";
-import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason } from "./src/protocol";
+import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, WorktreeDistance, WorkplaceStand, WorkplaceGitComparison, WorkplaceRemote, DeployGap, DeployLand, FactReason, BranchesRepoView, BranchesView, BranchView } from "./src/protocol";
 import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, CLAUDE_CODE_MESSUNG, CLAUDE_CODE_ZEILEN, FLEET_BYTES_JE_TOKEN, type ClaudeCodeRolle, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
@@ -208,6 +208,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
+import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRef, dropBranch, findBranch, markSeen,
+  openBranch, pruneBook, repoBranches, restoreBook, writeText } from "./server/branches";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
@@ -4942,15 +4944,20 @@ let auditPings: Record<string, AuditPingState> = {};
 // Deliberately NOT a LaneRecord — just the one field the feature needs, plus `review` on the opt-in
 // review park alone (LaneReviewCandidate): the identity a later owner review and the resume need.
 let shelved: Record<string, { at: number; note: string; review?: LaneReviewCandidate }> = {};
-// worktree path -> the OWNER'S free-text notepad (owner 2026-09-23/24: „[Zitat entfernt]“
-// ). ONE plain text
-// per worktree PATH — no Markdown, no history, no thread beside Task.comments — keyed by the path
-// so it rides a review park, a resume of the same tree and a server restart, and a worktree that
-// leaves the board (remove/discard/gone at boot) takes its text along: no orphan entry. Owner-only
-// reads and writes; the text travels between this map, the state file and the owner's own board
-// row — never into /api/self, a pane env, the audit log or a server log.
+// THE OWNER'S NOTEPAD (owner 2026-09-23/24: „[Zitat entfernt]“
+// ) lives on the BRANCH since Neuaufbau K5: one record per
+// (repo, branch) in server/branches.ts — Board-Name, points (= the notepad text), "passt". A removed
+// worktree leaves it standing and a fresh checkout of the same branch shows it again; it ends only
+// with the branch (discard with branchDeleted, boot without the ref). Owner-only reads and writes;
+// the text travels between this book, the state file and the owner's own board — never into
+// /api/self, a pane env, the audit log or a server log.
+let branchBook: BranchBook = [];
+// ALTBESTAND: the pre-K5 notepads, keyed by worktree PATH. Adopted onto their branch ONCE, at the
+// first boot that knows branches (settleBranchBook; `notesAdoptedAt` says it ran), so a path that
+// later holds another branch never inherits a stale note. Persisted UNCHANGED until the Bauleitung
+// releases the key after a healthy live run (13.10.) — nothing writes or sweeps it any more.
 let worktreeNotes: Record<string, string> = {};
-const WORKTREE_NOTE_MAX = 20_000; // characters, enforced with a named refusal — never evicted silently
+let notesAdoptedAt: number | null = null;
 // The candidate that holds a row, if any. Linear over at most a handful of shelve records.
 function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCandidate } | null {
   for (const [path, sh] of Object.entries(shelved))
@@ -4962,8 +4969,7 @@ function reviewParkOf(taskId: string): { path: string; candidate: LaneReviewCand
 // detachSlotTasks answer for an aborted lane — so no row is left `sent` with nothing that can run it.
 function dropShelved(path: string, why: string): void {
   const candidate = shelved[path]?.review;
-  delete shelved[path];
-  delete worktreeNotes[path]; // the tree is gone and its notepad goes with it — no orphan entry
+  delete shelved[path]; // the notepad is the branch's (branchBook) and outlives the tree
   if (!candidate) return;
   for (const t of tasks) {
     if (candidate.taskIds.includes(t.id) && t.status === "sent" && t.slot === null) {
@@ -6323,7 +6329,7 @@ function stateSnapshot(): string {
     ...(blockerObservedAt.size ? { blockerObservedAt: Object.fromEntries(blockerObservedAt) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    repoBases, repoWorkers, repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}), undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -8706,6 +8712,86 @@ async function workplaces(): Promise<Workplaces> {
   }) ?? null })) };
 }
 
+// NEUAUFBAU K5 · TASK = BRANCH (server/branches.ts holds the logic; this is its git and its state).
+// A record belongs to (repo, branch): `repo` is the canonical primary checkout, whichever worktree of
+// it a caller names.
+function branchNoteOf(repo: string, branch: string): string | null {
+  if (branch === "(detached)") return null;
+  return findBranch(branchBook, repoCanon(repo), branch)?.text || null;
+}
+async function branchRepoOf(raw: unknown): Promise<{ ok: true; repo: string } | { ok: false; error: string }> {
+  if (typeof raw !== "string" || !raw.trim()) return { ok: false, error: "expected repo" };
+  let top: string;
+  try { top = await repoRootOf(raw); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "not a git repository" }; }
+  const repo = repoCanon((await listWorktrees(top)).find((w) => w.primary)?.path ?? top);
+  if (!workplaceRepoList().includes(repo)) return { ok: false, error: `${repo} is not a workplace repo — GET /api/branches would not show it` };
+  return { ok: true, repo };
+}
+const branchExists = async (repo: string, branch: string): Promise<boolean> =>
+  (await gitRead(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).code === 0;
+// Boot: the pre-K5 notepads (keyed by path) move ONCE onto the branch checked out there; then every
+// record whose branch is surely gone ends. worktreeNotes itself stays as it was (see its declaration).
+async function settleBranchBook(): Promise<void> {
+  const branchAt = new Map<string, { repo: string; branch: string }>();
+  if (notesAdoptedAt === null) for (const path of Object.keys(worktreeNotes)) {
+    if (!existsSync(path)) continue;
+    const list = await listWorktrees(path);
+    const here = list.find((w) => w.path === path), primary = list.find((w) => w.primary);
+    if (here && primary && here.branch !== "(detached)") branchAt.set(path, { repo: repoCanon(primary.path), branch: here.branch });
+  }
+  const adopted = notesAdoptedAt === null ? adoptNotes(branchBook, worktreeNotes, branchAt, Date.now()).book : branchBook;
+  notesAdoptedAt ??= Date.now();
+  const heads = new Map<string, Set<string> | null>();
+  for (const repo of new Set(adopted.map((r) => r.repo))) {
+    const r = await gitRead(repo, "for-each-ref", "--format=%(refname)", "refs/heads");
+    heads.set(repo, r.code === 0 ? new Set(r.out.split("\n").filter(Boolean).map((x) => x.replace(/^refs\/heads\//, ""))) : null);
+  }
+  branchBook = pruneBook(adopted, (repo, branch) => {
+    const set = heads.get(repo);
+    return set ? set.has(branch) : null;
+  });
+}
+async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
+  const [refsRead, places, integration] = await Promise.all([
+    gitRead(repo, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(committerdate:unix)", "refs/heads"),
+    listWorktrees(repo), integrationBranch(repo)]);
+  if (refsRead.code !== 0)
+    return { repo, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }] };
+  const refs: BranchRef[] = refsRead.out.split("\n").flatMap((line) => {
+    const [ref, head, at] = line.split("\0");
+    return ref?.startsWith("refs/heads/") && head && at ? [{ branch: ref.slice("refs/heads/".length), head, at: Number(at) * 1000 }] : [];
+  });
+  const where: BranchPlace[] = places.filter((w) => w.branch !== "(detached)").map((w) => ({ path: w.path, branch: w.branch, primary: w.primary }));
+  const v = repoBranches(branchBook, repo, refs, where);
+  const reasons: FactReason[] = [];
+  const branches = await Promise.all(v.named.map(async ({ record, ref, path }): Promise<BranchView> => {
+    const base = record.base ?? integration;
+    const count = base ? await gitRead(repo, "rev-list", "--left-right", "--count", `${base}...${ref.head}`) : null;
+    const m = count?.code === 0 ? /^(\d+)\s+(\d+)$/.exec(count.out) : null;
+    if (!m) reasons.push({ field: `${record.branch}.distance`, reason: base ? "base-unreadable" : "integration-branch-unknown" });
+    const holder = path ? workplaceHolder(path) : null;
+    return { branch: record.branch, name: record.name, base: record.base, head: ref.head, text: record.text, rev: record.rev,
+      seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
+      distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null };
+  }));
+  return { repo, branches, others: v.others, othersTotal: v.othersTotal, reasons };
+}
+async function branchesView(): Promise<BranchesView> {
+  return { repos: await Promise.all(workplaceRepoList().map((repo) => branchesOfRepo(repo))) };
+}
+// An existing branch without a worktree gets one at the path Fleet derives for it (worktreePathFor),
+// with the same scaffold createWorktree gives a new one.
+async function checkoutBranchWorktree(repo: string, branch: string, harness: Harness): Promise<string> {
+  const path = worktreePathFor(repo, branch);
+  if (existsSync(path)) throw new Error(`worktree path already exists: ${path}`);
+  mkdirSync(`${repo}.worktrees`, { recursive: true });
+  const add = await git(repo, "worktree", "add", path, branch);
+  if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
+  await excludeLaneScratch(path);
+  await laneScaffoldFor(repo, path, harness);
+  return path;
+}
+
 // the real risk behind a destructive action, computed once and shared by every surface
 // that needs to show it BEFORE the click (risk preview panels) and the
 // one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
@@ -8813,7 +8899,7 @@ async function freshenWorktreeBoard(b: WorktreeBoard): Promise<WorktreeBoard> {
       })(),
       slot: slots.find((x) => x.cwd === w.path)?.id ?? null,
       note: shelved[w.path]?.note ?? null,
-      notepad: worktreeNotes[w.path] ?? null,
+      notepad: branchNoteOf(b.repo, w.branch),
       review: reviewCandidateView(w.path),
       // the preview's state moves on the owner's clicks and its deadline, never on git time; its
       // `stale` is one rev-parse, and only for a row that has a preview record at all
@@ -45263,6 +45349,9 @@ if (existsSync(file)) {
     if (typeof pwn === "object" && pwn !== null && !Array.isArray(pwn))
       for (const [k, v] of Object.entries(pwn as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "string") worktreeNotes[k] = v;
+    branchBook = restoreBook((persisted as { branches?: unknown }).branches);
+    const adoptedAt = (persisted as { branchNotesAdoptedAt?: unknown }).branchNotesAdoptedAt;
+    notesAdoptedAt = typeof adoptedAt === "number" && Number.isFinite(adoptedAt) ? adoptedAt : null;
     retiredCandidateState = {
       ...("lanePreviews" in persisted ? { lanePreviews: persisted.lanePreviews } : {}),
       ...("candidateReviews" in persisted ? { candidateReviews: persisted.candidateReviews } : {}),
@@ -45432,10 +45521,9 @@ pruneAttention();
 // vanished while the server was down cannot be resumed, so its rows go back to owner review instead.
 for (const [path, sh] of Object.entries(shelved))
   if (sh.review && !existsSync(path)) dropShelved(path, "its worktree was gone at boot");
-// …and a notepad whose tree vanished while the server was down goes with the tree (the boot's
-// saveState below persists the sweep)
-for (const path of Object.keys(worktreeNotes))
-  if (!existsSync(path)) delete worktreeNotes[path];
+// …the pre-K5 notepads move onto their branch once, and a record whose branch is surely gone ends
+// (the boot's saveState below persists both)
+await settleBranchBook();
 for (const t of tasks) {
   if (t.status === "sent" && t.slot === null && reviewParkOf(t.id)) continue;
   if (t.status === "sent" && !(t.slot != null && slotFrom(t.slot)?.worktree)) {
@@ -51799,7 +51887,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             shortstat: sh.code === 0 && sh.out ? sh.out : null,
             empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
             note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
-            notepad: worktreeNotes[w.path] ?? null, // the owner's notepad on this path
+            notepad: branchNoteOf(primary.path, w.branch), // the owner's notepad on this branch
             review: reviewCandidateView(w.path), // …and the review candidate, if it was parked for review
           };
         };
@@ -52091,6 +52179,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       mergeParked.delete(wt.branch); // deliberate destruction takes the parked ⏸ with it
       const branchDeleted = wt.branch !== "(detached)"
         && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
+      if (branchDeleted) {
+        branchBook = dropBranch(branchBook, repoCanon(top.out), wt.branch); // the points end with their branch
+        await saveStateNow();
+      }
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path, branch: wt.branch,
         head: head.code === 0 ? head.out : null, branchDeleted });
@@ -52105,16 +52197,138 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || typeof body.path !== "string" || typeof body.text !== "string")
         return json({ error: "expected { repo, path, text }" }, 400);
-      if (body.text.length > WORKTREE_NOTE_MAX)
-        return json({ error: `note is ${body.text.length} characters — the cap is ${WORKTREE_NOTE_MAX}; shorten it (the stored note is unchanged)` }, 400);
+      if (body.text.length > BRANCH_TEXT_MAX)
+        return json({ error: `note is ${body.text.length} characters — the cap is ${BRANCH_TEXT_MAX}; shorten it (the stored note is unchanged)` }, 400);
       const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);
-      const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
+      const list = await listWorktrees(top.out);
+      const wt = list.find((w) => !w.primary && w.path === body.path);
       if (!wt) return json({ error: "not a worktree of this repo" }, 400);
-      if (body.text === "") delete worktreeNotes[wt.path];
-      else worktreeNotes[wt.path] = body.text;
+      if (wt.branch === "(detached)") return json({ error: "the worktree has no branch (detached HEAD) — the notepad belongs to a branch" }, 409);
+      // this door sends no rev (the notepad of the session card): it writes over the stored stand, as before
+      const repo = repoCanon(list.find((x) => x.primary)?.path ?? top.out);
+      const w = writeText(branchBook, repo, wt.branch, body.text, findBranch(branchBook, repo, wt.branch)?.rev ?? 0, Date.now());
+      if (!w.ok) return json({ error: w.error }, w.status);
+      branchBook = w.book;
       await saveStateNow(); // the note is on disk before the answer — a restart right after keeps it
       return json({ ok: true, path: wt.path, length: body.text.length });
+    }
+    // NEUAUFBAU K5 · TASK = BRANCH: the branch is the unit of work — Board-Name, points, the owner's
+    // "passt" at a commit — and outlives worktrees and sessions (server/branches.ts). Owner-only by
+    // POSITION, like the notepad door above: a lane's self token is no credential here.
+    if (url.pathname === "/api/branches" && req.method === "GET") {
+      if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "branches accepts no selectors" }, 400);
+      return json(await branchesView());
+    }
+    // open a branch on the board: a NEW one (no `branch`: a name derived from `name`; or a free
+    // `branch` name), or an EXISTING one — checked out into a worktree if it has none. A name another
+    // branch of the repo carries is refused with that branch, before anything is created.
+    if (url.pathname === "/api/branches" && req.method === "POST") {
+      const body = await readJson(req);
+      const points = body?.points;
+      if (!body || typeof body.name !== "string" || (body.branch !== undefined && typeof body.branch !== "string")
+        || (body.base !== undefined && typeof body.base !== "string")
+        || (points !== undefined && !(Array.isArray(points) && points.every((x) => typeof x === "string"))))
+        return json({ error: "expected { repo, name, branch?, base?, points?: string[], harness? }" }, 400);
+      // the private scaffold follows the harness that will work in the tree (laneScaffoldFor)
+      const ho = harnessIdOf(body);
+      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
+      const h = harnessOf(ho.harness);
+      if (!h.allowsLanes) return json({ error: `harness ${h.id} is main-session only — it cannot work on a branch` }, 400);
+      const fo = laneFormOf(body, h);
+      if (!fo.ok || fo.form !== "worktree") return json({ error: "form must be 'worktree' — a branch is checked out as a worktree" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      const repo = ro.repo, wanted = typeof body.branch === "string" ? body.branch.trim() : "";
+      const base = typeof body.base === "string" && body.base.trim() ? body.base.trim() : null;
+      if (base && (await gitRead(repo, "rev-parse", "--verify", "--quiet", `${base}^{commit}`)).code !== 0)
+        return json({ error: `no such base: ${base}` }, 400);
+      let branch = wanted;
+      if (!branch) {
+        const slug = taskBranchSlug(body.name) || "ohne-name";
+        branch = `branch/${slug}`;
+        if (await branchExists(repo, branch)) branch = `branch/${slug}-${randomBytes(2).toString("hex")}`;
+      }
+      if ((await git(repo, "check-ref-format", "--branch", branch)).code !== 0) return json({ error: `invalid branch name: ${branch}` }, 400);
+      const opening = { repo, branch, name: body.name, base,
+        points: Array.isArray(points) ? points.filter((x): x is string => typeof x === "string") : [] };
+      const dry = openBranch(branchBook, { ...opening, at: Date.now() });
+      if (!dry.ok) return json({ error: dry.error, ...(dry.existing ? { existing: dry.existing } : {}) }, dry.status);
+      const existed = await branchExists(repo, branch);
+      const primaryBranch = (await listWorktrees(repo)).find((w) => w.primary)?.branch;
+      if (branch === primaryBranch || branch === await integrationBranch(repo))
+        return json({ error: `${branch} is the repo's own line, not a branch to work on` }, 400);
+      if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
+      let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
+      try {
+        if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h)).path;
+        else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
+      } catch (e) {
+        const error = e instanceof Error ? e.message : "worktree failed";
+        return json({ error }, /already exists/.test(error) ? 409 : 400);
+      }
+      // the book may have moved during the git work: the name is judged again on the current one
+      const done = openBranch(branchBook, { ...opening, at: Date.now() });
+      if (!done.ok) return json({ error: `${done.error} — the worktree ${path} stands without a Board-Name`,
+        ...(done.existing ? { existing: done.existing } : {}) }, done.status);
+      branchBook = done.book;
+      await saveStateNow();
+      workplacesCache = null;
+      void tickGit().catch(() => {});
+      return json({ ok: true, repo, branch, path, created: !existed, name: done.record.name, text: done.record.text,
+        rev: done.record.rev }, existed ? 200 : 201);
+    }
+    // the points (= notepad text) of a branch, written whole against the `rev` the writer read: a
+    // stale rev answers 409 with the stored text and rev, and nothing is overwritten
+    if (url.pathname === "/api/branches/note" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.branch !== "string" || typeof body.text !== "string" || typeof body.rev !== "number")
+        return json({ error: "expected { repo, branch, text, rev }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      if (!(await branchExists(ro.repo, body.branch))) return json({ error: `no such branch: ${body.branch}` }, 404);
+      const w = writeText(branchBook, ro.repo, body.branch, body.text, body.rev, Date.now());
+      if (!w.ok) return json({ error: w.error, ...(w.current ? { current: { text: w.current.text, rev: w.current.rev } } : {}) }, w.status);
+      branchBook = w.book;
+      await saveStateNow();
+      return json({ ok: true, rev: w.record.rev, length: w.record.text.length });
+    }
+    // "Owner hat gesehen / passt" at one commit of the branch — the board sends the head it showed.
+    // The door it came through is recorded (cookie = the owner's board); a merge shows it, never needs it.
+    if (url.pathname === "/api/branches/seen" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.branch !== "string" || typeof body.head !== "string")
+        return json({ error: "expected { repo, branch, head }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      if (!(await branchExists(ro.repo, body.branch))) return json({ error: `no such branch: ${body.branch}` }, 404);
+      if (!/^[0-9a-f]{40}$/.test(body.head)) return json({ error: "head must be a full commit sha" }, 400);
+      if ((await gitRead(ro.repo, "merge-base", "--is-ancestor", body.head, `refs/heads/${body.branch}`)).code !== 0)
+        return json({ error: `${body.head.slice(0, 8)} is not a commit of ${body.branch}` }, 409);
+      const seen = markSeen(branchBook, ro.repo, body.branch, body.head, tokenChannel(req) ?? "cookie", Date.now());
+      if (!seen.ok) return json({ error: seen.error }, seen.status);
+      branchBook = seen.book;
+      await saveStateNow();
+      return json({ ok: true, seen: seen.record.seen });
+    }
+    // a branch's own changes against its base, without a session: diff, files and commits
+    if (url.pathname === "/api/branches/diff" && req.method === "GET") {
+      const branch = url.searchParams.get("branch") ?? "";
+      const ro = await branchRepoOf(url.searchParams.get("repo"));
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      if (!branch || !(await branchExists(ro.repo, branch))) return json({ error: `no such branch: ${branch}` }, 404);
+      const base = findBranch(branchBook, ro.repo, branch)?.base ?? await integrationBranch(ro.repo);
+      if (!base) return json({ error: "cannot resolve the repo's integration branch" }, 400);
+      const range = `${base}...refs/heads/${branch}`;
+      const [d, ns, log, head] = await Promise.all([
+        gitRead(ro.repo, "diff", "--no-color", range), gitRead(ro.repo, "diff", "--name-only", range),
+        gitRead(ro.repo, "log", "--format=%H%x00%s", `${base}..refs/heads/${branch}`),
+        gitRead(ro.repo, "rev-parse", `refs/heads/${branch}`)]);
+      if (d.code !== 0 || log.code !== 0) return json({ error: `diff against ${base} failed` }, 400);
+      return json({ repo: ro.repo, branch, base, head: head.out,
+        files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
+        commits: log.out.split("\n").filter(Boolean).map((line) => { const [sha, subject] = line.split("\0"); return { sha, subject: subject ?? "" }; }),
+        diff: d.out.length > DIFF_CAP ? `${d.out.slice(0, DIFF_CAP)}\n… truncated` : d.out, truncated: d.out.length > DIFF_CAP });
     }
     if (url.pathname === "/api/testinstanzen" && req.method === "GET") {
       const script = `${import.meta.dir}/testinstanz.sh`;

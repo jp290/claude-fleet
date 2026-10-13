@@ -602,6 +602,12 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/worktrees/remove", method: "POST", body: {}, owner: 400 },
   { path: "/api/worktrees/discard", method: "POST", body: {}, owner: 400 },
   { path: "/api/worktrees/note", method: "POST", body: {}, owner: 400 },
+  // Neuaufbau K5: the branch's points and the owner's „[Zitat entfernt]“ — a self token must reach none of them
+  { path: "/api/branches", method: "GET", owner: 200 },
+  { path: "/api/branches", method: "POST", body: {}, owner: 400 },
+  { path: "/api/branches/note", method: "POST", body: {}, owner: 400 },
+  { path: "/api/branches/seen", method: "POST", body: {}, owner: 400 },
+  { path: "/api/branches/diff", method: "GET", owner: 400 },
   { path: "/api/repos/undo-land", method: "POST", body: {}, owner: 400 },
   { path: "/api/repo-base", method: "POST", body: {}, owner: 400 },
   // the per-repo unattended lane cap: the one owner setting that WIDENS how many sessions the

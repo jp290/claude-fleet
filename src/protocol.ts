@@ -927,6 +927,22 @@ export interface WorkplaceStand {
   update: { state: string; main: string | null; mainSha: string | null } | null; reasons: FactReason[];
 }
 export interface Workplaces { repos: WorkplaceRepo[]; stands: WorkplaceStand[]; measuredAt: number; cacheMs: number }
+// GET /api/branches (Neuaufbau K5, server/branches.ts): je Repo die Branches mit Board-Namen und die
+// übrigen Branches für „Bestehend öffnen“. `text` ist die Punkteliste, zugleich der Notizblock; `rev`
+// ist der Stand, gegen den POST /api/branches/note schreibt. `seen` ist „Owner hat gesehen / passt“
+// an genau `seen.head`; ob das noch die Spitze ist, sagt der Vergleich mit `head`.
+export interface BranchSeenView { at: number; head: string; via: "cookie" | "bearer" | "query" }
+export interface BranchView {
+  branch: string; name: string; base: string | null; head: string;
+  text: string; rev: number; seen: BranchSeenView | null;
+  path: string | null; session: { slot: number; openedAt: number } | null;
+  distance: WorktreeDistance | null;
+}
+export interface BranchOtherView { branch: string; head: string; at: number; path: string | null }
+export interface BranchesRepoView {
+  repo: string; branches: BranchView[]; others: BranchOtherView[]; othersTotal: number; reasons: FactReason[];
+}
+export interface BranchesView { repos: BranchesRepoView[] }
 export interface DeployLand {
   sha: string; branch: string | null; task: string | null; at: number | null;
   reasons: FactReason[];

@@ -15,7 +15,7 @@ import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname, loadavg, cpus } from "node:os";
 import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
-import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
@@ -5930,20 +5930,6 @@ function surfaceOfView(v: Task): { paths: string[]; origin: TaskFilesOrigin } | 
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
 let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
-// public intake shares its own secret, NEVER the owner token. Empty = intake disabled.
-const INTAKE_SECRET = process.env.FLEET_INTAKE_SECRET ?? "";
-const intakeStrikes: number[] = []; // timestamps, for a simple hourly rate limit
-// Failed intake auth, counted apart from the accepted-submission rate limit above. A wrong
-// secret is a password guess, and every other credential surface here already treats it as one:
-// tokenGate sleeps 400ms and audits, /s/<id>/auth sleeps, audits and locks after 50. Intake had
-// none of the three — its hourly cap only ever counted ACCEPTED submissions, so a guesser was
-// never slowed, never locked out, and left no trace at all. That matters more than the endpoint's
-// size suggests: /intake is dispatched BEFORE the share-host gate so it answers on the public
-// tunnel too, which makes it the one guessable surface reachable from outside (found by the
-// inspection pulse, d8efc50f — latent only because FLEET_INTAKE_SECRET is unset).
-const intakeFails: number[] = [];
-const INTAKE_FAIL_WINDOW_MS = 3_600_000;
-const INTAKE_FAIL_LOCK = 50; // same bar as a share's failStrike
 const AUTO_MIN_EVERY_SEC = 10;
 const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
@@ -44167,51 +44153,6 @@ async function handleOwnerStudioRoute(req: Request, url: URL): Promise<Response>
   return json({ ok: true, studio: updated });
 }
 
-// public feature-request dropbox. Gated by its own secret; strict caps; hard hourly rate
-// limit. The result is always a `pending` task the owner must review before anything runs.
-async function handleIntake(req: Request): Promise<Response> {
-  if (!INTAKE_SECRET) return json({ error: "intake disabled" }, 404);
-  const now = Date.now();
-  while (intakeFails.length && now - intakeFails[0] > INTAKE_FAIL_WINDOW_MS) intakeFails.shift();
-  // locked out: refuse BEFORE comparing, so a locked guesser cannot use the endpoint as an oracle
-  // even with the right secret — same stance as /s/<id>/auth's pre-check
-  if (intakeFails.length >= INTAKE_FAIL_LOCK) {
-    await Bun.sleep(400);
-    return json({ error: "unauthorized" }, 401);
-  }
-  const given = req.headers.get("x-intake-secret") ?? "";
-  const a = Buffer.from(given), b = Buffer.from(INTAKE_SECRET);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    await Bun.sleep(400); // flat delay, as tokenGate — a guess costs wall-clock, not just a strike
-    intakeFails.push(now);
-    // never the attempted secret itself, exactly as owner_auth_fail refuses to log the token
-    audit("intake_auth_fail");
-    if (intakeFails.length === INTAKE_FAIL_LOCK) audit("intake_auth_lock", undefined, `fails:${INTAKE_FAIL_LOCK}`);
-    return json({ error: "unauthorized" }, 401);
-  }
-  while (intakeStrikes.length && now - intakeStrikes[0] > 3_600_000) intakeStrikes.shift();
-  if (intakeStrikes.length >= 30) return json({ error: "rate limited" }, 429);
-  const body = await readJson(req);
-  if (!body || typeof body.text !== "string") return json({ error: "expected { text }" }, 400);
-  const text = body.text.slice(0, MAX_TASK_TEXT).trim();
-  if (!text) return json({ error: "empty text" }, 400);
-  intakeStrikes.push(now);
-  const id = randomBytes(4).toString("hex");
-  // `body.from` is ACCEPTED AND DROPPED. It was a sender label persisted for display only, never
-  // trusted and never read by anything that decides — so what it actually did was carry attacker
-  // prose from the one public write door onto the queue board. The door is unchanged otherwise
-  // (secret, rate limit, `pending`, `source: "intake"`); a caller may keep sending the field and
-  // gets the same 200, it simply does not survive the request.
-  const t: Task = {
-    id, originId: id, text, source: "intake",
-    kind: "auftrag", kindAtCreate: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
-  };
-  tasks = capTasks([...tasks, t]);
-  saveState();
-  console.log(`intake: task (${text.length} chars)`);
-  return json({ ok: true });
-}
-
 // --- startup: claim the directory, restore persisted state, adopt stray sessions, seed offsets ---
 
 // A second server over the same STATE_DIR corrupts fleet.json: STATE_FILE and every ledger
@@ -48954,12 +48895,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (SNAPSHOT_MIRROR && !["GET", "HEAD", "OPTIONS"].includes(req.method))
       return json({ refusal: "snapshot-mirrored-read-only", error: "snapshot-mirrored-read-only: echte Arbeitsorte sind nur gespiegelt" }, 409);
 
-    // /intake is a feature-request dropbox behind its own secret (never the owner token).
-    // Handled before the share-host gate so it works on BOTH the owner host and the public
-    // tunnel. It only ever creates a `pending` task — nothing here runs code or reaches a
-    // session. (Host already validated against ALLOWED_HOSTS in guard() above.)
-    if (url.pathname === "/intake" && req.method === "POST") return handleIntake(req);
-
     // the public tunnel hostname is share-only: nothing else exists there, not even
     // the owner login page. (Host was already validated against ALLOWED_HOSTS above.)
     if (SHARE_HOSTS.has(req.headers.get("host") ?? "")) {
@@ -49055,8 +48990,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return json(trailStatsFromQuery(url));
     }
 
-    // self-scheduling with the scoped FLEET_SELF_TOKEN (see ensureSlot). Sits AFTER the share-host gate,
-    // unlike /intake. The target slot is HARD-DERIVED from the token — a `slot` field in the body is
+    // self-scheduling with the scoped FLEET_SELF_TOKEN (see ensureSlot). Sits AFTER the share-host gate.
+    // The target slot is HARD-DERIVED from the token — a `slot` field in the body is
     // structurally never read (createAutoForSlot takes `s`). No lane check, by design.
     if (url.pathname === "/api/self/autos" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
@@ -50793,7 +50728,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           quiet: inQuietHours(Date.now()) },
         autosOn,
         quietHours,
-        intake: !!INTAKE_SECRET,
         // verification tier 2: the newest post-land audit, or null when none has run (tier 2 off,
         // or no land since boot). Advisory FACT for the owner — it gates nothing; the client's job
         // is to make a `red`/`unknown` result impossible to miss and to name the land it followed.
@@ -53382,8 +53316,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (eventOwnerAck && req.method === "POST")
       return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);
-    // --- task queue (owner side). Tasks arrive here (owner-created) or via /intake
-    // (pending). Only the owner moves a task to `queued`; only then can the dispatcher run it.
+    // --- task queue (owner side). Tasks arrive here (owner-created).
+    // Only the owner moves a task to `queued`; only then can the dispatcher run it.
     if (url.pathname === "/api/tasks" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
@@ -53415,7 +53349,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           return json({ error: `program ${program.id} is ${program.status}` }, 409);
         taskProgramId = program.id;
       }
-      // per-task target repo (owner-only — the intake and steward routes hard-set null).
+      // per-task target repo (owner-only — the steward route hard-sets null).
       // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
       // time by createWorktree, which fails loudly onto the task's note.
       let taskRepo: string | null = null;

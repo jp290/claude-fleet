@@ -25,7 +25,7 @@ Credential, keine verifizierte Geräte-ID.
 
 `server/auth.ts#resolveSelfPrincipal` löst für Self-Routen ausschließlich den Header `x-fleet-self-token` als Session auf. Sie behalten
 ihre eigenen 401-Antworten mit 400 ms Verzögerung und ihre fachlichen 409-Verweigerungen; der
-Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward-, Share- und Intake-Türen behalten
+Resolver erteilt selbst keinen Grant. Owner-, Helper-, Steward- und Share-Türen behalten
 ihre eigenen Reihenfolgen und Fehlerpfade. Eine Kombination mehrerer Credentials auf einem Request
 ändert damit keine Türentscheidung.
 

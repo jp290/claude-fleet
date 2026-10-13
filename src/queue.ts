@@ -1,4 +1,4 @@
-import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
+import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
 import { perfRebuild } from "./perfmarks";
 import { Shell, ShellRow, openShell } from "./shell";
@@ -4405,7 +4405,7 @@ export function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
-  const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available, intakeOn,
+  const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
     // the wave caveat's acknowledgment is a RENDER INPUT of this list, unlike qRawAck which lives
     // in the detail pane: without it here the checkbox flips, renderQueue is called, the key has
@@ -4434,8 +4434,7 @@ export function renderQueue() {
     const n = (g: QGroup) => scoped.filter((t) => qGroupOf(t) === g).length;
     const held = scoped.filter((t) => !qClosed(t) && t.hold).length;
     shell.setSubtitle([`${n("running")} running`, `${n("released")} released`, `${n("needs")} need you`,
-      `${n("backlog")} backlog`, `${n("notes")} notes`, held ? `⏸ ${held} held` : "",
-      intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
+      `${n("backlog")} backlog`, `${n("notes")} notes`, held ? `⏸ ${held} held` : ""].filter(Boolean).join(" · "));
   } else if (qView === "notes") {
     const notes = scoped.filter((t) => qGroupOf(t) === "notes");
     const richtung = notes.filter((t) => t.kind === "richtung").length;

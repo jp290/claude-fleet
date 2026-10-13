@@ -472,7 +472,6 @@ const PRE_AUTH_ROUTES = [
 
 
   '= /favicon.ico',
-  '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,
   String.raw`~ /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief|summary|transcript)$/`,
   String.raw`~ /^\/s\/[a-z0-9]+$/`,
@@ -626,7 +625,7 @@ const dangerous = (slot: number): Probe[] => [
   // owner a side-effect-free 400 (no verdict), so it carries the positive control too.
   { path: "/api/post-land-audits/adjudicate", method: "POST", body: {}, owner: 400 },
   { path: "/api/tasks", method: "POST", body: {}, owner: 400 },
-  // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
+  // GET /api/tasks serves the full prompt texts that the 2 s poll no
   // longer carries — a read route, but the most content-bearing one the queue has
   { path: "/api/tasks", method: "GET", owner: 200 },
   // the repo sheet (K2): one owner reading per canonical repo over lands, audits, adjudications

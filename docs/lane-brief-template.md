@@ -21,7 +21,7 @@ A queue row whose text OPENS with these lines needs no card extractor: `card-ext
 reads them, `card-extract.ts#validateCard` checks them against the tree like any other card, and
 `cards.jsonl` books the card as `source:"format"` (spec: `docs/messungen/2026-09-13-task-aggregation-a-e-fable.md` §A).
 Every filing door takes it as plain row text — owner `POST /api/tasks`, the MAIN's self-filing, the
-steward, intake — so there is one grammar, not four.
+steward — so there is one grammar, not three.
 
 ```text
 [{optional title line}]

@@ -43,8 +43,7 @@ its land, and `server.ts#removeWorktreeSafe` is the only way a lane's tree goes 
 a target repo, a chosen agent (`spawn`), a file surface and a card. Four kinds exist
 (`server/types.ts#TASK_KINDS`) and only `auftrag` is executable — `richtung`, `notiz` and `betrieb`
 are advisory and every dispatch path skips them. A row is created `pending` and only an owner act
-moves it to `queued` (`server.ts#releaseTask`); text arriving through the public intake address is
-data until then, never a command.
+moves it to `queued` (`server.ts#releaseTask`).
 
 **Program.** A Program is an owner-confirmed bracket around rows, with a bound Project MAIN session.
 Its statuses are `proposed · confirmed · active · complete` (`server/types.ts#PROGRAM_STATUSES`) and
@@ -66,7 +65,7 @@ verdict reaches the Programs whose rows the land covered.
 
 ## The life of one row
 
-1. **Filed** — owner, public intake, a steward pulse, or a bound Program MAIN writes a `pending` row.
+1. **Filed** — owner, a steward pulse, or a bound Program MAIN writes a `pending` row.
 2. **Compiled** — an optional sweep turns the row's text into a
    card extracted by a small model and then checked deterministically (`card-extract.ts`).
 3. **Released** — an owner act (or a Program's release policy) moves it to `queued`.

@@ -13,7 +13,7 @@ Scope and sources, so the omissions are not silent:
 - A directory's sentence is maintained in `repo-map.ts#DIRECTORY_NOTES`.
 - A file's sentence is that file's own first comment line, read from the file.
 - Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,
-  `SYSTEM.md`, `OWNER.md`, `INTAKE.md`, `SHARING.md`, `HANDOFF.md`, `Dockerfile`, `package.json`,
+  `SYSTEM.md`, `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `Dockerfile`, `package.json`,
   `bun.lock`, `launchd-example.plist`, `fleet-watchdog.service`, `fleet-sync.service`,
   `fleet-sync.timer`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.

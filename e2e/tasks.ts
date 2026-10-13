@@ -2227,7 +2227,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // `instance` parses the same payload it always did — and the new key is a self-contained leaf
     // with exactly one member, so there is no half-shape for it to trip over either.
     const preInstanceKeys = ["now", "chips", "shareBase", "v", "autos", "watches", "events", "tasks",
-      "programs", "dispatch", "autosOn", "quietHours", "intake", "postLandAudit",
+      "programs", "dispatch", "autosOn", "quietHours", "postLandAudit",
       "postLandAuditLive", "gate", "errors", "deployGap", "bundleStale", "slots"];
     const instanceLeaf = (instancePoll.instance ?? {}) as Record<string, unknown>;
     check("the instance field is additive: every pre-cut key is still present and the new one is a one-member leaf",
@@ -9083,7 +9083,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && Object.values(brokenStays).every((v) => v === null),
       JSON.stringify({ strayQuote, brokenStays }));
 
-    // --- the PROMPT. It is the half that keeps a queue text — reachable from /intake — from ever
+    // --- the PROMPT. It is the half that keeps a queue text from ever
     // being read as an instruction, and the fence must be as undefeatable as the refiner's.
     const cp = buildCardPrompt("do the thing", ["low", "high"]);
     // E1a (1): the answer template is the contract the model fills — measured 2026-09-14, 6 of 21

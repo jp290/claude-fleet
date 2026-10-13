@@ -1,7 +1,7 @@
 // Security e2e: the perimeter properties that must not silently regress. This is a SEPARATE
 // harness (not a module of the main suite) for two reasons — it deliberately drives a share
 // into its hour-long brute-force LOCKOUT, which no other check may then share a counter with,
-// and it needs its own dispatcher-enabled instance to prove that remotely-submitted text is
+// and it needs its own dispatcher-enabled instance to prove that a pending task is
 // never dispatched to an agent without an owner promotion. Run via ./e2e-security.sh.
 //
 // Scope note, so this file is not mistaken for the whole story: the main suite (e2e/auth.ts,
@@ -25,7 +25,6 @@ import { afterTick, BASE, check, DISPATCH_TICK_MS, failures, get, IP, PORT, post
 
 const REPO = process.env.FLEET_E2E_REPO ?? "";
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
-const INTAKE = process.env.FLEET_INTAKE_SECRET ?? "";
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 
 const withCookie = (path: string, cookie: string): Promise<Response> =>
@@ -201,21 +200,16 @@ if (REPO) {
 }
 
 // ---------------------------------------------------------------------------
-// §5 The line that must not be crossed: text submitted from OUTSIDE (the public intake
-// dropbox) becomes a `pending` task and nothing else. Only an owner promotion makes it
-// dispatchable. Without this, /intake would be remote prompt-injection into an agent
-// running with the owner's privileges.
+// §5 The line that must not be crossed: a `pending` task is never dispatched. Only an owner
+// promotion makes it dispatchable.
 // ---------------------------------------------------------------------------
-if (INTAKE && DISPATCH_REPO) {
-  const marker = `sec-e2e-intake-${Date.now()}`;
-  const inj = await fetch(BASE + "/intake", { method: "POST",
-    headers: { "content-type": "application/json", "x-intake-secret": INTAKE },
-    body: JSON.stringify({ text: marker, from: "outsider", status: "queued", queue: true, source: "owner", slot: 1 }) });
-  check("§5 intake accepts the submission", inj.ok);
+if (DISPATCH_REPO) {
+  const marker = `sec-e2e-pending-${Date.now()}`;
+  const filed = await post("/api/tasks", { text: marker, queue: false });
+  check("§5 the owner files a pending task", filed.ok);
   // The 2 s poll carries DIGESTS only (server.ts, grep `TaskDigest`): `text` is gone from it and
-  // null-valued fields are omitted entirely. So resolve the id ONCE against the full list, assert
-  // the STORED record there — where a rejected `slot` is an explicit null rather than an absent
-  // key — and use the digest for the one thing it is for, polling `status`. Joining by id keeps
+  // null-valued fields are omitted entirely. So resolve the id ONCE against the full list and use
+  // the digest for the one thing it is for, polling `status`. Joining by id keeps
   // this harness working whatever the digest sheds next; matching on text did not.
   const fullTask = async (): Promise<{ id: string; text: string; status: string; source: string; slot: number | null } | undefined> =>
     ((await (await get("/api/tasks")).json()) as
@@ -223,13 +217,11 @@ if (INTAKE && DISPATCH_REPO) {
       .tasks.find((t) => t.text === marker);
   const t0 = await fullTask();
   // its own named check, so a broken join fails HERE instead of toppling the three below as dominos
-  check("§5 the intake task is findable by its marker", !!t0?.id, JSON.stringify(t0));
+  check("§5 the pending task is findable by its marker", !!t0?.id, JSON.stringify(t0));
   const taskOf = async (): Promise<{ id: string; status: string } | undefined> => {
     const j = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] };
     return j.tasks.find((t) => t.id === t0?.id);
   };
-  check("§5 a spoofed status/queue/source/slot in the intake body is ignored — pending, source intake",
-    t0?.status === "pending" && t0?.source === "intake" && t0?.slot === null, JSON.stringify(t0));
   const laneCount = async (): Promise<number> => {
     const j = (await (await get("/api/sessions")).json()) as { slots: { worktree: unknown }[] };
     return j.slots.filter((s) => s.worktree).length;
@@ -474,9 +466,6 @@ if (INTAKE && DISPATCH_REPO) {
 // ---------------------------------------------------------------------------
 // §10 The board editor's WRITE route is contained by the working directory it names.
 //
-// Numbered 10 but placed HERE, above §9: §9 leaves /intake locked for an hour and says so, and
-// nothing may run after it. The number is the section's identity, the position is §9's constraint.
-//
 // This is the one route on this server that writes bytes to a path a request named, so the
 // perimeter it keeps is not "validate the input" — it is a containment, and a containment is only
 // worth what its escapes prove. Four ways out are tried against a REAL repo (slot 2's cwd): a
@@ -608,43 +597,6 @@ if (REPO) {
       noArg.status === 400, String(noArg.status));
   }
   try { unlinkSync(`${REPO}/${linkName}`); } catch { /* already gone */ }
-}
-
-// ---------------------------------------------------------------------------
-// §9 /intake's LOCKOUT. Of the three guards the intake hardening built, this is the one that had
-// no net at all — grep for INTAKE_FAIL_LOCK across every suite came back empty on 2026-08-02.
-// The property is an ORDER, not a value: once the window is full handleIntake refuses BEFORE it
-// compares, so a locked guesser cannot use the endpoint as an oracle even while holding the right
-// secret. An ordering is exactly what a later edit undoes silently and no type checks.
-// LAST in this file on purpose: it leaves /intake locked for the rest of the fail window, and §5
-// above needs the endpoint working.
-// ---------------------------------------------------------------------------
-if (INTAKE) {
-  // read the bar from the server rather than writing 50 twice — the same derivation e2e/pins.ts
-  // uses, so raising the constant cannot leave this section quietly testing nothing
-  const lockN = Number(/INTAKE_FAIL_LOCK = (\d+)/.exec(readFileSync(`${ROOT}/server.ts`, "utf8"))?.[1] ?? 0);
-  check("§9 the lockout bar is readable from the server source", lockN > 0, String(lockN));
-  const post_ = (secret: string, text: string) => fetch(BASE + "/intake", { method: "POST",
-    headers: { "content-type": "application/json", "x-intake-secret": secret },
-    body: JSON.stringify({ text }) });
-  // fired in parallel: a wrong secret costs a deliberate 400ms flat delay, so 50 serially would add
-  // 20s to this suite. The strike is pushed AFTER that sleep, so a parallel burst all clears the
-  // pre-check and lands exactly lockN strikes — which is the state this section wants.
-  const burst = await Promise.all(Array.from({ length: lockN }, () => post_(`${INTAKE}-wrong`, "guess")));
-  check("§9 every wrong secret is refused 401",
-    burst.every((r) => r.status === 401), burst.map((r) => r.status).join(","));
-  const marker = `sec-e2e-locked-${Date.now()}`;
-  const right = await post_(INTAKE, marker);
-  check("§9 once locked, even the RIGHT secret is refused — the refusal runs BEFORE the compare",
-    right.status === 401, String(right.status));
-  const tasksNow = ((await (await get("/api/tasks")).json()) as { tasks: { text: string }[] }).tasks;
-  check("§9 …and the refused submission wrote no task",
-    !tasksNow.some((t) => t.text === marker), marker);
-  const trail = (() => { try { return readFileSync(`${ROOT}/audit.jsonl`, "utf8"); } catch { return ""; } })();
-  check("§9 the lockout announces itself on the audit trail", trail.includes("intake_auth_lock"),
-    trail.split("\n").filter((l) => l.includes("intake_auth")).slice(-2).join(" | ").slice(0, 200));
-  check("§9 the trail never records the secret that was tried",
-    !trail.includes(`${INTAKE}-wrong`));
 }
 
 console.log(results.join("\n"));

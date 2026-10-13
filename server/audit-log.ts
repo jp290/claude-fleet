@@ -115,7 +115,6 @@ type AuditEvent =
   // reach, and the only place the returned rows' reason survives the note being overwritten.
   | "task_wave_split"
   | "owner_auth_fail"
-  | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
   | "codex_bind" | "codex_bind_ambiguous" | "codex_owner_bind" | "codex_resume_lost"
   // a claude pane's conversation went on in a new transcript file and the record followed Claude

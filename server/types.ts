@@ -1429,8 +1429,7 @@ function validAttentionBranch(branch: string): boolean {
 
 const MAX_MESSAGE_TEXT = 2000;
 
-// a queued feature request. Owner-created or submitted via the public /intake address
-// (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
+// a queued feature request. NEVER auto-sent: a task only leaves `pending` when
 // the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
 // free lanes. External text is data, never a command until the owner opts it in.
 const TASK_KINDS = ["auftrag", "richtung", "notiz", "betrieb"] as const;
@@ -1478,7 +1477,7 @@ interface Task {
   // derivable). `kindChanges` gains one entry per change, in order; absent until the first one.
   kindAtCreate?: TaskKind;
   kindChanges?: TaskKindChange[];
-  repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
+  repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: the
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
   base?: string; // optional per-task integration branch. Absent preserves the repo-wide/default

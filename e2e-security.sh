@@ -75,7 +75,6 @@ trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null
 
 TOKEN=e2e-security-token
-INTAKE=e2e-security-intake
 SHAREHOST=sharetest
 
 # FLEET_CMD=true → panes are a bare login shell (claudeAlive short-circuits true, so the
@@ -92,7 +91,7 @@ DISP_TICK=250
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_TOKEN=$TOKEN \
    FLEET_DISPATCH_TICK_MS=$DISP_TICK \
-   FLEET_CMD=true FLEET_AUTO_REVIEW_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_INTAKE_SECRET=$INTAKE \
+   FLEET_CMD=true FLEET_AUTO_REVIEW_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 \
    FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST \
    FLEET_DISPATCH_REPO='$DIR/dispatchrepo' FLEET_DISPATCH_MAX_LANES=8 \
    exec bun server.ts >> server.log 2>&1"
@@ -117,7 +116,7 @@ cd "$DIR" || exit 1
 # FLEET_E2E_SUITE labels this run's trail rows (e2e/trail-emit.ts); the emitter's default is
 # "isolated", so without it these rows would claim to be the main suite's.
 FLEET_E2E_SUITE=security \
-  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_TOKEN=$TOKEN FLEET_INTAKE_SECRET=$INTAKE \
+  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_TOKEN=$TOKEN \
   FLEET_DISPATCH_TICK_MS=$DISP_TICK \
   FLEET_SHARE_HOSTS=$SHAREHOST FLEET_E2E_REPO="$DIR/testrepo" FLEET_DISPATCH_REPO="$DIR/dispatchrepo" \
   bun fleet-e2e-security.ts

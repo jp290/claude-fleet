@@ -344,7 +344,7 @@ const steps: Step[] = [
     await landDurability.run();
   } },
 
-  // --- task queue + dispatch gates, intake, the public share host ---
+  // --- task queue + dispatch gates, the public share host ---
   { unit: "core-tasks", module: "tasks", run: async () => {
     await tasks.run(ctx);
   } },

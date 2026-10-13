@@ -740,7 +740,6 @@ export async function setSlotSetting(slot: number, field: "model" | "effort", va
 export let autosList: AutoInfo[] = [];
 export let tasksList: TaskInfo[] = [];
 export let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
-export let intakeOn = false;
 // the automation kill-switch and quiet hours, as the owner poll carries them. Read by the settings
 // window's "Fleet" rows only; null until the first poll (and on a server that predates the fields).
 export let autosOnSrv: boolean | null = null;
@@ -7650,7 +7649,7 @@ export async function refresh() {
       return;
     }
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
-      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
+      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
       instance?: { name?: string | null; source?: InstanceSource };
       codexCli?: CodexCliSnapshot;
@@ -7718,7 +7717,6 @@ export async function refresh() {
     const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
     renderInstanceBand(tiSource);
     setInstanceSource(tiSource);
-    intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;
     quietHoursSrv = data.quietHours ?? null;
     renderAutoStatus();

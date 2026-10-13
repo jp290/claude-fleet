@@ -62,6 +62,10 @@ if (!BASE || !TOKEN || !DIR || !SOCK) {
 //                                         has one to show: the server omits an uncapped s1)
 //   codex .............................. 5 "pick conversation" (owner must act) · 8 healthy: nothing
 const CTX_PCT = { 1: 12, 2: 78, 3: 45, 9: 37, 10: 21, 12: 5 };
+// K9 S2: how long ago each ctx session made its last model call, on the 1 h cache tier — the popover's
+// „Cache“ row reads warm with its minutes or cold since when (main 2 is past the hour, with a Claude
+// compaction earlier in its conversation); the ages run on from the planting
+const CTX_LAST_CALL_MIN = { 1: 20, 2: 75, 3: 45, 9: 3, 10: 50, 12: 2 };
 // claude's default here is claude-opus-5[1m] (src/protocol.ts#FLEET_DEFAULT_MODEL): one percent of
 // its window is 10 000 input tokens. The API is read back after the restart, never assumed.
 const WINDOW = 1_000_000;
@@ -177,10 +181,21 @@ if (PATCH) {
     const proj = `${DIR}/home/.claude/projects/${s.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     mkdirSync(proj, { recursive: true });
     const used = Math.round((pct / 100) * WINDOW);
-    writeFileSync(`${proj}/${sid}.jsonl`, JSON.stringify({ type: "assistant",
-      message: { usage: { input_tokens: used, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 } } }) + "\n");
+    const lastCall = Date.now() - (CTX_LAST_CALL_MIN[id] ?? 0) * 60_000;
+    const lines = [];
+    if (id === "2") {
+      const compactedAt = lastCall - 2 * HOUR;
+      lines.push({ type: "system", subtype: "compact_boundary", timestamp: new Date(compactedAt).toISOString(),
+        compactMetadata: { trigger: "auto", preTokens: 487_000, postTokens: 9_000 } });
+      s.compaction = { at: compactedAt, openedAt: s.openedAt, sessionId: sid, trigger: "auto", preTokens: 487_000,
+        postTokens: 9_000, idle: true, ledgerId: "fixture-compaction" };
+    }
+    lines.push({ type: "assistant", timestamp: new Date(lastCall).toISOString(),
+      message: { usage: { input_tokens: used, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1,
+        cache_creation: { ephemeral_1h_input_tokens: 1, ephemeral_5m_input_tokens: 0 } } } });
+    writeFileSync(`${proj}/${sid}.jsonl`, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
   }
-  planted.push(`ctx on ${Object.entries(CTX_PCT).map(([id, p]) => `${id}=${p}%`).join(" ")}`);
+  planted.push(`ctx on ${Object.entries(CTX_PCT).map(([id, p]) => `${id}=${p}% (last call ${CTX_LAST_CALL_MIN[id]} min ago)`).join(" ")} · slot 2 compacted 487k → 9k`);
   // CODEX: slot 5 in the state Fleet will not guess its way out of, slot 8 bound and healthy.
   const cx = (id, state) => {
     const s = slot(id);

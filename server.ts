@@ -144,14 +144,11 @@ import {
   loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX,
   type LineageRole, type LineageOccupant, type LineageSeat, type LineageWatchTarget, type LineageAutoTarget, type LineageObligationRef, type LineageHandover,
   type LineageHandoverLoss,
-  MAX_STUDIOS, STUDIO_ID_RE, studioContentFrom, loadStudio, loadProgramStudioBinding,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, type ProgramReleasePolicy, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX,
   REVIEW_PARK_DEFAULT_HOURS, REVIEW_PARK_MAX_HOURS, loadLaneReviewCandidate, loadLaneResume,
   loadStallSensor, type StallSensorState,
   type TaskDisposition, loadTaskDisposition, TASK_DISPOSITION_GRUND_MAX, TASK_DISPOSITION_BELEG_MAX,
-  type Studio, type StudioContent, type ProgramStudioBinding, type StudioStage,
-  type StudioBriefAudience,
   type BoxPin, type WSData, type Share, type ShareComment, type Auto, type WatchBase, type MergeWatch,
   type Watch, type FleetEventStatus, type FleetEventRecoveryState,
   HELPER_CMD_ALLOW, helperCmdCheck, helperArtifactGlobsFrom, helperArtifactsFrom, HELPER_ARTIFACT_MAX,
@@ -3047,7 +3044,6 @@ const decisionsWithAuthors = (p: Program): { index: number; text: string; at: nu
 };
 
 let programs: Program[] = [];
-let studios: Studio[] = [];
 const programBootstrapInflight = new Set<string>();
 let startupStateRefusal: string | null = null;
 
@@ -6296,7 +6292,6 @@ function stateSnapshot(): string {
       const { main: _preDelivery, ...persisted } = p;
       return persisted;
     }),
-    studios,
     messages, ...(messagesLost ? { messagesLost } : {}),
     lineageHandovers, lineageHandoverLosses,
     ...(successionDebts.length ? { successionDebts } : {}),
@@ -20689,13 +20684,13 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`, readiness.screen ?? null); return; }
   try {
     const context = prepared?.context ?? await laneContextDelivery(free, wt, brief, sourceRows, briefSource, clarify);
-    const { notesBlock, snippetBlock, neighborBlock, studioLaneBlock } = context;
+    const { notesBlock, snippetBlock, neighborBlock } = context;
     // Every await since the readiness wait was git or state work, and a kill or re-open in that window
     // must not receive this text — the same re-check the boot sleep gets, at the last moment it helps.
     if (identityLost()) { await requeue("slot changed during brief assembly — requeued"); return; }
     const deliveredBrief = clarify
-      ? `${brief}${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}\n\n${context.korrekturen}${context.anchorBlock}`
-      : `${brief}${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
+      ? `${brief}${notesBlock}${snippetBlock}${neighborBlock}\n\n${context.korrekturen}${context.anchorBlock}`
+      : `${brief}${notesBlock}${snippetBlock}${neighborBlock}\n\nSession-Regeln: ./AGENTS.override.md`;
     await sendText(free, deliveredBrief, true, { path: "brief" });
     for (const row of waveRows) dispatchRefusalStreak.delete(row.id);
     const at = Date.now();
@@ -20714,7 +20709,7 @@ interface LaneContextDelivery {
   packMcp: ContextPackMcpServer[];
   /** the variant the plan ACCEPTED (laneVarianteRaw → resolveVariante); null = the plain lane */
   variante: ContextPositionVariante | null;
-  notesBlock: string; snippetBlock: string; neighborBlock: string; studioLaneBlock: string; anchorBlock: string;
+  notesBlock: string; snippetBlock: string; neighborBlock: string; anchorBlock: string;
   /** the owner's corrections as this lane's brief carries them (ownerKorrekturenText) */
   korrekturen: string;
   record: (deliveredBrief: string, at: number, extra?: Record<string, unknown>) => Promise<void>;
@@ -20744,7 +20739,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const { repoPlan, blobShas, blobModes } = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
   const laneProgram = free.programId ? programs.find((p) => p.id === free.programId) : undefined;
   // THE PROGRAM'S OWN POINTERS (Program.contextPacks), third and last in the same plan: the lane's
-  // Program is read through the slot's programId, like the studio block below. A lane outside every
+  // Program is read through the slot's programId. A lane outside every
   // Program, or of one without packs, gets the empty plan — its receipt keeps its exact bytes. The
   // path check runs against the same listing that stamps the versions, so nothing extra is read.
   const programPlan = planProgramContext({ program: laneProgram ?? null, trackedPaths: new Set(blobShas.keys()) });
@@ -20756,28 +20751,13 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const varianteFacts = { ...(base.variante ? { variante: base.variante } : {}),
     ...(base.varianteVerworfen ? { varianteVerworfen: base.varianteVerworfen } : {}) };
   const anchorBlock = renderContextAnchorBlock(plan);
-  // THE LANE'S HALF OF THE STUDIO RECORD. The founding brief's half is folded into railBlockFor;
-  // a worker lane never passes through that selector, so its half is read here — through the
-  // slot's programId, which dispatchTask wrote from the row moments ago. An absent programId, an
-  // absent binding, and a studio with nothing addressed to a lane all render the empty string, so
-  // a lane outside a studio receives byte-identically the brief every dispatch delivered before.
-  //
-  // POSITION is the rail's position for the rail's reason: before the anchors, because the
-  // context receipt hashes the anchor block ALONE and it has to stay the tail of the brief; and
-  // before the exit footer, because the three closing acts are the last thing a lane reads.
-  //
-  // AUDIENCE "lane", and only that one. `review` and `critic` blocks are stored and rendered
-  // NOWHERE today, which is a gap named rather than papered over: Fleet has exactly one
-  // worker-brief builder and no typed lane role to select by (workflow-v2.md §7 F4). Guessing a
-  // role from the harness or the task text would be a second, quieter source for an owner choice.
-  const studioLaneBlock = laneProgram ? studioBlockFor(laneProgram, "lane") : "";
   // N1, "Notizen auf deiner Flaeche" (docs/notizen-verarbeitung-2026-09-06.md §3). Until this
   // seam a `notiz` had exactly one consumer — the owner. No tick reads one, `capTasks` never
   // retires one, and a lane has no route to fetch one, so 127 pending notes reached nobody whose
   // work stood on their files. The join is set arithmetic over the SAME projection the board
   // shows (taskView: derived surface, derived cluster), never a model call.
   //
-  // POSITION: before the studio block, and therefore before the anchors, for the anchors' own
+  // POSITION: before the anchors, for the anchors' own
   // reason — the context receipt hashes the anchor block ALONE, so anything appended after it
   // would be hashed as if it were an anchor. A no-hit dispatch renders the empty string and its
   // bytes are unchanged, which is what makes the addition invisible where it has nothing to say.
@@ -20822,7 +20802,7 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
   const notesBlock = renderNotesBlock(laneSources.shown, undefined, laneSources.overflow);
   // THE SOURCE PACKAGE (docs/tailored-context.md §6a): the exact lines of the symbols the brief
   // names, cut from the LANE'S commit — `head` above is the integration tip, and main may have
-  // moved since the worktree forked. POSITION before the studio block and the anchors, for the
+  // moved since the worktree forked. POSITION before the anchors, for the
   // anchors' reason: the receipt hashes the anchor block alone. Clarify gets none, like the notes.
   const snippet = clarify ? { block: "", receipt: NO_SNIPPET_RECEIPT }
     : await laneSnippetBlock(wt.path, head, { blobShas, blobModes }, brief, sourceRows);
@@ -20834,8 +20814,8 @@ async function laneContextDelivery(free: Slot, wt: { repo: string; path: string;
     free.harness, "lane", undefined, clarify ? "" : `${korrekturen}\n\n${laneExitFooter(free.harness, selfPosition(free).receiver, variante)}\n\n${memoryPointer("lane")}`);
   const selected = contextReceiptSelections(plan.selected, sessionAgents);
   const omitted = plan.omitted.map((entry) => ({ ...entry }));
-  return { sessionAgents, packMcp: planMcpServers(plan), variante, notesBlock, snippetBlock, neighborBlock, studioLaneBlock, anchorBlock, korrekturen,
-    block: `${notesBlock}${snippetBlock}${neighborBlock}${studioLaneBlock}${anchorBlock}`,
+  return { sessionAgents, packMcp: planMcpServers(plan), variante, notesBlock, snippetBlock, neighborBlock, anchorBlock, korrekturen,
+    block: `${notesBlock}${snippetBlock}${neighborBlock}${anchorBlock}`,
     record: async (deliveredBrief, at, extra) => {
       // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
       // facts. A later reader reconstructs every byte from the row and the renderer the row NAMES
@@ -41186,7 +41166,6 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
         : "kein Claude-Auto-Memory unter diesem Checkout" };
     case "delivery-header": return claude ? { immer: "Zustellung" } : { nie: "nur der Claude-Adapter traegt den Zustellkopf" };
     case "task-brief": case "source-pointers": case "source-code": case "lane-notes": return { nie: PLAN_NUR_DISPATCH };
-    case "studio-block": return { nie: "nur eine Studio-Bindung liefert das" };
   }
   // THE MAIN'S FOUNDING (bootstrap-main → buildProgramMainBrief) takes no plan yet: this door only tells
   // the window which way each row really goes. The brief carries card, rail (memory pointer inside it),
@@ -41732,81 +41711,11 @@ you need. A routine clean, green, in-program land is not a boundary; it is your 
 const PROGRAM_MAIN_RAIL_BLOCK = RAIL_HEAD + RAIL_TAIL;
 const GAME_MAKER_RAIL_BLOCK = RAIL_HEAD + RAIL_ROLE_GAME_MAKER + RAIL_TAIL;
 
-// === THE STUDIO BLOCK — the owner's curated workflow, delivered to the sessions that run it =====
-// The record and its doors landed as inventory and NOTHING read them (S1, docs/ideen/
-// 2026-09-03-studio-als-objekt.md §5). This is the reader. What it buys is measured, not assumed:
-// on the iOS run three normative workflow rules lived only in prose, and reached zero of eight
-// lanes (docs/messungen/2026-09-03-Fremdprojekt-worktrail-audit-synthese.md, root 5). A rule that is
-// not in a brief is not in the session.
-//
-// IT IS FOLDED INTO `railBlockFor`, NOT ADDED AT THE TWO BUILDER SEAMS. `railBlockFor` is "the one
-// selector, read by both builders", and both builders carry the identical seam
-// `body.join("\n") + railBlockFor(program) + anchorBlock`. Hanging the studio text off those two
-// seams instead would create the SECOND seam the selector exists to prevent: the next founding
-// variant gets written against one of them and silently ships without the block. One selector, one
-// seam, four founding shapes — the property e2e/programs.ts holds byte for byte.
-//
-// A PROGRAM WITH NO BINDING GETS ZERO ADDITIONAL BYTES. That is the property under test first: an
-// unbound Program's founding brief is byte-identical to the one every founding before this cut
-// delivered, and a bound one's whole delta is this block.
-//
-// RENDERED FROM THE CURRENT RECORD. There is no rev history (decided in §8 F2 — studios are few and
-// nobody asked for the retrospect), so the current row is the only text that exists. When the
-// binding was made against an older revision the brief SAYS SO rather than pretending otherwise:
-// the drift is made visible, which is the entire reason `rev` is stored at binding time.
-const studioOfProgram = (program: Program): Studio | undefined =>
-  program.studio ? studios.find((one) => one.id === program.studio!.id) : undefined;
-
-// Only fields that EXIST are rendered. An absent budget prints nothing — a "budget: none" line
-// would read as a decision the owner never made, and the three fields are optional precisely
-// because a studio written before them is still a studio.
-const studioStageLines = (stage: StudioStage, i: number): string[] => {
-  const lines = [`${i + 1}. ${stage.id} — ${stage.title} (${stage.required ? "required" : "optional"})`,
-    `   Role: ${stage.role}`];
-  if (stage.spawn) lines.push(`   Spawn: ${stage.spawn.harness} / ${stage.spawn.model} / ${stage.spawn.effort}`);
-  if (stage.budget !== undefined) lines.push(`   Budget: ${stage.budget} tokens — what this act should cost`);
-  if (stage.stopLine !== undefined) lines.push(`   Stop line: ${stage.stopLine} tokens — where this role stops and reports`);
-  if (stage.onBreach !== undefined) lines.push(`   On breach: ${stage.onBreach}`);
-  if (stage.gate !== undefined) lines.push(`   Gate: ${stage.gate}`);
-  return lines;
-};
-
-// The owner's block text is copied VERBATIM — never summarised, never reflowed, never truncated.
-// It is already capped at the door (STUDIO_TEXT_MAX per block, STUDIO_BRIEF_BLOCKS_MAX blocks), and
-// a brief that paraphrased an owner's rule would be a second source for it, which is the failure
-// this whole record exists to end.
-const studioBlockFor = (program: Program, audience: StudioBriefAudience): string => {
-  const studio = studioOfProgram(program);
-  if (!studio) return "";
-  const blocks = studio.briefBlocks.filter((block) => block.appliesTo === audience);
-  const stages = audience === "main" ? studio.workflow.stages : [];
-  if (blocks.length === 0 && stages.length === 0) return "";
-  const bound = program.studio!.rev;
-  const lines = [``, ``,
-    `--- THE STUDIO WORKFLOW: ${studio.name} (${studio.id}), revision ${studio.rev}`,
-    ``,
-    `This Program is bound to an owner-curated studio. What follows is that record, not advice.`,
-    `Workflow document: ${studio.workflow.doc.path} (declared sha ${studio.workflow.doc.sha}; nothing`,
-    `re-read the file, so treat the digest as the owner's claim about which version this describes).`];
-  if (bound !== studio.rev)
-    lines.push(`The binding was made against revision ${bound} and the record now stands at ${studio.rev}:`,
-      `this brief renders the CURRENT record, and the difference is stated so it is not silent.`);
-  if (stages.length) {
-    lines.push(``, `STAGES, in the order the studio declares them:`);
-    for (const [i, stage] of stages.entries()) lines.push(...studioStageLines(stage, i));
-  }
-  if (blocks.length) {
-    lines.push(``, `STUDIO BRIEF BLOCKS for this brief (owner text, verbatim):`);
-    for (const block of blocks) lines.push(``, `[${block.id}]`, block.text);
-  }
-  return lines.join("\n");
-};
-
 // The one selector, read by both builders. Standard Programs receive the common MAIN card;
 // Game-Maker Programs receive their specialist role block instead.
 const railBlockFor = (program: Program, korrekturen: string): string =>
   (isGameMaker(program) ? GAME_MAKER_RAIL_BLOCK : `\n\n${MAIN_ROLE_CARD}${PROGRAM_MAIN_RAIL_BLOCK}`)
-  + `\n\n${korrekturen}` + studioBlockFor(program, "main");
+  + `\n\n${korrekturen}`;
 
 // THE PROGRAM IN A MAIN'S START BRIEF: its mandate verbatim, the rest of its record as a pointer.
 // Until 2026-10-10 every Program-MAIN brief printed `JSON.stringify(programContent(program), null,
@@ -41828,8 +41737,7 @@ const programRecordPointer = (program: Program): string =>
   + `GET /api/self/programs returns the whole Program row; GET /api/self/program-execution its live state and handover.`;
 function programMandateLines(program: Program): string[] {
   return [
-    // no id, as the JSON before it carried none: two Programs of one title stay byte-identical here,
-    // which is what lets e2e/programs.ts isolate the studio block by splicing
+    // no id, as the JSON before it carried none: two Programs of one title stay byte-identical here
     `${PROGRAM_MANDATE_HEAD} — «${program.title}»:`,
     "Intent:", program.intent,
     "Success criterion:", program.successCriterion,
@@ -43442,84 +43350,8 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
     await saveStateNow();
     return json({ ok: true, id: program.id, promotion: program.promotion ?? null });
   }
-  // THE STUDIO BINDING DOOR — the only writer of `program.studio`, and its own route for the same
-  // reason the profile door is: it reads a BODY carrying an owner decision. Two acts, one door:
-  // `{"studio": {"id": "..."}}` binds, `{"studio": null}` releases, and releasing is the same
-  // request shape so an owner never reaches for a different tool to take a choice back.
-  //
-  // WHAT IS STORED IS A POINTER PLUS THE REVISION IT WAS MADE AGAINST, never a copy of the record.
-  // A copy would be a second source for the same text — the exact failure the Studio exists to end.
-  // `rev` is read off the studio HERE, at binding time, so a later change to a shared studio shows
-  // up as a difference rather than acting silently under a MAIN founded before it. NOTHING in this
-  // cut compares the two numbers; this door only makes the comparison possible.
-  //
-  // THE STATUS GATES ARE THE PROFILE DOOR'S, for the profile door's reason: this record is spent at
-  // FOUNDING, and a binding that changed under a running MAIN would mean the session was founded
-  // under one workflow and judged under another. A complete program refuses every real write; an
-  // active program with a LIVE bound MAIN refuses to rebind or release; an active program on a
-  // stale or absent binding stays writable, because that is precisely the program whose NEXT
-  // founding should use a fresh owner decision.
-  const studioBindRoute = /^\/api\/programs\/([^/]+)\/studio$/.exec(url.pathname);
-  if (studioBindRoute) {
-    if (req.method !== "POST") return json({ error: "bad request" }, 400);
-    const program = programs.find((p) => p.id === studioBindRoute[1]);
-    if (!program) return json({ error: "unknown program" }, 404);
-    const body = await readJson(req);
-    if (!body || typeof body !== "object" || Array.isArray(body))
-      return json({ error: "invalid json" }, 400);
-    const extra = Object.keys(body).filter((k) => k !== "studio");
-    if (extra.length)
-      return json({ error: `this door reads studio only — [${extra.join(", ")}] is not read` }, 400);
-    if (!("studio" in body))
-      return json({ error: 'studio is required — send {"studio": {"id": "Fremdprojekt"}} to bind, {"studio": null} to release' }, 400);
-    // The desired binding is decided BEFORE any gate, so every refusal below is about the CHANGE
-    // and not about a shape nobody validated — the profile door's rule, one record over.
-    let desired: ProgramStudioBinding | null = null;
-    if (body.studio !== null) {
-      const raw = body.studio;
-      if (!raw || typeof raw !== "object" || Array.isArray(raw))
-        return json({ error: "studio must be an object or null" }, 400);
-      const fields = raw as Record<string, unknown>;
-      const unknown = Object.keys(fields).filter((k) => k !== "id");
-      if (unknown.length)
-        return json({ error: `unknown studio key(s): ${unknown.join(", ")} — a binding body is exactly {id}; boundAt and rev are stamped here` }, 400);
-      if (typeof fields.id !== "string" || !STUDIO_ID_RE.test(fields.id))
-        return json({ error: "id must be a studio id (lowercase letters, digits and dashes)" }, 400);
-      const studio = studios.find((x) => x.id === fields.id);
-      if (!studio)
-        return json({ error: `unknown studio ${fields.id} — create it with POST /api/studios before binding a program to it` }, 404);
-      desired = { id: studio.id, boundAt: 0, rev: studio.rev }; // boundAt stamped below
-    }
-    // IDENTICAL RETRIES ARE READS OF THE ACT THAT ALREADY LANDED. Answered before every in-flight
-    // and lifecycle gate, for the profile door's reason: a lost 200 may be retried while the
-    // founding it enabled is already running, and a 409 there would make an idempotent owner
-    // actuator non-idempotent. This branch changes no timestamp, writes no audit row, performs no
-    // save — and it does NOT re-anchor `rev`: re-binding against a newer revision is a real change,
-    // and the way to make one is to release and bind again.
-    const currentBinding = program.studio;
-    if (desired === null ? currentBinding === undefined : currentBinding?.id === desired.id)
-      return json({ ok: true, id: program.id, studio: program.studio ?? null });
-    if (programBootstrapInflight.has(program.id) || program.founding)
-      return json({ error: "a Program-MAIN founding for this program is in flight — its brief reads this binding, so it cannot change underneath it. Retry once the founding has answered" }, 409);
-    if (program.status === "complete")
-      return json({ error: "cannot change the studio of a complete program — its receipts, outcomes and briefs are already dated against the workflow it ran under" }, 409);
-    const studioOccupant = program.main ? slotFrom(program.main.slot) : null;
-    const studioLiveBound = !!program.main && !!studioOccupant?.cwd
-      && studioOccupant.openedAt === program.main.openedAt;
-    if (program.status === "active" && studioLiveBound)
-      return json({ error: `this program has a LIVE bound Program-MAIN in slot ${program.main!.slot} — its studio is fixed for that session, because it was founded under this one. Retire or replace the binding first` }, 409);
-    if (desired === null) {
-      delete program.studio;
-      audit("program_studio", undefined, `${program.id} released`);
-    } else {
-      program.studio = { ...desired, boundAt: Date.now() };
-      audit("program_studio", undefined, `${program.id} studio=${desired.id} rev=${desired.rev}`);
-    }
-    await saveStateNow();
-    return json({ ok: true, id: program.id, studio: program.studio ?? null });
-  }
   // THE PROGRAM-SCOPED DISPATCH DOOR — the only writer of `program.dispatch`, and its own route for
-  // the reason the three doors above it are: it reads a BODY carrying an owner decision. Two acts,
+  // the reason the two doors above it are: it reads a BODY carrying an owner decision. Two acts,
   // one door: `{"dispatch": {"v":1,"on":true,"maxLanes„[Zitat entfernt]“dispatch": null}` revokes,
   // and revoking is the same request shape so an owner never reaches for a different tool to take a
   // permission back.
@@ -43810,93 +43642,6 @@ async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response
   programs = programs.filter((p) => p !== program);
   await saveStateNow();
   return json({ ok: true });
-}
-
-// === THE STUDIO DOORS — owner truth about the WORKFLOW, one door per act ======================
-// A Studio is not a Program's property: several Programs may bind the same one, so its inventory
-// lives here rather than on any program route. Everything below spells the profile door's four
-// rules, because the same reasons hold: a CLOSED body (a key silently ignored is a key the owner
-// believes was honoured), the form validated BEFORE any lock, an identical repetition answered as
-// a READ, and a real change dated by the server's own clock.
-//
-// WHAT THIS CUT DELIBERATELY DOES NOT DO: nothing reads these records. No brief, no gate, no rail
-// and no view is changed by a studio existing or by a program binding one. The inventory must
-// stand before anything is founded on it, and a reader built at the same time as its store is a
-// reader nobody can prove wrong.
-const studioContentOf = (s: Studio): StudioContent => ({ name: s.name,
-  machineProfile: s.machineProfile, repoPolicy: s.repoPolicy, workflow: s.workflow,
-  briefBlocks: s.briefBlocks, gates: s.gates });
-// The one lock a shared record needs, and it is the profile door's race, not a new one: a founding
-// reads its Program's brief inputs twice, seconds apart, so a write to a studio a founding Program
-// is bound to would make those two reads differ. Narrow on purpose — it names the studio, not the
-// server: an unrelated founding never blocks an unrelated studio.
-const studioFoundingInflight = (studioId: string): Program | undefined =>
-  programs.find((p) => p.studio?.id === studioId
-    && (programBootstrapInflight.has(p.id) || !!p.founding));
-
-async function handleOwnerStudioRoute(req: Request, url: URL): Promise<Response> {
-  if (url.pathname === "/api/studios" && req.method === "GET") return json({ studios });
-  if (url.pathname === "/api/studios" && req.method === "POST") {
-    const body = await readJson(req);
-    if (!body || typeof body !== "object" || Array.isArray(body))
-      return json({ error: "invalid json" }, 400);
-    const fields = body as Record<string, unknown>;
-    if (typeof fields.id !== "string" || !STUDIO_ID_RE.test(fields.id))
-      return json({ error: "id must be a slug of lowercase letters, digits and dashes (2-40 characters), e.g. Fremdprojekt — it is how a brief and a ledger name this workflow" }, 400);
-    const { id, ...rest } = fields;
-    const valid = studioContentFrom(rest);
-    if (!valid.ok) return json({ error: valid.error }, 400);
-    // An identical create is a READ of the act that already landed — the same rule the profile door
-    // states, and the reason a create needs it too: a lost 200 is retried, and a retry that turned
-    // into a 409 would make an idempotent owner actuator non-idempotent. A DIFFERENT body under an
-    // existing id is a change and is refused here, because there is a door for changes and using
-    // the wrong one silently would rewrite a record the owner meant to create.
-    const existing = studios.find((x) => x.id === id);
-    if (existing) {
-      if (JSON.stringify(studioContentOf(existing)) === JSON.stringify(valid.content))
-        return json({ ok: true, studio: existing });
-      return json({ error: `a studio named ${id} already exists — change it with POST /api/studios/${id}, which bumps its rev` }, 409);
-    }
-    // HARD CAP, NO EVICTION. capPrograms may drop rows because a COMPLETE Program is a prunable
-    // candidate (since K2, one no open task still names); a studio never becomes complete, so an
-    // eviction here could only throw away an owner act.
-    if (studios.length >= MAX_STUDIOS)
-      return json({ error: `the studio inventory holds its maximum of ${MAX_STUDIOS} — nothing is evicted to make room, because a studio never becomes complete and every row here is an owner decision` }, 409);
-    const at = Date.now();
-    const studio: Studio = { v: 1, id, createdAt: at, confirmedAt: at, rev: 1, ...valid.content };
-    studios = [...studios, studio];
-    audit("studio_create", undefined, `${id} machineProfile=${studio.machineProfile} stages=${studio.workflow.stages.length}`);
-    await saveStateNow();
-    return json({ ok: true, studio });
-  }
-  const studioRoute = /^\/api\/studios\/([^/]+)$/.exec(url.pathname);
-  if (!studioRoute || req.method !== "POST") return json({ error: "bad request" }, 400);
-  const studio = studios.find((x) => x.id === studioRoute[1]);
-  if (!studio) return json({ error: "unknown studio" }, 404);
-  const body = await readJson(req);
-  if (!body || typeof body !== "object" || Array.isArray(body))
-    return json({ error: "invalid json" }, 400);
-  const valid = studioContentFrom(body);
-  if (!valid.ok) return json({ error: valid.error }, 400);
-  // IDENTICAL IS A READ: no rev bump, no stamp, no audit row, no save. `rev` is the number every
-  // binding is measured against, so bumping it for a repetition would invent drift that never
-  // happened and make a stale binding look stale that is not.
-  if (JSON.stringify(studioContentOf(studio)) === JSON.stringify(valid.content))
-    return json({ ok: true, studio });
-  const founding = studioFoundingInflight(studio.id);
-  if (founding)
-    return json({ error: `a Program-MAIN founding for program ${founding.id}, which is bound to this studio, is in flight — that founding reads this record twice, seconds apart, so it cannot change underneath it. Retry once the founding has answered` }, 409);
-  // A MERELY ACTIVE bound program does NOT refuse this write, and that is decided, not forgotten
-  // (docs/ideen/2026-09-03-studio-als-objekt.md §8 F2): a studio is a shared source, and refusing
-  // every change while any bound program is active would freeze the record for good — the whole
-  // standalone use of this cut is that the owner can curate the workflow while the readers are
-  // built. The drift is made VISIBLE instead of silent: the binding keeps the `rev` it was made
-  // against and this bump moves the studio's. Nothing here compares them.
-  const updated: Studio = { ...studio, ...valid.content, rev: studio.rev + 1, confirmedAt: Date.now() };
-  studios = studios.map((x) => (x.id === studio.id ? updated : x));
-  audit("studio_change", undefined, `${studio.id} rev=${updated.rev}`);
-  await saveStateNow();
-  return json({ ok: true, studio: updated });
 }
 
 // --- startup: claim the directory, restore persisted state, adopt stray sessions, seed offsets ---
@@ -44363,28 +44108,6 @@ if (existsSync(file)) {
         console.log(`loadState: dropped ${overCappedVerdicts} task verdict(s) past NOTE_VERDICTS_MAX=${NOTE_VERDICTS_MAX} — a store this large cannot come from the write door`);
       tasks = capTasks(tasks);
       seedTerminalArchive();
-    // THE STUDIO INVENTORY, read back with the discipline the Program loader states one comment
-    // down: absent stays [], and a row this build cannot parse is SKIPPED WHOLE — never repaired
-    // field by field, because half a workflow is a different workflow, not a shorter one. Read
-    // BEFORE the Programs so the bindings below are resolved against an inventory that already
-    // exists. A binding whose studio is missing is kept as written and NOT scrubbed: the owner's
-    // act is the honest record, and quietly deleting a pointer would hide exactly the loss this
-    // loader was added to prevent (a field nobody reads back dies at the first restart, silently).
-    if (Array.isArray((persisted as { studios?: unknown }).studios)) {
-      const loadedStudios: Studio[] = [];
-      let unreadableStudios = 0;
-      for (const raw of (persisted as { studios: unknown[] }).studios) {
-        const studio = loadStudio(raw);
-        if (!studio) { unreadableStudios++; continue; }
-        if (loadedStudios.some((x) => x.id === studio.id)) { unreadableStudios++; continue; }
-        loadedStudios.push(studio);
-      }
-      studios = loadedStudios.slice(0, MAX_STUDIOS);
-      if (unreadableStudios) {
-        console.error(`${unreadableStudios} persisted studio row(s) unreadable — skipped`);
-        audit("studio_unreadable", undefined, `${unreadableStudios} row(s) skipped at load`);
-      }
-    }
     // absent Programs stay []; no provenance is inferred from slots or tasks, and rows are rebuilt
     // from declared fields so hand-written keys are never persisted.
     if (Array.isArray((persisted as { programs?: unknown }).programs)) {
@@ -44448,10 +44171,6 @@ if (existsSync(file)) {
         }
         const promotion = loadPromotion(x.promotion);
         const profile = loadProgramProfile(x.profile);
-        // the studio BINDING, read explicitly for the reason the comment at the top of this block
-        // states: rows are rebuilt from declared fields, so a field nobody names here does not
-        // survive a restart and nothing says so. Unreadable degrades to ABSENT, like the profile.
-        const studioBinding = loadProgramStudioBinding(x.studio);
         // the PROGRAM-SCOPED DISPATCH permission, read with the promotion record's discipline and
         // for the promotion record's reason: an unreadable permission degrades to ABSENT, which
         // here means "the global switch decides this program alone" — the legacy behaviour, never
@@ -44579,7 +44298,6 @@ if (existsSync(file)) {
           ...(main ? { main } : {}),
           ...(promotion ? { promotion } : {}),
           ...(profile ? { profile } : {}),
-          ...(studioBinding ? { studio: studioBinding } : {}),
           ...(programDispatch ? { dispatch: programDispatch } : {}),
           ...(programRelease ? { release: programRelease } : {}),
           ...(kurzname ? { kurzname } : {}),
@@ -50036,17 +49754,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
     // task owner API, but are checked before the steward dispatcher so a steward credential is a
     // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
-    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid|text-proposals))?$/.test(url.pathname)) {
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|dispatch|release|release-valid|text-proposals))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
-    }
-
-    // The studio inventory sits beside the Programs and takes the same owner gate for the same
-    // reason: a session may propose what a Program is FOR, never the workflow it will be judged by.
-    // Checked before the steward dispatcher, so a steward credential is a plain owner-auth failure.
-    if (/^\/api\/studios(?:\/[^/]+)?$/.test(url.pathname)) {
-      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
-      return handleOwnerStudioRoute(req, url);
     }
 
 

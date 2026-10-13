@@ -1542,7 +1542,7 @@ Binding. Ein recycelter Slot erbt nichts.
 jeder Lane-Gründungs- und Staffelstab-Brief (`memoryPointer("lane")`) tragen einen Absatz
 `YOUR MEMORY …` von höchstens 512 UTF-8-Bytes: die Tür und ihre Grenzen, kein kopierter Zustand. Im
 Lane-Gründungsbrief steht er HINTER dem Exit-Footer — die Spanne Brief…Footer vermessen die
-Dispatch-Proben als Notiz-/Quell-/Studio-/Anker-Region. Der
+Dispatch-Proben als Notiz-/Quell-/Anker-Region. Der
 Standard-Nachfolgebrief zählt deshalb keine Task-Status mehr (`- Task rows: not copied here …`);
 Inbox- und Pflichtenzeilen des Handovers sind unverändert.
 
@@ -6623,7 +6623,7 @@ curl -X POST http://<fleet-host>:<port>/api/programs/<program>/promotion \
 
 **Die Antwort nennt den geänderten Fakt, nicht den Record** (seit 2026-09-18):
 `{ok, id, promotion}`, `promotion: null` nach einem Widerruf. Dasselbe Muster gilt für alle
-Owner-Feldtüren am Program — `profile`, `studio`, `dispatch`, `release` antworten `{ok, id, <feld>}`
+Owner-Feldtüren am Program — `profile`, `dispatch`, `release` antworten `{ok, id, <feld>}`
 — und für die Übergänge `confirm` · `activate` · `complete`: `{ok, existing?, id, status}`, bei
 `confirm` zusätzlich `promotion`, weil der Confirm sie vergeben kann. Den ganzen Record liest
 `GET /api/programs`. Anlass: eine Vergabe EINES Enum-Werts antwortete mit ~4 373 Tokens, die Hälfte

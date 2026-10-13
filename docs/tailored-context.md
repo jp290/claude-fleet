@@ -205,7 +205,7 @@ catch requeues, exactly as for an unreadable integration head.
 **(c) `server.ts#briefAndSend`** — after `notesBlock`, `snippetBlock` (empty for a clarify lane),
 then the slot identity is re-checked before the send (every await since the readiness wait was git or
 state work), and the delivered bytes are
-`${brief}${notesBlock}${snippetBlock}${studioLaneBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`.
+`${brief}${notesBlock}${snippetBlock}${anchorBlock}${clarify ? "" : LANE_EXIT_FOOTER}`.
 claude, codex and pi receive the same text through `sendText`.
 
 Two details are not negotiable. **Raw bytes, never `gitRead`:** `gitRead` trims, and losing a
@@ -237,7 +237,7 @@ head in FRONT of its prose. The order of a single-row dispatch, as `server.ts#br
    `FLAECHE` · `DONE` · `VERIFY` · `VERBOTEN`, closed by `--- AUFTRAG ---`; at most 1.5 KB
    (`CARD_HEAD_MAX_BYTES`, per-field byte budgets, a final clip as guard).
 2. **the prose** — `brief ?? text`, unchanged; the card is a reading of it, never a replacement.
-3. notes block · source package (§6b) · studio lane block · anchor block · exit footer.
+3. notes block · source package (§6b) · anchor block · exit footer.
 
 A wave brief does the same per row (`renderWaveBrief`: each `--- ZEILE n VON m ---` opens with that
 row's head when it has a valid card). The receipt books `briefSource: "card"` whenever the head was

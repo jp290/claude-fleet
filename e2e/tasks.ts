@@ -5028,7 +5028,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ snipMoved, lane: snipLaneSha, head: fHead, receiptHead: fReceipt?.head ?? null,
         label: fLines[snipLabelAt] ?? null, omitted: snipOmitted, shown: snipShown?.slice(0, 160) ?? null }));
     // THE SOURCE PACKAGE ON THE LEDGER: the block's own bytes (it ends where the anchors begin in
-    // this checkout — no studio block), one excerpt, and the two named refs it could not deliver,
+    // this checkout), one excerpt, and the two named refs it could not deliver,
     // with the reason the block printed. Without the field this reads undefined and the row keeps
     // no trace of 56 % of a brief.
     const snipBlockBytes = fPrompt.includes("\n\nQuellpaket")

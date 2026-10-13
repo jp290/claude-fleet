@@ -446,10 +446,6 @@ const PRE_AUTH_ROUTES = [
   // session can never widen its own authority: the record is written by this route alone (pinned in
   // e2e/pins.ts), and a self token meets the same tokenGate 401 here as any other non-owner
   // credential.
-  // `studio` joined the verb set 2026-09-03 for the same reason `promotion` and `profile` did, and
-  // with the same consequence: it is the OWNER's binding of a Program to a WORKFLOW record, written
-  // by this route alone, and a session that could write it would be choosing the workflow it is
-  // judged by. Owner side of this line, tokenGate inline, no self-token header read.
   // `dispatch` joined this alternation 2026-09-05 with the program-scoped dispatch door. REVIEWED,
   // not merely widened: the route is inside the block whose FIRST statement is the owner tokenGate,
   // exactly like its four neighbours here, so it is pre-auth in position and owner-only in effect.
@@ -462,12 +458,7 @@ const PRE_AUTH_ROUTES = [
   // `text-proposals` joined 2026-10-07 with the Program's living text: it APPLIES a MAIN's proposed
   // intent/successCriterion/nonGoals or rejects it — an owner confirmation by definition, so tokenGate
   // first and a MAIN token 401 (e2e/programs.ts living text (6)).
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|studio|dispatch|release|release-valid|text-proposals))?$/`,
-  // The studio inventory itself, beside the Programs regex and for its reasons: a Studio is owner
-  // truth about the workflow (stages, gates, brief blocks), several Programs may bind the same one,
-  // and the handler sits before the steward interceptor only so a steward credential meets the same
-  // tokenGate 401 as any other non-owner credential.
-  String.raw`~ /^\/api\/studios(?:\/[^/]+)?$/`,
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main|promotion|profile|dispatch|release|release-valid|text-proposals))?$/`,
 
 
   '= /favicon.ico',
@@ -635,12 +626,6 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/programs", method: "GET", owner: 200 },
   { path: "/api/messages", method: "GET", owner: 200 },
   { path: "/api/messages/000000000000000000000000/reply", method: "POST", body: {}, owner: 400 },
-  // The studio inventory is owner truth about the WORKFLOW a Program binds — stages, spawn triples,
-  // gates, brief blocks — so it is owner-only for the reason the Program bodies above are: a session
-  // that could write it would be choosing the workflow it is judged by. Empty POST is a
-  // side-effect-free named 400 (no id), which is what lets it carry the positive control.
-  { path: "/api/studios", method: "POST", body: {}, owner: 400 },
-  { path: "/api/studios", method: "GET", owner: 200 },
   // the konzept ledger's owner door writes the OWNER as actor, so a scoped credential reaching it would
   // forge the one provenance the ledger exists to prove. An empty body is a side-effect-free named 400
   // (validated before the root is looked at), which carries the positive control.

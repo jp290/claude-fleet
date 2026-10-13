@@ -72,6 +72,12 @@ export interface BriefSuccession {
   // the three — successionOf reads them as the fleet's values then.
   defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
   sessionPct?: number | null;
+  // K9 S2 (server.ts#successionFacts): the warm switch in force and where it comes from, the prompt
+  // cache as the transcript says it, the newest compaction of this occupant. An older server sends none.
+  keepCache?: { on: boolean; from: "session" | "fleet"; fleetOn: boolean; exempt: "steward" | "lane" | "harness" | null;
+    idleMin: number; lifetimeMin: number; hourCap: number; warmTurns: number };
+  cache?: { state: "warm" | "kalt" | "kompaktiert" | "unbekannt"; lastCallAt: number | null; ttlSec: number; coldAt: number | null };
+  compaction?: { at: number; preTokens: number | null; postTokens: number | null } | null;
 }
 export interface BriefSetup { profile: "standard" | "game-maker" | null;
   repo: string | null; head: string | null;

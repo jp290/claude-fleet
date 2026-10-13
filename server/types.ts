@@ -1909,14 +1909,13 @@ interface MemoryGrantOccupant { slot: number; openedAt: number }
 // its hint at all. Bound to `occupant`; every succession on the slot re-binds it to
 // the successor (server/succession.ts), a freshly opened occupant starts on the fleet's values.
 // `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
-// session above its effective threshold whose last model call is `keepCacheIdleMin` minutes old is
-// succeeded through the owner door (no turn of its own) or, while further work is foreseeable, kept
-// warm by one short turn — always before the prompt cache's measured lifetime runs out
-// (KEEP_CACHE_LIFETIME_MIN, docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md).
-// `warmBound: false` switches off the DEFAULT warm turn a bound Program-MAIN or the Orchestratorin gets
-// without any switch (server.ts#keepCacheBoundOf); true is the fleet's value and stores no record.
-interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean; keepCacheIdleMin: number;
-  warmBound: boolean; setAt: number; occupant: MemoryGrantOccupant }
+// session whose switch is on gets one short turn `keepCacheIdleMin` minutes after its last model call,
+// before the prompt cache's measured lifetime runs out (KEEP_CACHE_LIFETIME_MIN,
+// docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md; server/succession.ts#warmDecision).
+// `keepCache: null` is the fleet's value for the kind of session (server.ts#keepCacheFleetOn: on for a
+// bound Program-MAIN and the Orchestratorin, off otherwise) and stores no record.
+interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
+  setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
@@ -1932,21 +1931,24 @@ const KEEP_CACHE_IDLE_MIN_DEFAULT = 50;
 const keepCacheIdleMinOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
   && n >= KEEP_CACHE_IDLE_MIN_MIN && n <= KEEP_CACHE_IDLE_MIN_MAX && n % KEEP_CACHE_IDLE_MIN_STEP === 0;
 // fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values).
-// A record written before the keepCache pair existed reads with the pair off at its default duration,
-// one written before `warmBound` with the default warm turn on.
+// A record written before the keepCache pair existed reads at the fleet's values. One written with the
+// two switches of 11.–13.10. (`keepCache` for the owner's warm-or-succeed, `warmBound` for the bound
+// default) reads as the one switch: the owner's `true` stays on, `warmBound: false` is off, the rest is
+// the fleet's value.
 function loadHandoverSetting(v: unknown): HandoverSetting | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const g = v as Record<string, unknown>;
   if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "warmBound", "setAt", "occupant"].includes(k))) return null;
   const o = g.occupant as Record<string, unknown> | null;
-  const keepCache = g.keepCache ?? false;
+  const twoSwitches = g.warmBound !== undefined;
+  if (twoSwitches && (typeof g.warmBound !== "boolean" || typeof g.keepCache !== "boolean")) return null;
+  const keepCache = twoSwitches ? (g.keepCache ? true : g.warmBound ? null : false) : g.keepCache ?? null;
   const keepCacheIdleMin = g.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
-  const warmBound = g.warmBound ?? true;
   if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
-    || typeof keepCache !== "boolean" || !keepCacheIdleMinOk(keepCacheIdleMin) || typeof warmBound !== "boolean"
+    || !(keepCache === null || typeof keepCache === "boolean") || !keepCacheIdleMinOk(keepCacheIdleMin)
     || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
     || typeof o.openedAt !== "number") return null;
-  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, warmBound, setAt: g.setAt,
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, setAt: g.setAt,
     occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
 }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
@@ -2120,8 +2122,8 @@ interface Slot {
   lineageId: string | null;
   // THE OWNER'S HANDOVER SETTING for this occupant (HandoverSetting), null where the owner set none —
   // the session then runs on the rail's env threshold with the hint on. Reset with the occupant by
-  // openSlot and the teardown; a succession through the owner door (server.ts#handleOwnerSucceed, the
-  // keepCache act included) carries it unchanged to the successor on the same slot. Persisted in fleet.json.
+  // openSlot and the teardown; every succession on the slot carries it unchanged to the successor
+  // (server/succession.ts). Persisted in fleet.json.
   handover: HandoverSetting | null;
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't

@@ -6,7 +6,11 @@
 // own preview sentence (GET …/succeed → `says`, server/succession.ts#successorSentence).
 // Every write redraws the line in place from what the client holds and then from the server's answer
 // (HandoverView.repaint → board.ts#paintContextRow): no /brief and no column render per click.
+// S2 (owner 13.10.: „[Zitat entfernt]“): the cache warm or
+// cold with its minutes, Claude's compaction, the warm switch, and at a cold cache the button names
+// what the successor continues from — the session's own handover or the raw transcript.
 import { api, el } from "./client";
+import { serverClock } from "./composer";
 import type { BriefSuccession } from "./board";
 
 export interface HandoverView {
@@ -26,6 +30,12 @@ export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, strin
   waiting: "sie wartet auf dich",
   unpinned: "kein festgehaltenes Gespräch zum Messen",
 };
+// why no cache is kept warm here (server.ts#keepCacheExempt)
+const WARM_OFF_WHY: Record<NonNullable<NonNullable<BriefSuccession["keepCache"]>["exempt"]>, string> = {
+  steward: "die Planungs-Session wird nicht warm gehalten",
+  lane: "eine Lane gibt mit ihrem Bericht weiter",
+  harness: "dieser Agent hat keinen gemessenen Cache",
+};
 // the values one click away; a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
 const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60];
 // the answer of the last write, shown at once while the brief is read again (the board's tick)
@@ -38,7 +48,8 @@ const fresh = new Map<number, { openedAt: number | undefined; sc: BriefSuccessio
 const writing = new Set<number>();
 const succeeding = new Set<number>();
 const errs = new Map<number, { text: string; title: string }>();
-const previews = new Map<number, { openedAt: number | undefined; at: number; ready: boolean; says: string }>();
+const previews = new Map<number, { openedAt: number | undefined; at: number; ready: boolean; says: string;
+  source: "handover" | "transcript" | null }>();
 const previewLoading = new Set<number>();
 // the newest render's repaint per slot: an answer that arrives after the board rebuilt the column
 // redraws the line that stands now, not the one its click was drawn on
@@ -50,17 +61,20 @@ export function freshSuccession(slot: number, openedAt: number | undefined): Bri
   return f && f.openedAt === openedAt && Date.now() - f.at < FRESH_MS ? f.sc : null;
 }
 
-// what the server will answer, drawn before it answers: the threshold, the hint, and the gate a
-// threshold of 0 turns on or off; the PATCH answer replaces it a moment later
-function expected(sc: BriefSuccession, body: { thresholdPct?: number | null; nudge?: boolean }): BriefSuccession {
+type HandoverWrite = { thresholdPct?: number | null; nudge?: boolean; keepCache?: boolean | null };
+// what the server will answer, drawn before it answers: the threshold, the hint, the warm switch, and
+// the gate a threshold of 0 turns on or off; the PATCH answer replaces it a moment later
+function expected(sc: BriefSuccession, body: HandoverWrite): BriefSuccession {
   if (body.nudge !== undefined) return { ...sc, nudgeOn: body.nudge };
+  if (body.keepCache !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache,
+    on: body.keepCache ?? sc.keepCache.fleetOn, from: body.keepCache === null ? "fleet" : "session" } } : sc;
   const own = body.thresholdPct ?? null;
   const eff = own ?? sc.defaultPct;
   const gate = sc.thresholdOff && sc.thresholdOff !== "rail" ? sc.thresholdOff : eff > 0 ? null : "rail";
   return { ...sc, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff };
 }
 
-async function write(v: HandoverView, body: { thresholdPct?: number | null; nudge?: boolean }): Promise<void> {
+async function write(v: HandoverView, body: HandoverWrite): Promise<void> {
   if (writing.has(v.slot)) return;
   writing.add(v.slot);
   errs.delete(v.slot);
@@ -88,18 +102,19 @@ async function loadPreview(slot: number, openedAt: number | undefined): Promise<
   previewLoading.add(slot);
   try {
     const r = await api(`/api/slots/${slot}/succeed`);
-    const j = (await r.json().catch(() => null)) as { ready?: boolean; says?: string; error?: string } | null;
+    const j = (await r.json().catch(() => null)) as { ready?: boolean; says?: string; error?: string;
+      source?: "handover" | "transcript" | null } | null;
     previews.set(slot, { openedAt, at: Date.now(), ready: r.ok && j?.ready === true,
-      says: j?.says ?? `Fleet konnte nicht prüfen, ob sie gerade ruht (${j?.error ?? `HTTP ${r.status}`}).` });
+      says: j?.says ?? `Fleet konnte nicht prüfen, ob sie gerade ruht (${j?.error ?? `HTTP ${r.status}`}).`, source: j?.source ?? null });
   } catch (error) {
     previews.set(slot, { openedAt, at: Date.now(), ready: false,
-      says: `Fleet konnte nicht prüfen, ob sie gerade ruht (${error instanceof Error ? error.message : String(error)}).` });
+      says: `Fleet konnte nicht prüfen, ob sie gerade ruht (${error instanceof Error ? error.message : String(error)}).`, source: null });
   } finally {
     previewLoading.delete(slot);
     repaint(slot);
   }
 }
-function previewOf(v: HandoverView): { ready: boolean; says: string } | null {
+function previewOf(v: HandoverView): { ready: boolean; says: string; source: "handover" | "transcript" | null } | null {
   const p = previews.get(v.slot);
   const mine = p && p.openedAt === v.openedAt ? p : null;
   if ((!mine || Date.now() - mine.at > PREVIEW_MS) && !previewLoading.has(v.slot) && !succeeding.has(v.slot))
@@ -129,6 +144,20 @@ async function succeed(v: HandoverView): Promise<void> {
   }
   if (ok) v.succeeded();
   else repaint(v.slot);
+}
+
+// the cache now, on the server's clock: the brief says warm or cold when it was read, the minutes run on
+type CacheNow = { state: NonNullable<BriefSuccession["cache"]>["state"]; min: number | null };
+function cacheNow(c: NonNullable<BriefSuccession["cache"]>): CacheNow {
+  if ((c.state !== "warm" && c.state !== "kalt") || c.coldAt === null) return { state: c.state, min: null };
+  const left = c.coldAt - serverClock();
+  return left > 0 ? { state: "warm", min: Math.ceil(left / 60_000) } : { state: "kalt", min: Math.floor(-left / 60_000) };
+}
+const minText = (min: number): string => min < 1 ? "eben" : min < 90 ? `${min} min` : `${Math.round(min / 60)} h`;
+const kTokens = (n: number): string => `${Math.round(n / 1000)}k`;
+function compactionText(c: NonNullable<BriefSuccession["compaction"]>): string {
+  const at = new Date(c.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  return `Von Claude kompaktiert ${at}${c.preTokens !== null && c.postTokens !== null ? `, ${kTokens(c.preTokens)} → ${kTokens(c.postTokens)}` : ""}.`;
 }
 
 function row(k: string, v: (Node | string)[], h: string, cls = ""): HTMLElement {
@@ -198,13 +227,50 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
   const given = sc.gaveUp ? `Aufgehört nach ${sc.nudges}.` : sc.nudges ? `Bisher ${sc.nudges}.` : "Bisher keiner.";
   rows.push(row("Hinweis", [seg], `An der Schwelle, höchstens ${sc.maxNudges}-mal. ${given}`));
 
+  const cache = sc.cache ? cacheNow(sc.cache) : null;
+  if (cache) {
+    const word = (w: string): HTMLElement => el("b", "", w);
+    rows.push(row("Cache",
+      cache.state === "warm" ? [word("warm"), ` · noch ${minText(cache.min ?? 0)}`]
+        : cache.state === "kalt" ? [word("kalt"), ` seit ${minText(cache.min ?? 0)}`]
+        : cache.state === "kompaktiert" ? [word("kompaktiert")] : ["unbekannt"],
+      sc.compaction ? compactionText(sc.compaction)
+        : cache.state === "kalt" ? "Der nächste Turn schreibt den ganzen Kontext neu."
+        : cache.state === "unbekannt" ? "Fleet hat noch keinen Modellaufruf gelesen." : ""));
+  }
+
+  const kc = sc.keepCache;
+  if (kc) {
+    const warmSeg = el("span", "seg");
+    for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
+      const shown = !kc.exempt && kc.on === on;
+      const b = button(word, `${shown ? "on" : ""}${!kc.exempt && kc.fleetOn === on ? " dflt" : ""}`.trim(), `warm-${on ? "an" : "aus"}`,
+        kc.exempt ? "Hier wird kein Cache warm gehalten, der Grund steht darunter"
+          : kc.fleetOn === on ? `${word} — der Wert der Fleet für diese Art Session`
+          : on ? "Den Cache dieser Session warm halten — nur diese Session" : "Diese Session nicht warm halten — nur diese Session",
+        // the fleet's value takes the session back to the fleet: no own record is kept
+        () => { if (kc.on !== on) void write(v, { keepCache: kc.fleetOn === on ? null : on }); });
+      b.setAttribute("aria-pressed", String(shown));
+      b.disabled = !!kc.exempt;
+      warmSeg.appendChild(b);
+    }
+    rows.push(row("Warmhalten", [warmSeg], kc.exempt ? `Aus: ${WARM_OFF_WHY[kc.exempt]}.`
+      : kc.on ? `Nach ${kc.idleMin} min Ruhe ein kurzer Turn, höchstens ${kc.hourCap}-mal pro Stunde. ${kc.warmTurns ? `Bisher ${kc.warmTurns}.` : "Bisher keiner."}`
+      : `Der Cache verfällt ${kc.lifetimeMin} min nach dem letzten Modellaufruf.`));
+  }
+
   const p = previewOf(v);
   const going = succeeding.has(v.slot);
-  const go = button(going ? "Wird geöffnet …" : "Neue Session jetzt", "bbtn", "succeed",
-    "Eine frische Session im selben Slot. Die laufende bekommt keinen Turn mehr; ihr Gespräch bleibt lesbar.",
+  // AT A COLD CACHE the button continues the work in a fresh session and names its source; the old
+  // session gets no turn either way (server.ts#handleOwnerSucceed)
+  const cold = cache?.state === "kalt";
+  const go = button(going ? "Wird geöffnet …" : cold ? "In neuer Session fortsetzen" : "Neue Session jetzt", "bbtn", "succeed",
+    `${cold ? "Der Cache ist kalt. " : ""}Eine frische Session im selben Slot. Die laufende bekommt keinen Turn mehr; ihr Gespräch bleibt lesbar.`,
     () => void succeed(v));
   go.disabled = going || !p?.ready;
-  rows.push(row("Nachfolge", [go], going ? "Die laufende Session endet, die neue startet mit ihrem Brief." : p?.says ?? "Fleet prüft, ob sie gerade ruht …", "wide"));
+  const source = cold && p?.ready && p.source ? `Quelle: ${p.source === "handover" ? "Fleet-Übergabe" : "rohes Transkript"}. ` : "";
+  rows.push(row("Nachfolge", [go], going ? "Die laufende Session endet, die neue startet mit ihrem Brief."
+    : p ? `${source}${p.says}` : "Fleet prüft, ob sie gerade ruht …", "wide"));
 
   const err = errs.get(v.slot);
   if (err) {

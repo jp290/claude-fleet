@@ -68,3 +68,51 @@ export function successorSentence(p: SucceedPreviewFacts): string {
   if (!read) notes.push("das Transkript kann Fleet nicht lesen");
   return `Die Nachfolgerin bekommt ${got}${notes.length ? `; ${notes.join(", ")}` : ""}.`;
 }
+
+// DER CACHE EINER SESSION (S2, Owner 13.10.: „[Zitat entfernt]“
+// ). Gelesen aus dem Transkript (server.ts#deliveryCacheReading): der letzte echte Modellaufruf,
+// die Stufe des Caches (1 h oder 5 min) und eine Kompaktierung danach. Warm bis zum Ende der Stufe,
+// dann kalt: Ein Turn schreibt den ganzen Kontext neu. Hat Claude nach dem letzten Aufruf kompaktiert,
+// ist der alte Cache verbraucht und der Kontext klein; dann heißt es „kompaktiert“, nicht „kalt“.
+export type CacheState = "warm" | "kalt" | "kompaktiert" | "unbekannt";
+export interface CacheView { state: CacheState; lastCallAt: number | null; ttlSec: number; coldAt: number | null }
+export function cacheView(lastCallAt: number | null, ttlSec: number, compactedAt: number | null, now: number): CacheView {
+  if (lastCallAt === null) return { state: "unbekannt", lastCallAt, ttlSec, coldAt: null };
+  const coldAt = lastCallAt + ttlSec * 1000;
+  if (compactedAt !== null && compactedAt >= lastCallAt) return { state: "kompaktiert", lastCallAt, ttlSec, coldAt };
+  return { state: now < coldAt ? "warm" : "kalt", lastCallAt, ttlSec, coldAt };
+}
+
+// WARMHALTEN: EIN SCHALTER, EINE ENTSCHEIDUNG. Bis S1 gab es zwei Wege (der Owner-Schalter über der
+// Schwelle mit Nachfolge, der Default gebundener MAINs ohne). Jetzt hält eine Session, deren Schalter
+// an ist, ihren Cache warm: `idleMin` Minuten nach dem letzten Modellaufruf ein kurzer Turn, solange
+// der Cache noch lebt. Gedeckelt ohne eigenen Turn (`warmMax`) und je Stunde (`hourCap`). Die Übergabe
+// an der Schwelle ist S3. `on` ist der Schalter, der gilt: der eigene der Session, sonst der Fleet-Wert
+// für ihre Art (server.ts#keepCacheFleetOn).
+export interface WarmFacts {
+  on: boolean; asleep: boolean; pinned: boolean;
+  lastCallAt: number | null; tier: "1h" | "5m" | "codex" | "unknown"; compactedAt: number | null;
+  idleMin: number; lifetimeMin: number;
+  warmTurns: number; warmMax: number; warmLastHour: number; hourCap: number;
+}
+export type WarmReason = "off" | "asleep" | "unpinned" | "no-usage" | "cache-5m" | "compacted" | "before-duration"
+  | "expired" | "warm-cap" | "hour-cap" | "due";
+export interface WarmDecision { act: "warm" | null; reason: WarmReason; lastUsageAt: number | null; dueAt: number | null }
+export function warmDecision(f: WarmFacts, now: number): WarmDecision {
+  const no = (reason: WarmReason, lastUsageAt: number | null = null, dueAt: number | null = null): WarmDecision =>
+    ({ act: null, reason, lastUsageAt, dueAt });
+  if (!f.on) return no("off");
+  if (f.asleep) return no("asleep");
+  if (!f.pinned) return no("unpinned");
+  const last = f.lastCallAt;
+  if (last === null) return no("no-usage");
+  // eine 5-min-Stufe ist vor jedem Warm-Turn verfallen, eine Kompaktierung hat den Cache verbraucht
+  if (f.tier === "5m") return no("cache-5m", last);
+  if (f.compactedAt !== null && f.compactedAt >= last) return no("compacted", last);
+  const dueAt = last + f.idleMin * 60_000;
+  if (now < dueAt) return no("before-duration", last, dueAt);
+  if (now >= last + f.lifetimeMin * 60_000) return no("expired", last, dueAt);
+  if (f.warmTurns >= f.warmMax) return no("warm-cap", last, dueAt);
+  if (f.warmLastHour >= f.hourCap) return no("hour-cap", last, dueAt);
+  return { act: "warm", reason: "due", lastUsageAt: last, dueAt };
+}

@@ -4996,33 +4996,28 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   await runMigrateTickRace();
 }
 
-// --- KEEP THE CACHE OR HAND OVER BEFORE IT IS GONE (server.ts#tickKeepCache; PATCH
-// /api/slots/:id/handover `keepCache` + `keepCacheIdleMin`). Five sessions, each planted at 50 % of
-// its window with its newest model call 51 min old — above the suite's 44 % and past a 50-minute
-// duration, before the measured 60-minute cache lifetime:
-//   W  switched on with an Auto armed (work foreseeable): first at 55 min nothing happens, then at
-//      50 min ONE warm turn reaches its pane and the occupant stays. Mutation: drop the
-//      `before-duration` gate (W is warmed at 55) or the work read (W is succeeded instead).
-//   S  switched on, nothing foreseeable: the OWNER DOOR hands it over, and the old occupant gets no
-//      turn — byte recorder and prompt log. Mutation: a sendText into the predecessor first. The
-//      setting belongs to the LINE on the slot (MAIN 4e5ab4bb, 08.10.): the successor carries it
-//      unchanged and is not handed over again at once, and the owner door's route carries it to the
-//      next one too. Mutation: drop server.ts#carryHandoverSetting. An owner PATCH that lands while
-//      the route's succession is parked at the start of its beforeKill is the setting carried
-//      (review 24095cba). Mutation: read the setting on entry to handleOwnerSucceed instead.
-//   C  no switch at all: neither a warm turn nor a succession. Mutation: drop liveKeepCache's filter.
-//   G  bound game-maker MAIN, T the ⚙ steward: the switch is refused by name (the card's exemptions).
-//   X  a warm turn held at sendText's before-paste latch while the owner switches the session off:
-//      nothing reaches the pane. Mutation: drop the setting re-check in beforePaste (review 69b3235c/1).
-//   W again: a save with UNCHANGED values neither resets the warm count nor opens the retry window.
-//      Mutation: clear keepCacheRuns on every PATCH (review 69b3235c/2) — a second warm turn follows.
-//   X, C again, parked by the keepCache latch right AFTER the decision (review 138e5be7): X decided
-//      warm, then its threshold is re-set — nothing is typed (mutation: take the setting's version
-//      after canDeliver instead of with the decision); C switched on, decided succeed, then switched
-//      off — no successor (mutation: drop handleOwnerSucceed's `stillWanted` question); C once more,
-//      parked after a succeed decision while an Auto is set on it — no successor (review c545cc32;
-//      mutation: stillWanted asks only the setting's version, not keepCacheWork).
-// Invalid values are refused with the setting left as it was. ---
+// --- KEEP THE CACHE WARM BEFORE IT IS GONE (server.ts#tickKeepCache, server/succession.ts#warmDecision;
+// PATCH /api/slots/:id/handover `keepCache` true | false | null + `keepCacheIdleMin`; Neuaufbau K9 S2,
+// owner 13.10.: „[Zitat entfernt]“). Sessions planted at 50 %
+// of their window, the newest model call 51 min old (S: 61 min, past the measured 60-minute lifetime):
+//   G  a bound Program-MAIN without a setting of its own: the fleet's value is on, ONE short warm turn,
+//      the hour cap (1 in this run) holds the next; off and back to the fleet's value by PATCH.
+//      Mutation: drop keepCacheFleetOn's binding read (C is warmed) or the hour-cap gate.
+//   C  bound to nothing, no setting: the fleet's value is off — no warm turn.
+//   W  bound to nothing, switched on: at 55 min nothing (before-duration), at 50 min ONE warm turn and the
+//      occupant stays; fleet.json keeps the switch; a save with UNCHANGED values neither resets the warm
+//      count nor the hour cap. Mutations: drop the before-duration gate; clear keepCacheRuns on every PATCH.
+//   X  a warm turn held at sendText's before-paste latch while the owner switches it off types nothing
+//      (mutation: drop the version check in beforePaste); switched on again, parked right AFTER the
+//      decision and its duration re-set — the turn decided under the old version types nothing
+//      (mutation: take the version after canDeliver instead of with the decision).
+//   S  cold (61 min): switched on it gets no warm turn (expired) and its facts say kalt; the owner door's
+//      preview names the source the button shows — the raw transcript, then the Fleet handover once the
+//      session wrote one; the press opens a successor, the old session gets NO turn, and the successor
+//      carries the line's setting, including an owner PATCH that lands while the press is parked at
+//      its beforeKill (mutation: read the setting on entry to handleOwnerSucceed).
+//   T  the ⚙ steward: the switch is refused by name.
+// Invalid values are refused with the setting left as it was; the retired `warmBound` field sets nothing. ---
 // --- tickMigrate: the previous tick's nudge completes DURING this tick's awaits (08.10.: two nudges
 // to one session 307 ms apart under a 900 s cooldown, in a slots+self-token run). Driven on the cut
 // source with every await in hand: tick 1 types B's nudge and holds the send; tick 2 scans B as due
@@ -5559,9 +5554,9 @@ async function runKeepCache(): Promise<void> {
     return { slot: r?.ok ? free : 0, openedAt, cwd };
   };
   const W = await openFree(mkRepo("keep-warm-repo"), "keep-warm");
-  const S = await openFree(mkRepo("keep-succeed-repo"), "keep-succeed");
+  const S = await openFree(mkRepo("keep-cold-repo"), "keep-cold");
   const C = await openFree(mkRepo("keep-control-repo"), "keep-control");
-  const G = await openFree(mkRepo("keep-gamemaker-repo"), "keep-gamemaker");
+  const G = await openFree(mkRepo("keep-bound-repo"), "keep-bound");
   const T = await openFree(mkRepo("keep-steward-repo"), "⚙ steward");
   const X = await openFree(mkRepo("keep-inflight-repo"), "keep-inflight");
   const all = [W, S, C, G, T, X];
@@ -5585,7 +5580,7 @@ async function runKeepCache(): Promise<void> {
   if (!all.every((x) => x.slot > 0 && x.openedAt > 0)) { await cleanup(); return; }
 
   // PLANTED, not driven (watch.ts's migrate fixture, for its reason): FLEET_CMD=true pins no session,
-  // and the fill and the newest model call are read off the pinned conversation. W, S and G carry
+  // and the fill and the newest model call are read off the pinned conversation. W, S, G and X carry
   // the hint OFF as their setting, so the armed migrate tick types nothing into them; C keeps none.
   await stopSrv();
   const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown }>;
@@ -5596,29 +5591,32 @@ async function runKeepCache(): Promise<void> {
     const row = state.slots?.[String(x.slot)];
     if (!row) continue;
     row.sessionId = sid(i);
-    if (x !== C) row.handover = { thresholdPct: null, nudge: false, keepCache: false, keepCacheIdleMin: 50, setAt: plantAt,
+    if (x !== C) row.handover = { thresholdPct: null, nudge: false, keepCache: null, keepCacheIdleMin: 50, setAt: plantAt,
       occupant: { slot: x.slot, openedAt: x.openedAt } };
   }
   state.programs = [...(state.programs ?? []), {
-    id: PROGRAM, title: "keepCache game-maker fixture", intent: "Refuse keepCache on a game-maker MAIN",
-    successCriterion: "PATCH answers 409 game-maker", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    id: PROGRAM, title: "keepCache bound fixture", intent: "A bound MAIN is kept warm by default",
+    successCriterion: "one warm turn", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
     status: "active", createdAt: plantAt - 1000, proposedBy: { kind: "owner" }, confirmedAt: plantAt - 900, activatedAt: plantAt - 800,
     profile: { v: 1, kind: "game-maker", confirmedAt: plantAt - 850 },
     main: { slot: G.slot, openedAt: G.openedAt, sessionId: sid(3), boundAt: plantAt - 700 } }];
   writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
   const lastCallAt = Date.now() - 51 * 60_000;
+  const coldCallAt = Date.now() - 61 * 60_000;
   for (const [i, x] of [W, S, C, G, X].entries()) {
+    const at = x === S ? coldCallAt : lastCallAt;
     const dir = `${process.env.HOME}/.claude/projects/${x.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/${sid(i)}.jsonl`,
-      `${JSON.stringify({ type: "user", cwd: x.cwd, timestamp: new Date(lastCallAt - 1000).toISOString(),
+      `${JSON.stringify({ type: "user", cwd: x.cwd, timestamp: new Date(at - 1000).toISOString(),
         message: { role: "user", content: "KEEP-OWNER-MARK was vor einer Stunde gefragt wurde" } })}\n`
-      + `${JSON.stringify({ type: "assistant", cwd: x.cwd, timestamp: new Date(lastCallAt).toISOString(),
+      + `${JSON.stringify({ type: "assistant", cwd: x.cwd, timestamp: new Date(at).toISOString(),
         message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "KEEP-SESSION-MARK" }],
           usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000, cache_read_input_tokens: 300_000, output_tokens: 10,
             cache_creation: { ephemeral_1h_input_tokens: 100_000, ephemeral_5m_input_tokens: 0 } } } })}\n`);
   }
-  // the before-paste latch parks exactly one send whose text names the marker written into it later
+  // the before-paste latch parks exactly one send whose text names the marker; it is armed for X only,
+  // when G and W are already held by the hour cap
   const latch = `${ROOT}/keep-inflight-latch`;
   const keepLatch = `${ROOT}/keep-decided-latch`;
   for (const f of [latch, keepLatch].flatMap((l) => [l, `${l}.reached`, `${l}.release`])) rmSync(f, { force: true });
@@ -5640,11 +5638,14 @@ async function runKeepCache(): Promise<void> {
     return reached;
   };
 
-  type KeepFacts = { act: string | null; reason: string; thresholdPct: number | null; lastUsageAt: number | null;
-    dueAt: number | null; work: string[]; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null };
-  type View = { setting: { thresholdPct: number | null; nudge: boolean; keepCache: boolean; keepCacheIdleMin: number } | null;
-    openedAt: number | null; keepCacheIdle?: { min: number; max: number; step: number; lifetimeMin: number };
-    succession: { fill: { pct: number } | null; keepCache: KeepFacts | null } | null };
+  type KeepFacts = { act: string | null; reason: string; lastUsageAt: number | null; dueAt: number | null; on: boolean;
+    from: string; fleetOn: boolean; exempt: string | null; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null;
+    hourCap: number; warmLastHour: number };
+  type CacheFacts = { state: string; lastCallAt: number | null; ttlSec: number; coldAt: number | null };
+  type Setting = { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
+    occupant?: { slot?: number; openedAt?: number } };
+  type View = { setting: Setting | null; openedAt: number | null; keepCacheIdle?: { min: number; max: number; step: number; lifetimeMin: number };
+    succession: { fill: { pct: number } | null; keepCache: KeepFacts | null; cache?: CacheFacts } | null };
   const hv = async (slot: number): Promise<View> => (await (await get(`/api/slots/${slot}/handover`)).json()) as View;
   const hp = async (slot: number, body: unknown): Promise<{ status: number; body: View & { refusal?: string } }> => {
     const r = await fetch(`${BASE}/api/slots/${slot}/handover`, { method: "PATCH",
@@ -5652,10 +5653,21 @@ async function runKeepCache(): Promise<void> {
     return { status: r.status, body: (await r.json().catch(() => ({}))) as View & { refusal?: string } };
   };
   const v0 = await Promise.all([W, S, C].map((x) => hv(x.slot)));
-  check("keepCache setup: W, S and C are measurably at 50 % with the switch off, and the route names the 5..55 duration under the 60-min lifetime",
-    v0.every((v) => v.succession?.fill?.pct === 50 && v.succession.keepCache === null)
+  check("keepCache setup: W, S and C are measurably at 50 %, bound to nothing and so off by the fleet's value, and the route names the 5..55 duration under the 60-min lifetime",
+    v0.every((v) => v.succession?.fill?.pct === 50 && v.succession.keepCache?.on === false && v.succession.keepCache.from === "fleet"
+      && v.succession.keepCache.fleetOn === false && v.succession.keepCache.reason === "off")
       && v0[0]!.keepCacheIdle?.min === 5 && v0[0]!.keepCacheIdle.max === 55 && v0[0]!.keepCacheIdle.lifetimeMin === 60,
     JSON.stringify(v0.map((v) => ({ fill: v.succession?.fill, keep: v.succession?.keepCache, idle: v.keepCacheIdle }))));
+  const wCache = v0[0]?.succession?.cache;
+  const sCache = v0[1]?.succession?.cache;
+  check("keepCache cache: W's last call 51 min ago on a 1 h cache is warm until that call + 60 min, S's at 61 min is cold",
+    wCache?.state === "warm" && wCache.ttlSec === 3600 && wCache.lastCallAt !== null && wCache.coldAt === wCache.lastCallAt + 3_600_000
+      && sCache?.state === "kalt" && sCache.coldAt !== null && sCache.coldAt < Date.now(),
+    JSON.stringify({ w: wCache, s: sCache }));
+  const row = (await (await get("/api/sessions")).json()) as { slots: { id: number; cache?: { lastCallAt?: number; ttlSec?: number } }[] };
+  const wRow = row.slots.find((y) => y.id === W.slot)?.cache;
+  check("keepCache cache: the sessions row carries the last call and the tier's lifetime — the field a client counts down from",
+    wRow?.lastCallAt === wCache?.lastCallAt && wRow?.ttlSec === 3600, JSON.stringify(wRow));
 
   // C has no setting, so the armed migrate tick nudges it once (unchanged behaviour, cooldown 15 min):
   // that paste is awaited first, or it could land in the shell line that starts C's recorder
@@ -5664,7 +5676,7 @@ async function runKeepCache(): Promise<void> {
     cNudged = (await plogRead()).some((e) => e.slot === C.slot && e.openedAt === C.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
     if (!cNudged) await Bun.sleep(100);
   }
-  // byte recorders take the three panes' stdin (the owner door's no-turn proof), then they rest
+  // byte recorders take the panes' stdin (the owner door's no-turn proof), then they rest
   const rec = (x: typeof W): string => `${ROOT}/keep-recorder-${x.slot}`;
   for (const x of [W, S, C, X]) {
     rmSync(rec(x), { force: true });
@@ -5683,12 +5695,12 @@ async function runKeepCache(): Promise<void> {
 
   // INVALID VALUES and EXEMPT SESSIONS: refused by name, and nothing is stored
   const refusals: [string, number, unknown, number, string][] = [
-    ["the switch takes only true/false", S.slot, { expectedOpenedAt: S.openedAt, keepCache: "ja" }, 400, "bad-keep-cache"],
+    ["the switch takes only true, false or null", S.slot, { expectedOpenedAt: S.openedAt, keepCache: "ja" }, 400, "bad-keep-cache"],
     ["60 min is the measured lifetime itself", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: 60 }, 400, "bad-keep-cache-idle"],
     ["0 min is below the floor", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: 0 }, 400, "bad-keep-cache-idle"],
     ["33 is not a 5-step", S.slot, { expectedOpenedAt: S.openedAt, keepCache: true, keepCacheIdleMin: 33 }, 400, "bad-keep-cache-idle"],
     ["a string is no duration", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: "50" }, 400, "bad-keep-cache-idle"],
-    ["a game-maker MAIN is exempt", G.slot, { expectedOpenedAt: G.openedAt, keepCache: true }, 409, "game-maker"],
+    ["the retired warmBound sets nothing", S.slot, { expectedOpenedAt: S.openedAt, warmBound: false }, 400, "nothing-to-set"],
     ["the ⚙ steward is exempt", T.slot, { expectedOpenedAt: T.openedAt, keepCache: true }, 409, "steward"],
   ];
   const seen: string[] = [];
@@ -5698,55 +5710,48 @@ async function runKeepCache(): Promise<void> {
     seen.push(`${what}=${r.status}:${r.body.refusal ?? "-"}`);
     if (r.status !== status || r.body.refusal !== refusal) allRefused = false;
   }
-  const [sAfter, gAfter, tAfter] = await Promise.all([hv(S.slot), hv(G.slot), hv(T.slot)]);
-  check("keepCache refusals: a non-boolean switch and a duration off 5..55 in 5-steps are 400, game-maker and steward 409 — no setting moved",
-    allRefused && sAfter.setting?.keepCache === false && sAfter.setting.keepCacheIdleMin === 50
-      && gAfter.setting?.keepCache === false && tAfter.setting === null,
-    `${seen.join(" ")} · S=${JSON.stringify(sAfter.setting)} G=${JSON.stringify(gAfter.setting)} T=${JSON.stringify(tAfter.setting)}`);
+  const [sAfter, tAfter] = await Promise.all([hv(S.slot), hv(T.slot)]);
+  check("keepCache refusals: a switch other than true/false/null and a duration off 5..55 in 5-steps are 400, warmBound alone sets nothing, the steward 409 — no setting moved",
+    allRefused && sAfter.setting?.keepCache === null && sAfter.setting.keepCacheIdleMin === 50 && tAfter.setting === null,
+    `${seen.join(" ")} · S=${JSON.stringify(sAfter.setting)} T=${JSON.stringify(tAfter.setting)}`);
 
-  // G, THE BOUND DEFAULT (owner 10.10.: „[Zitat entfernt]“): G is
-  // a bound Program-MAIN with no switch, its last call 51 min old on a 1h cache. The tick types the
-  // short bound text once, and the hour cap (1 in this run, FLEET_KEEP_WARM_PER_HOUR) holds the next;
-  // C, bound to nothing, gets none. Mutations: drop the hour-cap gate (the decision reads warm again),
-  // drop keepCacheBound's binding read (C is warmed), drop the warmBound read (G stays on after PATCH).
-  const BOUND = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
-  const boundRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
+  // G, THE FLEET'S VALUE FOR A BOUND MAIN (owner 10.10.: „[Zitat entfernt]“
+  // ): no switch of its own, its last call 51 min old on a 1 h cache. The tick types the
+  // short text once, and the hour cap (1 in this run, FLEET_KEEP_WARM_PER_HOUR) holds the next; C, bound
+  // to nothing, gets none.
+  const WARM = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
     (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Cache warmhalten"));
   let gWarm: PromptLogEntry[] = [];
   for (let i = 0; i < 100 && !gWarm.length; i++) {
-    gWarm = await boundRows(G);
+    gWarm = await warmRows(G);
     if (!gWarm.length) await Bun.sleep(100);
   }
-  type BoundFacts = { mode?: string; act?: string | null; reason?: string; hourCap?: number | null; warmLastHour?: number };
-  const gView = (await hv(G.slot)) as unknown as { succession?: { keepCache?: BoundFacts | null } | null };
+  const gView = await hv(G.slot);
+  const gk = gView.succession?.keepCache;
   const gRow = ((await sessions()).slots.find((y) => y.id === G.slot) as { keepCache?: { act?: string; n?: number; outcome?: string } } | undefined)?.keepCache;
-  check("keepCache bound: a bound Program-MAIN without any switch gets ONE short warm turn that names no state, the hour cap holds the next, its sessions row carries the last act and the count — and an unbound session gets none",
-    gWarm.length === 1 && gWarm[0]!.text === BOUND && gView.succession?.keepCache?.mode === "bound"
-      && gView.succession.keepCache.act === null && gView.succession.keepCache.reason === "hour-cap"
-      && gView.succession.keepCache.hourCap === 1 && gView.succession.keepCache.warmLastHour === 1
-      && gRow?.act === "warm" && gRow.n === 1 && !!gRow.outcome?.startsWith("sent") && (await boundRows(C)).length === 0,
-    JSON.stringify({ rows: gWarm.map((e) => e.text), facts: gView.succession?.keepCache, row: gRow, c: (await boundRows(C)).length }));
-  const gBad = await hp(G.slot, { expectedOpenedAt: G.openedAt, warmBound: "nein" });
-  const gOff = await hp(G.slot, { expectedOpenedAt: G.openedAt, warmBound: false });
-  check("keepCache bound: PATCH warmBound:false switches the default off for this occupant (a non-boolean is 400) — stored, and no decision is made any more",
-    gBad.status === 400 && gBad.body.refusal === "bad-warm-bound" && gOff.status === 200
-      && (gOff.body.setting as { warmBound?: boolean } | null)?.warmBound === false && gOff.body.succession?.keepCache === null,
-    JSON.stringify({ bad: gBad.status, refusal: gBad.body.refusal, setting: gOff.body.setting, keep: gOff.body.succession?.keepCache }));
+  check("keepCache G: a bound Program-MAIN without a switch of its own is on by the fleet's value — ONE short warm turn that names no state, the hour cap holds the next, its sessions row carries the last act and the count, and C bound to nothing gets none",
+    gWarm.length === 1 && gWarm[0]!.text === WARM && gk?.on === true && gk.from === "fleet" && gk.fleetOn === true
+      && gk.act === null && gk.reason === "hour-cap" && gk.hourCap === 1 && gk.warmLastHour === 1
+      && gRow?.act === "warm" && gRow.n === 1 && !!gRow.outcome?.startsWith("sent") && (await warmRows(C)).length === 0,
+    JSON.stringify({ rows: gWarm.map((e) => e.text), facts: gk, row: gRow, c: (await warmRows(C)).length }));
+  const gOff = await hp(G.slot, { expectedOpenedAt: G.openedAt, keepCache: false });
+  const gBack = await hp(G.slot, { expectedOpenedAt: G.openedAt, keepCache: null });
+  check("keepCache G: PATCH false switches this session off (stored, the decision says off), null returns it to the fleet's value",
+    gOff.status === 200 && gOff.body.setting?.keepCache === false && gOff.body.succession?.keepCache?.on === false
+      && gOff.body.succession.keepCache.from === "session" && gOff.body.succession.keepCache.reason === "off"
+      && gBack.status === 200 && gBack.body.setting?.keepCache === null && gBack.body.succession?.keepCache?.on === true
+      && gBack.body.succession.keepCache.from === "fleet",
+    JSON.stringify({ off: [gOff.status, gOff.body.setting, gOff.body.succession?.keepCache], back: [gBack.status, gBack.body.setting, gBack.body.succession?.keepCache] }));
 
-  const WARM = "[fleet] Prompt-Cache warmhalten";
-  const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
-    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith(WARM));
-
-  // W, THE DURATION: work is foreseeable (an Auto an hour out), but 51 min is before 55 — nothing
-  const auto = (await (await post(`/api/slots/${W.slot}/autos`, { text: "keep-warm-auto", inSec: 3600, idleSec: 0 })).json()) as
-    { auto?: { id: string } };
+  // W, THE DURATION: switched on at 55 min while its last call is 51 min old — nothing
   const w55 = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCache: true, keepCacheIdleMin: 55 });
   const k55 = w55.body.succession?.keepCache;
   await Bun.sleep(1500);
   check("keepCache W: switched on at 55 min while the last call is 51 min old — the answer says before-duration with its due time, and no turn is typed",
     w55.status === 200 && w55.body.setting?.keepCache === true && w55.body.setting.keepCacheIdleMin === 55
-      && k55?.act === null && k55.reason === "before-duration" && k55.dueAt === (k55.lastUsageAt ?? 0) + 55 * 60_000
-      && k55.work.includes(`auto:${auto.auto?.id}`) && (await warmRows(W)).length === 0,
+      && k55?.on === true && k55.from === "session" && k55.act === null && k55.reason === "before-duration"
+      && k55.dueAt === (k55.lastUsageAt ?? 0) + 55 * 60_000 && (await warmRows(W)).length === 0,
     JSON.stringify({ status: w55.status, setting: w55.body.setting, keep: k55 }));
 
   // W, WARM: the same session at 50 min — one short turn, the occupant stays
@@ -5756,78 +5761,111 @@ async function runKeepCache(): Promise<void> {
     await Bun.sleep(100);
     warmed = await warmRows(W);
   }
-  await Bun.sleep(1500); // six more ticks: the retry window holds a second turn back
+  await Bun.sleep(1500); // six more ticks: the retry window and the hour cap hold a second turn back
   const wView = await hv(W.slot);
   const wRec = existsSync(rec(W)) ? readFileSync(rec(W), "utf8") : "";
-  check("keepCache W: at 50 min with work foreseeable the decision is warm, ONE turn reaches the pane, and the occupant stays",
-    w50.status === 200 && w50.body.succession?.keepCache?.act === "warm" && w50.body.succession.keepCache.reason === "work-foreseeable"
-      && (await warmRows(W)).length === 1 && wRec.includes("Prompt-Cache warmhalten") && wRec.includes("Antworte nur mit")
+  check("keepCache W: at 50 min the decision is warm, ONE turn reaches the pane, and the occupant stays",
+    w50.status === 200 && w50.body.succession?.keepCache?.act === "warm" && w50.body.succession.keepCache.reason === "due"
+      && (await warmRows(W)).length === 1 && wRec.includes("Cache warmhalten") && wRec.includes("Antworte nur mit")
       && wView.openedAt === W.openedAt && wView.succession?.keepCache?.warmTurns === 1
       && wView.succession.keepCache.last?.act === "warm" && wView.succession.keepCache.last.outcome.startsWith("sent"),
     JSON.stringify({ decision: w50.body.succession?.keepCache, rows: warmed.length, recorder: wRec.slice(0, 200), after: wView.succession?.keepCache }));
-  let persisted: unknown = null;
+  let persisted: Setting | null = null;
   for (let i = 0; i < 40; i++) {
-    try { persisted = (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { handover?: unknown }> })
-      .slots?.[String(W.slot)]?.handover ?? null; } catch { /* mid-write */ }
-    if ((persisted as { keepCacheIdleMin?: number } | null)?.keepCacheIdleMin === 50) break;
+    try { persisted = ((JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { handover?: Setting }> })
+      .slots?.[String(W.slot)]?.handover ?? null); } catch { /* mid-write */ }
+    if (persisted?.keepCacheIdleMin === 50) break;
     await Bun.sleep(100);
   }
-  check("keepCache: fleet.json keeps the switch and the duration with the occupant",
-    (persisted as { keepCache?: boolean } | null)?.keepCache === true
-      && (persisted as { keepCacheIdleMin?: number }).keepCacheIdleMin === 50
-      && (persisted as { occupant?: { openedAt?: number } }).occupant?.openedAt === W.openedAt, JSON.stringify(persisted));
+  check("keepCache: fleet.json keeps the switch and the duration with the occupant, and no retired warmBound",
+    persisted?.keepCache === true && persisted.keepCacheIdleMin === 50 && persisted.occupant?.openedAt === W.openedAt
+      && !("warmBound" in (persisted as object)), JSON.stringify(persisted));
 
-  // W, AN UNCHANGED SAVE: the same switch and duration again — the warm count and the retry window
-  // stand, so no second turn follows within the window
+  // W, AN UNCHANGED SAVE: the same switch and duration again — the warm count and the hour cap stand,
+  // so no second turn follows
   const wSame = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCache: true, keepCacheIdleMin: 50 });
   await Bun.sleep(1500);
   const wSameView = await hv(W.slot);
-  check("keepCache W: a save with unchanged values keeps the warm count and the retry window — still exactly one warm turn",
+  check("keepCache W: a save with unchanged values keeps the warm count and the hour cap — still exactly one warm turn",
     wSame.status === 200 && (await warmRows(W)).length === 1 && wSameView.succession?.keepCache?.warmTurns === 1
       && wSameView.succession.keepCache.last?.act === "warm",
     JSON.stringify({ status: wSame.status, rows: (await warmRows(W)).length, keep: wSameView.succession?.keepCache }));
 
   // X, SWITCHED OFF IN FLIGHT: its warm turn is parked before the paste, the owner switches it off,
   // the latch opens — nothing is typed
-  const xAuto = (await (await post(`/api/slots/${X.slot}/autos`, { text: "keep-inflight-auto", inSec: 3600, idleSec: 0 })).json()) as
-    { auto?: { id: string } };
-  writeFileSync(latch, `auto:${xAuto.auto?.id ?? "none"}`);
+  writeFileSync(latch, "Cache warmhalten");
   const xOn = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true, keepCacheIdleMin: 50 });
   let parked = false;
   for (let i = 0; i < 100 && !parked; i++) {
     parked = existsSync(`${latch}.reached`);
     if (!parked) await Bun.sleep(100);
   }
+  const parkedAt = parked ? (JSON.parse(readFileSync(`${latch}.reached`, "utf8")) as { slot?: number }).slot : null;
   const xOff = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: false });
   writeFileSync(`${latch}.release`, "");
   await Bun.sleep(1500);
   const xRec = existsSync(rec(X)) ? readFileSync(rec(X), "utf8") : null;
   check("keepCache X: a warm turn parked before the paste while the owner switches the session off types nothing",
-    xOn.status === 200 && xOn.body.succession?.keepCache?.act === "warm" && parked && xOff.status === 200
+    xOn.status === 200 && xOn.body.succession?.keepCache?.act === "warm" && parked && parkedAt === X.slot && xOff.status === 200
       && xOff.body.setting?.keepCache === false && xRec === "",
-    JSON.stringify({ on: xOn.status, decision: xOn.body.succession?.keepCache?.act, parked, off: xOff.status,
+    JSON.stringify({ on: xOn.status, decision: xOn.body.succession?.keepCache?.act, parked, parkedAt, off: xOff.status,
       recorder: xRec?.slice(0, 200) }));
 
   // X, A NEW VERSION BETWEEN DECISION AND ACT: switched on again (a changed switch is a fresh warm
-  // budget), decided warm under 44 %, parked, re-set to 45 % — the turn decided under 44 is not typed
+  // budget), decided warm at 50 min, parked, re-set to 45 min — the turn decided under 50 is not typed
   const xGot: { on?: Awaited<ReturnType<typeof hp>>; re?: Awaited<ReturnType<typeof hp>> } = {};
   const xParked = await parkAfterDecision(X.slot,
     async () => { xGot.on = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true }); },
-    async () => { xGot.re = await hp(X.slot, { expectedOpenedAt: X.openedAt, thresholdPct: 45 }); });
+    async () => { xGot.re = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCacheIdleMin: 45 }); });
   const { on: xOn2, re: xRe } = xGot;
   const xRec2 = existsSync(rec(X)) ? readFileSync(rec(X), "utf8") : null;
-  check("keepCache X: a setting re-set between the decision and the act — the warm turn decided under the old version types nothing",
+  check("keepCache X: a duration re-set between the decision and the act — the warm turn decided under the old version types nothing",
     xOn2?.status === 200 && xOn2.body.succession?.keepCache?.act === "warm" && xParked && xRe?.status === 200
-      && xRe.body.setting?.thresholdPct === 45 && xRec2 === "",
+      && xRe.body.setting?.keepCacheIdleMin === 45 && xRec2 === "",
     JSON.stringify({ on: xOn2?.status, decision: xOn2?.body.succession?.keepCache?.act, parked: xParked,
       reset: xRe?.status, recorder: xRec2?.slice(0, 200) }));
-  await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: false });
-  if (xAuto.auto) await post(`/api/autos/${xAuto.auto.id}/delete`, {});
+  await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: null, keepCacheIdleMin: 50 });
 
-  // S, SUCCEED: nothing foreseeable — the owner door, and the old session gets no turn
+  // C, NO SWITCH: the same fill and the same age, seconds of ticks later — untouched
+  const cView = await hv(C.slot);
+  const cRec = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : "";
+  check("keepCache C: a session bound to nothing without a switch of its own gets no warm turn at the same fill and age",
+    cView.openedAt === C.openedAt && cView.setting === null && cView.succession?.keepCache?.on === false
+      && (await warmRows(C)).length === 0 && !cRec.includes("warmhalten"),
+    JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
+
+  // S, COLD: switched on, a cache past its lifetime gets no warm turn — the next turn pays it either way
+  const sOn = await hp(S.slot, { expectedOpenedAt: S.openedAt, keepCache: true });
+  await Bun.sleep(1500);
+  check("keepCache S: a cold cache (last call 61 min ago) switched on gets no warm turn — the decision says expired, the facts say kalt",
+    sOn.status === 200 && sOn.body.succession?.keepCache?.act === null && sOn.body.succession.keepCache.reason === "expired"
+      && sOn.body.succession.cache?.state === "kalt" && (await warmRows(S)).length === 0,
+    JSON.stringify({ status: sOn.status, keep: sOn.body.succession?.keepCache, cache: sOn.body.succession?.cache }));
+
+  // S, THE BUTTON'S SOURCE (owner 13.10.: ein „[Zitat entfernt]“): the owner
+  // door's preview names what a press continues from — the raw transcript while the session wrote no
+  // handover, the Fleet handover once it did
+  type Preview = { ready?: boolean; source?: string | null; says?: string };
+  const preview = async (): Promise<Preview> => (await (await get(`/api/slots/${S.slot}/succeed`)).json()) as Preview;
+  let p0: Preview = {};
+  for (let i = 0; i < 100 && p0.ready !== true; i++) {
+    p0 = await preview();
+    if (p0.ready !== true) await Bun.sleep(100);
+  }
+  const sTok = (JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { selfToken?: string }> })
+    .slots?.[String(S.slot)]?.selfToken ?? "";
+  const wrote = await fetch(`${BASE}/api/self/handover`, { method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": sTok }, body: JSON.stringify({ intent: "KEEP-STAND fertig: nichts · offen: alles" }) });
+  const p1 = await preview();
+  check("keepCache S: the preview names the source — the raw transcript without a handover, the Fleet handover after the session wrote one",
+    p0.ready === true && p0.source === "transcript" && wrote.ok && p1.ready === true && p1.source === "handover"
+      && /stehende Übergabe/.test(p1.says ?? ""),
+    JSON.stringify({ p0, wrote: wrote.status, p1 }));
+
+  // S, THE PRESS: the owner door, the old session gets no turn, and the successor carries the line's setting
   const promptsOfS = async (): Promise<number> => (await plogRead()).filter((e) => e.slot === S.slot && e.openedAt === S.openedAt).length;
   const sBefore = await promptsOfS();
-  const sOn = await hp(S.slot, { expectedOpenedAt: S.openedAt, keepCache: true });
+  const pressed = await post(`/api/slots/${S.slot}/succeed`, { expectedOpenedAt: S.openedAt });
   let heir: Row | undefined;
   for (let i = 0; i < 300; i++) {
     heir = (await sessions()).slots.find((x) => x.id === S.slot);
@@ -5841,48 +5879,26 @@ async function runKeepCache(): Promise<void> {
     if (!brief) await Bun.sleep(100);
   }
   const sRec = existsSync(rec(S)) ? readFileSync(rec(S), "utf8") : null;
-  type Carried = View["setting"] & { occupant?: { slot?: number; openedAt?: number } };
   const carriedTo = async (openedAt: number | undefined): Promise<View> => {
     let v = await hv(S.slot);
-    for (let i = 0; i < 100 && (v.setting as Carried | null)?.occupant?.openedAt !== openedAt; i++) {
+    for (let i = 0; i < 100 && v.setting?.occupant?.openedAt !== openedAt; i++) {
       await Bun.sleep(100);
       v = await hv(S.slot);
     }
     return v;
   };
   const heirView = await carriedTo(heir?.openedAt);
-  check("keepCache S: at 50 min with nothing foreseeable the decision is succeed, and the owner door opens a successor on the same slot and cwd",
-    sOn.status === 200 && sOn.body.succession?.keepCache?.act === "succeed" && sOn.body.succession.keepCache.reason === "no-work-foreseeable"
-      && heir?.cwd === S.cwd && (heir.openedAt ?? 0) > S.openedAt && brief.includes("VOM OWNER AUSGELÖST") && brief.includes("KEEP-SESSION-MARK"),
-    JSON.stringify({ decision: sOn.body.succession?.keepCache, heir: { cwd: heir?.cwd, openedAt: heir?.openedAt }, brief: brief.slice(0, 300) }));
+  const h1 = heirView.setting;
+  check("keepCache S: the press opens a successor on the same slot and cwd that starts from the Fleet handover and carries the line's setting",
+    pressed.ok && heir?.cwd === S.cwd && (heir.openedAt ?? 0) > S.openedAt && brief.includes("VOM OWNER AUSGELÖST")
+      && brief.includes("Stehende Übergabe: `intent` im Linien-Record") && h1?.keepCache === true && h1.keepCacheIdleMin === 50 && h1.nudge === false
+      && h1.occupant?.slot === S.slot && h1.occupant.openedAt === heir?.openedAt,
+    JSON.stringify({ pressed: pressed.status, heir: { cwd: heir?.cwd, openedAt: heir?.openedAt }, setting: h1, brief: brief.slice(0, 300) }));
   check("keepCache S: the predecessor got NO turn — its byte recorder stayed empty and the prompt log holds no new row for its occupation",
     sRec === "" && (await promptsOfS()) === sBefore,
     `recorder=${JSON.stringify(sRec?.slice(0, 200))} prompts ${sBefore} → ${await promptsOfS()}`);
-  const lineSetting = (v: View, openedAt: number | undefined): boolean => {
-    const h = v.setting as Carried | null;
-    return h?.keepCache === true && h.keepCacheIdleMin === 50 && h.nudge === false && h.thresholdPct === null
-      && h.occupant?.slot === S.slot && h.occupant.openedAt === openedAt;
-  };
-  await Bun.sleep(3000); // a successor handed over again at once would have a third occupant by now
-  const heirStill = (await sessions()).slots.find((x) => x.id === S.slot);
-  check("keepCache S: the successor carries the line's setting unchanged — and is not handed over again at once",
-    lineSetting(heirView, heir?.openedAt) && heirView.succession?.keepCache?.act === null
-      && heirView.succession.keepCache.warmTurns === 0 && heirStill?.openedAt === heir?.openedAt,
-    JSON.stringify({ setting: heirView.setting, keep: heirView.succession?.keepCache, openedAt: heirStill?.openedAt, heir: heir?.openedAt }));
-  // …and the owner door's own route carries it to the next successor as well
-  let ready = false;
-  for (let i = 0; i < 100 && !ready; i++) {
-    ready = ((await (await get(`/api/slots/${S.slot}/succeed`)).json()) as { ready?: boolean }).ready === true;
-    if (!ready) await Bun.sleep(100);
-  }
-  const pressed = ready ? await post(`/api/slots/${S.slot}/succeed`, {}) : null;
-  const heir2 = (await sessions()).slots.find((x) => x.id === S.slot);
-  const heir2View = await carriedTo(heir2?.openedAt);
-  check("keepCache S: the owner door's route POST /api/slots/:id/succeed carries the setting to the next successor too",
-    ready && !!pressed?.ok && (heir2?.openedAt ?? 0) > (heir?.openedAt ?? 0) && lineSetting(heir2View, heir2?.openedAt),
-    JSON.stringify({ ready, pressed: pressed?.status, heir2: heir2?.openedAt, setting: heir2View.setting }));
-  // THE LAST SETTING BEFORE THE KILL is carried: the route's succession of heir2 is parked at the start
-  // of its beforeKill, the owner sets 45 min meanwhile, and heir3 carries 45 — not the 50 it began with
+  // THE LAST SETTING BEFORE THE KILL is carried: the next press is parked at the start of its
+  // beforeKill, the owner sets 45 min meanwhile, and the next successor carries 45 — not 50
   let ready2 = false;
   for (let i = 0; i < 100 && !ready2; i++) {
     ready2 = ((await (await get(`/api/slots/${S.slot}/succeed`)).json()) as { ready?: boolean }).ready === true;
@@ -5896,61 +5912,17 @@ async function runKeepCache(): Promise<void> {
     atKill = existsSync(`${keepLatch}.reached`);
     if (!atKill) await Bun.sleep(100);
   }
-  const late = await hp(S.slot, { expectedOpenedAt: heir2?.openedAt, keepCacheIdleMin: 45 });
+  const late = await hp(S.slot, { expectedOpenedAt: heir?.openedAt, keepCacheIdleMin: 45 });
   writeFileSync(`${keepLatch}.release`, "");
-  const pressed3 = pressing ? await pressing : null;
+  const pressed2 = pressing ? await pressing : null;
   for (const f of [keepLatch, `${keepLatch}.reached`, `${keepLatch}.release`]) rmSync(f, { force: true });
-  const heir3 = (await sessions()).slots.find((x) => x.id === S.slot);
-  const heir3View = await carriedTo(heir3?.openedAt);
-  const h3 = heir3View.setting as Carried | null;
+  const heir2 = (await sessions()).slots.find((x) => x.id === S.slot);
+  const h2 = (await carriedTo(heir2?.openedAt)).setting;
   check("keepCache S: an owner PATCH between the brief build and the kill is the setting carried — the successor holds 45, not 50",
-    ready2 && atKill && late.status === 200 && !!pressed3?.ok && (heir3?.openedAt ?? 0) > (heir2?.openedAt ?? 0)
-      && h3?.keepCacheIdleMin === 45 && h3.keepCache === true && h3.occupant?.openedAt === heir3?.openedAt,
-    JSON.stringify({ ready2, atKill, late: late.status, pressed: pressed3?.status, heir3: heir3?.openedAt, setting: heir3View.setting }));
+    ready2 && atKill && late.status === 200 && !!pressed2?.ok && (heir2?.openedAt ?? 0) > (heir?.openedAt ?? 0)
+      && h2?.keepCacheIdleMin === 45 && h2.keepCache === true && h2.occupant?.openedAt === heir2?.openedAt,
+    JSON.stringify({ ready2, atKill, late: late.status, pressed: pressed2?.status, heir2: heir2?.openedAt, setting: h2 }));
 
-  // C, NO SWITCH: the same fill and the same age, seconds of ticks later — untouched
-  const cView = await hv(C.slot);
-  const cRec = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : "";
-  check("keepCache C: a session without the switch at the same fill and age gets neither a warm turn nor a successor",
-    cView.openedAt === C.openedAt && cView.setting === null && cView.succession?.keepCache === null
-      && (await warmRows(C)).length === 0 && !cRec.includes("warmhalten"),
-    JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
-
-  // C, SWITCHED OFF BETWEEN DECISION AND SUCCESSION: switched on (nothing foreseeable → succeed),
-  // parked after the decision, switched off — the owner door's last question refuses, no successor
-  const cGot: { on?: Awaited<ReturnType<typeof hp>>; off?: Awaited<ReturnType<typeof hp>> } = {};
-  const cParked = await parkAfterDecision(C.slot,
-    async () => { cGot.on = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: true }); },
-    async () => { cGot.off = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: false }); });
-  const { on: cOn, off: cOff } = cGot;
-  await Bun.sleep(3000); // a succession that went through would have opened its successor by now
-  const cAfter = (await sessions()).slots.find((x) => x.id === C.slot);
-  const cRec2 = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : null;
-  check("keepCache C: switched off between the succeed decision and the kill — nothing is handed over and the old session gets no turn",
-    cOn?.status === 200 && cOn.body.succession?.keepCache?.act === "succeed" && cParked && cOff?.status === 200
-      && cAfter?.openedAt === C.openedAt && cRec2 !== null && !cRec2.includes("warmhalten") && !cRec2.includes("[fleet succession]"),
-    JSON.stringify({ on: cOn?.status, decision: cOn?.body.succession?.keepCache?.act, parked: cParked, off: cOff?.status,
-      openedAt: cAfter?.openedAt, expected: C.openedAt }));
-
-  // C, WORK FORESEEABLE BETWEEN DECISION AND SUCCESSION: switched on again (nothing foreseeable →
-  // succeed), parked, an Auto is set on it — the owner door's last question refuses, no successor
-  const cWork: { on?: Awaited<ReturnType<typeof hp>>; auto?: string } = {};
-  const cParked2 = await parkAfterDecision(C.slot,
-    async () => { cWork.on = await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: true }); },
-    async () => { cWork.auto = ((await (await post(`/api/slots/${C.slot}/autos`, { text: "keep-late-work", inSec: 3600, idleSec: 0 })).json()) as
-      { auto?: { id: string } }).auto?.id; });
-  await Bun.sleep(3000);
-  const cAfter2 = (await sessions()).slots.find((x) => x.id === C.slot);
-  const cView2 = await hv(C.slot);
-  check("keepCache C: work that became foreseeable between the succeed decision and the kill keeps the session — no successor",
-    cWork.on?.status === 200 && cWork.on.body.succession?.keepCache?.act === "succeed" && cParked2 && !!cWork.auto
-      && cAfter2?.openedAt === C.openedAt && (cView2.succession?.keepCache?.work ?? []).includes(`auto:${cWork.auto}`),
-    JSON.stringify({ on: cWork.on?.status, decision: cWork.on?.body.succession?.keepCache?.act, parked: cParked2, auto: cWork.auto,
-      openedAt: cAfter2?.openedAt, expected: C.openedAt, keep: cView2.succession?.keepCache }));
-  await hp(C.slot, { expectedOpenedAt: C.openedAt, keepCache: false });
-  if (cWork.auto) await post(`/api/autos/${cWork.auto}/delete`, {});
-
-  if (auto.auto) await post(`/api/autos/${auto.auto.id}/delete`, {});
   for (const x of [W, S, C, X]) rmSync(rec(x), { force: true });
   for (const f of [latch, keepLatch].flatMap((l) => [l, `${l}.reached`, `${l}.release`])) rmSync(f, { force: true });
   await cleanup();
@@ -12242,15 +12214,25 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   const NOTE = "Bilder bei 390 nochmal mit der Insel zusammen ansehen.";
   const noteOf = (st: State) => st === "land" || st === "mehr" || st === "alarm" ? NOTE : null;
   const UNDO_BRANCH = "fleet/261005-insel-am-telefon-1b2c";
-  const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean } };
+  const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean },
+    // K9 S2: slot 3's own warm switch (null = the fleet's value, on for this bound main) and whether its cache is cold
+    slot3: null as boolean | null, cold: false };
+  const COMPACTED_AT = new Date(2026, 9, 13, 12, 40).getTime();
   const SUCC_READY = "Die Nachfolgerin bekommt die stehende Übergabe von vor 12 min und 9 Einträge Transkript-Rest.";
   const SUCC_LANE = "Geht gerade nicht: eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht.";
   const succession = (slot: number) => slot === 3
     ? { rail: "standard-main", fill: { usedTokens: 520_000, windowTokens: 1_000_000, pct: 52 }, thresholdPct: null, thresholdOff: "fleet",
-      nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true }
+      nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true,
+      keepCache: { on: handover.slot3 ?? true, from: handover.slot3 === null ? "fleet" : "session", fleetOn: true, exempt: null,
+        idleMin: 50, lifetimeMin: 60, hourCap: 2, warmTurns: 1 },
+      cache: handover.cold ? { state: "kalt", lastCallAt: fx.now - 75 * 60_000, ttlSec: 3600, coldAt: fx.now - 15 * 60_000 }
+        : { state: "warm", lastCallAt: fx.now - 20 * 60_000, ttlSec: 3600, coldAt: fx.now + 40 * 60_000 },
+      compaction: { at: COMPACTED_AT, trigger: "auto", preTokens: 487_000, postTokens: 9_000, idle: true } }
     : { rail: "lane", fill: { usedTokens: 370_000, windowTokens: 1_000_000, pct: 37 }, thresholdPct: handover.slot9?.thresholdPct ?? 40, thresholdOff: null,
       nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 3, taken: 2, cap: 5, defaultPct: 40,
-      pctFrom: handover.slot9?.thresholdPct != null ? "session" : "fleet", nudgeOn: handover.slot9?.nudge ?? true };
+      pctFrom: handover.slot9?.thresholdPct != null ? "session" : "fleet", nudgeOn: handover.slot9?.nudge ?? true,
+      keepCache: { on: false, from: "fleet", fleetOn: false, exempt: "lane", idleMin: 50, lifetimeMin: 60, hourCap: 2, warmTurns: 0 },
+      cache: { state: "warm", lastCallAt: fx.now - 3 * 60_000, ttlSec: 3600, coldAt: fx.now + 57 * 60_000 }, compaction: null };
   const setupOf = () => ({ profile: "standard", repo: REPO, head: MAIN,
     packs: [{ id: "grammatik", useWhen: "Oberflächen-Arbeit", sources: [{ path: "docs/design/grammatik.md", anchor: "# Grammatik" }], privateSourceId: null },
       { id: "verify-e2e", useWhen: "Beweise", sources: [{ path: "AGENTS.md", anchor: "## Verify" }], privateSourceId: null }],
@@ -12311,6 +12293,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           handover.slot9 = { thresholdPct: "thresholdPct" in b ? b.thresholdPct ?? null : cur.thresholdPct, nudge: "nudge" in b ? b.nudge ?? true : cur.nudge };
           return void json(requestId, { slot: 9, openedAt: openedAt(9), setting: handover.slot9, step: 5, min: 5, max: 95, succession: succession(9) });
         }
+        if (p === "/api/slots/3/handover") {
+          const b = body as { keepCache?: boolean | null };
+          if ("keepCache" in b) handover.slot3 = b.keepCache ?? null;
+          return void json(requestId, { slot: 3, openedAt: openedAt(3), setting: null, step: 5, min: 5, max: 95, succession: succession(3) });
+        }
         if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") {
           const answer = () => json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
           return void (fx.holdOpen ? fx.holdOpen.then(answer) : answer());
@@ -12363,7 +12350,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       const sp = /^\/api\/slots\/(\d+)\/succeed$/.exec(p);
       if (sp) return void json(requestId, sp[1] === "9"
         ? { slot: 9, ready: false, refusal: { reason: "lane", error: "a lane hands over by its own report" }, says: SUCC_LANE }
-        : { slot: Number(sp[1]), ready: true, refusal: null, says: SUCC_READY });
+        : { slot: Number(sp[1]), ready: true, refusal: null, says: SUCC_READY, source: "handover" });
       const m = /^\/api\/slots\/(\d+)\/(brief|worktrees|merge|transcript)$/.exec(p);
       if (m) {
         const slot = Number(m[1]);
@@ -12545,6 +12532,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         await navigate("http://fleet.fixture/blank");
         const focus = focusOf(st);
         handover.slot9 = null;
+        handover.slot3 = null;
+        handover.cold = false;
         await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}');
           ${st === "mehr" ? "localStorage.setItem('fleet.board.folds', JSON.stringify(['setup', 'rechte']));" : ""} })()`);
         await navigate("http://fleet.fixture/");
@@ -13445,6 +13434,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               pop: pop ? { kind: pop.dataset.pop, items: [...pop.querySelectorAll('.bmenuitem')].map((b) => ({ t: txt(b.querySelector('.t')), danger: b.classList.contains('danger'), color: getComputedStyle(b).color })),
                 seps: pop.querySelectorAll('.sep').length, rows: [...pop.querySelectorAll('.pr')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .pv')), h: txt(r.querySelector(':scope > .h')) })),
                 pcts: [...pop.querySelectorAll('.pcts button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
+                warm: [...pop.querySelectorAll('button[data-uk^="warm-"]')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
                 go: (() => { const b = pop.querySelector('button[data-uk="succeed"]'); return b ? { t: b.textContent.trim(), d: b.disabled } : null; })(), box: box(pop) } : null,
               focusPop: document.activeElement?.dataset?.pop ?? null,
               note: (() => { const n = body.querySelector('.bnotesec'); if (!n) return null; const ta = n.querySelector('textarea'), save = n.querySelector('.bnotesave'), foot = n.querySelector('.bnotefoot');
@@ -13474,7 +13464,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             sess: { name: string | null; glyphs: { label: string | null; title: string; text: string }[]; meta: string | null; kv: { k: string | null; v: string | null; title: string; sw: string | null }[] } | null;
             work: { text: string | null; state: string | null; files: number; landnote: string | null; buttons: { text: string; label: string | null; primary: boolean; disabled: boolean }[] } | null;
             pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[];
-              pcts: { t: string; on: boolean; dflt: boolean; d: boolean }[]; go: { t: string; d: boolean } | null;
+              pcts: { t: string; on: boolean; dflt: boolean; d: boolean }[]; warm: { t: string; on: boolean; dflt: boolean; d: boolean }[];
+              go: { t: string; d: boolean } | null;
               box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
             note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
             hist: { rows: number; files: number; folds: number; more: string | null } | null;
@@ -13706,16 +13697,26 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             n = await info();
             facts.ueb = { pop: n.pop, openBriefs, openMs };
             const rows = n.pop?.rows ?? [], pcts = n.pop?.pcts ?? [];
-            claims[`${it}the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Nachfolge, nothing else`] = n.pop?.kind === "ueb"
+            claims[`${it}the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Cache · Warmhalten · Nachfolge, nothing else`] = n.pop?.kind === "ueb"
               && openBriefs === 0 && openMs < 2500
-              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Übergabe bei", "Hinweis", "Nachfolge"])
+              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nachfolge"])
               && JSON.stringify(pcts.map((x) => x.t)) === JSON.stringify(["25", "30", "35", "40", "45", "50", "55", "60"])
               && (isLane ? pcts.find((x) => x.on)?.t === "40" && pcts.find((x) => x.dflt)?.t === "40" && pcts.every((x) => !x.d)
                   && /die Fleet steht auf 40 %/.test(rows[0]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[1]?.h ?? "")
-                  && n.pop?.go?.d === true && rows[2]?.h === SUCC_LANE
+                  && n.pop?.go?.d === true && rows[4]?.h === SUCC_LANE
                 : pcts.every((x) => x.d && !x.on) && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[0]?.h ?? "")
-                  && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows[2]?.h === SUCC_READY)
+                  && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows[4]?.h === SUCC_READY)
               && sheetOk(n.pop?.box);
+            // K9 S2 (owner 13.10.: „[Zitat entfernt]“): the cache
+            // warm with its minutes and Claude's compaction, the warm switch with the fleet's value marked —
+            // a lane says why nothing is kept warm there
+            const warm = n.pop?.warm ?? [];
+            claims[`${it}the cache reads warm with its minutes left${isLane ? "" : " and Claude's compaction"}, the warm switch ${isLane ? "is off and says why a lane is not kept warm" : "is on by the fleet's value for a bound main"}`] = isLane
+              ? rows[2]?.v === "warm · noch 57 min" && rows[2]?.h === "" && warm.length === 2 && warm.every((x) => x.d && !x.on)
+                && rows[3]?.h === "Aus: eine Lane gibt mit ihrem Bericht weiter."
+              : rows[2]?.v === "warm · noch 40 min" && rows[2]?.h === "Von Claude kompaktiert 12:40, 487k → 9k."
+                && JSON.stringify(warm) === JSON.stringify([{ t: "An", on: true, dflt: true, d: false }, { t: "Aus", on: false, dflt: false, d: false }])
+                && rows[3]?.h === "Nach 50 min Ruhe ein kurzer Turn, höchstens 2-mal pro Stunde. Bisher 1.";
             await shot(`info-${st}-${width}`);
             if (st === "uebergabe") {
               const line = `document.querySelector('#boardbody .bhead .bkv.ctx > .v')?.innerText ?? ''`;
@@ -13752,6 +13753,45 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             n = await info();
             claims[`${it}Escape closes the popover and hands the focus back to its switch`] = !n.pop && n.focusPop === "ueb";
             if (st === "main") {
+              // A COLD CACHE (owner 13.10.: ein „[Zitat entfernt]“): the cache reads
+              // cold since its minutes, and the button continues in a new session naming its source
+              handover.cold = true;
+              fx.writes = [];
+              await afterTick();
+              await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+              await wait(`/^Quelle: /.test(${lastH})`, 3000);
+              await settle(150);
+              n = await info();
+              facts.cold = n.pop;
+              claims[`${it}at a cold cache the button reads „In neuer Session fortsetzen“ and names its source, the cache row says since when`] =
+                n.pop?.rows?.[2]?.v === "kalt seit 15 min" && n.pop.go?.t === "In neuer Session fortsetzen" && n.pop.go.d === false
+                && n.pop.rows[4]?.h === `Quelle: Fleet-Übergabe. ${SUCC_READY}`;
+              await shot(`info-${st}-kalt-${width}`);
+              await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+              await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
+              // THE WARM SWITCH: Aus is this session's own value, An — the fleet's value — returns it to the
+              // fleet (keepCache null); each one click over the handover route, no /brief
+              fx.writes = [];
+              await afterTick();
+              t0 = Date.now();
+              await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="warm-aus"]')`, 3000);
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="warm-aus"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="warm-aus"]')?.classList.contains('on')`, 2000);
+              await settle(100);
+              n = await info();
+              const offHint = n.pop?.rows?.[3]?.h ?? "";
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="warm-an"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="warm-an"]')?.classList.contains('on')`, 2000);
+              await settle(100);
+              const warmBriefs = briefsSince(t0);
+              facts.warmWrites = { writes: fx.writes, warmBriefs, offHint };
+              claims[`${it}Warmhalten Aus is one click for THIS occupant and An returns it to the fleet's value — over the handover route, no /brief`] =
+                warmBriefs === 0 && offHint === "Der Cache verfällt 60 min nach dem letzten Modellaufruf."
+                && JSON.stringify(fx.writes.filter((w) => w.path === "/api/slots/3/handover").map((w) => w.body))
+                  === JSON.stringify([{ expectedOpenedAt: openedAt(3), keepCache: false }, { expectedOpenedAt: openedAt(3), keepCache: null }]);
+              await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+              await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
               // „Neue Session jetzt“ on a resting main: ONE post to the owner door, naming the occupant the
               // button was drawn for — a press on a row a succession already moved on is the server's 409
               fx.writes = [];
@@ -13762,7 +13802,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               await settle(100);
               const pressed = fx.writes.filter((w) => w.path === "/api/slots/3/succeed");
               facts.succeedWrites = fx.writes;
-              claims[`${it}„Neue Session jetzt“ posts ONE owner-door succession for this occupant and closes the popover`] =
+              claims[`${it}the successor button posts ONE owner-door succession for this occupant and closes the popover`] =
                 pressed.length === 1 && JSON.stringify(pressed[0]?.body) === JSON.stringify({ expectedOpenedAt: openedAt(3) });
             }
           }

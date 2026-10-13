@@ -686,46 +686,42 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   hält), und `thresholdPct` ist schon der wirksame Wert. Gespeichert wird in `Slot.handover`
   (`server/types.ts#HandoverSetting`), in fleet.json mit seiner Belegung. Die Einstellung gehört der
   LINIE auf dem Slot: jede Nachfolge im selben Slot trägt sie unverändert zur Nachfolgerin — Owner-Tür
-  (`server.ts#handleOwnerSucceed`, auch die von keepCache ausgelöste), Self-Tür auf jeder Schiene und der
+  (`server.ts#handleOwnerSucceed`), Self-Tür auf jeder Schiene und der
   Harness-Wechsel einer Lane (`server/succession.ts`, gesetzt in `server.ts#respawnInPlace` und
   `server.ts#restartLaneSession`); nur ein frisches Öffnen beginnt auf den Fleet-Werten. Fleet-Werte
-  selbst sind keine Einstellung: `null` + Hinweis an + keepCache aus speichert nichts. Ablehnungen: jede
+  selbst sind keine Einstellung: `null` + Hinweis an + keepCache `null` speichert nichts. Ablehnungen: jede
   Self-Credential (Header oder Bearer) 401 wie an jeder Owner-Route, ein Wert außerhalb der 5er-Schritte
   oder vom falschen Typ 400 (`bad-threshold`, `bad-nudge`, `bad-keep-cache`, `bad-keep-cache-idle`,
   `nothing-to-set`), eine andere Belegung 409 `occupant-changed`, ein Slot ohne Session 409 `not-active`,
   ein Nicht-claude-Harness 409 `harness` (das Band gilt nur für claude), ein unbekannter Slot 404.
   Gemessen in `e2e/self-token.ts`.
-- **keepCache — nachfolgen oder warm halten, bevor der Prompt-Cache abläuft** (seit 2026-10-08, Owner
-  07.10.): dieselbe `PATCH`-Route nimmt `keepCache` (Schalter) und `keepCacheIdleMin` (Vielfaches von 5
-  zwischen 5 und 55, Default 50 — unter der gemessenen Lebensdauer von 60 min,
-  `docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md`); `GET`/`PATCH` antworten dazu
-  `keepCacheIdle {step, min, max, default, lifetimeMin}`, und die succession facts tragen
-  `keepCache: null` (aus) oder `{act, reason, thresholdPct, lastUsageAt, dueAt, work, idleMin,
-  lifetimeMin, warmTurns, warmMax, last}`. Der Tick `server.ts#tickKeepCache` liest nur eingeschaltete
-  Sessions; `server.ts#keepCacheDecision` entscheidet: über der wirksamen Schwelle und `keepCacheIdleMin`
-  Minuten nach dem letzten Modellaufruf → ist Arbeit absehbar (`server.ts#keepCacheWork`: armierter
-  Pane-Watch dieser Belegung, aktives Auto am Slot, laufende Lane eines gebundenen Programs), ein kurzer
-  Warm-Turn (Pfad `cache-warm`, höchstens `KEEP_CACHE_WARM_MAX` ohne eigenen Turn); sonst die
-  Owner-Nachfolge ohne Turn an die alte Session. Bis zum Kill bzw. Paste wird erneut gefragt, ob die
-  Einstellung in derselben Fassung gilt und (vor einer Nachfolge) ob inzwischen Arbeit absehbar ist —
-  sonst geschieht nichts (Owner-Tür: 409 `setting-changed`). Ein Warm-Turn wird nur in einen als leer
-  gelesenen Composer getippt. Weitere Ablehnungen beim Einschalten: 409 `steward`, `lane`, `game-maker`
-  (ausgenommen) und `no-threshold`. Gemessen in `e2e/slots.ts#runKeepCache`.
-- **Der Default-Warm-Turn gebundener MAINs** (seit 2026-10-11, Owner 10.10.): ohne jeden Schalter hält
-  derselbe Tick eine claude-Program-MAIN mit lebender Bindung und die Orchestratorin (der eine Slot,
-  auf den die Rollenadresse `orchestrator` auflöst) warm (`server.ts#keepCacheBound`,
-  `#keepCacheBoundDecision`): `keepCacheIdleMin` (Default 50) Minuten nach dem letzten Modellaufruf und
-  vor 60 min ein kurzer Turn, der nichts über ihren Stand sagt („[fleet] Cache warmhalten. Antworte nur
-  mit „ok" …"), über dieselben Zustellgates und denselben Composer-Check wie der Owner-Schalter. Er
-  warmt nur — keine Schwelle, keine Nachfolge, kein `keepCacheWork`. Keinen Turn gibt es bei Lanes,
-  codex/pi, dem Steward, einer 5-min-Cache-Stufe (`cache-5m`), nach einer Kompaktierung (`compacted`),
-  über `KEEP_CACHE_WARM_MAX` und über dem Stundendeckel (`hour-cap`, `FLEET_KEEP_WARM_PER_HOUR`, Default 2).
-  Abschalten je Belegung: `PATCH … {warmBound:false}` (400 `bad-warm-bound` für Nicht-Booleans); er
-  fährt mit der übrigen Einstellung durch die Owner-Tür-Nachfolge. Die succession facts tragen dann
-  `mode: "bound"`, `hourCap`, `warmLastHour`; die Zeile in `GET /api/sessions` trägt
-  `keepCache {at, act, outcome, n}` (letzter Akt, Warm-Turns seit Boot), fehlt ohne Akt. Hintergrund:
-  12 von 12 Auto-Kompaktierungen dieses Hosts begannen 53–54 min nach dem letzten Modellaufruf, im
-  Leerlauf. Gemessen in `e2e/slots.ts#runKeepCache` (G).
+- **keepCache — den Prompt-Cache warm halten, bevor er abläuft** (seit 2026-10-08; ein Schalter seit
+  K9 S2, 2026-10-13, Owner 13.10.: „[Zitat entfernt]“):
+  dieselbe `PATCH`-Route nimmt `keepCache` (`true` · `false` · `null` = der Fleet-Wert für die Art Session)
+  und `keepCacheIdleMin` (Vielfaches von 5 zwischen 5 und 55, Default 50 — unter der gemessenen
+  Lebensdauer von 60 min, `docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md`); `GET`/`PATCH`
+  antworten dazu `keepCacheIdle {step, min, max, default, lifetimeMin}`. Der Fleet-Wert
+  (`server.ts#keepCacheFleetOn`) ist **an** für eine claude-Program-MAIN mit lebender Bindung und die
+  Orchestratorin (der eine Slot, auf den die Rollenadresse `orchestrator` auflöst; Owner 10.10.), **aus**
+  für jede andere Session. Eine Entscheidung (`server/succession.ts#warmDecision`, Tick
+  `server.ts#tickKeepCache`): Schalter an, `keepCacheIdleMin` Minuten nach dem letzten Modellaufruf und vor
+  60 min ein kurzer Turn („[fleet] Cache warmhalten. Antworte nur mit „ok" …“, Pfad `cache-warm`), der
+  nichts über ihren Stand sagt. Keinen Turn gibt es ausgeschaltet (`off`), schlafend, ohne gelesenen
+  Aufruf, bei einer 5-min-Cache-Stufe (`cache-5m`), nach einer Kompaktierung (`compacted`), nach Ablauf
+  (`expired` — ein kalter Cache wird nicht gewärmt), über `KEEP_CACHE_WARM_MAX` ohne eigenen Turn
+  (`warm-cap`) und über dem Stundendeckel (`hour-cap`, `FLEET_KEEP_WARM_PER_HOUR`, Default 2). Bis zum
+  Paste wird gefragt, ob der Schalter in derselben Fassung gilt; ein Warm-Turn wird nur in einen als leer
+  gelesenen Composer getippt. Einschalten verweigert 409 `steward`, `lane` und `harness` (nur claude hat
+  die gemessene Lebensdauer). Die succession facts tragen `keepCache {act, reason, lastUsageAt, dueAt, on,
+  from: "session" | "fleet", fleetOn, exempt, idleMin, lifetimeMin, warmTurns, warmMax, last, hourCap,
+  warmLastHour}`, dazu `cache {state: "warm" | "kalt" | "kompaktiert" | "unbekannt", lastCallAt, ttlSec,
+  coldAt}` (`server/succession.ts#cacheView`) und `compaction {at, trigger, preTokens, postTokens, idle}`
+  der Belegung oder `null`. Die Zeile in `GET /api/sessions` trägt `cache {lastCallAt, ttlSec}` (fehlt ohne
+  gelesenen Aufruf) und `keepCache {at, act, outcome, n}` (letzter Akt, Warm-Turns seit Boot; fehlt ohne
+  Akt). Ein Datensatz mit den zwei Schaltern vom 11.–13.10. (`keepCache` + `warmBound`) liest sich als der
+  eine: `keepCache: true` bleibt an, `warmBound: false` ist aus, sonst der Fleet-Wert; `warmBound` im
+  `PATCH` setzt nichts mehr. Die Übergabe an der Schwelle ist Schnitt S3. Gemessen in
+  `e2e/slots.ts#runKeepCache`.
 - **Eine Session in einem Ordner OHNE git ist ein normaler Zustand, kein Lesefehler** (seit 2026-10-02):
   scheitert der git-Teil von `GET /api/slots/:id/brief`, `…/diff`, `/api/steward/slots/:id/brief` oder
   der Gast-Routen `/s/:id/brief` und `/s/:id/diff`, fragt `server.ts#cwdGitState` nach dem GRUND, und
@@ -863,7 +859,10 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   `{expectedOpenedAt}` (optional, so sendet ihn der Knopf „Neue Session jetzt“ im Übergabe-Popover) nennt
   die Belegung, für die gedrückt wurde: steht dort inzwischen eine andere, 409 `occupant-changed`, bevor
   irgendetwas geprüft wird. `GET` dieselbe Route ist die Vorschau des Knopfs (`server.ts#ownerSucceedPreview`):
-  `ready`, `refusal`, Alter der stehenden Übergabe, Umfang des Rests und `says`, ein Satz, was die
+  `ready`, `refusal`, Alter der stehenden Übergabe, Umfang des Rests, `source` (woraus die Nachfolgerin
+  fortsetzt: `handover` = die stehende Übergabe der Session mit dem Rest danach, `transcript` = nur das
+  rohe Transkript, `null` = nichts davon; der Knopf nennt es bei kaltem Cache als „Fleet-Übergabe“ bzw.
+  „rohes Transkript“) und `says`, ein Satz, was die
   Nachfolgerin bekommt (`server/succession.ts#successorSentence`). Audit `main_succession` mit
   `owner-triggered`.
   **Program-Schiene (seit 2026-10-07):** ist die ruhende Session exakt gebundene MAIN Standard-Programs
@@ -880,7 +879,7 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   Preflight) kommen unverändert, ohne `reason`. Game-Maker bleibt abgewiesen.
 - **`GET /api/slots/:id/succeed`** (Owner) — die Lese-Tür für den Knopf, ohne Wirkung: `{ready,
   refusal: {reason, error} | null, rail: "program" | "generic", programs: [id…], idleMs, observed, idleThresholdMs, standingHandover: {at, ageMs,
-  channel, pointer} | null, tail: {state, reason, entries, omitted, chars}}`. Sie liest das Transkript,
+  channel, pointer} | null, tail: {state, reason, entries, omitted, chars}, source, says}`. Sie liest das Transkript,
   ist also kein 2-s-Poll; dafür trägt die Zeile in `GET /api/sessions` `standingHandover: {at}` (fehlt,
   wenn keine steht) neben dem vorhandenen `lastOutput` und `now`.
 

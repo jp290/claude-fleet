@@ -207,7 +207,8 @@ import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./serv
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
-import { ownSetting, settingForSuccessor, successorSentence } from "./server/succession";
+import { cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, type CacheView,
+  type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
@@ -10651,7 +10652,7 @@ type SendPath =
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
   | "stand-nudge"       // the one-line reminder that a lane's stand is behind its commits (tickLaneStand)
-  | "cache-warm"        // one short turn that keeps a session's prompt cache warm — owner switch or bound default (tickKeepCache)
+  | "cache-warm"        // one short turn that keeps a session's prompt cache warm — its keepCache switch (tickKeepCache)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
   // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
   | "rate-limit-resume";
@@ -14108,14 +14109,17 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
     standingHandover: standing ? { at: standing.at, ageMs: now - standing.at,
       channel: standing.intent !== null ? "intent" : "pointer", pointer: standing.pointer } : null,
     tail: tail ? { state: tail.state, reason: tail.reason, entries: tail.entries, omitted: tail.omitted, chars: tail.chars } : null,
+    // what the successor continues FROM, for the button at a cold cache (K9 S2): the session's own
+    // standing handover with the rest after it, or the raw transcript where it wrote none; null = neither
+    source: standing ? "handover" : tail?.state === "read" ? "transcript" : null,
     // the button's one sentence: what the successor gets, or why the door does not open now
     says: successorSentence({ refusal, rail: bound.length ? "program" : "generic",
       standingHandover: standing ? { ageMs: now - standing.at } : null, tail }) };
 }
 
-// `stillWanted` is the unattended caller's own last question (tickKeepCache: is the switch still on,
-// in the version the decision was made under?) — asked with every other one, the last time directly
-// before the kill; a sentence back refuses with nothing handed over. The route passes none.
+// `stillWanted` is an unattended caller's own last question (is its reason still in force, in the
+// version the decision was made under?) — asked with every other one, the last time directly before
+// the kill; a sentence back refuses with nothing handed over. The route passes none.
 async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | null = null): Promise<Response> {
   const no = (r: OwnerSucceedNo): Response => json({ error: r.error, reason: r.reason }, r.code);
   const railNo = ownerSucceedRailRefusal(s);
@@ -25805,9 +25809,13 @@ interface SuccessionFacts {
   // the owner's own value as set, even while a gate above keeps `thresholdPct` null — so the
   // popover shows what was set instead of the rail's default; null = none set
   sessionPct: number | null;
-  // THE KEEP-CACHE SWITCH of this session (HandoverSetting.keepCache, tickKeepCache): null while it
-  // is off, otherwise what the tick would do now and what it last did
-  keepCache: KeepCacheFacts | null;
+  // THE KEEP-CACHE SWITCH of this session (HandoverSetting.keepCache, tickKeepCache): the switch in
+  // force and where it comes from, what the tick would do now and what it last did
+  keepCache: KeepCacheFacts;
+  // the prompt cache as the transcript says it (server/succession.ts#cacheView), and the newest
+  // compaction of this occupant (noteCompaction) — null while there is none
+  cache: CacheView;
+  compaction: { at: number; trigger: string; preTokens: number | null; postTokens: number | null; idle: boolean } | null;
 }
 // the threshold the tick compares against for THIS session: the owner's own value where one is set,
 // otherwise the rail's env value (FLEET_LANE_MIGRATE_PCT for a lane, FLEET_MIGRATE_PCT for a main)
@@ -25838,6 +25846,8 @@ function programMainLineOf(s: Slot): { past: ProgramLineageEntry[]; dropped: num
 }
 function successionFacts(s: Slot): SuccessionFacts {
   const lane = s.worktree !== null;
+  const now = Date.now();
+  const cache = deliveryCacheReading(s);
   const off = successionThresholdOff(s, lane);
   const attempt = migrateTried.get(s.id);
   // the record counts only while it names THIS conversation, exactly as the tick reads it: a /clear
@@ -25868,15 +25878,19 @@ function successionFacts(s: Slot): SuccessionFacts {
     pctFrom: s.handover && s.handover.occupant.openedAt === s.openedAt && s.handover.thresholdPct !== null ? "session" : "fleet",
     nudgeOn: handoverNudgeOn(s),
     sessionPct: s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null,
-    keepCache: keepCacheFacts(s, Date.now()),
+    keepCache: keepCacheFacts(s, now),
+    cache: cacheView(cache.at, cache.ttlSec, ctxCache.get(s.id)?.compactedAt ?? null, now),
+    compaction: s.compaction && s.compaction.openedAt === s.openedAt ? { at: s.compaction.at, trigger: s.compaction.trigger,
+      preTokens: s.compaction.preTokens, postTokens: s.compaction.postTokens, idle: s.compaction.idle } : null,
   };
 }
 
 // THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
-// {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean,
-// keepCacheIdleMin?: 5..55 in 5-steps, warmBound?: boolean}; null returns the threshold to the rail's env value. Every
-// field is this occupant's and dies with it (Slot.handover).
+// {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean | null,
+// keepCacheIdleMin?: 5..55 in 5-steps}; null returns the threshold to the rail's env value and the
+// switch to the fleet's value for the kind of session. The setting belongs to the line on the slot
+// (server/succession.ts).
 // The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
 function handoverView(s: Slot): Response {
   return json({ slot: s.id, openedAt: s.cwd ? s.openedAt : null, setting: s.handover,
@@ -25894,14 +25908,13 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   const hasNudge = has("nudge");
   const hasKeep = has("keepCache");
   const hasIdle = has("keepCacheIdleMin");
-  const hasWarm = has("warmBound");
-  if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasWarm)
-    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin and/or warmBound" }, 400);
-  if (hasWarm && typeof body.warmBound !== "boolean") return json({ refusal: "bad-warm-bound", error: "warmBound must be true or false" }, 400);
+  if (!hasPct && !hasNudge && !hasKeep && !hasIdle)
+    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache and/or keepCacheIdleMin" }, 400);
   if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
     return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
   if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
-  if (hasKeep && typeof body.keepCache !== "boolean") return json({ refusal: "bad-keep-cache", error: "keepCache must be true or false" }, 400);
+  if (hasKeep && !(body.keepCache === null || typeof body.keepCache === "boolean"))
+    return json({ refusal: "bad-keep-cache", error: "keepCache must be true, false or null (the fleet's value for this kind of session)" }, 400);
   if (hasIdle && !keepCacheIdleMinOk(body.keepCacheIdleMin))
     return json({ refusal: "bad-keep-cache-idle", error: `keepCacheIdleMin must be a multiple of ${KEEP_CACHE_IDLE_MIN_STEP} from ${KEEP_CACHE_IDLE_MIN_MIN} to ${KEEP_CACHE_IDLE_MIN_MAX} — the prompt cache measured on this host lives ${KEEP_CACHE_LIFETIME_MIN} min, and the act must come before that` }, 400);
   // the band is claude's (tickMigrate skips every other harness before it reads the fill): a setting
@@ -25912,23 +25925,19 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   const next: HandoverSetting = {
     thresholdPct: hasPct ? body.thresholdPct as number | null : cur?.thresholdPct ?? null,
     nudge: hasNudge ? body.nudge as boolean : cur?.nudge ?? true,
-    keepCache: hasKeep ? body.keepCache as boolean : cur?.keepCache ?? false,
+    keepCache: hasKeep ? body.keepCache as boolean | null : cur?.keepCache ?? null,
     keepCacheIdleMin: hasIdle ? body.keepCacheIdleMin as number : cur?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
-    warmBound: hasWarm ? body.warmBound as boolean : cur?.warmBound ?? true,
     setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
   };
-  // the switch is refused where its act cannot happen, like a setting on another harness: the
-  // steward and a game-maker MAIN are exempt by the owner's card, and a lane's handover is a report
-  // only the lane itself writes (the owner door refuses all three by the same names)
+  // the switch is refused ON where no warm turn can happen: the steward is exempt by the owner's card,
+  // and a lane hands over by its own report
   if (next.keepCache) {
     const exempt = keepCacheExempt(s);
     if (exempt) return json({ refusal: exempt, error: KEEP_CACHE_EXEMPT_WHY[exempt] }, 409);
-    if ((next.thresholdPct ?? railPct(false)) <= 0)
-      return json({ refusal: "no-threshold", error: "keepCache acts above the session's handover threshold, and none applies here — send a thresholdPct with it" }, 409);
   }
   // the fleet's own values are no setting: storing them would keep a record that says nothing
-  s.handover = next.thresholdPct === null && next.nudge && !next.keepCache
-    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT && next.warmBound ? null : next;
+  s.handover = next.thresholdPct === null && next.nudge && next.keepCache === null
+    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT ? null : next;
   // a CHANGED switch or duration is a new start for the tick's bookkeeping of this occupant (warm
   // turns, retry window); a save with the same values is none, or saving again and again would
   // reset the warm cap and keep a session warm without end
@@ -25939,44 +25948,37 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   return handoverView(s);
 }
 
-// --- KEEP THE CACHE OR HAND OVER BEFORE IT IS GONE (owner 07.10.: „[Zitat entfernt]“
+// --- KEEP THE CACHE WARM BEFORE IT IS GONE (owner 07.10.: „[Zitat entfernt]“
 // 
-// ). The measurement behind it (docs/messungen/2026-10-07-cache-
-// lebensdauer-nachfolge.md): a resumption 5–60 min after the last model call rewrote median 614
-// tokens, one from 62 min on median 199 779 — at 400k tokens on Opus 5.5 that is 0,08 USD read
-// against 3,20 USD rewritten, list-price equivalents.
+// ; 13.10.: „[Zitat entfernt]“). The
+// measurement behind it (docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md): a resumption
+// 5–60 min after the last model call rewrote median 614 tokens, one from 62 min on median 199 779 —
+// at 400k tokens on Opus 5.5 that is 0,08 USD read against 3,20 USD rewritten, list-price equivalents.
 //
-// ONE FUNCTION DECIDES, per session, only where the owner switched it on (HandoverSetting.keepCache):
-//   above the effective threshold AND the newest model call `keepCacheIdleMin` minutes old →
-//     · further work is FORESEEABLE (keepCacheWork: something will type a turn into this pane) →
-//       `warm`: one short turn now, which reads the cache instead of rewriting it and starts its
-//       hour again. Bounded: KEEP_CACHE_WARM_MAX turns without a turn of the session's own, because
-//       a warm read costs 1/40 of a cold 1h write on Opus 5.5 (1/20 on Sonnet 5.5 / Opus 5) and an
-//       unbounded warm loop over a watch that never fires would spend past that.
-//     · nothing foreseeable → `succeed`: the OWNER DOOR (handleOwnerSucceed), the same function
-//       POST /api/slots/:id/succeed runs, so the old session gets no turn and the successor starts
-//       on the standing handover and the transcript rest.
-// Everything else is a reason, never an act: below the threshold, before the duration, a fill or a
-// model call the server cannot read, a cache already past its lifetime while work is foreseeable
-// (warming a cache that is gone buys nothing; the next real turn pays it either way).
-//
-// WHAT "FORESEEABLE" READS, all of it server state of THIS occupant: an armed watch that types into
-// the pane (delivery "pane"), an enabled Auto on the slot, a live lane of a Program this MAIN is
-// bound to (its report will arrive here). A running subagent is NOT read: the server cannot see it,
-// and it does not need to — Claude Code paints its spinner while one runs, so the pane is never at
-// rest and neither act fires (the owner door's busy gate, canDeliver's idle gate).
-type KeepCacheExempt = "steward" | "lane" | "game-maker" | "harness";
+// ONE SWITCH PER SESSION (Neuaufbau K9 S2): HandoverSetting.keepCache, or where the owner set none the
+// fleet's value for the kind of session — on for a claude Program-MAIN with a live binding and for the
+// Orchestratorin (owner 10.10.: „[Zitat entfernt]“
+// ), off for every other. ONE DECISION (server/succession.ts#warmDecision): with the
+// switch on, `keepCacheIdleMin` minutes after the newest model call and before the cache's lifetime,
+// one short turn that reads the cache instead of rewriting it and starts its hour again. Capped
+// without a turn of the session's own (KEEP_CACHE_WARM_MAX — a warm read costs 1/40 of a cold 1 h
+// write on Opus 5.5, and an unbounded loop over a session nobody returns to would spend past that) and
+// per hour. The handover at the threshold is S3, not this tick.
+// WHY 50 MIN IS EARLY ENOUGH: on this host Claude compacted 12 of 12 idle sessions 53–54 min after their
+// last model call ("Compacted while idle, before the prompt cache expired", 14 transcripts, 2026-10-11);
+// the warm turn at the default 50 min plus one 60 s tick is planned before that (a busy or held pane can
+// push it later). A session whose cache tier reads 5 min, or that compacted after its last call, gets
+// nothing: there is no cache left to keep.
+type KeepCacheExempt = "steward" | "lane" | "harness";
 const KEEP_CACHE_EXEMPT_WHY: Record<KeepCacheExempt, string> = {
   steward: "the ⚙ steward is a standing role — keepCache does not apply to it",
-  lane: "a lane hands over by its own `handoff` fleet-report, written in a turn of the lane itself — the owner door that keepCache acts through refuses it",
-  "game-maker": "a game-maker Program-MAIN hands over a committed checkpoint only it can write — keepCache does not apply to it",
+  lane: "a lane hands over by its own `handoff` fleet-report and is not kept warm",
   harness: "only a claude session has the measured prompt-cache lifetime keepCache acts on",
 };
 function keepCacheExempt(s: Slot): KeepCacheExempt | null {
   if (s.label === STEWARD_LABEL) return "steward";
   if (s.worktree) return "lane";
   if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
-  if (boundProgramsForMain(s).some(isGameMaker)) return "game-maker";
   return null;
 }
 const KEEP_CACHE_WARM_MAX = 24;
@@ -25987,16 +25989,17 @@ const KEEP_CACHE_RETRY_MS = 120_000;
 // a model call this long after the last warm turn was the session's own work, and the warm count
 // starts over
 const KEEP_CACHE_OWN_TURN_MS = 600_000;
-type KeepCacheAct = "succeed" | "warm";
-interface KeepCacheLast { at: number; act: KeepCacheAct; outcome: string }
-// `warmAts`: the warm turns of the last hour (the bound default's hour cap); `warmTotal`: every warm
-// turn this occupant got since boot, the count its sessions row shows
+// the hour cap: 2 fits the 50-min default twice into an hour and no more; FLEET_KEEP_WARM_PER_HOUR moves it
+const KEEP_CACHE_PER_HOUR = Math.max(1, Number(process.env.FLEET_KEEP_WARM_PER_HOUR ?? 2) | 0);
+interface KeepCacheLast { at: number; act: "warm"; outcome: string }
+// `warmAts`: the warm turns of the last hour (the hour cap); `warmTotal`: every warm turn this
+// occupant got since boot, the count its sessions row shows
 interface KeepCacheRun { openedAt: number; sessionId: string | null; warmTurns: number; lastWarmAt: number;
   last: KeepCacheLast | null; warmAts: number[]; warmTotal: number }
-interface KeepCacheDecision { act: KeepCacheAct | null; reason: string; thresholdPct: number | null;
-  lastUsageAt: number | null; dueAt: number | null; work: string[] }
-interface KeepCacheFacts extends KeepCacheDecision { mode: KeepCacheMode; idleMin: number; lifetimeMin: number; warmTurns: number;
-  warmMax: number; last: KeepCacheLast | null; hourCap: number | null; warmLastHour: number }
+// the popover's facts: the decision, the switch in force and where it comes from, and what was done
+interface KeepCacheFacts extends WarmDecision { on: boolean; from: "session" | "fleet"; fleetOn: boolean;
+  exempt: KeepCacheExempt | null; idleMin: number; lifetimeMin: number; warmTurns: number; warmMax: number;
+  last: KeepCacheLast | null; hourCap: number; warmLastHour: number }
 // process-local like migrateTried: a restart forgets the warm count rather than carrying automation
 // intent into a new process, and the next decision reads the transcript afresh
 const keepCacheRuns = new Map<number, KeepCacheRun>();
@@ -26008,133 +26011,53 @@ function keepCacheRunOf(s: Slot): KeepCacheRun {
   keepCacheRuns.set(s.id, fresh);
   return fresh;
 }
-const liveKeepCache = (s: Slot): HandoverSetting | null =>
-  s.cwd && s.handover?.keepCache && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
-// what the warm budget is counted under: the switch and the duration, nothing else of the setting
-const keepCacheRunKey = (h: HandoverSetting | null): string =>
-  `${h?.keepCache ?? false}:${h?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT}`;
-// the version a decision was made under: switch, duration and the threshold it was compared with.
-// A warm turn in flight is typed only while the setting still reads exactly this.
-const keepCacheVersion = (h: HandoverSetting | null): string | null =>
-  h?.keepCache ? `${h.keepCacheIdleMin}:${h.thresholdPct}` : null;
-
-// THE DEFAULT WARM TURN (owner 10.10. ~22:0x: „[Zitat entfernt]“
-// ). The
-// same tick, the same delivery gates and the same composer check as the owner's switch above, with
-// three differences, all of them narrower: it needs no switch, only a LIVE BINDING — a claude
-// Program-MAIN bound to an active Program, or the one slot the role address "orchestrator" resolves
-// to; it only ever WARMS (no threshold, no succeed, no foreseeable-work read: a bound MAIN is the
-// session the next owner or lane turn lands in); and it is capped per hour on top of the warm cap.
-// The owner switches it off per occupant with PATCH /api/slots/:id/handover {warmBound:false}, which
-// rides on to every successor on the slot with the rest of the setting (server/succession.ts).
-// WHY 50 MIN IS EARLY ENOUGH: on this host Claude compacted 12 of 12 idle sessions 53–54 min after their
-// last model call ("Compacted while idle, before the prompt cache expired", 14 transcripts, 2026-10-11);
-// the warm turn at the default 50 min plus one 60 s tick is planned before that (a busy or held pane can push it later). A session whose cache tier
-// reads 5 min, or that compacted after its last call, gets nothing: there is no cache left to keep.
-type KeepCacheMode = "owner" | "bound";
-// the hour cap: 2 fits the 50-min default twice into an hour and no more; FLEET_KEEP_WARM_PER_HOUR moves it
-const KEEP_CACHE_BOUND_PER_HOUR = Math.max(1, Number(process.env.FLEET_KEEP_WARM_PER_HOUR ?? 2) | 0);
-function keepCacheBound(s: Slot): boolean {
-  if (!s.cwd || s.worktree || s.label === STEWARD_LABEL || harnessOf(s.harness) !== CLAUDE_HARNESS) return false;
-  const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
-  if (own && !own.warmBound) return false;
+const ownHandover = (s: Slot): HandoverSetting | null =>
+  s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
+// THE FLEET'S VALUE for the kind of session: a Program-MAIN with a live binding, or the one slot the
+// role address "orchestrator" resolves to — the sessions the next owner or lane turn lands in
+function keepCacheFleetOn(s: Slot): boolean {
   return boundProgramsForMain(s).length > 0 || deliveryRecipient({ kind: "orchestrator" }) === s;
 }
-const keepCacheModeOf = (s: Slot): KeepCacheMode | null => liveKeepCache(s) ? "owner" : keepCacheBound(s) ? "bound" : null;
-const keepCacheBoundIdleMin = (s: Slot): number =>
-  s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.keepCacheIdleMin : KEEP_CACHE_IDLE_MIN_DEFAULT;
-// the version a decision of EITHER mode was made under; null = nothing may be typed any more
-function keepCacheVersionOf(s: Slot): string | null {
-  const mode = keepCacheModeOf(s);
-  return mode === "owner" ? `owner:${keepCacheVersion(liveKeepCache(s))}`
-    : mode === "bound" ? `bound:${keepCacheBoundIdleMin(s)}` : null;
+// the switch in force: the session's own, else the fleet's value; never on an exempt or empty slot
+function keepCacheOn(s: Slot): boolean {
+  if (!s.cwd || keepCacheExempt(s)) return false;
+  return ownHandover(s)?.keepCache ?? keepCacheFleetOn(s);
 }
+const keepCacheIdleMinOf = (s: Slot): number => ownHandover(s)?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
+// what the warm budget is counted under: the switch and the duration, nothing else of the setting
+const keepCacheRunKey = (h: HandoverSetting | null): string =>
+  `${h?.keepCache ?? null}:${h?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT}`;
+// the version a decision was made under; null = nothing may be typed any more. A warm turn in flight
+// is typed only while the switch still reads exactly this.
+const keepCacheVersionOf = (s: Slot): string | null => keepCacheOn(s) ? `on:${keepCacheIdleMinOf(s)}` : null;
 const warmLastHour = (run: KeepCacheRun, now: number): number => run.warmAts.filter((t) => now - t < 3_600_000).length;
-function keepCacheBoundDecision(s: Slot, now: number): KeepCacheDecision {
-  const no = (reason: string, rest: Partial<KeepCacheDecision> = {}): KeepCacheDecision =>
-    ({ act: null, reason, thresholdPct: null, lastUsageAt: null, dueAt: null, work: [], ...rest });
-  if (!keepCacheBound(s)) return no("off");
-  if (s.sleeping) return no("asleep");
-  if (!s.sessionId) return no("unpinned");
-  const cache = deliveryCacheReading(s);
-  const lastUsageAt = cache.at;
-  if (lastUsageAt === null) return no("no-usage");
-  if (cache.ttlQuelle === "5m") return no("cache-5m", { lastUsageAt });
-  const compactedAt = ctxCache.get(s.id)?.compactedAt ?? null;
-  if (compactedAt !== null && compactedAt >= lastUsageAt) return no("compacted", { lastUsageAt });
-  const dueAt = lastUsageAt + keepCacheBoundIdleMin(s) * 60_000;
-  const facts = { lastUsageAt, dueAt };
-  if (now < dueAt) return no("before-duration", facts);
-  if (now >= lastUsageAt + KEEP_CACHE_LIFETIME_MIN * 60_000) return no("expired", facts);
-  const run = keepCacheRunOf(s);
-  if (run.lastWarmAt && lastUsageAt > run.lastWarmAt + KEEP_CACHE_OWN_TURN_MS) run.warmTurns = 0;
-  if (run.warmTurns >= KEEP_CACHE_WARM_MAX) return no("warm-cap", facts);
-  if (warmLastHour(run, now) >= KEEP_CACHE_BOUND_PER_HOUR) return no("hour-cap", facts);
-  return { act: "warm", reason: "bound", thresholdPct: null, lastUsageAt, dueAt, work: [] };
+function keepCacheDecision(s: Slot, now: number): WarmDecision {
+  const on = keepCacheOn(s);
+  const cache = on ? deliveryCacheReading(s) : null;
+  const run = on ? keepCacheRunOf(s) : null;
+  if (run && cache?.at != null && run.lastWarmAt && cache.at > run.lastWarmAt + KEEP_CACHE_OWN_TURN_MS) run.warmTurns = 0;
+  return warmDecision({ on, asleep: !!s.sleeping, pinned: !!s.sessionId, lastCallAt: cache?.at ?? null,
+    tier: cache?.ttlQuelle ?? "unknown", compactedAt: ctxCache.get(s.id)?.compactedAt ?? null,
+    idleMin: keepCacheIdleMinOf(s), lifetimeMin: KEEP_CACHE_LIFETIME_MIN, warmTurns: run?.warmTurns ?? 0,
+    warmMax: KEEP_CACHE_WARM_MAX, warmLastHour: run ? warmLastHour(run, now) : 0, hourCap: KEEP_CACHE_PER_HOUR }, now);
 }
-// what a bound session is told: that this is a warm turn and what to answer — nothing about its state
-const KEEP_CACHE_BOUND_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
-function keepCacheWork(s: Slot): string[] {
-  const own = new Set(boundProgramsForMain(s).map((p) => p.id));
-  return [
-    ...watches.filter((w) => w.armed && w.slot === s.id && w.slotOpenedAt === s.openedAt && w.delivery !== "inbox")
-      .map((w) => `watch:${w.id}`),
-    ...autos.filter((a) => a.enabled && a.slot === s.id && (a.slotOpenedAt === undefined || a.slotOpenedAt === s.openedAt))
-      .map((a) => `auto:${a.id}`),
-    ...slots.filter((x) => x.cwd && x.worktree && x.programId && own.has(x.programId)).map((x) => `lane:${x.id}`),
-  ];
+function keepCacheFacts(s: Slot, now: number): KeepCacheFacts {
+  const run = keepCacheRuns.get(s.id);
+  const mine = run && run.openedAt === s.openedAt && run.sessionId === s.sessionId ? run : null;
+  return { ...keepCacheDecision(s, now), on: keepCacheOn(s), from: ownHandover(s)?.keepCache != null ? "session" : "fleet",
+    fleetOn: keepCacheFleetOn(s), exempt: keepCacheExempt(s), idleMin: keepCacheIdleMinOf(s),
+    lifetimeMin: KEEP_CACHE_LIFETIME_MIN, warmTurns: mine?.warmTurns ?? 0, warmMax: KEEP_CACHE_WARM_MAX,
+    last: mine?.last ?? null, hourCap: KEEP_CACHE_PER_HOUR, warmLastHour: mine ? warmLastHour(mine, now) : 0 };
 }
-function keepCacheDecision(s: Slot, now: number): KeepCacheDecision {
-  const no = (reason: string, rest: Partial<KeepCacheDecision> = {}): KeepCacheDecision =>
-    ({ act: null, reason, thresholdPct: null, lastUsageAt: null, dueAt: null, work: [], ...rest });
-  const set = liveKeepCache(s);
-  if (!set) return no("off");
-  const exempt = keepCacheExempt(s);
-  if (exempt) return no(exempt);
-  if (s.sleeping) return no("asleep");
-  if (!s.sessionId) return no("unpinned");
-  const thresholdPct = handoverPct(s, false);
-  if (thresholdPct <= 0) return no("no-threshold");
-  const fill = contextFill(s);
-  if (fill === null) return no("fill-unknown", { thresholdPct });
-  if (fill.pct < thresholdPct) return no("below-threshold", { thresholdPct });
-  const lastUsageAt = deliveryCacheReading(s).at;
-  if (lastUsageAt === null) return no("no-usage", { thresholdPct });
-  const dueAt = lastUsageAt + set.keepCacheIdleMin * 60_000;
-  const work = keepCacheWork(s);
-  const facts = { thresholdPct, lastUsageAt, dueAt, work };
-  if (now < dueAt) return no("before-duration", facts);
-  if (!work.length) return { act: "succeed", reason: "no-work-foreseeable", ...facts };
-  if (now >= lastUsageAt + KEEP_CACHE_LIFETIME_MIN * 60_000) return no("expired-with-work", facts);
-  const run = keepCacheRunOf(s);
-  if (run.lastWarmAt && lastUsageAt > run.lastWarmAt + KEEP_CACHE_OWN_TURN_MS) run.warmTurns = 0;
-  if (run.warmTurns >= KEEP_CACHE_WARM_MAX) return no("warm-cap", facts);
-  return { act: "warm", reason: "work-foreseeable", ...facts };
-}
-function keepCacheFacts(s: Slot, now: number): KeepCacheFacts | null {
-  const mode = keepCacheModeOf(s);
-  if (!mode) return null;
-  const run = keepCacheRunOf(s);
-  const owner = mode === "owner";
-  return { ...(owner ? keepCacheDecision(s, now) : keepCacheBoundDecision(s, now)), mode,
-    idleMin: owner ? liveKeepCache(s)!.keepCacheIdleMin : keepCacheBoundIdleMin(s), lifetimeMin: KEEP_CACHE_LIFETIME_MIN,
-    warmTurns: run.warmTurns, warmMax: KEEP_CACHE_WARM_MAX, last: run.last,
-    hourCap: owner ? null : KEEP_CACHE_BOUND_PER_HOUR, warmLastHour: warmLastHour(run, now) };
-}
-// THE SESSIONS ROW'S HALF (letzter Zug und Zaehler): the last warm-or-succeed act this occupant got and
-// how many warm turns since boot — omitted while there is none, the 2 s poll's data-saver rule
-function keepCacheRowView(s: Slot): { at: number; act: KeepCacheAct; outcome: string; n: number } | null {
+// THE SESSIONS ROW'S HALF (letzter Zug und Zaehler): the last warm act this occupant got and how many
+// warm turns since boot — omitted while there is none, the 2 s poll's data-saver rule
+function keepCacheRowView(s: Slot): { at: number; act: "warm"; outcome: string; n: number } | null {
   const run = keepCacheRuns.get(s.id);
   if (!run || run.openedAt !== s.openedAt || !run.last) return null;
   return { at: run.last.at, act: run.last.act, outcome: run.last.outcome.slice(0, 80), n: run.warmTotal };
 }
-function keepCacheWarmText(d: KeepCacheDecision, now: number): string {
-  const idle = d.lastUsageAt === null ? "?" : Math.floor((now - d.lastUsageAt) / 60_000);
-  return `[fleet] Prompt-Cache warmhalten (Owner-Einstellung dieser Session, keepCache): du bist über deiner `
-    + `Übergabe-Schwelle von ${d.thresholdPct} % und seit ${idle} min ohne Modellaufruf; absehbar kommt weitere Arbeit `
-    + `(${d.work.join(", ")}). Dieser Turn hält nur den Cache warm, bevor er nach ${KEEP_CACHE_LIFETIME_MIN} min verfällt. `
-    + "Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
-}
+// what the session is told: that this is a warm turn and what to answer — nothing about its state
+const KEEP_CACHE_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
 
 // e2e only: parks at the point the latch file names, so a probe can change the setting in between —
 // `<slot>` right after tickKeepCache's decision for that slot, `kill:<slot>` at the start of the owner
@@ -26153,77 +26076,47 @@ async function waitForKeepCacheTestLatch(at: string): Promise<void> {
 }
 
 // THE TICK: registered on the migrate cadence whatever FLEET_MIGRATE_PCT says, because the switch is
-// the owner's per session and may carry its own threshold. Without a switched-on session it returns
-// before any tmux or ps call.
+// per session. Without a session whose switch is on it returns before any tmux or ps call.
 let keepCacheTickBusy = false;
 const keepCacheInflight = new Set<number>();
 async function tickKeepCache(): Promise<void> {
   if (keepCacheTickBusy) return;
   const now = Date.now();
-  // the setting's version is taken WITH the decision: the warm text and the succeed both come from
-  // `d`, so every later check asks about exactly the setting `d` was read under
-  const due: { s: Slot; d: KeepCacheDecision; run: KeepCacheRun; version: string | null; mode: KeepCacheMode }[] = [];
+  // the setting's version is taken WITH the decision, so every later check asks about exactly the
+  // setting the decision was read under
+  const due: { s: Slot; run: KeepCacheRun; version: string | null }[] = [];
   for (const s of slots) {
-    const mode = keepCacheModeOf(s);
-    if (!mode || keepCacheInflight.has(s.id)) continue;
+    if (!keepCacheOn(s) || keepCacheInflight.has(s.id)) continue;
     const run = keepCacheRunOf(s);
     if (run.last && now - run.last.at < KEEP_CACHE_RETRY_MS) continue;
-    const d = mode === "owner" ? keepCacheDecision(s, now) : keepCacheBoundDecision(s, now);
-    if (d.act) due.push({ s, d, run, version: keepCacheVersionOf(s), mode });
+    if (keepCacheDecision(s, now).act) due.push({ s, run, version: keepCacheVersionOf(s) });
   }
   if (!due.length) return;
   keepCacheTickBusy = true;
   try {
-    for (const { s, d, run, version, mode } of due) {
+    for (const { s, run, version } of due) {
       const openedAt = s.openedAt;
       const sessionId = s.sessionId;
       await waitForKeepCacheTestLatch(String(s.id));
-      // THE OWNER MAY SWITCH IT OFF WHILE THE ACT IS ON ITS WAY: asked again before every step that
-      // could reach the pane — for a warm turn at the queue (beforeSend) and as the last question
-      // before the paste (beforePaste), for a succession with the owner door's own questions up to
-      // the kill. A switched-off or re-set session gets nothing.
-      const unwanted = (current: Slot): string | null => keepCacheVersionOf(current) !== version
-        ? `keepCache of slot ${s.id} was switched off or changed after the decision` : null;
+      // THE OWNER MAY SWITCH IT OFF WHILE THE TURN IS ON ITS WAY: asked again at the queue (beforeSend)
+      // and as the last question before the paste (beforePaste). A switched-off or re-set session gets nothing.
       const stillSet = (current: Slot): void => {
-        const why = unwanted(current);
-        if (why) throw new DeliveryCancelled(`${why} — nothing typed`);
+        if (keepCacheVersionOf(current) !== version)
+          throw new DeliveryCancelled(`keepCache of slot ${s.id} was switched off or changed after the decision — nothing typed`);
       };
-      if (d.act === "succeed") {
-        keepCacheInflight.add(s.id);
-        run.last = { at: now, act: "succeed", outcome: "pending" };
-        audit("main_succession", s.id, `keepCache: ${Math.floor((now - (d.lastUsageAt ?? now)) / 60_000)} min since the last model call, `
-          + `above ${d.thresholdPct} %, no work foreseeable — the owner door hands over without a turn`);
-        void (async () => {
-          try {
-            // …and whether work became foreseeable meanwhile (a watch armed, an Auto set, a lane of
-            // the bound Program opened): then nothing is handed over, and the next tick decides warm
-            const r = await handleOwnerSucceed(s, () => unwanted(s) ?? (keepCacheWork(s).length
-              ? `work became foreseeable for slot ${s.id} after the decision (${keepCacheWork(s).join(", ")})` : null));
-            const b = (await r.clone().json().catch(() => ({}))) as { reason?: string; error?: string };
-            // the run of a succeeded occupant dies with it; a refusal stays on it, by name
-            if (s.openedAt === openedAt) run.last = { at: Date.now(), act: "succeed",
-              outcome: r.ok ? "succeeded" : `refused ${r.status}: ${b.reason ?? b.error ?? "unknown"}` };
-          } catch (e) {
-            logError("keepCacheSucceed", e);
-            if (s.openedAt === openedAt) run.last = { at: Date.now(), act: "succeed", outcome: `failed: ${e instanceof Error ? e.message : e}` };
-          } finally { keepCacheInflight.delete(s.id); }
-        })();
-        continue;
-      }
-      // WARM: the same delivery gate the migrate nudge passes, minus quiet hours — the switch is the
-      // owner's own standing intent for this session, as a one-shot is (canDeliver's rule)
+      // the same delivery gate the migrate nudge passes, minus quiet hours — the switch is the owner's
+      // own standing intent for this session, as a one-shot is (canDeliver's rule)
       if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
       const verdict = await canDeliver(s, { now, idleMs: MIGRATE_IDLE_MS, quietHours: false });
-      if (!verdict.ok || s.openedAt !== openedAt || s.sessionId !== sessionId || keepCacheModeOf(s) !== mode) {
+      if (!verdict.ok || s.openedAt !== openedAt || s.sessionId !== sessionId || keepCacheVersionOf(s) !== version) {
         if (!verdict.ok && s.openedAt === openedAt)
           run.last = { at: now, act: "warm", outcome: `held: ${verdict.gate}${verdict.detail ? ` (${verdict.detail})` : ""}` };
         continue;
       }
-      const text = mode === "owner" ? keepCacheWarmText(d, now) : KEEP_CACHE_BOUND_TEXT;
       keepCacheInflight.add(s.id);
       void (async () => {
         try {
-          const { acceptance } = await sendText(s, text, true, { path: "cache-warm", rollbackOwnPayload: true,
+          const { acceptance } = await sendText(s, KEEP_CACHE_TEXT, true, { path: "cache-warm", rollbackOwnPayload: true,
             // THE COMPOSER DRAFT: sendText refuses an occupied composer itself (SendComposerOccupied —
             // nothing typed). What it lets through is a composer it CANNOT see on a harness that
             // declares one, and there a draft could stand unseen and merge with this text — so a
@@ -26250,15 +26143,15 @@ async function tickKeepCache(): Promise<void> {
           run.warmAts = [...run.warmAts.filter((t) => sentAt - t < 3_600_000), sentAt];
           run.lastWarmAt = sentAt;
           run.last = { at: sentAt, act: "warm", outcome: `sent (${acceptance})` };
-          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text: KEEP_CACHE_TEXT, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(s);
-          logPrompt(s, text, "auto", sentAt, undefined, acceptance);
+          logPrompt(s, KEEP_CACHE_TEXT, "auto", sentAt, undefined, acceptance);
         } catch (e) {
           if (s.openedAt === openedAt)
             run.last = { at: Date.now(), act: "warm", outcome: `not sent: ${e instanceof Error ? e.message : e}` };
           if (!(e instanceof DeliveryCancelled)) {
             logError("keepCacheWarm", e);
-            logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+            logPrompt(s, KEEP_CACHE_TEXT, "auto", Date.now(), undefined, sendFailureDelivery(e));
           }
         } finally { keepCacheInflight.delete(s.id); }
       })();
@@ -45550,12 +45443,13 @@ function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorL
   return { ctx: { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 }, apiError };
 }
 
-function deliveryCacheReading(s: Slot): DeliveryCacheFact {
+// `refresh: false` when the caller has just run contextReading(s) itself (the sessions poll): one tail read per slot
+function deliveryCacheReading(s: Slot, refresh = true): DeliveryCacheFact {
   const h = harnessOf(s.harness);
   if (h.id !== "claude" && h.id !== "codex") return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   if (!s.cwd || !s.sessionId) return { at: null, ttlSec: h.id === "codex" ? 1800 : 300,
     ttlQuelle: h.id === "codex" ? "codex" : "unknown" };
-  contextReading(s);
+  if (refresh) contextReading(s);
   const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
   const tail = ctxFiles.get(s.id)?.identity === identity ? ctxCache.get(s.id) : null;
   if (h.id === "claude") return tail?.cache ?? { at: null, ttlSec: 300, ttlQuelle: "unknown" };
@@ -49618,8 +49512,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           // It is on THIS route because this is the one every MAIN and the board already poll; the
           // steward route kept it where only a `⚙ steward` pane could reach it, and there was none.
           const st = stalledFacts(s, laneSignalView(s, pollNow), pollNow);
-          // ctx and apiStall off ONE tail read per slot per poll (contextReading)
+          // ctx, apiStall and the cache off ONE tail read per slot per poll (contextReading)
           const reading = contextReading(s);
+          const cache = s.cwd ? deliveryCacheReading(s, false) : null;
           const stall = apiStallFact(s, reading.apiError, pollNow);
           // B3 · what Fleet has TYPED into this pane today (the send ledger's own counter). Only
           // for an OCCUPIED row: the counter is keyed by slot number and outlives the occupant that
@@ -49744,6 +49639,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
               const sc = successionRowView(s);
               return sc ? { succession: sc } : {};
             })(),
+            // THE PROMPT CACHE of this occupant (K9 S2): the newest real model call and the tier's
+            // lifetime, so a client can say warm or cold and how long — omitted while no call is read,
+            // the data-saver rule (~45 B on a row that has one)
+            ...(cache?.at != null ? { cache: { lastCallAt: cache.at, ttlSec: cache.ttlSec } } : {}),
             // the newest Claude compaction of this occupant (noteCompaction) and the last keepCache act
             // with its warm count (keepCacheRowView) — each omitted while there is none
             ...(s.compaction && s.compaction.openedAt === s.openedAt ? { compaction: { at: s.compaction.at,

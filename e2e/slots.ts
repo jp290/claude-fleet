@@ -5812,16 +5812,18 @@ async function runKeepCache(): Promise<void> {
       recorder: xRec?.slice(0, 200) }));
 
   // X, A NEW VERSION BETWEEN DECISION AND ACT: switched on again (a changed switch is a fresh warm
-  // budget), decided warm at 50 min, parked, re-set to 45 min — the turn decided under 50 is not typed
+  // budget), decided warm at 50 min, parked, re-set to 55 min — the turn decided under 50 is not typed.
+  // 55 and not a shorter duration: a changed duration restarts the warm budget, and under 45 the
+  // 51-min-old call would be due again at once — a NEW decision of the new version, rightly typed.
   const xGot: { on?: Awaited<ReturnType<typeof hp>>; re?: Awaited<ReturnType<typeof hp>> } = {};
   const xParked = await parkAfterDecision(X.slot,
     async () => { xGot.on = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true }); },
-    async () => { xGot.re = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCacheIdleMin: 45 }); });
+    async () => { xGot.re = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCacheIdleMin: 55 }); });
   const { on: xOn2, re: xRe } = xGot;
   const xRec2 = existsSync(rec(X)) ? readFileSync(rec(X), "utf8") : null;
   check("keepCache X: a duration re-set between the decision and the act — the warm turn decided under the old version types nothing",
     xOn2?.status === 200 && xOn2.body.succession?.keepCache?.act === "warm" && xParked && xRe?.status === 200
-      && xRe.body.setting?.keepCacheIdleMin === 45 && xRec2 === "",
+      && xRe.body.setting?.keepCacheIdleMin === 55 && xRec2 === "",
     JSON.stringify({ on: xOn2?.status, decision: xOn2?.body.succession?.keepCache?.act, parked: xParked,
       reset: xRe?.status, recorder: xRec2?.slice(0, 200) }));
   await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: null, keepCacheIdleMin: 50 });
@@ -13712,7 +13714,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             // a lane says why nothing is kept warm there
             const warm = n.pop?.warm ?? [];
             claims[`${it}the cache reads warm with its minutes left${isLane ? "" : " and Claude's compaction"}, the warm switch ${isLane ? "is off and says why a lane is not kept warm" : "is on by the fleet's value for a bound main"}`] = isLane
-              ? rows[2]?.v === "warm · noch 57 min" && rows[2]?.h === "" && warm.length === 2 && warm.every((x) => x.d && !x.on)
+              ? rows[2]?.v === "warm · noch 57 min" && rows[2]?.h === null && warm.length === 2 && warm.every((x) => x.d && !x.on)
                 && rows[3]?.h === "Aus: eine Lane gibt mit ihrem Bericht weiter."
               : rows[2]?.v === "warm · noch 40 min" && rows[2]?.h === "Von Claude kompaktiert 12:40, 487k → 9k."
                 && JSON.stringify(warm) === JSON.stringify([{ t: "An", on: true, dflt: true, d: false }, { t: "Aus", on: false, dflt: false, d: false }])

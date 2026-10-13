@@ -207,7 +207,7 @@ const LEAD_ID_EVENTS = new Set(["task_dispatch", "task_release", "main_task", "t
   "main_brief", "task_files_confirm", "task_files_propose", "task_files_dismiss", "task_program", "task_kind",
   "task_note_attach", "task_note_detach", "task_wave_start", "task_wave_dispatch", "task_kill_archive",
   "task_cards_confirm", "dispatch_requeued", "dispatch_parked", "self_land_start", "criterion_proposed",
-  "criterion_confirmed", "steward_task", "note_verdict"]);
+  "criterion_confirmed", "note_verdict"]);
 // the stages a reader looks for by name; every other event keeps its own name under `event.`
 const AUDIT_KINDS: Record<string, string> = {
   task_dispatch: "task.dispatched", main_task: "task.filed", task_release: "task.released", task_hold: "task.held",

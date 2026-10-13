@@ -1582,10 +1582,6 @@ interface Task {
   // later judged against (see Slot.mission). Durable on purpose: before this field the settled
   // criterion lived only in pane scrollback and died at /clear, so nothing could later say what
   // the work was measured against.
-  ref?: string; // steward filings only: the pulse's stable condition slug (rundgang bound 1 /
-  // the Inspektion's register `key`). One live proposal per ref — the server answers a repeat
-  // filing with the existing row instead of a duplicate, so a persisting condition survives
-  // as ONE queue item across an hourly pulse. Absent on ad-hoc filings and non-steward rows.
   refine?: unknown;
   briefReview?: unknown;
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.

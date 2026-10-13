@@ -44,8 +44,6 @@ Your register lives in the steward journal on the SERVER, not as a file in this 
 
 The server stamps `ts` itself — the first live pulse invented round-minute times that predate its own `auto_fire` by an hour, and a register whose timestamps are fiction cannot be audited against the trail; a server stamp closes that class. Register writes are capped per hour (an honest inspection's volume fits comfortably; a loop does not) — a 429 is a stop-and-surface signal, never something to wait out inside the pulse.
 
-Then file **at most 1–2** — the ones the owner would be most annoyed to lose — via `POST /api/steward/tasks` with your token, `{"text": „[Zitat entfernt]“, "ref": „[Zitat entfernt]“}` (defaults to `kind:„[Zitat entfernt]“` — never dispatchable, correct for findings; claim `{"kind":„[Zitat entfernt]“}` only for a genuinely runnable work brief). The shared slug means the queue dedups against your own register vocabulary: a repeat filing of a live condition answers `{"dedup":true}` — treat that as „[Zitat entfernt]“, never as an error. He reads the text in the queue with none of this pulse's context: name the file:line, what is wrong or missing, the cost, and what decision is his. Include your confidence honestly — a `kandidat` that reads like a defect is worse than not filing. You file `pending` only; you never queue and never act. The server caps open steward proposals at 10; hitting the cap is itself something to surface, never to force past.
-
 An inspection that finds nothing files nothing and says so in one line. That is a complete, good pulse — this harness is repeatedly reviewed, and "nothing new in revier 3" is the *expected* result most of the time. Never manufacture a finding to justify the pulse.
 
 ## 4. Emit (short — the pane transcript is the channel)
@@ -61,6 +59,6 @@ gefiled:    <task text keys, or "—">
 
 ## Hard limits
 
-Never: edit code, commit, land, merge, deploy, run the e2e suites (they take machine-wide locks and this pulse is unattended — `main:docs/suite-contention.md`), send to any pane, touch files outside this worktree, or act on a finding. Read-only plus the two writes named above (register line, pending task). An owner stop instruction outranks this ritual. You inspect; he decides.
+Never: edit code, commit, land, merge, deploy, run the e2e suites (they take machine-wide locks and this pulse is unattended — `main:docs/suite-contention.md`), send to any pane, touch files outside this worktree, or act on a finding. Read-only plus the register line named above. An owner stop instruction outranks this ritual. You inspect; he decides.
 
 $ARGUMENTS

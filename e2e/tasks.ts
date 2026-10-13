@@ -1635,16 +1635,6 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Task.programId refuses empty and non-string values as bad programId (400)",
     malformedAttach.every((r) => r.status === 400), malformedAttach.map((r) => r.status).join(","));
 
-  const stewardToken = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
-  const stewardAttach = await fetch(`${BASE}/api/steward/tasks`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewardToken}` },
-    body: JSON.stringify({ text: "steward program attachment refusal", programId: provenanceProgramId }),
-  });
-  const stewardAttachText = await stewardAttach.text();
-  check("Task.programId steward door refuses attachment because only the owner may attach work to a program",
-    stewardAttach.status === 400 && stewardAttachText.includes("only the owner may attach work to a program"),
-    `${stewardAttach.status} ${stewardAttachText}`);
-
   await restartSrv();
   const persistedProgramTasks = ((await (await get("/api/tasks")).json()) as
     { tasks: { id: string; programId?: string }[] }).tasks;

@@ -5649,7 +5649,7 @@ const DISPATCH_MAX_LANES_PER_PROGRAM: number | null =
     ? Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES_PER_PROGRAM) | 0)
     : null;
 // ACP-16: how many rows ONE Program-MAIN may hold released-but-not-yet-started through its own
-// door. Unlike STEWARD_MAX_PENDING this IS a per-object cap, so the number that reaches the machine
+// door. This IS a per-object cap, so the number that reaches the machine
 // is a PRODUCT and naming it is part of the cap — a per-program cap whose sum is never stated is
 // the mistake the paragraph above spends ten lines on.
 // THE PRODUCT: a release needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most
@@ -6035,12 +6035,7 @@ let persistedToken: string | null = null;
 const STEWARD_LABEL = "⚙ steward";
 let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
-// max OPEN steward-filed pending tasks — a looping pulse must not flood the STEWARD's own shelf of
-// unread proposals. NOT the fleet's autonomy limit, and this comment used to imply it was: what
-// bounds how much work runs unattended is DISPATCH_MAX_LANES, a number about lanes. This
-// one is about rows nobody has read yet, filed through one door by one principal.
-const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
-// the shape a steward `ref` / register `key` must have: derived from the THING, not the phrasing
+// the shape a register `key` must have: derived from the THING, not the phrasing
 // (inspektion.md — the slug IS the dedup mechanism, a sloppy one silently re-files)
 const STEWARD_REF_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 // register lines per hour (the Inspektion writes one per seriously-considered finding, refuted
@@ -44779,9 +44774,6 @@ if (existsSync(file)) {
               confirmedAt: Number(t.criterion.confirmedAt) || null,
               ...(parts.ok && parts.parts.length ? { parts: parts.parts } : {}) }))(criterionPartsFromBody(t.criterion.parts))
             : undefined,
-          // a hand-edited ref that no longer parses as a slug is dropped, not repaired — dedup
-          // against a mangled key would silently stop matching the pulse's next filing anyway
-          ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined,
           // a malformed proposal degrades to "none proposed": confirming one mints new task rows
           ...(t.refine !== undefined ? { refine: t.refine } : {}),
           ...(t.briefReview !== undefined ? { briefReview: t.briefReview } : {}),
@@ -49034,67 +49026,6 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const home = stewardSlot();
     if (!home) return json({ error: "no steward slot active" }, 404);
     return createAutoForSlot(home, await readJson(req));
-  }
-  // steward files PENDING tasks (queue-automation.md item 1): its Rundgang observations become
-  // reviewable proposals without any action capability — same stance as intake. The owner
-  // create route fuses create+promote in one call (`body.queue === true` → queued), so for
-  // this principal the status is HARD-FORCED to "pending" and any queue field is discarded —
-  // "pending only" enforced in code, never convention (queue-automation.md "the line that must
-  // not be crossed": producers write pending; only the owner promotes, dispatch stays dumb).
-  if (url.pathname === "/api/steward/tasks" && req.method === "POST") {
-    const body = await readJson(req);
-    if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
-    if (body.programId !== undefined)
-      return json({ error: "only the owner may attach work to a program" }, 400);
-    // optional `ref`: the pulse's stable condition slug. Refused when malformed rather than
-    // silently dropped — a filing that THINKS it is dedup-protected but isn't would re-file
-    // every pulse, which is exactly the failure the field exists against.
-    if (body.ref !== undefined && (typeof body.ref !== "string" || !STEWARD_REF_RE.test(body.ref)))
-      return json({ error: "ref must match [a-z0-9][a-z0-9._-]{0,63}" }, 400);
-    const ref = typeof body.ref === "string" ? body.ref : undefined;
-    // server-side ref-dedup (the mechanism rundgang.md's scheduling amendment left open — the
-    // pulse is hourly now, so display-discipline alone no longer bounds duplicates): one LIVE
-    // proposal per ref. Scoped to live rows (pending/queued/sent) on purpose — a done/archived
-    // ref may be re-filed: the owner ruled on that row, and a condition that RETURNS after a
-    // ruling is new information, not pulse noise. Checked before the cap so a full queue answers
-    // a repeat sighting truthfully (dedup) instead of with a spurious 409.
-    if (ref) {
-      const live = tasks.find((t) => t.source === "steward" && t.ref === ref
-        && (t.status === "pending" || t.status === "queued" || t.status === "sent"));
-      if (live) {
-        audit("steward_task_dedup", stewardSlot()?.id, `${ref}:${live.id}`);
-        return json({ ok: true, dedup: true, task: live });
-      }
-    }
-    // cap open steward proposals so a looping pulse can't flood the review buffer (caps are
-    // mandatory — same stance as sends/autos). WHAT THIS BOUNDS AND WHAT IT DOES NOT: it bounds the
-    // pile of unread STEWARD filings, counted globally over this one source, and nothing else. The
-    // sentence that stood here — "review capacity is the binding constraint" — was true only while
-    // every such row waited on the owner to read it. It is not the fleet's autonomy limit: under a
-    // Program hull a Program-MAIN releases its own rows, so those rows never enter an owner review
-    // buffer at all, and this number would still read 10 while binding nothing about them
-    // (docs/attic/harvest-critic-J-2026-08-21.md:114-120, CONFIRMED). The resource that actually bounds
-    // unattended execution is the repo's lane cap (repoLaneCap — per repo since 2026-09-07; this
-    // repo's is 1) — lanes, not rows.
-    const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
-    if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
-    // A steward filing defaults to notiz. An explicit category is accepted only through the same
-    // four-value validator as the owner create and kind-change routes.
-    if (body.kind !== undefined && !isTaskKind(body.kind))
-      return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
-    const id = randomBytes(4).toString("hex");
-    const stewardKind: TaskKind = isTaskKind(body.kind) ? body.kind : "notiz";
-    const t: Task = {
-      id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-      source: "steward", kind: stewardKind, kindAtCreate: stewardKind,
-      repo: null, // never body.repo — a steward text must not choose where a lane spawns
-      status: "pending", created: Date.now(), slot: null, note: null,
-      ...(ref ? { ref } : {}),
-    };
-    tasks = capTasks([...tasks, t]);
-    saveState();
-    audit("steward_task", stewardSlot()?.id, t.id);
-    return json({ ok: true, task: t });
   }
   if (url.pathname === "/api/steward/send" && req.method === "POST")
     return handleStewardSend(await readJson(req));
@@ -54284,19 +54215,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (!parsed.ok) return json({ error: parsed.error }, 400);
         disposition = parsed.disposition;
       }
-      // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a deterministic
-      // `propose`-class outcome. Fire ONCE, gated on the pending→ transition ONLY: deleting an already-
-      // promoted row is cleanup, not a dismissal; archiving a PENDING proposal IS one. Read the class
-      // BEFORE mutating status. `adopt` stays the compat verb on the "helped" side. Narrativ: server-narrativ-archiv.md#fetch-task-actions
-      const proposeOutcome: "helped" | "dismissed" | null =
-        t.source === "steward" && t.status === "pending"
-          ? (taskAct[2] === "queue" || taskAct[2] === "adopt" ? "helped"
-            : taskAct[2] === "delete" || taskAct[2] === "archive" ? "dismissed" : null)
-          : null;
-      // ...and the KIND with it, for the same reason the comment above gives for the class:
-      // `adopt` rewrites notiz→auftrag, so reading it at journal-write time would record every
-      // adopted observation as having been an executable task all along.
-      const outcomeKind = t.kind;
       // Compatibility alias for the old one-way conversion. The new /kind route handles every
       // direction; adopt deliberately keeps its narrow historic contract.
       if (taskAct[2] === "adopt") {
@@ -54358,14 +54276,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       else t.status = "done";
       // a reason belongs to an ARCHIVED row only; the ledger keeps every earlier one
       if (t.status !== "archived") t.disposition = undefined;
-      if (proposeOutcome) {
-        // the row is deleted or mutated right above, so the record carries what the ruling was ABOUT: `ref`
-        // stays the task id, `slug` the steward's condition ref, plus a 200-char excerpt (a retention
-        // trade-off, not an archive). Live measurement 2026-08-05: server-narrativ-archiv.md#fetch-task-actions
-        writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome,
-          taskKind: outcomeKind, ...(t.ref ? { slug: t.ref } : {}), text: t.text.slice(0, 200) });
-        audit("steward_propose_outcome", stewardSlot()?.id, `${t.id}:${proposeOutcome}`);
-      }
       saveState();
       return json({ ok: true });
     }

@@ -134,9 +134,9 @@ type AuditEvent =
   // the lane, so the trail is the only place the disappearance is written down.
   | "merge_verdict_sent" | "merge_verdict_skip" | "merge_verdict_undeliverable"
   | "steward_send" | "steward_send_capped"
-  | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
+  | "steward_journal" | "steward_journal_capped"
   // ACP-23 · a bound Program-MAIN filed a row of its own Program through POST /api/self/tasks.
-  // Named after its PRODUCER like steward_task, and separate from task_release for the same reason
+  // Named after its PRODUCER, and separate from task_release for the same reason
   // that pair is separate: filing and releasing are two acts, and a trail that could not tell them
   // apart would make "the machine wrote itself work" and "the machine started work" one line.
   | "main_task"
@@ -224,9 +224,6 @@ type AuditEvent =
   // never asked about. The ordinary land carries no flag and is refused, so an absent row here means
   // no override happened, not that one was unrecorded.
   | "land_rejected_report_override"
-  // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
-  // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
-  | "steward_task_dedup"
   | "slot_shelve"
   // the board editor wrote a file into a session's working directory. This server's only
   // owner-driven write to a path outside its own state files, so it is on the trail by the same

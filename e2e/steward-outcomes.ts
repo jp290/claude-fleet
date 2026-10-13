@@ -1,121 +1,12 @@
-// The steward principal, second half: filed proposals, per-slot model, the owner disposition
+// The steward principal, second half: per-slot model, the owner disposition
 // rail and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, stopSrv, tmuxOut } from "./harness";
 import type { StewardCtx } from "./ctx";
-import type { DigJ } from "./steward-core";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 
 export async function run(sc: StewardCtx): Promise<void> {
-  // --- steward files PENDING tasks (queue-automation.md item 1): observations become
-  // reviewable proposals; the pending→queued gate stays with the owner. ---
-  const stTask = await sc.stewPost("/api/steward/tasks", { text: "steward proposal: rebase lane 3", queue: true });
-  const stTaskJ = (await stTask.json()) as { ok?: boolean; task?: { id: string; status: string; source: string; kind?: string } };
-  check("steward files a task and queue:true is DISCARDED — status hard-forced to pending",
-    stTask.ok && stTaskJ.task?.status === "pending" && stTaskJ.task?.source === "steward",
-    JSON.stringify(stTaskJ));
-  check("a steward task defaults to kind \"notiz\" — an observation, never a runnable brief",
-    stTaskJ.task?.kind === "notiz", JSON.stringify(stTaskJ.task));
-  // the unsafe direction is a deliberate, auditable opt-in — and junk is refused, never coerced
-  const stLane = (await (await sc.stewPost("/api/steward/tasks", { text: "steward brief: run the drill", kind: "auftrag" })).json()) as { task?: { id: string; kind?: string } };
-  check("the steward may explicitly claim kind \"auftrag\" (opt-in for a real work brief)",
-    stLane.task?.kind === "auftrag", JSON.stringify(stLane.task));
-  check("an unknown kind is rejected (400), never coerced",
-    (await sc.stewPost("/api/steward/tasks", { text: "x", kind: "evil" })).status === 400);
-  // the repo field is owner-only: a steward text must never choose where a lane spawns
-  const stRepo = (await (await sc.stewPost("/api/steward/tasks", { text: "repo grab probe", repo: "/tmp" })).json()) as { task?: { id?: string; repo?: unknown } };
-  check("a steward task can never choose a target repo (field ignored, stays null)",
-    stRepo.task?.repo == null, JSON.stringify(stRepo.task));
-  await post(`/api/tasks/${stRepo.task?.id}/delete`, {});
-  await post(`/api/tasks/${stLane.task?.id}/delete`, {});
-  const sessSt = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; source: string }[] };
-  check("steward-filed task lands in the owner's queue as pending/steward",
-    sessSt.tasks.some((t) => t.id === stTaskJ.task?.id && t.status === "pending" && t.source === "steward"));
-  // AN OBSERVATION IS NOT WORK (owner ask 2026-08-05). Releasing one used to be legal and produced
-  // a `queued` row that no tick would ever run, carrying a note explaining its own inertness — a
-  // contradiction parked in the release lane. The honest move is a CONVERSION the owner performs:
-  // adopt turns the observation into a brief, back at pending, where it still
-  // has to be released. Which keeps the steward from ever authoring runnable work.
-  const stQ = await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {});
-  check("an observation cannot be released — it is not a brief (409)",
-    stQ.status === 409, `${stQ.status} ${await stQ.text()}`);
-  check("owner adopts the steward-filed observation (notiz → auftrag, still pending)",
-    (await post(`/api/tasks/${stTaskJ.task?.id}/adopt`, {})).ok);
-  const promRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; kind?: string; status: string; note?: string }[] })
-    .tasks.find((t) => t.id === stTaskJ.task?.id);
-  check("the adopted row is a pending BRIEF that says where it came from",
-    promRow?.kind === "auftrag" && promRow.status === "pending" && (promRow.note ?? "").includes("adopted from an observation"),
-    JSON.stringify(promRow));
-  check("steward task rejects empty text (400)", (await sc.stewPost("/api/steward/tasks", { text: "  " })).status === 400);
-
-  // --- ref-dedup: one LIVE proposal per condition slug (the piece rundgang.md's scheduling
-  // amendment left open — the pulse is hourly now, so display-discipline alone no longer
-  // bounds duplicates). Filed BEFORE the cap fill below so the at-cap re-file can prove the
-  // dedup answer outranks the 409. ---
-  const refA = (await (await sc.stewPost("/api/steward/tasks",
-    { text: "ref probe: lane 3 awaiting a human", ref: "lane3-awaiting-human" })).json()) as
-    { ok?: boolean; dedup?: boolean; task?: { id: string; ref?: string } };
-  check("a steward filing may carry a stable ref (stored on the row)",
-    refA.ok === true && refA.dedup === undefined && refA.task?.ref === "lane3-awaiting-human",
-    JSON.stringify(refA));
-  const refB = (await (await sc.stewPost("/api/steward/tasks",
-    { text: "ref probe RE-SIGHTED, different phrasing", ref: "lane3-awaiting-human" })).json()) as
-    { ok?: boolean; dedup?: boolean; task?: { id: string } };
-  check("re-filing a live ref answers the EXISTING row (dedup:true, same id), never a duplicate",
-    refB.ok === true && refB.dedup === true && refB.task?.id === refA.task?.id, JSON.stringify(refB));
-  const refRows = ((await (await get("/api/tasks")).json()) as { tasks: { ref?: string }[] }).tasks
-    .filter((t) => t.ref === "lane3-awaiting-human");
-  check("the queue holds exactly one row for the ref after the repeat sighting",
-    refRows.length === 1, `rows=${refRows.length}`);
-  // dedup must survive the owner ACTING on the row, not just the row existing. Since 2026-08-05 an
-  // observation is adopted rather than released (a note has nothing to release), so the reachable
-  // post-action state is adopt → queue, and the ref must still answer through both.
-  check("owner adopts and releases the ref'd row — a QUEUED row still dedups (live is pending|queued|sent)",
-    (await post(`/api/tasks/${refA.task?.id}/adopt`, {})).ok
-    && (await post(`/api/tasks/${refA.task?.id}/queue`, {})).ok
-    && (((await (await sc.stewPost("/api/steward/tasks",
-      { text: "resight while queued", ref: "lane3-awaiting-human" })).json()) as { dedup?: boolean }).dedup === true));
-  // ...and park it again: a released row here would race the dispatcher for a slot the sections
-  // below expect to be free
-  await post(`/api/tasks/${refA.task?.id}/unqueue`, {});
-  // a RULED-ON row frees its ref: archive-from-pending is a dismissal, and a condition that
-  // returns after a ruling is new information, not pulse noise
-  const refC = (await (await sc.stewPost("/api/steward/tasks",
-    { text: "ruled-on probe", ref: "ruled-on-cond" })).json()) as { task?: { id: string } };
-  await post(`/api/tasks/${refC.task?.id}/archive`, {});
-  const refC2 = (await (await sc.stewPost("/api/steward/tasks",
-    { text: "the condition RETURNED after the ruling", ref: "ruled-on-cond" })).json()) as
-    { dedup?: boolean; task?: { id: string } };
-  check("an archived (ruled-on) ref may be re-filed as a NEW row — dedup scopes to live rows only",
-    refC2.dedup === undefined && !!refC2.task?.id && refC2.task?.id !== refC.task?.id,
-    JSON.stringify({ old: refC.task?.id, new: refC2.task?.id }));
-  check("a malformed ref is refused (400), never silently dropped",
-    (await sc.stewPost("/api/steward/tasks", { text: "x", ref: "Bad Ref!" })).status === 400
-    && (await sc.stewPost("/api/steward/tasks", { text: "x", ref: `a${"b".repeat(64)}` })).status === 400);
-
-  // cap: open steward-pending tasks are bounded — fill to the cap, expect 409, then clean up
-  const capIds: string[] = [];
-  let capHit = false;
-  for (let i = 0; i < 12; i++) {
-    const r = await sc.stewPost("/api/steward/tasks", { text: `cap probe ${i}` });
-    if (r.status === 409) { capHit = true; break; }
-    capIds.push(((await r.json()) as { task: { id: string } }).task.id);
-  }
-  check("steward pending cap refuses the overflow proposal (409)", capHit, `filed=${capIds.length}`);
-  // at the cap, the two answers stay distinct: a repeat sighting is a truthful dedup (200,
-  // checked before the cap), a genuinely new condition is still refused (409, no cap bypass)
-  const atCapDedup = await sc.stewPost("/api/steward/tasks",
-    { text: "resight at the cap", ref: "lane3-awaiting-human" });
-  check("at the cap a repeat sighting still answers dedup (200), not a spurious 409",
-    atCapDedup.ok && (((await atCapDedup.json()) as { dedup?: boolean }).dedup === true),
-    String(atCapDedup.status));
-  check("at the cap a NEW ref is still refused (409) — dedup is not a cap bypass",
-    (await sc.stewPost("/api/steward/tasks", { text: "new condition", ref: "brand-new-cond" })).status === 409);
-  for (const id of [...capIds, stTaskJ.task?.id, refA.task?.id, refC2.task?.id]) await post(`/api/tasks/${id}/delete`, {});
-  check("owner token on the steward tasks route is out of scope (404)",
-    (await post("/api/steward/tasks", { text: "x" })).status === 404);
-
   // --- Slot.model (synergy-findings Tier-2): per-slot claude model, validated at set time
   // (the value is baked into the pane's shell command — charset is load-bearing), persisted
   // on the slot and echoed on the owner + steward reads. The --model spawn-string proof
@@ -156,48 +47,12 @@ export async function run(sc: StewardCtx): Promise<void> {
   renameSync("steward-journal.jsonl", "steward-journal.jsonl.1");
   await sc.stewPost("/api/steward/journal", { counts: { "healthy-running": 4 }, decisions_surfaced: 0, changed: false });
   await Bun.sleep(200);
-  // tail wide enough (server max) to be robust against interleaved records: the propose-outcome
-  // trail adds one record per owner promote/dismiss of a steward task — the cap-probe cleanup
-  // above dismisses ~10 in a burst, which pushed the anchor past a tail of 10.
+  // tail wide enough (server max) to be robust against interleaved records.
   const jGet2J = (await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean }[] };
   check("steward journal delta anchor survives a rotation boundary (reads across .1)",
     jGet2J.records?.some((r) => r.kind === "rundgang" && r.decisions_surfaced === 1)
     && jGet2J.records?.some((r) => r.kind === "rundgang" && r.counts?.["healthy-running"] === 4 && r.changed === false),
     JSON.stringify(jGet2J).slice(0, 200));
-
-  // digest's delta anchor must be the last RUNDGANG record, not the last record of ANY kind
-  // (P-1a) — proved using a still-live non-rundgang journal writer: adopting/dismissing a
-  // steward proposal appends kind:"propose_outcome" (server.ts, the /api/tasks/:id/adopt|delete
-  // route) independently of the deleted intervention-outcome tally
-  // (docs/analysis-2026-07-28-verification.md §3). `adopt` carries the "helped" side of that
-  // channel since 2026-08-05, where `queue` used to — an observation is no longer releasable.
-  const anchorProp = (await (await sc.stewPost("/api/steward/tasks", { text: "propose: digest anchor probe" })).json()) as { task: { id: string } };
-  await post(`/api/tasks/${anchorProp.task.id}/adopt`, {});
-  await Bun.sleep(200); // writeStewardJournal's appendEvent write is fire-and-forget — settle before reading
-  const anchorRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string }[] }).records;
-  const anchorJ = (await (await sc.stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { prior?: { counts?: Record<string, number> } | null };
-  check("digest delta anchor is the last RUNDGANG record, not a foreign record written since (P-1a)",
-    anchorRecs[anchorRecs.length - 1]?.kind === "propose_outcome"
-    && anchorJ.prior?.kind === "rundgang" && anchorJ.prior?.counts?.["healthy-running"] === 4,
-    JSON.stringify({ lastRecord: anchorRecs[anchorRecs.length - 1]?.kind, prior: anchorJ.prior }).slice(0, 240));
-  await post(`/api/tasks/${anchorProp.task.id}/delete`, {});
-
-  // archive mirrors delete for the propose-outcome channel: shelving a PENDING proposal IS a
-  // dismissal — without this, archive would be a silent second path around the measurement.
-  // The later delete of the (now archived) row writes NOTHING: the pending-only guard holds.
-  const archProp = (await (await sc.stewPost("/api/steward/tasks", { text: "propose: archive probe" })).json()) as { task: { id: string } };
-  check("owner archives a pending steward proposal", (await post(`/api/tasks/${archProp.task.id}/archive`, {})).ok);
-  await Bun.sleep(200); // writeStewardJournal's append is fire-and-forget — settle before reading
-  const archRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as
-    { records: { kind?: string; ref?: string; outcome?: string }[] }).records;
-  check("archiving a pending proposal records propose_outcome dismissed (no silent path around the channel)",
-    archRecs.some((r) => r.kind === "propose_outcome" && r.ref === archProp.task.id && r.outcome === "dismissed"),
-    JSON.stringify(archRecs.slice(-3)));
-  const archRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] })
-    .tasks.find((t) => t.id === archProp.task.id);
-  check("the archived proposal keeps its row (status archived, not deleted)",
-    archRow?.status === "archived", JSON.stringify(archRow));
-  await post(`/api/tasks/${archProp.task.id}/delete`, {});
 
   // --- the Inspektion's register as a journal kind: typed write, server-stamped ts, read back
   // through the same rotation-aware reader as the pulse anchor. It replaces the loose jsonl in
@@ -608,12 +463,12 @@ export async function run(sc: StewardCtx): Promise<void> {
   // view carries the founding intent (id/status/source/text) it was started for. ---
   {
     await post("/api/dispatch", { on: true });
-    // an older steward NOTE sits FIRST in FIFO order. Since 2026-08-05 it cannot even be released
+    // an older NOTE sits FIRST in FIFO order. Since 2026-08-05 it cannot even be released
     // (the release route refuses an observation), so the defence is now TWO-LAYERED: the route
     // says no, and the dispatcher's `kind === "auftrag"` filter still shields rows that reached
     // `queued` before that refusal existed — a state only an old fleet.json can hold. Both are
     // asserted below; the second one has to be, because no API call can construct it any more.
-    const skipNote = (await (await sc.stewPost("/api/steward/tasks", { text: "note: lane 3 looks done — go look" })).json()) as { task: { id: string } };
+    const skipNote = (await (await post("/api/tasks", { text: "note: lane 3 looks done — go look", kind: "notiz" })).json()) as { task: { id: string } };
     const skipQ = await post(`/api/tasks/${skipNote.task.id}/queue`, {});
     check("an observation cannot enter the release lane at all (409 at the route)", skipQ.status === 409);
     const sigTask = (await (await post("/api/tasks", { text: "steward-signal task probe", queue: false })).json()) as { task: { id: string } };

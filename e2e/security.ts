@@ -497,7 +497,7 @@ const STEWARD_ROUTES = [
   // (deployGap/bundleStale on /api/steward/sessions) and until now could only file a note about it.
   "= /api/deploy", "= /api/deploys",
   "= /api/dispositions", "= /api/steward/autos", "= /api/steward/digest", "= /api/steward/journal",
-  "= /api/steward/send", "= /api/steward/sessions", "= /api/steward/tasks",
+  "= /api/steward/send", "= /api/steward/sessions",
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/brief$/`,
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/transcript$/`,
 ];

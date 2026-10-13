@@ -123,8 +123,7 @@ rather than degrading quietly.
 ## The two pulses (2026-07-29)
 
 Unprompted **attention**, never unprompted action. Both run as owner-created autos on the
-steward slot, both are read-only, and both end in the same place: at most one or two
-`pending` proposals the owner promotes or drops. Neither gates anything.
+steward slot, and both are read-only. Neither gates anything.
 
 | | `/rundgang` | `/inspektion` |
 |---|---|---|
@@ -144,11 +143,6 @@ qualified key is re-keyed by its own `repo` when it is diffed (`server.ts#sinceL
 Lane branches stay keyed by branch alone: two repos can hold a lane with the same branch name
 (an explicit `branch` at spawn; a generated name carries a 4-hex random suffix, so a clash there
 is unlikely, not impossible), and then one of the two lanes is missing from the map.
-
-Filings from both pulses carry a stable `ref` slug; the server keeps **one live proposal per
-ref** and answers a repeat filing with the existing row (`dedup:true`) — a persisting condition
-survives an hourly pulse as one queue item, not a pile. A done/archived ref may re-file: the
-owner ruled, and a condition that returns after a ruling is new information.
 
 Three properties earn the Inspektion its keep, each written against a measured failure:
 

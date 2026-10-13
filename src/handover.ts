@@ -183,7 +183,7 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
   rows.push(row("Übergabe bei", [pcts, el("span", "unit", "%")],
     sc.thresholdOff && sc.thresholdOff !== "rail" ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
       : sc.defaultPct <= 0 && sc.pctFrom === "fleet" ? "Für diese Art Session steht keine Schwelle. Eine Wahl gilt nur hier."
-      : `Ab hier gibt sie an eine frische Session weiter. ${sc.pctFrom === "session" ? "Eigener Wert dieser Session" : "Wert der Fleet"}${sc.defaultPct > 0 ? `, die Fleet steht auf ${sc.defaultPct} %` : ""}.`,
+      : `${sc.pctFrom === "session" ? "Eigener Wert dieser Session" : "Ab hier gibt sie an eine frische Session weiter"}${sc.defaultPct > 0 ? `; die Fleet steht auf ${sc.defaultPct} %` : ""}.`,
     "wide"));
 
   const seg = el("span", "seg");

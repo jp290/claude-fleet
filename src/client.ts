@@ -1344,6 +1344,12 @@ class Pane {
   private chatSource: string | null = null;
   private chatTimer: ReturnType<typeof setTimeout> | undefined;
   private chatBusy = false;
+  // THE PUSH (server/transcript-push.ts, Neuaufbau K10 S2): the transcript's complete-line count as the pane
+  // socket last said it. Set = the server tells this socket when the file grew, and the running session's
+  // chat reads then instead of every chatMs; null = no word on this socket yet, or it dropped → the timer
+  private pushLines: number | null = null;
+  // a push came while a read was running (or the read found a new file): read again right after it
+  private chatAgain = false;
   // THE LIVE STATE (GET /api/slots/:id/live, server/live-state.ts, Neuaufbau K10 S1): the status line at
   // the end of the view and Claude Code's own queue, every liveMs while the chat shows the running session
   private live: LiveState | null = null;
@@ -1861,6 +1867,7 @@ class Pane {
     // un-stick the busy flag so the reassigned pane's next pollChat() isn't blocked; the
     // old slot's in-flight fetch bails on the chatGen guard in pollChat.
     this.chatBusy = false;
+    this.chatAgain = false;
     clearTimeout(this.liveTimer);
     this.liveTimer = undefined;
     this.liveBusy = false;
@@ -2438,6 +2445,7 @@ class Pane {
     };
     const initial = this.chatTotal === 0;
     this.chatBusy = true;
+    this.chatAgain = false;
     let grew = false;
     try {
       const res = await api(past === null ? `/api/slots/${slot}/transcript?after=${this.chatTotal}`
@@ -2474,7 +2482,8 @@ class Pane {
         this.openAgents.clear();
         this.chatTotal = 0;
         this.chatSource = data.source;
-        return; // next tick refills from 0
+        this.chatAgain = true;
+        return; // the next read refills from 0
       }
       this.chatSource = data.source;
       if (data.source === null && !this.chatEl.childElementCount) {
@@ -2560,13 +2569,33 @@ class Pane {
         // chatMs === 0 means the tab went hidden mid-fetch: stop the chain rather than
         // re-arm it. chatPump() (driven by the poll pump on the way back) restarts it.
         const ms = plan().chatMs;
-        // a past session's file is finished: once a read brings nothing new there is nothing to poll
-        if (this.view === "chat" && ms && (past === null || grew)) {
+        // the running session's chat is told by its pane socket when the transcript grew (onPush): it reads
+        // again only when that happened during this read. Without a push (no word yet, the socket dropped,
+        // codex/pi) the chatMs chain runs as before. A past session's file is finished: once a read brings
+        // nothing new there is nothing to poll
+        const pushed = past === null && this.pushLines !== null;
+        if (this.view === "chat" && ms && pushed) {
+          clearTimeout(this.chatTimer);
+          if (this.chatAgain) void this.pollChat();
+        } else if (this.view === "chat" && ms && (past === null || grew)) {
           clearTimeout(this.chatTimer);
           this.chatTimer = setTimeout(() => void this.pollChat(), ms);
         }
       }
     }
+  }
+
+  // the pane socket said how many complete lines the transcript has (server/transcript-push.ts): the running
+  // session's chat reads now if it has not got them. A hidden tab (chatMs 0) catches up through chatPump
+  private onPush(raw: string): void {
+    let m: { t?: unknown; lines?: unknown };
+    try { m = JSON.parse(raw) as typeof m; } catch { return; } // not a message this client knows
+    if (m.t !== "transcript" || typeof m.lines !== "number") return;
+    this.pushLines = m.lines;
+    if (this.view !== "chat" || this.pastN !== null || !plan().chatMs || m.lines === this.chatTotal) return;
+    if (this.chatBusy) { this.chatAgain = true; return; }
+    clearTimeout(this.chatTimer);
+    void this.pollChat();
   }
 
   // the poll pump drives this on every visibility flip and every flip of the switch: drop
@@ -2611,6 +2640,7 @@ class Pane {
     // in data-saver mode; absent means the server's own SEED_LINES, i.e. today's behaviour.
     // Read at connect time, so flipping the switch takes effect on the NEXT reconnect.
     const seed = plan().seed;
+    this.pushLines = null;
     const ws = new WebSocket(
       `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}${seed ? `&seed=${seed}` : ""}`,
     );
@@ -2626,6 +2656,8 @@ class Pane {
       this.sendResize(true);
     };
     ws.onmessage = (e) => {
+      // a text frame is the server talking to the chat (server/transcript-push.ts), never terminal bytes
+      if (typeof e.data === "string") { if (g === this.gen) this.onPush(e.data); return; }
       const action = seedFramePlan(g, this.gen, firstFrame);
       if (!action) return;
       if (action.reset) {
@@ -2650,6 +2682,9 @@ class Pane {
     };
     ws.onclose = () => {
       if (g !== this.gen) return;
+      // no socket, no push: the running session's chat goes back to its chatMs chain until the next one
+      this.pushLines = null;
+      if (this.view === "chat" && this.pastN === null && plan().chatMs) void this.pollChat();
       perfFinish(this.perfSwitch, false); this.perfSwitch = null;
       if (focused === this.index) setConn(false);
       // every successful open costs a scrollback seed, so a socket that keeps opening and

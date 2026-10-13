@@ -2,7 +2,7 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendEvent } from "./persist";
@@ -30,8 +30,12 @@ afterAll(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 let loadProvenSafe = false;
 
 describe("server.ts laden", () => {
-  test("ein Import endet von selbst, ohne Server, Zeitschleife, tmux-Server oder Boot-Spuren", async () => {
+  test("ein Import endet von selbst, ohne Server, Zeitschleife, tmux-Server, Boot-Spuren oder Deploy-Abrechnung", async () => {
     const absentBefore = BOOT_TRACES.filter((name) => !existsSync(join(ROOT, name)));
+    // ein offener Deploy-Marker: nur der Start (resolveDeployMarker) räumt ihn ab und schreibt deploys.jsonl
+    const marker = join(STATE_DIR, "deploy-inflight.json");
+    const markerBody = JSON.stringify({ id: "ladetest", target: "0".repeat(40), at: 1_790_000_000_000 });
+    writeFileSync(marker, markerBody, { mode: 0o600 });
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env))
       if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
@@ -53,7 +57,9 @@ describe("server.ts laden", () => {
     expect(ms).toBeLessThan(LOAD_DEADLINE_MS);
     expect(tmuxServer.exitCode).not.toBe(0);
     expect(absentBefore.filter((name) => existsSync(join(ROOT, name)))).toEqual([]);
-    expect(readdirSync(STATE_DIR)).toEqual([]);
+    expect(readdirSync(STATE_DIR)).toEqual(["deploy-inflight.json"]);
+    expect(readFileSync(marker, "utf8")).toBe(markerBody);
+    rmSync(marker);
     loadProvenSafe = true;
   }, LOAD_DEADLINE_MS + 5_000);
 });

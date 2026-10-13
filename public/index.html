@@ -2225,6 +2225,12 @@
   #shell-found .fdtask { width: 100%; box-sizing: border-box; min-height: 140px; resize: vertical; padding: 12px 14px; border-radius: 14px;
     background: var(--chat-surface); border: 1px solid var(--chat-edge); color: var(--chat-ink); font: 15px/1.45 var(--chat-sans); }
   #shell-found .fdtask:focus { outline: none; border-color: var(--chat-mute); }
+  /* the Branch form (Neuaufbau K5): a one-line name, short goal and points, the repo's other branches */
+  #shell-found .fdbranchview .fdtask { min-height: 0; }
+  #shell-found .fdbranchview input.fdtask { height: 44px; padding: 0 14px; }
+  #shell-found .fdbranchothers { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; margin-bottom: 6px; }
+  #shell-found .fdbranchother.on { border-color: var(--chat-mute); background: var(--c-hover); }
+  #shell-found .fdbranchex { margin-top: 6px; }
   #shell-found .fdreceipt { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border-radius: 14px;
     background: var(--c-hover); border: 1px solid var(--chat-edge); }
   #shell-found .fdreceipt > svg { width: 22px; height: 22px; color: var(--q-live); }

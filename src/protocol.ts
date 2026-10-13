@@ -928,7 +928,8 @@ export interface WorkplaceStand {
 }
 export interface Workplaces { repos: WorkplaceRepo[]; stands: WorkplaceStand[]; measuredAt: number; cacheMs: number }
 // GET /api/branches (Neuaufbau K5, server/branches.ts): je Repo die Branches mit Board-Namen und die
-// übrigen Branches für „Bestehend öffnen“. `text` ist die Punkteliste, zugleich der Notizblock; `rev`
+// übrigen Branches für „Bestehend öffnen“. `base` ist die Basis, gegen die Abstand und Diff zählen
+// (die des Branches, sonst der Integrationszweig). `text` ist die Punkteliste, zugleich der Notizblock; `rev`
 // ist der Stand, gegen den POST /api/branches/note schreibt. `seen` ist „Owner hat gesehen / passt“
 // an genau `seen.head`; ob das noch die Spitze ist, sagt der Vergleich mit `head`.
 export interface BranchSeenView { at: number; head: string; via: "cookie" | "bearer" | "query" }

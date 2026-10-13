@@ -3,6 +3,7 @@ import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSel
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
 import { openLaneFounding } from "./founding";
+import { boardBranch, branchCard, loadBranches } from "./branchcard";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
 import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
@@ -1633,7 +1634,9 @@ export async function renderBoard() {
     if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
     if (flip) liveFlipAfter(flip);
     if (focusKey) {
-      for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex]")) {
+      // inputs too (K5): a branch card's "Punkt hinzufügen" keeps the focus over the write's repaints,
+      // so the second point typed after Enter lands in the field (Critic B4)
+      for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex], input")) {
         if (boardFocusKey(cand) !== focusKey) continue;
         // the reading position was put back above — a focus that scrolled to its button would undo it
         cand.focus({ preventScroll: true });
@@ -2577,6 +2580,7 @@ export const WORKPLACES_EVERY_MS = 10_000;
 // the caller just made (a test instance's up), and dropping the ask kept its stale answer on screen
 let workplacesAgain = false;
 export function loadWorkplaces(force = false): void {
+  loadBranches(force, () => void renderBoard()); // the branches of the board ride the same beat (K5)
   if (workplacesBusy && force) { workplacesAgain = true; return; }
   if (workplacesBusy || (!force && Date.now() - workplacesAt < WORKPLACES_EVERY_MS)) return;
   workplacesBusy = true;
@@ -4737,7 +4741,9 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   const label = s ? laneLabel(s).replace(/^⎇\s*/, "") : "";
   const bare = !!w.branch && (label === w.branch || label === w.branch.replace(/^fleet\//, ""));
   const said = bare ? laneWords(w.branch).replace(isLiveLane(w.branch) ? /^live\s+/ : /$^/, "") : label;
-  const name = el("span", `nm${s ? "" : " leer"}`, s ? said : words ?? laneWords(w.branch));
+  // a branch of the board (K5) carries its Board-Name with or without a session
+  const bb = boardBranch(R.repo, w.branch);
+  const name = el("span", `nm${s ? "" : " leer"}`, bb?.name ?? (s ? said : words ?? laneWords(w.branch)));
   if (bare) name.title = w.branch ?? "";
   rowCells(row, node, ref, hue, name);
   // a run that names its slot must name THIS lane's session too — a branch alone is not enough then
@@ -4772,6 +4778,11 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine, ended));
   // a live lane says so beside its name; what failed at its start stays in sight, the rest opens on a tap
   const liveLane = isLiveLane(w.branch);
+  if (bb) {
+    const tag = el("span", "livetag", "Branch");
+    tag.title = `Ein Branch des Boards (${w.branch}): Punkte, Diff, passt, Session — er bleibt, auch wenn die Session endet`;
+    name.appendChild(tag);
+  }
   if (liveLane) {
     const tag = el("span", "livetag", "Live");
     tag.title = "Live-Session: der Owner arbeitet in ihrer Testinstanz mit, am Ende Mergen";
@@ -4780,6 +4791,7 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
     if (err) out.push(err);
   }
   if (!open) return out;
+  if (bb) out.push(branchCard(R.repo, bb, s ? s.id : null, () => void renderBoard()));
   // THE OPENED LANE: its checks as the four points (or the plain word that there is none yet — never
   // a row of empty points), each run of it as its sentence with its machine, its test instance as a
   // line with Öffnen or Starten, and for a worktree no session holds: its controls
@@ -4795,7 +4807,8 @@ function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: 
   out.push(...runLines(mine));
   if (liveLane) out.push(...liveLines(R, w, s, standOf));
   else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
-  if (!s && !mirror) out.push(...wtLines(R, w, wts));
+  // a branch of the board starts its session from its card — no second way in as a lane here (K5)
+  if (!s && !mirror && !bb) out.push(...wtLines(R, w, wts));
   return out;
 }
 

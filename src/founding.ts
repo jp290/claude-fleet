@@ -37,7 +37,7 @@ import { Flakes } from "./flakes";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
-import { packIdFassung, standSincePreview, type FoundingPlanOmission, type FoundingPlanPack,
+import { packIdFassung, standSincePreview, type BranchesView, type BranchOtherView, type FoundingPlanOmission, type FoundingPlanPack,
   type FoundingPlanPart, type FoundingSessionAgents, type LaneAnchor, type PackAnchors, type PackStand } from "./protocol";
 import { openShell, type Shell } from "./shell";
 import { dropGrantMount, proofGrantRow } from "./rights";
@@ -63,10 +63,6 @@ const KINDS: { id: Kind; word: string; glyph: Parameters<typeof icon>[0]; title:
   { id: "branch", word: "Branch", glyph: "branch", title: "Neuer Branch" },
   { id: "task", word: "Task", glyph: "pencil", title: "Neuer Task" },
 ];
-// what the Branch choice is missing, said where the choice stands grey (FAKT, Lane 9B: a worktree
-// without a session does not come into being today — createWorktree runs only in the lane spawn)
-const BRANCH_MISSING = "Ein Worktree ohne Session entsteht heute nicht: der Server legt einen Worktree nur beim Start einer Lane an.";
-const BRANCH_DOOR = "Es fehlt die Server-Tür für einen Worktree ohne Session — bis es sie gibt, steht diese Wahl grau.";
 
 // where the window was opened from: a clicked free place, or ⎇+/the repo's + (its repo and, for ⎇+,
 // the session occupant the lane hangs under — never the slot alone, slots recycle)
@@ -120,6 +116,17 @@ interface ProgRow { id: string; title: string; state: ProgState; slot: number | 
 type Pop = "place" | "agent" | "model" | "effort" | "container" | "orphan" | `swap:${string}`;
 // what a filed task left behind: the queue row, or the send receipt at the Orchestratorin
 type TaskReceipt = { kind: "card"; id: string; repo: string } | { kind: "orch"; slot: number; sendId: string; parked: boolean };
+// THE BRANCH (Neuaufbau K5): a new branch or one the repo already has, with its Board-Name, the goal its
+// session gets as first message and its points. `made` is the branch the server already created when
+// its session did not start — the next click starts only the session.
+interface BranchForm {
+  mode: "new" | "existing"; name: string; goal: string; points: string; pick: string | null;
+  others: { repo: string; rows: BranchOtherView[]; total: number } | null; othersErr: string | null; othersSeq: number;
+  othersFor: string | null;             // the repo the last read of `others` was asked for
+  made: string | null; existing: { branch: string; name: string } | null; busy: boolean; error: string | null;
+}
+const blankBranch = (): BranchForm => ({ mode: "new", name: "", goal: "", points: "", pick: null, others: null, othersErr: null,
+  othersSeq: 0, othersFor: null, made: null, existing: null, busy: false, error: null });
 
 interface State {
   shell: Shell;
@@ -154,6 +161,7 @@ interface State {
   findTimer: ReturnType<typeof setTimeout> | null;
   paintFolders: (() => void) | null;    // the open folder list repaints alone, so typing keeps focus
   task: { text: string; busy: boolean; receipt: TaskReceipt | null; error: string | null };
+  branch: BranchForm;
   error: string | null;
   busy: boolean;
   goFocus: boolean;                     // desktop: Starten takes the focus once it can, until the focus went elsewhere
@@ -249,7 +257,7 @@ function open(entry: Entry) {
     switches: new Map(), last: null, note: null, moved: null, details: false, startShown: false, startOpen: null,
     progs: null, progOther: 0, progErr: null, progSeq: 0, program: null,
     dir: "~", list: null, listErr: null, listSeq: 0, find: "", hits: null, findPartial: false, findSeq: 0,
-    findTimer: null, paintFolders: null, task: { text: "", busy: false, receipt: null, error: null }, goFocus: !isMobile(),
+    findTimer: null, paintFolders: null, task: { text: "", busy: false, receipt: null, error: null }, branch: blankBranch(), goFocus: !isMobile(),
     error: null, busy: false, proof: null, pop: null, restore, teardown: () => {},
   };
   // the popovers own Escape, the arrows and Enter while one is open. WINDOW capture runs before
@@ -383,12 +391,11 @@ function kindBar(): HTMLElement {
   bar.setAttribute("aria-label", "Was entsteht");
   for (const k of KINDS) {
     const on = s.kind === k.id;
-    const b = btn(`fdkind${on ? " on" : ""}${k.id === "branch" ? " grey" : ""}`);
+    const b = btn(`fdkind${on ? " on" : ""}`);
     b.dataset.kind = k.id;
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(on));
     b.append(icon(k.glyph), el("span", "", k.word));
-    if (k.id === "branch") b.title = BRANCH_DOOR;
     b.onclick = () => { if (s.kind !== k.id) { s.kind = k.id; s.pop = null; s.error = null; renderAll(); } };
     bar.append(b);
   }
@@ -396,12 +403,157 @@ function kindBar(): HTMLElement {
 }
 
 function branchView(): HTMLElement {
+  const s = S!;
+  const f = s.branch;
   const box = el("section", "fdone fdbranchview");
-  box.append(lab("Branch ohne Session"));
-  const card = el("div", "fdgreycard");
-  card.append(icon("branch"), el("div", "fdgreysay", BRANCH_MISSING));
-  box.append(card, el("div", "fdsay2", "Bis dahin legt Session → Lane Worktree und Session zusammen an."));
+  const modes = el("div", "fdkinds fdbranchmode");
+  modes.setAttribute("role", "radiogroup");
+  modes.setAttribute("aria-label", "Neuer oder bestehender Branch");
+  for (const [id, word] of [["new", "Neu"], ["existing", "Bestehend"]] as const) {
+    const b = btn(`fdkind${f.mode === id ? " on" : ""}`, word);
+    b.dataset.mode = id;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(f.mode === id));
+    b.onclick = () => {
+      if (f.mode === id) return;
+      f.mode = id; f.error = null; f.existing = null; f.made = null;
+      if (id === "existing") loadOthers();
+      renderAll();
+    };
+    modes.append(b);
+  }
+  box.append(modes);
+  box.append(lab("Für"));
+  box.append(placeRow());
+  if (s.pop === "place") box.append(placePop());
+  if (f.mode === "existing") box.append(othersList());
+  box.append(lab("Name auf dem Board"));
+  const name = el("input", "fdtask fdbranchname") as HTMLInputElement;
+  name.value = f.name;
+  name.placeholder = "z. B. Task = Branch";
+  name.maxLength = 80;
+  name.oninput = () => { f.name = name.value; f.error = null; f.existing = null; renderFoot(); };
+  box.append(name);
+  box.append(lab("Ziel"));
+  const goal = el("textarea", "fdtask fdbranchgoal") as HTMLTextAreaElement;
+  goal.value = f.goal;
+  goal.rows = 3;
+  goal.placeholder = "In wenigen Sätzen — geht als erste Nachricht an die Session.";
+  goal.oninput = () => { f.goal = goal.value; };
+  box.append(goal);
+  box.append(lab("Punkte"));
+  const ta = el("textarea", "fdtask fdbranchpoints") as HTMLTextAreaElement;
+  ta.value = f.points;
+  ta.rows = 3;
+  ta.placeholder = "Ein Punkt je Zeile — sie gehören zum Branch und bleiben, auch wenn die Session endet.";
+  ta.oninput = () => { f.points = ta.value; };
+  box.append(ta);
+  if (f.error) box.append(el("div", "fdnote warn", f.error));
+  if (f.existing) {
+    const ex = f.existing;
+    const go = btn("fdopt fdbranchex", `Zu „${ex.name}“ (${ex.branch}) — dort weiterarbeiten`);
+    go.onclick = () => { void openBranchSession(ex.branch, ex.name); };
+    box.append(go);
+  }
+  queueMicrotask(() => { if (S === s && s.kind === "branch" && !s.pop && !s.shell.root.contains(document.activeElement)) name.focus({ preventScroll: true }); });
   return box;
+}
+
+// the repo's branches without a Board-Name, for "Bestehend" (GET /api/branches → others)
+function loadOthers(): void {
+  const s = S;
+  if (!s?.place) return;
+  const f = s.branch, seq = ++f.othersSeq, repo = s.place;
+  f.othersErr = null;
+  f.othersFor = repo;
+  void api("/api/branches").then(async (r) => {
+    const j = (await r.json().catch(() => null)) as BranchesView | { error?: string } | null;
+    if (S !== s || f.othersSeq !== seq) return;
+    const row = j && "repos" in j ? j.repos.find((x) => x.repo === repo) : undefined;
+    if (!r.ok || !row) f.othersErr = !r.ok ? `Die Branches kamen nicht (${(j && "error" in j && j.error) || r.status}).` : "Dieses Repo führt das Board nicht.";
+    else f.others = { repo, rows: row.others, total: row.othersTotal };
+    renderAll();
+  }).catch(() => { if (S === s && f.othersSeq === seq) { f.othersErr = "Der Server ist nicht erreichbar."; renderAll(); } });
+}
+function othersList(): HTMLElement {
+  const s = S!;
+  const f = s.branch;
+  const box = el("div", "fdbranchothers");
+  if (f.othersErr) { box.append(el("div", "fdnote warn", f.othersErr)); return box; }
+  if (!f.others || f.others.repo !== s.place) {
+    if (f.othersFor !== s.place) loadOthers();
+    box.append(el("div", "fdsay2", "liest die Branches …"));
+    return box;
+  }
+  if (!f.others.rows.length) { box.append(el("div", "fdsay2", "Dieses Repo hat keinen Branch ohne Board-Namen.")); return box; }
+  for (const o of f.others.rows) {
+    const b = btn(`fdopt fdbranchother${f.pick === o.branch ? " on" : ""}`);
+    b.dataset.branch = o.branch;
+    b.setAttribute("aria-pressed", String(f.pick === o.branch));
+    b.append(el("span", "fdoptw", o.branch), el("span", "fdfaint", o.path ? "ausgecheckt" : "ohne Worktree"));
+    b.onclick = () => {
+      f.pick = o.branch; f.error = null; f.existing = null;
+      if (!f.name.trim()) f.name = o.branch.replace(/^.*\//, "").replace(/[-_]+/g, " ");
+      renderAll();
+    };
+    box.append(b);
+  }
+  if (f.others.total > f.others.rows.length) box.append(el("div", "fdsay2", `die jüngsten ${f.others.rows.length} von ${f.others.total}`));
+  return box;
+}
+
+// BRANCH ÖFFNEN: the branch with its name and points (POST /api/branches), then its session
+// (POST /api/branches/open) with the goal as first message. A name the repo already gives another
+// branch comes back with that branch, and the window offers to go there instead.
+async function openBranch() {
+  const s = S;
+  const f = s?.branch;
+  const name = f?.name.trim();
+  if (!s || !f || !name || f.busy || !s.place) return;
+  if (f.made) { await openBranchSession(f.made, name); return; }
+  if (f.mode === "existing" && !f.pick) { f.error = "Wähle den Branch, auf dem du weiterarbeitest."; renderAll(); return; }
+  f.busy = true;
+  f.error = null;
+  f.existing = null;
+  renderFoot();
+  try {
+    const points = f.points.split("\n").map((l) => l.trim()).filter(Boolean);
+    const r = await post("/api/branches", { repo: s.place, name, points, ...(f.mode === "existing" && f.pick ? { branch: f.pick } : {}) });
+    const j = (await r.json().catch(() => null)) as { branch?: string; error?: string; existing?: { branch: string; name: string } } | null;
+    if (S !== s) return;
+    if (r.status === 409 && j?.existing) { f.existing = j.existing; f.error = `Den Namen „${j.existing.name}“ trägt in diesem Repo schon ${j.existing.branch}.`; return; }
+    if (!r.ok || !j?.branch) { f.error = `Der Branch entstand nicht: ${j?.error ?? `Antwort ${r.status}`}`; return; }
+    f.made = j.branch;
+    f.busy = false;
+    await openBranchSession(j.branch, name);
+  } catch (e) {
+    if (S === s) f.error = `Der Server ist nicht erreichbar: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    if (S === s) { f.busy = false; renderAll(); }
+  }
+}
+async function openBranchSession(branch: string, name: string) {
+  const s = S;
+  const f = s?.branch;
+  if (!s || !f || f.busy || !s.place) return;
+  f.busy = true;
+  renderFoot();
+  try {
+    const goal = f.goal.trim();
+    const r = await post("/api/branches/open", { repo: s.place, branch, ...(goal ? { goal } : {}) });
+    const j = (await r.json().catch(() => null)) as { slot?: number; error?: string } | null;
+    if (S !== s) return;
+    if (!r.ok || typeof j?.slot !== "number") {
+      f.error = `„${name}“ steht mit seinen Punkten, die Session startete nicht: ${j?.error ?? `Antwort ${r.status}`}`;
+      return;
+    }
+    closeFounding();
+    if (await revealStartedSlot(j.slot)) showSlot(j.slot);
+  } catch (e) {
+    if (S === s) f.error = `Der Server ist nicht erreichbar: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    if (S === s) { f.busy = false; renderAll(); }
+  }
 }
 
 // --- TASK: filed as a card, or handed to the Orchestratorin --------------------------------------------
@@ -1792,10 +1944,15 @@ function renderFoot() {
   const text = el("div", "fdsaycol");
   const acts = el("div", "fdacts");
   if (s.kind === "branch") {
-    text.append(el("div", "fdfootnote", BRANCH_DOOR));
-    const go = btn("fdgo", "Branch anlegen");
-    go.disabled = true;
-    go.title = BRANCH_DOOR;
+    const f = s.branch;
+    const free = fleet.some((x) => !x.cwd);
+    text.append(el("div", "fdfootnote", !s.place ? "Wähle das Repo des Branches."
+      : free ? `Branch und Session in ${baseName(s.place)}`
+      : "Alle Plätze sind belegt — der Branch entsteht mit seinen Punkten, die Session startest du, sobald ein Platz frei ist."));
+    const go = btn("fdgo", f.busy ? "Wird geöffnet …" : f.made ? "Session starten" : "Branch öffnen");
+    go.dataset.act = "branch";
+    go.disabled = !f.name.trim() || !s.place || f.busy || (f.mode === "existing" && !f.pick && !f.made);
+    go.onclick = () => { void openBranch(); };
     acts.append(go);
     foot.append(text, acts);
     return;

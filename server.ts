@@ -6778,9 +6778,19 @@ function knownRepos(): string[] {
   for (const s of slots) {
     if (!s.cwd) continue;
     if (s.worktree?.repo) out.add(s.worktree.repo);
-    else if (existsSync(`${s.cwd}/.git`)) out.add(s.cwd);
+    else if (existsSync(`${s.cwd}/.git`)) out.add(primaryCheckoutOf(s.cwd));
   }
   return [...out];
+}
+// A session without a lane ref may sit in a LINKED worktree (a branch session of K5, a Bau-Session):
+// its `.git` is a file "gitdir: <repo>/.git/worktrees/<name>", and the repo it belongs to is that
+// primary checkout — not a project of its own beside it. Anything else stays the directory itself.
+function primaryCheckoutOf(cwd: string): string {
+  try {
+    if (!lstatSync(`${cwd}/.git`).isFile()) return cwd;
+    const m = /^gitdir:\s*(.+)\/\.git\/worktrees\/[^/]+\s*$/.exec(readFileSync(`${cwd}/.git`, "utf8"));
+    return m?.[1] && existsSync(`${m[1]}/.git`) ? m[1] : cwd;
+  } catch { return cwd; }
 }
 
 async function slotCommits(s: Slot): Promise<SlotCommits> {
@@ -8773,7 +8783,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     const m = count?.code === 0 ? /^(\d+)\s+(\d+)$/.exec(count.out) : null;
     if (!m) reasons.push({ field: `${record.branch}.distance`, reason: base ? "base-unreadable" : "integration-branch-unknown" });
     const holder = path ? workplaceHolder(path) : null;
-    return { branch: record.branch, name: record.name, base: record.base, head: ref.head, text: record.text, rev: record.rev,
+    return { branch: record.branch, name: record.name, base, head: ref.head, text: record.text, rev: record.rev,
       seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
       distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null };
   }));
@@ -8821,7 +8831,7 @@ async function deliverBranchGoal(s: Slot, text: string): Promise<{ delivered: bo
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { delivered: false, reason: readiness.reason };
   try {
-    await sendText(s, text, true, { path: "founding" });
+    await sendText(s, text, true, { path: "branch-goal" });
   } catch (e) {
     logPrompt(s, text, "auto", Date.now(), undefined, "uncertain");
     return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
@@ -10982,6 +10992,7 @@ type SendPath =
   | "owner"             // POST /send — the owner typing into a pane
   | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
   | "founding"          // a Program-MAIN / orchestrator founding or bind brief
+  | "branch-goal"       // the goal a branch session gets at its start (POST /api/branches/open, Neuaufbau K5)
   | "succession"        // the successor's founding brief on POST /api/self/succeed
   | "lane-harness"      // the continuation brief after the owner switched a live lane's harness
   | "auto"              // a scheduled check-in firing (tickAutos)
@@ -11035,6 +11046,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "owner": "Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
+  "branch-goal": "Ziel eines Branches (Owner-Credential, POST /api/branches/open)",
   "succession": "Nachfolge-Brief (POST /api/self/succeed)",
   "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
   "auto": "geplanter Check-in",
@@ -11062,6 +11074,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
   "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
   "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
+  "branch-goal": "naechster Schritt: arbeite am Ziel dieses Branches · Grenze: sein Worktree und Branch",
   "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
   "lane-harness": "naechster Schritt: setze die Lane-Arbeit auf dem neuen Harness fort · Grenze: derselbe Auftrag und Worktree",
   "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",

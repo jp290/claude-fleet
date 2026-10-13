@@ -233,19 +233,22 @@ describe("Altbestand: Notizblöcke je Pfad wandern auf ihren Branch, der alte Sc
 const transcriptDir = (cwd: string): string => join(PROJECTS, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
 
 describe("Session auf dem Branch: ohne Rolle, im Worktree, mit dem Board-Namen", () => {
-  test("die Session sitzt im Worktree und trägt den Namen; ein zweites Öffnen sagt, wo sie läuft", async () => {
+  test("die Session sitzt im Worktree und trägt den Namen; ein zweites Öffnen sagt, wo sie läuft; ihr Repo ist das des Branches", async () => {
     const f = fixture();
-    const [made, opened, again, list, plain] = await life(f, [
+    const [made, opened, again, list, plain, known] = await life(f, [
       post("/api/branches", { repo: f.repo, name: "Session Probe", points: ["eins"] }),
       post("/api/branches/open", { repo: f.repo, branch: "branch/session-probe" }),
       post("/api/branches/open", { repo: f.repo, branch: "branch/session-probe" }),
       get("/api/branches"),
-      post("/api/branches/open", { repo: f.repo, branch: "main" })]);
+      post("/api/branches/open", { repo: f.repo, branch: "main" }),
+      get("/api/commits")]);
     expect(opened).toMatchObject({ status: 200, body: { cwd: made?.body.path, label: "Session Probe", resumed: null } });
     const slot = Number(opened?.body.slot);
     expect(again).toMatchObject({ status: 409, body: { session: { slot } } });
     expect(rowsOf(list!, f.repo).branches.map((r) => r.session?.slot)).toEqual([slot]);
     expect(plain?.status).toBe(404);
+    // die Session im Worktree ist kein eigenes Projekt neben ihrem Repo (Info zeigte sie doppelt)
+    expect(known?.body.repos).toEqual([f.repo]);
   }, LIFE_DEADLINE_MS);
 
   test("Fortsetzen nimmt das jüngste Gespräch des Worktrees, auch ohne Worktree vorher; fresh beginnt neu", async () => {

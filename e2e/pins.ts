@@ -3940,7 +3940,7 @@ await import(pathToFileURL(process.argv[2]).href);
   const branchRailBody = railBody("async function deliverBranchGoal(", "const BRANCH_GOAL_MAX");
   const branchRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(branchRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(branchRailBody)
-    && /await sendText\(s, text, true, \{ path: "founding" \}\);/.test(branchRailBody);
+    && /await sendText\(s, text, true, \{ path: "branch-goal" \}\);/.test(branchRailBody);
   const packsRailGated = /await Bun\.sleep\(FOUNDING_BOOT_GRACE_MS\);/.test(packsRailBody)
     && /await waitForFoundingReadiness\(s, stillCurrent\)/.test(packsRailBody)
     && /await sendText\(s, [A-Za-z]+, true, \{ path: "founding" \}\);/.test(packsRailBody);

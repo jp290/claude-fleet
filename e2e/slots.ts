@@ -3910,10 +3910,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // the queue rides with the live state (GET /live, the chat's status line, K10 S1); the transcript route
       // stopped carrying it in S2. /live answers an empty queue for a pane that is not Claude Code's, so the
       // slot's adapter is read first: an empty queue there would pass every check below without a reader
-      const qHarness = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness: string | null }[] })
-        .slots.find((s) => s.id === qFree)?.harness;
-      check("session queue fixture: the slot runs the Claude Code adapter (harness null), the one /live reads a queue for",
-        qHarness === null, `harness=${JSON.stringify(qHarness)}`);
+      // (the default adapter's row carries no `harness` key at all)
+      const qRow = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness?: string | null }[] })
+        .slots.find((s) => s.id === qFree);
+      check("session queue fixture: the slot runs the Claude Code adapter (no harness named), the one /live reads a queue for",
+        qRow !== undefined && (qRow.harness ?? null) === null, `row=${qRow !== undefined} harness=${JSON.stringify(qRow?.harness ?? null)}`);
       const live = async () => ((await (await get(`/api/slots/${qFree}/live`)).json()) as { queued?: { text: string; at: string | null }[] }).queued;
       // the chat hears when the transcript grew (server/transcript-push.ts, K10 S2; owner 13.10.: „[Zitat entfernt]“
       // ): a pane socket that asked on connect (push=1) gets the count of complete
@@ -14158,13 +14159,15 @@ export async function runSessionRollover(ids: readonly [number, number, number],
     const through = tr.entries.some((e) => e.role === "user" && e.blocks.some((b) => b.text === PROBE));
     // the queue rides with the live state (GET /live) since K10 S2; it answers an empty queue for a pane
     // that is not Claude Code's, so the slot's adapter is read with it
-    const aHarness = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness: string | null }[] })
-      .slots.find((s) => s.id === A)?.harness;
+    // (the default adapter's row carries no `harness` key at all)
+    const aRow = ((await (await get("/api/sessions")).json()) as { slots: { id: number; harness?: string | null }[] })
+      .slots.find((s) => s.id === A);
+    const aClaude = aRow !== undefined && (aRow.harness ?? null) === null;
     const lv = (await (await get(`/api/slots/${A}/live`)).json()) as { queued?: { text: string }[] };
     const waiting = (lv.queued ?? []).some((q) => q.text === PROBE);
     check("session rollover: the chat view reads the continued file, and its live queue shows the prompt consumed there as through",
-      tr.source === `${Q}.jsonl` && through && aHarness === null && Array.isArray(lv.queued) && !waiting,
-      `source=${tr.source} through=${through} harness=${JSON.stringify(aHarness)} waiting=${waiting} queued=${JSON.stringify(lv.queued ?? null)}`);
+      tr.source === `${Q}.jsonl` && through && aClaude && Array.isArray(lv.queued) && !waiting,
+      `source=${tr.source} through=${through} claude=${aClaude} waiting=${waiting} queued=${JSON.stringify(lv.queued ?? null)}`);
     const row = ((await (await get("/api/sessions")).json()) as
       { slots: { id: number; ctx?: { usedTokens: number } | null }[] }).slots.find((s) => s.id === A);
     check("session rollover: ctx comes from the continued file",

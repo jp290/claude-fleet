@@ -42595,7 +42595,7 @@ function companionSuccessionLines(companions: readonly { program: Program; retai
   });
 }
 
-// THE STAND BEFORE THE MATERIAL (2026-10-11, a Fremdprojekt-MAIN successor read the Program's rows through
+// THE STAND BEFORE THE MATERIAL (2026-10-11, an Fremdprojekt-MAIN successor read the Program's rows through
 // five doors, 45.6 KB, for what one `state.sh --brief` answers in 4.9 KB). The script is Fleet's, so
 // its path is absolute — a target-repo successor has no ./state.sh, and a relative name sent the
 // 2026-09-13 one searching ~/.claude. The script cds to its own checkout and reads by self-token.

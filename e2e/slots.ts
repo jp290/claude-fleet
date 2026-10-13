@@ -1336,7 +1336,7 @@ export async function run(): Promise<void> {
     check("owner reseed at matching width is a capture, not a tail of the raw stream",
       flood.bytes > 100 && flood.bytes * 4 < raw, `seed ${flood.bytes} B vs stream ${raw} B`);
 
-    // 2) continuity. Fremdprojekt uniquely numbered lines slowly (one line per pipe read, so the raw
+    // 2) continuity. Feed uniquely numbered lines slowly (one line per pipe read, so the raw
     // file's write boundaries stay line-aligned) and reconnect WHILE they flow — that is the
     // state the seed has to get right: poll() lags its 100 ms tick, so bytes sit in the file
     // (hence in the capture) that this client has not been sent yet and are still on their way.

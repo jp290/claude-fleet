@@ -641,7 +641,7 @@ export async function run(ctx: Ctx): Promise<void> {
         cut("const activeProgramDispatch =", "const programDispatchGrant ="),
         cut("const repoLaneCap =", "// Tracked paths are repository facts"),
         cut("const programDispatchCap =", "// THE OWNER'S RELEASE POLICY"), fn("foundingRowOf"),
-        cut("const taskRepoOf =", "// ONE flag for the sweep below")].join("\n");
+        cut("const taskRepoOf =", "// --- THE CARD TICK")].join("\n");
       const setup = `
         const clock = {now: 1800000000000, gitAt: 1800000000000, fail: false, observeFail: false, pause: false};
         const waiters = [];
@@ -2248,7 +2248,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const briefWriteJ = (await briefWrite.json()) as { ok?: boolean; brief?: { text: string; at: number } };
     const rawAfterBrief = await (await get("/api/sessions")).text();
     const pollAfterBrief = JSON.parse(rawAfterBrief) as
-      { analysis?: unknown; briefCompiler?: { on?: boolean }; tasks: BudgetDigest[] };
+      { analysis?: unknown; tasks: BudgetDigest[] };
     const digAfterBrief = pollAfterBrief.tasks.find((t) => t.id === bigT.task.id);
     const fullAfterBrief = ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; analysis?: unknown; brief?: { text: string; at: number } }[] })
@@ -6917,7 +6917,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${rT.task.id}/delete`, {});
   }
 
-  // --- (h) THE BRIEF COMPILER, AND THE QUEUE ANALYST'S RETIREMENT (2026-09-10).
+  // --- (h) THE QUEUE ANALYST'S RETIREMENT (2026-09-10).
   //
   // This section was the analyst's regression net: ~40 checks over a three-valued verdict, its
   // staleness rule, its failure/backoff arm, its verdict ledger, its collision read and the
@@ -6925,26 +6925,20 @@ export async function run(ctx: Ctx): Promise<void> {
   // 7ff56eab83f64b0826142139c7f4d1be274ebd2d), so what is left here is the two things the cut had
   // to preserve and the four it had to make impossible.
   //
-  // PRESERVED — the production half, which shared the analyst's sweep and switch until 2026-08-18:
-  // a briefless draft is compiled once, the STORED bytes are what a lane receives, an owner edit
-  // pins them, and a release is what starts a row.
+  // PRESERVED — the STORED bytes are what a lane receives, and a release is what starts a row.
   // NEGATIVE — the retirement, driven against a LIVE server rather than read off the source (that
   // is e2e/pins.ts's half): no route, no wire field, no persisted carrier, no analyst-shaped stall.
   //
-  // Needs its own server env (enhancer stand-in + 1 s brief sweep), so this section restarts srv —
+  // Needs its own server env (the dispatch repo, six lanes), so this section restarts srv —
   // FLEET_DISPATCH_REPO rides along explicitly because restartSrv builds the spawn line from
   // process.env and the wrapper only ever put that knob in the SERVER's env, not this process's. ---
   {
     interface HRow { id: string; status: string; kind?: string; note?: string; slot?: number;
       briefAt?: number; analysis?: unknown }
     const hSess = async (): Promise<{ tasks: HRow[]; slots: { id: number; cwd: string | null }[];
-      dispatch: { repo: string; on: boolean }; analysis?: unknown;
-      briefCompiler?: { on?: boolean } }> =>
+      dispatch: { repo: string; on: boolean }; analysis?: unknown }> =>
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; slots: { id: number; cwd: string | null }[];
-        dispatch: { repo: string; on: boolean }; analysis?: unknown;
-        briefCompiler?: { on?: boolean } };
-    // `model`/`by` ride along because (h4-race) asserts AUTHORSHIP, not just text: the clobber this
-    // section pins replaced the owner's three fields as surely as it replaced their bytes.
+        dispatch: { repo: string; on: boolean }; analysis?: unknown };
     interface HBrief { text: string; edited: boolean; at: number; model?: string; by?: string }
     const hFull = async (id: string): Promise<{ analysis?: unknown; brief?: HBrief } | undefined> =>
       ((await (await get("/api/tasks")).json()) as { tasks: { id: string; analysis?: unknown; brief?: HBrief }[] })
@@ -6960,42 +6954,30 @@ export async function run(ctx: Ctx): Promise<void> {
     const mkTask = async (text: string): Promise<string> =>
       ((await (await post("/api/tasks", { text, queue: false })).json()) as { task: { id: string } }).task.id;
 
-    const FAKEENH = `${ROOT}/fakeenhance`;
-    const BRIEFMARK = "COMPILED-BRIEF::";
-    await Bun.write(FAKEENH, [
-      "#!/bin/sh",
-      "cat | bun -e '",
-      "const input = await new Response(Bun.stdin.stream()).text();",
-      "const draft = input.split(\"## Entwurf\").pop().trim();",
-      `console.log(JSON.stringify({ prompt: ${JSON.stringify(BRIEFMARK)} + draft }));`,
-      "'",
-      "",
-    ].join("\n"));
-    spawnSync("chmod", ["+x", FAKEENH]);
+    // the stored brief comes through the owner's brief door, marked so the delivered prompt is
+    // recognisable below
+    const BRIEFMARK = "STORED-BRIEF::";
+    const ownBrief = async (id: string, text: string): Promise<void> => {
+      await post(`/api/tasks/${id}/brief`, { text: `${BRIEFMARK}${text}` });
+    };
     const dispatchRepo = (await hSess()).dispatch.repo;
-    const hEnv = { FLEET_DISPATCH_REPO: dispatchRepo, FLEET_ENHANCE_CMD: FAKEENH,
-      FLEET_BRIEF_MS: "1000", FLEET_DISPATCH_MAX_LANES: "6" };
+    const hEnv = { FLEET_DISPATCH_REPO: dispatchRepo, FLEET_DISPATCH_MAX_LANES: "6" };
     await restartSrv(hEnv);
     await post("/api/dispatch", { on: true });
 
-    // (h0) THE WIRE. The poll carries the compiler's mode as its own fact — and carries NO analyst
-    // fact beside it. Asserted as an own-property absence rather than `!== true`: a field present
-    // and false would mean the retirement left a carrier standing.
+    // (h0) THE WIRE. The poll carries NO analyst fact. Asserted as an own-property absence rather
+    // than `!== true`: a field present and false would mean the retirement left a carrier standing.
     const hPoll = await hSess();
-    check("(h0) the poll carries the brief compiler's own mode and no analyst mode at all",
-      hPoll.briefCompiler?.on === true && !("analysis" in hPoll),
-      JSON.stringify({ briefCompiler: hPoll.briefCompiler, analysisKeyPresent: "analysis" in hPoll }));
+    check("(h0) the poll carries no analyst mode at all",
+      !("analysis" in hPoll), JSON.stringify({ analysisKeyPresent: "analysis" in hPoll }));
 
-    // (h1) THE COMPILER WRITES THE BYTES. One machine brief per briefless draft, `edited:false`.
-    const hP = await mkTask("brief probe P: pending — the compiler must write this row's brief");
+    // (h1) A BRIEFED ROW CARRIES NO READING. The load-bearing negative of the whole cut: after
+    // 2026-09-10 nothing in this fleet produces a judgement about a row.
+    const hP = await mkTask("brief probe P: pending — a stored brief, and no reading beside it");
+    await ownBrief(hP, "brief probe P");
     const hPFull = await till(() => hFull(hP), (r) => !!r?.brief);
-    check("(h1) a briefless pending draft is compiled once, as a machine brief",
-      hPFull?.brief?.text.startsWith(BRIEFMARK) === true && hPFull.brief.edited === false,
-      JSON.stringify(hPFull?.brief ?? null));
-    // …and writes no reading doing it. The load-bearing negative of the whole cut: a compiler
-    // produces bytes, and after 2026-09-10 nothing in this fleet produces a judgement about a row.
     const hPRow = await hRow(hP);
-    check("(h1) …and no reading comes with it — neither the poll digest nor the full row carries one",
+    check("(h1) a briefed row carries no reading — neither the poll digest nor the full row carries one",
       hPFull?.analysis === undefined && hPRow?.analysis === undefined && typeof hPRow?.briefAt === "number",
       JSON.stringify({ full: hPFull?.analysis, row: hPRow?.analysis, briefAt: hPRow?.briefAt }));
 
@@ -7004,6 +6986,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // stall on "not analysed yet". Both are gone, so the two halves are checked as a pair: the
     // pending row sits still through a full dispatch tick, the released one starts.
     const hQ = await mkTask("brief probe Q: released — the dispatcher must start exactly this one");
+    await ownBrief(hQ, "brief probe Q");
     await till(() => hFull(hQ), (r) => !!r?.brief);
     await post(`/api/tasks/${hQ}/queue`, {});
     // The tick's existence is read off the released row itself — the fixed one-tick-plus-slack
@@ -7031,98 +7014,7 @@ export async function run(ctx: Ctx): Promise<void> {
       qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK)
       && sent.some((prompt) => prompt.startsWith(qBrief!.text)),
       JSON.stringify({ status: qRow?.status, brief: qBrief?.text.slice(0, 60), sentCount: sent.length }));
-    // …and the receipt names the machine as the author. This is the only path in the suite where a
-    // brief exists that the owner never touched, so it is the only place the "compiled" arm of the
-    // derivation can be proven at all — everywhere else the brief is hand-set (edited:true).
-    const qReceipt = await till(
-      async () => (await contextReceipts()).receipts.find((receipt) => receipt.taskId === hQ),
-      (r) => !!r);
-    const qSent = sent.find((prompt) => prompt.startsWith(BRIEFMARK)) ?? "";
-    check("(h3) the machine-compiled brief is receipted as compiled, hashed over the delivered bytes",
-      qReceipt?.briefSource === "compiled" && !!qSent
-      && qReceipt?.briefHash === briefHashOf(qSent),
-      JSON.stringify(qReceipt ?? null));
     if (typeof qRow?.slot === "number") await post(`/api/slots/${qRow.slot}/kill`, {});
-
-    // (h4) THE OWNER OWNS THE BRIEF. Editing it pins the text against the sweep: the compiler
-    // selects on `briefDue` (no brief yet), so a pinned one is never recompiled over. Driven, not
-    // read: the row waits out three of the cadences (h1) just proved the compiler runs at.
-    const eb = await post(`/api/tasks/${hP}/brief`, { text: "hand-written brief, mine" });
-    const edited = await till(() => hFull(hP), (r) => r?.brief?.edited === true);
-    await Bun.sleep(3000);
-    const stillEdited = await hFull(hP);
-    check("(h4) an owner-edited brief is pinned and nothing recompiles over it",
-      eb.ok && edited?.brief?.edited === true && edited.brief.text === "hand-written brief, mine"
-      && stillEdited?.brief?.text === "hand-written brief, mine"
-      && stillEdited.brief.at === edited.brief.at,
-      JSON.stringify({ edited: edited?.brief, later: stillEdited?.brief }));
-
-    // (h4-race) …AND A COMPILE ALREADY RUNNING WHEN THE OWNER FILES DOES NOT WIN BY FINISHING LAST.
-    // (h4) above drives the SELECTION half: `briefDue` skips a row that carries a brief. This one
-    // drives the WRITE half, which is a different moment — the compiler chose its rows one enhancer
-    // runtime earlier, so the interesting owner brief is the one filed WHILE a compile is in
-    // flight. Product race read at server.ts#compileBriefs, forced 10/10 by lane 69707f16 and
-    // registered as flake family 25 (docs/verify-tiering.md §11.2x), where it is explicitly NOT
-    // given a flake licence: here a red is the finding.
-    //
-    // Timed by the STAND-IN, never by a sleep: it announces its own start and finish through two
-    // marker files, so "the compile was running when the brief was filed" is a driven fact and not
-    // a hope about scheduling. Only the raced draft is slowed (the stand-in keys on its marker) —
-    // every other row in this instance still compiles at full speed.
-    const RACEMARK = "race-probe-owner-brief-mid-compile";
-    const SLOWENH = `${ROOT}/slowenhance`;
-    const RSTART = `${ROOT}/race-compile-started`;
-    const REND = `${ROOT}/race-compile-finished`;
-    await Bun.write(SLOWENH, [
-      "#!/bin/sh",
-      "input=$(cat)",
-      "case \"$input\" in",
-      `  *${RACEMARK}*) : > "${RSTART}" ; sleep 3 ; : > "${REND}" ;;`,
-      "esac",
-      "printf '%s' \"$input\" | bun -e '",
-      "const input = await new Response(Bun.stdin.stream()).text();",
-      "const draft = input.split(\"## Entwurf\").pop().trim();",
-      `console.log(JSON.stringify({ prompt: ${JSON.stringify(BRIEFMARK)} + draft }));`,
-      "'",
-      "",
-    ].join("\n"));
-    spawnSync("chmod", ["+x", SLOWENH]);
-    for (const f of [RSTART, REND]) rmSync(f, { force: true });
-    await restartSrv({ ...hEnv, FLEET_ENHANCE_CMD: SLOWENH, FLEET_BRIEF_MS: "300" });
-    const raceId = await mkTask(`${RACEMARK} — an owner brief filed mid-compile must survive the compile`);
-    const raceStarted = await till(async () => existsSync(RSTART), (v) => v, 60);
-    const raceOwner = "owner brief, filed while the compiler was still running";
-    const rb = await post(`/api/tasks/${raceId}/brief`, { text: raceOwner });
-    const raceFinished = await till(async () => existsSync(REND), (v) => v, 60);
-    // the clobber is the statement right after the stand-in's last byte, and its AUDIT ROW is the
-    // fact that the server has read that byte — the fixed 1.5 s guessed at the same moment
-    try {
-      await until(async () => !!(((await (await get("/api/audit?limit=100")).json()) as
-        { events: { event?: string; taskId?: string }[] }).events)
-        .find((e) => e.event === "brief_compile_discarded" && e.taskId === raceId),
-      { timeoutMs: 15_000, stepMs: 100, what: `brief_compile_discarded audit row for ${raceId}` });
-    } catch (e) { if (!(e instanceof UntilTimeout)) throw e; }
-    check("(h4-race) fixture: the compile really was in flight when the owner filed, and finished after",
-      raceStarted && rb.ok && raceFinished,
-      JSON.stringify({ started: raceStarted, brief: rb.status, finished: raceFinished }));
-    const raced = await hFull(raceId);
-    check("(h4-race) an owner brief filed DURING a compile survives it — text AND authorship",
-      raced?.brief?.text === raceOwner && raced.brief.edited === true
-      && raced.brief.model === "owner" && raced.brief.by === "owner",
-      JSON.stringify(raced?.brief ?? null));
-    // …and the compile that was thrown away is NAMEABLE. A silent discard is the same defect one
-    // layer down: nobody could later say a worker ran, produced bytes and lost.
-    const raceAudit = ((await (await get("/api/audit?limit=100")).json()) as
-      { events: { event?: string; detail?: string; taskId?: string; reason?: string; kept?: string }[] })
-      .events.find((e) => e.event === "brief_compile_discarded" && e.taskId === raceId);
-    check("(h4-race) …and the discarded compile is on the trail, with the kept author and the reason",
-      raceAudit?.kept === "owner" && raceAudit.reason === "brief-present:owner"
-      && (raceAudit.detail ?? "").startsWith(`${raceId} kept=owner`)
-      && !(raceAudit.detail ?? "").includes(raceOwner) && !(raceAudit.detail ?? "").includes(BRIEFMARK),
-      JSON.stringify(raceAudit ?? null));
-    await post(`/api/tasks/${raceId}/delete`, {});
-    for (const f of [SLOWENH, RSTART, REND]) rmSync(f, { force: true });
-    await restartSrv(hEnv); // (h5)/(h6) get back the server this section has always handed them
 
     // (h5) THE ROUTE IS RETIRED, not refusing. `POST /api/tasks/:id/reanalyse` answered 200 with a
     // reader and 409 without one for the analyst's whole life; a retired verb must answer neither,
@@ -7139,12 +7031,13 @@ export async function run(ctx: Ctx): Promise<void> {
     // into the state file, restart, and read the row back. A restored verdict would be a claim
     // about a tree that has since moved, refreshed by nothing — which is why it must not survive.
     const legacyId = await mkTask("legacy probe: a persisted analyst verdict must not survive a reload");
+    await ownBrief(legacyId, "legacy probe");
     await till(() => hFull(legacyId), (r) => !!r?.brief);
     await post("/api/dispatch", { on: false });
     // the hand-edit races the LIVE server's own saveState, which would silently write the field
-    // back out and leave the reload check passing for the wrong reason. So the compiler is stopped
-    // first: with no sweep due and the dispatcher off, nothing on this instance writes state.
-    await restartSrv({ ...hEnv, FLEET_BRIEF_MS: "0" });
+    // back out and leave the reload check passing for the wrong reason. So the dispatcher is
+    // stopped first: with it off, nothing on this instance writes state.
+    await restartSrv(hEnv);
     const stateFile = `${ROOT}/fleet.json`;
     const state = JSON.parse(readFileSync(stateFile, "utf8")) as { tasks: Record<string, unknown>[] };
     const legacyRow = state.tasks.find((t) => t.id === legacyId);
@@ -7155,7 +7048,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(h6) fixture: the state file really carries a legacy analysis before the reload",
       JSON.parse(readFileSync(stateFile, "utf8")).tasks
         .find((t: { id: string }) => t.id === legacyId)?.analysis?.verdict === "ready", "");
-    await restartSrv({ ...hEnv, FLEET_BRIEF_MS: "0" });
+    await restartSrv(hEnv);
     const legacyFull = await hFull(legacyId);
     const legacyDigest = await hRow(legacyId);
     check("(h6) a persisted analysis is DROPPED at load — neither the full row nor the poll carries it",
@@ -7173,26 +7066,9 @@ export async function run(ctx: Ctx): Promise<void> {
       reSaved !== undefined && reSaved.analysis === undefined,
       JSON.stringify(reSaved?.analysis ?? null));
 
-    // (h7) COMPILER OFF IS THE LIVE DEPLOYMENT, and it must stay byte-for-byte what it was: the
-    // draft keeps its raw text and the mode is OMITTED rather than sent as false. A non-event, so
-    // it out-waits three of the cadences (h1) proved the compiler runs at. The server is already on
-    // the compiler-off env from (h6).
-    const offPoll = await hSess();
-    check("(h7) with the compiler off its fact is omitted entirely (absent = off), and still no analyst fact",
-      offPoll.briefCompiler === undefined && !("analysis" in offPoll),
-      JSON.stringify({ briefCompiler: offPoll.briefCompiler, analysisKeyPresent: "analysis" in offPoll }));
-    const offT = await mkTask("brief probe: compiler off — this draft must stay raw");
-    await Bun.sleep(3000);
-    const offFull = await hFull(offT);
-    check("(h7) compiler off: no brief and no reading — the raw request is what a lane would get",
-      offFull?.brief === undefined && offFull?.analysis === undefined,
-      JSON.stringify(offFull ?? null));
-
     // cleanup — dispatcher off first (same requeue-race reason as (e)), then drop the probes.
-    // The stand-in env dies with the NEXT restartSrv on its own: extra never enters process.env.
     await post("/api/dispatch", { on: false });
-    for (const id of [hP, hQ, legacyId, offT]) await post(`/api/tasks/${id}/delete`, {});
-    await restartSrv(hEnv); // hand (i) a server with the compiler configured, as this section always did
+    for (const id of [hP, hQ, legacyId]) await post(`/api/tasks/${id}/delete`, {});
   }
 
   // --- (i) "▸ clarify first": the same spawn with a founding prompt that settles the
@@ -7445,24 +7321,9 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // --- Task.files + Task.cluster: one deterministic projector, three surface states.
   {
-    // THE BRIEF COMPILER IS TURNED OFF FIRST, and that is a PRECONDITION of this block, not tidiness.
-    // §(h) left this server armed (restartSrv(hEnv): FLEET_BRIEF_MS=1000 plus the enhancer stand-in),
-    // so a brief sweep ticks beside every row created below — and compileBriefs re-checks NOTHING
-    // after its `await runEnhance` (server.ts#compileBriefs): briefDue's "compiled, hands off" was
-    // read one enhancer-runtime earlier. A sweep that picks a row up in the few ms before the owner's
-    // POST /brief therefore overwrites that brief with the machine draft AFTER it, and the draft
-    // repeats the row's own text — which never names `.gitignore`. That is the whole of the
-    // "a new brief re-derives it" flake: 3 of 19 stored helper runs, always the same shape
-    // (files ["fleet-e2e.ts"], origin derived, a moved sha), reproduced deterministically with a
-    // slow stand-in enhancer. The product race is reported on its own line; this block's subject is
-    // the SURFACE, and a surface check must not share its one input with a second writer.
     const surfaceRepo = ((await (await get("/api/sessions")).json()) as
       { dispatch: { repo: string } }).dispatch.repo;
-    await restartSrv({ ...(surfaceRepo ? { FLEET_DISPATCH_REPO: surfaceRepo } : {}), FLEET_BRIEF_MS: "0" });
-    const surfaceCompiler = ((await (await get("/api/sessions")).json()) as
-      { briefCompiler?: { on?: boolean } }).briefCompiler;
-    check("surface setup: the brief compiler is OFF for this block — task.brief has one writer",
-      surfaceCompiler?.on !== true, JSON.stringify({ briefCompiler: surfaceCompiler ?? null, repo: surfaceRepo }));
+    await restartSrv(surfaceRepo ? { FLEET_DISPATCH_REPO: surfaceRepo } : {});
 
     const tracked = new Set([
       "server.ts", "server/persist.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts",
@@ -12583,25 +12444,10 @@ export async function run(ctx: Ctx): Promise<void> {
   //
   // WHAT "RAW" MEANS moved on 2026-09-10 with the queue analyst. It was "no verdict said ready";
   // it is now "no brief on the row", which is the fact that decides which BYTES the lane gets and
-  // the one that outlived the reader. So the honesty clause below is driven with a brief-compiler
-  // stand-in where it used to be driven with an analyst one. ---
+  // the one that outlived the reader. ---
   {
-    // marker-keyed like (h)'s stand-in, so the routing assertion below cannot pass by accident
-    const FAKEENH_K = `${ROOT}/fakeenhance-k`;
-    await Bun.write(FAKEENH_K, [
-      "#!/bin/sh",
-      "cat | bun -e '",
-      "const input = await new Response(Bun.stdin.stream()).text();",
-      "const draft = input.split(\"## Entwurf\").pop().trim();",
-      "console.log(JSON.stringify({ prompt: \"RAWSTART-BRIEF::\" + draft }));",
-      "'",
-      "",
-    ].join("\n"));
-    spawnSync("chmod", ["+x", FAKEENH_K]);
     const kRepo = ((await (await get("/api/sessions")).json()) as { dispatch: { repo: string } }).dispatch.repo;
-    // the compiler is OFF for (k1)/(k2): those two rows must stay briefless, i.e. genuinely raw,
-    // and a sweep writing a brief behind them would make both checks pass for the wrong reason.
-    await restartSrv({ FLEET_DISPATCH_REPO: kRepo, FLEET_ENHANCE_CMD: FAKEENH_K, FLEET_BRIEF_MS: "0" });
+    await restartSrv({ FLEET_DISPATCH_REPO: kRepo });
 
     interface KRow { id: string; status: string; briefAt?: number }
     const kRows = async (): Promise<KRow[]> =>
@@ -12643,14 +12489,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // (k3) THE HONESTY CLAUSE. The flag is not taken at its word: on a row that CARRIES a brief
     // there is no raw delivery to acknowledge, so the marker is dropped. The audit records a
     // deliberation that HAPPENED — an audit line a caller can simply claim is worth less than none.
-    await restartSrv({ FLEET_DISPATCH_REPO: kRepo, FLEET_ENHANCE_CMD: FAKEENH_K, FLEET_BRIEF_MS: "1000" });
-    const kC = await kMk("raw-start probe C: the compiler writes this one a brief, so nothing is raw");
+    const kC = await kMk("raw-start probe C: this one carries a brief, so nothing is raw");
+    await post(`/api/tasks/${kC}/brief`, { text: "raw-start probe C: a brief on the row" });
     let kCbrief: number | undefined;
     for (let i = 0; i < 40 && !kCbrief; i++) {
       kCbrief = (await kRows()).find((t) => t.id === kC)?.briefAt;
       if (!kCbrief) await Bun.sleep(250);
     }
-    check("(k3) fixture: the probe row carries a compiled brief (so the drop below can fail)",
+    check("(k3) fixture: the probe row carries a brief (so the drop below can fail)",
       typeof kCbrief === "number" && kCbrief > 0, `briefAt=${kCbrief ?? "none"}`);
     const kCr = await kStart(kC, { acknowledged: true });
     check("(k3) an acknowledgment on a BRIEFED row is DROPPED — the audit never records a deliberation that was only claimed",
@@ -12666,10 +12512,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // door that closes that gap and, above all, the two things about it that no ordinary probe sees:
   // that a filed row is `pending` and stays so, and that it is STILL THERE after the next boot ---
   {
-    // Back to the wrapper's env first. The (k) block above points the brief compiler at a stand-in
-    // with a 1 s tick, and a sweep writing `brief` onto the rows filed here would put fields into
-    // the reload comparison below that nothing in this section wrote. It also leaves the server exactly
-    // where every neighbouring module documents it should be left — on the wrapper's env.
+    // Back to the wrapper's env first. It leaves the server exactly where every neighbouring module
+    // documents it should be left — on the wrapper's env.
     await restartSrv();
 
     interface MSlot { id: number; cwd: string | null; label: string | null; worktree?: unknown }
@@ -14063,9 +13907,8 @@ export async function run(ctx: Ctx): Promise<void> {
       `slot=${nSlot} open=${nOpen?.status} token=${nToken.length} cwd=${nLive?.cwd} bound=${nBoundSlot}`);
 
     // (1) THE ACT ITSELF — and the ONE fact the whole lane turns on: the stored entry names the
-    // writing principal. `edited` stays true (it is the PIN against the brief sweep, not the
-    // authorship), `by` is "main", and `model` carries the author rather than the literal "owner"
-    // the door next to it writes.
+    // writing principal. `edited` stays true (it is the PIN, not the authorship), `by` is "main",
+    // and `model` carries the author rather than the literal "owner" the door next to it writes.
     const nOkId = await nMake("acp25 row of the bound program", nBoundProgram);
     const nAuditBefore = nAuditRows().length;
     const nOkRes = await nSharpen(nToken, nOkId, { text: "sharpened by the MAIN, not by the owner" });

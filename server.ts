@@ -5986,7 +5986,7 @@ const ATTENTION_KEEP_TERMINAL = 20;
 // An unanswered pile is an attention FAILURE, not a queue: past this the MAIN must resolve what it
 // already raised instead of adding to a list nobody can act on.
 const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
-// THE TWO SCHEDULER TICKS, deployment parameters like BRIEF_TICK_MS / AUTO_REVIEW_MS rather
+// THE TWO SCHEDULER TICKS, deployment parameters like AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
 // fires while the kill-switch is off". A non-event cannot be polled for — you wait a window wide
@@ -17882,7 +17882,7 @@ async function sharpenBriefForMain(s: Slot, id: string, body: Record<string, unk
   if (!mainBindingOf(s).ok || !boundProgramForMain(s, t.programId ?? null).ok)
     return json({ error: "this session's MAIN binding moved while the card was read — nothing written" }, 409);
   if (mainReview.review !== undefined) setTaskReview(t, mainReview.review, "main", s.id);
-  // `edited:true` is the PIN (briefDue: a row carrying a brief is never recompiled) and `by:"main"`
+  // `edited:true` is the PIN and `by:"main"`
   // is the authorship — the two facts that rode on one boolean until now. `model` carries the
   // author here for the same reason it carries the literal "owner" on the door next door: on a
   // hand-written brief that field has never named a model.
@@ -20380,7 +20380,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 }
 
 // the dispatch tail: deliver the brief once claude is up.
-// NO MODEL CALL LIVES HERE: the brief is compiled in the brief sweep and stored on the task; here it is sent with a freshly derived ContextPlan anchor block, and the
+// NO MODEL CALL LIVES HERE: the brief is stored on the task; here it is sent with a freshly derived ContextPlan anchor block, and the
 // stored brief is never rewritten with that projection. Fallback is the raw text. `ownerAct`
 // relaxes the AUTOMATION stops only (master stop, quiet hours — the "owner acts" carve-out
 // canDeliver documents); the claude-alive gate ALWAYS holds, because a claude that failed to boot
@@ -21124,46 +21124,6 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[], age
   });
 }
 
-// --- THE BRIEF COMPILER, and the reader that used to stand in front of it.
-//
-// Until 2026-09-10 this region held TWO tools. The QUEUE ANALYST (owner decision 2026-08-05, round
-// 2) read every dispatchable row against the tree and filed an advisory verdict — ready/needs-you/
-// unknown, with blockers and a collision list — which the dispatcher then required before starting
-// anything unattended, the board rendered as a chip, and `POST /api/tasks/:id/reanalyse` could
-// force. It decided nothing: the owner's promote was always the decision.
-//
-// It is retired. What it was measured to be worth, and the shape of the retirement, is the same
-// argument it once made against the eval gate it replaced: it had been switched OFF since
-// 2026-08-08 for its false-alarm rate (FLEET_ANALYSIS_MS default 60_000, but the live deployment
-// set 0), which is to say the fleet's real behaviour for a month was the one this cut makes the
-// only behaviour. A reader nobody runs is not a safety property; it is a vocabulary that keeps
-// promising one. The restore anchor is 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
-//
-// The BRIEF COMPILER stays, and it is now the only tool here. It turns a raw draft into the bytes a
-// lane is founded on — production, what it writes is what runs — and it never reads a row against
-// anything. The two hung off one number (FLEET_ANALYSIS_MS) until the switches were split on
-// 2026-08-08; with the analyst gone the split has one side left, and FLEET_BRIEF_MS is simply the
-// compiler's cadence.
-const BRIEF_TICK_MS = Math.max(0, Number(process.env.FLEET_BRIEF_MS ?? 0) | 0); // 0 = off, the default
-// ONE runtime fact for every compiler consumer: briefs already on the rows are history, and only
-// the configured cadence answers whether a compiler is running NOW.
-const BRIEF_ON = BRIEF_TICK_MS > 0;
-const BRIEF_BATCH_CAP = 6;    // one tick compiles at most this many, so a fan-out is bounded here
-const BRIEF_MAX_ATTEMPTS = 3; // consecutive failures before the row stops retrying itself
-const BRIEF_BACKOFF_MS = 60_000; // × 2^attempts — a broken worker must not hammer the machine
-const BRIEF_ENHANCE_LIMIT = 3;   // concurrent compiles; each is a throwaway claude session
-
-// the fact block for a lane that does not exist yet. Verified, not assumed: createWorktree forks
-// with `worktree add -b <branch> <path> <integration-tip>`, so the lane starts clean AT the tip —
-// 0 ahead, 0 behind, nothing uncommitted, no commits of its own. Which is to say the enhancer's
-// DATA block on the dispatch path was already empty when it ran post-spawn; compiling here costs
-// only the not-yet-existing branch name, and the "concretize from the DATA block" rule could never
-// have used that anyway.
-const freshLaneFacts = (laneBase: string | null): EnhanceFacts => ({
-  branch: null, laneScoped: true, laneBase, ahead: 0, behind: 0,
-  uncommitted: 0, uncommittedFiles: [], files: [], shortstat: "", commits: [], gitOp: false,
-});
-
 async function integrationHead(repo: string): Promise<string | null> {
   const br = await integrationBranch(repo);
   if (!br) return null;
@@ -21175,129 +21135,11 @@ const taskRepoOf = (t: Task): string | null => {
   const raw = t.repo ?? (DISPATCH_REPO || null);
   return raw === null ? null : repoCanon(raw);
 };
-// ONE flag for the sweep below. It guarded TWO sweeps writing the same field on the same rows until
-// the analyst went; it stays because it is what makes "no row is handed to two enhancers at once"
-// structural rather than a property of there happening to be one caller.
-let sweepBusy = false;
-// WHOSE BYTES A BRIEF ON THE ROW IS — the brief arm of briefSourceOf without its card branch,
-// because that branch answers a different question: a KARTE head in front of a brief changes the
-// first bytes a lane reads and changes no author.
-const briefAuthorOf = (b: TaskBrief): BriefAuthor | "compiled" =>
-  b.by ?? (b.edited || b.model === "owner" ? "owner" : "compiled");
-// THE SECOND READ, and the reason compileBriefs needs one: `briefDue` picked these rows ONE
-// ENHANCER RUNTIME ago, and nothing in this process waits for that worker — the owner's brief
-// door, the MAIN's, a delete and the dispatcher all move a row while a compile is in flight. So
-// the same four facts briefDue selects on are read again at the moment of the WRITE rather than at
-// the moment of the decision. Returns why this compile must be thrown away, or null when the row
-// is still the one it was started for.
-function briefRaceReason(t: Task): string | null {
-  if (!tasks.includes(t)) return "row-gone";
-  if (t.brief) return `brief-present:${briefAuthorOf(t.brief)}`;
-  if (dispatchingTasks.has(t.id)) return "dispatching";
-  if (t.status !== "pending" && t.status !== "queued") return `status:${t.status}`;
-  return null;
-}
-// THE ONE PLACE THE MACHINE WRITES A Task.brief, so a compiled brief has a single shape and a
-// single failure mode. Returns the ids whose compile FAILED, which the caller backs off on —
-// nothing else would. `consequence` names what happens NEXT, so one server.log line stays true.
-async function compileBriefs(rows: Task[], repo: string, laneBase: string | null,
-  consequence: string): Promise<string[]> {
-  const failed: string[] = [];
-  for (let i = 0; i < rows.length; i += BRIEF_ENHANCE_LIMIT) {
-    await Promise.all(rows.slice(i, i + BRIEF_ENHANCE_LIMIT).map(async (t) => {
-      try {
-        const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
-        // A COMPILE THAT FINISHED BEHIND ITS OWN ROW IS DROPPED, never written over what moved in
-        // the meantime. The owner brief that arrived mid-compile is the NEWER decision and this
-        // text is a derivation of the very draft it replaced (runEnhance read `t.text` before the
-        // await), so there is no sense in which the compile is the fresher fact — it is only the
-        // later write. Dropping it is not silent: nothing else in the fleet could name a compile
-        // that ran, cost a worker, and produced bytes nobody will ever read. Ids and authors only
-        // on that line — the audit ledger never carries prompt text (server/audit-log.ts).
-        const raced = briefRaceReason(t);
-        if (raced) {
-          const kept = t.brief ? briefAuthorOf(t.brief) : "none";
-          audit("brief_compile_discarded", undefined,
-            `${t.id} kept=${kept} discarded=${WORKER_MODELS.enhance.model} reason=${raced}`,
-            { taskId: t.id, reason: raced, kept, discarded: WORKER_MODELS.enhance.model });
-          console.log(`brief compiler: compile for ${t.id} discarded (${raced}) — the row's own brief stands`);
-          return;
-        }
-        t.brief = { text, at: Date.now(), model: WORKER_MODELS.enhance.model, edited: false };
-      } catch (e) {
-        // no brief is a legitimate state — the lane gets the raw draft. Both records, because they
-        // answer different questions and neither replaces the other: the line names WHICH draft
-        // (server.log, one per draft), the channel groups by REASON so eighteen of these read as
-        // one broken compiler counted 18× instead of eighteen unread lines.
-        failed.push(t.id);
-        console.log(`brief compiler: compile failed for ${t.id}, ${consequence}: ${e instanceof Error ? e.message : e}`);
-        logError("compileBriefs", e);
-      }
-    }));
-  }
-  return failed;
-}
-// The compiler's backoff, IN MEMORY on purpose: this paces a worker, it is not a finding about the
-// work. Nothing about a failed compile deserves to survive a restart — the row already carries the
-// honest state (no brief), and a fresh server may well have a working enhancer.
-const briefRetry = new Map<string, { attempts: number; at: number }>();
-// ONE rule for "this row needs the compiler": the compiler's schedule is a property of the DRAFT —
-// compiled once, never again, because a land does not invalidate a brief.
-function briefDue(t: Task, now: number): boolean {
-  if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
-  if (t.status !== "pending" && t.status !== "queued") return false;
-  if (t.brief) return false; // machine-written or owner-edited: both mean „[Zitat entfernt]“
-  const r = briefRetry.get(t.id);
-  if (!r) return true;
-  return r.attempts < BRIEF_MAX_ATTEMPTS && now - r.at >= BRIEF_BACKOFF_MS * 2 ** r.attempts;
-}
-async function tickBriefSweep(): Promise<void> {
-  if (sweepBusy || !BRIEF_ON) return;
-  sweepBusy = true;
-  try {
-    const now = Date.now();
-    const due = tasks.filter((t) => briefDue(t, now) && taskRepoOf(t) !== null);
-    if (!due.length) return;
-    // one repo batch per tick: the enhancer READS this repo, and a fan-out that is not bounded here
-    // is bounded by nothing.
-    const repo = taskRepoOf(due[0])!;
-    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, BRIEF_BATCH_CAP);
-    const bump = (t: Task): void => {
-      briefRetry.set(t.id, { attempts: (briefRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
-    };
-    // a missing repo is not a reason to spawn a worker against a directory that is not there — it
-    // takes the same backoff as a failed compile, so a mistyped FLEET_DISPATCH_REPO costs one log
-    // line per backoff step instead of one worker per tick.
-    if (!existsSync(repo) || !statSync(repo).isDirectory()) {
-      for (const t of batch) bump(t);
-      console.log(`brief compiler: repo not found, leaving ${batch.length} draft(s) raw: ${repo}`);
-      return;
-    }
-    const laneBase = await integrationBranch(repo);
-    const failed = new Set(await compileBriefs(batch, repo, laneBase, "the row keeps its raw draft"));
-    for (const t of batch) { if (failed.has(t.id)) bump(t); else briefRetry.delete(t.id); }
-    // a row that left the queue (done, deleted, evacuated by capTasks) takes its pacing with it —
-    // otherwise this map is the one thing here that grows for the life of the process
-    if (briefRetry.size) for (const id of [...briefRetry.keys()])
-      if (!tasks.some((t) => t.id === id)) briefRetry.delete(id);
-    // …and NOTHING ELSE. No verdict, no reading: this sweep compiles. A row it touched is still an
-    // unread row, and since 2026-09-10 nothing in this fleet claims to have read one.
-    if (failed.size < batch.length) saveState();
-  } finally {
-    sweepBusy = false;
-  }
-}
 
 // --- THE CARD TICK (S3): one small model turns each row's prose into a fixed shape, once.
 //
-// It sits beside the brief sweep because it is the same kind of machine — a paced, bounded,
-// throwaway worker over open auftrag rows — and deliberately does NOT share its flag: the brief
-// compiler rewrites how a request is SAID, this one only reads what it already says. Either can
-// be armed without the other.
-//
 // DEFAULT OFF, and off means NO TIMER IS REGISTERED (see the setInterval at the bottom of this
-// file), not a timer that returns early. That is the same bargain FLEET_BRIEF_MS strikes and it is
-// the one that makes the suites safe: every wrapper sets FLEET_CARD_MS=0, so no suite can spawn a
+// file), not a timer that returns early. That is the bargain that makes the suites safe: every wrapper sets FLEET_CARD_MS=0, so no suite can spawn a
 // real agent by forgetting a stand-in. Arming it in production is an OWNER act — watchdog.sh is
 // not touched by the lane that built this.
 const CARD_TICK_MS = Math.max(0, Number(process.env.FLEET_CARD_MS ?? 0) | 0); // 0 = off, the default
@@ -28819,7 +28661,6 @@ const MACHINE_SETTINGS = [
   { name: "FLEET_MODEL", value: DEFAULT_MODEL, default: FLEET_DEFAULT_MODEL, how: ".env + Neustart" },
   { name: "FLEET_STALLED_IDLE_MS", value: STALLED_IDLE_MS, default: 30 * 60_000, how: ".env + Neustart" },
   { name: "FLEET_CARD_MS", value: CARD_TICK_MS, default: 0, how: ".env + Neustart" },
-  { name: "FLEET_BRIEF_MS", value: BRIEF_TICK_MS, default: 0, how: ".env + Neustart" },
   { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + Neustart" },
   { name: "FLEET_AUTO_REVIEW_MS", value: AUTO_REVIEW_MS, default: 15_000, how: "watchdog.sh + kickstart" },
@@ -37410,9 +37251,8 @@ async function resolveTaskLane(id: string): Promise<TaskResolution> {
 // Two more shapes are retired, their WRITE doors closed by DISPOSITION_WORKERS (src/protocol.ts):
 // `analysis`, keyed by the `taskId`, with the queue analyst on 2026-09-10; and `enhance`, keyed by
 // the `draftId` = sha256(enhanced prompt).slice(0,16) that POST /api/enhance stamped, with the ✨
-// compose-box rework on 2026-09-19 (the route is gone; runEnhance lives on in the brief compiler,
-// which files no draft to label). The reader below validates no worker name, so the labels already
-// filed under either stay readable.
+// compose-box rework on 2026-09-19 (the route is gone). The reader below validates no worker
+// name, so the labels already filed under either stay readable.
 // the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both.
 // No worker gets a ref EXISTENCE check here: the rail records an owner opinion, and a label for a
 // row that has since been deleted is still a fact about what a worker produced. The shape gate
@@ -46174,10 +46014,6 @@ if (HOST_LOAD_MAX !== null || HOST_SWAP_MAX_PCT !== null)
 // no tick or gate reacts to a snapshot row; the one reader is the memory door (view=observations)
 if (STATE_SNAPSHOT_MS > 0) setInterval(() => void appendEvent(STATE_SNAPSHOT_FILE, buildStateSnapshot(Date.now())), STATE_SNAPSHOT_MS);
 console.log(`[fleet] state snapshot ${STATE_SNAPSHOT_MS > 0 ? `armed: FLEET_STATE_SNAPSHOT_MS=${STATE_SNAPSHOT_MS}` : "off (FLEET_STATE_SNAPSHOT_MS=0) — no tick registered"}`);
-// the brief compiler, off by default: a harness without a FLEET_ENHANCE_CMD stand-in MUST leave
-// FLEET_BRIEF_MS at 0, or the suite spawns a real agent. (A second timer stood beside it until
-// 2026-09-10 — the queue analyst's sweep on FLEET_ANALYSIS_MS.)
-if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
 // Same shape, same bargain: an unset FLEET_CARD_MS registers NO timer, so "off" is a property of
 // the process and not of a guard inside the sweep. The log line exists because the opposite
 // mistake — believing it armed when it is not — is the one that costs a week of silence.
@@ -50955,11 +50791,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: repoLaneCap(DISPATCH_REPO).max, repo: DISPATCH_REPO,
           waveBudget: LAND_WAVE_BUDGET, lanes: DISPATCH_REPO ? slots.filter((s) => inRepo(s, DISPATCH_REPO)).length : 0,
           quiet: inQuietHours(Date.now()) },
-        // The brief compiler's mode as a global runtime fact, never inferred per row from a stored
-        // brief. It sat beside an `analysis: { on }` sibling until 2026-09-10; that fact is gone
-        // with the analyst, and a client reading it must not silently degrade to "on".
-        // OMITTED AT ZERO like attentionOpen, for the same 12 KiB reason; absent reads as off.
-        ...(BRIEF_ON ? { briefCompiler: { on: true } } : {}),
         autosOn,
         quietHours,
         intake: !!INTAKE_SECRET,
@@ -54027,8 +53858,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return json({ ok: true, files, filesOrigin: "confirmed", unknownPaths });
     }
     // the brief is the one model output the owner may overwrite — it is the exact text a lane will
-    // receive. An edited brief is PINNED (`edited`; the sweep never recompiles over it) and invalidates
-    // any recompile over it.
+    // receive. An edited brief is PINNED (`edited`).
     const taskBrief = /^\/api\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
     if (req.method === "POST" && taskBrief) {
       const t = tasks.find((x) => x.id === taskBrief[1]);

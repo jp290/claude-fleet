@@ -740,10 +740,6 @@ export async function setSlotSetting(slot: number, field: "model" | "effort", va
 export let autosList: AutoInfo[] = [];
 export let tasksList: TaskInfo[] = [];
 export let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
-// The brief compiler's runtime mode. Omitted at zero on the wire, so `undefined` and `false` mean
-// the same thing here — off. A sibling `analysisOn` stood beside it until 2026-09-10 and retired
-// with the queue analyst.
-export let briefCompilerOn: boolean | undefined;
 export let intakeOn = false;
 // the automation kill-switch and quiet hours, as the owner poll carries them. Read by the settings
 // window's "Fleet" rows only; null until the first poll (and on a server that predates the fields).
@@ -7663,8 +7659,6 @@ export async function refresh() {
       // omitted by the server when nothing is configured — absent and empty are the same answer
       // here ("this board offers no switcher"), unlike `lands` above where absence had to mean YES
       instances?: InstanceLink[];
-      // omitted at zero by the server — absent means the compiler is off, exactly like `false`
-      briefCompiler?: { on?: boolean };
       // digest only (id/status/title/createdAt) — the binding lives on GET /api/programs
       programs?: ProgramDigest[];
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
@@ -7724,7 +7718,6 @@ export async function refresh() {
     const tiSource = data.instance?.source === undefined ? null : instanceSourceFrom(JSON.stringify(data.instance.source));
     renderInstanceBand(tiSource);
     setInstanceSource(tiSource);
-    briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     autosOnSrv = typeof data.autosOn === "boolean" ? data.autosOn : null;
     quietHoursSrv = data.quietHours ?? null;
@@ -7869,7 +7862,6 @@ export async function refresh() {
         t.review,
         // E4 · a variant decision arrives on a poll like a comment does, on the group row
         t.variantDecision?.winner, tasksList.find((x) => x.id === t.variantOf)?.variantDecision?.winner,
-        briefCompilerOn,
         // the lane line moves with the SLOTS (state, dirty, a recycled pointer), not with the row
         qLaneKey(new Map([[t.id, qLaneJoinOf(t.id)]])),
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";

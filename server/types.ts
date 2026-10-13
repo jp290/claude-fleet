@@ -1585,8 +1585,8 @@ interface Task {
   refine?: unknown;
   briefReview?: unknown;
   brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive.
-  // Compiled once per draft by the brief sweep, from then on stored, shown and editable (why it
-  // is stored rather than compiled at spawn: server-narrativ-archiv.md#task).
+  // Stored, shown and editable (why it is stored rather than compiled at spawn:
+  // server-narrativ-archiv.md#task).
   touched?: TaskTouch[]; // WHICH lands moved a file this row's surface names, newest first, capped
   // at TASK_TOUCHED_MAX. Advisory like `cluster`: it changes no status and gates
   // nothing — it answers "has the ground under this observation moved since it was written". ABSENT
@@ -1632,7 +1632,7 @@ interface Task {
 // it, and a migration that guessed an author for it would be the same falsehood with a timestamp.
 // The stored card: the validated body plus the provenance of the run that produced it. `model` is
 // the model that ACTUALLY RAN, read back from the worker observation rather than from the constant
-// the call site meant to use — the brief compiler stamps `SUMMARY_MODEL` on every brief regardless
+// the call site meant to use — the brief compiler stamped `SUMMARY_MODEL` on every brief regardless
 // of the route that answered it, and that is the mistake this field exists not to repeat.
 // `tokens` is absent unless the transport reported usage; absence is "not reported", never 0.
 interface TaskCard extends TaskCardBody {

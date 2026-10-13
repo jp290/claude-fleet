@@ -131,7 +131,7 @@ wait_bound() {
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_BRIEF_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=off exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_AUTO_REVIEW_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=off exec bun server.ts >> server.log 2>&1"
 wait_bound "boot (FLEET_CLEAN_REVIEW=off)" || exit $?
 
 cd "$DIR" || exit 1

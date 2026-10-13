@@ -67,7 +67,7 @@ verdict reaches the Programs whose rows the land covered.
 ## The life of one row
 
 1. **Filed** — owner, public intake, a steward pulse, or a bound Program MAIN writes a `pending` row.
-2. **Compiled** — optional sweeps turn the row's text into a brief (`server.ts#compileBriefs`) and a
+2. **Compiled** — an optional sweep turns the row's text into a
    card extracted by a small model and then checked deterministically (`card-extract.ts`).
 3. **Released** — an owner act (or a Program's release policy) moves it to `queued`.
 4. **Dispatched** — `server.ts#tickDispatch` runs on a timer, picks a queued row that fits the caps

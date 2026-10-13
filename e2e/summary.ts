@@ -4,7 +4,6 @@
 import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildEnhancePrompt } from "../enhance-prompt";
 import { HARVEST_LINE_MAX_BYTES, HARVEST_TICK_BYTES, TRANSCRIPT_TAIL_READ_BYTES, harvestStep, readTranscriptTail,
   tailCutMark, transcriptTailText, type HarvestCursor, type HarvestDrop, type TailView } from "../server/transcript-read";
 import { MODEL_DEFAULTS, roleDefaultsFor } from "../model-register";
@@ -460,91 +459,6 @@ export async function run(): Promise<void> {
     const latestArgv = (): string[] => readFileSync(`${ROOT}/codex-argv`, "utf8").split("\n").filter(Boolean);
     const noSumSession = async (): Promise<boolean> =>
       !(await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").some((name) => name.startsWith("sum-"));
-
-    // Enhance: POST /api/enhance is gone (2026-09-19), so runEnhance is driven through its one
-    // remaining caller — the brief compiler — on a 1 s sweep against the fixture repo. A lane that
-    // does not exist yet has a fully known fact block (server.ts#freshLaneFacts), so the expected
-    // prompt is exactly reconstructible. Equality, not a substring, proves stdin received the
-    // complete buildEnhancePrompt result. The run count is what makes the argv/prompt files ours: a
-    // compile of any other row in between would move it past +1 and fail as itself.
-    const briefEnv = { FLEET_BRIEF_MS: "1000", FLEET_DISPATCH_REPO: REPO };
-    const briefTask = async (text: string): Promise<string> =>
-      ((await (await post("/api/tasks", { text, queue: false })).json()) as { task: { id: string } }).task.id;
-    const briefOf = async (id: string): Promise<{ text: string; edited: boolean } | undefined> =>
-      ((await (await get("/api/tasks")).json()) as { tasks: { id: string; brief?: { text: string; edited: boolean } }[] })
-        .tasks.find((t) => t.id === id)?.brief;
-    const dropTask = async (id: string): Promise<void> => { await post(`/api/tasks/${id}/delete`, {}); };
-    // the compiler's outcome as the server records it: a brief on the row, or the one log line a
-    // failed compile writes — never a timeout read as either
-    const compiled = async (id: string, before: number): Promise<{ brief?: { text: string; edited: boolean }; failLine?: string }> => {
-      for (let i = 0; i < 40; i++) {
-        const brief = await briefOf(id);
-        if (brief) return { brief };
-        const failLine = readFileSync(`${ROOT}/server.log`, "utf8").split("\n")
-          .find((l) => l.includes(`brief compiler: compile failed for ${id},`));
-        if (failLine) return { failLine };
-        if (runs() > before + 1) return {};
-        await Bun.sleep(250);
-      }
-      return {};
-    };
-    if (!REPO) {
-      check("Codex enhance probe has the isolated fixture repo the brief compiler requires", false, "FLEET_E2E_REPO absent");
-    } else {
-      const laneBase = Bun.spawnSync(["git", "-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
-      const enhanceDraft = "prove migrated enhancer";
-      await setMode("enhance");
-      await restartSrv({ ...codexEnv, ...briefEnv });
-      const beforeEnhance = runs();
-      const enhId = await briefTask(enhanceDraft);
-      const enh = await compiled(enhId, beforeEnhance);
-      const enhanceArgv = latestArgv();
-      const enhancePrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
-      const facts = { branch: null, laneScoped: true, laneBase: laneBase || null, ahead: 0, behind: 0,
-        uncommitted: 0, uncommittedFiles: [], files: [], shortstat: "", commits: [], gitOp: false };
-      check("Codex enhance preserves its wrapped-JSON fallback and exact response contract",
-        enh.brief?.text === "codex enhanced prompt. own your work! /sharpen3" && enh.brief.edited === false
-        && runs() === beforeEnhance + 1, `${JSON.stringify(enh)} codexRuns=${runs()}/${beforeEnhance}`);
-      check("Codex enhance pins the register model/medium/read-only/ephemeral and receives the complete marked prompt only on stdin",
-        enhanceArgv[enhanceArgv.indexOf("-m") + 1] === CODEX.enhanceExec.id
-        && enhanceArgv[enhanceArgv.indexOf("-c") + 1] === 'model_reasoning_effort=medium'
-        && enhanceArgv[enhanceArgv.indexOf("-s") + 1] === "read-only" && enhanceArgv.includes("--ephemeral")
-        && enhancePrompt === buildEnhancePrompt(enhanceDraft, facts)
-        && enhancePrompt.includes(WORKER_CONTRACTS.enhance.mark)
-        && !enhanceArgv.some((a) => a.includes(WORKER_CONTRACTS.enhance.mark)) && await noSumSession(),
-        `argv=${enhanceArgv.join(" ")} bytes=${Buffer.byteLength(enhancePrompt)} laneBase=${laneBase}`);
-      check("codex worker removes its fresh tmp directory after enhance success", tmpGone());
-      await dropTask(enhId);
-
-      await setMode("malformed");
-      const beforeBad = runs();
-      const badId = await briefTask("malformed enhance probe");
-      const bad = await compiled(badId, beforeBad);
-      check("a malformed Codex enhance answer is the compiler's named failure and leaves the row briefless",
-        bad.brief === undefined && (bad.failLine ?? "").includes("enhancer returned no JSON"),
-        JSON.stringify(bad));
-      check("codex worker removes its fresh tmp directory after malformed enhance output", tmpGone());
-      await dropTask(badId);
-
-      const beforeEnhanceStandin = runs();
-      await restartSrv({ ...codexEnv, ...briefEnv, FLEET_ENHANCE_CMD: `${ROOT}/fakeenh` });
-      const standinId = await briefTask("prove stand-in precedence");
-      const standin = await compiled(standinId, beforeEnhanceStandin);
-      check("FLEET_ENHANCE_CMD stays ahead of the Codex route",
-        standin.brief?.text === "enhanced prompt. own your work! /sharpen3" && runs() === beforeEnhanceStandin,
-        `${JSON.stringify(standin)} codexRuns=${runs()}/${beforeEnhanceStandin}`);
-      await dropTask(standinId);
-
-      const beforeEnhanceRollback = runs();
-      await restartSrv({ ...codexEnv, ...briefEnv, FLEET_WORKER_ROUTE_ENHANCE: "claude", FLEET_WORKER_HARNESS: "codex" });
-      const rollbackId = await briefTask("prove explicit enhance rollback");
-      const rollback = await compiled(rollbackId, beforeEnhanceRollback);
-      check("FLEET_WORKER_ROUTE_ENHANCE=claude selects the old session lane without a Codex fallback",
-        rollback.brief === undefined && (rollback.failLine ?? "").includes('harness "codex" cannot host a worker session')
-        && runs() === beforeEnhanceRollback,
-        `${JSON.stringify(rollback)} codexRuns=${runs()}/${beforeEnhanceRollback}`);
-      await dropTask(rollbackId);
-    }
 
     // Commit-message: a private throwaway lane is needed because the real caller's response
     // contract is the commit result itself. It is removed before the later lane families start.

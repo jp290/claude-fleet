@@ -24,8 +24,7 @@ export async function run(): Promise<void> {
       `enhance=${gone.status} ${goneBody.slice(0, 80)} vs unknown=${never.status} ${neverBody.slice(0, 80)}`);
   }
   // --- buildEnhancePrompt: PURE-function unit tests against the REAL prompt module ---
-  // The brief compiler (e2e/tasks.ts, e2e/summary.ts) only proves a subprocess answer is plumbed
-  // through; the prompt text itself is checked here — buildMergePrompt's pre-extraction history. The
+  // The prompt text itself is checked here — buildMergePrompt's pre-extraction history. The
   // real enhancer runs a live agent, so its EFFECT is not testable here; what IS deterministic
   // is that the built string carries the fact layer and still upholds its invariants.
   {

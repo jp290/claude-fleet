@@ -2703,9 +2703,8 @@ wurden, ist also von dem des Owners nicht zu unterscheiden, und Abwesenheit ist 
 Schärfung.
 
 **Was gespeichert wird:** `TaskBrief.by` — ein geschlossenes Paar `"owner" | "main"`, in Form und
-Begründung `TaskNotePin.by`. `edited:true` bleibt, was es immer war: der PIN gegen den
-Brief-Sweep (`briefDue`); `by` ist die Urheberschaft. Die beiden Fakten ritten bis hierher auf einem
-Boolean.
+Begründung `TaskNotePin.by`. `edited:true` bleibt, was es immer war: der PIN; `by` ist die
+Urheberschaft. Die beiden Fakten ritten bis hierher auf einem Boolean.
 
 **Ein so gestempelter Brief ist auch die Reihenfolge der Zeile:** `edited:true` mit `by:"main"` (diese
 Tür) oder `by:"owner"` (die Owner-Tür) ersetzt die `NACH`-Angaben des Originaltexts an beiden

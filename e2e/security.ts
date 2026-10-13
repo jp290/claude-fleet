@@ -900,7 +900,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const MACHINE_SETTING_NAMES = [
     "FLEET_DISPATCH_MAX_LANES", "FLEET_VERIFY_TIMEOUT_MS", "FLEET_VERIFY_WAIT_MS",
     "FLEET_MIGRATE_PCT", "FLEET_LANE_MIGRATE_PCT", "FLEET_MODEL", "FLEET_STALLED_IDLE_MS",
-    "FLEET_CARD_MS", "FLEET_BRIEF_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
+    "FLEET_CARD_MS", "FLEET_LAND_FF_RETRY_ROUNDS",
     "FLEET_MERGE_REPAIR_ROUNDS", "FLEET_AUTO_REVIEW_MS", "FLEET_MAX_SESSIONS",
   ];
   const [machineOwner, machineSelf, machineShare] = await Promise.all([

@@ -1977,11 +1977,9 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 
 {
   // THE QUEUE ANALYST IS RETIRED (2026-09-10). What these rules hold is what the retirement left
-  // behind: the normalizer that strips its persisted field, the deterministic wave projection, and
-  // the brief compiler that was fused to it. The restore anchor is
-  // 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
+  // behind: the normalizer that strips its persisted field and the deterministic wave projection.
+  // The restore anchor is 7ff56eab83f64b0826142139c7f4d1be274ebd2d.
   const client = clientU.text;
-  const executableServer = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
   // LEGACY STATE IS DROPPED, NOT CARRIED. A fleet.json written before the retirement still holds
   // `analysis` on its rows. The normalizer must not restore it — the load-bearing half of the cut,
@@ -2027,30 +2025,6 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && !/"files-confirm"|\/files\/confirm/.test(client),
     `${surfaceActs} file-surface act(s) in the client`);
 
-  // --- AND WHAT SURVIVED IT. The brief compiler was fused to the analyst on one switch until
-  // 2026-08-08 and is the half that stayed; these rules are what keep the cut from having taken it
-  // along. Its own fact, its own guard, its own registration, and a sweep that writes no reading.
-  const briefFactDefs = [...executableServer.matchAll(/const BRIEF_ON = BRIEF_TICK_MS > 0;/g)];
-  pin("one plainly named server fact derives brief-compiler mode from its own configured cadence",
-    briefFactDefs.length === 1, `${briefFactDefs.length} BRIEF_ON definition(s)`);
-  const briefStart = server.indexOf("async function tickBriefSweep");
-  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("const clampStr", briefStart));
-  const briefCode = briefBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("BRIEF_ON feeds the brief sweep guard and its only scheduler registration",
-    /sweepBusy \|\| !BRIEF_ON/.test(briefBody)
-      && /if \(BRIEF_ON\) setInterval\([^\n]*tickBriefSweep[^\n]*, BRIEF_TICK_MS\);/.test(executableServer));
-  pin("the compiler sweep compiles and never judges: no verdict, no reading",
-    briefCode.length > 0 && !briefCode.includes("ANALYSIS") && !briefCode.includes(".analysis"),
-    briefCode.length ? "" : "tickBriefSweep not found");
-  // ONE site writes a machine brief, and after the retirement exactly ONE caller reaches it — the
-  // analyst's own compile step was the second. A third would be a new producer of the bytes a lane
-  // is founded on, which is the one thing this rule exists to make visible.
-  pin("exactly one site writes a machine-compiled brief, and one sweep goes through it",
-    [...executableServer.matchAll(/\.brief = \{ text, at: Date\.now\(\), model: WORKER_MODELS\.enhance\.model, edited: false \}/g)].length === 1
-      && [...executableServer.matchAll(/await compileBriefs\(/g)].length === 1);
-  pin("the owner poll carries the compiler mode as its own fact, omitted at zero",
-    /\.\.\.\(BRIEF_ON \? \{ briefCompiler: \{ on: true \} \} : \{\}\),/.test(executableServer)
-      && client.includes("briefCompilerOn = data.briefCompiler?.on;"));
   pin("every brief exposes one text-free top-level generation that invalidates client full/list/detail caches",
     /& \{ briefAt\?: number; criterion\?:/.test(server)
       && /\.\.\.\(t\.brief \? \{ briefAt: t\.brief\.at \} : \{\}\)/.test(server)
@@ -9850,9 +9824,9 @@ export default function (pi) {
 
 // --- THE CARD STAMPS THE MODEL THAT RAN (S3, 2026-09-12) -----------------------------------------
 // A must-agree pair whose other side is not a type: `WorkerRunObservation` is what runWorker knows
-// about the run it just made, and nothing forces a caller to read it. The brief compiler does not —
-// it writes `model: SUMMARY_MODEL` at the assignment, so every stored brief names the summary tier
-// whatever route actually answered. That is a false provenance on a live field today, and this pin
+// about the run it just made, and nothing forces a caller to read it. The brief compiler did not —
+// it wrote `model: SUMMARY_MODEL` at the assignment, so every stored brief names the summary tier
+// whatever route actually answered. That was a false provenance on a live field, and this pin
 // is what keeps the card from repeating it: the card's model must come from the OBSERVATION.
 //
 // Stated as a rule about the two writers rather than as a snapshot of either line: the card reads
@@ -9894,11 +9868,6 @@ export default function (pi) {
   const cardFallback = /model: observed\.model, at: Date\.now\(\), ms, valid: false,/.test(srv);
   pin(`${RULE_CARD} — extractCard stamps observed.model on BOTH its answer paths, never a constant`,
     cardAssign && cardFallback, `validated=${cardAssign} unreadable=${cardFallback}`);
-  // the contrast, and it is the reason the rule exists. If this ever stops matching, the brief
-  // compiler was fixed — delete this half, do not widen it.
-  const briefAssign = /t\.brief = \{ text, at: Date\.now\(\), model: WORKER_MODELS\.enhance\.model, edited: false \}/.test(srv);
-  pin(`${RULE_CARD} — the brief compiler still stamps the CONSTANT, which is why the card may not`,
-    briefAssign, `briefStampsConstant=${briefAssign}`);
   // DEFAULT OFF means no timer, not a guarded one — the property that makes a suite unable to spawn
   // a real extractor by forgetting a stand-in. Both halves: the arming condition and the const.
   const cardOff = /const CARD_ON = CARD_TICK_MS > 0;/.test(srv)

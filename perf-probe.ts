@@ -33,7 +33,7 @@ export async function scratchInstance(): Promise<{
     LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8",
     FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: token,
     FLEET_INSTANCE: "performance-fixture", FLEET_CMD: "cat", FLEET_LANDS: "0",
-    FLEET_BRIEF_MS: "0", FLEET_LANE_AUTOCLOSE: "0", FLEET_STATE_SNAPSHOT_MS: "0",
+    FLEET_LANE_AUTOCLOSE: "0", FLEET_STATE_SNAPSHOT_MS: "0",
     FLEET_CLAUDE_PROJECTS_DIR: join(dir, "projects"), FLEET_REPO_DIR: repo,
   };
   let server: ReturnType<typeof Bun.spawn> | undefined;

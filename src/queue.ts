@@ -1,4 +1,4 @@
-import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, briefCompilerOn, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
+import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, intakeOn, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
 import { perfRebuild } from "./perfmarks";
 import { Shell, ShellRow, openShell } from "./shell";
@@ -4065,9 +4065,7 @@ export function renderQueueDetail() {
         : brief
           ? `The stored brief will be sent${brief.edited
             ? (briefByMain(brief) ? " — pinned by its Program-MAIN" : " — yours, pinned") : ""}.`
-          : briefCompilerOn === true
-            ? "No brief yet — the raw request will be sent unless the compiler writes one first."
-            : "No brief, and no compiler is running — the raw request will be sent."));
+          : "No brief — the raw request will be sent."));
       release.appendChild(b);
       place(release, "release");
     }

@@ -2614,7 +2614,10 @@ let wtFieldKey = "";
 export function renderWorkplaceField(): void {
   const slot = panes[focused]?.slot ?? 0;
   const s = slot ? fleet.find((x) => x.id === slot) : undefined;
-  const repo = s?.cwd ? (s.worktree?.repo ?? s.repo ?? s.cwd) : null;
+  // a session without a lane ref in a linked worktree (a branch session, K5) has its worktree as
+  // s.repo; the Arbeitsorte know which repo that worktree belongs to
+  const holder = s?.cwd && !s.worktree ? workplaces?.repos.find((r) => r.worktrees?.some((w) => !w.primary && w.session?.slot === s.id)) : undefined;
+  const repo = s?.cwd ? (s.worktree?.repo ?? holder?.repo ?? s.repo ?? s.cwd) : null;
   // the worktree's row in the last Arbeitsorte read — looked up again at the click, since the read
   // may arrive after the field was drawn
   const rowNow = () => {

@@ -8,9 +8,12 @@
 // - THE TRANSCRIPT says whether a request is still open (the prompt is there, its end_turn is not),
 //   and it is Claude Code's own queue: `queue-operation` enqueue / dequeue / remove / popAll.
 // It reads only what was appended since the last read — a 34 MB file costs one read, not one per poll.
+// The chat's transcript route reads from the same seat (K10 S2): the bytes of the lines it asks for,
+// and what the whole file says about them, folded as the file grows.
 import { open, stat } from "node:fs/promises";
 import { composerBuffer } from "../composer";
 import { isInterruptMark } from "../src/pendingsend";
+import { ASK_TOOL } from "./conversation-read";
 
 export type Turn = "working" | "ready" | "asking" | "interrupted" | "unknown";
 export type TurnDetail = "thinking" | "hooks" | null;
@@ -172,15 +175,71 @@ export function queueOf(t: TailState): QueuedPrompt[] {
   return t.open.filter((q) => q.text.trim() !== "" && !q.text.startsWith("<system-reminder") && !q.text.startsWith("<task-notification"))
     .map((q) => ({ text: q.text.length > QUEUE_TEXT_MAX ? `${q.text.slice(0, QUEUE_TEXT_MAX)} … [+${q.text.length - QUEUE_TEXT_MAX} chars]` : q.text, at: q.at }));
 }
-// the whole file at once (the transcript route's `queued`, until S2 reads it from here). Every poll
-// pays for it, so it parses only what the queue needs: its own lines, and user lines while something waits
-export function sessionQueue(lines: readonly string[]): QueuedPrompt[] {
-  let t = emptyTail();
-  lines.forEach((l, i) => {
-    if (l.includes('"queue-operation"') || (t.open.length && l.includes('"user"'))) t = foldLine(t, l, i + 1);
-  });
-  return queueOf(t);
+
+// --- what the transcript route needs from the WHOLE file (K10 S2) ------------------------------
+// server.ts#transcriptPayload hands out the lines from `after` on, but three facts about them can sit
+// anywhere in the file: a queued prompt's attachment may stand before `after` and the same prompt's own
+// user line after it (it shows once, at the attachment), an AskUserQuestion call before `after` and its
+// answer after it, and the model is the newest assistant line's. They grow with the file, line by line.
+export interface ViewFacts {
+  // source_uuid of every queued_command prompt attachment
+  queued: ReadonlySet<string>;
+  // AskUserQuestion calls by tool_use id → their input (a sidechain's are not this conversation's), and
+  // the ids a result answers
+  askCalls: ReadonlyMap<string, unknown>;
+  askAnswered: ReadonlySet<string>;
+  // the newest assistant line's model and the effort it names. Claude writes message.model on every
+  // assistant line; "<synthetic>" marks a locally made error turn, not a model. The composer shows it where
+  // the slot record names no model — a hand-started or adopted session the fleet default would mislabel
+  // (seventeenth cut: slot 5 ran Haiku 4.5, the switch said Opus 5). `effort` rides on every assistant line
+  // (Claude Code 2.1.x), so an /effort typed in the pane shows from the next request on
+  model: string | null;
+  effort: string | null;
 }
+export function viewFolder(from?: ViewFacts) {
+  const queued = new Set(from?.queued), askCalls = new Map(from?.askCalls), askAnswered = new Set(from?.askAnswered);
+  let model = from?.model ?? null, effort = from?.effort ?? null;
+  return {
+    // only lines that name what a fact needs are parsed; a torn line is skipped (the render loop reports it)
+    add(raw: string): void {
+      if (raw.includes("queued_command")) {
+        try {
+          const d = JSON.parse(raw) as { type?: unknown; attachment?: { type?: unknown; commandMode?: unknown; source_uuid?: unknown } };
+          if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
+            && typeof d.attachment.source_uuid === "string") queued.add(d.attachment.source_uuid);
+        } catch { /* torn line */ }
+      }
+      const callLine = raw.includes(`"${ASK_TOOL}"`);
+      const resultLine = askCalls.size > 0 && raw.includes('"tool_result"') && [...askCalls.keys()].some((id) => raw.includes(id));
+      if (callLine || resultLine) {
+        try {
+          const d = JSON.parse(raw) as { type?: unknown; isSidechain?: unknown; message?: { content?: unknown } };
+          if (d.isSidechain !== true && Array.isArray(d.message?.content)) {
+            for (const b of d.message.content as { type?: unknown; name?: unknown; id?: unknown; input?: unknown; tool_use_id?: unknown }[]) {
+              if (d.type === "assistant" && b?.type === "tool_use" && b.name === ASK_TOOL && typeof b.id === "string" && b.id) askCalls.set(b.id, b.input);
+              else if (d.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string" && askCalls.has(b.tool_use_id))
+                askAnswered.add(b.tool_use_id);
+            }
+          }
+        } catch { /* torn line */ }
+      }
+      if (raw.includes('"assistant"') && raw.includes('"model"')) {
+        try {
+          const d = JSON.parse(raw) as { type?: unknown; effort?: unknown; message?: { model?: unknown } };
+          const m = d.message?.model;
+          if (d.type === "assistant" && typeof m === "string" && m && m !== "<synthetic>") {
+            model = m;
+            effort = typeof d.effort === "string" && d.effort ? d.effort : null;
+          }
+        } catch { /* torn line */ }
+      }
+    },
+    facts(): ViewFacts { return { queued, askCalls, askAnswered, model, effort }; },
+  };
+}
+// what a whole-file split would hand the route from line `after` on: the complete lines, and last a line
+// Claude Code is still writing (it fails to parse and caps `total` there, or it parses and counts)
+export interface TranscriptLines { lines: string[]; total: number; facts: ViewFacts }
 
 export function combine(frame: FrameRead, tail: TailState, at: number): LiveState {
   const turn: Turn = frame.shape === "spinner" ? "working"
@@ -204,46 +263,102 @@ export interface LiveDeps {
   // the occupant; a new one starts the slot's cache over
   identity(slot: number): string | null;
 }
-interface Seat { identity: string | null; file: string | null; offset: number; carry: string; tail: TailState;
+// `offset` = bytes read; `carry` = the bytes after the last newline (a line Claude Code is still writing);
+// `starts[k]` = where non-empty line k+1 begins, so a read from line `after` reads only its own bytes.
+// Reads of one seat run one after another (`chain`): the live poll, the transcript route and the push
+// tick share it, and two reads at once would fold the same bytes twice.
+interface Seat { identity: string | null; file: string | null; offset: number; carry: Buffer; tail: TailState;
+  starts: number[]; view: ReturnType<typeof viewFolder>; chain: Promise<unknown>;
   frame: FrameRead | null; frameMark: number; frameAt: number }
 // a capture costs ~3.8 ms CPU (tmux client 3.25, server 0.18, Bun 0.33 — measured 2026-10-13, 400
 // calls); MIN_GAP_MS bounds it to ~5/s per watched pane however many tabs ask, and an unpainted
 // pane is not captured again before IDLE_RECHECK_MS (a dialog that paints once, then waits)
 const MIN_GAP_MS = 200;
 const IDLE_RECHECK_MS = 5_000;
-const NL = "\n";
+const NL = "\n", NL_BYTE = 0x0a;
+
+const freshSeat = (identity: string | null): Seat => ({ identity, file: null, offset: 0, carry: Buffer.alloc(0), tail: emptyTail(),
+  starts: [], view: viewFolder(), chain: Promise.resolve(), frame: null, frameMark: -1, frameAt: 0 });
+const restart = (seat: Seat, file: string | null): void => {
+  Object.assign(seat, { file, offset: 0, carry: Buffer.alloc(0), tail: emptyTail(), starts: [], view: viewFolder() });
+};
+
+// `strict`: a file that cannot be read throws (the transcript route answers it, as its whole-file read
+// did); otherwise the seat just stays where it was (the live poll and the push tick try again)
+async function readTail(seat: Seat, file: string | null, strict: boolean): Promise<void> {
+  if (file !== seat.file) restart(seat, file);
+  if (!file) return;
+  let size: number;
+  try { size = (await stat(file)).size; } catch (e) { if (strict) throw e; return; }
+  if (size < seat.offset) restart(seat, file);
+  if (size === seat.offset) return;
+  const fh = await open(file, "r");
+  try {
+    const buf = Buffer.alloc(size - seat.offset);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, seat.offset);
+    // split on the newline BYTE: it never occurs inside a UTF-8 sequence, so a read that ends inside a
+    // character leaves it whole in the carry
+    const base = seat.offset - seat.carry.length;
+    const bytes = Buffer.concat([seat.carry, buf.subarray(0, bytesRead)]);
+    seat.offset += bytesRead;
+    let t = seat.tail, from = 0;
+    for (let nl = bytes.indexOf(NL_BYTE); nl !== -1; from = nl + 1, nl = bytes.indexOf(NL_BYTE, from)) {
+      const raw = bytes.toString("utf8", from, nl);
+      if (raw.trim() === "") continue;
+      seat.starts.push(base + from);
+      t = foldLine(t, raw, t.lines + 1);
+      seat.view.add(raw);
+    }
+    seat.tail = t;
+    seat.carry = Buffer.from(bytes.subarray(from));
+  } finally { await fh.close(); }
+}
+const inTurn = <T>(seat: Seat, job: () => Promise<T>): Promise<T> => {
+  const run = seat.chain.then(job, job);
+  seat.chain = run.catch(() => {});
+  return run;
+};
+// the lines from `after` on, out of the bytes the seat has read: the complete ones from the file, the
+// line still being written from the carry. The facts are a copy, the line being written folded into it
+async function linesFrom(seat: Seat, file: string, after: number): Promise<TranscriptLines> {
+  const n = seat.starts.length, from = Math.max(0, after | 0);
+  const lines: string[] = [];
+  if (from < n) {
+    const end = seat.offset - seat.carry.length;
+    const fh = await open(file, "r");
+    try {
+      const buf = Buffer.alloc(end - seat.starts[from]!);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, seat.starts[from]!);
+      for (const raw of buf.subarray(0, bytesRead).toString("utf8").split(NL)) if (raw.trim() !== "") lines.push(raw);
+    } finally { await fh.close(); }
+  }
+  const writing = seat.carry.toString("utf8");
+  const facts = viewFolder(seat.view.facts());
+  if (writing.trim() === "") return { lines, total: n, facts: facts.facts() };
+  if (from <= n) lines.push(writing);
+  facts.add(writing);
+  return { lines, total: n + 1, facts: facts.facts() };
+}
+// a file no seat holds (a past session's, server.ts#pastTranscript): read once, whole, the same way
+export async function readTranscript(file: string, after: number): Promise<TranscriptLines> {
+  const seat = freshSeat(null);
+  await readTail(seat, file, true);
+  return linesFrom(seat, file, after);
+}
 
 export function createLiveReader(deps: LiveDeps, now: () => number = Date.now) {
   const seats = new Map<number, Seat>();
-  const fresh = (identity: string | null): Seat => ({ identity, file: null, offset: 0, carry: "", tail: emptyTail(),
-    frame: null, frameMark: -1, frameAt: 0 });
-
-  async function readTail(seat: Seat, file: string | null): Promise<void> {
-    if (file !== seat.file) Object.assign(seat, { file, offset: 0, carry: "", tail: emptyTail() });
-    if (!file) return;
-    let size: number;
-    try { size = (await stat(file)).size; } catch { return; }
-    if (size < seat.offset) Object.assign(seat, { offset: 0, carry: "", tail: emptyTail() });
-    if (size === seat.offset) return;
-    const fh = await open(file, "r");
-    try {
-      const buf = Buffer.alloc(size - seat.offset);
-      const { bytesRead } = await fh.read(buf, 0, buf.length, seat.offset);
-      seat.offset += bytesRead;
-      const parts = (seat.carry + buf.subarray(0, bytesRead).toString("utf8")).split(NL);
-      seat.carry = parts.pop() ?? ""; // a line Claude Code has not finished writing
-      let t = seat.tail;
-      for (const raw of parts) if (raw.trim() !== "") t = foldLine(t, raw, t.lines + 1);
-      seat.tail = t;
-    } finally { await fh.close(); }
-  }
+  const seatOf = (slot: number): Seat => {
+    const identity = deps.identity(slot);
+    let seat = seats.get(slot);
+    if (!seat || seat.identity !== identity) { seat = freshSeat(identity); seats.set(slot, seat); }
+    return seat;
+  };
 
   return {
     async read(slot: number): Promise<LiveState> {
-      const identity = deps.identity(slot);
-      let seat = seats.get(slot);
-      if (!seat || seat.identity !== identity) { seat = fresh(identity); seats.set(slot, seat); }
-      await readTail(seat, deps.transcript(slot));
+      const seat = seatOf(slot);
+      await inTurn(seat, () => readTail(seat, deps.transcript(slot), false));
       const t = now(), mark = deps.paintMark(slot);
       const stale = seat.frame === null || (mark !== seat.frameMark && t - seat.frameAt >= MIN_GAP_MS)
         || t - seat.frameAt >= IDLE_RECHECK_MS;
@@ -254,6 +369,18 @@ export function createLiveReader(deps: LiveDeps, now: () => number = Date.now) {
         seat.frameAt = t;
       }
       return combine(seat.frame!, seat.tail, t);
+    },
+    // the transcript route (server.ts#transcriptPayload): the slot's file from line `after` on, reading only
+    // what was appended since the seat's last read and the bytes of the lines asked for
+    lines(slot: number, file: string, after: number): Promise<TranscriptLines> {
+      const seat = seatOf(slot);
+      return inTurn(seat, async () => { await readTail(seat, file, true); return linesFrom(seat, file, after); });
+    },
+    // complete lines in the slot's transcript now; null = no transcript (server/transcript-push.ts). A line
+    // still being written is not counted: when it completes, the count moves and the chat is told
+    count(slot: number): Promise<number | null> {
+      const seat = seatOf(slot);
+      return inTurn(seat, async () => { await readTail(seat, deps.transcript(slot), false); return seat.file ? seat.starts.length : null; });
     },
     // the tail as of the last read (server/recall.ts reads the whole queue and the newest prompt from it)
     tailOf(slot: number): TailState | null { return seats.get(slot)?.tail ?? null; },

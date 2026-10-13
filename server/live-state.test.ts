@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { combine, createLiveReader, emptyTail, foldLine, readFrame, sessionQueue, type TailState } from "./live-state";
+import { combine, createLiveReader, emptyTail, foldLine, readFrame, readTranscript, viewFolder, type TailState } from "./live-state";
 import fixtures from "./live-state.fixtures.json";
 
 const F = fixtures.frames as Record<string, string>;
@@ -93,10 +93,6 @@ describe("Transkript: Claude Codes Warteschlange und offene Anfrage", () => {
     expect(fold(TX.slice(0, end)).request).toBe(false);
     expect(fold(TX).request).toBe(false); // the last essay was interrupted: its marker closed it
   });
-  test("sessionQueue liest dieselbe Warteschlange wie der Leser", () => {
-    for (const n of [queueOp("enqueue", fq), queueOp("popAll"), queueOp("enqueue", `${fq} NEU`), TX.length])
-      expect(sessionQueue(TX.slice(0, n))).toEqual(fold(TX.slice(0, n)).open.map((q) => ({ text: q.text, at: q.at })));
-  });
 });
 
 describe("Zustand: Rahmen und Transkript zusammen", () => {
@@ -163,5 +159,103 @@ describe("Leser: nur was dazukam, und ein Rahmen nur, wenn die Pane gemalt hat",
     writeFileSync(file, `${TX[0]}\n`);
     who = "b";
     expect(await reader.read(2)).toMatchObject({ withdrawn: [], turn: "unknown" });
+  });
+});
+
+// Neuaufbau K10 S2 · Tempo. Owner 13.10.: „[Zitat entfernt]“
+// . Der Transkript-Abruf liest vom selben Sitz wie der Live-Zustand:
+// nur was dazukam, dann die Bytes der Zeilen ab `after`. Er muss dieselben Zeilen liefern wie die ganze Datei.
+describe("Transkript-Abruf: dieselben Zeilen wie die ganze Datei, gelesen wird nur, was dazukam", () => {
+  const dir = mkdtempSync(join(tmpdir(), "live-tail-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  // what the route read before S2: the whole file, split, blank lines dropped
+  const whole = (bytes: Buffer, after: number) => {
+    const all = bytes.toString("utf8").split("\n").filter((l) => l.trim() !== "");
+    return { lines: all.slice(after), total: all.length };
+  };
+  const reader = (file: string) => createLiveReader({ capture: async () => null, transcript: () => file, paintMark: () => 0, identity: () => "o" });
+
+  test("in Stücken angehängt, auch mitten in einem Umlaut abgerissen: je Stand dieselben Zeilen und dieselbe Zahl", async () => {
+    const file = join(dir, "a.jsonl");
+    writeFileSync(file, "");
+    const r = reader(file);
+    const bytes = Buffer.from(`${TX.join("\n")}\n\n  \n`, "utf8");
+    const umlaut = bytes.indexOf(Buffer.from("ü", "utf8"));
+    expect(umlaut).toBeGreaterThan(0);
+    const cuts = [0, 777, umlaut + 1, umlaut + 2, 9000, 9001, 20_000, bytes.length - 3, bytes.length];
+    for (let i = 1; i < cuts.length; i++) {
+      appendFileSync(file, bytes.subarray(cuts[i - 1], cuts[i]));
+      const sofar = bytes.subarray(0, cuts[i]);
+      const total = whole(sofar, 0).total;
+      for (const after of [0, 1, Math.floor(total / 2), total - 1, total, total + 3]) {
+        const got = await r.lines(1, file, after);
+        expect({ lines: got.lines, total: got.total }).toEqual(whole(sofar, after));
+      }
+    }
+  });
+  test("vollständige Zeilen zählen; die Zeile, die Claude Code noch schreibt, erst, wenn sie fertig ist", async () => {
+    const file = join(dir, "b.jsonl");
+    writeFileSync(file, `${TX[0]}\n${TX[1]}\n${TX[2]!.slice(0, 40)}`);
+    const r = reader(file);
+    expect(await r.count(1)).toBe(2);
+    expect((await r.lines(1, file, 0)).total).toBe(3); // the route hands the torn line out last, as before
+    appendFileSync(file, `${TX[2]!.slice(40)}\n`);
+    expect(await r.count(1)).toBe(3);
+  });
+  test("Abruf, Live-Zustand und Zählung gleichzeitig auf einem Sitz lesen jede Zeile einmal", async () => {
+    const file = join(dir, "c.jsonl");
+    writeFileSync(file, "");
+    const r = reader(file);
+    for (let k = 0; k < TX.length; k += 7) {
+      appendFileSync(file, TX.slice(k, k + 7).map((l) => `${l}\n`).join(""));
+      const [a, , n, b] = await Promise.all([r.lines(1, file, 0), r.read(1), r.count(1), r.lines(1, file, k)]);
+      const bytes = Buffer.from(TX.slice(0, k + 7).map((l) => `${l}\n`).join(""));
+      expect(a.lines).toEqual(whole(bytes, 0).lines);
+      expect(b.lines).toEqual(whole(bytes, k).lines);
+      expect(n).toBe(whole(bytes, 0).total);
+    }
+    expect((await r.read(1)).withdrawn).toEqual(fold(TX).withdrawn);
+  });
+  test("eine kürzer gewordene Datei wird von vorn gelesen", async () => {
+    const file = join(dir, "d.jsonl");
+    writeFileSync(file, TX.map((l) => `${l}\n`).join(""));
+    const r = reader(file);
+    expect((await r.lines(1, file, 0)).total).toBe(TX.length);
+    writeFileSync(file, `${TX[5]}\n`);
+    expect(await r.lines(1, file, 0)).toMatchObject({ lines: [TX[5]], total: 1 });
+  });
+  test("eine vergangene Session liest dieselben Zeilen einmal am Stück; eine fehlende Datei wirft wie zuvor", async () => {
+    const file = join(dir, "e.jsonl");
+    writeFileSync(file, TX.map((l) => `${l}\n`).join(""));
+    expect(await readTranscript(file, 10)).toEqual(await reader(file).lines(1, file, 10));
+    await expect(readTranscript(join(dir, "fehlt.jsonl"), 0)).rejects.toThrow();
+  });
+  test("was die ganze Datei über die Zeilen ab `after` sagt: Rückfrage samt Eingabe, Antwort, Warteschlange, neuestes Modell", async () => {
+    const ask = TX.map((l) => JSON.parse(l) as { type?: string; message?: { content?: { type?: string; name?: string; id?: string; input?: unknown }[] } })
+      .flatMap((d) => (d.type === "assistant" ? d.message?.content ?? [] : []).filter((b) => b.type === "tool_use" && b.name === "AskUserQuestion"));
+    expect(ask.length).toBe(2);
+    const ids = ask.map((b) => String(b.id));
+    const extra = [
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: String(ask[1]!.id), content: "Meer" }] } },
+      { type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", source_uuid: "q-1", prompt: "danach" } },
+      { type: "assistant", effort: "low", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } },
+      { type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: "API Error" }] } },
+    ].map((o) => JSON.stringify(o));
+    const file = join(dir, "f.jsonl");
+    writeFileSync(file, [...TX, ...extra].map((l) => `${l}\n`).join(""));
+    const { facts, lines } = await reader(file).lines(1, file, TX.length + 3);
+    expect(lines).toEqual([extra[3]]);
+    expect([...facts.askCalls.keys()]).toEqual(ids);
+    expect(facts.askCalls.get(ids[0]!)).toEqual(ask[0]!.input);
+    // the first one Esc closed in the recording, which Claude Code answers with a tool_result too
+    expect(TX.some((l) => l.includes('"tool_result"') && l.includes(ids[0]!))).toBe(true);
+    expect([...facts.askAnswered]).toEqual(ids);
+    expect([...facts.queued]).toEqual(["q-1"]);
+    expect({ model: facts.model, effort: facts.effort }).toEqual({ model: "claude-opus-5-5", effort: "low" });
+  });
+  test("eine Rückfrage aus einem Subagenten gehört nicht zu dieser Unterhaltung", () => {
+    const v = viewFolder();
+    v.add(JSON.stringify({ type: "assistant", isSidechain: true, message: { content: [{ type: "tool_use", name: "AskUserQuestion", id: "side", input: {} }] } }));
+    expect(v.facts().askCalls.size).toBe(0);
   });
 });

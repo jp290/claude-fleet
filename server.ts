@@ -201,7 +201,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
-import { createLiveReader, sessionQueue, type QueuedPrompt } from "./server/live-state";
+import { createLiveReader, readTranscript } from "./server/live-state";
+import { createTranscriptPush } from "./server/transcript-push";
 import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
@@ -23082,7 +23083,7 @@ function resultText(c: unknown): string {
 // the chat view and every other reader keep them
 // `ask` (owner transcript routes only): the file's native question calls by id, the ids its results
 // answer, and the response's binding — with it a call gets its typed form, a result its typed answer
-interface AskRead { calls: Map<string, unknown>; answered: Set<string>; binding: Binding }
+interface AskRead { calls: ReadonlyMap<string, unknown>; answered: ReadonlySet<string>; binding: Binding }
 function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry | null {
   const cap = (t: string, max: number) => (full ? t : trim(t, max));
   const d = raw as {
@@ -23094,7 +23095,7 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
   // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
-  // server/live-state.ts#sessionQueue) and reaches the conversation in one of two measured forms
+  // server/live-state.ts#foldLine) and reaches the conversation in one of two measured forms
   // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
   // an ordinary type:user line; absorbed into a running tool turn it becomes an
   // attachment/queued_command (measured 2026-09-21, live transcript daccbb0e) — terminal typing
@@ -23231,9 +23232,9 @@ const timelineIndex = new TimelineIndex({
   },
 });
 
-// THE SESSION'S OWN QUEUE lives in server/live-state.ts#sessionQueue now (Neuaufbau K10 S1): the same
-// FIFO pairing of `queue-operation` lines, plus the `popAll` that ↑ in the input field writes (Claude Code
-// 2.1.296, measured 2026-10-13). The live reader below folds the same lines incrementally.
+// THE SESSION'S OWN QUEUE comes with the live state (GET /live, server/live-state.ts#foldLine, Neuaufbau K10
+// S1): the FIFO pairing of `queue-operation` lines, plus the `popAll` that ↑ in the input field writes
+// (Claude Code 2.1.296, measured 2026-10-13). Since S2 the transcript route no longer carries it.
 
 // the conversation view's data source, shared by the owner chat view and the guest
 // reader — `after` = line count the client has already consumed, so entry numbering
@@ -23267,7 +23268,7 @@ function nativeOf(req: NativeReq, s: Slot, before: ReadSeat, read: { found: bool
     binding: transcriptBinding({ history: false, questions: read.questions, pinned: read.pinned, fileSession: read.fileSession, before, after }) };
 }
 async function transcriptPayload(s: Slot, afterRaw: number, full = false, native?: NativeReq):
-  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript; queued?: QueuedPrompt[] }> {
+  Promise<{ entries: TEntry[]; total: number; source: string | null; cache?: ConversationRead["cache"]; model?: string | null; effort?: string | null; ttlSec?: number; native?: NativeTranscript }> {
   const conv = harnessOf(s.harness).conversation;
   if (conv) return conversationPayload(s, conv, afterRaw, native);
   const before: ReadSeat = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
@@ -23277,49 +23278,25 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
     ...(native && { native: nativeOf(native, s, before, { found: false, questions: claude, pinned: false, fileSession: null, via: null }) }) };
   const pinned = !!s.sessionId && file === `${projDir(s.cwd!)}/${s.sessionId}.jsonl`;
   const tier = harnessOf(s.harness).id === "claude" && slots[s.id - 1] === s ? { ttlSec: deliveryCacheState(s).ttlSec } : {};
-  const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
   const after = Math.max(0, afterRaw | 0);
+  // The slot's LIVE file is read from its seat in server/live-state.ts (K10 S2): only what was appended
+  // since the last read, then the bytes of the lines from `after` on; what the whole file says about them
+  // (a queued prompt's attachment, AskUserQuestion calls and answers, the model) is folded there as the file
+  // grows. A past session's copy (pastTranscript) is not the slot's record and is read once, whole.
+  const read = slots[s.id - 1] === s ? await liveReader.lines(s.id, file, after) : await readTranscript(file, after);
   const nat = native && nativeOf(native, s, before, { found: true, questions: claude, pinned,
     fileSession: basename(file).replace(/\.jsonl$/, ""), via: pinned ? "pinned" : "newest-file" });
-  const ask: AskRead | undefined = nat && claude ? { calls: new Map(), answered: new Set(), binding: nat.binding } : undefined;
-  // A queued prompt the transcript ALSO records as its own type:user turn (same source_uuid)
-  // shows once, at the attachment's earlier position — the later duplicate is dropped. Pass 1
-  // collects over the WHOLE file: the attachment may sit before `after`, its duplicate after.
-  // The same pass (no second scan) collects the native question calls by id and the ids a result
-  // answers — a call's result may sit after `after`, its call before it. Only lines that name the
-  // tool, or a known call id, are parsed; a sidechain (subagent) line is not this conversation's.
-  const queued = new Set<string>();
-  for (const l of lines) {
-    if (l.includes("queued_command")) {
-      try {
-        const d = JSON.parse(l) as { type?: unknown; attachment?: { type?: unknown; commandMode?: unknown; source_uuid?: unknown } };
-        if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "prompt"
-          && typeof d.attachment.source_uuid === "string") queued.add(d.attachment.source_uuid);
-      } catch { /* torn line — the render loop reports it */ }
-    }
-    if (!ask) continue;
-    const callLine = l.includes(`"${ASK_TOOL}"`);
-    const resultLine = ask.calls.size > 0 && l.includes('"tool_result"') && [...ask.calls.keys()].some((id) => l.includes(id));
-    if (!callLine && !resultLine) continue;
-    try {
-      const d = JSON.parse(l) as { type?: unknown; isSidechain?: unknown; message?: { content?: unknown } };
-      if (d.isSidechain === true || !Array.isArray(d.message?.content)) continue;
-      for (const b of d.message.content as { type?: unknown; name?: unknown; id?: unknown; input?: unknown; tool_use_id?: unknown }[]) {
-        if (d.type === "assistant" && b?.type === "tool_use" && b.name === ASK_TOOL && typeof b.id === "string" && b.id)
-          ask.calls.set(b.id, b.input);
-        else if (d.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string" && ask.calls.has(b.tool_use_id))
-          ask.answered.add(b.tool_use_id);
-      }
-    } catch { /* torn line — the render loop reports it */ }
-  }
+  const ask: AskRead | undefined = nat && claude ? { calls: read.facts.askCalls, answered: read.facts.askAnswered, binding: nat.binding } : undefined;
+  // A queued prompt the transcript ALSO records as its own type:user turn (same source_uuid) shows once,
+  // at the attachment's earlier position — the later duplicate is dropped
+  const queued = read.facts.queued;
   const entries: TEntry[] = [];
-  const { model, effort } = transcriptModel(lines);
-  // the session's queue rides only on the owner's LIVE route: a past session's file holds no queue
-  // anyone still waits on, and share, steward and the export keep their payloads as they were
-  const tail = { ...(nat && { native: nat }), ...(native && !native.history && claude && { queued: sessionQueue(lines) }) };
-  for (let i = after; i < lines.length; i++) {
+  const { model, effort } = read.facts;
+  const tail = { ...(nat && { native: nat }) };
+  for (let k = 0; k < read.lines.length; k++) {
+    const i = after + k;
     try {
-      const parsed: unknown = JSON.parse(lines[i]);
+      const parsed: unknown = JSON.parse(read.lines[k]);
       const u = parsed as { type?: unknown; source_uuid?: unknown };
       if (queued.size && u.type === "user" && typeof u.source_uuid === "string" && queued.has(u.source_uuid)) continue;
       const e = viewEntry(parsed, i + 1, full, ask);
@@ -23328,15 +23305,16 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
       // only the FINAL line may be a partial mid-append (cap total so the next poll
       // re-reads it once complete) — an unparseable line mid-file is just skipped,
       // otherwise it would pin total forever and loop the client on the same range
-      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
+      if (i === read.total - 1) return { entries, total: i, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
     }
   }
-  return { entries, total: lines.length, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
+  return { entries, total: read.total, source: file.split("/").pop() ?? null, model, effort, ...tier, ...tail };
 }
 
 // THE LIVE STATE of a claude pane (server/live-state.ts, Neuaufbau K10 S1): working, ready, asking,
 // interrupted, Claude Code's own queue and its input field. Read on demand by the chat view's live poll;
-// a pane that painted nothing since its last frame is not captured again.
+// a pane that painted nothing since its last frame is not captured again. Its transcript seat also serves
+// the transcript route and the push tick (K10 S2).
 const liveReader = createLiveReader({
   capture: async (id) => {
     const s = slots[id - 1];
@@ -23376,25 +23354,6 @@ async function recallSlot(s: Slot, kind: RecallKind): Promise<RecallResult> {
   audit("slot_recall", s.id, `${kind} ${res.result}${"why" in res ? ` — ${res.why}` : ""}`,
     { kind, result: res.result, ...(res.result === "recalled" ? { chars: res.texts.reduce((n, t) => n + [...t].length, 0) } : {}) });
   return res;
-}
-
-// the model the conversation's newest assistant turn ran on (Claude writes message.model on every
-// assistant line; "<synthetic>" marks a locally made error turn, not a model). The composer shows
-// it where the slot record names no model — a hand-started or adopted session, which the fleet
-// default would otherwise mislabel (seventeenth cut: slot 5 ran Haiku 4.5, the switch said Opus 5).
-// The same line carries the request's `effort` (Claude Code 2.1.x writes it on every assistant line,
-// so an /effort typed in the pane shows from the next request on); null on a line without one.
-function transcriptModel(lines: string[]): { model: string | null; effort: string | null } {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"assistant"') || !lines[i].includes('"model"')) continue;
-    try {
-      const d = JSON.parse(lines[i]) as { type?: unknown; effort?: unknown; message?: { model?: unknown } };
-      const m = d.message?.model;
-      if (d.type === "assistant" && typeof m === "string" && m && m !== "<synthetic>")
-        return { model: m, effort: typeof d.effort === "string" && d.effort ? d.effort : null };
-    } catch { /* a torn last line — keep walking back */ }
-  }
-  return { model: null, effort: null };
 }
 
 // codex / pi: the whole file is parsed (pi's tree needs every parentId), so an unchanged file is
@@ -44879,6 +44838,13 @@ setInterval(() => operationalView?.observe(), AUTOS_TICK_MS);
 void codexCliObserver.tick();
 setInterval(() => void codexCliObserver.tick(), 30_000);
 setInterval(() => void poll(), 100);
+// THE CHAT IS TOLD WHEN ITS TRANSCRIPT GREW (server/transcript-push.ts, Neuaufbau K10 S2): on the same 100 ms
+// beat, for Claude Code sessions only, like GET /live (owner, 13.10.: Codex and pi stay as they are)
+const transcriptPush = createTranscriptPush({
+  slots: () => slots.filter((s) => s.cwd && s.clients.size > 0 && harnessOf(s.harness).id === "claude"),
+  count: (id) => liveReader.count(id),
+});
+setInterval(() => void transcriptPush.tick(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
 // the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
 setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);

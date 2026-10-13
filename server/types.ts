@@ -125,6 +125,8 @@ type WSData = {
   seed?: number; // client's scrollback budget for the connect seed; 0/absent = SEED_LINES
   share?: string; // set on guest connections: the share id this socket belongs to
   ownerInput?: { occupant: SlotStreamOccupant; paneId: string };
+  // the transcript line count this socket was last told (server/transcript-push.ts)
+  pushed?: number;
 };
 
 // a share exposes exactly ONE slot to a guest behind its own password — the owner

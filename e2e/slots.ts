@@ -2047,8 +2047,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /const pending = pane\.addPending\(outgoing\);[\s\S]*const delivery = deliver\(slot, outgoing\);\s*sendOk = await delivery;[\s\S]*if \(!sendOk\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
-    // (the Esc marker joined the import, card "wartet in der Chat-Ansicht")
-    /import \{ isInterruptMark, pendingSettledBy, splitDeliveryHeader \} from "\.\/pendingsend"/.test(cliSrc)
+    // (the Esc marker joined the import, card "wartet in der Chat-Ansicht"; the chat's recall joined it
+    // with unwrapPasted, K10 S3 — so the import names pendingSettledBy among whatever else it takes)
+    /import \{[^}]*\bpendingSettledBy\b[^}]*\} from "\.\/pendingsend"/.test(cliSrc)
     // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
     // retires one bubble per owner part, 2026-10-03)
     && /if \(!parts\) \{ this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\); continue; \}/.test(cliSrc)

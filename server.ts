@@ -26113,10 +26113,11 @@ async function tickKeepCache(): Promise<void> {
           run.last = { at: now, act: "warm", outcome: `held: ${verdict.gate}${verdict.detail ? ` (${verdict.detail})` : ""}` };
         continue;
       }
+      const text = KEEP_CACHE_TEXT;
       keepCacheInflight.add(s.id);
       void (async () => {
         try {
-          const { acceptance } = await sendText(s, KEEP_CACHE_TEXT, true, { path: "cache-warm", rollbackOwnPayload: true,
+          const { acceptance } = await sendText(s, text, true, { path: "cache-warm", rollbackOwnPayload: true,
             // THE COMPOSER DRAFT: sendText refuses an occupied composer itself (SendComposerOccupied —
             // nothing typed). What it lets through is a composer it CANNOT see on a harness that
             // declares one, and there a draft could stand unseen and merge with this text — so a
@@ -26143,15 +26144,15 @@ async function tickKeepCache(): Promise<void> {
           run.warmAts = [...run.warmAts.filter((t) => sentAt - t < 3_600_000), sentAt];
           run.lastWarmAt = sentAt;
           run.last = { at: sentAt, act: "warm", outcome: `sent (${acceptance})` };
-          s.history = [...s.history, { text: KEEP_CACHE_TEXT, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
           saveHistory(s);
-          logPrompt(s, KEEP_CACHE_TEXT, "auto", sentAt, undefined, acceptance);
+          logPrompt(s, text, "auto", sentAt, undefined, acceptance);
         } catch (e) {
           if (s.openedAt === openedAt)
             run.last = { at: Date.now(), act: "warm", outcome: `not sent: ${e instanceof Error ? e.message : e}` };
           if (!(e instanceof DeliveryCancelled)) {
             logError("keepCacheWarm", e);
-            logPrompt(s, KEEP_CACHE_TEXT, "auto", Date.now(), undefined, sendFailureDelivery(e));
+            logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
           }
         } finally { keepCacheInflight.delete(s.id); }
       })();

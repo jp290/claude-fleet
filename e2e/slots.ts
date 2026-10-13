@@ -2194,12 +2194,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /const KINDS: [^=]*= \[\s*\{ id: "session"[^\n]*\n\s*\{ id: "branch"[^\n]*\n\s*\{ id: "task"/.test(foundCode)
     && foundCode.includes('bar.setAttribute("aria-label", "Was entsteht");') && foundCode.includes('kind: "session", role: "lane", layer: "rolle"'),
     "KINDS + kindBar in src/founding.ts");
-  // should-reject a session started in secret: Branch has no door, so it posts nothing and says what is missing
-  const branchFoot = foundCode.slice(foundCode.indexOf('if (s.kind === "branch") {'), foundCode.indexOf('if (s.kind === "task") {'));
-  check("founding window: Branch stands grey and names the missing server door — it posts nothing",
-    foundCode.includes("const BRANCH_DOOR = ") && branchFoot.includes("go.disabled = true;") && !/post\(|onclick/.test(branchFoot)
-    && !/\/api\/worktrees["`?]/.test(foundCode),
-    branchFoot.slice(0, 160) || "no branch foot in renderFoot");
   check("founding window: Task files a card over POST /api/tasks (not released) or hands it to the running Orchestratorin over POST /send, receipt in the window",
     foundCode.includes('post("/api/tasks", { text, queue: false, repo })')
     && /post\("\/send", \{ slot: orch\.id, text: [^\n]*whenFree: true,/.test(foundCode)
@@ -6187,6 +6181,8 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
     export const api = async path => {
       if (path.startsWith('/api/dirinfo?')) return Response.json({ git: true, branch: 'fixture', dirty: 0, orphans: [{path:'/fixture/lane', branch:'fleet/continued'}] });
       if (path === '/api/sessions') return Response.json({ slots: window.fixtureSlots });
+      // a fleet without a repo opens the folder list; this fixture has no folders to offer
+      if (path.startsWith('/api/dirs?')) return Response.json({ error: 'fixture: no folders' }, { status: 404 });
       // the start receipt reads the project views FRESH at the occupant the start produced
       // (src/rights.ts#proofGrantRow): the server's answer for a session nobody assigned one to
       if (path.startsWith('/api/slots/') && path.endsWith('/memory-grant')) {
@@ -6250,6 +6246,13 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
       if (url === '/api/tasks') return Response.json({ task: { id: 'fixture-task-1' } });
       if (url === '/send') return window.fixtureParked ? Response.json({ ok: true, receipt: { sendId: 'p'.repeat(24) } }, { status: 202 })
         : Response.json({ ok: true, receipt: { sendId: 's'.repeat(24) } });
+      // THE BRANCH (K5): the branch with its Board-Name and points, then its session in a free place —
+      // the success answers as server.ts writes them
+      if (url === '/api/branches') return Response.json({ ok: true, repo: body.repo, branch: 'branch/fixture', path: '/fixture/branch', created: true, name: body.name });
+      if (url === '/api/branches/open') {
+        window.fixtureSlots = [fleet[0], { id: 2, cwd: '/fixture/branch', label: null, openedAt: 2000 }];
+        return Response.json({ ok: true, slot: 2, openedAt: 2000, cwd: '/fixture/branch', label: null, resumed: null, goal: body.goal ? 'follows' : null });
+      }
       // bootstrap-main's three answers that found nothing, word for word as server.ts writes them
       const boot = url.endsWith('/bootstrap-main');
       if (boot && window.fixtureBootstrap === 'existing') return Response.json({ ok: true, existing: true, program: { id: 'p-free', main: { slot: 1, openedAt: 100 } } });
@@ -6301,6 +6304,7 @@ window.fixtureRecycle = () => { fleet.find(r => r.id === 2).openedAt = 3000; doc
 window.fixtureResetSlots = () => { fleet.splice(1); fleet.push({id:2,cwd:null,label:null,openedAt:1000}); if (window.fixtureOrch) fleet[0].role = 'orchestrator'; else delete fleet[0].role; };
 window.fixtureLane = () => openLaneFounding('/fixture/repo', { slot: 1, openedAt: 100 });
 window.fixturePlus = () => openLaneFounding('/fixture/repo');
+window.fixtureNoRepo = () => { const cwd = fleet[0].cwd; fleet[0].cwd = null; openPicker(2); fleet[0].cwd = cwd; };
 window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free').onclick = window.fixtureOpen; window.fixtureReady = true;`, loader: 'ts'
       }));
     } }]
@@ -6646,10 +6650,29 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       g['should-reject: a late answer to a closed window never closes the window opened after it'] = await evaluate<boolean>(`!!document.querySelector('#shell-found .fdgo') && !document.querySelector('#shell-found .fdgo').disabled && !document.querySelector('#shell-found.fdproved') && window.fixtureShown === 2`);
 
       // --- BRANCH and TASK (owner 10.10.) ----------------------------------------------------------------
-      await reset(); await click('.fdkind[data-kind="branch"]'); await shot('branch');
+      // the branch door (K5; owner 11.10. „[Zitat entfernt]“): the branch with its name
+      // and points, then its session with the goal as first message
+      const typeIn = (selector: string, text: string) => evaluate(`(() => { const t = document.querySelector(${JSON.stringify(selector)}); t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event('input')); })()`);
+      const branchGo = `document.querySelector('#shell-found .fdgo[data-act="branch"]')`;
+      await reset(); await click('.fdkind[data-kind="branch"]'); await wait(`!!document.querySelector('.fdbranchname')`); await shot('branch');
+      g['Branch: the tab offers Neu and Bestehend, Neu chosen, under the title Neuer Branch'] = await evaluate<boolean>(`Array.from(document.querySelectorAll('.fdbranchmode .fdkind'), b => b.textContent).join() === 'Neu,Bestehend'
+        && document.querySelector('.fdbranchmode [aria-checked="true"]')?.dataset.mode === 'new' && document.querySelector('#shell-found h2').textContent === 'Neuer Branch'`);
       await click('.fdgo');
-      g['Branch stands grey and says what is missing; its button sends nothing'] = await evaluate<boolean>(`document.querySelector('.fdgo').disabled && ${footSays}.includes('Es fehlt die Server-Tür für einen Worktree ohne Session')
-        && document.querySelector('.fdgreycard').textContent.includes('Worktree ohne Session') && document.querySelector('#shell-found h2').textContent === 'Neuer Branch' && ${starts}.length === 0`);
+      g['should-reject an opening: without a name Branch öffnen stands grey and sends nothing'] = await evaluate<boolean>(`${branchGo}?.textContent === 'Branch öffnen' && ${branchGo}.disabled && ${starts}.length === 0`);
+      await reset('', 'window.fixtureNoRepo()', `!!document.querySelector('#shell-found .fdkind')`); await key('Escape');
+      await click('.fdkind[data-kind="branch"]'); await wait(`!!document.querySelector('.fdbranchname')`);
+      await typeIn('.fdbranchname', 'Uhr in der Statuszeile'); await click('.fdgo');
+      g['should-reject an opening: without a repo Branch öffnen stands grey, the foot asks for the repo, nothing is sent'] = await evaluate<boolean>(`${branchGo}?.disabled && ${footSays} === 'Wähle das Repo des Branches.' && ${starts}.length === 0`);
+      await reset(); await click('.fdkind[data-kind="branch"]'); await wait(`!!document.querySelector('.fdbranchname')`);
+      await typeIn('.fdbranchname', 'Uhr in der Statuszeile'); await typeIn('.fdbranchgoal', 'Die Uhr steht rechts.'); await typeIn('.fdbranchpoints', 'Uhr zeigen\n\n  Sekunden weglassen ');
+      g['with a name and a repo Branch öffnen is free'] = await evaluate<boolean>(`${branchGo}?.disabled === false`);
+      await click('.fdgo');
+      const shown = await wait(`window.fixtureShown === 2`).then(() => true, () => false);
+      detail['branch-open'] = await evaluate<string>(`JSON.stringify(${starts})`);
+      g['Branch öffnen: POST /api/branches with repo, name and points, then POST /api/branches/open with that branch and the goal; the window gives way to the session'] = shown && detail['branch-open'] === JSON.stringify([
+        { url: '/api/branches', body: { repo: '/fixture/repo', name: 'Uhr in der Statuszeile', points: ['Uhr zeigen', 'Sekunden weglassen'] } },
+        { url: '/api/branches/open', body: { repo: '/fixture/repo', branch: 'branch/fixture', goal: 'Die Uhr steht rechts.' } }])
+        && await evaluate<boolean>(`!document.querySelector('#shell-found')`);
       const typeTask = (text: string) => evaluate(`(() => { const t = document.querySelector('.fdtask'); t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event('input')); })()`);
       await reset(); await click('.fdkind[data-kind="task"]'); await wait(`!!document.querySelector('.fdtask')`);
       g['Task: nothing to file while the text is empty'] = await evaluate<boolean>(`document.querySelector('[data-act="file"]').disabled && document.querySelector('[data-act="orch"]').disabled`);

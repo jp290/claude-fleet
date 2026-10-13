@@ -36,11 +36,12 @@ describe("server.ts laden", () => {
     const marker = join(STATE_DIR, "deploy-inflight.json");
     const markerBody = JSON.stringify({ id: "ladetest", target: "0".repeat(40), at: 1_790_000_000_000 });
     writeFileSync(marker, markerBody, { mode: 0o600 });
+    // keine FLEET_-Variable von außen, auch nicht aus einer .env im Checkout (bun lädt sie sonst im Kind neu)
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env))
       if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
     const started = Date.now();
-    const proc = Bun.spawn([process.execPath, "-e", `await import(${JSON.stringify(SERVER)}); console.log("geladen");`],
+    const proc = Bun.spawn([process.execPath, "--no-env-file", "-e", `await import(${JSON.stringify(SERVER)}); console.log("geladen");`],
       { cwd: ROOT, env: { ...env, ...isolation }, stdout: "pipe", stderr: "pipe" });
     const deadline = setTimeout(() => proc.kill("SIGKILL"), LOAD_DEADLINE_MS);
     const exitCode = await proc.exited;
@@ -68,6 +69,9 @@ describe("server.ts laden", () => {
 // im Testprozess
 async function load() {
   if (!loadProvenSafe) throw new Error("Laden ist nicht als startfrei bewiesen — Import im Testprozess unterbleibt");
+  // wie im Subprozess: nur die Isolation. bun test hat die .env des Checkouts schon geladen, und
+  // server/types.ts liest beim Laden z. B. FLEET_SEPARATE_LANE_SLOTS und FLEET_MAX_SESSIONS (MAX_SLOTS)
+  for (const key of Object.keys(process.env)) if (key.startsWith("FLEET_")) delete process.env[key];
   Object.assign(process.env, isolation);
   const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
   const before = signals.map((sig) => process.listenerCount(sig));

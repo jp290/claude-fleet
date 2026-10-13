@@ -367,11 +367,6 @@ type AuditEvent =
   // (bootstrap-main with `slot`, server.ts#attachProgramToLiveMain). Detail names the program, the
   // Programs it joins and a replaced stale occupation if there was one — never Program content.
   | "program_main_attach"
-  // THE PORTFOLIO READ GRANT (memory M4, server.ts#patchMemoryGrant / #transferMemoryGrant): the
-  // owner set or revoked a grant on one occupant, a generic succession carried it (same or narrower)
-  // to the successor, or a set failed to reach disk and was rolled back. Detail names grant id,
-  // revision, occupant, project count and views — never a repository path.
-  | "memory_grant"
   // the recorded MAIN binding learned the session id its pane discovered AFTER the bind
   // (backfillProgramMainSessionId). Detail names the program and the id that filled the `null`;
   // there is no row for the no-op case, because "nothing to fill" is not an event.

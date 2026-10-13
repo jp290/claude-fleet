@@ -715,7 +715,7 @@ Netzwerkkosten werden nicht als null behauptet.
     Alle sechs Kombinationen sind unterstützt. Absenz bei einer neuen Codex-Gründung nimmt explizit
     `{sandbox:"danger-full-access",approval:"never"}`; andere Harnesses behalten ihre Defaults und
     verweigern jede explizite Auswahl als `unsupported` vor Spawn. Dies sind Fleet-Sessiondaten,
-    kein CLI-`--profile`, kein MemoryGrant, keine Rollen-, Pack- oder Accountberechtigung.
+    kein CLI-`--profile`, keine Rollen-, Pack- oder Accountberechtigung.
     Open/Recycling, Lane-Gründung/Attach, Task.spawn/Dispatch und Program-Gründung benutzen dieselbe
     Validierung. Slot-Persistenz und `GET /api/sessions` zeigen die normalisierte Auswahl.
     Fresh, exakter Resume, Heal, Wake und Restart geben immer `--sandbox` und `--ask-for-approval`

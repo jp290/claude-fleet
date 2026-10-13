@@ -16,7 +16,7 @@ import { porcelainPath } from "./gitpath";
 import { icon, type IconName } from "./icons";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { compTray, serverClock } from "./composer";
-import { rightsHoldFocus, rightsSection, wireRights } from "./rights";
+import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
 import { OFF_WHY, freshSuccession, handoverRows } from "./handover";
 
@@ -1447,9 +1447,6 @@ export async function renderBoard() {
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
   if (document.activeElement instanceof HTMLTextAreaElement && boardBody.contains(document.activeElement)) return;
-  // the same hold for an open choice in the rights block: its own state survives a repaint, but a
-  // rebuilt column would take the focus out from under the owner's next switch
-  if (rightsHoldFocus(boardBody)) return;
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
@@ -1512,7 +1509,7 @@ export async function renderBoard() {
     // is new on every tick, so a focused control was dropped to <body> three times a minute; a
     // stable key (boardFocusKey) finds its successor after the swap.
     // Both are read HERE, before the first section is built: a section that keeps its element
-    // across ticks (the rights' grant host, src/rights.ts#paintGrant) takes it out of the live
+    // across ticks takes it out of the live
     // column while the new nodes are assembled, the column is that much shorter for a moment, and
     // a scrollTop read then is already clamped — the restore jumped the column under the pointer.
     // From here to the swap nothing awaits, so the values are still the reader's at the swap.
@@ -2299,34 +2296,11 @@ function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElem
   }
   return box;
 }
-// the rights summary needs the grant, which only the rights block reads; while the tab is CLOSED this
-// asks the same owner route at most every 15 s per occupant, riding the repaint (no loop), and says
-// "unbekannt" when it could not read — never "keine" (G6.5). An open tab is the block itself, which
-// reads for itself: the summary then keeps its last answer and adds no second request.
-const grantSum = new Map<number, { openedAt: number | undefined; at: number; text: string }>();
-const grantBusy = new Set<number>();
-function grantSummary(s: SlotInfo): string {
-  const g = grantSum.get(s.id);
-  const fresh = g && g.openedAt === s.openedAt;
-  if (boardFolds.has("rechte")) return fresh ? g.text : "Projektsichten im Reiter";
-  if ((!fresh || Date.now() - g.at > 15_000) && !grantBusy.has(s.id)) {
-    grantBusy.add(s.id);
-    const openedAt = s.openedAt;
-    void api(`/api/slots/${s.id}/memory-grant`).then(async (r) => {
-      const j = (await r.json().catch(() => null)) as { grant?: { projectKeys?: unknown[] } | null; inForce?: boolean } | null;
-      const n = r.ok && j?.inForce && Array.isArray(j.grant?.projectKeys) ? j.grant.projectKeys.length : 0;
-      grantSum.set(s.id, { openedAt, at: Date.now(), text: !r.ok || !j ? "Projektsichten unbekannt"
-        : n ? `${n} ${n === 1 ? "Projektsicht" : "Projektsichten"}` : "keine Projektsichten" });
-    }).catch(() => { grantSum.set(s.id, { openedAt, at: Date.now(), text: "Projektsichten unbekannt" }); })
-      .finally(() => { grantBusy.delete(s.id); if (!fresh) void renderBoard(); });
-  }
-  return fresh ? g.text : "Projektsichten …";
-}
 function rightsSummary(s: SlotInfo): string {
   const program = s.programId ? programsPoll.find((x) => x.id === s.programId) : undefined;
   const own = s.worktree ? (s.taskId ? "eigener Auftrag" : "kein Auftrag")
     : s.programId ? `Program ${program?.title ? program.title.slice(0, 20) : s.programId.slice(0, 8)}` : "keine eigene Arbeit";
-  return `${own} · ${s.worktree ? "keine Projektsichten" : grantSummary(s)}`;
+  return own;
 }
 function moreSection(c: BoardCtx): HTMLElement {
   const { s, slot, brief, facts, prompts, outlineErr } = c;

@@ -1897,59 +1897,12 @@ const loadLaneResume = (value: unknown): LaneResume | null => {
     resumedAt: r.resumedAt, verify: "stale" };
 };
 interface SuccessionRetirement { at: number; cwd: string; token: string }
-// THE PORTFOLIO READ GRANT (memory M4, task 41641179; docs/self-api.md §memory). A READ permission
-// the owner sets on one exact occupant: which projects (opaque projectKeys) and which of their
-// projections the portfolio view may fold for it. It is the one new kind of fact M4 writes — no
-// label, model or role line grants it, and it grants nothing but reading: no write, dispatch or
-// land. `revision` counts every set, revoke and transfer of the slot's grant and is what a writer
-// must name (PATCH …/memory-grant `expectedRevision`); `revokedAt` keeps a revoked record so the
-// count survives. Bound to `occupant` AND `lineageId`: a recycled occupant or another line holds
-// nothing, and the loader drops a record that does not match its slot row exactly.
-const MEMORY_GRANT_VIEWS = ["work", "observations"] as const;
-type MemoryGrantView = typeof MEMORY_GRANT_VIEWS[number];
-const MEMORY_GRANT_PROJECTS_MAX = 50;
-const MEMORY_GRANT_ID_RE = /^[0-9a-f]{24}$/;
-const PROJECT_KEY_RE = /^[0-9a-f]{16}$/;
 interface MemoryGrantOccupant { slot: number; openedAt: number }
-interface MemoryGrant {
-  v: 1; grantId: string; revision: number; issuedBy: "owner-principal" | "succession"; issuedAt: number;
-  lineageId: string | null; occupant: MemoryGrantOccupant; projectKeys: string[]; views: MemoryGrantView[];
-  revokedAt: number | null; transferredFrom: MemoryGrantOccupant | null;
-}
-const MEMORY_GRANT_KEYS = ["v", "grantId", "revision", "issuedBy", "issuedAt", "lineageId", "occupant", "projectKeys",
-  "views", "revokedAt", "transferredFrom"];
-// fails CLOSED: any key outside the record, any malformed field → null, never a partial grant
-function loadMemoryGrant(v: unknown): MemoryGrant | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !MEMORY_GRANT_KEYS.includes(k))) return null;
-  const occ = (o: unknown): MemoryGrantOccupant | null => o && typeof o === "object" && !Array.isArray(o)
-    && Object.keys(o).length === 2 && Number.isSafeInteger((o as { slot?: unknown }).slot)
-    && typeof (o as { openedAt?: unknown }).openedAt === "number"
-    ? { slot: (o as MemoryGrantOccupant).slot, openedAt: (o as MemoryGrantOccupant).openedAt } : null;
-  const occupant = occ(g.occupant);
-  const from = g.transferredFrom === null || g.transferredFrom === undefined ? null : occ(g.transferredFrom);
-  const keys = g.projectKeys;
-  const views = g.views;
-  if (g.v !== 1 || typeof g.grantId !== "string" || !MEMORY_GRANT_ID_RE.test(g.grantId)
-    || !Number.isSafeInteger(g.revision) || (g.revision as number) < 1
-    || (g.issuedBy !== "owner-principal" && g.issuedBy !== "succession") || typeof g.issuedAt !== "number"
-    || !(g.lineageId === null || (typeof g.lineageId === "string" && LINEAGE_ID_RE.test(g.lineageId)))
-    || !occupant || (g.transferredFrom != null && !from)
-    || !Array.isArray(keys) || keys.length < 1 || keys.length > MEMORY_GRANT_PROJECTS_MAX
-    || !keys.every((k) => typeof k === "string" && PROJECT_KEY_RE.test(k)) || new Set(keys).size !== keys.length
-    || !Array.isArray(views) || views.length < 1 || new Set(views).size !== views.length
-    || !views.every((x) => (MEMORY_GRANT_VIEWS as readonly unknown[]).includes(x))
-    || !(g.revokedAt === null || typeof g.revokedAt === "number")) return null;
-  return { v: 1, grantId: g.grantId, revision: g.revision as number, issuedBy: g.issuedBy, issuedAt: g.issuedAt,
-    lineageId: g.lineageId as string | null, occupant, projectKeys: [...keys as string[]], views: [...views as MemoryGrantView[]],
-    revokedAt: g.revokedAt as number | null, transferredFrom: from };
-}
 // THE OWNER'S HANDOVER SETTING on one occupant (Slot.handover; server.ts#patchHandover, the
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
 // HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
 // FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
-// its hint at all. Bound to `occupant` like a read grant; every succession on the slot re-binds it to
+// its hint at all. Bound to `occupant`; every succession on the slot re-binds it to
 // the successor (server/succession.ts), a freshly opened occupant starts on the fleet's values.
 // `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
 // session above its effective threshold whose last model call is `keepCacheIdleMin` minutes old is
@@ -2157,10 +2110,6 @@ interface Slot {
   // can still open a past session's transcript after its report is gone. Same lifetime as
   // laneSuccessions: reset by openSlot, stamped back by succeedLane, persisted in fleet.json.
   laneSeats: LaneSeat[];
-  // THE PORTFOLIO READ GRANT on this occupant (MemoryGrant), null for every session the owner never
-  // granted one. Reset by openSlot and the teardown with the occupant; the generic succession rail
-  // alone carries it to its successor (same or narrower scope), persisted in fleet.json.
-  memoryGrant: MemoryGrant | null;
   // THE ROLE LINE this session holds (LineageHandover): minted by the first generic
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
@@ -3568,11 +3517,10 @@ export type {
   ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, CodexPermissions, SlotPermissions, SlotStreamOccupant,
   ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageAutoTarget, LineageObligationRef, LineageHandover,
-  LineageHandoverRead, LineageHandoverLoss, MemoryGrant, MemoryGrantView, MemoryGrantOccupant, HandoverSetting,
+  LineageHandoverRead, LineageHandoverLoss, MemoryGrantOccupant, HandoverSetting,
 };
 export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
-  MEMORY_GRANT_VIEWS, MEMORY_GRANT_PROJECTS_MAX, PROJECT_KEY_RE, loadMemoryGrant,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
   KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk,

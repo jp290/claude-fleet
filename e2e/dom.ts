@@ -303,10 +303,8 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   }
 
   // THE RIGHTS OF A SESSION (card "der Owner sieht an jeder Session und beim Gruenden, was sie
-  // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture —
-  // real grants, real 409s, a really re-occupied slot. Every scenario is its own line, so a painted
-  // draft, a PATCH that should not have gone out or an "unbekannt" drawn as "keine" turns exactly
-  // that line red. A browser that cannot run is the PROBE line — red, never a skip.
+  // lesen darf"; docs/design/datenrechte-notiz.md): measured against THIS instance, not a fixture.
+  // Every scenario is its own line. A browser that cannot run is the PROBE line — red, never a skip.
   try {
     // both widths stay (e897fa95 left its one-viewport verdict here): the trail saw rights claims red at
     // 1200 AND at 390, different ones at each, and a claim stays at every width it was red at

@@ -86,16 +86,6 @@ Die Nachfolge
 ändert daran nichts: sie nennt weiter den **Linien-Record** als die eine Übergabe (§Nachfolge unten,
 `e3e5084a`); die Karte ist ein zusätzlicher TEXT, kein zweiter Kanal.
 
-**Das Portfolio-Gedächtnis ist eine Owner-Zuteilung, keine Rollenfolge** (seit 2026-09-24, Zeile
-41641179). Beide Briefe tragen nach den Schritten den Pointer `YOUR PORTFOLIO MEMORY …`
-(`server.ts#memoryPortfolioPointer`, ≤ 512 B) auf `GET /api/self/memory?view=portfolio` — die
-Faltung der Projekte, die ein vom Owner gesetzter Read-Grant nennt, jede Summe auf Projekt und
-Quellversion rückführbar. Das Label „Orchestrator" gewährt ihn nicht (409 `no-grant`); der Owner
-setzt ihn mit `PATCH /api/slots/:id/memory-grant`, er ist reines Leserecht, und die generische
-Nachfolge trägt ihn gleich oder verengt (`succeed` mit `memoryGrant`), nie weiter. Die Briefe
-kopieren keine Portfolio-Tabelle: die manuelle projektübergreifende Übersicht im Übergabetext
-entfällt, gelesen wird sie aus der Tür. Vertrag: `docs/self-api.md` §memory.
-
 Der Einstieg für Orchestratorin und Standard-MAIN im Fleet-Repo ist genau `./state.sh --brief`.
 Die Rollenwahl stammt aus `/api/self`: die Orchestratorin liest zusätzlich die gehaltene
 Owner-Betriebssicht (vorhandenes Owner-Leserecht bleibt nötig), die MAIN nur ihre eigene

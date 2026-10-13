@@ -40,7 +40,6 @@ import { modelLabel } from "./modelname";
 import { packIdFassung, standSincePreview, type BranchesView, type BranchOtherView, type FoundingPlanOmission, type FoundingPlanPack,
   type FoundingPlanPart, type FoundingSessionAgents, type LaneAnchor, type PackAnchors, type PackStand } from "./protocol";
 import { openShell, type Shell } from "./shell";
-import { dropGrantMount, proofGrantRow } from "./rights";
 
 // the four roles of the register (session-blocks.ts#SessionRole); the server's own word for each
 // comes with the plan (`rollen[].wort`), the sentence is the window's (Konzept 3, Blatt 20)
@@ -2228,7 +2227,7 @@ async function captureProof(s: State, body: StartProof["body"], before: number |
   const slots = document.getElementById("slots");
   if (slots) watch.observe(slots, { childList: true, subtree: true });
   const teardown = s.teardown;
-  s.teardown = () => { watch.disconnect(); dropGrantMount("proof"); teardown(); };
+  s.teardown = () => { watch.disconnect(); teardown(); };
   renderProof();
   if (packs.length || role === "orchestratorin" || role === "main") {
     try {
@@ -2361,27 +2360,7 @@ function renderProof() {
     if (p.receiptCount > 1) packCell.append(el("div", "fdproofnote", `${p.receiptCount} Startbelege — der jüngste gilt.`));
   }
   if (p.receiptError) packCell.append(el("div", "fdproofnote", p.receiptError));
-  // E38/E39: THE PROJECT VIEWS this start granted — none, by construction — read back FRESH at the
-  // occupant the start produced. Below the table the same block as in the session's Info, as an
-  // optional step of its own: a failure there is said in the block, the status line stays.
-  let step: HTMLElement | null = null;
-  if (row && !p.stale) {
-    const gr = proofGrantRow(p.result.slot, row.openedAt!, !!row.worktree, () => { if (S === s) renderProof(); });
-    const r = el("div", "fdproofrow"); r.dataset.field = "Projektsichten";
-    r.dataset.state = gr.warn ? "missing" : "same";
-    const req = el("div", "fdrequested", "keine");
-    req.append(el("span", "fdproofnote", "der Start vergibt keine"));
-    const got = el("div", `fdactual${gr.warn ? " warn" : ""}`);
-    got.append(gr.observed);
-    r.append(el("span", "fdproofkey", "Projektsichten"), req, got);
-    table.append(r);
-    if (gr.step) {
-      step = el("div", "fdproofgrant");
-      step.append(lab("Projektsichten · optional — die Session läuft auch ohne"), gr.step);
-    }
-  }
   detail.append(table);
-  if (step) detail.append(step);
   s.shell.foot.replaceChildren();
   // no session started: there is nothing to go to, so the button is not offered at all
   if (!row) {

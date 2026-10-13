@@ -49462,8 +49462,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // client can only ever ask for LESS than the server already sends, never more.
       const seedParam = Number(url.searchParams.get("seed") ?? 0) | 0;
       const seed = seedParam > 0 ? Math.min(SEED_LINES, Math.max(50, seedParam)) : 0;
+      // push = the chat view asks to hear when the transcript grew (server/transcript-push.ts, K10 S2). It is
+      // a text frame on a socket every other reader takes as terminal bytes, so only a client that asks gets it
+      const push = url.searchParams.get("push") === "1";
       if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0,
-        cols, rows, force, seed, ownerInput: { occupant, paneId: inputTarget.paneId } } })) return;
+        cols, rows, force, seed, push, ownerInput: { occupant, paneId: inputTarget.paneId } } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {

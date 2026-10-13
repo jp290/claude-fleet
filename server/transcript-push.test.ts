@@ -10,9 +10,9 @@ const sock = (data: PushSocket["data"]) => {
 };
 
 describe("Push: der Chat hört, wann sein Transkript gewachsen ist", () => {
-  test("jeder bereite Owner-Socket hört die neue Zeilenzahl einmal; ein Gast und ein noch nicht geseedeter Socket nichts", async () => {
+  test("jeder bereite Socket, der danach gefragt hat, hört die neue Zeilenzahl einmal; einer, der nicht fragte (Gast, Werkzeug, Check), und ein noch nicht geseedeter nichts", async () => {
     let n = 4;
-    const owner = sock({ ready: true }), second = sock({ ready: true }), guest = sock({ ready: true, share: "s1" }), seeding = sock({ ready: false });
+    const owner = sock({ ready: true, push: true }), second = sock({ ready: true, push: true }), guest = sock({ ready: true }), seeding = sock({ ready: false, push: true });
     const push = createTranscriptPush({ slots: () => [{ id: 1, clients: [owner, second, guest, seeding] }], count: async () => n });
     await push.tick();
     await push.tick(); // nothing new: nothing sent
@@ -29,7 +29,7 @@ describe("Push: der Chat hört, wann sein Transkript gewachsen ist", () => {
   });
   test("eine Datei, die schrumpft (neue Session-Datei), wird auch gemeldet", async () => {
     let n = 40;
-    const owner = sock({ ready: true });
+    const owner = sock({ ready: true, push: true });
     const push = createTranscriptPush({ slots: () => [{ id: 1, clients: [owner] }], count: async () => n });
     await push.tick();
     n = 2;
@@ -37,15 +37,15 @@ describe("Push: der Chat hört, wann sein Transkript gewachsen ist", () => {
     expect(owner.got).toEqual([transcriptFrame(40), transcriptFrame(2)]);
   });
   test("ohne Transkript, ohne Owner oder bei einem Lesefehler: nichts gesendet, der nächste Takt läuft wieder", async () => {
-    const owner = sock({ ready: true });
+    const owner = sock({ ready: true, push: true });
     let fail = true, asked = 0;
     const push = createTranscriptPush({
-      slots: () => [{ id: 1, clients: [owner] }, { id: 2, clients: [] }, { id: 3, clients: [sock({ ready: true })] }],
+      slots: () => [{ id: 1, clients: [owner] }, { id: 2, clients: [sock({ ready: true })] }, { id: 3, clients: [sock({ ready: true, push: true })] }],
       count: async (id) => { asked++; if (id === 3) return null; if (fail) throw new Error("ENOENT"); return 7; },
     });
     await push.tick();
     expect(owner.got).toEqual([]);
-    expect(asked).toBe(2); // slot 2 has no owner socket: not even counted
+    expect(asked).toBe(2); // slot 2 has no socket that asked: not even counted
     fail = false;
     await push.tick();
     expect(owner.got).toEqual([transcriptFrame(7)]);
@@ -53,7 +53,7 @@ describe("Push: der Chat hört, wann sein Transkript gewachsen ist", () => {
   test("ein Takt, der noch liest, wird nicht verdoppelt", async () => {
     let release = () => {};
     let counts = 0;
-    const owner = sock({ ready: true });
+    const owner = sock({ ready: true, push: true });
     const push = createTranscriptPush({
       slots: () => [{ id: 1, clients: [owner] }],
       count: () => { counts++; return new Promise<number>((ok) => { release = () => ok(3); }); },

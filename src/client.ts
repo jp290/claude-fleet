@@ -2642,7 +2642,7 @@ class Pane {
     const seed = plan().seed;
     this.pushLines = null;
     const ws = new WebSocket(
-      `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}${seed ? `&seed=${seed}` : ""}`,
+      `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}${seed ? `&seed=${seed}` : ""}&push=1`,
     );
     this.ws = ws;
     ws.binaryType = "arraybuffer";

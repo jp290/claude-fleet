@@ -1742,18 +1742,25 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 
   // RESTS: a pane printing is refused by name, and nothing ends. The busy state is OBSERVED on the
   // non-mutating preview first — a POST into a pane that happened to pause would hand over for real.
+  // Only a busy the LOOP made counts: for 1.5 s after the open (server.ts#ensureSlot, quietUntil) the
+  // loop's bytes do not refresh lastOutput, and the preview's busy is then the attach paint's — it
+  // turns ready under the POST that follows (s1 of a k/4 audit, 13.10.: idleMs 490, then 200 and a
+  // real succession). Row BEFORE preview, as in the Program-MAIN half below.
+  const loopSentAt = Date.now();
   await tmuxOut("send-keys", "-t", `=s${free}:`, "for i in $(seq 1 60); do echo owner-succ-busy $i; sleep 0.1; done", "Enter");
   let busyPreview: Preview = {};
-  for (let i = 0; i < 60 && busyPreview.refusal?.reason !== "busy"; i++) {
+  let loopCounted = false;
+  for (let i = 0; i < 60 && !(loopCounted && busyPreview.refusal?.reason === "busy"); i++) {
     await Bun.sleep(100);
+    loopCounted = ((await sessions()).slots.find((x) => x.id === free)?.lastOutput ?? 0) >= loopSentAt;
     busyPreview = await preview(free);
   }
-  const busy = busyPreview.refusal?.reason === "busy" ? await post(`/api/slots/${free}/succeed`, {}) : null;
+  const busy = loopCounted && busyPreview.refusal?.reason === "busy" ? await post(`/api/slots/${free}/succeed`, {}) : null;
   const busyBody = busy ? (await busy.json()) as { reason?: string; error?: string } : {};
   check("owner succession door: a pane mid-turn is refused 409 `busy` by name, and the occupant stays",
     busyPreview.ready === false && busy?.status === 409 && busyBody.reason === "busy"
       && (await sessions()).slots.find((x) => x.id === free)?.openedAt === oldOpenedAt,
-    `preview=${JSON.stringify(busyPreview)} post=${busy?.status} ${JSON.stringify(busyBody)}`);
+    `loopCounted=${loopCounted} preview=${JSON.stringify(busyPreview)} post=${busy?.status} ${JSON.stringify(busyBody)}`);
 
   // NO TURN: the loop ends, then a byte recorder takes the pane's stdin. Non-canonical, so a paste
   // without Enter reaches the file too; the pane is then left to rest past the owner-act idle gate.

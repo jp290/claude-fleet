@@ -2463,12 +2463,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // entirely. What remains behind a disclosure is the prompt outline, and only that.
   // what is left behind a disclosure is exactly two things a reader reaches for rarely: the base
   // branch's own history, and the prompt outline. files/lanes/agents are NOT among them.
-  // Card R2 (§3 item 8): what is fixed at the founding or reached for rarely sits behind four tabs
+  // Card R2 (§3 item 8): what is fixed at the founding or reached for rarely sits behind the tabs
   // under "Mehr zu dieser Session", in this order; the base branch's history stays the one fold inside
   // the opened History. Lanes and the advisory agents are NOT among them (the lanes are the Arbeitsorte).
+  // The Postfach tab (K13, 14.10.) stands between Rechte and Files, only for a session with mail.
   const tabOrder = [...boardSrc.matchAll(/boardTab\("(\w+)"/g)].map((m) => m[1]);
-  check("client: Setup · Rechte · Files · Your prompts are the four tabs under \"Mehr\", and 'already in main' the one fold in History",
-    tabOrder.join(",") === "setup,rechte,files,prompts" && foldOrder.join(",") === "repoCommits"
+  check("client: Setup · Rechte · Postfach · Files · Your prompts are the tabs under \"Mehr\", and 'already in main' the one fold in History",
+    tabOrder.join(",") === "setup,rechte,postfach,files,prompts" && foldOrder.join(",") === "repoCommits"
     && /prefSet\("fleet\.board\.folds", JSON\.stringify\(\[\.\.\.boardFolds\]\)\)/.test(boardSrc),
     JSON.stringify({ tabOrder, foldOrder }));
   check("client: the file tree is the Files tab, with the scroll box that keeps it in place and the explorer one glyph away",

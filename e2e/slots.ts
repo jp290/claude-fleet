@@ -2341,18 +2341,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     /packsFrom === "receipt"/.test(setupSrc) && /delivered with the founding brief/.test(setupSrc)
     && /declared by this session's program/.test(setupSrc), "the packs note in renderBoard");
   // THE SUCCESSION NUMBERS, one line since card R3 (rechter-tab-notiz.md §4): the fill and a switch
-  // with the threshold on its face. The two traps stay asserted: a board that prints a threshold
-  // nobody armed, and one that draws an unmeasurable context as 0 %. The popover (src/handover.ts,
-  // K9 S1) is measured by its behaviour in runArbeitsorteDom's info claims, the served numbers live
+  // with the threshold on its face. The trap of an unmeasurable context drawn as 0 % stays asserted
+  // here; a board that prints a threshold nobody armed is measured by its behaviour since K9 S3c (the
+  // main's „52 % · Übergabe aus“ with its reason on hover in runArbeitsorteDom's info claims). The popover
+  // (src/handover.ts, K9 S1) is measured by its behaviour in runArbeitsorteDom's info claims, the served numbers live
   // in e2e/watch.ts, the route that sets them per session in e2e/self-token.ts.
   const succSrc = boardSrc.slice(boardSrc.indexOf("function contextRow("), boardSrc.indexOf("// GEHÖRT ZU"));
   check("client: an unmeasurable fill reads \"nicht messbar\" — the percentage exists only inside the sc.fill branch",
     /const fill = sc\.fill \? `\$\{Math\.round\(sc\.fill\.pct\)\} %` : "nicht messbar";/.test(succSrc),
     "the Kontext row in src/board.ts");
-  check("client: a threshold is printed only when the server sent one, otherwise the named reason",
-    /sc\.thresholdPct !== null \? `Übergabe bei \$\{sc\.thresholdPct\} %` : "Übergabe aus"/.test(succSrc)
-    && /aus: \$\{OFF_WHY\[sc\.thresholdOff \?\? "rail"\]\}/.test(succSrc),
-    "the handover switch in src/board.ts");
   // THE SPACE CUT (owner, 2026-09-20: „[Zitat entfernt]“
   // ). Three lines left the column, and each of them was a REPETITION or a non-event, never
   // a fact: the setup block's `Type` row said what the head's own state line says word for word,
@@ -5009,6 +5006,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //   Q chose Compact: the hint, then `/compact` once, typed bare, and Q stays the same occupant.
 //   R chose nothing either, wrote no standing handover, and its pane prints every 200 ms: the hint comes mid-work,
 //     the act does not; once the pane rests, the new occupant comes with the fleet's succession brief.
+//   O switched the handover off (thresholdPct 0, K9 S3c, owner 14.10.: „[Zitat entfernt]“) and
+//     rests like P: in the ticks that hint and replace P it gets no hint and keeps its occupant; its facts say why.
 // PATCH: an unknown choice is 400; a lane cannot choose a new session (the unit test of choiceInput).
 async function runThresholdAct(): Promise<void> {
   const repos: string[] = [];
@@ -5037,7 +5036,8 @@ async function runThresholdAct(): Promise<void> {
   const P = await openFree(mkRepo("act-succeed-repo"), "act-succeed");
   const Q = await openFree(mkRepo("act-compact-repo"), "act-compact");
   const R = await openFree(mkRepo("act-working-repo"), "act-working");
-  const all = [P, Q, R];
+  const O = await openFree(mkRepo("act-off-repo"), "act-off");
+  const all = [P, Q, R, O];
   const statePath = `${ROOT}/fleet.json`;
   const cleanup = async (): Promise<void> => {
     for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
@@ -5046,16 +5046,17 @@ async function runThresholdAct(): Promise<void> {
       rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
     }
   };
-  check("threshold act setup: three plain sessions open on private checkouts",
-    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 3,
+  check("threshold act setup: four plain sessions open on private checkouts",
+    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 4,
     JSON.stringify(all.map((x) => ({ slot: x.slot, openedAt: x.openedAt }))));
   if (!all.every((x) => x.slot > 0 && x.openedAt > 0)) { await cleanup(); return; }
 
   // the panes before the plant: P and Q record what is typed (the owner door's no-turn proof, as in the
   // keepCache fixture) and ECHO it — after the restart a pane is observed only by its output, and a pane
-  // never observed does not rest (server.ts#thresholdResting); R prints every 200 ms
+  // never observed does not rest (server.ts#thresholdResting); R prints every 200 ms; O records like P, so a hint
+  // or an act on it would be seen
   const rec = (x: typeof P): string => `${ROOT}/act-recorder-${x.slot}`;
-  for (const x of [P, Q]) {
+  for (const x of [P, Q, O]) {
     rmSync(rec(x), { force: true });
     await tmuxOut("send-keys", "-t", `=s${x.slot}:`, `cat > '${rec(x)}'`, "Enter");
   }
@@ -5065,14 +5066,14 @@ async function runThresholdAct(): Promise<void> {
     standingHandover?: unknown }> };
   const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000004${String(i).padStart(2, "0")}`;
   const plantAt = Date.now();
-  // only Q chose; P and R take the fleet's value (null)
+  // only Q chose; P, R and O take the fleet's value (null); O switched the handover off
   const choice = new Map([[Q, "compact"]]);
   const STANDING = "ACT-STANDING-MARK Absicht: den Schnitt zu Ende bringen, dann landen.";
   for (const [i, x] of all.entries()) {
     const row = state.slots?.[String(x.slot)];
     if (!row) continue;
     row.sessionId = sid(i);
-    row.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: choice.get(x) ?? null,
+    row.handover = { thresholdPct: x === O ? 0 : null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: choice.get(x) ?? null,
       setAt: plantAt, occupant: { slot: x.slot, openedAt: x.openedAt } };
     // P's standing handover, written after its last transcript line (60 s before the plant): nothing after it is lost
     if (x === P) row.standingHandover = { at: plantAt - 30_000, openedAt: x.openedAt, intent: STANDING, pointer: null, ahead: null };
@@ -5091,15 +5092,20 @@ async function runThresholdAct(): Promise<void> {
   await restartSrv();
 
   type Succ = { fill: { pct: number } | null; thresholdPct: number | null; capPct: number | null; atThreshold: string;
-    choices: string[]; fleetChoice: string; act: { act: string; outcome: string } | null };
+    choices: string[]; fleetChoice: string; act: { act: string; outcome: string } | null; thresholdOff: string | null;
+    sessionPct: number | null };
   const facts = async (slot: number): Promise<Succ | null> =>
     ((await (await get(`/api/slots/${slot}/handover`)).json()) as { succession?: Succ }).succession ?? null;
-  const f0 = await Promise.all(all.map((x) => facts(x.slot)));
+  const f0 = await Promise.all([P, Q, R].map((x) => facts(x.slot)));
   check("threshold act setup: P, Q and R stand at 50 % against 44/49 — P and R on the fleet's value, a new session, Q on its own Compact",
     f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49 && f.fleetChoice === "succeed")
       && f0.map((f) => f?.atThreshold).join(",") === "succeed,compact,succeed"
       && JSON.stringify(f0[0]?.choices) === JSON.stringify(["hint", "compact", "succeed"]),
     JSON.stringify(f0));
+  const fO = await facts(O.slot);
+  check("threshold act setup: O at the same 50 % has its handover switched off — no base, no cap, the reason is its own",
+    fO?.fill?.pct === 50 && fO.thresholdPct === null && fO.capPct === null && fO.thresholdOff === "session" && fO.sessionPct === 0,
+    JSON.stringify(fO));
   // the successor's founding brief, read by OCCUPANT from the prompt log (the owner door's appendix names the source)
   const briefOf = async (slot: number, openedAt: number | undefined): Promise<string> => {
     for (let i = 0; i < 100; i++) {
@@ -5161,6 +5167,14 @@ async function runThresholdAct(): Promise<void> {
     rWorking === R.openedAt && !!rNew && rNew !== R.openedAt
       && rBrief.includes("Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben."),
     JSON.stringify({ old: R.openedAt, working: rWorking, now: rNew, brief: rBrief.split("\n").filter((l) => /tehende Übergabe/.test(l)).map((l) => l.slice(0, 90)) }));
+  // O rested through every tick that hinted and replaced P and R — over its cap like them, on the same fleet's value
+  const oTyped = await typed(O);
+  const oRecorded = existsSync(rec(O)) ? readFileSync(rec(O), "utf8") : "";
+  const oFacts = await facts(O.slot);
+  check("„Aus“: O, resting at 50 % with its handover switched off, gets no hint and no act — the same occupant after P and R were replaced",
+    pNew !== P.openedAt && rNew !== R.openedAt && oTyped.length === 0 && !oRecorded.includes(HINT) && (await openedAtOf(O)) === O.openedAt
+      && oFacts?.act === null && oFacts.thresholdOff === "session",
+    JSON.stringify({ typed: oTyped.map((e) => e.text.slice(0, 60)), recorded: oRecorded.length, act: oFacts?.act, off: oFacts?.thresholdOff }));
 
   const bad = await fetch(`${BASE}/api/slots/${Q.slot}/handover`, { method: "PATCH",
     headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -12542,7 +12556,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   const NOTE = "Bilder bei 390 nochmal mit der Insel zusammen ansehen.";
   const noteOf = (st: State) => st === "land" || st === "mehr" || st === "alarm" ? NOTE : null;
   const UNDO_BRANCH = "fleet/261005-insel-am-telefon-1b2c";
-  const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean },
+  const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean; atThreshold?: string | null },
     // K9 S2: slot 3's own warm switch (null = the fleet's value, on for this bound main) and whether its cache is cold;
     // S2b: its minutes and its own warm text (null = the fleet's)
     slot3: null as boolean | null, cold: false, idle3: 50, text3: null as string | null };
@@ -12558,12 +12572,22 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         text: handover.text3, fleetText: WARM_FLEET_TEXT, textMax: 500 },
       cache: handover.cold ? { state: "kalt", lastCallAt: fx.now - 75 * 60_000, ttlSec: 3600, coldAt: fx.now - 15 * 60_000 }
         : { state: "warm", lastCallAt: fx.now - 20 * 60_000, ttlSec: 3600, coldAt: fx.now + 40 * 60_000 },
-      compaction: { at: COMPACTED_AT, trigger: "auto", preTokens: 487_000, postTokens: 9_000, idle: true } }
-    : { rail: "lane", fill: { usedTokens: 370_000, windowTokens: 1_000_000, pct: 37 }, thresholdPct: handover.slot9?.thresholdPct ?? 40, thresholdOff: null,
+      compaction: { at: COMPACTED_AT, trigger: "auto", preTokens: 487_000, postTokens: 9_000, idle: true },
+      // K9 S3: a bound main with the fleet's master switch off — its choice row stands, quiet
+      kind: "program-main", capPct: null, thresholdFrom: "env", atThreshold: "succeed", choices: ["hint", "compact", "succeed"],
+      fleetChoice: "succeed", act: null }
+    // K9 S3c: the lane's own 0 is its „Aus“ — no base, no cap, the reason is its own (server.ts#successionThresholdOff)
+    : { rail: "lane", fill: { usedTokens: 370_000, windowTokens: 1_000_000, pct: 37 },
+      thresholdPct: handover.slot9?.thresholdPct === 0 ? null : handover.slot9?.thresholdPct ?? 40,
+      thresholdOff: handover.slot9?.thresholdPct === 0 ? "session" : null, sessionPct: handover.slot9?.thresholdPct ?? null,
       nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 3, taken: 2, cap: 5, defaultPct: 40,
       pctFrom: handover.slot9?.thresholdPct != null ? "session" : "fleet", nudgeOn: handover.slot9?.nudge ?? true,
       keepCache: { on: false, from: "fleet", fleetOn: false, exempt: "lane", idleMin: 50, lifetimeMin: 60, hourCap: 2, warmTurns: 0 },
-      cache: { state: "warm", lastCallAt: fx.now - 3 * 60_000, ttlSec: 3600, coldAt: fx.now + 57 * 60_000 }, compaction: null };
+      cache: { state: "warm", lastCallAt: fx.now - 3 * 60_000, ttlSec: 3600, coldAt: fx.now + 57 * 60_000 }, compaction: null,
+      // K9 S3: the lane's row 40/45 (cap = base + 5), and its choices: the hint or Compact, never a new session
+      kind: "lane", capPct: handover.slot9?.thresholdPct === 0 ? null : (handover.slot9?.thresholdPct ?? 40) + 5,
+      thresholdFrom: handover.slot9?.thresholdPct != null ? "session" : "fleet",
+      atThreshold: handover.slot9?.atThreshold ?? "hint", choices: ["hint", "compact"], fleetChoice: "hint", act: null };
   const setupOf = () => ({ profile: "standard", repo: REPO, head: MAIN,
     packs: [{ id: "grammatik", useWhen: "Oberflächen-Arbeit", sources: [{ path: "docs/design/grammatik.md", anchor: "# Grammatik" }], privateSourceId: null },
       { id: "verify-e2e", useWhen: "Beweise", sources: [{ path: "AGENTS.md", anchor: "## Verify" }], privateSourceId: null }],
@@ -12619,9 +12643,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         let body: unknown = null; try { body = JSON.parse(request.postData ?? "null"); } catch { body = request.postData ?? null; }
         fx.writes.push({ path: `${p}${url.search}`, body });
         if (p === "/api/slots/9/handover") {
-          const b = body as { thresholdPct?: number | null; nudge?: boolean };
-          const cur = handover.slot9 ?? { thresholdPct: null, nudge: true };
-          handover.slot9 = { thresholdPct: "thresholdPct" in b ? b.thresholdPct ?? null : cur.thresholdPct, nudge: "nudge" in b ? b.nudge ?? true : cur.nudge };
+          const b = body as { thresholdPct?: number | null; nudge?: boolean; atThreshold?: string | null };
+          const cur = handover.slot9 ?? { thresholdPct: null, nudge: true, atThreshold: null };
+          handover.slot9 = { thresholdPct: "thresholdPct" in b ? b.thresholdPct ?? null : cur.thresholdPct, nudge: "nudge" in b ? b.nudge ?? true : cur.nudge,
+            atThreshold: "atThreshold" in b ? b.atThreshold ?? null : cur.atThreshold ?? null };
           return void json(requestId, { slot: 9, openedAt: openedAt(9), setting: handover.slot9, step: 5, min: 5, max: 95, succession: succession(9) });
         }
         if (p === "/api/slots/3/handover") {
@@ -13776,8 +13801,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               pop: pop ? { kind: pop.dataset.pop, items: [...pop.querySelectorAll('.bmenuitem')].map((b) => ({ t: txt(b.querySelector('.t')), danger: b.classList.contains('danger'), color: getComputedStyle(b).color })),
                 seps: pop.querySelectorAll('.sep').length, rows: [...pop.querySelectorAll('.pr')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .pv')), h: txt(r.querySelector(':scope > .h')) })),
                 pcts: [...pop.querySelectorAll('.pcts button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
+                // K9 S3c: „Aus“ beside the values, and whether the ten values and their unit stand on one line inside the popover
+                pctOff: (() => { const b = pop.querySelector('button[data-uk="pct-aus"]'); return b ? { t: b.textContent.trim(), on: b.classList.contains('on'), d: b.disabled } : null; })(),
+                pctLine: (() => { const seg = pop.querySelector('.pcts'), unit = seg?.nextElementSibling; if (!seg || !unit) return null;
+                  const inner = pop.getBoundingClientRect().right - parseFloat(getComputedStyle(pop).paddingRight), sr = seg.getBoundingClientRect();
+                  return { tops: new Set([...seg.querySelectorAll('button')].map((b) => Math.round(b.getBoundingClientRect().top))).size,
+                    over: Math.round(Math.max(sr.right, unit.getBoundingClientRect().right) - inner),
+                    mid: Math.round((unit.getBoundingClientRect().top + unit.getBoundingClientRect().bottom - sr.top - sr.bottom) / 2) }; })(),
                 warm: [...pop.querySelectorAll('button[data-uk^="warm-"]')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
                 mins: [...pop.querySelectorAll('.mins button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt') })),
+                choices: [...pop.querySelectorAll('.choices button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
                 wtext: (() => { const t = pop.querySelector('textarea[data-uk="wtext"]'); if (!t) return null; const sv = pop.querySelector('[data-uk="wtext-save"]'), fl = pop.querySelector('[data-uk="wtext-fleet"]');
                   return { value: t.value, ph: t.placeholder, save: !!sv && sv.getClientRects().length > 0, fleet: !!fl && fl.getClientRects().length > 0 }; })(),
                 go: (() => { const b = pop.querySelector('button[data-uk="succeed"]'); return b ? { t: b.textContent.trim(), d: b.disabled } : null; })(), box: box(pop) } : null,
@@ -13810,7 +13843,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             work: { text: string | null; state: string | null; files: number; landnote: string | null; buttons: { text: string; label: string | null; primary: boolean; disabled: boolean }[] } | null;
             pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[];
               pcts: { t: string; on: boolean; dflt: boolean; d: boolean }[]; warm: { t: string; on: boolean; dflt: boolean; d: boolean }[];
+              pctOff: { t: string; on: boolean; d: boolean } | null; pctLine: { tops: number; over: number; mid: number } | null;
               mins: { t: string; on: boolean; dflt: boolean }[]; wtext: { value: string; ph: string; save: boolean; fleet: boolean } | null;
+              choices: { t: string; on: boolean; dflt: boolean; d: boolean }[];
               go: { t: string; d: boolean } | null;
               box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
             note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
@@ -13879,9 +13914,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}the session's values are Kontext · Gehört zu — no Branch, no Landet in, no Check, no Land`] =
               JSON.stringify(keys) === JSON.stringify(["Kontext", "Gehört zu"]);
             const kon = n.sess.kv.find((r) => r.k === "Kontext");
-            claims[`${it}the handover is ONE line — "${isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus"}" — whether the hint was given only on hover`] = !!kon
-              && (kon.v ?? "").startsWith(isLane ? "37 % · Übergabe bei 40 %" : "52 % · Übergabe aus") && !/Hinweis/.test(kon.v ?? "")
-              && /Hinweis noch nicht gegeben/.test(kon.sw ?? "") && !/\b(Fill|Handover|Kind|Handoff)\b/.test(n.bodyText);
+            // K9 S3 (§4: „52 % · Übergabe bei 50 % (warm)“): the line shows the threshold in force — the lane's cap 45
+            // while its cache is warm; a threshold that cannot fire is „Übergabe aus“ with the reason on hover
+            claims[`${it}the handover is ONE line — "${isLane ? "37 % · Übergabe bei 45 % (warm)" : "52 % · Übergabe aus"}" — whether the hint was given only on hover`] = !!kon
+              && (kon.v ?? "").startsWith(isLane ? "37 % · Übergabe bei 45 % (warm)" : "52 % · Übergabe aus") && !/Hinweis/.test(kon.v ?? "")
+              && /Hinweis noch nicht gegeben/.test(kon.sw ?? "") && (isLane || /aus: auf dieser Fleet nicht eingeschaltet/.test(kon.sw ?? ""))
+              && !/\b(Fill|Handover|Kind|Handoff)\b/.test(n.bodyText);
             claims[`${it}"Gehört zu" carries the links${isLane ? " Auftrag · Akte" : ""}`] = isLane
               ? /^Auftrag [0-9a-f]{8} Akte$/.test(n.sess.kv.find((r) => r.k === "Gehört zu")?.v ?? "") : n.sess.kv.some((r) => r.k === "Gehört zu");
             if (isLane) {
@@ -14044,18 +14082,25 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             facts.ueb = { pop: n.pop, openBriefs, openMs };
             const rows = n.pop?.rows ?? [], pcts = n.pop?.pcts ?? [];
             // S2b: a session kept warm adds its minutes and its text under the switch
-            const uebRows = isLane ? ["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nachfolge"]
-              : ["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nach", "Text", "Nachfolge"];
+            const uebRows = isLane ? ["Schwelle", "Hinweis", "Cache", "Warmhalten", "An der Schwelle", "Nachfolge"]
+              : ["Schwelle", "Hinweis", "Cache", "Warmhalten", "Nach", "Text", "An der Schwelle", "Nachfolge"];
             claims[`${it}the switch opens the handover settings without reading the brief: ${uebRows.join(" · ")}, nothing else`] = n.pop?.kind === "ueb"
               && openBriefs === 0 && openMs < 2500
               && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(uebRows)
-              && JSON.stringify(pcts.map((x) => x.t)) === JSON.stringify(["25", "30", "35", "40", "45", "50", "55", "60"])
+              && JSON.stringify(pcts.map((x) => x.t)) === JSON.stringify(["25", "30", "35", "40", "45", "50", "55", "60", "65", "70"])
               && (isLane ? pcts.find((x) => x.on)?.t === "40" && pcts.find((x) => x.dflt)?.t === "40" && pcts.every((x) => !x.d)
-                  && /die Fleet steht auf 40 %/.test(rows[0]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[1]?.h ?? "")
+                  && n.pop?.pctOff?.d === false && n.pop.pctOff.on === false
+                  && rows[0]?.h === "Fleet-Wert für eine Lane: Hinweis ab 40 %, Übergabe bei 45 %, solange der Cache warm ist."
+                  && /höchstens 3-mal\. Bisher keiner\./.test(rows[1]?.h ?? "")
                   && n.pop?.go?.d === true && rows.at(-1)?.h === SUCC_LANE
-                : pcts.every((x) => x.d && !x.on) && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[0]?.h ?? "")
+                : pcts.every((x) => x.d && !x.on) && n.pop?.pctOff?.d === true && n.pop.pctOff.on === false
+                  && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[0]?.h ?? "")
                   && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows.at(-1)?.h === SUCC_READY)
               && sheetOk(n.pop?.box);
+            // K9 S3c: ten values now (25–70) — they and their unit stand on one line inside the popover, at every width
+            claims[`${it}the ten thresholds 25–70 and their unit stand on one line inside the popover, „Aus“ beside or below them`] =
+              !!n.pop?.pctLine && n.pop.pctLine.tops === 1 && n.pop.pctLine.over <= 0 && Math.abs(n.pop.pctLine.mid) <= 4
+              && n.pop.pctOff?.t === "Aus";
             // K9 S2 (owner 13.10.: „[Zitat entfernt]“): the cache
             // warm with its minutes and Claude's compaction, the warm switch with the fleet's value marked —
             // a lane says why nothing is kept warm there
@@ -14073,6 +14118,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               && n.pop?.mins.find((x) => x.on)?.t === "50" && n.pop.mins.find((x) => x.dflt)?.t === "50" && rows[4]?.h === null
               && n.pop.wtext?.value === "" && n.pop.wtext.ph === WARM_FLEET_TEXT && !n.pop.wtext.save && !n.pop.wtext.fleet
               && rows[5]?.h === "Leer: der Text der Fleet, die Session antwortet nur „ok“.";
+            // K9 S3b (owner 13.10.: „[Zitat entfernt]“): what Fleet does at the
+            // threshold, the hint marked as the fleet's value — a lane has no new session, a gate that cannot fire keeps it quiet
+            const choiceRow = rows.find((x) => x.k === "An der Schwelle");
+            // K9 S3b-2: the fleet's value is marked from the served fleetChoice — the lane's hint, the MAIN's new session
+            claims[`${it}„An der Schwelle“ offers ${isLane ? "Hinweis · Compact, the hint on and marked as the fleet's" : "Hinweis · Compact · Neue Session, quiet behind the switched-off fleet, Neue Session marked as the fleet's"}`] = isLane
+              ? JSON.stringify(n.pop?.choices) === JSON.stringify([{ t: "Hinweis", on: true, dflt: true, d: false }, { t: "Compact", on: false, dflt: false, d: false }])
+                && choiceRow?.h === "Nur der Hinweis; die Session wählt den Punkt selbst."
+              : JSON.stringify(n.pop?.choices?.map((x) => x.t)) === JSON.stringify(["Hinweis", "Compact", "Neue Session"])
+                && (n.pop?.choices ?? []).every((x) => x.d && !x.on) && (n.pop?.choices ?? []).filter((x) => x.dflt).map((x) => x.t).join() === "Neue Session"
+                && choiceRow?.h === "Hier wirkt keine Schwelle.";
             await shot(`info-${st}-${width}`);
             if (st === "uebergabe") {
               const line = `document.querySelector('#boardbody .bhead .bkv.ctx > .v')?.innerText ?? ''`;
@@ -14080,13 +14135,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               await afterTick();
               t0 = Date.now();
               await evaluate(`[...document.querySelectorAll('#boardbody .bpop .pcts button')].find((b) => b.textContent.trim() === '60')?.click()`);
-              await wait(`(${line}).includes('Übergabe bei 60 %') && document.querySelector('#boardbody .bpop .pcts button.on')?.textContent.trim() === '60'`, 2000);
+              await wait(`(${line}).includes('Übergabe bei 65 % (warm)') && document.querySelector('#boardbody .bpop .pcts button.on')?.textContent.trim() === '60'`, 2000);
               const clickBriefs = briefsSince(t0), clickMs = Date.now() - t0;
               await settle(100);
               await afterTick();
               t0 = Date.now();
-              await evaluate(`[...document.querySelectorAll('#boardbody .bpop .seg button')].find((b) => b.textContent === 'Aus')?.click()`);
-              await wait(`document.querySelector('#boardbody .bpop .seg:not(.pcts) button.on')?.textContent === 'Aus'`, 2000);
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="nudge-aus"]')?.click()`);
+              await wait(`!!document.querySelector('#boardbody .bpop button[data-uk="nudge-aus"].on')`, 2000);
               const offBriefs = briefsSince(t0);
               await settle(100);
               n = await info();
@@ -14095,14 +14150,59 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                 clickBriefs === 0 && clickMs < 2500 && offBriefs === 0
                 && fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: 60 }))
                 && fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), nudge: false }))
-                && (n.sess?.kv.find((r) => r.k === "Kontext")?.v ?? "").startsWith("37 % · Übergabe bei 60 % Hinweis aus");
+                && (n.sess?.kv.find((r) => r.k === "Kontext")?.v ?? "").startsWith("37 % · Übergabe bei 65 % (warm) Hinweis aus")
+                && n.pop?.rows?.[0]?.h === "Eigener Wert dieser Session: Hinweis ab 60 %, Übergabe bei 65 %, solange der Cache warm ist; die Fleet steht auf 40 %.";
               // the fleet's own value (marked) takes the session back to the fleet: no own record is kept
               fx.writes = [];
               await evaluate(`[...document.querySelectorAll('#boardbody .bpop .pcts button')].find((b) => b.textContent.trim() === '40')?.click()`);
-              await wait(`(${line}).includes('Übergabe bei 40 %')`, 2000);
+              await wait(`(${line}).includes('Übergabe bei 45 % (warm)')`, 2000);
               await settle(100);
               claims[`${it}the fleet's own value returns the session to the fleet — the write is thresholdPct null`] =
                 fx.writes.some((w) => w.path === "/api/slots/9/handover" && JSON.stringify(w.body) === JSON.stringify({ expectedOpenedAt: openedAt(9), thresholdPct: null }));
+              // K9 S3c (owner 14.10., via the Bauleitung: „[Zitat entfernt]“
+              // ): „[Zitat entfernt]“ is one click and writes 0; the popover and the
+              // Kontext line say it is off and why; pressed again it follows the fleet
+              fx.writes = [];
+              await afterTick();
+              t0 = Date.now();
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="pct-aus"]')?.click()`);
+              await wait(`!!document.querySelector('#boardbody .bpop button[data-uk="pct-aus"].on') && (${line}).includes('Übergabe aus')`, 2000);
+              const offPctBriefs = briefsSince(t0);
+              await settle(100);
+              n = await info();
+              const offWrites = fx.writes.filter((w) => w.path === "/api/slots/9/handover").map((w) => w.body);
+              const offView = { pctOff: n.pop?.pctOff, on: n.pop?.pcts.filter((x) => x.on).map((x) => x.t), h: n.pop?.rows?.[0]?.h,
+                choiceH: n.pop?.rows?.find((x) => x.k === "An der Schwelle")?.h, line: n.sess?.kv.find((r) => r.k === "Kontext")?.v };
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="pct-aus"]')?.click()`);
+              await wait(`!document.querySelector('#boardbody .bpop button[data-uk="pct-aus"].on') && (${line}).includes('Übergabe bei 45 % (warm)')`, 2000);
+              await settle(100);
+              const offBackWrites = fx.writes.filter((w) => w.path === "/api/slots/9/handover").map((w) => w.body);
+              facts.uebOff = { view: offView, writes: offBackWrites, offPctBriefs };
+              claims[`${it}„Aus“ is one click without a /brief and writes 0: the popover marks it, no value stands, it says the handover is off for this session; pressed again it follows the fleet`] =
+                offPctBriefs === 0 && JSON.stringify(offWrites) === JSON.stringify([{ expectedOpenedAt: openedAt(9), thresholdPct: 0 }])
+                && offView.pctOff?.on === true && offView.on?.length === 0
+                && offView.h === "Aus: für diese Session ausgestellt, ohne Hinweis und ohne Übergabe."
+                && offView.choiceH === "Die Übergabe ist für diese Session aus."
+                && (offView.line ?? "").startsWith("37 % · Übergabe aus")
+                && JSON.stringify(offBackWrites) === JSON.stringify([{ expectedOpenedAt: openedAt(9), thresholdPct: 0 }, { expectedOpenedAt: openedAt(9), thresholdPct: null }]);
+              // Compact is one click, the sentence says what Fleet will do then; the hint (the fleet's) takes it back
+              fx.writes = [];
+              await afterTick();
+              t0 = Date.now();
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="at-compact"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop .choices button.on')?.textContent === 'Compact'`, 2000);
+              const compactBriefs = briefsSince(t0);
+              await settle(100);
+              n = await info();
+              const compactH = n.pop?.rows?.find((x) => x.k === "An der Schwelle")?.h ?? null;
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="at-hint"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop .choices button.on')?.textContent === 'Hinweis'`, 2000);
+              await settle(100);
+              facts.uebChoice = { writes: fx.writes, compactH, compactBriefs };
+              claims[`${it}Compact is one click without a /brief, its sentence names the act at the cap; Hinweis writes the fleet's value back`] =
+                compactBriefs === 0 && compactH === "Ab 45 % oder kurz vor kaltem Cache tippt Fleet /compact, sobald sie ruht."
+                && JSON.stringify(fx.writes.filter((w) => w.path === "/api/slots/9/handover").map((w) => w.body))
+                  === JSON.stringify([{ expectedOpenedAt: openedAt(9), atThreshold: "compact" }, { expectedOpenedAt: openedAt(9), atThreshold: null }]);
             }
             await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
             await wait(`!document.querySelector('#boardbody .bpop')`, 3000);

@@ -74,8 +74,10 @@ kein `succeed`.
 
 ### Orchestratorin · jeder andere Harness
 
+Gebaut aus ihrer Zeile der Schwellen-Tabelle (`server/succession.ts#orchestratorContextLine`, K9 S3c).
+
 ```text
---- KONTEXT --- Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.
+--- KONTEXT --- Ab 45 % schreibt Fleet dir einen Hinweis; bis 50 % arbeitest du weiter, solange dein Cache warm ist, und waehlst den Punkt der Uebergabe selbst. Deine Werte stehen in GET /api/self -> context.
 ```
 
 **Lane.** Die Lane-Karte verweist auf den Schlussblock `HOW THIS LANE ENDS`, den jeder mutierende

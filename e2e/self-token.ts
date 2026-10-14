@@ -147,7 +147,6 @@ export async function run(ctx: Ctx): Promise<void> {
       ["self token as bearer", hp({ expectedOpenedAt: opened, thresholdPct: 60 }, { ...SJ, authorization: `Bearer ${selfTok}` }), 401, null],
       ["no credential", hp({ expectedOpenedAt: opened, thresholdPct: 60 }, SJ), 401, null],
       ["33 is not a 5-step", hp({ expectedOpenedAt: opened, thresholdPct: 33 }), 400, "bad-threshold"],
-      ["0 is below the floor", hp({ expectedOpenedAt: opened, thresholdPct: 0 }), 400, "bad-threshold"],
       ["100 is above the ceiling", hp({ expectedOpenedAt: opened, thresholdPct: 100 }), 400, "bad-threshold"],
       ["a string is no number", hp({ expectedOpenedAt: opened, thresholdPct: "40" }), 400, "bad-threshold"],
       ["the hint takes only true/false", hp({ expectedOpenedAt: opened, nudge: "aus" }), 400, "bad-nudge"],
@@ -165,6 +164,14 @@ export async function run(ctx: Ctx): Promise<void> {
     const after = await hv();
     check("handover refusals: a self credential is 401, a value off the 5-step range or of the wrong type is 400, another occupant is 409 — the setting stays 35 % / hint off",
       allRefused && after.body.setting?.thresholdPct === 35 && after.body.setting.nudge === false, `${seen.join(" ")} · ${JSON.stringify(after.body.setting)}`);
+    // K9 S3c (owner 14.10.: „[Zitat entfernt]“): 0 is „[Zitat entfernt]“ for THIS occupant, no refusal. Whether
+    // the tick then stays quiet is measured in e2e/slots.ts#runThresholdAct; here an earlier gate may name the reason
+    const off = await hp({ expectedOpenedAt: opened, thresholdPct: 0 });
+    const offB = (await off.json().catch(() => ({}))) as View;
+    check("handover: 0 switches the handover off for this occupant — kept as 0, no threshold stands, and the reason is never the rail's",
+      off.status === 200 && offB.setting?.thresholdPct === 0 && offB.succession?.sessionPct === 0 && offB.succession.pctFrom === "session"
+        && offB.succession.thresholdPct === null && offB.succession.thresholdOff !== null && offB.succession.thresholdOff !== "rail",
+      JSON.stringify({ status: off.status, setting: offB.setting, succession: offB.succession }));
     const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots.find((x) => !x.cwd)?.id ?? null;
     const idle = free === null ? null : await hp({ expectedOpenedAt: 0, thresholdPct: 40 }, H, free);
     const idleJ = (await idle?.json().catch(() => ({}))) as { refusal?: string } | undefined;

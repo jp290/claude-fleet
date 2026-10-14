@@ -19,7 +19,7 @@ import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./dev
 import { compTray, serverClock } from "./composer";
 import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
-import { OFF_WHY, freshSuccession, handoverRows } from "./handover";
+import { OFF_WHY, freshSuccession, handoverAt, handoverRows } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
@@ -66,7 +66,7 @@ export interface BriefSuccession {
   rail: "lane" | "standard-main" | "game-maker-main" | "handoff";
   fill: { usedTokens: number; windowTokens: number; pct: number } | null;
   thresholdPct: number | null;
-  thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | null;
+  thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | null;
   nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
   session: number; taken: number | null; cap: number | null;
   // the owner's per-session setting (server.ts#patchHandover): the rail's env value, whether the
@@ -82,6 +82,14 @@ export interface BriefSuccession {
     fleetIdleMin?: number; text?: string | null; fleetText?: string; textMax?: number };
   cache?: { state: "warm" | "kalt" | "kompaktiert" | "unbekannt"; lastCallAt: number | null; ttlSec: number; coldAt: number | null };
   compaction?: { at: number; preTokens: number | null; postTokens: number | null } | null;
+  // K9 S3 (server.ts#successionFacts): the kind of session, the cap where Fleet's action is due, where the
+  // base comes from, the choice at the threshold and the newest act — an older server sends none
+  kind?: "orchestrator" | "program-main" | "bau" | "lane" | "session"; capPct?: number | null;
+  thresholdFrom?: "session" | "env" | "fleet";
+  atThreshold?: "hint" | "compact" | "succeed"; choices?: ("hint" | "compact" | "succeed")[];
+  // K9 S3b-2: the fleet's value for this session (a new session, a lane the hint); a server before S3b-2 sends none
+  fleetChoice?: "hint" | "compact" | "succeed";
+  act?: { at: number; act: "compact" | "succeed"; outcome: string } | null;
 }
 export interface BriefSetup { profile: "standard" | "game-maker" | null;
   repo: string | null; head: string | null;
@@ -1907,7 +1915,9 @@ function contextRow(c: BoardCtx): HTMLElement {
   const fill = sc.fill ? `${Math.round(sc.fill.pct)} %` : "nicht messbar";
   const sw = el("button", "optsw") as HTMLButtonElement;
   sw.type = "button";
-  sw.append(document.createTextNode(sc.thresholdPct !== null ? `Übergabe bei ${sc.thresholdPct} %` : "Übergabe aus"), icon("chevron"));
+  // the threshold in force now (§4): the cap while the cache is warm, the base once it is cold
+  const at = handoverAt(sc);
+  sw.append(document.createTextNode(at ? `Übergabe bei ${at.pct} %${at.cache ? ` (${at.cache})` : ""}` : "Übergabe aus"), icon("chevron"));
   sw.title = `Übergabe-Einstellungen dieser Session — ${sc.thresholdPct === null ? `aus: ${OFF_WHY[sc.thresholdOff ?? "rail"]}`
     : sc.pctFrom === "session" ? `eigene Schwelle dieser Session (Fleet: ${sc.defaultPct} %)` : "die Schwelle der Fleet"}`
     + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`;

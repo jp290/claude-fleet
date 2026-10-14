@@ -12,6 +12,10 @@
 // S2b (owner 13.10.: „[Zitat entfernt]“
 // ): while the switch is on, the minutes as one click
 // and the text the warm turn types, with the fleet's own text as the way back.
+// S3 (owner 13.10.: „[Zitat entfernt]“, „[Zitat entfernt]“
+// ): the threshold row says where its base
+// comes from and where the cap lies, a row „An der Schwelle“ picks what Fleet does then — the hint, Compact
+// or a new session — and the Kontext line shows the threshold in force: the cap while the cache is warm.
 import { api, el } from "./client";
 import { serverClock } from "./composer";
 import type { BriefSuccession } from "./board";
@@ -32,6 +36,7 @@ export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, strin
   steward: "die Planungs-Session wird nicht erinnert",
   waiting: "sie wartet auf dich",
   unpinned: "kein festgehaltenes Gespräch zum Messen",
+  session: "für diese Session ausgestellt, ohne Hinweis und ohne Übergabe",
 };
 // why no cache is kept warm here (server.ts#keepCacheExempt)
 const WARM_OFF_WHY: Record<NonNullable<NonNullable<BriefSuccession["keepCache"]>["exempt"]>, string> = {
@@ -39,8 +44,17 @@ const WARM_OFF_WHY: Record<NonNullable<NonNullable<BriefSuccession["keepCache"]>
   lane: "eine Lane gibt mit ihrem Bericht weiter",
   harness: "dieser Agent hat keinen gemessenen Cache",
 };
-// the values one click away; a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
-const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60];
+// the kind of session whose row of the threshold table applies (server/succession.ts#thresholdOf)
+const KIND_WORDS: Record<NonNullable<BriefSuccession["kind"]>, string> = {
+  orchestrator: "eine Orchestratorin", "program-main": "eine Program-MAIN", bau: "eine Bau-Session", lane: "eine Lane",
+  session: "eine Session",
+};
+// what Fleet does at the threshold (server/succession.ts#choicesFor)
+type Choice = NonNullable<BriefSuccession["atThreshold"]>;
+const CHOICE_WORDS: Record<Choice, string> = { hint: "Hinweis", compact: "Compact", succeed: "Neue Session" };
+// the values one click away, up to 70 (K9 S3c, owner 14.10.: „[Zitat entfernt]“
+// , no 100); a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
+const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
 // the warm turn's minutes the same way (5..55 in 5-steps, PATCH); eight values fit the popover's line
 const MINUTES = [20, 25, 30, 35, 40, 45, 50, 55];
 // the answer of the last write, shown at once while the brief is read again (the board's tick)
@@ -72,19 +86,23 @@ export function freshSuccession(slot: number, openedAt: number | undefined): Bri
 }
 
 type HandoverWrite = { thresholdPct?: number | null; nudge?: boolean; keepCache?: boolean | null; keepCacheIdleMin?: number;
-  keepCacheText?: string | null };
+  keepCacheText?: string | null; atThreshold?: Choice | null };
 // what the server will answer, drawn before it answers: the threshold, the hint, the warm switch, and
-// the gate a threshold of 0 turns on or off; the PATCH answer replaces it a moment later
+// the gate a threshold of 0 turns on or off — the session's own 0 is its „Aus“, a rail's 0 the rail's;
+// the PATCH answer replaces it a moment later
 function expected(sc: BriefSuccession, body: HandoverWrite): BriefSuccession {
   if (body.nudge !== undefined) return { ...sc, nudgeOn: body.nudge };
+  if (body.atThreshold !== undefined) return { ...sc, atThreshold: body.atThreshold ?? sc.fleetChoice ?? "hint" };
   if (body.keepCache !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache,
     on: body.keepCache ?? sc.keepCache.fleetOn, from: body.keepCache === null ? "fleet" : "session" } } : sc;
   if (body.keepCacheIdleMin !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, idleMin: body.keepCacheIdleMin } } : sc;
   if (body.keepCacheText !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, text: body.keepCacheText } } : sc;
   const own = body.thresholdPct ?? null;
   const eff = own ?? sc.defaultPct;
-  const gate = sc.thresholdOff && sc.thresholdOff !== "rail" ? sc.thresholdOff : eff > 0 ? null : "rail";
-  return { ...sc, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff };
+  const gate = sc.thresholdOff && sc.thresholdOff !== "rail" && sc.thresholdOff !== "session" ? sc.thresholdOff
+    : eff > 0 ? null : own === 0 ? "session" : "rail";
+  return { ...sc, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff,
+    capPct: gate ? null : eff + CAP_GAP_PCT, thresholdFrom: own === null ? "fleet" : "session" };
 }
 
 // true = the server took it
@@ -169,6 +187,15 @@ function cacheNow(c: NonNullable<BriefSuccession["cache"]>): CacheNow {
   const left = c.coldAt - serverClock();
   return left > 0 ? { state: "warm", min: Math.ceil(left / 60_000) } : { state: "kalt", min: Math.floor(-left / 60_000) };
 }
+// THE THRESHOLD IN FORCE NOW (§4: „52 % · Übergabe bei 50 % (warm)“): the cap while the cache is warm, the
+// base once it is cold; without a cache reading, or from a server that sends no cap, the base alone
+const CAP_GAP_PCT = 5;
+export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null } | null {
+  if (sc.thresholdPct === null) return null;
+  const cache = sc.cache ? cacheNow(sc.cache).state : null;
+  if (cache === "warm" && sc.capPct != null) return { pct: sc.capPct, cache: "warm" };
+  return { pct: sc.thresholdPct, cache: cache === "kalt" ? "kalt" : null };
+}
 const minText = (min: number): string => min < 1 ? "eben" : min < 90 ? `${min} min` : `${Math.round(min / 60)} h`;
 const kTokens = (n: number): string => `${Math.round(n / 1000)}k`;
 function compactionText(c: NonNullable<BriefSuccession["compaction"]>): string {
@@ -225,10 +252,28 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
     b.disabled = locked;
     pcts.appendChild(b);
   }
-  rows.push(row("Übergabe bei", [pcts, el("span", "unit", "%")],
+  // „AUS“ (K9 S3c, owner 14.10.: „[Zitat entfernt]“): this session's own 0 — no hint, no act;
+  // pressed again it follows the fleet again. Read from the value as set, so a gate above it does not hide it
+  const off = sc.sessionPct === 0;
+  const offSeg = el("span", "seg pctoff");
+  const ob = button("Aus", off && !locked ? "on" : "", "pct-aus",
+    locked ? "Hier wirkt keine Schwelle, der Grund steht darunter"
+      : off ? `Die Übergabe ist für diese Session aus — noch einmal klicken: zurück auf ${sc.defaultPct > 0 ? `${sc.defaultPct} %` : "den Fleet-Wert"}`
+      : "Die Übergabe für diese Session ausstellen: kein Hinweis, keine neue Session — nur diese Session",
+    () => void write(v, { thresholdPct: off ? null : 0 }));
+  ob.setAttribute("aria-pressed", String(off && !locked));
+  ob.disabled = locked;
+  offSeg.appendChild(ob);
+  // the base and the cap in one sentence, and whose value it is (§4: „Fleet-Wert für eine Orchestratorin: 45 %,
+  // solange der Cache warm ist 50 %“)
+  const band = sc.thresholdPct !== null && sc.capPct != null
+    ? `Hinweis ab ${sc.thresholdPct} %, Übergabe bei ${sc.capPct} %, solange der Cache warm ist` : null;
+  rows.push(row("Schwelle", [pcts, el("span", "unit", "%"), offSeg],
     sc.thresholdOff && sc.thresholdOff !== "rail" ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
       : sc.defaultPct <= 0 && sc.pctFrom === "fleet" ? "Für diese Art Session steht keine Schwelle. Eine Wahl gilt nur hier."
-      : `${sc.pctFrom === "session" ? "Eigener Wert dieser Session" : "Ab hier gibt sie an eine frische Session weiter"}${sc.defaultPct > 0 ? `; die Fleet steht auf ${sc.defaultPct} %` : ""}.`,
+      : sc.pctFrom === "session" ? `Eigener Wert dieser Session${band ? `: ${band}` : ""}${sc.defaultPct > 0 ? `; die Fleet steht auf ${sc.defaultPct} %` : ""}.`
+      : band ? `Fleet-Wert für ${sc.kind ? KIND_WORDS[sc.kind] : "diese Art Session"}: ${band}.`
+      : `Ab hier gibt sie an eine frische Session weiter; die Fleet steht auf ${sc.defaultPct} %.`,
     "wide"));
 
   const seg = el("span", "seg");
@@ -274,6 +319,31 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
       : kc.on ? `Nach ${kc.idleMin} min Ruhe ein kurzer Turn, höchstens ${kc.hourCap}-mal pro Stunde. ${kc.warmTurns ? `Bisher ${kc.warmTurns}.` : "Bisher keiner."}`
       : `Der Cache verfällt ${kc.lifetimeMin} min nach dem letzten Modellaufruf.`));
     if (kc.on && !kc.exempt) rows.push(...warmRows(v, kc));
+  }
+
+  // AN DER SCHWELLE (S3b): what Fleet does once the cap is reached or the cache is about to go cold — the hint
+  // only, Compact, or a new session, the fleet's value marked; a lane has no new session
+  const choices = sc.choices ?? [];
+  if (choices.length > 1) {
+    // the fleet's value is marked and written as null (S3b-2: a new session, a lane the hint; an older server: the hint)
+    const fleet = sc.fleetChoice ?? "hint";
+    const now = sc.atThreshold ?? fleet;
+    const cseg = el("span", "seg choices");
+    for (const c of choices) {
+      const b = button(CHOICE_WORDS[c], `${c === now && !locked ? "on" : ""}${c === fleet ? " dflt" : ""}`.trim(), `at-${c}`,
+        c === fleet ? `${CHOICE_WORDS[c]} — der Wert der Fleet` : `${CHOICE_WORDS[c]} an der Schwelle — nur diese Session`,
+        () => { if (c !== now) void write(v, { atThreshold: c === fleet ? null : c }); });
+      b.setAttribute("aria-pressed", String(c === now && !locked));
+      b.disabled = locked;
+      cseg.appendChild(b);
+    }
+    const when = sc.capPct != null ? `Ab ${sc.capPct} % oder kurz vor kaltem Cache` : "Wenn es so weit ist";
+    const what = now === "compact" ? `${when} tippt Fleet /compact, sobald sie ruht.`
+      : now === "succeed" ? `${when} öffnet Fleet eine neue Session, sobald sie ruht.`
+      : "Nur der Hinweis; die Session wählt den Punkt selbst.";
+    const last = sc.act ? ` Zuletzt ${new Date(sc.act.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}: ${CHOICE_WORDS[sc.act.act]}, ${sc.act.outcome}.` : "";
+    rows.push(row("An der Schwelle", [cseg], locked ? "Hier wirkt keine Schwelle."
+      : sc.thresholdOff === "session" ? `Die Übergabe ist für diese Session aus.${last}` : `${what}${last}`, "wide"));
   }
 
   const p = previewOf(v);

@@ -8,9 +8,9 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, ownSetting,
-  settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts,
-  type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
+import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText,
+  orchestratorContextLine, ownSetting, settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision,
+  warmTextInput, type ActFacts, type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
 import { loadHandoverSetting, type HandoverSetting } from "./types";
 
 const setting = (slot: number, openedAt: number): HandoverSetting => ({ thresholdPct: 55, nudge: false, keepCache: true,
@@ -152,6 +152,12 @@ describe("der Text des Warm-Turns", () => {
     expect(loadHandoverSetting({ ...rec, atThreshold: "succeed" })?.atThreshold).toBe("succeed");
     expect(loadHandoverSetting({ ...rec, atThreshold: "clear" })).toBeNull();
   });
+  test("fleet.json: 0 ist „Aus“ und bleibt stehen, 1 bis 4 und 100 verwerfen den Datensatz", () => {
+    const rec = { thresholdPct: 0, nudge: true, keepCache: null, keepCacheIdleMin: 50, setAt: 1, occupant: { slot: 3, openedAt: 100 } };
+    expect(loadHandoverSetting(rec)?.thresholdPct).toBe(0);
+    expect(loadHandoverSetting({ ...rec, thresholdPct: 70 })?.thresholdPct).toBe(70);
+    for (const pct of [1, 4, 100, -5]) expect(loadHandoverSetting({ ...rec, thresholdPct: pct })).toBeNull();
+  });
 });
 
 describe("die Schwelle je Art", () => {
@@ -176,6 +182,14 @@ describe("die Schwelle je Art", () => {
     expect(thresholdOf("lane", 0, null)).toMatchObject({ basePct: 0, capPct: 0 });
     expect(thresholdStep(90, thresholdOf("lane", 0, null), "warm")).toBe("below");
     expect(thresholdOf("lane", 0, 40)).toMatchObject({ basePct: 40, capPct: 45, from: "session" });
+  });
+  // K9 S3c (Owner 14.10.: „[Zitat entfernt]“): 0 als eigener Wert ist „[Zitat entfernt]“
+  test("ein eigener Wert 0 schaltet diese Session ab, auch über Env und Tabelle: an der Obergrenze weder Hinweis noch Handlung", () => {
+    for (const [kind, env] of [["session", 44], ["orchestrator", null], ["lane", null]] as const) {
+      const t = thresholdOf(kind, env, 0);
+      expect(t).toMatchObject({ basePct: 0, capPct: 0, from: "session" });
+      for (const cache of ["warm", "kalt"] as const) expect(thresholdStep(99, t, cache, true)).toBe("below");
+    }
   });
 });
 
@@ -371,5 +385,15 @@ describe("die Handlung", () => {
     expect(actDecision({ ...base, step: "hint" }).reason).toBe("not-due");
     expect(actDecision({ ...base, actedAt: base.now - 60_000 }).reason).toBe("acted");
     expect(actDecision({ ...base, actedAt: base.now - 15 * 60_000 }).act).toBe("succeed");
+  });
+});
+
+describe("die Rollenkarte der Orchestratorin", () => {
+  test("Owner: „[Zitat entfernt]“ — ihre Kontext-Zeile nennt ihre Zeile 45/50", () => {
+    const line = orchestratorContextLine(thresholdOf("orchestrator", 40, null));
+    expect(line).toContain("Ab 45 % schreibt Fleet dir einen Hinweis");
+    expect(line).toContain("bis 50 % arbeitest du weiter, solange dein Cache warm ist");
+    expect(line).not.toContain("spaetestens bei 45");
+    expect(line).not.toContain("FLEET_MIGRATE_PCT");
   });
 });

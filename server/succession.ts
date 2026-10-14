@@ -148,7 +148,8 @@ const FLEET_BASE_PCT: Record<SessionKind, number> = { orchestrator: 45, "program
 export const CAP_GAP_PCT = 5;
 export interface Threshold { kind: SessionKind; basePct: number; capPct: number; from: "session" | "env" | "fleet" }
 // `envPct`: der Env-Wert der Schiene, null = nicht gesetzt; 0 schaltet die Schiene ab (basePct 0).
-// `ownPct`: der eigene Wert der Session (HandoverSetting.thresholdPct), null = keiner.
+// `ownPct`: der eigene Wert der Session (HandoverSetting.thresholdPct), null = keiner; 0 = „Aus“ für diese Session
+// (K9 S3c, Owner 14.10.: „[Zitat entfernt]“): Basis 0, also weder Hinweis noch Handlung.
 export function thresholdOf(kind: SessionKind, envPct: number | null, ownPct: number | null): Threshold {
   const env = kind === "orchestrator" ? null : envPct;
   const basePct = ownPct ?? env ?? FLEET_BASE_PCT[kind];
@@ -298,4 +299,12 @@ export function hintText(f: HintFacts): string {
   return `${opening}. Schreib eine stehende Übergabe (POST /api/self/handover, \`intent\` ODER \`pointer\`) und halte sie `
     + "aktuell: Mit ihr öffnet der Owner jederzeit eine neue Session, ohne dir einen Turn zu schicken. "
     + `Am Ende eines Schritts gibst du selbst weiter: POST /api/self/succeed. Beide Türen nehmen den ${token}.`;
+}
+
+// DIE KONTEXT-ZEILE DER ORCHESTRATORIN (S3c; Bauleitung 14.10.: „[Zitat entfernt]“ auf 45/50
+// umschreiben). Ihre Rollenkarte nennt die Zeile der Tabelle, aus der sie kommt, statt einer zweiten Zahl:
+// Hinweis an der Basis, Übergabe an der Obergrenze, solange der Cache warm ist. ASCII wie die übrige Karte.
+export function orchestratorContextLine(t: Threshold): string {
+  return `--- KONTEXT --- Ab ${t.basePct} % schreibt Fleet dir einen Hinweis; bis ${t.capPct} % arbeitest du weiter, solange dein Cache `
+    + `warm ist, und waehlst den Punkt der Uebergabe selbst. Deine Werte stehen in GET /api/self -> context.`;
 }

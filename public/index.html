@@ -3306,6 +3306,8 @@
   #board .ubpop .pr.wide + .pr { margin-top: 2px; }
   #board .ubpop .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   #board .seg:is(.pcts, .mins) button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+  /* ten thresholds 25–70 (K9 S3c), eleven with a lane's 37, and their unit on one line of the 256-px row; „Aus“ below */
+  #board .seg.pcts button { min-width: 21px; padding: 0 2px; }
   /* the warm turn's own text (K9 S2b): the notepad's field, the full width of its row */
   #board .ubpop .pta { flex: 1 1 100%; box-sizing: border-box; min-height: 40px; resize: vertical; padding: 5px 7px;
     background: var(--chat-surface); color: var(--chat-prose); border: 1px solid var(--chat-edge); border-radius: var(--r1);
@@ -3417,6 +3419,8 @@
     #board .seg:is(.pcts, .mins) button { min-width: 36px; padding: 0 4px; }
     /* eight minutes and their unit on one line of Info's 335-px sheet */
     #board .seg.mins button { min-width: 32px; }
+    /* eleven thresholds and their unit on one line of the same sheet */
+    #board .seg.pcts button { min-width: 26px; padding: 0 2px; }
     #board .ubpop .pta { font-size: 16px; }
     #board .seg button { min-height: 40px; padding: 0 14px; }
   }

@@ -176,7 +176,7 @@ import {
   type WorkplaceCheckObservation, type WorkplaceStandSource,
   type SlotStreamOccupant, type TaskCriterionPart,
   helperReposFrom, remoteControlName,
-  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting, type HandoverSetting,
+  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, HANDOVER_PCT_OFF, handoverPctOk, loadHandoverSetting, type HandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
   KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX,
 } from "./server/types";
@@ -208,8 +208,8 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
   setOpener, usableCheck, writeText } from "./server/branches";
-import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, ownSetting, settingForSuccessor,
-  successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
+import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, orchestratorContextLine, ownSetting,
+  settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -25892,8 +25892,9 @@ function migrateRailOf(s: Slot): MigrateRail {
 // THE THRESHOLD IS THE EFFECTIVE ONE, never the raw env. FLEET_MIGRATE_PCT = 0 leaves tickMigrate
 // unregistered (the setInterval at the bottom of this file), which turns the LANE rail's own 40 off
 // with it; a board printing 40 there would name a gate that cannot fire. Every other `off` reason
-// is one of the tick's own skips, in the order the tick applies them.
-type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail";
+// is one of the tick's own skips, in the order the tick applies them. `session` is the owner's „[Zitat entfernt]“ for
+// this one session (HandoverSetting.thresholdPct HANDOVER_PCT_OFF, K9 S3c), `rail` a 0 on its kind's env.
+type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session";
 interface SuccessionFacts {
   rail: "lane" | MigrateRail;
   // THE ROW OF THE THRESHOLD TABLE (K9 S3): the kind of session, the base the hint comes at
@@ -25993,7 +25994,7 @@ function successionThresholdOff(s: Slot, t: Threshold): ThresholdOff | null {
   if (!s.sessionId) return "unpinned";
   if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
   if (MIGRATE_PCT <= 0) return "fleet";        // the master switch: no tick is registered at all
-  if (t.basePct <= 0) return "rail";
+  if (t.basePct <= 0) return t.from === "session" ? "session" : "rail";
   return null;
 }
 // A PROGRAM-MAIN'S LINE IS ITS PROGRAM (docs/self-api.md §Linien-Record): it never carries a
@@ -26056,7 +26057,7 @@ function successionFacts(s: Slot): SuccessionFacts {
 
 // THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
-// {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean | null,
+// {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | 0 (off) | null, nudge?: boolean, keepCache?: boolean | null,
 // keepCacheIdleMin?: 5..55 in 5-steps, keepCacheText?: string | null, atThreshold?: "hint" | "compact" | "succeed" | null};
 // null returns the threshold to the base of its kind (thresholdFor), the choice at the threshold to the fleet's value (S3b-2), the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
 // (server/succession.ts).
@@ -26082,7 +26083,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasText && !hasAt)
     return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin, keepCacheText and/or atThreshold" }, 400);
   if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
-    return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
+    return json({ refusal: "bad-threshold", error: `thresholdPct must be null, ${HANDOVER_PCT_OFF} (off) or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
   if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
   if (hasKeep && !(body.keepCache === null || typeof body.keepCache === "boolean"))
     return json({ refusal: "bad-keep-cache", error: "keepCache must be true, false or null (the fleet's value for this kind of session)" }, 400);
@@ -41798,8 +41799,9 @@ const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-A
 // ROLE: what a succession owes, for every harness alike. WHEN a session hands over is runtime
 // behaviour of the harness it runs on, so it is a second, separately chosen line — never folded
 // into the role text, or a codex Orchestratorin reads a percentage stop its harness does not have.
-// Both lines stand verbatim in docs/rollenkarten.md §Kontext je Harness; e2e/pins.ts holds them.
-const ORCHESTRATOR_CONTEXT_LINE = `--- KONTEXT --- Entscheidung an der Schwelle FLEET_MIGRATE_PCT (gemessen mit ctl.sh ctx), darunter keine Nachfolge, spaetestens bei 45 %.`;
+// Both lines stand in docs/rollenkarten.md §Kontext je Harness; the claude one is built from her row of
+// the threshold table (server/succession.ts#orchestratorContextLine, K9 S3c), the codex one e2e/pins.ts holds.
+const ORCHESTRATOR_CONTEXT_LINE = orchestratorContextLine(thresholdOf("orchestrator", null, null));
 
 const ORCHESTRATOR_CONTEXT_LINE_CODEX = `--- KONTEXT --- Codex verdichtet seinen Kontext nativ und automatisch. Ein gemessener Fuellstand ist Anzeige: kein Grund, die Arbeit anzuhalten, und kein Anlass fuer eine Nachfolge. Eine Nachfolge ist nur ein bewusster Akt, und dann traegt sie die UEBERGABE oben vollstaendig.`;
 

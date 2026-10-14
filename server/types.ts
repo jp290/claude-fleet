@@ -1904,7 +1904,8 @@ interface SuccessionRetirement { at: number; cwd: string; token: string }
 interface MemoryGrantOccupant { slot: number; openedAt: number }
 // THE OWNER'S HANDOVER SETTING on one occupant (Slot.handover; server.ts#patchHandover, the
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
-// HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the base of its kind (server/succession.ts#thresholdOf,
+// HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, HANDOVER_PCT_OFF = the handover is off for this session (no hint, no act;
+// K9 S3c, Mangel 70), or null = the base of its kind (server/succession.ts#thresholdOf,
 // moved by FLEET_MIGRATE_PCT / FLEET_LANE_MIGRATE_PCT); `nudge: false` keeps tickMigrate from writing this session
 // its hint at all. Bound to `occupant`; every succession on the slot re-binds it to
 // the successor (server/succession.ts), a freshly opened occupant starts on the fleet's values.
@@ -1927,7 +1928,8 @@ interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCac
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
-const handoverPctOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
+const HANDOVER_PCT_OFF = 0;
+const handoverPctOk = (n: unknown): n is number => n === HANDOVER_PCT_OFF || typeof n === "number" && Number.isInteger(n)
   && n >= HANDOVER_PCT_MIN && n <= HANDOVER_PCT_MAX && n % HANDOVER_PCT_STEP === 0;
 // 3 043/3 043 warm resumptions at 5–60 min, 270/270 cold from 62 min on (the 07.10. measurement):
 // the duration must end before that edge, and 55 is the measurement's own five-minute planning buffer
@@ -3545,7 +3547,7 @@ export type {
 };
 export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
-  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
+  HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, HANDOVER_PCT_OFF, handoverPctOk, loadHandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
   KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX, keepCacheTextOk, thresholdActOk,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,

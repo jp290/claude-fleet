@@ -669,9 +669,10 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   die WIRKSAME Schwelle samt zugestelltem Stups, die Schiene und die wievielte Session der Linie
   gegen den Deckel (`taken`/`cap` sind `null`, wo kein Deckel existiert — eine handgeöffnete Lane
   hat keine Zeile). `thresholdPct: null` kommt IMMER mit `thresholdOff`: `steward` · `waiting` ·
-  `unpinned` · `harness` · `fleet` (Hauptschalter) · `rail` — in genau der Reihenfolge, in der
-  `tickMigrate` seine Tore anlegt, damit die ROHE Env-Zahl nirgends als Schwelle erscheint, die
-  nicht feuern kann. Die Stups-Zahl ist prozesslokal (`server/succession.ts#HintLedger`): nach einem Neustart steht
+  `unpinned` · `harness` · `fleet` (Hauptschalter) · `rail` (die Env ihrer Art steht auf 0) ·
+  `session` (der Owner hat die Übergabe für diese Session ausgestellt, eigener Wert 0, K9 S3c) — in genau
+  der Reihenfolge, in der `tickMigrate` seine Tore anlegt, damit die ROHE Env-Zahl nirgends als Schwelle
+  erscheint, die nicht feuern kann. Die Stups-Zahl ist prozesslokal (`server/succession.ts#HintLedger`): nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
 - **Schwelle je Art Session (K9 S3, `server/succession.ts#thresholdOf`, docs/neuaufbau/befunde/07-nachfolge.md
@@ -708,7 +709,8 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
 - **Schwelle und Hinweis je Session setzt der Owner** (Owner-Route, seit 2026-10-06, die Übergabe-Zeile
   der rechten Spalte): `GET /api/slots/:id/handover` antwortet `{slot, openedAt, setting, step, min, max,
   succession}`; `PATCH` mit `{expectedOpenedAt, thresholdPct?, nudge?}` setzt für GENAU diese Belegung eine
-  eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `null` = zurück auf den Wert ihrer Art) und
+  eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `0` = „Aus“: weder Hinweis noch Handlung, `off: session`;
+  `null` = zurück auf den Wert ihrer Art; das Popover bietet 25–70 und „Aus“) und
   ob `tickMigrate` ihr den Hinweis überhaupt schreibt (`nudge: false` = nie). Der Env-Wert
   (`FLEET_MIGRATE_PCT` / `FLEET_LANE_MIGRATE_PCT`) bleibt der Default und der Hauptschalter bleibt
   `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`),
@@ -721,7 +723,7 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `server.ts#restartLaneSession`); nur ein frisches Öffnen beginnt auf den Fleet-Werten. Fleet-Werte
   selbst sind keine Einstellung: `null` + Hinweis an + keepCache `null` speichert nichts. Ablehnungen: jede
   Self-Credential (Header oder Bearer) 401 wie an jeder Owner-Route, ein Wert außerhalb der 5er-Schritte
-  oder vom falschen Typ 400 (`bad-threshold`, `bad-nudge`, `bad-keep-cache`, `bad-keep-cache-idle`,
+  (außer 0) oder vom falschen Typ 400 (`bad-threshold`, `bad-nudge`, `bad-keep-cache`, `bad-keep-cache-idle`,
   `nothing-to-set`), eine andere Belegung 409 `occupant-changed`, ein Slot ohne Session 409 `not-active`,
   ein Nicht-claude-Harness 409 `harness` (das Band gilt nur für claude), ein unbekannter Slot 404.
   Gemessen in `e2e/self-token.ts`.

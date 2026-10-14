@@ -1,4 +1,5 @@
-import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, laneLabel, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
+import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, laneLabel, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchText, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
+import type { ModelSwitch } from "../server/model-switch";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
 import { renderWorkplaceField, sessionActive } from "./board";
 import { modelLabel } from "./modelname";
@@ -203,6 +204,8 @@ let optsKey = "";
 let optOpen: OptField | null = null;
 let optStaged: Partial<Record<OptField, string>> = {};
 let optMsg: Partial<Record<OptField, string>> = {};
+// the switch an Übernehmen started (setSlotSetting): its sentence follows the slot row's modelSwitch from then on
+let optFollow: Partial<Record<OptField, ModelSwitch>> = {};
 let optsSlot = 0;
 // Twelfth cut: Apply on the MODEL switch first asks (owner: a model switch costs the session its
 // prompt cache). The ask is state, not DOM, for the reason optOpen is — the poll repaints the row.
@@ -388,11 +391,12 @@ export function renderComposerOpts(force: boolean): void {
   const slot = optSlot();
   const h = slot ? harnessEntry(slot) : null;
   const s = fleet.find((x) => x.id === slot);
-  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? "", pane?.observedEffort ?? ""].join("|");
+  const key = [slot, h?.id ?? "", s?.model ?? "", s?.effort ?? "", defaultModel ?? "", pane?.observedModel ?? "", pane?.observedEffort ?? "",
+    s?.modelSwitch ? `${s.modelSwitch.field}:${s.modelSwitch.state}:${s.modelSwitch.at}` : ""].join("|");
   if (!force && key === optsKey) { tickCacheAge(); return; }
   optsKey = key;
   // a pick staged for one session must never be applied to the next one the focus lands on
-  if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; optConfirm = false; }
+  if (slot !== optsSlot) { optsSlot = slot; optOpen = null; optStaged = {}; optMsg = {}; optFollow = {}; optConfirm = false; }
   stopMascot();
   compOpts.replaceChildren();
   ageEl = mascotEl = null;
@@ -612,8 +616,12 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
   const pop = el("div", `optpop ${field}`);
   const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
   apply.title = what;
-  const status = el("div", "cmdstatus", optMsg[field] ?? "");
-  status.hidden = !optMsg[field];
+  // after an Übernehmen, the sentence follows what Claude Code made of that very switch (the slot row's modelSwitch)
+  const sw = fleet.find((x) => x.id === slot)?.modelSwitch, follow = optFollow[field];
+  const msg = optMsg[field] && follow && sw && sw.field === field && sw.want === follow.want && sw.at >= follow.at
+    ? switchText(sw) : optMsg[field];
+  const status = el("div", "cmdstatus", msg ?? "");
+  status.hidden = !msg;
   const sync = () => {
     const v = optStaged[field];
     const pending = !!v && v !== current;
@@ -630,7 +638,8 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
     apply.textContent = "Wird umgestellt …";
     const verdict = await setSlotSetting(slot, field, v);
     optStaged = { ...optStaged, [field]: undefined };
-    optMsg = { ...optMsg, [field]: verdict };
+    optMsg = { ...optMsg, [field]: verdict.text };
+    optFollow = { ...optFollow, [field]: verdict.switched };
     renderComposerOpts(true); // the popover stays open (optOpen) and shows the verdict
   };
   apply.onclick = () => {

@@ -23,6 +23,7 @@ import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-regis
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 import { timelineWireFixture } from "./timeline-ui";
+import { viewFolder } from "../server/live-state";
 
 // A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
 // starts it from THIS runner, whose env carries FLEET_VERIFY_CMD (e2e-isolated.sh evals SRV_ENV into
@@ -9133,6 +9134,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const closedByApply = !await isOpen();
       await wait(`window.__fx.shown(document.querySelector('#compopts .optpop.effort.open'))`, 3000);
       await settle(400);
+      // one request since Mangel 53 S-b: the server records the level, types it and answers Claude Code's question
       const effortPosts = fx.posts.slice(posts0).filter((x) => x.path === "/api/slots/1/model").map((x) => x.body);
       const effortPop = await box("document.querySelector('#compopts .optpop.effort.open')");
       await shot(`${W}${keyboard ? "-tastatur" : ""}-effort-uebernommen`);
@@ -9141,7 +9143,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         popGone: await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')") };
       const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the island and the switch's own Apply writes it`;
       claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig+", "mittel", "hoch*", "sehr hoch"] }) && staged.ready
-        && postsAfterPress === 0 && closedByApply && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low" })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
+        && postsAfterPress === 0 && closedByApply && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low", push: true })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
         && (facts.effort as { popGone: boolean }).popGone;
       detail[effortClaim] = facts.effort;
       // one pick at a time, and the model asks first, exactly as the switch at the field does — nothing goes out before the answer
@@ -10772,7 +10774,12 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   const text = (role: "user" | "assistant", t: string, min: number) => ({ role, ts: at(min), blocks: [{ t: "text", text: t }] });
   const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[],
     recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[],
-    reads: [] as number[] };
+    reads: [] as number[],
+    // the transcript's raw lines as far as the model/effort facts go (scenario 15): the route folds them with
+    // server/live-state.ts#viewFolder, the way server.ts#transcriptPayload does; `sys` counts the lines that
+    // carry no chat entry, so `total` grows with them as the real line count does
+    raw: [JSON.stringify({ type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } })],
+    sys: 0 };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -10833,9 +10840,17 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
         fx.reads.push(Date.now());
-        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
-          source: "/fixture/orch.jsonl", ttlSec: 300 });
+        const folded = viewFolder();
+        for (const line of fx.raw) folded.add(line);
+        const { model, effort } = folded.facts();
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length + fx.sys,
+          source: "/fixture/orch.jsonl", ttlSec: 300, model, effort });
       }
+      // the composer's model and effort switches (scenario 15) need the slot's adapter entry
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [{ id: "claude", default: true, note: null,
+        effortLevels: ["low", "medium", "high", "xhigh", "max"], models: modelsForHarness("claude"),
+        supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
+        modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) });
       // the chat view reads the session's queue here since K10 S1; a held prompt means a running turn
       if (p === "/api/slots/1/history") return void json(requestId, { history: fx.history });
       if (p === "/api/slots/1/live")
@@ -10890,6 +10905,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const claims: Record<string, boolean> = {};
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
+      fx.raw = fx.raw.slice(0, 1);
+      fx.sys = 0;
       fx.sends = [];
       fx.queued = [];
       fx.recalls = [];
@@ -11095,6 +11112,21 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       fx.entries = [...fx.entries, text("assistant", droppedText, 61)];
       claims["push: when the socket drops, the chat asks every second again and the next answer arrives without a push"] =
         await wait(shows(droppedText), 2500);
+      // --- 15. Mangel 53, owner 13.10.: „[Zitat entfernt]“
+      // . Claude Code writes the switch as two local_command lines (recorded, 2.1.296); the switch under the
+      // field shows the new model from them, before any answer ran on it
+      const MODEL_VAL = "document.querySelector('#compopts .optswrap.model .optval')?.textContent ?? ''";
+      const answers = () => evaluate<number>("document.querySelectorAll('.pane .panechat .msg.assistant').length");
+      const fableName = modelLabel("claude-fable-5-1[1m]").split(" · ")[0];
+      const before = { val: await evaluate<string>(MODEL_VAL), answers: await answers() };
+      fx.raw = [...fx.raw,
+        JSON.stringify({ type: "system", subtype: "local_command", content: "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-fable-5-1[1m]</command-args>", level: "info", isMeta: false }),
+        JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "model", args: "claude-fable-5-1[1m]" } })];
+      fx.sys += 2;
+      const switched = await wait(`(${MODEL_VAL}).startsWith(${JSON.stringify(fableName)})`, 2500);
+      facts.modelSwitch = { before, after: { val: await evaluate<string>(MODEL_VAL), answers: await answers() }, fableName };
+      claims["model switch: after Claude Code's „Set model to Fable 5.1“ line the switch under the field shows Fable, with no new answer"] =
+        before.val.startsWith(modelLabel("claude-opus-5-5").split(" · ")[0]) && switched && (await answers()) === before.answers;
       results.push({ width, height, claims, facts });
     }
     return results;

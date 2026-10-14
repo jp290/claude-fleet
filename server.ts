@@ -204,6 +204,7 @@ import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/tr
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
 import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./server/recall";
+import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
@@ -23336,6 +23337,42 @@ const liveReader = createLiveReader({
   paintMark: (id) => slots[id - 1]?.offset ?? 0,
   identity: (id) => { const s = slots[id - 1]; return s?.cwd ? `${s.openedAt}\0${s.sessionId ?? ""}` : null; },
 });
+
+// THE BOARD'S MODEL/EFFORT SWITCH AFTER IT TYPED (server/model-switch.ts, Mangel 53 S-b): one watch per slot; a
+// second switch replaces it, and it ends with the occupant that got the command. What it learns rides the 2 s
+// poll as the slot row's `modelSwitch`, for that occupant only.
+const modelSwitches = new Map<number, { stop: () => void; openedAt: number; view: ModelSwitch }>();
+function startModelSwitch(s: Slot, field: SwitchField, want: string, file: string | null, offset: number): void {
+  modelSwitches.get(s.id)?.stop();
+  const occupant = { openedAt: s.openedAt, sessionId: s.sessionId };
+  const entry = { stop: () => {}, openedAt: s.openedAt, view: { field, want, state: "typed" as ModelSwitch["state"], at: Date.now() } };
+  modelSwitches.set(s.id, entry);
+  const alive = () => s.openedAt === occupant.openedAt && s.sessionId === occupant.sessionId && modelSwitches.get(s.id) === entry;
+  // Claude Code's own answer only: the transcript's local_command line; any other harness stays "typed"
+  if (harnessOf(s.harness).id !== "claude" || !file) return;
+  const tail = lineTail(file, offset);
+  const watch = watchSwitch(field, want, {
+    alive,
+    frame: async () => {
+      const cap = await tmux("capture-pane", "-p", "-e", "-t", paneTarget(sess(s.id)));
+      return cap.code === 0 && alive() ? cap.out : null;
+    },
+    // in the slot's inputChain like a /send, so this Enter never lands between another send's paste and its Enter
+    enter: async () => {
+      const task = s.inputChain.then(async () => alive() && (await tmux("send-keys", "-t", paneTarget(sess(s.id)), "Enter")).code === 0);
+      s.inputChain = task.catch(() => {});
+      return task;
+    },
+    lines: async () => transcriptFile(s) === file ? tail.lines() : [],
+    working: async () => (await liveReader.read(s.id)).turn === "working",
+    publish: (state) => {
+      if (!alive()) return;
+      entry.view = { field, want, state, at: Date.now() };
+    },
+  });
+  entry.stop = watch.stop;
+  void watch.done.then((end) => { if (end === "stopped" && modelSwitches.get(s.id) === entry && !alive()) modelSwitches.delete(s.id); });
+}
 
 // ESC AND ↑ FROM THE CHAT VIEW (server/recall.ts, Neuaufbau K10 S3): in the slot's inputChain like a /send,
 // so a key never lands between a send's paste and its Enter. The field is read and erased exactly as
@@ -49592,6 +49629,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(s.effort ? { effort: s.effort } : {}),
             ...(paneModel?.model ? { paneModel: paneModel.model } : {}),
             ...(paneModel?.modelPushedAt ? { modelPushedAt: paneModel.modelPushedAt } : {}),
+            // the board's last model/effort switch and what Claude Code made of it (startModelSwitch); this occupant's only
+            ...(() => { const sw = modelSwitches.get(s.id); return sw && sw.openedAt === s.openedAt ? { modelSwitch: sw.view } : {}; })(),
             // an owner /send waiting for an empty composer (THE PARKED SEND); omitted when none waits
             ...(parked ? { parkedSend: parked } : {}),
             ...(stuckDeliveryFor(s) ? { stuckDelivery: stuckDeliveryFor(s) } : {}),
@@ -52880,26 +52919,42 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         saveState();
         let modelPushedAt: number | undefined;
         if (body.push === true) {
-          const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, harness: false });
+          // the board's switch (Mangel 53 S-b): the field the body names, model first — typed alone, never inside a
+          // waiting bundle (bypassQueue, like an owner /-command). An owner's click passes quiet hours; the emergency
+          // stop holds it like every owner send (K1: „[Zitat entfernt]“)
+          const field: SwitchField = body.model !== undefined ? "model" : "effort";
+          const value = field === "model" ? s.model : s.effort;
+          if (!value) return json({ error: `push needs a ${field} to type` }, 400);
+          const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, harness: false, quietHours: false });
           if (!gate.ok)
             return json({ error: `model push held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
+          const file = transcriptFile(s);
+          const offset = file ? Bun.file(file).size : 0;
           try {
-            await sendText(s, `/model ${s.model}`, true, { path: "model-push" });
+            await sendText(s, switchCommand(harnessOf(s.harness).id, field, value), true, { path: "model-push", bypassQueue: true });
           } catch (e) {
             if (e instanceof SendRefused) return json({ error: `model push held (${e.message})` }, 409);
-            return json({ error: `model push outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 409);
+            // typed, and the field reads as not empty: Claude Code's question stands under the command's echo, which
+            // the accept read takes for the field (befunde/12 §5, measured on :8981). Claude Code's own line decides
+            // (startModelSwitch); any other failure stays uncertain
+            if (!(e instanceof SendNotAccepted))
+              return json({ error: `model push outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 409);
           }
-          modelPushedAt = Date.now();
-          const previous = paneModelInfo.get(s.id);
-          paneModelInfo.set(s.id, {
-            model: previous?.model ?? null,
-            at: previous?.at ?? 0,
-            modelPushedAt,
-          });
-          audit("slot_model_push", s.id, `model=${s.model ?? "-"}`);
+          if (field === "model") {
+            modelPushedAt = Date.now();
+            const previous = paneModelInfo.get(s.id);
+            paneModelInfo.set(s.id, {
+              model: previous?.model ?? null,
+              at: previous?.at ?? 0,
+              modelPushedAt,
+            });
+          }
+          audit("slot_model_push", s.id, `${field}=${value}`);
+          startModelSwitch(s, field, value, file, offset);
         }
         return json({ ok: true, model: s.model, effort: s.effort,
-          ...(modelPushedAt ? { modelPushedAt } : {}) });
+          ...(modelPushedAt ? { modelPushedAt } : {}),
+          ...(body.push === true ? { modelSwitch: modelSwitches.get(s.id)?.view } : {}) });
       }
       // the owner writes this slot's standing intention (Slot.mission). Owner-only by CONSTRUCTION: the
       // steward gate above default-denies, and it must stay that way — a producer that can write the

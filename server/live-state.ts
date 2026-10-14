@@ -14,6 +14,7 @@ import { open, stat } from "node:fs/promises";
 import { composerBuffer } from "../composer";
 import { isInterruptMark } from "../src/pendingsend";
 import { ASK_TOOL } from "./conversation-read";
+import { readCommandLine, type PendingCommand } from "./model-switch";
 
 export type Turn = "working" | "ready" | "asking" | "interrupted" | "unknown";
 export type TurnDetail = "thinking" | "hooks" | null;
@@ -192,13 +193,17 @@ export interface ViewFacts {
   // assistant line; "<synthetic>" marks a locally made error turn, not a model. The composer shows it where
   // the slot record names no model — a hand-started or adopted session the fleet default would mislabel
   // (seventeenth cut: slot 5 ran Haiku 4.5, the switch said Opus 5). `effort` rides on every assistant line
-  // (Claude Code 2.1.x), so an /effort typed in the pane shows from the next request on
+  // (Claude Code 2.1.x). A /model or /effort with an argument shows at once: Claude Code writes the command and its
+  // output (server/model-switch.ts#readCommandLine, two shapes) — „Set model to …“/„Set effort level to …“ when it
+  // switched; „Kept model as …“ and a pick from the menu (no args) wait for the next request (Mangel 53)
   model: string | null;
   effort: string | null;
+  // a command line whose output has not been read yet (shape b carries the args only there)
+  command: PendingCommand | null;
 }
 export function viewFolder(from?: ViewFacts) {
   const queued = new Set(from?.queued), askCalls = new Map(from?.askCalls), askAnswered = new Set(from?.askAnswered);
-  let model = from?.model ?? null, effort = from?.effort ?? null;
+  let model = from?.model ?? null, effort = from?.effort ?? null, command = from?.command ?? null;
   return {
     // only lines that name what a fact needs are parsed; a torn line is skipped (the render loop reports it)
     add(raw: string): void {
@@ -233,8 +238,14 @@ export function viewFolder(from?: ViewFacts) {
           }
         } catch { /* torn line */ }
       }
+      const ran = readCommandLine(raw, command);
+      command = ran.pending;
+      if (ran.run?.args) {
+        if (ran.run.command === "model" && ran.run.out.startsWith("Set model to ")) model = ran.run.args;
+        else if (ran.run.command === "effort" && ran.run.out.startsWith("Set effort level to ")) effort = ran.run.args;
+      }
     },
-    facts(): ViewFacts { return { queued, askCalls, askAnswered, model, effort }; },
+    facts(): ViewFacts { return { queued, askCalls, askAnswered, model, effort, command }; },
   };
 }
 // what a whole-file split would hand the route from line `after` on: the complete lines, and last a line

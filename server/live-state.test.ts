@@ -259,3 +259,63 @@ describe("Transkript-Abruf: dieselben Zeilen wie die ganze Datei, gelesen wird n
     expect(v.facts().askCalls.size).toBe(0);
   });
 });
+
+// Mangel 53, Owner 13.10.: „[Zitat entfernt]“
+// . Die local_command-Zeilen sind aus Transkripten kopiert (Claude Code 2.1.296; „[Zitat entfernt]“ mit
+// Argument 2.1.291, 07.10.), ohne Sitzungsfelder.
+describe("Modell und Effort: der Wechsel zählt, sobald Claude Code ihn schreibt", () => {
+  const LC = {
+    modelName: { type: "system", subtype: "local_command", content: "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-fable-5-1[1m]</command-args>", level: "info", isMeta: false },
+    modelSet: { type: "system", subtype: "local_command", content: "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "model", args: "claude-fable-5-1[1m]" } },
+    modelKept: { type: "system", subtype: "local_command", content: "<local-command-stdout>Kept model as `Opus 5.5 (1M context)`</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "model", args: "claude-fable-5-1[1m]" } },
+    effortSet: { type: "system", subtype: "local_command", content: "<local-command-stdout>Set effort level to xhigh (saved as your default for new sessions): Deeper reasoning than high, just below maximum (on supported models)</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "effort", args: "xhigh" } },
+    effortMenu: { type: "system", subtype: "local_command", content: "<local-command-stdout>Set effort level to max (this session only): Maximum capability with deepest reasoning. May use excessive tokens resulting in long response times or overthinking. Use sparingly for the hardest tasks.</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "effort", args: "" } },
+  };
+  const opus = { type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } };
+  const facts = (...lines: object[]) => {
+    const v = viewFolder();
+    for (const l of lines) v.add(JSON.stringify(l));
+    const f = v.facts();
+    return { model: f.model, effort: f.effort };
+  };
+  test("Opus-Antwort, dann „Set model to“: Fable ohne neue Antwort; der Effort bleibt", () => {
+    expect(facts(opus, LC.modelName, LC.modelSet)).toEqual({ model: "claude-fable-5-1[1m]", effort: "high" });
+  });
+  test("„Kept model as“ mit Argument: das Modell bleibt Opus", () => {
+    expect(facts(opus, LC.modelName, LC.modelKept)).toEqual({ model: "claude-opus-5-5", effort: "high" });
+  });
+  test("„Set effort level to xhigh“: xhigh ohne neue Antwort; das Modell bleibt", () => {
+    expect(facts(opus, LC.effortSet)).toEqual({ model: "claude-opus-5-5", effort: "xhigh" });
+  });
+  test("aus dem Menü gewählt (ohne Argument): nichts bis zur nächsten Antwort", () => {
+    expect(facts(opus, LC.effortMenu)).toEqual({ model: "claude-opus-5-5", effort: "high" });
+  });
+  // the second shape Claude Code writes (user lines, no commandRun; recorded 2.1.296 on :8981 after the
+  // „Switch model?“ question was answered): the args stand only in the command line before the output
+  const U = {
+    caveat: { type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>" } },
+    modelName: { type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-fable-5-1[1m]</command-args>" } },
+    modelSet: { type: "user", message: { role: "user", content: "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>" } },
+    // the effort command line in the model line's form; the output line is recorded (2.1.296)
+    effortName: { type: "user", message: { role: "user", content: "<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>xhigh</command-args>" } },
+    effortSet: { type: "user", message: { role: "user", content: "<local-command-stdout>Set effort level to xhigh (saved as your default for new sessions): Deeper reasoning than high, just below maximum (on supported models)</local-command-stdout>" } },
+  };
+  test("die zweite Form (User-Zeilen ohne commandRun): Fable bzw. xhigh aus der Befehlszeile davor", () => {
+    expect(facts(opus, U.caveat, U.modelName, U.modelSet)).toEqual({ model: "claude-fable-5-1[1m]", effort: "high" });
+    expect(facts(opus, U.caveat, U.effortName, U.effortSet)).toEqual({ model: "claude-opus-5-5", effort: "xhigh" });
+  });
+  test("Befehlszeile und Ausgabe in zwei Lesungen: die Befehlszeile wartet in den Fakten", () => {
+    const first = viewFolder();
+    for (const l of [opus, U.caveat, U.modelName]) first.add(JSON.stringify(l));
+    const next = viewFolder(first.facts());
+    next.add(JSON.stringify(U.modelSet));
+    expect(next.facts().model).toBe("claude-fable-5-1[1m]");
+  });
+  test("eine Ausgabe ohne Befehlszeile davor sagt nichts", () => {
+    expect(facts(opus, U.modelSet)).toEqual({ model: "claude-opus-5-5", effort: "high" });
+  });
+  test("die nächste Antwort spricht wieder für sich", () => {
+    const fable = { type: "assistant", effort: "xhigh", message: { model: "claude-fable-5-1", content: [{ type: "text", text: "y" }] } };
+    expect(facts(opus, LC.modelSet, LC.effortSet, fable)).toEqual({ model: "claude-fable-5-1", effort: "xhigh" });
+  });
+});

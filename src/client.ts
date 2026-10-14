@@ -1,4 +1,5 @@
 import type { CodexFirstTurn } from "../server/conversation-read";
+import type { ModelSwitch } from "../server/model-switch";
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
@@ -547,6 +548,8 @@ export interface SlotInfo {
   // Fleet deliveries a bundle holds for this session (server.ts#heldDeliveriesView): how many, when
   // the bundle is due (null = until the next send), which paths. ABSENT = nothing held.
   heldDeliveries?: HeldDeliveries;
+  // the board's last model/effort switch and what Claude Code made of it (server.ts#startModelSwitch). ABSENT = none
+  modelSwitch?: ModelSwitch;
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
@@ -719,22 +722,38 @@ export function paneCommand(h: HarnessInfo | null, field: "model" | "effort", va
   return null;
 }
 export const switchesInPane = (h: HarnessInfo | null): boolean => paneCommand(h, "model", "") !== null;
-export async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<string> {
+// `switched`: the switch the server started for exactly this value — the sentence then follows its row state
+export async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<{ text: string; switched?: ModelSwitch }> {
+  const what = field === "model" ? "Modell" : "Effort";
+  if (switchesInPane(harnessEntry(slot))) {
+    // one request: the server records the value, types the command and answers Claude Code's question for exactly
+    // this value (server/model-switch.ts, Mangel 53); what follows rides the slot row as `modelSwitch` (switchText)
+    const res = await post(`/api/slots/${slot}/model`, { [field]: value, push: true });
+    const j = (await res.json().catch(() => null)) as { error?: string; modelSwitch?: ModelSwitch } | null;
+    if (res.status === 400) return { text: `Nicht umgestellt: ${j?.error ?? "HTTP 400"} — die Session läuft unverändert` };
+    if (!res.ok) return { text: `Vermerkt, aber nicht getippt: ${j?.error ?? `HTTP ${res.status}`}` };
+    return j?.modelSwitch ? { text: switchText(j.modelSwitch), switched: j.modelSwitch } : { text: `${what} ${value} — getippt` };
+  }
   const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
   if (!rec.ok) {
     const why = ((await rec.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${rec.status}`;
-    return `Nicht umgestellt: ${why} — die Session läuft unverändert`;
+    return { text: `Nicht umgestellt: ${why} — die Session läuft unverändert` };
   }
-  const what = field === "model" ? "Modell" : "Effort";
-  if (!switchesInPane(harnessEntry(slot))) {
-    const r = await post(`/api/slots/${slot}/restart`, {});
-    const j = (await r.json().catch(() => null)) as { resumed?: boolean; error?: string } | null;
-    if (!r.ok) return `Vermerkt, aber der Neustart ging nicht: ${j?.error ?? `HTTP ${r.status}`} — sie läuft noch mit dem alten ${what}`;
-    return `${what} ${value} — neu gestartet${j?.resumed ? ", das Gespräch geht weiter" : ", FRISCH (das Gespräch ließ sich nicht fortsetzen)"}`;
+  const r = await post(`/api/slots/${slot}/restart`, {});
+  const j = (await r.json().catch(() => null)) as { resumed?: boolean; error?: string } | null;
+  if (!r.ok) return { text: `Vermerkt, aber der Neustart ging nicht: ${j?.error ?? `HTTP ${r.status}`} — sie läuft noch mit dem alten ${what}` };
+  return { text: `${what} ${value} — neu gestartet${j?.resumed ? ", das Gespräch geht weiter" : ", FRISCH (das Gespräch ließ sich nicht fortsetzen)"}` };
+}
+// the sentence under the switch for what Claude Code made of it
+export function switchText(sw: ModelSwitch): string {
+  const what = sw.field === "model" ? modelLabel(sw.want) : `Effort ${sw.want}`;
+  switch (sw.state) {
+    case "typed": return `${what} — getippt, die Session stellt um, wenn der laufende Schritt endet`;
+    case "set": return `${what} — umgestellt`;
+    case "kept": return sw.field === "model" ? "Claude Code hat das alte Modell behalten" : "Claude Code hat die alte Stufe behalten";
+    case "asks": return "Claude Code fragt im Terminal — dort beantworten";
+    case "not-set": return `${what} — nicht umgestellt`;
   }
-  const cmd = paneCommand(harnessEntry(slot), field, value);
-  const paneOk = cmd ? await deliver(slot, cmd) : false;
-  return paneOk ? `${what} ${value} — umgestellt` : `Vermerkt, aber nicht in der Session angekommen — tippe ${cmd ?? `/${field}`} dort selbst`;
 }
 
 export let autosList: AutoInfo[] = [];

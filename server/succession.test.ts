@@ -4,20 +4,25 @@
 // S2, Owner 13.10.: „[Zitat entfernt]“ — ein Schalter, eine
 // Entscheidung, warm/kalt aus dem Transkript. S2b, Owner 13.10.: „[Zitat entfernt]“
 //  — der eigene Text des Warm-Turns, nur Text, ohne Zugangsdaten.
+// S3, Owner 13.10.: „[Zitat entfernt]“
+//  und
+// „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { agoText, cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, warmTextInput,
-  type SucceedPreviewFacts, type WarmFacts } from "./succession";
+import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, HintLedger, hintText, ownSetting,
+  settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts,
+  type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
 import { loadHandoverSetting, type HandoverSetting } from "./types";
 
 const setting = (slot: number, openedAt: number): HandoverSetting => ({ thresholdPct: 55, nudge: false, keepCache: true,
-  keepCacheIdleMin: 45, keepCacheText: "Lies den Stand und antworte mit einem Satz.", setAt: 1, occupant: { slot, openedAt } });
+  keepCacheIdleMin: 45, keepCacheText: "Lies den Stand und antworte mit einem Satz.", atThreshold: "succeed", setAt: 1,
+  occupant: { slot, openedAt } });
 
 describe("die Einstellung der Linie", () => {
   test("die eigene Einstellung der gehenden Besetzung geht unverändert auf die Nachfolgerin über", () => {
     const own = ownSetting(setting(3, 100), { slot: 3, openedAt: 100 });
     const next = settingForSuccessor(own, { slot: 3, openedAt: 200 }, 999);
     expect(next).toEqual({ thresholdPct: 55, nudge: false, keepCache: true, keepCacheIdleMin: 45,
-      keepCacheText: "Lies den Stand und antworte mit einem Satz.", setAt: 999, occupant: { slot: 3, openedAt: 200 } });
+      keepCacheText: "Lies den Stand und antworte mit einem Satz.", atThreshold: "succeed", setAt: 999, occupant: { slot: 3, openedAt: 200 } });
   });
   test("eine Einstellung, die eine andere Besetzung nennt, geht nicht mit", () => {
     expect(ownSetting(setting(3, 100), { slot: 3, openedAt: 101 })).toBeNull();
@@ -138,5 +143,228 @@ describe("der Text des Warm-Turns", () => {
     expect(loadHandoverSetting({ ...rec, keepCacheText: "Stand lesen." })?.keepCacheText).toBe("Stand lesen.");
     expect(loadHandoverSetting({ ...rec, keepCacheText: "/clear" })).toBeNull();
     expect(loadHandoverSetting({ ...rec, keepCacheText: 7 })).toBeNull();
+  });
+  test("fleet.json: die Wahl an der Schwelle — ohne Feld nur Hinweis, eine unbekannte Wahl verwirft den Datensatz", () => {
+    const rec = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, setAt: 1, occupant: { slot: 3, openedAt: 100 } };
+    expect(loadHandoverSetting(rec)?.atThreshold).toBeNull();
+    expect(loadHandoverSetting({ ...rec, atThreshold: "compact" })?.atThreshold).toBe("compact");
+    expect(loadHandoverSetting({ ...rec, atThreshold: "succeed" })?.atThreshold).toBe("succeed");
+    expect(loadHandoverSetting({ ...rec, atThreshold: "clear" })).toBeNull();
+  });
+});
+
+describe("die Schwelle je Art", () => {
+  test("die Tabelle ab Werk: Orchestratorin 45/50, Program-MAIN und Bau-Session 40/45, Lane 37/42", () => {
+    const rows = (["orchestrator", "program-main", "bau", "session", "lane"] as const)
+      .map((k) => [k, thresholdOf(k, null, null)] as const)
+      .map(([k, t]) => `${k} ${t.basePct}/${t.capPct} ${t.from}`);
+    expect(rows).toEqual(["orchestrator 45/50 fleet", "program-main 40/45 fleet", "bau 40/45 fleet", "session 40/45 fleet",
+      "lane 37/42 fleet"]);
+  });
+  test("die Env verschiebt die Basis ihrer Schiene, die Obergrenze bleibt 5 darüber; die Orchestratorin behält ihre Zeile", () => {
+    expect(thresholdOf("program-main", 44, null)).toEqual({ kind: "program-main", basePct: 44, capPct: 49, from: "env" });
+    expect(thresholdOf("bau", 44, null)).toMatchObject({ basePct: 44, capPct: 49, from: "env" });
+    expect(thresholdOf("lane", 30, null)).toMatchObject({ basePct: 30, capPct: 35, from: "env" });
+    expect(thresholdOf("orchestrator", 40, null)).toEqual({ kind: "orchestrator", basePct: 45, capPct: 50, from: "fleet" });
+  });
+  test("der eigene Wert der Session ist ihre Basis und gewinnt über Env und Tabelle, auch bei der Orchestratorin", () => {
+    expect(thresholdOf("lane", 30, 55)).toEqual({ kind: "lane", basePct: 55, capPct: 60, from: "session" });
+    expect(thresholdOf("orchestrator", null, 60)).toMatchObject({ basePct: 60, capPct: 65, from: "session" });
+  });
+  test("eine Env 0 schaltet die Schiene ab, ein eigener Wert schaltet sie für diese Session wieder an", () => {
+    expect(thresholdOf("lane", 0, null)).toMatchObject({ basePct: 0, capPct: 0 });
+    expect(thresholdStep(90, thresholdOf("lane", 0, null), "warm")).toBe("below");
+    expect(thresholdOf("lane", 0, 40)).toMatchObject({ basePct: 40, capPct: 45, from: "session" });
+  });
+});
+
+describe("die Stufe an der Schwelle", () => {
+  const orch = thresholdOf("orchestrator", null, null);
+  test("Owner: die Orchestratorin bis 50 %, solange der Cache warm bleibt", () => {
+    expect(thresholdStep(44, orch, "warm")).toBe("below");
+    expect(thresholdStep(47, orch, "warm")).toBe("hint");
+    expect(thresholdStep(50, orch, "warm")).toBe("due");
+  });
+  test("kalt über der Basis ist die Handlung fällig, kalt unter der Basis nichts", () => {
+    expect(thresholdStep(47, orch, "kalt")).toBe("due");
+    expect(thresholdStep(40, orch, "kalt")).toBe("below");
+  });
+  test("je Zeile: an der Basis der Hinweis, an der Obergrenze fällig", () => {
+    for (const k of ["program-main", "bau", "session", "lane"] as const) {
+      const t = thresholdOf(k, null, null);
+      expect([thresholdStep(t.basePct - 1, t, "warm"), thresholdStep(t.basePct, t, "warm"), thresholdStep(t.capPct - 1, t, "warm"),
+        thresholdStep(t.capPct, t, "warm")]).toEqual(["below", "hint", "hint", "due"]);
+    }
+  });
+  test("kompaktiert und unbekannt zählen nicht als kalt", () => {
+    expect(thresholdStep(47, orch, "kompaktiert")).toBe("hint");
+    expect(thresholdStep(47, orch, "unbekannt")).toBe("hint");
+  });
+});
+
+describe("das Budget der Hinweise", () => {
+  const MIN = 60_000;
+  // eine echte Uhrzeit: lastAt 0 heißt im Budget „nie“
+  const T0 = Date.parse("2026-10-14T08:00:00Z");
+  test("zwischen Basis und Obergrenze ein Hinweis; die Session wählt den Punkt", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    const c = l.claim(1, "a", "hint", T0);
+    expect(c).not.toBeNull();
+    l.delivered(c!, T0);
+    l.release(c!);
+    expect(l.due(1, "a", "hint", T0 + 60 * MIN)).toBe(false);
+  });
+  test("ist die Handlung fällig, kommen weitere, im Abstand und höchstens drei", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    const sent: number[] = [];
+    for (let t = T0; t <= T0 + 90 * MIN; t += 5 * MIN) {
+      const c = l.claim(1, "a", "due", t);
+      if (!c) continue;
+      const r = l.delivered(c, t);
+      l.release(c);
+      sent.push((t - T0) / MIN);
+      if (r.gaveUp) expect(r.nudges).toBe(3);
+    }
+    expect(sent).toEqual([0, 15, 30]);
+    expect(l.of(1, "a")).toMatchObject({ nudges: 3, gaveUp: true });
+  });
+  test("ein Hinweis, der ankommt, während ein späterer Tick noch wartet, wird nicht ein zweites Mal getippt", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    // Tick 2 sieht B als fällig, bevor Tick 1 sendet …
+    expect(l.due(2, "b", "due", T0)).toBe(true);
+    const first = l.claim(2, "b", "due", T0);
+    // … während Tick 1s Hinweis unterwegs ist, reserviert Tick 2 nichts …
+    expect(l.claim(2, "b", "due", T0 + 1)).toBeNull();
+    l.delivered(first!, T0 + 2);
+    l.release(first!);
+    // … und nach dessen Ankunft auch nicht: der Abstand gilt ab der Ankunft
+    expect(l.claim(2, "b", "due", T0 + 3)).toBeNull();
+  });
+  test("ein fehlgeschlagener Versuch zählt nicht, wartet aber den Abstand ab", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    const c = l.claim(1, "a", "hint", T0)!;
+    l.failed(c, T0);
+    l.release(c);
+    expect(l.claim(1, "a", "hint", T0 + 5 * MIN)).toBeNull();
+    const again = l.claim(1, "a", "hint", T0 + 15 * MIN);
+    expect(again?.attempt.nudges).toBe(0);
+  });
+  test("ein neues Gespräch im Slot beginnt bei null", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    const c = l.claim(1, "a", "hint", T0)!;
+    l.delivered(c, T0);
+    l.release(c);
+    expect(l.of(1, "b")).toBeNull();
+    expect(l.due(1, "b", "hint", T0 + 1)).toBe(true);
+  });
+});
+
+describe("der Hinweis", () => {
+  const facts = (kind: "session" | "lane" | "program-main", fillPct: number, cache: "warm" | "kalt" = "warm",
+    choice: ThresholdChoice = "hint", cooling = false) => {
+    const threshold = thresholdOf(kind, 44, null);
+    return { fillPct, usedTokens: fillPct * 10_000, windowTokens: 1_000_000, threshold, cache, choice,
+      step: thresholdStep(fillPct, threshold, cache, cooling) };
+  };
+  test("er nennt Füllstand, Schwelle und Obergrenze und bittet um die stehende Übergabe", () => {
+    const t = hintText(facts("session", 46));
+    expect(t.startsWith("[fleet] Dein Kontext ist bei 46% (460000 von 1000000 Tokens im Fenster). ")).toBe(true);
+    expect(t).toContain("Die Schwelle dieser Session ist 44 %, die Obergrenze 49 %.");
+    expect(t).toContain("Fleet übergibt nicht selbst, du wählst den Punkt");
+    expect(t).toContain("POST /api/self/handover");
+    expect(t).toContain("POST /api/self/succeed");
+    expect(t).not.toContain("Obergrenze ist erreicht");
+  });
+  test("ein Text für jede Schiene außer der Lane: die Program-MAIN liest dasselbe wie eine Session", () => {
+    expect(hintText(facts("program-main", 46))).toBe(hintText(facts("session", 46)));
+  });
+  test("die Lane gibt mit ihrem handoff-Report weiter, nicht mit einer stehenden Übergabe", () => {
+    const t = hintText(facts("lane", 46));
+    expect(t).toContain("Die Schwelle dieser Lane ist 44 %");
+    expect(t.indexOf("committe")).toBeLessThan(t.indexOf("status `handoff`"));
+    expect(t.indexOf("status `handoff`")).toBeLessThan(t.indexOf("POST /api/self/succeed"));
+    expect(t).not.toContain("/api/self/handover");
+  });
+  test("fällig sagt er, warum: Obergrenze oder kalter Cache", () => {
+    expect(hintText(facts("session", 50))).toContain("Die Obergrenze ist erreicht.");
+    expect(hintText(facts("session", 46, "kalt"))).toContain("Dein Cache ist kalt");
+  });
+  test("keine alten Kanäle: weder Watches, Autos noch Linien-Record oder HANDOFF.md", () => {
+    for (const k of ["session", "lane", "program-main"] as const)
+      for (const c of ["hint", "compact", "succeed"] as const)
+        expect(hintText(facts(k, 50, "warm", c))).not.toMatch(/Watches|Autos|Linien-Record|HANDOFF\.md/);
+  });
+  test("ein Text je Wahl: er nennt die Handlung und bittet um die stehende Übergabe", () => {
+    const compact = hintText(facts("session", 46, "warm", "compact"));
+    expect(compact).toContain("Ab 49 % oder kurz bevor dein Cache kalt wird tippt Fleet `/compact`, sobald du ruhst");
+    expect(compact).toContain("POST /api/self/handover");
+    expect(compact).not.toContain("Fleet übergibt nicht selbst");
+    const succeed = hintText(facts("session", 46, "warm", "succeed"));
+    expect(succeed).toContain("öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst");
+    expect(succeed).toContain("in deine Pane wird dafür nichts getippt");
+    expect(succeed).toContain("POST /api/self/handover");
+    expect(hintText(facts("lane", 46, "warm", "compact"))).toContain("Committe vorher deinen Stand.");
+  });
+  test("kurz vor kalt sagt er es", () => {
+    expect(hintText(facts("session", 46, "warm", "succeed", true))).toContain("Dein Cache wird bald kalt.");
+  });
+});
+
+describe("kurz vor kalt", () => {
+  const MIN = 60_000;
+  test("bei 60 min Stufe ab 50 min Ruhe, solange der Cache noch warm ist", () => {
+    expect(cacheCooling(cacheView(0, 3600, null, 49 * MIN), 49 * MIN)).toBe(false);
+    expect(cacheCooling(cacheView(0, 3600, null, 50 * MIN), 50 * MIN)).toBe(true);
+    expect(cacheCooling(cacheView(0, 3600, null, 61 * MIN), 61 * MIN)).toBe(false);
+  });
+  test("eine 5-min-Stufe bekommt eine Minute Vorlauf; kompaktiert und unbekannt kühlen nicht", () => {
+    expect(cacheCooling(cacheView(0, 300, null, 3.9 * MIN), 3.9 * MIN)).toBe(false);
+    expect(cacheCooling(cacheView(0, 300, null, 4 * MIN), 4 * MIN)).toBe(true);
+    expect(cacheCooling(cacheView(0, 3600, 1, 55 * MIN), 55 * MIN)).toBe(false);
+    expect(cacheCooling(cacheView(null, 3600, null, 55 * MIN), 55 * MIN)).toBe(false);
+  });
+  test("kurz vor kalt ist die Handlung über der Basis fällig, darunter nicht", () => {
+    const t = thresholdOf("orchestrator", null, null);
+    expect(thresholdStep(47, t, "warm", true)).toBe("due");
+    expect(thresholdStep(44, t, "warm", true)).toBe("below");
+  });
+});
+
+describe("die Wahl an der Schwelle", () => {
+  test("ab Werk nur Hinweis; eine Lane wählt Hinweis oder Compact, jede andere Art auch neue Session", () => {
+    expect(choicesFor("lane")).toEqual(["hint", "compact"]);
+    expect(choicesFor("orchestrator")).toEqual(["hint", "compact", "succeed"]);
+    expect(choicesFor("bau")).toEqual(["hint", "compact", "succeed"]);
+  });
+  test("„hint“ und null speichern nichts, eine Lane bekommt keine neue Session, anderes ist kein Wert", () => {
+    expect(choiceInput(null, "session")).toEqual({ ok: true, choice: null });
+    expect(choiceInput("hint", "session")).toEqual({ ok: true, choice: null });
+    expect(choiceInput("succeed", "session")).toEqual({ ok: true, choice: "succeed" });
+    expect(choiceInput("compact", "lane")).toEqual({ ok: true, choice: "compact" });
+    expect(choiceInput("succeed", "lane")).toEqual({ ok: false, refusal: "lane-succeed" });
+    expect(choiceInput("clear", "session")).toEqual({ ok: false, refusal: "bad-at-threshold" });
+    expect(choiceInput(1, "session")).toEqual({ ok: false, refusal: "bad-at-threshold" });
+  });
+});
+
+describe("die Handlung", () => {
+  const base: ActFacts = { choice: "succeed", step: "due", resting: true, hinted: true, hintOn: true, actedAt: null,
+    retryMs: 15 * 60_000, now: 1_000_000 };
+  test("fällig, Hinweis angekommen, ruhend: die gewählte Handlung", () => {
+    expect(actDecision(base)).toEqual({ act: "succeed", reason: "due" });
+    expect(actDecision({ ...base, choice: "compact" })).toEqual({ act: "compact", reason: "due" });
+  });
+  test("Owner: Fleet handelt nur an einer ruhenden Session, nie mitten im Turn", () => {
+    expect(actDecision({ ...base, resting: false })).toEqual({ act: null, reason: "working" });
+  });
+  test("erst der Hinweis, der die Handlung nennt — außer der Owner hat ihn abgeschaltet", () => {
+    expect(actDecision({ ...base, hinted: false })).toEqual({ act: null, reason: "hint-first" });
+    expect(actDecision({ ...base, hinted: false, hintOn: false })).toEqual({ act: "succeed", reason: "due" });
+  });
+  test("nur Hinweis, nicht fällig, eben gehandelt: nichts", () => {
+    expect(actDecision({ ...base, choice: "hint" }).reason).toBe("choice-hint");
+    expect(actDecision({ ...base, step: "hint" }).reason).toBe("not-due");
+    expect(actDecision({ ...base, actedAt: base.now - 60_000 }).reason).toBe("acted");
+    expect(actDecision({ ...base, actedAt: base.now - 15 * 60_000 }).act).toBe("succeed");
   });
 });

@@ -425,7 +425,7 @@ export function renderCohorts(rows: LaneRow[]): string {
 const MIGRATE_HEAD = "[fleet] Dein Kontext ist bei ";
 const WAVE_HEAD = /DIESE LANE TRÄGT EINE WELLE: (\d+) QUEUE-ZEILEN/;
 const CARD_SIZE = /GROESSE: (klein|mittel|gross)\b/g;
-/** server.ts#LANE_MIGRATE_PCT's default; the window of every Opus-5 lane is 1M */
+/** the lane threshold's default until K9 S3 (now server/succession.ts#thresholdOf, 37); the window of every Opus-5 lane is 1M */
 const LANE_THRESHOLD_PCT = 40;
 const OPUS_WINDOW = 1_000_000;
 const SMALL_RESULT_CHARS = 200;

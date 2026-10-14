@@ -652,18 +652,17 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `successions: n` — nur wenn n > 0. Sie ist das einzige Feld dort, das sagen kann, dass eine Lane über
   mehrere Sessions lief: `sessionMs` misst nur die LETZTE.
 - **Der Anstoß kommt vom Server, nicht aus dem Bauch der Lane:** `tickMigrate` nudget seit demselben Schnitt
-  auch Lanes, mit eigener Schwelle `FLEET_LANE_MIGRATE_PCT` (Default 40, 0 = aus) und eigenem Text.
+  auch Lanes, mit eigener Schwelle (ab Werk 37 %, `FLEET_LANE_MIGRATE_PCT` verschiebt sie, 0 = aus) und eigenem Ausgang.
   `FLEET_MIGRATE_PCT` bleibt der Hauptschalter — ist er 0, wird der Timer gar nicht registriert und keine
   der beiden Schienen feuert. Live ist er 0, also ist die Schiene ARMIERBAR, nicht armiert.
   `migrate-nudge` ist eine sofortige Zustellung: nach den bestehenden Zustell-Gates wartet der
   Kontext-Hinweis auf keiner Schiene auf `FLEET_DELIVERY_BUNDLE_SEC`.
 - **Beide Schienen sind claude-only (seit 2026-09-13):** `tickMigrate` überspringt jeden Slot, dessen
   Harness nicht claude ist, bevor es den Füllstand liest — Codex kompaktiert selbst, und das
-  Übergabeband gilt nur für claude. Die MAIN-Nachricht trägt die Nachfolge-Schiene
-  (`server.ts#migrateRailOf`, dieselbe Bindung wie `handleSelfSucceed`): eine gebundene Standard-
-  Program-MAIN wird nicht mehr zu einem HANDOFF-Commit aufgefordert, ein Game-Maker zum Checkpoint
-  ohne `carry`, eine ungebundene Session seit e3e5084a zum Linien-Record mit
-  optionalem `intent` ODER `pointer`. Die Lane-Nachricht ist unverändert.
+  Übergabeband gilt nur für claude. Seit K9 S3 gibt es EINEN Hinweis-Text (`server/succession.ts#hintText`)
+  statt drei je Schiene: Füllstand, Schwelle und Obergrenze, „Fleet übergibt nicht selbst, du wählst den
+  Punkt“, dann die Bitte um die stehende Übergabe (`POST /api/self/handover`) und `POST /api/self/succeed`.
+  Nur der Ausgang einer Lane ist ein anderer (commit, `handoff`-Report, `succeed`).
 - **Dieselben vier Zahlen sind seit 2026-09-20 LESBAR, nicht nur wirksam:** `GET /api/slots/:id/brief`
   trägt `succession` (`server.ts#successionFacts`, nur lesend), und die rechte Spalte zeichnet sie
   als vier Label/Wert-Zeilen im Kopf: Füllstand (`contextFill`; `null` = nicht messbar, NIE 0 %),
@@ -672,13 +671,37 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   hat keine Zeile). `thresholdPct: null` kommt IMMER mit `thresholdOff`: `steward` · `waiting` ·
   `unpinned` · `harness` · `fleet` (Hauptschalter) · `rail` — in genau der Reihenfolge, in der
   `tickMigrate` seine Tore anlegt, damit die ROHE Env-Zahl nirgends als Schwelle erscheint, die
-  nicht feuern kann. Die Stups-Zahl ist prozesslokal wie `migrateTried`: nach einem Neustart steht
+  nicht feuern kann. Die Stups-Zahl ist prozesslokal (`server/succession.ts#HintLedger`): nach einem Neustart steht
   dort 0, während das Prompt-Ledger den Stups behält. Gemessen in `e2e/watch.ts` an derselben
   Fixture, an der der Tick selbst gemessen wird.
+- **Schwelle je Art Session (K9 S3, `server/succession.ts#thresholdOf`, docs/neuaufbau/befunde/07-nachfolge.md
+  §4):** Jede Art hat eine Basis und eine Obergrenze: Orchestratorin 45/50, Program-MAIN, Bau-Session und
+  jede andere Session 40/45, Lane 37/42. `FLEET_MIGRATE_PCT` verschiebt die Basis aller Nicht-Lanes außer der
+  Orchestratorin, `FLEET_LANE_MIGRATE_PCT` die der Lane; ein eigener Wert der Session ist ihre Basis; die
+  Obergrenze liegt immer 5 darüber. An der Basis kommt der Hinweis, auch mitten in der Arbeit (kein Ruhe-Tor:
+  Claude Code reiht einen Prompt während eines Turns ein). Zwischen Basis und Obergrenze kommt bei warmem
+  Cache nur dieser eine; an der Obergrenze oder bei kaltem Cache über der Basis ist die Handlung fällig, ab
+  Werk ein weiterer Hinweis, höchstens drei je Gespräch, 15 min auseinander. Die succession facts tragen
+  `kind`, `capPct` und `thresholdFrom` (`session` | `env` | `fleet`). **`GET /api/self` → `context`**
+  nennt dasselbe für die Session selbst: `{fill: {pct, usedTokens, windowTokens} | null, kind, basePct,
+  capPct, from, off, hint, choice, cache}` (`basePct`/`capPct` sind `null`, solange `off` einen Grund nennt).
+- **Die Wahl an der Schwelle (K9 S3b, `server/succession.ts#actDecision`):** `PATCH /api/slots/:id/handover`
+  nimmt `atThreshold`: `hint` (Fleet-Wert für jede Art, wird nicht gespeichert, ebenso `null`), `compact` oder
+  `succeed`; eine Lane nimmt nur `hint` oder `compact` (`succeed` = 409 `lane-succeed`, sie gibt mit ihrem
+  handoff-Report weiter), anderes = 400 `bad-at-threshold`. Ist die Handlung fällig (Obergrenze, kalter
+  Cache, oder „kurz vor kalt“: ab 10 min vor dem Ende der Cache-Stufe, `cacheCooling`, vor Claudes eigener
+  Leerlauf-Kompaktierung nach 53 min; nicht, solange der Warmhalte-Schalter der Session an ist — dann kommt
+  der Warm-Turn), handelt Fleet nur an einer RUHENDEN Session
+  (`server.ts#thresholdResting`: das Ruhe-Tor der Owner-Tür, der Live-Turn weder `working` noch `asking`,
+  nichts in Claudes Warteschlange) und erst nach dem Hinweis, der die Handlung nennt (außer `nudge: false`):
+  `compact` tippt `/compact` ohne Zustell-Kopf (Pfad `threshold-compact`), `succeed` geht durch die Owner-Tür
+  ohne Turn an die Vorgängerin (`handleOwnerSucceed` mit `stillWanted`; Audit `main_succession`
+  „threshold-triggered“). Je Gespräch eine Handlung je 15 min, Audit `threshold_act`. Die succession facts
+  tragen `atThreshold`, `choices` und `act {at, act, outcome}`.
 - **Schwelle und Hinweis je Session setzt der Owner** (Owner-Route, seit 2026-10-06, die Übergabe-Zeile
   der rechten Spalte): `GET /api/slots/:id/handover` antwortet `{slot, openedAt, setting, step, min, max,
   succession}`; `PATCH` mit `{expectedOpenedAt, thresholdPct?, nudge?}` setzt für GENAU diese Belegung eine
-  eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `null` = zurück auf den Env-Wert der Schiene) und
+  eigene Schwelle (Vielfaches von 5 zwischen 5 und 95, `null` = zurück auf den Wert ihrer Art) und
   ob `tickMigrate` ihr den Hinweis überhaupt schreibt (`nudge: false` = nie). Der Env-Wert
   (`FLEET_MIGRATE_PCT` / `FLEET_LANE_MIGRATE_PCT`) bleibt der Default und der Hauptschalter bleibt
   `FLEET_MIGRATE_PCT`; die succession facts tragen dazu `defaultPct`, `pctFrom` (`session` | `fleet`),
@@ -891,6 +914,12 @@ schon ohne einen übergeben. Frisch ist also kein Uhr-Alter, sondern „[Zitat e
 drei Stunden alte Übergabe über einer seitdem ruhenden Pane ist frisch, eine zehn Minuten alte vor
 30 000 Zeichen Arbeit nicht. Ein unlesbarer Rest ist nie frisch. Der Hinweis der Standard-Program-
 MAIN nennt die stehende Übergabe jetzt ebenfalls als Alternative.
+**Nur unterhalb der Obergrenze** (K9 S3b; Bauleitung 14.10. für den Owner nach Mangel 65: „[Zitat entfernt]“
+): Unterhalb kommt
+der Hinweis erneut, sobald der Füllstand seit dem letzten um 5 Punkte gestiegen ist. Weil der erste
+frühestens an der Basis kommt und die Obergrenze 5 darüber liegt, ist das die Obergrenze selbst. Dort kommt
+der Hinweis trotz frischer Übergabe, und nach ihm die gewählte Handlung, die neue Session über dieselbe
+Owner-Tür, die die stehende Übergabe liest.
 
 Gemessen 2026-10-07 an einem echten Claude-Transkript (dieser Lane, 628 Zeilen, 1,79 MB jsonl) auf einer
 Scratch-Instanz: Übergabe 8 min alt, Rest 9 Einträge / 1227 Zeichen, Brief **2242 Bytes**; ohne

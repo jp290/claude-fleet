@@ -208,8 +208,9 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
-import { cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, warmTextInput, type CacheView,
-  type WarmDecision } from "./server/succession";
+import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, HintLedger, hintText, ownSetting, settingForSuccessor,
+  successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
+  type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 
@@ -10157,7 +10158,8 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reviewInflight.delete(s.id);
   reviewAutoTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
-  migrateTried.delete(s.id);
+  hintLedger.forget(s.id);
+  thresholdActs.delete(s.id);
   successionStarted.delete(s.id);
   harvest.delete(s.id);
   startCache.delete(s.id);
@@ -10652,12 +10654,16 @@ type SendPath =
   | "program-event-orphan" // a terminal Program event or merge verdict lost its MAIN
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
   | "migrate-nudge"     // the context-band / succession reminder (tickMigrate)
+  | "threshold-compact" // `/compact`, typed by tickMigrate when a session's choice at the threshold is Compact (K9 S3b)
   | "stand-nudge"       // the one-line reminder that a lane's stand is behind its commits (tickLaneStand)
   | "cache-warm"        // one short turn that keeps a session's prompt cache warm — its keepCache switch (tickKeepCache)
   | "api-stall-resume" // "resume" into a claude pane parked on an API-error round (tickApiStallResume)
   // "resume" into a pane parked on a usage limit whose reset time has passed (tickRateLimitResume)
   | "rate-limit-resume";
 type DeliveryClass = "sofort" | "buendelbar";
+// the paths that type a slash command bare: no delivery header, so no meaning sentence (DELIVERY_SOURCE null)
+type UnheadedPath = "model-push" | "threshold-compact";
+const unheadedPath = (path: SendPath): path is UnheadedPath => path === "model-push" || path === "threshold-compact";
 function deliveryClass(path: SendPath): DeliveryClass {
   return path === "bundle" || path === "inbox-nudge" || path === "auto" ? "buendelbar" : "sofort";
 }
@@ -10704,12 +10710,14 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "program-event-orphan": "Hinweis auf unzustellbares Program-Ereignis",
   "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
   "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
+  // a slash command: typed bare, a delivery header in front would make it prose (deliveryHeader)
+  "threshold-compact": null,
   "stand-nudge": "Stand-Erinnerung einer Lane",
   "cache-warm": "Cache-Warmhalten (keepCache)",
   "api-stall-resume": "Fortsetzen nach API-Fehler",
   "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
 };
-const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
+const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
   "bundle": "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
   "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
@@ -10741,7 +10749,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, "model-push">, string> = {
 // deliveryAddress reads it — a bound MAIN first, then a worktree, then an Orchestratorin label on a
 // session without one; every other receiver keeps the DELIVERY_MEANING sentence.
 type DeliveryRole = "lane" | "main" | "orchestrator";
-const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, "model-push">, Record<DeliveryRole, string>>> = {
+const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, UnheadedPath>, Record<DeliveryRole, string>>> = {
   "succession": {
     "lane": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
     "main": "naechster Schritt: uebernimm das gebundene Program und seine offenen Pflichten · Grenze: sein Auftrag",
@@ -10757,7 +10765,7 @@ function deliveryRole(s: Slot): DeliveryRole | null {
   return boundProgramsForMain(s).length ? "main" : s.worktree ? "lane"
     : isOrchestratorLabel(s.label) ? "orchestrator" : null;
 }
-function deliveryMeaning(path: Exclude<SendPath, "model-push">, s: Slot): string {
+function deliveryMeaning(path: Exclude<SendPath, UnheadedPath>, s: Slot): string {
   const role = deliveryRole(s);
   return (role ? DELIVERY_MEANING_BY_ROLE[path]?.[role] : undefined) ?? DELIVERY_MEANING[path];
 }
@@ -10770,7 +10778,7 @@ const headsDelivery = (form: Harness): boolean => form === CLAUDE_HARNESS && !DE
 // suites see the form.
 function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string, s: Slot): string | null {
   const source = DELIVERY_SOURCE[path];
-  if (!source || path === "model-push" || !headsDelivery(form)
+  if (!source || unheadedPath(path) || !headsDelivery(form)
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
   // owner is the ONE source with no position sentence and no path: `ctl.sh send`, the Orchestratorin
   // and the MAINs ride the same route with the same credential, so the head names the credential and
@@ -11350,7 +11358,7 @@ function bundleText(entries: QueuedDelivery[], s: Slot): string {
   const headed = headsDelivery(harnessOf(s.harness));
   return deliveryBundleText(entries.map((entry) => {
     const path = entry.options.path;
-    return { path, meaning: headed && path !== "model-push" ? deliveryMeaning(path, s) : null, text: entry.text };
+    return { path, meaning: headed && !unheadedPath(path) ? deliveryMeaning(path, s) : null, text: entry.text };
   }));
 }
 function bundleNotice(entries: QueuedDelivery[]): string {
@@ -13257,8 +13265,8 @@ const laneSucceedCounts = new Map<string, number>();
 // memory-only, so a restart demotes the fact honestly: the brief then points at the handoff
 // report below instead of guessing between a MAIN's order and the lane's own call.
 function successionReasonFor(s: Slot): string {
-  const attempt = migrateTried.get(s.id);
-  if (attempt && attempt.sessionId === s.sessionId && attempt.nudges > 0)
+  const attempt = s.sessionId ? hintLedger.of(s.id, s.sessionId) : null;
+  if (attempt && attempt.nudges > 0)
     return `Kontext-Schwelle — der Server hat diese Session ${attempt.nudges}× selbst zur Übergabe gemahnt`;
   return "Grund laut handoff-Report — der Server hat keinen Übergabe-Nudge aufgezeichnet; "
     + "ob MAIN-Auftrag oder Lane-Entscheid, sagt der Wortlaut der Übergabe unten";
@@ -14183,7 +14191,7 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     const beforeKill = async (): Promise<Response | null> => {
       await waitForKeepCacheTestLatch(`kill:${s.id}`);
       const refused = await lastQuestion();
-      if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} owner-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
+      if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} ${stillWanted ? "threshold" : "owner"}-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
         + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
       return refused;
     };
@@ -23060,7 +23068,7 @@ function rekeyOccupantSession(s: Slot, from: string, to: string, own: FleetEvent
     const hit = m.get(s.id);
     if (hit?.sessionId === from) m.set(s.id, { ...hit, sessionId: to });
   };
-  moved(migrateTried); moved(keepCacheRuns); moved(apiStallTried); moved(rateLimitTried);
+  hintLedger.moveSession(s.id, from, to); moved(thresholdActs); moved(keepCacheRuns); moved(apiStallTried); moved(rateLimitTried);
   const oldHold = `${s.id}:${s.openedAt}:${from}`;
   for (const [id, h] of composerHolds) if (h.occupant === oldHold) composerHolds.set(id, { ...h, occupant: holdOccupant(s) });
   // the continuation REPLAYS the conversation (measured: 726f0471 opens with 9cf65120's turns), and
@@ -24693,10 +24701,12 @@ const MIGRATE_PCT = Number(process.env.FLEET_MIGRATE_PCT ?? 0) | 0;
 // 2026-09-12). 0 = off for lanes exactly as MIGRATE_PCT = 0 is off for mains.
 //
 // MIGRATE_PCT REMAINS THE MASTER SWITCH — the timer below is still registered only when it is > 0,
-// so this default arms NOTHING on a deployment that never armed migration at all. That is what
-// keeps "live default off" true while the lane threshold carries a real number: arming is one env
-// line (FLEET_MIGRATE_PCT), and a fleet that arms it gets the lane rail at 40 unless it says otherwise.
-const LANE_MIGRATE_PCT = Number(process.env.FLEET_LANE_MIGRATE_PCT ?? 40) | 0;
+// so the lane threshold arms NOTHING on a deployment that never armed migration at all. Ab Werk the
+// lane rail reads the table (server/succession.ts#thresholdOf, lane 37/42, K9 S3); this env moves its
+// base, and null = unset. Each env moves the base of its own rail only: FLEET_MIGRATE_PCT the MAINs,
+// Bau-Sessions and other sessions, never the Orchestratorin's row (Bauleitung 14.10.).
+const LANE_MIGRATE_PCT_ENV = process.env.FLEET_LANE_MIGRATE_PCT === undefined ? null
+  : Number(process.env.FLEET_LANE_MIGRATE_PCT) | 0;
 const MIGRATE_IDLE_MS = Number(process.env.FLEET_MIGRATE_IDLE_MS ?? 120_000) | 0;
 const MIGRATE_COOLDOWN_MS = Number(process.env.FLEET_MIGRATE_COOLDOWN_MS ?? 900_000) | 0;
 const MIGRATE_TICK_MS = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
@@ -25812,13 +25822,20 @@ async function tickMessageNudge(): Promise<void> {
   } finally { messageNudgeBusy = false; }
 }
 
-// --- the EXIT for a main session whose measured context is filling. A session id, not a slot id,
-// is the identity: /clear or a non-resumable respawn gets a fresh budget, while the same conversation
-// can receive at most three attempts. This state is intentionally process-local like reviewAutoTried;
-// a restart resets the reminder budget rather than persisting automation intent into a new process.
-interface MigrateAttempt { sessionId: string; nudges: number; lastAt: number; gaveUp: boolean }
-const migrateTried = new Map<number, MigrateAttempt>();
+// --- THE HINT AT THE THRESHOLD (K9 S3). Its budget per conversation is server/succession.ts#HintLedger:
+// a session id, not a slot id, is the identity — /clear or a non-resumable respawn gets a fresh budget,
+// while the same conversation receives at most three hints, MIGRATE_COOLDOWN_MS apart. Process-local
+// like reviewAutoTried: a restart resets the budget rather than persisting automation intent.
 const MIGRATE_MAX_NUDGES = 3;
+const hintLedger = new HintLedger(MIGRATE_MAX_NUDGES, MIGRATE_COOLDOWN_MS);
+// WHAT FLEET DID AT THE THRESHOLD of one conversation (K9 S3b): the act, when, and what came of it —
+// process-local like the hint budget; one act per conversation per MIGRATE_COOLDOWN_MS
+interface ThresholdActRun { sessionId: string; at: number; act: "compact" | "succeed"; outcome: string }
+const thresholdActs = new Map<number, ThresholdActRun>();
+const thresholdActOf = (s: Slot): ThresholdActRun | null => {
+  const run = thresholdActs.get(s.id);
+  return run && run.sessionId === s.sessionId ? run : null;
+};
 
 type MigrateRail = "standard-main" | "game-maker-main" | "handoff";
 function migrateRailOf(s: Slot): MigrateRail {
@@ -25842,13 +25859,21 @@ function migrateRailOf(s: Slot): MigrateRail {
 type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail";
 interface SuccessionFacts {
   rail: "lane" | MigrateRail;
+  // THE ROW OF THE THRESHOLD TABLE (K9 S3): the kind of session, the base the hint comes at
+  // (`thresholdPct`), the cap where Fleet's action is due (`capPct`, null while off) and where the
+  // base comes from — the session's own value, the rail's env, or the table
+  kind: SessionKind; capPct: number | null; thresholdFrom: Threshold["from"];
+  // THE CHOICE AT THE THRESHOLD (K9 S3b): what Fleet does once the action is due, the choices this kind
+  // has, and the newest act on this conversation — null while there is none
+  atThreshold: ThresholdChoice; choices: readonly ThresholdChoice[];
+  act: { at: number; act: "compact" | "succeed"; outcome: string } | null;
   // the measurement the threshold is compared against — contextFill, the one the nudge quotes.
   // null = it could not answer (no pinned conversation, no usage record, no nameable window), and
   // never 0: a zero fill is a measurement.
   fill: ContextFill | null;
   thresholdPct: number | null;
   thresholdOff: ThresholdOff | null;
-  // nudges DELIVERED to THIS conversation. migrateTried is keyed by sessionId and process-local, so
+  // nudges DELIVERED to THIS conversation. hintLedger is keyed by sessionId and process-local, so
   // a restart honestly forgets them instead of carrying automation intent into a new process — which
   // means 0 here reads "none since this server booted", the same bargain successionReasonFor makes.
   nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
@@ -25857,8 +25882,8 @@ interface SuccessionFacts {
   // keyed by originId, so a hand-opened lane has no row to count against, and the main rails have
   // no cap at all.
   session: number; taken: number | null; cap: number | null;
-  // THE OWNER'S SETTING for this session (Slot.handover, PATCH /api/slots/:id/handover): the rail's
-  // env value it falls back to, whether `thresholdPct` is this session's own (`pctFrom: "session"`),
+  // THE OWNER'S SETTING for this session (Slot.handover, PATCH /api/slots/:id/handover): the base it
+  // falls back to (env or table), whether `thresholdPct` is this session's own (`pctFrom: "session"`),
   // and whether the tick may write the hint at all. The effective threshold above already applies it.
   defaultPct: number; pctFrom: "session" | "fleet"; nudgeOn: boolean;
   // the owner's own value as set, even while a gate above keeps `thresholdPct` null — so the
@@ -25872,21 +25897,60 @@ interface SuccessionFacts {
   cache: CacheView;
   compaction: { at: number; trigger: string; preTokens: number | null; postTokens: number | null; idle: boolean } | null;
 }
-// the threshold the tick compares against for THIS session: the owner's own value where one is set,
-// otherwise the rail's env value (FLEET_LANE_MIGRATE_PCT for a lane, FLEET_MIGRATE_PCT for a main)
-const railPct = (lane: boolean): number => (lane ? LANE_MIGRATE_PCT : MIGRATE_PCT);
-function handoverPct(s: Slot, lane: boolean): number {
-  const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null;
-  return own ?? railPct(lane);
+// WHICH KIND OF SESSION this is, for its row in the threshold table (server/succession.ts#thresholdOf):
+// a lane by its worktree; the Orchestratorin as the one slot the role address resolves to (the reading
+// keepCacheFleetOn takes); a Program-MAIN by its live binding; a Bau-Session as the session on a board
+// branch's own worktree (POST /api/branches/open → worktreePathFor); every other session like a MAIN.
+function sessionKindOf(s: Slot): SessionKind {
+  if (s.worktree) return "lane";
+  if (deliveryRecipient({ kind: "orchestrator" }) === s) return "orchestrator";
+  if (boundProgramsForMain(s).length) return "program-main";
+  const cwd = s.cwd;
+  if (cwd && branchBook.some((r) => r.name !== null && repoCanon(worktreePathFor(r.repo, r.branch)) === repoCanon(cwd))) return "bau";
+  return "session";
+}
+// the env value of the session's rail: FLEET_LANE_MIGRATE_PCT for a lane (null = unset), FLEET_MIGRATE_PCT otherwise
+const railEnvPct = (kind: SessionKind): number | null => (kind === "lane" ? LANE_MIGRATE_PCT_ENV : MIGRATE_PCT);
+const ownThresholdPct = (s: Slot): number | null =>
+  s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null;
+// the threshold the tick compares against for THIS session: the owner's own value as its base where
+// one is set, otherwise the rail's env value, otherwise the table's row for its kind
+function thresholdFor(s: Slot): Threshold {
+  const kind = sessionKindOf(s);
+  return thresholdOf(kind, railEnvPct(kind), ownThresholdPct(s));
+}
+// what Fleet does once the action is due (K9 S3b): the session's own choice, else only the hint — the
+// fleet's value for every kind; a choice this kind cannot take reads as the hint (choicesFor)
+function thresholdChoiceOf(s: Slot, kind: SessionKind): ThresholdChoice {
+  const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.atThreshold : null;
+  return own && choicesFor(kind).includes(own) ? own : "hint";
+}
+// warm or cold as the transcript says it (server/succession.ts#cacheView): the newest model call, its
+// cache tier, and a compaction after it
+function cacheStateOf(s: Slot, now: number): CacheView {
+  const cache = deliveryCacheReading(s);
+  return cacheView(cache.at, cache.ttlSec, ctxCache.get(s.id)?.compactedAt ?? null, now);
+}
+// GET /api/self → `context`: the fill, the base where the hint comes and the cap where Fleet's action is
+// due, the kind of session whose row that is and where the base comes from; `off` names why no hint will
+// come (the same reasons the board reads, successionThresholdOff), `hint: false` that the owner switched
+// it off for this session. `fill: null` = not measurable, never 0.
+function selfContextView(s: Slot): Record<string, unknown> {
+  const t = thresholdFor(s);
+  const off = successionThresholdOff(s, t);
+  const fill = contextFill(s);
+  return { fill: fill ? { pct: fill.pct, usedTokens: fill.usedTokens, windowTokens: fill.windowTokens } : null,
+    kind: t.kind, basePct: off ? null : t.basePct, capPct: off ? null : t.capPct, from: t.from, off,
+    hint: handoverNudgeOn(s), choice: thresholdChoiceOf(s, t.kind), cache: cacheStateOf(s, Date.now()).state };
 }
 const handoverNudgeOn = (s: Slot): boolean => !(s.handover && s.handover.occupant.openedAt === s.openedAt && !s.handover.nudge);
-function successionThresholdOff(s: Slot, lane: boolean): ThresholdOff | null {
+function successionThresholdOff(s: Slot, t: Threshold): ThresholdOff | null {
   if (s.label === STEWARD_LABEL) return "steward";
   if (s.awaiting === "owner") return "waiting";
   if (!s.sessionId) return "unpinned";
   if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
   if (MIGRATE_PCT <= 0) return "fleet";        // the master switch: no tick is registered at all
-  if (handoverPct(s, lane) <= 0) return "rail";
+  if (t.basePct <= 0) return "rail";
   return null;
 }
 // A PROGRAM-MAIN'S LINE IS ITS PROGRAM (docs/self-api.md §Linien-Record): it never carries a
@@ -25902,13 +25966,13 @@ function programMainLineOf(s: Slot): { past: ProgramLineageEntry[]; dropped: num
 function successionFacts(s: Slot): SuccessionFacts {
   const lane = s.worktree !== null;
   const now = Date.now();
-  const cache = deliveryCacheReading(s);
-  const off = successionThresholdOff(s, lane);
-  const attempt = migrateTried.get(s.id);
+  const threshold = thresholdFor(s);
+  const off = successionThresholdOff(s, threshold);
   // the record counts only while it names THIS conversation, exactly as the tick reads it: a /clear
   // or a non-resumable respawn is a fresh budget, and reporting the old count against a new session
   // would be a nudge history for a conversation that never received one.
-  const mine = attempt && attempt.sessionId === s.sessionId ? attempt : null;
+  const mine = s.sessionId ? hintLedger.of(s.id, s.sessionId) : null;
+  const acted = thresholdActOf(s);
   // the line's length: a lane counts its batons on the slot (laneSuccessions, persisted), a
   // Program-MAIN the MAINs its Program had before it, any other main the handover records addressed
   // to its line. No line yet = this is the founding session.
@@ -25919,8 +25983,14 @@ function successionFacts(s: Slot): SuccessionFacts {
   const taken = lane && s.originId ? laneSucceedCounts.get(s.originId) ?? 0 : null;
   return {
     rail: lane ? "lane" : migrateRailOf(s),
+    kind: threshold.kind,
+    capPct: off ? null : threshold.capPct,
+    thresholdFrom: threshold.from,
+    atThreshold: thresholdChoiceOf(s, threshold.kind),
+    choices: choicesFor(threshold.kind),
+    act: acted ? { at: acted.at, act: acted.act, outcome: acted.outcome } : null,
     fill: contextFill(s),
-    thresholdPct: off ? null : handoverPct(s, lane),
+    thresholdPct: off ? null : threshold.basePct,
     thresholdOff: off,
     nudges: mine?.nudges ?? 0,
     nudgedAt: mine?.lastAt ? mine.lastAt : null,
@@ -25929,12 +25999,12 @@ function successionFacts(s: Slot): SuccessionFacts {
     session: line + 1,
     taken,
     cap: lane && s.originId && FLEET_LANE_SUCCEED_MAX > 0 ? FLEET_LANE_SUCCEED_MAX : null,
-    defaultPct: railPct(lane),
-    pctFrom: s.handover && s.handover.occupant.openedAt === s.openedAt && s.handover.thresholdPct !== null ? "session" : "fleet",
+    defaultPct: thresholdOf(threshold.kind, railEnvPct(threshold.kind), null).basePct,
+    pctFrom: threshold.from === "session" ? "session" : "fleet",
     nudgeOn: handoverNudgeOn(s),
-    sessionPct: s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.thresholdPct : null,
+    sessionPct: ownThresholdPct(s),
     keepCache: keepCacheFacts(s, now),
-    cache: cacheView(cache.at, cache.ttlSec, ctxCache.get(s.id)?.compactedAt ?? null, now),
+    cache: cacheStateOf(s, now),
     compaction: s.compaction && s.compaction.openedAt === s.openedAt ? { at: s.compaction.at, trigger: s.compaction.trigger,
       preTokens: s.compaction.preTokens, postTokens: s.compaction.postTokens, idle: s.compaction.idle } : null,
   };
@@ -25943,8 +26013,8 @@ function successionFacts(s: Slot): SuccessionFacts {
 // THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
 // {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean | null,
-// keepCacheIdleMin?: 5..55 in 5-steps, keepCacheText?: string | null}; null returns the threshold to the
-// rail's env value, the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
+// keepCacheIdleMin?: 5..55 in 5-steps, keepCacheText?: string | null, atThreshold?: "hint" | "compact" | "succeed" | null};
+// null returns the threshold to the base of its kind (thresholdFor), the choice at the threshold to the hint, the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
 // (server/succession.ts).
 // The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
 function handoverView(s: Slot): Response {
@@ -25964,8 +26034,9 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   const hasKeep = has("keepCache");
   const hasIdle = has("keepCacheIdleMin");
   const hasText = has("keepCacheText");
-  if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasText)
-    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin and/or keepCacheText" }, 400);
+  const hasAt = has("atThreshold");
+  if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasText && !hasAt)
+    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin, keepCacheText and/or atThreshold" }, 400);
   if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
     return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
   if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
@@ -25977,6 +26048,12 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   if (text && !text.ok) return json({ refusal: text.refusal, error: text.refusal === "keep-cache-secret"
     ? "keepCacheText holds a credential of this Fleet — the text is stored in fleet.json and typed into the pane"
     : `keepCacheText must be null or text of at most ${KEEP_CACHE_TEXT_MAX} characters: no control character but the line break, no leading / or !` }, 400);
+  // what Fleet does at the threshold (K9 S3b): a lane hands over by its own report, so its choices are the
+  // hint and Compact (server/succession.ts#choicesFor)
+  const at = hasAt ? choiceInput(body.atThreshold, sessionKindOf(s)) : null;
+  if (at && !at.ok) return json({ refusal: at.refusal, error: at.refusal === "lane-succeed"
+    ? "a lane hands over by its own handoff report — at the threshold it takes the hint or Compact, not a new session"
+    : "atThreshold must be null, hint, compact or succeed" }, at.refusal === "lane-succeed" ? 409 : 400);
   // the band is claude's (tickMigrate skips every other harness before it reads the fill): a setting
   // there would name a gate that cannot fire, so it is refused rather than stored
   if (harnessOf(s.harness) !== CLAUDE_HARNESS)
@@ -25988,6 +26065,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
     keepCache: hasKeep ? body.keepCache as boolean | null : cur?.keepCache ?? null,
     keepCacheIdleMin: hasIdle ? body.keepCacheIdleMin as number : cur?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
     keepCacheText: text?.ok ? text.text : cur?.keepCacheText ?? null,
+    atThreshold: at?.ok ? (at.choice === "hint" ? null : at.choice) : cur?.atThreshold ?? null,
     setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
   };
   // the switch is refused ON where no warm turn can happen: the steward is exempt by the owner's card,
@@ -25998,7 +26076,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   }
   // the fleet's own values are no setting: storing them would keep a record that says nothing
   s.handover = next.thresholdPct === null && next.nudge && next.keepCache === null
-    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT && next.keepCacheText === null ? null : next;
+    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT && next.keepCacheText === null && next.atThreshold === null ? null : next;
   // a CHANGED switch or duration is a new start for the tick's bookkeeping of this occupant (warm
   // turns, retry window); a save with the same values is none, or saving again and again would
   // reset the warm cap and keep a session warm without end
@@ -26063,7 +26141,7 @@ interface KeepCacheFacts extends WarmDecision { on: boolean; from: "session" | "
   last: KeepCacheLast | null; hourCap: number; warmLastHour: number;
   // the session's own warm text (null = the fleet's, `fleetText`) and its cap
   text: string | null; fleetText: string; textMax: number }
-// process-local like migrateTried: a restart forgets the warm count rather than carrying automation
+// process-local like hintLedger: a restart forgets the warm count rather than carrying automation
 // intent into a new process, and the next decision reads the transcript afresh
 const keepCacheRuns = new Map<number, KeepCacheRun>();
 function keepCacheRunOf(s: Slot): KeepCacheRun {
@@ -26374,55 +26452,10 @@ async function pastTranscript(s: Slot, n: number, after: number) {
   return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after, false, history)) };
 }
 
-function migrateMessage(fill: ContextFill, rail: MigrateRail): string {
-  const opening = `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
-    + "Das ist ein Server-Prädikat, keine Meldung von dir. Übergib jetzt in dieser Reihenfolge: ";
-  const succeed = "POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN";
-  if (rail === "standard-main")
-    return opening
-      + "(1) offene Pflichten dort lesbar machen, wo die Nachfolgerin sie liest — Program-Tasks, fleet-reports, "
-      + "Inbox —, nichts nur im Pane-Text; ein Übergabe-Commit ist für eine gebundene Program-MAIN kein Gate; "
-      + `(2) ${succeed}, optional mit \`carry\` (ein Satz: das Erste, was du als Nächstes tätest). `
-      // the Program rail's owner door (handleOwnerSucceed → succeedProgramMain) reads the same
-      // standing handover, as prose beside the Program record
-      + "Läuft gerade Arbeit, die du nicht abbrechen willst: schreib stattdessen eine stehende Übergabe "
-      + "(POST /api/self/handover, `intent` ODER `pointer`) und halte sie in deinen weiteren Turns aktuell — der Program-Record "
-      + "bleibt die Übergabe, sie ist deine Absicht daneben, und der Owner kann die Nachfolge jederzeit ohne einen Turn an dich auslösen.";
-  if (rail === "game-maker-main")
-    return opening
-      + "(1) den Abschnitt `## Current game checkpoint` in HANDOFF.md aktualisieren UND committen; "
-      + `(2) ${succeed}, ohne \`carry\` — der Checkpoint ist der eine Übergabekanal.`;
-  return opening
-    + "(1) offene Pflichten als Watches, Autos und Reports stehen lassen — sie gehen per ID in den Linien-Record, ein HANDOFF-Commit ist kein Gate mehr; "
-    + `(2) ${succeed}, optional mit \`intent\` (höchstens ${LINEAGE_INTENT_MAX} Zeichen: Absicht, Korrekturen, Reihenfolge) ODER \`pointer\` (ein committeter, datierter Abschnitt), nie beides. `
-    // THE STANDING HANDOVER (handleSelfHandover): the same channel written ahead, so the owner's door
-    // (handleOwnerSucceed) can hand over later without a turn of this session
-    + "Läuft gerade Arbeit, die du nicht abbrechen willst: schreib dieselbe Absicht stattdessen als stehende Übergabe "
-    + "(POST /api/self/handover, `intent` ODER `pointer`) und halte sie in deinen weiteren Turns aktuell — dann kann der Owner "
-    + "die Nachfolge jederzeit auslösen, ohne dir dafür einen Turn zu schicken.";
-}
-
-// THE LANE'S VERSION OF THE SAME EXIT, and the three steps differ because a lane's handover
-// medium is different: it has no HANDOFF.md to commit (that file belongs to the main checkout and
-// a lane's copy would land on the integration branch as noise), it has a typed report rail that
-// already reaches its coordinator, and its successor inherits the SAME worktree — so the state
-// transfer is the branch itself plus one report. Same measured-pct opening as the main message on
-// purpose: both are the server saying what it measured, and a lane must not have to learn a
-// second way of hearing that.
-function laneMigrateMessage(fill: ContextFill): string {
-  return `[fleet] Dein Kontext ist bei ${fill.pct}% (${fill.usedTokens} von ${fill.windowTokens} Tokens im Fenster). `
-    + "Das ist ein Server-Prädikat, keine Meldung von dir. Diese Lane übergibt jetzt den Staffelstab, "
-    + "statt schlechter zu werden — in dieser Reihenfolge: "
-    + "(1) bring den laufenden Schnitt zu Ende und committe (`git status --porcelain` muss leer sein); "
-    + "(2) file einen fleet-report mit status `handoff` (fertig / offen / nächster Schritt / offene Zahlen); "
-    + "(3) POST /api/self/succeed mit dem x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN. "
-    + "Deine Nachfolgerin ist eine frische Session auf DIESEM Worktree, Branch und Slot; "
-    + "sie bekommt den Brief, `git log`, `git status` und deinen handoff-Text als ersten Prompt.";
-}
-
 // A FRESH STANDING HANDOVER ENDS THE NUDGE (owner 2026-10-06: every nudge is a turn that re-reads the
 // whole context). The nudge exists to make a full session leave a handover; once one stands, the owner
 // door (handleOwnerSucceed) can hand over without a turn, and another nudge buys only a second turn.
+// BELOW THE CAP ONLY since K9 S3b (tickMigrate): at the cap the hint comes all the same.
 // FRESH IS NOT A CLOCK AGE: it is "nothing the successor needs is lost" — the transcript rest since the
 // handover's `at` still reaches the successor WHOLE (freshTranscriptTail: read, nothing omitted under
 // FRESH_TAIL_MAX). A handover written three hours ago over a pane that has rested since is fresh; one
@@ -26451,11 +26484,18 @@ async function standingHandoverFresh(s: Slot): Promise<boolean> {
   return fresh;
 }
 
+// THE HINT AT THE THRESHOLD (K9 S3, docs/neuaufbau/befunde/07-nachfolge.md §2 S3, §4). The decision is
+// server/succession.ts — the row of the table (thresholdFor), the step (thresholdStep), the budget
+// (hintLedger), the text (hintText) and the act (actDecision); this tick reads the facts, types and acts.
+// Owner 13.10. about a session that worked past 40 %: „[Zitat entfernt]“
+//  So the hint waits for no
+// rest: Claude Code takes a prompt typed during a turn as a queued command, and the session picks the
+// point. THE ACT (S3b) does wait: Fleet compacts or opens a new session only at a resting session.
 let migrateTickBusy = false;
-const pendingMigrateNudges = new Set<string>();
 async function tickMigrate(): Promise<void> {
   const now = Date.now();
-  const due: { s: Slot; fill: ContextFill; lane: boolean; attempt: MigrateAttempt }[] = [];
+  const due: { s: Slot; sessionId: string; lane: boolean; facts: HintFacts }[] = [];
+  const acts: { s: Slot; sessionId: string; facts: HintFacts }[] = [];
   for (const s of slots) {
     if (!s.cwd || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
     // CLAUDE ONLY, on both rails. contextFill answers for codex/pi/pi-zai too, but the handover band
@@ -26463,83 +26503,74 @@ async function tickMigrate(): Promise<void> {
     // state, not succession pressure (owner, 2026-09-06). Another harness is „[Zitat entfernt]“
     // , never "0%" — so it is skipped before the fill is read, not after.
     if (harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
-    // TWO RAILS, ONE TICK. The kind is read off the slot and decides BOTH the threshold and the
-    // text; a lane is no longer skipped here (it was until 2026-09-12, when the only exit a lane
-    // had was the land it might be nowhere near). `awaiting === "owner"` still covers the clarify
-    // lane above: it was told to stop and wait, and a handover nudge is work it must not start.
-    const lane = s.worktree !== null;
-    // the owner's own threshold for this session wins over the rail's env value, and a session the
-    // owner switched the hint off for is not this tick's business at all (Slot.handover)
-    if (!handoverNudgeOn(s)) continue;
-    const threshold = handoverPct(s, lane);
-    if (threshold <= 0) continue; // a rail whose own threshold is 0 is off even while the tick runs
+    // `awaiting === "owner"` above covers the clarify lane: it was told to stop and wait
+    const threshold = thresholdFor(s);
     const fill = contextFill(s);
-    if (fill === null || fill.pct < threshold) continue; // cannot tell is never coerced to zero
-    const prior = migrateTried.get(s.id);
-    const attempt = prior?.sessionId === s.sessionId
-      ? prior : { sessionId: s.sessionId, nudges: 0, lastAt: 0, gaveUp: false };
-    if (attempt.gaveUp || attempt.nudges >= MIGRATE_MAX_NUDGES) continue;
-    if (attempt.lastAt && now - attempt.lastAt < MIGRATE_COOLDOWN_MS) continue;
-    due.push({ s, fill, lane, attempt });
+    if (fill === null || threshold.basePct <= 0 || fill.pct < threshold.basePct) continue; // cannot tell is never 0
+    const cache = cacheStateOf(s, now);
+    // „kurz vor kalt“ only where nothing keeps the cache warm: with its keepCache switch on, the warm turn
+    // comes first (Owner 13.10.: „[Zitat entfernt]“)
+    const step = thresholdStep(fill.pct, threshold, cache.state, !keepCacheOn(s) && cacheCooling(cache, now));
+    const choice = thresholdChoiceOf(s, threshold.kind);
+    const facts: HintFacts = { fillPct: fill.pct, usedTokens: fill.usedTokens, windowTokens: fill.windowTokens, threshold, step,
+      cache: cache.state, choice };
+    // a session the owner switched the hint off for gets none (Slot.handover); its act still comes
+    if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now))
+      due.push({ s, sessionId: s.sessionId, lane: threshold.kind === "lane", facts });
+    const acted = thresholdActOf(s);
+    if (choice !== "hint" && step === "due" && !(acted && now - acted.at < MIGRATE_COOLDOWN_MS))
+      acts.push({ s, sessionId: s.sessionId, facts });
   }
-  if (!due.length) return; // common case: no tmux/ps calls
+  if (!due.length && !acts.length) return; // common case: no tmux/ps calls
   if (migrateTickBusy) return;
   migrateTickBusy = true;
   try {
-    for (const { s, fill, lane, attempt } of due) {
-      const pendingKey = `${s.id}:${attempt.sessionId}`;
-      if (pendingMigrateNudges.has(pendingKey) || fleetSendParked(`migrate:${pendingKey}`)) continue;
-      // Same unobserved-pane rule as tickWatches: contextFill's null currently masks this for a
-      // fresh transcript, but that unrelated absence semantic is not an idle-safety guarantee.
-      if (MIGRATE_IDLE_MS > 0 && s.lastOutput === 0) continue;
-      const verdict = await canDeliver(s, { now, idleMs: MIGRATE_IDLE_MS, quietHours: true });
+    for (const { s, sessionId, lane, facts } of due) {
+      const pendingKey = `${s.id}:${sessionId}`;
+      if (fleetSendParked(`migrate:${pendingKey}`)) continue;
+      // no idle gate (above); quiet hours and a live pane still hold
+      const verdict = await canDeliver(s, { now, quietHours: true });
       // ...and the KIND is re-checked with the rest of the identity: a slot recycled from a lane
       // into a plain checkout (or back) during these awaits would otherwise be handed the other
-      // rail's instructions, which name an exit it does not have.
-      if (!verdict.ok || s.sessionId !== attempt.sessionId || !s.cwd || (s.worktree !== null) !== lane
+      // rail's exit.
+      if (!verdict.ok || s.sessionId !== sessionId || !s.cwd || (s.worktree !== null) !== lane
         || harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
-      // asked after the delivery gate, so the transcript is read only for a nudge that would go out.
+      // asked after the delivery gate, so the transcript is read only for a hint that would go out.
       // NOT FOR A LANE: its standing handover is the stand its MAIN reads (handleSelfHandover), no
-      // door hands a lane over on it, so it must not silence the lane's own handoff nudge
-      if (!lane && await standingHandoverFresh(s)) continue;
-      if (s.sessionId !== attempt.sessionId || !s.cwd) continue;
-      // ANOTHER TICK'S NUDGE MAY HAVE LANDED DURING THESE AWAITS: `attempt` was built before them, and
-      // the previous tick's send to this session (in flight when the pending check above ran) stores
-      // its own attempt when it completes — a newer one for the same session means the hint is out,
-      // or this tick types it a second time (08.10.: two nudges 307 ms apart under a 900 s cooldown)
-      const latest = migrateTried.get(s.id);
-      if (latest && latest !== attempt && latest.sessionId === attempt.sessionId) continue;
-      // the rail is read HERE, after the awaits, for the same reason the kind is re-checked: a
-      // binding that moved while canDeliver ran must not be answered with the stale rail's gate.
-      const text = lane ? laneMigrateMessage(fill) : migrateMessage(fill, migrateRailOf(s));
-      pendingMigrateNudges.add(pendingKey);
+      // door hands a lane over on it, so it must not silence the lane's own hint.
+      // ONLY BELOW THE CAP (Bauleitung 14.10. for the owner, after Mangel 65: „[Zitat entfernt]“
+      // ): below it the hint returns
+      // once the fill rose 5 points since the last one — the first comes at the base at the earliest and the
+      // cap lies CAP_GAP_PCT = 5 above it, so that point IS the cap. There the hint comes, and the chosen act after it.
+      if (!lane && facts.fillPct < facts.threshold.capPct && await standingHandoverFresh(s)) continue;
+      if (s.sessionId !== sessionId || !s.cwd) continue;
+      // ASKED AFTER THE AWAITS, in one step with the reservation: a hint that landed or is still on its
+      // way meanwhile (the previous tick's send) is not typed a second time
+      const claim = hintLedger.claim(s.id, sessionId, facts.step, Date.now());
+      if (!claim) continue;
+      const text = hintText(facts);
       const beforeSend = async (current: Slot): Promise<void> => {
-        if (current !== s || s.sessionId !== attempt.sessionId)
+        if (current !== s || s.sessionId !== sessionId)
           throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
       };
-      // a delivered nudge, typed at once or out of the parked list: counted, kept, logged
+      // a delivered hint, typed at once or out of the parked list: counted, kept, logged
       const migrateDelivered = (current: Slot, acceptance: Acceptance): void => {
         const sentAt = Date.now();
-        attempt.nudges++;
-        attempt.lastAt = sentAt;
-        migrateTried.set(current.id, attempt);
-        if (attempt.nudges >= MIGRATE_MAX_NUDGES && !attempt.gaveUp) {
-          attempt.gaveUp = true;
-          audit("migrate_gave_up", current.id, `gave up session=${attempt.sessionId} after ${attempt.nudges} delivered nudges`);
-        }
+        const counted = hintLedger.delivered(claim, sentAt);
+        if (counted.gaveUp)
+          audit("migrate_gave_up", current.id, `gave up session=${sessionId} after ${counted.nudges} delivered nudges`);
         current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
         saveHistory(current);
         logPrompt(current, text, "auto", sentAt, undefined, acceptance);
       };
       void (async () => {
         try {
-          const { acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
-            bundleGate: { idleMs: MIGRATE_IDLE_MS }, beforeSend });
+          const { acceptance } = await sendText(s, text, true, { path: "migrate-nudge", rollbackOwnPayload: true, beforeSend });
           migrateDelivered(s, acceptance);
         } catch (e) {
           // THE HELD FIELD MUST NOT EAT THE MIGRATION (systemlast-befund 2026-10-11: under memory
           // pressure "composer occupied — nothing typed" dropped this nudge exactly when it was
-          // needed, and the cooldown below kept it away). It waits as a parked Fleet send instead.
+          // needed, and the cooldown kept it away). It waits as a parked Fleet send instead.
           if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, { key: `migrate:${pendingKey}`,
             send: (current) => sendText(current, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
               requireAgent: true, beforeSend }),
@@ -26550,14 +26581,82 @@ async function tickMigrate(): Promise<void> {
         if (!(e instanceof DeliveryCancelled)) {
           logError("migrationSend", e);
           logPrompt(s, text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-          attempt.lastAt = Date.now();
-          migrateTried.set(s.id, attempt);
+          hintLedger.failed(claim, Date.now());
         }
-      }).finally(() => { pendingMigrateNudges.delete(pendingKey); });
+      }).finally(() => { hintLedger.release(claim); });
+    }
+    for (const { s, sessionId, facts } of acts) {
+      const resting = s.sessionId === sessionId && await thresholdResting(s);
+      const acted = thresholdActOf(s);
+      const decision = actDecision({ choice: facts.choice, step: facts.step, resting, hintOn: handoverNudgeOn(s),
+        hinted: (hintLedger.of(s.id, sessionId)?.nudges ?? 0) > 0, actedAt: acted?.at ?? null,
+        retryMs: MIGRATE_COOLDOWN_MS, now: Date.now() });
+      if (!decision.act || s.sessionId !== sessionId || !s.cwd || thresholdChoiceOf(s, sessionKindOf(s)) !== decision.act) continue;
+      const run: ThresholdActRun = { sessionId, at: Date.now(), act: decision.act, outcome: "läuft" };
+      thresholdActs.set(s.id, run);
+      const detail = `${decision.act} session=${sessionId} fill=${facts.fillPct}% base=${facts.threshold.basePct}% cap=${facts.threshold.capPct}% cache=${facts.cache}`;
+      void (decision.act === "compact" ? compactAtThreshold(s, sessionId) : succeedAtThreshold(s, sessionId))
+        .then((outcome) => { run.outcome = outcome; audit("threshold_act", s.id, `${detail}: ${outcome}`); })
+        .catch((e: unknown) => {
+          run.outcome = `Fehler: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+          logError("thresholdAct", e);
+          audit("threshold_act", s.id, `${detail}: ${run.outcome}`);
+        });
     }
   } finally {
     migrateTickBusy = false;
   }
+}
+
+// RESTS, for an act Fleet takes on its own (K9 S3b, §4: „Fleet handelt nur an einer ruhenden Session“):
+// the owner door's own predicate (ownerSucceedBusy: no pane output within MERGE_IDLE_MS), the live turn
+// (server/live-state.ts) neither working nor asking — a dialog would take a typed /compact as its answer —
+// and nothing waiting in Claude Code's own queue. A PANE NOT OBSERVED since this server booted does not
+// rest: lastOutput 0 means its output was never seen (laneSignalView's honesty rule), and the owner door's
+// predicate reads that as long idle — after a restart Fleet acted on a printing pane (K9 S3b, core run
+// 1014081053, fixture R). The hint before the act is typed anyway, and its echo makes the pane observed.
+// NOR DOES A PANE IN A QUIET WINDOW: the window (the attach after a boot, a resize, the paste of the hint
+// before this very act) keeps every byte from stamping lastOutput, the session's own as well, so its quiet
+// counts only from the window's end. Core run 1014083939, fixture R: the act came 59–294 ms after the hint,
+// inside the boot's attach window and the hint's own paste window, and a pane printing every 200 ms read
+// as resting.
+async function thresholdResting(s: Slot): Promise<boolean> {
+  if (s.lastOutput === 0) return false;
+  if (Date.now() - Math.max(s.lastOutput, s.quietUntil) < MERGE_IDLE_MS) return false;
+  if (await ownerSucceedBusy(s)) return false;
+  const live = await liveReader.read(s.id);
+  return live.turn !== "working" && live.turn !== "asking" && live.queued.length === 0;
+}
+// COMPACT: `/compact` typed bare into the resting session, which stays the same occupant and conversation.
+// Asked again right before the paste: the same conversation, the choice still Compact, still resting.
+async function compactAtThreshold(s: Slot, sessionId: string): Promise<string> {
+  const still = async (current: Slot): Promise<void> => {
+    if (current !== s || s.sessionId !== sessionId) throw new DeliveryCancelled("the session changed before /compact");
+    if (thresholdChoiceOf(s, sessionKindOf(s)) !== "compact") throw new DeliveryCancelled("the choice at the threshold changed before /compact");
+    if (!(await thresholdResting(s))) throw new DeliveryCancelled("the session works again — /compact waits");
+  };
+  try {
+    const { acceptance } = await sendText(s, "/compact", true, { path: "threshold-compact", beforeSend: still });
+    const at = Date.now();
+    s.history = [...s.history, { text: "/compact", ts: at, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(s);
+    logPrompt(s, "/compact", "auto", at, undefined, acceptance);
+    return `getippt (${acceptance})`;
+  } catch (e) {
+    if (e instanceof DeliveryCancelled) return `nicht getippt: ${e.message}`;
+    logPrompt(s, "/compact", "auto", Date.now(), undefined, sendFailureDelivery(e));
+    throw e;
+  }
+}
+// A NEW SESSION: the owner's door without a turn for the predecessor (handleOwnerSucceed), which asks
+// `stillWanted` with every other question, the last time right before the kill
+async function succeedAtThreshold(s: Slot, sessionId: string): Promise<string> {
+  const stillWanted = (): string | null => s.sessionId !== sessionId ? "the session changed"
+    : thresholdChoiceOf(s, sessionKindOf(s)) !== "succeed" ? "the choice at the threshold is no longer a new session" : null;
+  const res = await handleOwnerSucceed(s, stillWanted);
+  if (res.ok) return "neue Session";
+  const body = await res.json().catch(() => ({})) as { reason?: string; error?: string };
+  return `abgewiesen: ${body.reason ?? body.error ?? res.status}`.slice(0, 200);
 }
 
 // --- THE STAND REMINDER (row b366597f; docs/messungen/2026-10-07-live-worktree-konzept.md §7–§8).
@@ -28046,7 +28145,8 @@ const MACHINE_SETTINGS = [
   { name: "FLEET_VERIFY_TIMEOUT_MS", value: VERIFY_TIMEOUT_MS, default: 120_000, how: "watchdog.sh + kickstart" },
   { name: "FLEET_VERIFY_WAIT_MS", value: VERIFY_WAIT_MS, default: 900_000, how: "watchdog.sh + kickstart" },
   { name: "FLEET_MIGRATE_PCT", value: MIGRATE_PCT, default: 0, how: ".env + Neustart" },
-  { name: "FLEET_LANE_MIGRATE_PCT", value: LANE_MIGRATE_PCT, default: 40, how: ".env + Neustart" },
+  { name: "FLEET_LANE_MIGRATE_PCT", value: thresholdOf("lane", LANE_MIGRATE_PCT_ENV, null).basePct,
+    default: thresholdOf("lane", null, null).basePct, how: ".env + Neustart" },
   { name: "FLEET_MODEL", value: DEFAULT_MODEL, default: FLEET_DEFAULT_MODEL, how: ".env + Neustart" },
   { name: "FLEET_STALLED_IDLE_MS", value: STALLED_IDLE_MS, default: 30 * 60_000, how: ".env + Neustart" },
   { name: "FLEET_CARD_MS", value: CARD_TICK_MS, default: 0, how: ".env + Neustart" },
@@ -44923,7 +45023,7 @@ const STEWARD_VERIFY_SUFFIX = " Verifiziere dein Ergebnis, bevor du fertig melde
 const PULSE_QUESTION_MAX = 240;
 const PULSE_QUOTE_MAX = 200;
 // THE HANDOVER BAND, as a pulse FACT — not a second migrate rail. tickMigrate NUDGES at its own
-// thresholds (MIGRATE_PCT / LANE_MIGRATE_PCT) and is armed per fleet; this number is the owner's
+// thresholds (server/succession.ts#thresholdOf) and is armed per fleet; this number is the owner's
 // rule about context QUALITY („[Zitat entfernt]“, 2026-09-06),
 // and all the pulse does with it is say that the band is reached, in the same DATA block that
 // carries the measurement. A controller had no way to hear it at all: notiz 76862eb3 (slot 12,
@@ -45008,7 +45108,7 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
       // CLAUDE ONLY, the same sentence tickMigrate states at its own gate: contextFill answers for
       // codex/pi/pi-zai too, but Codex compacts its own window and a Pi/GLM session at 80 % is
       // operating state, not succession pressure (owner, 2026-09-06). And the pointer is the rail's
-      // own exit — a lane has no HANDOFF.md to write (laneMigrateMessage says why), so naming that
+      // own exit — a lane has no HANDOFF.md to write (it hands over by its report), so naming that
       // file at a lane would name a medium it must not use.
       ...(fill && fill.pct >= PULSE_BAND_PCT && harnessOf(s.harness) === CLAUDE_HARNESS
         ? [`- Band: ${PULSE_BAND_PCT} % erreicht — ${s.worktree
@@ -47839,6 +47939,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // Serving idleMs alone would hand a fresh session a ~1.79e12 and read as "long idle".
         idleMs: Math.max(0, Date.now() - s.lastOutput),
         observed: s.lastOutput > 0,
+        // FÜLLSTAND UND SCHWELLE (K9 S3): what the threshold tick reads for this session
+        context: selfContextView(s),
         autos: autos.filter((a) => a.slot === s.id),
         watches: watches.filter((w) => w.slot === s.id),
         events: fleetEvents.filter((e) => fleetEventReceiverIs(e, s)),

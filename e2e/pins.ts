@@ -2981,7 +2981,7 @@ await import(pathToFileURL(process.argv[2]).href);
           const LANE_OUTCOME_FILE = '/fixture';
           const messageAddressesFor = () => [], messageRetentionUnknown = () => [], NO_MESSAGE_ADDRESS = 'unsupported';
           const messages = {entries:[],dropped:0}, attentionRequests = [], autos = [], watches = [], fleetEvents = [];
-          const selfPosition = () => ({}), lineageSelfView = () => null, attentionFor = () => [];
+          const selfPosition = () => ({}), lineageSelfView = () => null, attentionFor = () => [], selfContextView = () => null;
           ${tested}
           throw Error('route did not execute');
         })();`;

@@ -419,12 +419,14 @@ Ohne Schalter warmt derselbe Tick eine gebundene claude-Program-MAIN und die Orc
 ## Kontext-Hinweis des Servers
 
 Der Tick `server.ts#tickMigrate` (nur registriert bei `FLEET_MIGRATE_PCT > 0`) stupst ausschließlich
-Slots der claude-Harness an; codex/pi/pi-zai sind nicht zuständig, nicht 0 %. Seine MAIN-Nachricht
-(`server.ts#migrateMessage`) folgt der Schiene, die `server.ts#migrateRailOf` über dieselbe Bindung
-wie `handleSelfSucceed` bestimmt: gebundene Standard-Program-MAIN → offene Pflichten lesbar machen,
-dann `succeed` mit optionalem `carry`, kein HANDOFF-Commit · Game-Maker → Checkpoint committen,
-`succeed` ohne `carry` · ungebunden, mehrdeutig gebunden → Pflichten stehen lassen (sie gehen
-per ID in den Linien-Record), `succeed` mit optionalem `intent` ODER `pointer`. Der Hinweis ist ein Server-Prädikat, nicht das Gate; das Gate bleibt `handleSelfSucceed`.
+Slots der claude-Harness an; codex/pi/pi-zai sind nicht zuständig, nicht 0 %. Seit K9 S3 entscheidet
+`server/succession.ts`: die Schwelle je Art Session (`thresholdOf`, Orchestratorin 45/50, Program-MAIN,
+Bau-Session und andere 40/45, Lane 37/42; die Env verschiebt die Basis außer bei der Orchestratorin), die
+Stufe (`thresholdStep`: Hinweis an der Basis, fällig an der Obergrenze oder kalt darüber) und EIN Text
+(`hintText`): Füllstand, Schwelle, „Fleet übergibt nicht selbst“, dann die stehende Übergabe und
+`succeed`; nur eine Lane bekommt ihren eigenen Ausgang (commit, `handoff`-Report, `succeed`). Der
+Hinweis kommt auch mitten in der Arbeit. Er ist ein Server-Prädikat, nicht das Gate; das Gate bleibt
+`handleSelfSucceed`.
 
 ## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)
 

@@ -312,6 +312,10 @@ type AuditEvent =
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
+  // FLEET ACTED AT A SESSION'S THRESHOLD (K9 S3b, server.ts#tickMigrate): its choice was Compact or a new
+  // session, the action was due, and the session rested. The detail names the act, the conversation, the
+  // fill against base and cap, and what came of it.
+  | "threshold_act"
   // A LANE HANDED ITS BATON TO A FRESH SESSION ON THE SAME WORKTREE (server.ts#succeedLane). Its
   // own word rather than slot_open's, because slot_open says a session started and this says the
   // WORK continued across a session boundary: the branch is unchanged, the queue rows are

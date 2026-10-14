@@ -7693,6 +7693,9 @@ export async function run(): Promise<void> {
     // FLEET_HARNESS_AUTOMATION, so canDeliver would admit it — only the tick's claude filter keeps it
     // silent. Without both of those the "no prompt" row would measure the harness gate instead.
     const boundId = await openPlain("migrate-bound-main");
+    // THE ORCHESTRATORIN'S OWN ROW (K9 S3, Owner 13.10.: „[Zitat entfernt]“
+    // ): the one slot the role address resolves to, at the same 50 %
+    const orchId = await openPlain("🎛 Orchestratorin migrate");
     const piId = await freeSlot();
     if (piId) await post(`/api/slots/${piId}/open`, { cwd: REPO, label: "migrate-pi", harness: "pi", model: "openai-codex/gpt-5.6-sol" });
     // CODEX ITSELF, not pi standing in for it (owner correction 2026-09-30: codex compacts natively,
@@ -7712,25 +7715,33 @@ export async function run(): Promise<void> {
     if (codexPaneUp) await plantScreen(codexId, ">_ OpenAI Codex (v0.147.0)\n›", "migration tick codex control");
 
     // the three panes whose migrate-nudge header is read back below (catPane: why not the shell)
-    await Promise.all([mainId, lane.slot, boundId].map((id) => catPane(`s${id}`)));
+    await Promise.all([mainId, lane.slot, boundId, orchId].filter(Boolean).map((id) => catPane(`s${id}`)));
     // Stop before editing fleet.json: a live saveState chain is allowed to replace the file, so an
     // edit made while srv runs would be a probe racing its subject. restartSrv starts it again with
     // the same FLEET_* env after the identities and usage files are in place.
     await stopSrv();
     const statePath = `${ROOT}/fleet.json`;
-    type MigrateState = { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string; openedAt?: number }>;
-      programs?: Record<string, unknown>[] };
+    type MigrateState = { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string; openedAt?: number;
+      standingHandover?: unknown }>; programs?: Record<string, unknown>[] };
     const state = JSON.parse(readFileSync(statePath, "utf8")) as MigrateState;
     const ids = new Map<number, string>([
       [mainId, "e2e0feed-0000-4000-8000-000000000101"],
       [lane.slot, "e2e0feed-0000-4000-8000-000000000102"],
       [stewardId, "e2e0feed-0000-4000-8000-000000000103"],
       [boundId, "e2e0feed-0000-4000-8000-000000000104"],
+      [orchId, "e2e0feed-0000-4000-8000-000000000107"],
     ]);
     const piSid = "e2e0feed-0000-4000-8000-000000000105";
     const codexSid = "e2e0feed-0000-4000-8000-000000000106";
     for (const [id, sid] of [...ids, [piId, piSid] as const, [codexId, codexSid] as const])
       if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
+    // K9 S3b (Bauleitung 14.10. for the owner, Mangel 65: „[Zitat entfernt]“
+    // ): the main carries a FRESH standing handover — its
+    // transcript below holds usage only, so nothing after `at` would be lost — and at its cap the hint comes all
+    // the same. Mutation: silence on any fresh handover again (server.ts#tickMigrate) → the main gets none.
+    const mainRow = state?.slots?.[String(mainId)];
+    if (mainRow) mainRow.standingHandover = { at: Date.now() - 60_000, openedAt: mainRow.openedAt,
+      intent: "MAIN-STANDING-MARK alles steht im Record", pointer: null, ahead: null };
     // Planted, not driven, for the hold block's reason further down: the tick reads only an ACTIVE
     // Program whose main names this living occupant (boundProgramForMain), and minting one through
     // the founding routes would measure those routes.
@@ -7810,7 +7821,7 @@ export async function run(): Promise<void> {
     // out numbers an earlier module closed. slots.ts's keepCache fixture nudges its slot C for real and
     // then kills it, so a steward or ctx:null control opened here on C's number read C's nudge as its
     // own — red twice in `slots,watch` reruns while the tick had sent this control nothing.
-    const migrateOccupant = new Map([mainId, lane.slot, stewardId, unknownId, boundId, piId, codexId]
+    const migrateOccupant = new Map([mainId, lane.slot, stewardId, unknownId, boundId, orchId, piId, codexId]
       .map((id) => [id, state?.slots?.[String(id)]?.openedAt] as const));
     const migratePrompts = async (slot: number) => (await plogRead())
       .filter((e) => e.slot === slot && e.openedAt !== undefined && e.openedAt === migrateOccupant.get(slot)
@@ -7820,17 +7831,20 @@ export async function run(): Promise<void> {
       await Bun.sleep(100);
       nudges = await migratePrompts(mainId);
     }
-    check("tickMigrate sends exactly one prompt to an above-threshold NON-LANE main session",
+    check("tickMigrate sends exactly one prompt to an above-threshold NON-LANE main session — at its cap, a fresh standing handover silences nothing",
       nudges.length === 1, `${nudges.length} prompt(s)`);
     const nudge = nudges[0]?.text ?? "";
-    // since e3e5084a the unbound rail hands over a role-lineage record, not a HANDOFF commit
-    check("the migration prompt names measured pct+window, says server predicate, then the line record (intent OR pointer) with self/succeed",
+    // K9 S3, Owner 13.10.: „[Zitat entfernt]“. The hint names the fill, this session's threshold
+    // and cap (the wrapper's FLEET_MIGRATE_PCT 44 moves a session's base, the cap is 5 above), says Fleet does
+    // not hand over itself, and asks for the standing handover before self/succeed — no old channel.
+    check("the hint names the measured pct+window, the session's threshold 44 and cap 49 as reached, says Fleet does not hand over, asks for the standing handover before self/succeed",
       nudge.includes("50%") && nudge.includes("1000000 Tokens im Fenster")
-        && nudge.includes("Server-Prädikat, keine Meldung von dir")
-        && nudge.indexOf("Linien-Record") >= 0 && nudge.indexOf("Linien-Record") < nudge.indexOf("POST /api/self/succeed")
-        && nudge.includes("`intent`") && nudge.includes("`pointer`") && nudge.includes("nie beides")
-        && !nudge.includes("HANDOFF.md schreiben")
-        && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN"), nudge);
+        && nudge.includes("Die Schwelle dieser Session ist 44 %, die Obergrenze 49 %. Die Obergrenze ist erreicht.")
+        && nudge.includes("Fleet übergibt nicht selbst, du wählst den Punkt")
+        && nudge.indexOf("POST /api/self/handover") >= 0 && nudge.indexOf("POST /api/self/handover") < nudge.indexOf("POST /api/self/succeed")
+        && nudge.includes("`intent` ODER `pointer`")
+        && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN")
+        && !/Linien-Record|Watches|HANDOFF\.md/.test(nudge), nudge);
     // THE LANE RAIL, 2026-09-12. Until this cut the check here asserted that a lane received
     // NOTHING — its only exit was to land, which is precisely what a lane too full to work well is
     // least able to do well. It now gets its OWN text on its OWN threshold
@@ -7846,33 +7860,39 @@ export async function run(): Promise<void> {
       laneNudges.length === 1 && laneNudges[0]!.ts >= migrateCrossedAt
         && laneNudges[0]!.ts - migrateCrossedAt <= 120_000,
       `nudges=${laneNudges.length} delayMs=${laneNudges[0] ? laneNudges[0].ts - migrateCrossedAt : "unknown"}`);
-    check("tickMigrate nudges an above-threshold LANE exactly once — same measured opening, the lane's own three acts",
+    check("tickMigrate hints an above-threshold LANE exactly once — same measured opening, its own threshold, its own exit in order",
       laneNudges.length === 1 && laneNudge.includes("50%")
         && laneNudge.includes("1000000 Tokens im Fenster")
-        && laneNudge.includes("Server-Prädikat, keine Meldung von dir")
-        && laneNudge.includes("DIESEM Worktree")
+        && laneNudge.includes("Die Schwelle dieser Lane ist 44 %, die Obergrenze 49 %.")
+        && laneNudge.includes("diesem Worktree")
         && laneNudge.indexOf("committe") < laneNudge.indexOf("status `handoff`")
         && laneNudge.indexOf("status `handoff`") < laneNudge.indexOf("POST /api/self/succeed"),
       `${laneNudges.length}: ${laneNudge}`);
-    check("…and the two texts are not one: a lane is never told to write and commit HANDOFF.md",
-      !laneNudge.includes("HANDOFF.md") && !nudge.includes("handoff`"), `${nudge.slice(0, 80)} | ${laneNudge.slice(0, 80)}`);
-    // THE ROLE, read off the binding (2026-09-13). The unbound main above is told the line record
-    // (e3e5084a); the bound Standard Program-MAIN beside it must not be, because its handover is the
-    // Program record. BREAKS IF: migrateMessage loses its rail argument (both mains get the same text)
-    // or migrateRailOf stops consulting boundProgramForMain.
+    check("…and the exit is the lane's own: the lane is not asked for a standing handover, a session not for a handoff report",
+      !laneNudge.includes("/api/self/handover") && !nudge.includes("status `handoff`") && !laneNudge.includes("HANDOFF.md"),
+      `${nudge.slice(0, 80)} | ${laneNudge.slice(0, 80)}`);
+    // ONE TEXT FOR EVERY RAIL BUT THE LANE (K9 S3, Bauleitung: „ein Hinweis-Text je Wahl statt drei je
+    // Schiene“). The bound Program-MAIN beside the unbound session sits at the same 50 % on the same
+    // threshold (FLEET_MIGRATE_PCT moves both bases), so it reads exactly the same hint.
     let boundNudges = await migratePrompts(boundId);
     for (let i = 0; i < 80 && boundNudges.length === 0; i++) {
       await Bun.sleep(100);
       boundNudges = await migratePrompts(boundId);
     }
     const boundNudge = boundNudges[0]?.text ?? "";
-    check("a bound Standard Program-MAIN is nudged once WITHOUT HANDOFF.md — offene Pflichten, then self/succeed with optional carry",
-      boundNudges.length === 1 && !boundNudge.includes("HANDOFF.md")
-        && boundNudge.includes("50%") && boundNudge.includes("Server-Prädikat, keine Meldung von dir")
-        && boundNudge.indexOf("offene Pflichten") >= 0
-        && boundNudge.indexOf("offene Pflichten") < boundNudge.indexOf("POST /api/self/succeed")
-        && boundNudge.includes("carry") && !boundNudge.includes("Linien-Record") && nudge.includes("Linien-Record"),
-      `${boundNudges.length}: ${boundNudge}`);
+    check("a bound Program-MAIN is hinted once with the very text the unbound session got — one text, not one per rail",
+      boundNudges.length === 1 && boundNudge !== "" && boundNudge === nudge, `${boundNudges.length}: ${boundNudge}`);
+    // THE ORCHESTRATORIN KEEPS HER ROW: FLEET_MIGRATE_PCT 44 does not move her base, so at 50 % she stands
+    // at her own cap 50 — the hint names 45 and 50, not 44 and 49
+    let orchNudges = await migratePrompts(orchId);
+    for (let i = 0; i < 80 && orchId && orchNudges.length === 0; i++) {
+      await Bun.sleep(100);
+      orchNudges = await migratePrompts(orchId);
+    }
+    check("the Orchestratorin is hinted once on her own row 45/50, not on the env's 44",
+      orchId > 0 && orchNudges.length === 1
+        && orchNudges[0]!.text.includes("Die Schwelle dieser Session ist 45 %, die Obergrenze 50 %. Die Obergrenze ist erreicht."),
+      `${orchNudges.length}: ${orchNudges[0]?.text.slice(0, 260) ?? ""}`);
     // THE HEADER'S SENTENCE FOLLOWS THE SAME ROLE (Sinnpruefung Buendel 5a). Until then every
     // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
     // The pane is the only place the typed header exists — the prompt journal records the body.
@@ -7890,7 +7910,7 @@ export async function run(): Promise<void> {
         && !!sentences.main && !sentences.main.includes("Lane")
         && sentences.bound !== sentences.main,
       JSON.stringify(sentences));
-    for (const id of [mainId, lane.slot, boundId]) await tmuxOut("send-keys", "-t", `s${id}`, "C-c");
+    for (const id of [mainId, lane.slot, boundId, orchId].filter(Boolean)) await tmuxOut("send-keys", "-t", `s${id}`, "C-c");
     check("tickMigrate never nudges the ⚙ steward or a ctx:null slot",
       (await migratePrompts(stewardId)).length === 0
         && (await migratePrompts(unknownId)).length === 0,
@@ -7906,7 +7926,8 @@ export async function run(): Promise<void> {
     // so what the board draws is provably the state the tick acted on and not a second derivation.
     type Succ = { rail: string; fill: { pct: number; usedTokens: number; windowTokens: number } | null;
       thresholdPct: number | null; thresholdOff: string | null; nudges: number; nudgedAt: number | null;
-      gaveUp: boolean; maxNudges: number; session: number; taken: number | null; cap: number | null };
+      gaveUp: boolean; maxNudges: number; session: number; taken: number | null; cap: number | null;
+      kind: string; capPct: number | null; thresholdFrom: string };
     const succOf = async (slot: number): Promise<Succ | null> =>
       ((await (await get(`/api/slots/${slot}/brief`)).json()) as { succession?: Succ }).succession ?? null;
     {
@@ -7931,6 +7952,22 @@ export async function run(): Promise<void> {
       check("succession facts: the rail named is the one the succeed call would apply — lane, handoff, standard-main",
         laneSucc?.rail === "lane" && mainSucc?.rail === "handoff" && boundSucc?.rail === "standard-main",
         JSON.stringify({ lane: laneSucc?.rail, main: mainSucc?.rail, bound: boundSucc?.rail }));
+      // THE ROW OF THE TABLE the board reads (K9 S3, §4): the kind, base and cap and where the base comes
+      // from — the env moves the lane's, the session's and the Program-MAIN's base, never the Orchestratorin's
+      const orchSucc = await succOf(orchId);
+      const row = (x: Succ | null) => x ? `${x.kind} ${x.thresholdPct}/${x.capPct} ${x.thresholdFrom}` : null;
+      check("succession facts: kind, base and cap per row — lane 44/49 env, session 44/49 env, Program-MAIN 44/49 env, Orchestratorin 45/50 fleet",
+        row(laneSucc) === "lane 44/49 env" && row(mainSucc) === "session 44/49 env" && row(boundSucc) === "program-main 44/49 env"
+          && row(orchSucc) === "orchestrator 45/50 fleet",
+        JSON.stringify({ lane: row(laneSucc), main: row(mainSucc), bound: row(boundSucc), orch: row(orchSucc) }));
+      // K9 S3: „GET /api/self nennt Füllstand und Schwelle“ — the session reads the same row for itself
+      const laneSelfTok = await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+      const laneCtx = ((await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": laneSelfTok } })).json()) as
+        { context?: { fill: { pct: number } | null; kind: string; basePct: number | null; capPct: number | null; from: string;
+          off: string | null; hint: boolean } }).context;
+      check("GET /api/self names the session's own fill and threshold: the lane at 50 % against its 44, cap 49",
+        laneCtx?.fill?.pct === 50 && laneCtx.kind === "lane" && laneCtx.basePct === 44 && laneCtx.capPct === 49
+          && laneCtx.from === "env" && laneCtx.off === null && laneCtx.hint === true, JSON.stringify(laneCtx));
       // THE MEASUREMENT IS NOT THE PRESSURE (owner, 2026-09-06): contextFill answers for a pi slot
       // too, and the board must still not read it as a handover band. The fill is served, the
       // threshold is off, and the reason names the harness rather than leaving a blank.
@@ -8011,11 +8048,24 @@ export async function run(): Promise<void> {
     // so both 50% slots are eligible again; zeroing only the LANE threshold must therefore move
     // exactly one of the two counts. A shared knob (or a lane rail reading MIGRATE_PCT) would
     // either freeze both or move both, and both readings fail here.
-    await restartSrv({ FLEET_LANE_MIGRATE_PCT: "0" });
+    // …AND THE MAIN PANE IS WORKING through that restart (K9 S3, Owner 13.10. about Slot 3: „[Zitat entfernt]“
+    // ):
+    // it prints every 200 ms and the restart sets the old two-minute rest gate (FLEET_MIGRATE_IDLE_MS 120 000).
+    // The hint waits for no rest, so the main rail sends again into the working pane.
+    await tmuxOut("send-keys", "-t", `s${mainId}`, "while :; do echo busy; sleep 0.2; done", "Enter");
+    await restartSrv({ FLEET_LANE_MIGRATE_PCT: "0", FLEET_MIGRATE_IDLE_MS: "120000" });
+    for (let i = 0; i < 100 && (await migratePrompts(mainId)).length < 2; i++) await Bun.sleep(100);
+    const mainIdleMs = await (async () => {
+      const r = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const lo = r.slots.find((x) => x.id === mainId)?.lastOutput ?? 0;
+      return lo > 0 ? r.now - lo : null;
+    })();
     await Bun.sleep(tickMs * 4 + 500);
-    check("FLEET_LANE_MIGRATE_PCT=0 silences the LANE rail alone — the main rail, re-armed by the restart, sends again",
-      (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1,
-      `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
+    check("FLEET_LANE_MIGRATE_PCT=0 silences the LANE rail alone — the main rail, re-armed by the restart, sends again INTO A WORKING PANE",
+      (await migratePrompts(mainId)).length === 2 && (await migratePrompts(lane.slot)).length === 1
+        && mainIdleMs !== null && mainIdleMs < 2_000,
+      `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length} mainIdleMs=${mainIdleMs}`);
+    await tmuxOut("send-keys", "-t", `s${mainId}`, "C-c");
     // …and the board reads that same asymmetry as a NAMED off, not as a threshold of 0: a rail whose
     // own knob is zero is off for its own reason while the other rail keeps its number.
     check("succession facts: zeroing the lane rail alone reports the lane off as `rail` while the main keeps its 44",
@@ -8119,7 +8169,7 @@ export async function run(): Promise<void> {
           && e.text.includes("The context nudge arrived; open work is inherited on this same worktree.")),
       JSON.stringify({ status: migrateSucceeded.status, success: migrateSuccess, heir: migrateHeir }));
 
-    for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, piId, codexId]) if (id) await post(`/api/slots/${id}/kill`, {});
+    for (const id of [mainId, lane.slot, stewardId, unknownId, boundId, orchId, piId, codexId]) if (id) await post(`/api/slots/${id}/kill`, {});
     for (const file of usageFiles) rmSync(file, { force: true });
   }
 

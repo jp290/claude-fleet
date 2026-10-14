@@ -4994,7 +4994,156 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   }
 
   await runKeepCache();
-  await runMigrateTickRace();
+  await runThresholdAct();
+}
+
+// --- AN DER SCHWELLE HANDELT FLEET, ABER NUR AN EINER RUHENDEN SESSION (K9 S3b, server.ts#tickMigrate,
+// server/succession.ts#actDecision). Owner 13.10.: „[Zitat entfernt]“
+// ; §4: „[Zitat entfernt]“, und vorher kommt der Hinweis, der die Handlung
+// nennt. Three plain sessions at 50 % — the wrapper's FLEET_MIGRATE_PCT 44 puts their cap at 49, so the act
+// is due — PLANTED like the keepCache fixture above (FLEET_CMD=true pins no conversation):
+//   P chose a new session: the hint, then, resting, a new occupant on the same slot; the old pane got only the hint.
+//   Q chose Compact: the hint, then `/compact` once, typed bare, and Q stays the same occupant.
+//   R chose a new session but its pane prints every 200 ms: the hint comes mid-work, the act does not; once
+//     the pane rests, the new occupant comes.
+// PATCH: an unknown choice is 400; a lane cannot choose a new session (the unit test of choiceInput).
+async function runThresholdAct(): Promise<void> {
+  const repos: string[] = [];
+  const mkRepo = (name: string): string => {
+    const repo = `${ROOT}/${name}`;
+    rmSync(repo, { recursive: true, force: true });
+    mkdirSync(repo, { recursive: true });
+    spawnSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+    spawnSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", repo, "config", "user.name", "t"]);
+    writeFileSync(`${repo}/README.md`, `${name}\n`);
+    spawnSync("git", ["-C", repo, "add", "README.md"]);
+    spawnSync("git", ["-C", repo, "commit", "-qm", "init"]);
+    repos.push(repo);
+    return repo;
+  };
+  type Row = { id: number; cwd: string | null; openedAt?: number; lastOutput: number };
+  const sessions = async (): Promise<{ now: number; slots: Row[] }> =>
+    (await (await get("/api/sessions")).json()) as { now: number; slots: Row[] };
+  const openFree = async (cwd: string, label: string): Promise<{ slot: number; openedAt: number; cwd: string }> => {
+    const free = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+    const r = free ? await post(`/api/slots/${free}/open`, { cwd, label }) : null;
+    const openedAt = (await sessions()).slots.find((x) => x.id === free)?.openedAt ?? 0;
+    return { slot: r?.ok ? free : 0, openedAt, cwd };
+  };
+  const P = await openFree(mkRepo("act-succeed-repo"), "act-succeed");
+  const Q = await openFree(mkRepo("act-compact-repo"), "act-compact");
+  const R = await openFree(mkRepo("act-working-repo"), "act-working");
+  const all = [P, Q, R];
+  const statePath = `${ROOT}/fleet.json`;
+  const cleanup = async (): Promise<void> => {
+    for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
+    for (const r of repos) {
+      rmSync(r, { recursive: true, force: true });
+      rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
+    }
+  };
+  check("threshold act setup: three plain sessions open on private checkouts",
+    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 3,
+    JSON.stringify(all.map((x) => ({ slot: x.slot, openedAt: x.openedAt }))));
+  if (!all.every((x) => x.slot > 0 && x.openedAt > 0)) { await cleanup(); return; }
+
+  // the panes before the plant: P and Q record what is typed (the owner door's no-turn proof, as in the
+  // keepCache fixture) and ECHO it — after the restart a pane is observed only by its output, and a pane
+  // never observed does not rest (server.ts#thresholdResting); R prints every 200 ms
+  const rec = (x: typeof P): string => `${ROOT}/act-recorder-${x.slot}`;
+  for (const x of [P, Q]) {
+    rmSync(rec(x), { force: true });
+    await tmuxOut("send-keys", "-t", `=s${x.slot}:`, `cat > '${rec(x)}'`, "Enter");
+  }
+  await tmuxOut("send-keys", "-t", `=s${R.slot}:`, "while :; do echo busy; sleep 0.2; done", "Enter");
+  await stopSrv();
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown }> };
+  const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000004${String(i).padStart(2, "0")}`;
+  const plantAt = Date.now();
+  const choice = new Map([[P, "succeed"], [Q, "compact"], [R, "succeed"]]);
+  for (const [i, x] of all.entries()) {
+    const row = state.slots?.[String(x.slot)];
+    if (!row) continue;
+    row.sessionId = sid(i);
+    row.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: choice.get(x),
+      setAt: plantAt, occupant: { slot: x.slot, openedAt: x.openedAt } };
+    // 500 000 of 1 000 000 (50 %), the last call a minute ago on a 1 h cache: warm, not cooling — only the cap makes it due
+    const dir = `${process.env.HOME}/.claude/projects/${x.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/${sid(i)}.jsonl`,
+      `${JSON.stringify({ type: "user", cwd: x.cwd, timestamp: new Date(plantAt - 61_000).toISOString(),
+        message: { role: "user", content: "ACT-OWNER-MARK was zuletzt gefragt wurde" } })}\n`
+      + `${JSON.stringify({ type: "assistant", cwd: x.cwd, timestamp: new Date(plantAt - 60_000).toISOString(),
+        message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ACT-SESSION-MARK" }],
+          usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000, cache_read_input_tokens: 300_000, output_tokens: 10,
+            cache_creation: { ephemeral_1h_input_tokens: 100_000, ephemeral_5m_input_tokens: 0 } } } })}\n`);
+  }
+  writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+  await restartSrv();
+
+  type Succ = { fill: { pct: number } | null; thresholdPct: number | null; capPct: number | null; atThreshold: string;
+    choices: string[]; act: { act: string; outcome: string } | null };
+  const facts = async (slot: number): Promise<Succ | null> =>
+    ((await (await get(`/api/slots/${slot}/handover`)).json()) as { succession?: Succ }).succession ?? null;
+  const f0 = await Promise.all(all.map((x) => facts(x.slot)));
+  check("threshold act setup: P, Q and R stand at 50 % against 44/49 with their own choice — new session, Compact, new session",
+    f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49)
+      && f0.map((f) => f?.atThreshold).join(",") === "succeed,compact,succeed"
+      && JSON.stringify(f0[0]?.choices) === JSON.stringify(["hint", "compact", "succeed"]),
+    JSON.stringify(f0));
+
+  const HINT = "[fleet] Dein Kontext ist bei ";
+  const typed = async (x: typeof P): Promise<PromptLogEntry[]> =>
+    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt);
+  const openedAtOf = async (x: typeof P): Promise<number | undefined> => (await sessions()).slots.find((y) => y.id === x.slot)?.openedAt;
+  let pNew: number | undefined = P.openedAt;
+  for (let i = 0; i < 150 && pNew === P.openedAt; i++) { await Bun.sleep(100); pNew = await openedAtOf(P); }
+  const pTyped = await typed(P);
+  const pRecorded = existsSync(rec(P)) ? readFileSync(rec(P), "utf8") : "";
+  check("new session at the threshold: P gets the hint naming the act, then — resting — a new occupant on the same slot, and its old pane got nothing but that hint",
+    pNew !== undefined && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
+      && pTyped[0]!.text.includes("öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst")
+      && pRecorded.includes("öffnet Fleet in diesem Slot eine neue Session") && !pRecorded.includes("/compact")
+      && pRecorded.split(HINT).length === 2,
+    JSON.stringify({ old: P.openedAt, now: pNew, typed: pTyped.map((e) => e.text.slice(0, 80)), recorded: pRecorded.length }));
+
+  let qTyped = await typed(Q);
+  for (let i = 0; i < 150 && !qTyped.some((e) => e.text === "/compact"); i++) { await Bun.sleep(100); qTyped = await typed(Q); }
+  await Bun.sleep(1500);
+  qTyped = await typed(Q);
+  const qFacts = await facts(Q.slot);
+  check("Compact at the threshold: Q gets the hint, then `/compact` once, typed bare, and stays the same occupant",
+    qTyped.map((e) => (e.text.startsWith(HINT) ? "hint" : e.text)).join(",") === "hint,/compact"
+      && qTyped[0]!.text.includes("tippt Fleet `/compact`, sobald du ruhst")
+      && (await openedAtOf(Q)) === Q.openedAt && qFacts?.act?.act === "compact" && qFacts.act.outcome.startsWith("getippt")
+      && (existsSync(rec(Q)) ? readFileSync(rec(Q), "utf8") : "").includes("/compact"),
+    JSON.stringify({ typed: qTyped.map((e) => e.text.slice(0, 60)), act: qFacts?.act }));
+
+  let rTyped = await typed(R);
+  for (let i = 0; i < 100 && !rTyped.some((e) => e.text.startsWith(HINT)); i++) { await Bun.sleep(100); rTyped = await typed(R); }
+  await Bun.sleep(3000);
+  const rWorking = await openedAtOf(R);
+  const rIdle = await (async () => { const sx = await sessions(); const r = sx.slots.find((y) => y.id === R.slot); return r ? sx.now - r.lastOutput : null; })();
+  const rFacts = await facts(R.slot);
+  check("…but not while it works: R gets the hint mid-work and, printing all along, no act — the same occupant 3 s on",
+    rTyped.some((e) => e.text.startsWith(HINT)) && rWorking === R.openedAt && rIdle !== null && rIdle < 1_000 && rFacts?.act === null,
+    JSON.stringify({ hint: rTyped.length, openedAt: rWorking, idleMs: rIdle, act: rFacts?.act }));
+  await tmuxOut("send-keys", "-t", `=s${R.slot}:`, "C-c");
+  let rNew: number | undefined = R.openedAt;
+  for (let i = 0; i < 150 && rNew === R.openedAt; i++) { await Bun.sleep(100); rNew = await openedAtOf(R); }
+  // only after R held while it worked: in core run 1014083939 R was replaced before the C-c, and this passed on that
+  check("…and once R rests, the new occupant comes",
+    rWorking === R.openedAt && rNew !== undefined && rNew !== R.openedAt, JSON.stringify({ old: R.openedAt, working: rWorking, now: rNew }));
+
+  const bad = await fetch(`${BASE}/api/slots/${Q.slot}/handover`, { method: "PATCH",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ expectedOpenedAt: Q.openedAt, atThreshold: "clear" }) });
+  const badBody = (await bad.json().catch(() => ({}))) as { refusal?: string };
+  check("threshold choice: an unknown choice is refused by name and nothing moves",
+    bad.status === 400 && badBody.refusal === "bad-at-threshold" && (await facts(Q.slot))?.atThreshold === "compact",
+    `${bad.status} ${JSON.stringify(badBody)}`);
+  await cleanup();
 }
 
 // --- KEEP THE CACHE WARM BEFORE IT IS GONE (server.ts#tickKeepCache, server/succession.ts#warmDecision;
@@ -5023,12 +5172,6 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //      its beforeKill (mutation: read the setting on entry to handleOwnerSucceed).
 //   T  the ⚙ steward: the switch is refused by name.
 // Invalid values are refused with the setting left as it was; the retired `warmBound` field sets nothing. ---
-// --- tickMigrate: the previous tick's nudge completes DURING this tick's awaits (08.10.: two nudges
-// to one session 307 ms apart under a 900 s cooldown, in a slots+self-token run). Driven on the cut
-// source with every await in hand: tick 1 types B's nudge and holds the send; tick 2 scans B as due
-// with a NEW attempt (tick 1's is stored only when its send completes) and parks in A's canDeliver,
-// before B's pending check; B's send completes; A is released. Mutation: drop the migrateTried
-// re-check after the awaits in server.ts#tickMigrate → B is typed a second time. ---
 // THE RESOLVED FOUNDING PLAN (GET /api/founding-plan → `plan`, session-blocks.ts#resolveSessionPlan): for
 // each role the route answers one plan whose hash is a function of its inputs, every row carries its
 // own facts, Nur Ordner delivers only what the folder loads natively, and the session file the window
@@ -5473,65 +5616,6 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
       attach.status === 400 && attachText.includes("a plan starts only at a fresh founding"), `${attach.status} ${attachText.slice(0, 200)}`);
     for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});
   }
-}
-
-async function runMigrateTickRace(): Promise<void> {
-  const source = readFileSync(resolve(import.meta.dir, "../server.ts"), "utf8");
-  const at = source.indexOf("let migrateTickBusy = false;");
-  const until = source.indexOf("\n// --- THE PARKED SEND", at);
-  if (at < 0 || until < 0) {
-    check("tickMigrate race: the tick's source is cut", false, `at=${at} until=${until}`);
-    return;
-  }
-  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(at, until));
-  type Fx = { id: number; cwd: string; label: string; awaiting: null; sessionId: string; harness: null; worktree: null;
-    lastOutput: number; history: unknown[] };
-  const fx = (id: number): Fx => ({ id, cwd: `/fixture/migrate-${id}`, label: `m${id}`, awaiting: null,
-    sessionId: `race-${id}`, harness: null, worktree: null, lastOutput: 1, history: [] });
-  const A = fx(1), B = fx(2);
-  const claude = { id: "claude" };
-  let parkA = false;
-  const held: { a?: () => void; send?: () => void } = {};
-  const sends: number[] = [];
-  const asked: number[] = [];
-  const deps = {
-    slots: [A, B], STEWARD_LABEL: "steward", harnessOf: () => claude, CLAUDE_HARNESS: claude,
-    handoverNudgeOn: () => true, handoverPct: () => 44,
-    contextFill: () => ({ pct: 50, usedTokens: 500_000, windowTokens: 1_000_000 }),
-    migrateTried: new Map(), MIGRATE_MAX_NUDGES: 3, MIGRATE_COOLDOWN_MS: 900_000, MIGRATE_IDLE_MS: 0,
-    canDeliver: async (s: Fx) => {
-      asked.push(s.id);
-      if (s === A && parkA) await new Promise<void>((r) => { held.a = r; });
-      return { ok: true };
-    },
-    standingHandoverFresh: async (s: Fx) => s === A, // A's handover is fresh: never typed, only awaited
-    laneMigrateMessage: () => "lane", migrateMessage: () => "[fleet] Dein Kontext ist bei 50%", migrateRailOf: () => null,
-    sendText: async (s: Fx) => {
-      sends.push(s.id);
-      if (sends.length === 1) await new Promise<void>((r) => { held.send = r; });
-      return { acceptance: "accepted" };
-    },
-    DeliveryCancelled: class extends Error {}, audit: () => {}, MAX_HISTORY: 50, saveHistory: () => {}, logPrompt: () => {},
-    logError: () => {}, sendFailureDelivery: () => "send-failed",
-    // a0387eec: a held field parks the nudge; this race never holds one, so nothing is parked
-    SendComposerOccupied: class extends Error {}, fleetSendParked: () => false, parkFleetSend: () => null,
-  };
-  const tick = new Function(...Object.keys(deps), `${js}; return tickMigrate;`)(...Object.values(deps)) as () => Promise<void>;
-  const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await Bun.sleep(0); };
-  await tick();
-  await settle();
-  parkA = true;
-  const second = tick();
-  await settle();
-  const parked = held.a !== undefined && held.send !== undefined;
-  held.send?.();
-  await settle();
-  held.a?.();
-  await second;
-  await settle();
-  check("tickMigrate race: a nudge that completes while the next tick awaits another session is not typed again",
-    parked && JSON.stringify(sends) === "[2]" && JSON.stringify(asked) === "[1,2,1,2]",
-    JSON.stringify({ parked, sends, asked }));
 }
 
 async function runKeepCache(): Promise<void> {

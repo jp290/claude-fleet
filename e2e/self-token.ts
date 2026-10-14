@@ -1904,14 +1904,15 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 //              and the transcript rest read from THIS occupant's pinned file after `at` only (drop
 //              the appendix, or the `since` cut, or read the slot's other file).
 //   game-maker — still refused by name at the owner door and at /api/self/handover (drop that refusal).
-//   fresh    — two sessions at 50 % above the armed 44, both with a standing handover: the one whose
-//              rest since the handover reaches a successor whole gets NO nudge, the one whose rest
-//              overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
-//              is nudged; make it "any handover" → the stale one is not).
+//   fresh    — two sessions at 46 %, above the armed 44 and below its cap 49, both with a standing handover:
+//              the one whose rest since the handover reaches a successor whole gets NO nudge, the one whose
+//              rest overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
+//              is nudged; make it "any handover" → the stale one is not). Below the cap only: at the cap
+//              a fresh handover silences nothing (K9 S3b, e2e/watch.ts, the main's hint).
 // the checks after ownerProgramSuccession's setup row, by name: each prints this string when it ran and
 // `NOT MEASURED — the setup row died: <it>` when the setup above it did not hold
 const LATER = {
-  ctx: "owner program succession setup: both handover subjects wrote a standing handover and measure 50 %",
+  ctx: "owner program succession setup: both handover subjects wrote a standing handover and measure 46 %, below the cap 49",
   staleOnce: "tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
   grownOnce: "tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
   gameMaker: "owner succession door: a game-maker Program-MAIN is still refused 409 `game-maker` at the owner door AND at /api/self/handover",
@@ -2092,10 +2093,11 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     mkdirSync(dir, { recursive: true });
     return `${dir}/${sid(i)}.jsonl`;
   };
-  // 500 000 of the 1 000 000 window: 50 %, above the 44 e2e-isolated.sh arms — the LAST line, because
-  // the context reader walks back to the newest usage record
+  // 460 000 of the 1 000 000 window: 46 %, above the 44 e2e-isolated.sh arms and below its cap 49 — a fresh
+  // handover silences the hint only there (K9 S3b) — the LAST line, because the context reader walks back
+  // to the newest usage record
   const usage = `${JSON.stringify({ message: { usage: { input_tokens: 100_000, cache_creation_input_tokens: 100_000,
-    cache_read_input_tokens: 300_000, output_tokens: 9_000_000 } } })}\n`;
+    cache_read_input_tokens: 260_000, output_tokens: 9_000_000 } } })}\n`;
   writeFileSync(fileOf(repoF, 1), line(repoF, "user", atF - 1000, "FRESH-BEFORE asked before the handover")
     + line(repoF, "user", atF + 1, "FRESH-AFTER one short question after it")
     + line(repoF, "assistant", atF + 2, [{ type: "text", text: "FRESH-AFTER one short answer" }]) + usage);
@@ -2117,8 +2119,8 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   type CtxRow = { id: number; ctx: { pct: number } | null };
   const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
   check(LATER.ctx,
-    atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 50
-      && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 50,
+    atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 46
+      && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 46,
     JSON.stringify({ atF, atT, ctx: ctxRows.filter((x) => [F.slot, T.slot].includes(x.id)) }));
   let staleNudges = await migratePrompts(T);
   for (let i = 0; i < 100 && staleNudges.length === 0; i++) {

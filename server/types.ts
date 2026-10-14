@@ -1904,8 +1904,8 @@ interface SuccessionRetirement { at: number; cwd: string; token: string }
 interface MemoryGrantOccupant { slot: number; openedAt: number }
 // THE OWNER'S HANDOVER SETTING on one occupant (Slot.handover; server.ts#patchHandover, the
 // right column's Übergabe popover). `thresholdPct` is a multiple of HANDOVER_PCT_STEP inside
-// HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the rail's own env value (FLEET_MIGRATE_PCT /
-// FLEET_LANE_MIGRATE_PCT stay the default); `nudge: false` keeps tickMigrate from writing this session
+// HANDOVER_PCT_MIN..HANDOVER_PCT_MAX, or null = the base of its kind (server/succession.ts#thresholdOf,
+// moved by FLEET_MIGRATE_PCT / FLEET_LANE_MIGRATE_PCT); `nudge: false` keeps tickMigrate from writing this session
 // its hint at all. Bound to `occupant`; every succession on the slot re-binds it to
 // the successor (server/succession.ts), a freshly opened occupant starts on the fleet's values.
 // `keepCache` + `keepCacheIdleMin` are the switch and the duration of server.ts#tickKeepCache: a
@@ -1917,8 +1917,13 @@ interface MemoryGrantOccupant { slot: number; openedAt: number }
 // `keepCacheText` is what that turn types (K9 S2b, owner 13.10.: „[Zitat entfernt]“
 // ); null = the fleet's own text, server.ts#KEEP_CACHE_TEXT. A record written before
 // the field existed reads null.
+// `atThreshold` is what Fleet does once the threshold's action is due (K9 S3b, server/succession.ts#actDecision):
+// `compact` or `succeed`; null = only the hint, the fleet's value for every kind. A record written before the
+// field existed reads null.
+type ThresholdAct = "compact" | "succeed";
+const thresholdActOk = (v: unknown): v is ThresholdAct => v === "compact" || v === "succeed";
 interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
-  keepCacheText: string | null; setAt: number; occupant: MemoryGrantOccupant }
+  keepCacheText: string | null; atThreshold: ThresholdAct | null; setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
@@ -1947,19 +1952,21 @@ const keepCacheTextOk = (t: unknown): t is string => typeof t === "string" && t.
 function loadHandoverSetting(v: unknown): HandoverSetting | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "keepCacheText", "warmBound", "setAt", "occupant"].includes(k))) return null;
+  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "keepCacheText", "atThreshold", "warmBound", "setAt", "occupant"].includes(k))) return null;
   const o = g.occupant as Record<string, unknown> | null;
   const twoSwitches = g.warmBound !== undefined;
   if (twoSwitches && (typeof g.warmBound !== "boolean" || typeof g.keepCache !== "boolean")) return null;
   const keepCache = twoSwitches ? (g.keepCache ? true : g.warmBound ? null : false) : g.keepCache ?? null;
   const keepCacheIdleMin = g.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
   const keepCacheText = g.keepCacheText ?? null;
+  const atThreshold = g.atThreshold ?? null;
+  if (!(atThreshold === null || thresholdActOk(atThreshold))) return null;
   if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
     || !(keepCache === null || typeof keepCache === "boolean") || !keepCacheIdleMinOk(keepCacheIdleMin)
     || !(keepCacheText === null || keepCacheTextOk(keepCacheText))
     || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
     || typeof o.openedAt !== "number") return null;
-  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, keepCacheText, setAt: g.setAt,
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, keepCacheText, atThreshold, setAt: g.setAt,
     occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
 }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
@@ -3534,13 +3541,13 @@ export type {
   ProgramValidation, ProgramDigest, DispatchSpawn, SlotContext, CodexPermissions, SlotPermissions, SlotStreamOccupant,
   ProgramDispatch, ProgramRelease, ProgramReleasePolicy, TaskHold, TaskHoldUntil, StallRepoClock, StallSensorState,
   TaskDisposition, LineageRole, LineageObligationKind, LineageOccupant, LineageSeat, LaneSeat, LineageWatchTarget, LineageAutoTarget, LineageObligationRef, LineageHandover,
-  LineageHandoverRead, LineageHandoverLoss, MemoryGrantOccupant, HandoverSetting,
+  LineageHandoverRead, LineageHandoverLoss, MemoryGrantOccupant, HandoverSetting, ThresholdAct,
 };
 export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
-  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX, keepCacheTextOk,
+  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX, keepCacheTextOk, thresholdActOk,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,

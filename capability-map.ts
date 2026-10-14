@@ -15,7 +15,7 @@ import {
 } from "./src/protocol";
 
 const SELF_FIELDS = [
-  "slot", "position", "label", "cwd", "mission", "awaiting", "lane", "idleMs", "observed",
+  "slot", "position", "label", "cwd", "mission", "awaiting", "lane", "idleMs", "observed", "context",
   "autos", "watches", "events", "lineage", "standingHandover",
 ] as const;
 

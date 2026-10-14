@@ -82,7 +82,7 @@ kein `succeed`.
 Lane-Brief trägt (`server.ts#laneExitFooter`): bei codex heißt `handoff` dort eine BEWUSSTE Abgabe,
 nie eine wegen des Füllstands, der Report ist die Übergabe, und es folgt keine `succeed`-Tür
 (`server.ts#LANE_EXIT_HANDOFF_CODEX`); jeder andere Harness gibt an der Kontextgrenze ab und
-ruft danach `POST /api/self/succeed` (`server.ts#LANE_EXIT_HANDOFF`, Schwelle
-`FLEET_LANE_MIGRATE_PCT`).
+ruft danach `POST /api/self/succeed` (`server.ts#LANE_EXIT_HANDOFF`, Schwelle der Lane ab Werk 37 %,
+`FLEET_LANE_MIGRATE_PCT` verschiebt sie, `server/succession.ts#thresholdOf`).
 
 **Program-MAIN.** Ihre Karte nennt keinen Zeitpunkt und ist für jeden Harness dieselbe.

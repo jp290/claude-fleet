@@ -4,7 +4,7 @@
 // their bytes, the device class and the build — one row per page and minute to POST /api/perf/field
 // (src/protocol.ts#FieldRow), numbers only. INVISIBLE in the product: nothing to see, nothing to switch.
 // What it costs itself stands in every row as `selfMs` (the time spent inside its own handlers).
-import { FIELD_CLICKS_MAX, FIELD_ROUTES_MAX, type FieldArea, type FieldRow } from "./protocol";
+import { FIELD_CLICKS_MAX, FIELD_PASTES_MAX, FIELD_ROUTES_MAX, type FieldArea, type FieldPaste, type FieldPasteEl, type FieldRow } from "./protocol";
 
 let selfMs = 0;
 const timed = <T>(fn: () => T): T => {
@@ -36,7 +36,36 @@ function areaOf(t: EventTarget | null): FieldArea | null {
   return !e ? null : e.closest("#shell-queue, #queuebtn") ? "queue" : e.closest("#board") ? "board" : e.closest("#side") ? "side" : null;
 }
 
-export function initFieldPerf(src: { v: () => number; sha: () => string | null }): void {
+// THE PASTES OF THE MINUTE (Mangel 64, src/protocol.ts#FieldPaste). The browser fires the paste event inside the
+// default action of the Cmd+V keydown, before any timer: a paste at the chat field while keys are still pending
+// belongs to them; one without pending keys came from a menu. Whether a handler cancelled either, and whether the
+// field grew, the caller learns later and writes onto the entry it got back.
+export class PasteLog {
+  private list: FieldPaste[] = [];
+  private frontAt: number | null = null;
+  front(at: number): void { this.frontAt = at; }
+  keys(el: FieldPasteEl, at: number, sel: boolean): FieldPaste | null { return this.add(el, at, sel); }
+  paste(at: number, pending: FieldPaste | null): FieldPaste | null {
+    if (pending && !pending.ev) { pending.ev = true; return pending; }
+    const p = this.add(null, at, false);
+    if (p) p.ev = true;
+    return p;
+  }
+  take(): FieldPaste[] { const out = this.list; this.list = []; return out; }
+  private add(el: FieldPasteEl | null, at: number, sel: boolean): FieldPaste | null {
+    if (this.list.length >= FIELD_PASTES_MAX) return null;
+    const p: FieldPaste = { el, keyOff: false, ev: false, off: false, files: false, landed: false, sel,
+      sinceFrontMs: this.frontAt === null ? null : Math.round(Math.max(0, at - this.frontAt)) };
+    this.list.push(p);
+    return p;
+  }
+}
+export function pasteEl(active: Element | null, field: Element, body: Element | null): FieldPasteEl {
+  return active === field ? "ta" : active?.classList.contains("xterm-helper-textarea") ? "term"
+    : !active || active === body ? "body" : "other";
+}
+
+export function initFieldPerf(src: { v: () => number; sha: () => string | null }, field: HTMLTextAreaElement): void {
   const sent = { at: performance.now() };
   let firstSlotMs: number | null = null, firstSent = false;
   let clicks: FieldRow["clicks"] = [];
@@ -71,16 +100,38 @@ export function initFieldPerf(src: { v: () => number; sha: () => string | null }
       x.bytes += e.transferSize || e.encodedBodySize || 0;
     }
   })).observe({ type: "resource", buffered: true });
+  // Cmd/Ctrl+V anywhere on the page, seen first (window, capture), and every paste at the chat field; the verdicts
+  // of the other handlers are read once they ran, the field's growth 100 ms later
+  const pastes = new PasteLog();
+  let pending: FieldPaste | null = null;
+  window.addEventListener("focus", (ev) => { pastes.front(ev.timeStamp); });
+  document.addEventListener("visibilitychange", (ev) => { if (!document.hidden) pastes.front(ev.timeStamp); });
+  window.addEventListener("keydown", (ev) => timed(() => {
+    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.key.toLowerCase() !== "v") return;
+    const p = pastes.keys(pasteEl(document.activeElement, field, document.body), ev.timeStamp, !(window.getSelection()?.isCollapsed ?? true));
+    pending = p;
+    setTimeout(() => { if (p) p.keyOff = ev.defaultPrevented; if (pending === p) pending = null; }, 0);
+  }), true);
+  window.addEventListener("paste", (ev) => timed(() => {
+    if (ev.target !== field) return;
+    const p = pastes.paste(ev.timeStamp, pending);
+    if (!p) return;
+    const before = field.value.length;
+    p.files = (ev.clipboardData?.files.length ?? 0) > 0;
+    setTimeout(() => { p.off = ev.defaultPrevented; }, 0);
+    setTimeout(() => { p.landed = field.value.length > before; }, 100);
+  }), true);
   const flush = (): void => {
     const now = performance.now();
-    if (!clicks.length && !Object.keys(routes).length && firstSent) { sent.at = now; return; }
+    const pasted = pastes.take();
+    if (!clicks.length && !Object.keys(routes).length && !pasted.length && firstSent) { sent.at = now; return; }
     const row: FieldRow = {
       v: src.v(), sha: (() => { const s = src.sha(); return s && /^[0-9a-f]{7,40}$/.test(s) ? s : null; })(),
       dev: { w: Math.min(20_000, innerWidth), h: Math.min(20_000, innerHeight),
         touch: matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0, ua: uaClass() },
       pageMs: Math.round(now), windowMs: Math.round(now - sent.at),
       firstSlotMs: firstSent || firstSlotMs === null ? null : Math.round(firstSlotMs),
-      clicks, routes, selfMs: Math.round(selfMs * 100) / 100,
+      clicks, routes, selfMs: Math.round(selfMs * 100) / 100, ...(pasted.length ? { pastes: pasted } : {}),
     };
     if (!navigator.sendBeacon("/api/perf/field", new Blob([JSON.stringify(row)], { type: "application/json" }))) return;
     if (firstSlotMs !== null) firstSent = true;

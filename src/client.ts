@@ -472,7 +472,7 @@ function flushPerf(): void {
 }
 setInterval(flushPerf, 60_000);
 // the board's own field rows (src/fieldperf.ts): its build and the server's boot head with every row
-initFieldPerf({ v: () => bundleV, sha: () => deployGapInfo?.bootHead ?? null });
+initFieldPerf({ v: () => bundleV, sha: () => deployGapInfo?.bootHead ?? null }, ta);
 document.addEventListener("visibilitychange", perfVisibility);
 
 export async function api(path: string, init?: RequestInit): Promise<Response> {

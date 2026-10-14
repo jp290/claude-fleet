@@ -982,6 +982,19 @@ export interface PerfRecord {
 // `selfMs` what the measuring itself cost inside its handlers that minute (src/fieldperf.ts).
 export const FIELD_AREAS = ["side", "board", "queue"] as const;
 export type FieldArea = typeof FIELD_AREAS[number];
+// `pastes` (Mangel 64, owner 14.10. 12:0x: „[Zitat entfernt]“): one entry per Cmd/Ctrl+V
+// and per paste into the chat field — where the keys stood (`el`: the chat field, the terminal, body, anything else;
+// null for a paste without the keys, from a menu), whether a handler cancelled the keys (`keyOff`), whether a paste
+// event reached the chat field (`ev`), cancelled (`off`) or carrying files, whether the field grew within 100 ms
+// (`landed`), whether text on the page stood selected at the keys (`sel`: copied from the board itself), and how long
+// after the window last came to the front. Flags and numbers only, never the text; a row
+// without a paste leaves the field out, so the rows before it stay valid.
+export const FIELD_PASTE_ELS = ["ta", "term", "body", "other"] as const;
+export type FieldPasteEl = typeof FIELD_PASTE_ELS[number];
+export interface FieldPaste {
+  el: FieldPasteEl | null; keyOff: boolean; ev: boolean; off: boolean; files: boolean; landed: boolean; sel: boolean;
+  sinceFrontMs: number | null;
+}
 export interface FieldRow {
   v: number; sha: string | null;
   dev: { w: number; h: number; touch: boolean; ua: string };
@@ -989,13 +1002,24 @@ export interface FieldRow {
   clicks: { a: FieldArea; ms: number }[];
   routes: Record<string, { n: number; bytes: number }>;
   selfMs: number;
+  pastes?: FieldPaste[];
 }
-export const FIELD_CLICKS_MAX = 200, FIELD_ROUTES_MAX = 60;
+export const FIELD_CLICKS_MAX = 200, FIELD_ROUTES_MAX = 60, FIELD_PASTES_MAX = 50;
 const FIELD_UA = /^(chrome|safari|firefox|edge|other)-(ios|android|mac|win|linux|other)$/;
+const PASTE_FLAGS = ["keyOff", "ev", "off", "files", "landed", "sel"] as const;
+function validPaste(p: unknown): boolean {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return false;
+  const x = p as Record<string, unknown>;
+  return Object.keys(x).length === 8 && (x.el === null || (FIELD_PASTE_ELS as readonly unknown[]).includes(x.el))
+    && PASTE_FLAGS.every((k) => typeof x[k] === "boolean")
+    && (x.sinceFrontMs === null || (typeof x.sinceFrontMs === "number" && Number.isFinite(x.sinceFrontMs) && x.sinceFrontMs >= 0 && x.sinceFrontMs <= 86_400_000));
+}
 export function validFieldRow(raw: unknown): raw is FieldRow {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const r = raw as Record<string, unknown>;
-  const keys = ["v", "sha", "dev", "pageMs", "windowMs", "firstSlotMs", "clicks", "routes", "selfMs"];
+  const keys = ["v", "sha", "dev", "pageMs", "windowMs", "firstSlotMs", "clicks", "routes", "selfMs", ...("pastes" in r ? ["pastes"] : [])];
+  if ("pastes" in r && !(Array.isArray(r.pastes) && r.pastes.length >= 1 && r.pastes.length <= FIELD_PASTES_MAX && r.pastes.every(validPaste)))
+    return false;
   if (Object.keys(r).length !== keys.length || !keys.every((k) => k in r)) return false;
   const ms = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 86_400_000;
   const int = (n: unknown, max: number) => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= max;

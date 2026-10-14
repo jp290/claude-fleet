@@ -120,9 +120,11 @@ export async function runHistoryProvenance(root = ROOT, clientRoot = dirname(rea
     if (!cycle || !row) throw new Error("cycleHist/histRow source missing");
     const code = new Bun.Transpiler({ loader: "ts" }).transformSync(
       `${source?.replace("export ", "") ?? ""}\nlet focused=0; const panes=[{slot:2}]; let cyc=null;\n${cycle}\n${row}`);
-    const f = new Function("ta", "fetchHistory", "el", "updateChips", "closeHist", "copyText",
+    // growComposer: both functions refit the field to the text they put in it (Mangel 61, S-e) — the cut-out source
+    // names it, and the check has no field to grow
+    const f = new Function("ta", "fetchHistory", "el", "updateChips", "closeHist", "copyText", "growComposer",
       `${code}\nreturn { cycleHist, histRow, origin: typeof historySource === 'function' ? historySource : null };`)(
-      box, async () => entries, el, () => {}, () => {}, () => {}) as {
+      box, async () => entries, el, () => {}, () => {}, () => {}, () => {}) as {
         cycleHist(dir: number): Promise<void>; histRow(text: string, meta: string, source?: string): Node;
         origin: ((entry: { text: string; source?: string }) => string) | null };
     for (const dir of [-1, -1, -1, 1, 1]) { await f.cycleHist(dir); recalled.push(box.value); }

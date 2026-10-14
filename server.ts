@@ -7485,7 +7485,7 @@ function taskBranchSlug(title: string): string {
 }
 
 async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string,
-  harness: Harness = CLAUDE_HARNESS, variante: ContextPositionVariante | null = null): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+  harness: Harness = CLAUDE_HARNESS, variante: ContextPositionVariante | null = null, rulebook = true): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
@@ -7526,7 +7526,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   }
   await excludeLaneScratch(path);
-  await laneScaffoldFor(root, path, harness, variante);
+  await laneScaffoldFor(root, path, harness, variante, rulebook);
   return { repo: root, path, branch, form };
 }
 
@@ -7599,8 +7599,11 @@ async function linkLaneGraph(root: string, path: string): Promise<void> {
   }
 }
 const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
+// `rulebook` false = no CLAUDE.md at all, neither the lane rendering nor the monolith copy: a BRANCH
+// worktree (Neuaufbau K11 R1, docs/neuaufbau/befunde/15-pruefpraxis.md). Its session follows the
+// branch's own AGENTS.md, which Claude Code loads only while no CLAUDE.md sits beside it.
 async function laneScaffoldFor(root: string, path: string, harness: Harness,
-  variante: ContextPositionVariante | null = null): Promise<void> {
+  variante: ContextPositionVariante | null = null, rulebook = true): Promise<void> {
   // every harness reads the graph the same way; it is no private scaffold, so it stands before the split
   await linkLaneGraph(root, path);
   if (scaffoldFree(harness)) {
@@ -7633,14 +7636,14 @@ async function laneScaffoldFor(root: string, path: string, harness: Harness,
   // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
   // copying the monolith below rather than leaving the lane with no rulebook at all. Failing the
   // spawn over it would be worse still — the rulebook is scaffolding, not the lane's work.
-  const laneRulebook = laneRulebookFor(root, variante, true);
+  const laneRulebook = rulebook ? laneRulebookFor(root, variante, true) : null;
   if (laneRulebook !== null && !existsSync(`${path}/CLAUDE.md`)
       && (await git(root, "check-ignore", "-q", "CLAUDE.md")).code === 0) {
     writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
     chmodSync(`${path}/CLAUDE.md`, 0o600);
   }
   for (const f of PRIVATE_SCAFFOLD) {
-    if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
+    if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`) || (!rulebook && f === "CLAUDE.md")) continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
     if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
     // 0600 at creation, NOT "preserve the source's mode": .env is *the* documented place for a
@@ -8406,7 +8409,7 @@ async function checkoutBranchWorktree(repo: string, branch: string, harness: Har
   const add = await git(repo, "worktree", "add", path, branch);
   if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   await excludeLaneScratch(path);
-  await laneScaffoldFor(repo, path, harness);
+  await laneScaffoldFor(repo, path, harness, null, false); // a branch worktree: no rulebook (K11 R1)
   return path;
 }
 
@@ -50969,7 +50972,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
       let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
       try {
-        if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h)).path;
+        if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h, null, false)).path;
         else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
       } catch (e) {
         const error = e instanceof Error ? e.message : "worktree failed";

@@ -190,5 +190,24 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "pruefpraxis",
+    "useWhen": "Bevor du fertig meldest oder einen Bericht abnimmst: Belege lesen, Diff und Testinstanz selbst ansehen, Bericht.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["landing"],
+    "hardness": "hard",
+    "group": "pruefen-landen",
+    "sources": [
+      { "path": "docs/pruefpraxis.md", "anchor": "## Prüfpraxis — ein Bericht ist eine Behauptung, bis er belegt ist" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2016,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

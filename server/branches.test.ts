@@ -6,8 +6,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchLand, type BranchRecord, chargeBase,
-  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand, repoBranches, restoreBook,
-  usableCheck, writeText,
+  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand, repoBranches, restoreBook,
+  setOpener, usableCheck, writeText,
 } from "./branches";
 
 const REPO = "/r/fleet";
@@ -264,5 +264,34 @@ describe("keine Funktion verändert den Stand, den sie bekommt", () => {
       recordLand(book, REPO, "b", { sha: HEAD, at, tip: HEAD, base: "main", subject: "x", points: [], passt: false, checked: false });
     }).not.toThrow();
     expect(findBranch(book, REPO, "b")?.text).toBe("- [ ] eins");
+  });
+});
+
+// Neuaufbau K13: Wer einen Branch über die Tür öffnet, steht an ihm, damit er und die Session darauf sich im
+// Postfach schreiben. Der Öffner ist ein Sitz (Slot und Ordner): Eine Nachfolge behält beides, ein anderer
+// Ordner im selben Slot ist jemand anderes.
+describe("Öffner: Slot und Ordner der Session, die den Branch öffnet", () => {
+  const LEAD = { slot: 2, cwd: "/w/bau-neuaufbau" };
+  test("der Öffner steht am Branch, übersteht das Speichern und findet seine Branches wieder", () => {
+    const book = setOpener(opened(opened([], "a", "A", ["eins"]), "b", "B"), REPO, "a", { ...LEAD, at }).book;
+    expect(findBranch(book, REPO, "a")?.opener).toEqual({ ...LEAD, at });
+    expect(findBranch(book, REPO, "a")?.text).toBe("- [ ] eins");
+    expect(findBranch(book, REPO, "b")?.opener).toBeUndefined();
+    expect(restoreBook(JSON.parse(JSON.stringify(book)))).toEqual(book);
+    expect(openedBy(book, LEAD).map((r) => r.branch)).toEqual(["a"]);
+    expect(openedBy(book, { slot: 2, cwd: "/w/anderswo" })).toEqual([]);
+    expect(openedBy(book, { slot: 3, cwd: LEAD.cwd })).toEqual([]);
+  });
+  test("eine andere Session, die neu öffnet, wird Öffner; der alte Stand bleibt unberührt", () => {
+    const first = deepFreeze(setOpener(opened([], "a", "A"), REPO, "a", { ...LEAD, at }).book);
+    const second = setOpener(first, REPO, "a", { slot: 4, cwd: "/w/other", at: at + 1 }).book;
+    expect(findBranch(second, REPO, "a")?.opener).toEqual({ slot: 4, cwd: "/w/other", at: at + 1 });
+    expect(findBranch(first, REPO, "a")?.opener).toEqual({ ...LEAD, at });
+    expect(openedBy(second, LEAD)).toEqual([]);
+  });
+  test("ein kaputter Öffner fällt beim Laden heraus, der Datensatz bleibt", () => {
+    const good: BranchRecord = { repo: REPO, branch: "a", name: "A", base: null, text: "", rev: 1, seen: null, lands: [], createdAt: at, updatedAt: at };
+    expect(restoreBook([{ ...good, opener: { slot: 0, cwd: "/w", at } }, { ...good, branch: "b", opener: { slot: 2, cwd: "", at } }]))
+      .toEqual([good, { ...good, branch: "b" }]);
   });
 });

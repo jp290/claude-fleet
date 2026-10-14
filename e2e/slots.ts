@@ -12698,7 +12698,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           flag: fl ? { cls: fl.className, box: box(fl) } : null,
           points: r.querySelectorAll('.way i').length, lr: box(r.querySelector(':scope > .lr')),
           git: r.querySelector(':scope > .lr > .gs')?.innerText.replace(/\\s+/g, ' ').trim() ?? null, gitTitle: r.querySelector(':scope > .lr > .gs')?.title ?? null,
-          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, tag: ti.tagName, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: !!ti.disabled } : null,
+          ti: ti ? { state: ti.dataset.ti ?? null, title: ti.title, tag: ti.tagName, box: box(ti), sq: vis(ti.querySelector('.sq')), bg: col(ti.querySelector('.sq'), 'backgroundColor'), disabled: !!ti.disabled,
+            port: ti.querySelector('.tiport')?.textContent ?? null, portLeft: (() => { const p = ti.querySelector('.tiport'), q = ti.querySelector('.sq'); return p && q ? p.getBoundingClientRect().right <= q.getBoundingClientRect().left : null; })() } : null,
           tag: r.querySelector(':scope > .nm .cnt[data-remote]')?.textContent ?? null,
           machine: r.dataset.machine ?? null, roles: r.querySelector(':scope > .nm .cnt')?.textContent ?? null,
           say: r.querySelector(':scope > .st')?.textContent ?? null, exp: r.getAttribute('aria-expanded'),
@@ -12749,7 +12750,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     type Flag = { cls: string; box: { x: number; r: number } };
     type Row = { cls: string; id: string | null; slot: string | null; node: string | null; kind: string | null; text: string; title: string; box: { x: number; r: number; y: number; w: number; h: number };
       ref: string | null; name: string | null; nd: string | null; flag: Flag | null; points: number; lr: { x: number; r: number } | null; git: string | null; gitTitle: string | null;
-      ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean } | null; tag: string | null;
+      ti: { state: string | null; title: string; tag: string; box: { x: number; r: number }; sq: boolean; bg: string | null; disabled: boolean; port: string | null; portLeft: boolean | null } | null; tag: string | null;
       machine: string | null; roles: string | null; say: string | null; exp: string | null; chip: string | null; chipTitle: string | null; tone: string | null; nmColor: string | null; msess: string | null;
       bar: string | null; ground: string; fade: string; barBox: { l: number; r: number; bg: string } | null; ndC: number | null;
       // the right edge of the row's words and git stand; the right edge of its last mark (the square), null without one;
@@ -13270,12 +13271,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const action = (path: string, act: string) => (w: { path: string; body: unknown }) => w.path === path && (w.body as { action?: string } | null)?.action === act;
           const square = !!zeitRow?.ti && zeitRow.ti.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && zeitRow.ti.tag === "SPAN"
             && !!freeRow?.ti && freeRow.ti.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
-            && zeitRow.ti.title === `Testinstanz läuft bis ${until}`;
+            && zeitRow.ti.title === `Testinstanz läuft bis ${until} · :8913`;
           await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
           const lineOpened = await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
           claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session — a sign, the row opens its line`] = square && lineOpened;
+          // K13 S7, Mangel 66 (owner 14.10.: „[Zitat entfernt]“): the measured port. A branch's
+          // row — the lane 3B and the worktree without a session alike — carries it in the square's title and in the
+          // opened line, not in the row, so the row keeps its 24 px and its name still wraps (state live)
+          const portRows = [zeitRow, freeRow].every((x) => x?.ti?.port === null && x.ti.title.endsWith(" · :8913"));
           r = await read();
           const line = r.lines.find((l) => l.cls.split(" ").includes("ti"));
+          claims[`${tag}a running test instance says its port in its square's title, at 3B and at the worktree without a session, and in the opened line`] =
+            portRows && !!line && line.text.startsWith(`Testinstanz läuft bis ${until} · :8913`);
           claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.startsWith(`Testinstanz läuft bis ${until}`)
             && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
           await shot(`${st}-${width}`);

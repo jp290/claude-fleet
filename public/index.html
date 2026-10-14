@@ -2965,8 +2965,9 @@
   #board .way i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
   #board .way i.run.old { box-shadow: inset 0 0 0 1.25px var(--chat-ink); }
   /* landed is a diamond: the one point that is an event */
-  /* the test instance's square at a closed lane is a sign, not a tap target */
-  #board .zr .lr .ti { width: auto; height: auto; cursor: inherit; }
+  /* the test instance's square at a closed lane is a sign, not a tap target — as wide as its square, not
+     the 14 px (40 px on the phone) a tap target keeps: those 4 px wrapped a lane's name under Linux */
+  #board .zr .lr .ti { width: auto; min-width: 0; height: auto; cursor: inherit; }
   #board .act { display: inline-grid; place-items: center; }
   #board .act .ico { width: 12px; height: 12px; }
   #board .act[data-tone="live"] { color: var(--q-live); }
@@ -2985,8 +2986,10 @@
     white-space: pre-line; pointer-events: none; box-shadow: 0 8px 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
   .holdtip.on { display: block; }
   /* the test instance: a square in its worktree's row — green while it runs */
-  #board .zr .ti { display: grid; place-items: center; width: 14px; height: 18px; padding: 0; border: 0; background: none;
-    border-radius: 4px; cursor: pointer; }
+  #board .zr .ti { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 14px; height: 18px; padding: 0;
+    border: 0; background: none; border-radius: 4px; cursor: pointer; }
+  /* its port beside it (src/board.ts#tiPort), left of the square so the squares keep one column */
+  #board .tiport { font: 10.5px var(--chat-mono); color: var(--chat-mute); white-space: nowrap; }
   #board .zr .ti:disabled { cursor: default; }
   #board .zr .ti.open { background: var(--c-hover); }
   #board .sq { width: 10px; height: 10px; border-radius: 2px; display: block; box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
@@ -3007,7 +3010,7 @@
   #board .zr.flash { background: var(--c-hover); }
   #board .zr[role="button"]:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -1px; }
   /* stem and branch rows: the branch itself in mono, right what hangs on it */
-  #board .zr.base { cursor: default; grid-template-columns: var(--rk-rail) auto minmax(0, 1fr) var(--rk-tiw, 14px); column-gap: 8px; }
+  #board .zr.base { cursor: default; grid-template-columns: var(--rk-rail) auto minmax(0, 1fr) var(--rk-tiw, minmax(14px, auto)); column-gap: 8px; }
   #board .zr.base .nm { grid-column: 2; font: 500 var(--chat-code-fs) var(--chat-mono); color: var(--chat-ink); }
   /* the stem's right side wraps rather than run into "main" */
   #board .zr.base .rt { grid-column: 3; justify-self: stretch; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 6px; align-items: center;
@@ -3204,7 +3207,7 @@
     #board .zr.mach[role="button"]:hover, #board .zr.zq:hover { background: transparent; }
     #board .zr.mach.open { background: var(--chat-surface); }
     /* no hover on the phone: only the own lane keeps the square */
-    #board .zr .ti { width: 40px; height: 40px; }
+    #board .zr .ti { min-width: 40px; height: 40px; }
     #board .zr .ti.off:not(.mine), #board .zr .ti.tpl { display: none; }
     #board .rk-btn { min-height: 40px; padding: 0 12px; }
     #board .ranke { --rk-tiw: auto; }
@@ -3350,12 +3353,50 @@
   #board .btab[data-tab="rechte"] .btabbody { padding-left: 0; }
   #board .btabbody .bsrow .bskey { width: 86px; }
   #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
+  /* the postfach (K13 S6/S9/S10, src/postfach.ts): one conversation per counterpart, the newest message on
+     top. Each message is first ONE line — who, the first line of its text, when — and a click opens it.
+     Each speaker has a hue (--who-h, set per row): this session the accent blue, every other address a
+     fixed hue without blue; this session's lines stand right, the other side's left. Name, time and state
+     are not selectable: a copy of an opened message takes its text. */
+  #board .bgespr + .bgespr { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--chat-edge-soft); }
+  #board .bgesprhd { margin-bottom: 2px; font-size: 11.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
+  #board .bgesprwho { color: hsl(var(--who-h, 222) 70% 74%); }
+  #board .bmsg { margin-top: 3px; border: 1px solid hsl(var(--who-h, 222) 38% 28%); border-radius: 8px;
+    background: hsl(var(--who-h, 222) 32% 14%); transition: border-color 0.3s; }
+  #board .bmsg.mine { margin-left: 10%; }
+  #board .bmsg.theirs { margin-right: 10%; }
+  #board .bmsg.first { margin-top: 9px; }
+  #board .bmsg.flash { border-color: var(--chat-ink); }
+  /* the closed line as an inbox row: who and when on top, the first line of the text under them, full width */
+  #board .bmsgline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1px 6px; width: 100%;
+    min-width: 0; padding: 4px 8px; border: 0;
+    border-radius: 8px; background: transparent; color: var(--b-ink2); font: 400 12px var(--chat-sans); text-align: left; cursor: pointer;
+    user-select: none; -webkit-user-select: none; }
+  #board .bmsgline:hover { background: hsl(var(--who-h, 222) 32% 18%); }
+  #board .bmsgwho { grid-row: 1; grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px; font-weight: 500; color: hsl(var(--who-h, 222) 70% 74%); }
+  #board .bmsgat { grid-row: 1; grid-column: 2; font-size: 10.5px; color: var(--b-ink3); }
+  #board .bmsgdot { grid-row: 1; grid-column: 3; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+  #board .bmsgfirst { grid-row: 2; grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bmsg.open .bmsgfirst { display: none; }
+  #board .bmsgtx { padding: 0 8px 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--b-ink); font-size: 12px; line-height: 1.45; }
+  #board .bmsgre { display: block; max-width: calc(100% - 16px); margin: 0 8px 3px; padding: 0; border: 0; border-radius: 0;
+    background: transparent; color: var(--b-ink3); font: 400 11px var(--chat-sans); text-align: left; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none; -webkit-user-select: none; }
+  #board div.bmsgre { cursor: default; }
+  #board .bmsgre:hover { color: var(--b-ink2); }
+  #board .bmsgmeta { margin: 0 8px 6px; font-size: 10.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
+  #board .bmsgmeta.open { color: var(--amber); }
+  #board .bmsgmore { margin: 6px 0 0 -6px; padding: 2px 6px; color: var(--chat-mute); background: transparent; border-color: transparent; }
+  #board .bmsgmore:hover { color: var(--chat-ink); background: var(--c-hover); }
   #board .bnopane { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b); border-top: 1px solid var(--chat-edge-soft); }
-  @media (prefers-reduced-motion: reduce) { #board .bib, #board .btabbtn .chev { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { #board .bib, #board .btabbtn .chev, #board .bmsg { transition: none; } }
   /* the phone: after the column's base rules on purpose — the same specificity wins by order */
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     /* the rest of the column at the phone's floor: a target 40 px, a reading row 32 px (§3b) */
     #board { --b-row: 40px; --b-hit: 40px; --b-fold: 40px; --b-grp: 12px; }
+    /* a postfach line is a target (src/postfach.ts, S10) */
+    #board .bmsgline { min-height: var(--b-hit); align-items: center; }
     #board .bsec h3 { font-size: 12px; min-height: 28px; }
     #board .ranke h3 { min-height: 40px; flex-wrap: wrap; }
     #board .bkv { min-height: 32px; font-size: 13px; }

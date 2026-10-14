@@ -10,7 +10,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fragmentFileName, RULEBOOK_FRAGMENTS } from "../rulebook";
-import { branchTestkit, commitIn, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
+import { type Answer, branchTestkit, commitIn, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
 
 const { TMP, PROJECTS, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -231,6 +231,173 @@ describe("Einen Commit öffnen: Betreff, Text und Änderung, auch auf einem Bran
     const [opened] = await life(f, [post("/api/branches/open", { repo: f.repo, branch: "branch/bericht" })]);
     const [cd] = await life(f, [get(`/api/slots/${Number(opened?.body.slot)}/commit-diff?hash=${short}`)]);
     expect(cd).toMatchObject({ status: 200, body: { hash: short, body: "Info-Spalte am Telefon: 1.8 s bis voll, drei Läufe.", files: ["messung.txt"] } });
+  }, LIFE_DEADLINE_MS);
+});
+
+// Neuaufbau K13 · Owner 14.10.: „[Zitat entfernt]“
+//  Die Session, die einen Branch öffnet, und die Session darauf
+// schreiben sich im Postfach: senden, lesen, quittieren, antworten. Wer nicht zu ihnen gehört, bekommt 409,
+// auch eine neue Session im Slot des Öffners, die in einem anderen Ordner sitzt.
+describe("Postfach: Öffner und Branch-Session schreiben sich, sonst niemand", () => {
+  type Msg = { id: string; from: { kind: string; slot?: number }; to: { kind: string; slot?: number; openedAt?: number };
+    payload: { text: string }; replyTo: string | null; readBy: { slot: number } | null };
+  const tokenOf = (f: Fixture, slot: number): string => {
+    const t = (persisted(f).slots as Record<string, { selfToken?: string }> | undefined)?.[String(slot)]?.selfToken;
+    if (!t) throw new Error(`kein Self-Token für Slot ${slot} in fleet.json`);
+    return t;
+  };
+  const slotOf = (a: Answer | undefined): number => {
+    const n = Number(a?.body.slot);
+    if (a?.status !== 200 || !Number.isInteger(n)) throw new Error(`Öffnen schlug fehl: ${JSON.stringify(a)}`);
+    return n;
+  };
+  const as = (self: string, step: { method: string; path: string; body?: unknown }) => ({ ...step, token: null, self });
+  const send = (self: string, slot: number, text: string, key: string, replyTo: string | null = null) =>
+    as(self, post("/api/self/messages", { to: { kind: "session", slot }, payload: { kind: "text", text }, idempotencyKey: key, replyTo }));
+  const box = (self: string) => as(self, get("/api/self/messages"));
+  const messageOf = (a: Answer | undefined): Msg => a?.body.message as Msg;
+  const entriesOf = (a: Answer | undefined): Msg[] => (a?.body.entries as Msg[] | undefined) ?? [];
+  const stored = (f: Fixture): Msg[] => ((persisted(f).messages as { entries?: Msg[] } | undefined)?.entries ?? []);
+  const openerOf = (f: Fixture, branch: string): unknown =>
+    (persisted(f).branches as { branch: string; opener?: unknown }[]).find((b) => b.branch === branch)?.opener;
+
+  test("wer mit Self-Token öffnet, steht als Öffner am Branch, auch nach einem Neustart; ohne Self-Token niemand", async () => {
+    const f = fixture();
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = slotOf(lead);
+    const [, strand, , foreign] = await life(f, [post("/api/branches", { repo: f.repo, name: "Strang" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/strang" }), self: tokenOf(f, L) },
+      post("/api/branches", { repo: f.repo, name: "Fremd" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/fremd" })]);
+    expect([strand?.status, foreign?.status]).toEqual([200, 200]);
+    expect(openerOf(f, "branch/strang")).toMatchObject({ slot: L, cwd: String(lead?.body.cwd) });
+    expect(openerOf(f, "branch/fremd")).toBeUndefined();
+    expect(openerOf(f, "branch/leitung")).toBeUndefined();
+    await life(f, ["save"]);
+    expect(openerOf(f, "branch/strang")).toMatchObject({ slot: L, cwd: String(lead?.body.cwd) });
+  }, LIFE_DEADLINE_MS * 3);
+
+  test("Bauleitung → Branch-Session und zurück, mit Quittung; eine fremde Session bekommt 409", async () => {
+    const f = fixture();
+    // die Bauleitung: eine Session ohne Rolle (hier selbst auf einem Branch, vom Owner geöffnet)
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = slotOf(lead);
+    const leadTok = tokenOf(f, L);
+    // sie öffnet den Strang mit ihrem Self-Token neben dem Owner-Bearer; den fremden öffnet der Owner allein
+    const [, strand, , foreign] = await life(f, [post("/api/branches", { repo: f.repo, name: "Strang" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/strang" }), self: leadTok },
+      post("/api/branches", { repo: f.repo, name: "Fremd" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/fremd" })]);
+    const S = slotOf(strand), F = slotOf(foreign);
+    const strandTok = tokenOf(f, S), foreignTok = tokenOf(f, F);
+
+    const [sent, strandBox, strandSelf] = await life(f, [
+      send(leadTok, S, "Bitte S1 bauen.", "auftrag-1"), box(strandTok), as(strandTok, get("/api/self"))]);
+    expect(sent?.status).toBe(200);
+    const question = messageOf(sent);
+    expect(question.to).toEqual({ kind: "session", slot: S, openedAt: Number(strand?.body.openedAt) });
+    expect(sent?.body.holder).toEqual({ slot: S, openedAt: Number(strand?.body.openedAt) });
+    expect(strandBox?.body.unread).toBe(1);
+    expect(entriesOf(strandBox).map((m) => m.payload.text)).toEqual(["Bitte S1 bauen."]);
+    // genau das liest der Hinweis in die Pane (server.ts#tickMessageNudge): ungelesener Eingang dieser Session
+    expect((strandSelf?.body.position as { messages?: { unread?: number } } | undefined)?.messages?.unread).toBe(1);
+
+    const [receipt, answer, leadBox, afterRead] = await life(f, [
+      as(strandTok, post(`/api/self/messages/${question.id}/read`, {})),
+      send(strandTok, L, "S1 steht, Spitze abc.", "antwort-1", question.id),
+      box(leadTok), box(strandTok)]);
+    expect(receipt?.status).toBe(200);
+    expect(messageOf(receipt).readBy?.slot).toBe(S);
+    expect(answer?.status).toBe(200);
+    expect(messageOf(answer).replyTo).toBe(question.id);
+    expect(leadBox?.body.unread).toBe(1);
+    expect(entriesOf(leadBox).map((m) => [m.payload.text, m.replyTo])).toEqual([["S1 steht, Spitze abc.", question.id],
+      ["Bitte S1 bauen.", null]]);
+    expect(afterRead?.body.unread).toBe(0);
+
+    const before = stored(f).length;
+    const refused = await life(f, [send(foreignTok, L, "fremd an Leitung", "f1"), send(foreignTok, S, "fremd an Strang", "f2"),
+      send(leadTok, F, "Leitung an fremd", "f3"), send(strandTok, F, "Strang an fremd", "f4")]);
+    expect(refused.map((a) => a.status)).toEqual([409, 409, 409, 409]);
+    expect(stored(f).length).toBe(before);
+  }, LIFE_DEADLINE_MS * 6);
+
+  test("ein neu besetzter Slot des Öffners in einem anderen Ordner ist nicht mehr Öffner; im selben Ordner (Nachfolge) schon", async () => {
+    const f = fixture();
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = slotOf(lead);
+    const [, strand] = await life(f, [post("/api/branches", { repo: f.repo, name: "Strang" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/strang" }), self: tokenOf(f, L) }]);
+    const S = slotOf(strand), strandTok = tokenOf(f, S);
+    const oldLead = { kind: "session", slot: L, openedAt: Number(lead?.body.openedAt) };
+
+    // Slot L wird frei und neu besetzt, in einem anderen Ordner
+    const [killed, , other] = await life(f, [post(`/api/slots/${L}/kill`, {}), post("/api/branches", { repo: f.repo, name: "Anderswo" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/anderswo" })]);
+    expect(killed?.status).toBe(200);
+    expect(slotOf(other)).toBe(L);
+    const otherTok = tokenOf(f, L);
+    const before = stored(f).length;
+    const [toNew, toOld, fromNew] = await life(f, [send(strandTok, L, "an den Slot der Leitung", "r1"),
+      as(strandTok, post("/api/self/messages", { to: oldLead, payload: { kind: "text", text: "an die alte Leitung" }, idempotencyKey: "r2" })),
+      send(otherTok, S, "von der neuen Besetzung", "r3")]);
+    expect([toNew?.status, toOld?.status, fromNew?.status]).toEqual([409, 409, 409]);
+    expect(stored(f).length).toBe(before);
+
+    // dieselbe Leitung kommt im selben Ordner wieder, wie nach einer Nachfolge: das Paar steht
+    const [, again] = await life(f, [post(`/api/slots/${L}/kill`, {}),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    expect(slotOf(again)).toBe(L);
+    expect(Number(again?.body.openedAt)).not.toBe(oldLead.openedAt);
+    const [back, forth] = await life(f, [send(strandTok, L, "Bericht an die Nachfolgerin", "n1"),
+      send(tokenOf(f, L), S, "Nachfolgerin an den Strang", "n2")]);
+    expect([back?.status, forth?.status]).toEqual([200, 200]);
+    expect(messageOf(back).to).toEqual({ kind: "session", slot: L, openedAt: Number(again?.body.openedAt) });
+  }, LIFE_DEADLINE_MS * 6);
+});
+
+// Neuaufbau K13 S8 · Mangel 67, Owner 14.10.: „[Zitat entfernt]“
+//  Owner-Satz: „[Zitat entfernt]“
+//  Eine Branch-Session hat keinen Lane-Bezug (worktree null); die
+// Slot-Route (der Weg von „Öffnen“, src/board.ts#tiRoute) nahm dann den Worktree selbst als Repo. Die
+// testinstanz.sh im Worktree ist ein Ersatz, der nur `status` beantwortet und nichts startet.
+describe("Testinstanz einer Branch-Session: die Slot-Route findet Repo und Worktree", () => {
+  const stub = (path: string, port: number) => writeFileSync(join(path, "testinstanz.sh"), `#!/bin/sh
+case "$1" in
+status)
+  if [ "$2" = --json ]; then printf '%s' '{"state":"up","port":${port},"expiresAt":${Date.now() + 3_600_000},"procStatus":"alive","httpStatus":"healthy","identity":"matched"}'
+  else echo "up pid 1 http://127.0.0.1:${port}/ expiresAt=${Math.floor(Date.now() / 1000) + 3600}"; fi ;;
+*) exit 1 ;;
+esac
+`, { mode: 0o755 });
+  type SlotView = { id: number; workplace: { path: string; mainCheckout: boolean } | null };
+
+  test("Status und Öffnen über /api/slots/:id/testinstanz, danach nennt /api/sessions den Ort der Session", async () => {
+    const f = fixture();
+    const [made, opened] = await life(f, [post("/api/branches", { repo: f.repo, name: "Strang" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/strang" })]);
+    const path = String(made?.body.path), S = Number(opened?.body.slot);
+    expect(opened?.status).toBe(200);
+    stub(path, 8968);
+    const [status, open, sessions] = await life(f, [get(`/api/slots/${S}/testinstanz`),
+      post(`/api/slots/${S}/testinstanz`, { action: "open" }), get("/api/sessions")]);
+    expect(status).toMatchObject({ status: 200, body: { state: "up", port: 8968, worktree: path, mainCheckout: false } });
+    expect(open).toMatchObject({ status: 200, body: { ok: true, worktree: path, port: 8968, url: "http://127.0.0.1:8968/" } });
+    const row = (sessions?.body.slots as SlotView[] | undefined)?.find((s) => s.id === S);
+    expect(row?.workplace).toMatchObject({ path, mainCheckout: false });
+  }, LIFE_DEADLINE_MS * 2);
+
+  test("eine Session in einem Ordner ohne Git bekommt weiter 409 unknown-worktree, es läuft nichts", async () => {
+    const f = fixture();
+    const plain = join(TMP, `ohne-git-${Date.now()}`);
+    mkdirSync(plain);
+    stub(plain, 8969);
+    const [opened, status] = await life(f, [post("/api/slots/3/open", { cwd: plain }), get("/api/slots/3/testinstanz")]);
+    expect(opened?.status).toBe(200);
+    expect(status).toMatchObject({ status: 409, body: { refusal: "unknown-worktree", nullSpawn: true } });
   }, LIFE_DEADLINE_MS);
 });
 

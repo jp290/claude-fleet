@@ -3323,7 +3323,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Die einzige lebende Session mit Orchestratorin-Label sendet als
   `{kind:"role",role:"orchestrator"}`; das Label gewährt keine weiteren Rechte.
   Eine ungebundene Nicht-Lane-Nicht-Steward-Session sendet als
-  `{kind:"session",slot,openedAt}` ausschließlich an `role:"orchestrator"` (sonst 409).
+  `{kind:"session",slot,openedAt}` ausschließlich an `role:"orchestrator"` oder an ihr
+  Branch-Gegenüber (unten, sonst 409).
   Die Lane sendet weiterhin nie (409 mit dem bisherigen Satz); der Steward wird mit eigenem
   Satz abgelehnt. Eine MAIN ohne Wahl unter mehreren Programs oder eine mehrdeutige
   Orchestratorin-Bindung wird nicht zur ungebundenen Session.
@@ -3345,6 +3346,17 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   ersetzter Occupant: benannte 409, kein neuer Record.
 - **Orchestratorin → Session:** Nur als Antwort mit `replyTo` auf die Nachricht genau dieser
   Session. Andere Absender, freie Erstnachrichten oder eine andere Session-Adresse: 409.
+- **Branch-Paar (Neuaufbau K13, `server.ts#branchPeers`):** Zwei Sessions ohne Rolle schreiben sich,
+  wenn die eine einen Branch über die Tür geöffnet hat und die andere gerade in dessen Worktree sitzt.
+  - **Öffner** ist, wer `POST /api/branches/open` mit dem Owner-Bearer **und** dem eigenen
+    `x-fleet-self-token` ruft; `ctl.sh` schickt beide Header.
+  - Gespeichert wird der Sitz, also Slot und Ordner (`server/branches.ts#BranchRecord.opener`). Eine
+    Nachfolge behält beides und bleibt Öffner.
+  - Besetzt eine Session den Slot neu, die in einem anderen Ordner sitzt, ist sie nicht mehr Öffner.
+  - Ein Öffnen ohne Self-Token (Board, Owner-Token allein) lässt einen früheren Öffner stehen.
+  - **Ziel:** `{kind:"session",slot}` genügt. Ohne `openedAt` meint die Adresse die Session, die jetzt
+    im Slot sitzt; gespeichert wird die volle Adresse.
+  - Wer nicht im Paar steht, bekommt 409, und nichts wird gespeichert.
 - **Lesegrenze (`server.ts#messageAddressesFor`, `#resolveMessageAddress`):** Eine ungebundene
   Session liest nur ihre Session-Adresse, eine Lane nur ihre Lane-Adresse, jeweils solange
   `slot` und `openedAt` passen. Die Zustellung setzt dieselbe aktuelle Leseberechtigung voraus:
@@ -3405,7 +3417,10 @@ Program-Adresse. Der Standard-Nachfolgebrief nennt diese Nachrichten mit `GET /a
 sie werden nicht als Handover-Obligations gespeichert.
 
 Der Nachrichten-Tick prüft Zustellbarkeit, Leerlauf und Ruhezeit und schreibt beim nächsten
-zustellbaren Aktivwerden einen `[fleet message]`-Hinweis über `inbox-nudge`. Ein unveränderter
+zustellbaren Aktivwerden einen `[fleet message]`-Hinweis über `inbox-nudge`. Für eine Lane und für eine
+Nachricht des Branch-Paars (Session an Session, K13) ist das Direktverkehr: nach
+`REPORT_DECISION_IDLE_MS` (3 s) Ruhe, an genau diesen Slot, ohne Viertelstunden-Bündel, Ruhezeit oder
+Abstand zwischen zwei Hinweisen. Jeder andere Hinweis an eine Session wartet im Bündel. Ein unveränderter
 Satz ungelesener IDs erhält in derselben Session keinen zweiten Hinweis; ein später gebundener
 Halter kann die gespeicherte Nachricht und den Hinweis erhalten. Das Senden selbst tippt nichts
 in die Pane. Derselbe Tick liefert auch den Hinweis für Session- und Lane-Adressen; alive-,
@@ -3461,6 +3476,8 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | Situation | Code | Satz |
 |---|---|---|
 | Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
+| Session an etwas anderes als die Orchestratorin oder ihr Branch-Gegenüber; Ziel Session ohne Orchestratorin-Antwort und ohne Paar | 409 | `an unbound session may address only the Orchestrator or its branch counterpart (…); a session destination is otherwise only an Orchestrator reply` |
+| `{kind:"session",slot}` auf einen Slot ohne lebende Session | 400 | `to session slot <n> holds no live session — without openedAt the address names the session in that slot now` |
 | Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
 | GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator` |
 | Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo, programId — […] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` |

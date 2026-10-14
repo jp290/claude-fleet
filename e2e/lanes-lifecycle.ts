@@ -644,8 +644,10 @@ export async function snapshotBoardDom(sourceRoot: string, opts: { mutants?: boo
 // e2e/slots.ts#runPhoneIslandDom, cut down to one page and three facts). Two loads per width
 // (900 × 700, 390 × 844): the band with long names and an /api/sessions without instance.source;
 // the mutant mode adds the same band with segments that cannot shrink (nowrap). A browser that cannot run is the PROBE line — red, never a skip.
-interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][] }
-export async function instanceBandDom(sourceRoot: string, opts: { mutants?: boolean } = {}): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts | null; live: BandDomFacts }[]; expected: string }> {
+// The fixture origin carries a port (FIXTURE_PORT) so the tab title's „· :<Port>“ is measured, not assumed.
+interface BandDomFacts { shown: boolean; htmlClass: boolean; appTop: number; text: string; clipped: string[]; bandOverflow: boolean; lastWhole: boolean; boxes: number[][]; title: string }
+const FIXTURE_PORT = 8967;
+export async function instanceBandDom(sourceRoot: string, opts: { mutants?: boolean } = {}): Promise<{ views: { size: string; real: BandDomFacts; mutant: BandDomFacts | null; live: BandDomFacts }[]; expected: string; expectedTitle: string }> {
   const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
@@ -700,13 +702,13 @@ export async function instanceBandDom(sourceRoot: string, opts: { mutants?: bool
     };
     const target = await send("Target.createTarget", { url: "about:blank" });
     sessionId = String((await send("Target.attachToTarget", { targetId: String(target.targetId), flatten: true })).sessionId);
-    await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+    await send("Fetch.enable", { patterns: [{ urlPattern: `http://fleet.fixture:${FIXTURE_PORT}/*` }] });
     await send("Runtime.enable");
     const evaluate = async <T>(expression: string): Promise<T> =>
       ((await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result as { value: T }).value;
     const load = async (html: string, src: unknown): Promise<BandDomFacts> => {
       page = { html, source: src };
-      await send("Page.navigate", { url: "http://fleet.fixture/?token=fixture" });
+      await send("Page.navigate", { url: `http://fleet.fixture:${FIXTURE_PORT}/?token=fixture` });
       await evaluate(`new Promise((ok) => { const until = Date.now() + 8000; const tick = () => {
         const b = document.getElementById('tiband'); if ((b && document.readyState === 'complete' && (${src === undefined} ? Date.now() > until - 6000 : !b.hidden)) || Date.now() > until) return ok(true); setTimeout(tick, 50); }; tick(); })`);
       return await evaluate<BandDomFacts>(`(() => { const b = document.getElementById('tiband'), cs = getComputedStyle(b), o = b.getBoundingClientRect();
@@ -718,7 +720,7 @@ export async function instanceBandDom(sourceRoot: string, opts: { mutants?: bool
           clipped: segs.filter((s) => s.scrollWidth > s.clientWidth || s.getBoundingClientRect().right > r.right + 0.5).map((s) => s.textContent.slice(0, 40)),
           bandOverflow: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth,
           lastWhole: !!lr && lr.left >= r.left - 0.5 && lr.right <= r.right + 0.5 && lr.bottom <= r.bottom + 0.5 && last.scrollWidth <= last.clientWidth,
-          boxes: [r, lr].filter(Boolean).map((x) => [x.left, x.right, x.top, x.bottom].map((n) => Math.round(n * 100) / 100)) }; })()`);
+          boxes: [r, lr].filter(Boolean).map((x) => [x.left, x.right, x.top, x.bottom].map((n) => Math.round(n * 100) / 100)), title: document.title }; })()`);
     };
     const views: { size: string; real: BandDomFacts; mutant: BandDomFacts | null; live: BandDomFacts }[] = [];
     for (const [width, height, mobile] of [[900, 700, false], [390, 844, true]] as const) {
@@ -727,7 +729,7 @@ export async function instanceBandDom(sourceRoot: string, opts: { mutants?: bool
       const real = await load(indexHtml, source), mutant = opts.mutants ? await load(mutantHtml, source) : null, live = await load(indexHtml, undefined);
       views.push({ size: `${width}x${height}`, real, mutant, live });
     }
-    return { views, expected };
+    return { views, expected, expectedTitle: `${source.branch} · :${FIXTURE_PORT}` };
   } finally {
     socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }

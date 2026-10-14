@@ -20,6 +20,7 @@ import { compTray, serverClock } from "./composer";
 import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
 import { OFF_WHY, freshSuccession, handoverRows } from "./handover";
+import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
 // poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
@@ -2327,6 +2328,14 @@ function moreSection(c: BoardCtx): HTMLElement {
     r.querySelector(":scope > h3")?.remove();
     body.appendChild(r);
   }));
+  // POSTFACH (K13, src/postfach.ts): only where this session has written or received a message
+  const openedAt = s.openedAt;
+  if (openedAt) {
+    loadPostfach(() => void renderBoard());
+    const mail = postfachOf(slot, openedAt);
+    if (mail?.length) sec.appendChild(boardTab("postfach", "Postfach", postfachSummary(mail, slot, openedAt),
+      (body) => postfachBody(body, mail, slot, openedAt)));
+  }
   // FILES: drawn where there is a branch (the tree is `git ls-files`). The explorer opens from the
   // tab's glyph without opening the tab; the tree loads once per working directory (the latch).
   if (brief?.branch) {
@@ -3463,12 +3472,22 @@ async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action:
 function mirroredWorktree(_w: WorkplaceRow): boolean {
   return false;
 }
+// THE PORT beside the square (owner 14.10.: „[Zitat entfernt]“): the one
+// the server measured for this instance, so a tab named „[Zitat entfernt]“ finds its row
+function tiPortOf(w: WorkplaceRow): number | null {
+  const port = (w.testinstanz?.instance as { port?: unknown } | undefined)?.port;
+  return typeof port === "number" ? port : null;
+}
+function tiPort(w: WorkplaceRow): HTMLElement[] {
+  const port = tiPortOf(w);
+  return port === null ? [] : [el("span", "tiport", `:${port}`)];
+}
 function tiSquare(w: WorkplaceRow, here: boolean): HTMLElement {
   const look = tiLook(w);
   const box = el("button", `ti ${look.cls}${here ? " mine" : ""}${rankeOpen === `ti:${w.path}` ? " open" : ""}`) as HTMLButtonElement;
   box.type = "button";
   box.dataset.ti = look.state;
-  box.appendChild(el("span", "sq"));
+  box.append(...tiPort(w), el("span", "sq"));
   const verb = look.cls === "up" ? "Klick: Öffnen, Stoppen" : look.cls === "off" ? "Klick: Starten"
     : look.cls === "exp" ? "Klick: neu starten" : look.cls === "tpl" ? "" : "Klick: neu lesen";
   box.title = verb ? `${look.word} — ${verb}` : look.word;
@@ -3483,16 +3502,19 @@ function tiSquare(w: WorkplaceRow, here: boolean): HTMLElement {
   return box;
 }
 // the square at a closed lane while its instance runs: a sign, not a button — a tap on the row opens
-// the lane, and the instance's line there carries Öffnen and Stoppen
+// the lane, and the instance's line there carries Öffnen and Stoppen. Its port stands in the title and
+// in that line, not in the row: the row keeps 24 px, and a lane's name wraps rather than end in …
 function tiSign(w: WorkplaceRow): HTMLElement {
   const look = tiLook(w);
   const box = el("span", `ti ${look.cls}`);
   box.dataset.ti = look.state;
   box.appendChild(el("span", "sq"));
-  box.title = look.word;
-  box.dataset.hold = look.word;
+  const port = tiPortOf(w);
+  const word = port === null ? look.word : `${look.word} · :${port}`;
+  box.title = word;
+  box.dataset.hold = word;
   box.setAttribute("role", "img");
-  box.setAttribute("aria-label", look.word);
+  box.setAttribute("aria-label", word);
   return box;
 }
 function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
@@ -3507,7 +3529,8 @@ function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map
   const err = tiErr.get(w.path);
   const inst = w.testinstanz?.instance as { recordedSource?: { before?: { head?: string | null } | null } | null; port?: number | null } | undefined;
   const from = sha7(inst?.recordedSource?.before?.head ?? null);
-  const word = busy ? "wird ausgeführt…" : look.cls === "up" ? `läuft${look.expiresAt ? ` bis ${clockOf(look.expiresAt)}` : ""}`
+  const port = tiPortOf(w);
+  const word = busy ? "wird ausgeführt…" : look.cls === "up" ? `läuft${look.expiresAt ? ` bis ${clockOf(look.expiresAt)}` : ""}${port === null ? "" : ` · :${port}`}`
     : look.cls === "exp" ? "abgelaufen" : look.cls === "off" ? "aus" : look.cls === "bad" ? "antwortet nicht" : "unbekannt";
   tx.appendChild(el("span", "w", `Testinstanz ${word}`));
   // WHERE IT COMES FROM: the commit the copy was taken from, as recorded at the copy — not proof of

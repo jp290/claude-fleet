@@ -11,7 +11,9 @@
 //   (3) renaming all but one resolves it again, with no slot closed or renamed by Fleet.
 //
 // Every slot is one this module opened itself, on vacant slots, and killed again at the end.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { BASE, ROOT, check, get, post } from "./harness";
 
 const NO_MESSAGE_ADDRESS = "not a principal with an address";
@@ -45,7 +47,7 @@ export async function messageDeliveryChecks(): Promise<void> {
   type Occupant = { id: number; cwd: string; openedAt: number; sessionId: string;
     worktree: object | null; lastOutput: number; label: string; history: unknown[] };
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
-  type MessageRow = { id: string; to: Address; from: { kind: "program"; id: string }; readBy: object | null };
+  type MessageRow = { id: string; to: Address; from: { kind: "program"; id: string } | Address; readBy: object | null };
   type Options = { deliveryClass?: string; address?: { kind: string; id: number };
     bypassQueue?: boolean; beforePaste?: (current: Occupant) => void;
     beforeSend?: (current: Occupant) => Promise<void> };
@@ -150,6 +152,32 @@ export async function messageDeliveryChecks(): Promise<void> {
       && !recycled.api.messageInboundFor(recycled.slot, { ...recycled.rows[0]!, readBy: { openedAt: 100 } }));
   await recycled.tick();
   check("lane message: old unread traffic never wakes a recycled slot", recycled.sent.length === 0);
+
+  // K13 · Owner 14.10.: „[Zitat entfernt]“
+  //  Eine Nachricht des Branch-Paars (nur Öffner und Branch-Session
+  // schreiben Session an Session) kommt wie die einer MAIN an ihre Lane: nach kurzer Ruhe, an genau diesen
+  // Slot, nicht erst mit dem Viertelstunden-Bündel.
+  const pair = (p: { quiet?: boolean; automatable?: boolean } = {}) => {
+    const fixture = make(false);
+    fixture.rows[0] = { ...fixture.rows[0]!, from: { kind: "session", slot: 2, openedAt: 50 } };
+    fixture.slot.lastOutput = now - 10_000;
+    fixture.policy(p);
+    return fixture;
+  };
+  const pairIdle = pair(); await pairIdle.tick();
+  check("branch pair message: ten-second idle delivers it to the exact slot, without the bundle",
+    pairIdle.sent.length === 1 && pairIdle.sent[0]?.options.deliveryClass === "sofort"
+      && pairIdle.sent[0]?.options.address?.kind === "slot" && pairIdle.sent[0]?.options.address?.id === 29
+      && pairIdle.sent[0]?.options.bypassQueue === true,
+    JSON.stringify(pairIdle.sent[0]?.options ?? null));
+  await pairIdle.tick();
+  check("branch pair message: the same unread set is nudged once", pairIdle.sent.length === 1);
+  const pairNight = pair({ quiet: true }); await pairNight.tick();
+  check("branch pair message: quiet hours do not hold it, as for a lane", pairNight.sent.length === 1);
+  const pairBusy = pair(); pairBusy.slot.lastOutput = Date.now(); await pairBusy.tick();
+  check("branch pair message: an active pane is still held", pairBusy.sent.length === 0);
+  const ambient = make(false); ambient.slot.lastOutput = now - 10_000; await ambient.tick();
+  check("session message from a Program or the Orchestrator still waits for the backlog's quiet", ambient.sent.length === 0);
 }
 
 export async function run(): Promise<void> {
@@ -234,5 +262,171 @@ export async function run(): Promise<void> {
       `${inboxA3.status} ${JSON.stringify(inboxA3.body).slice(0, 200)}`);
   } finally {
     for (const id of [a, b, c]) await post(`/api/slots/${id}/kill`, {});
+  }
+}
+
+// THE POSTFACH IN A REAL BROWSER (K13 S10, src/postfach.ts). Owner 14.10.: „[Zitat entfernt]“
+// 
+//  Owner-Satz: „[Zitat entfernt]“
+// 
+//  The real client bundle behind a fixture
+// origin: /api/sessions names two sessions, /api/messages carries one long message from the second to the
+// first and one short answer; the board shows the first with its Postfach tab open. Every claim reads the
+// DOM. Driven by e2e/dom.ts; a lane can call it with an artefact folder and against another tree.
+export interface PostfachDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+export async function runPostfachDom(sourceRoot: string, artifacts?: string): Promise<PostfachDomResult[]> {
+  const scratch = resolve(tmpdir(), `fleet-postfach-dom-${process.pid}-${crypto.randomUUID()}`);
+  mkdirSync(scratch, { recursive: true });
+  const built = await Bun.build({ entrypoints: [resolve(sourceRoot, "src/client.ts")], target: "browser" });
+  if (!built.success) { rmSync(scratch, { recursive: true, force: true }); throw new Error(built.logs.join("\n")); }
+  const appJs = await built.outputs[0]!.text();
+  const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  const now = Date.now();
+  const lead = { kind: "session", slot: 1, openedAt: 1000 }, strand = { kind: "session", slot: 2, openedAt: 2000 };
+  const long = ["S6 fertig: das Postfach liest sich als Gespräch, Merge-Check grün.",
+    "Nur Client: src/postfach.ts und das Postfach-CSS.", "Nicht geprüft: Kopfzeile in einer echten claude-Pane."];
+  // newest first, as the route answers
+  const entries = [
+    { id: "m-long", from: strand, to: lead, at: now - 60_000, payload: { kind: "text", text: long.join("\n") }, replyTo: "m-ask", readAt: null },
+    { id: "m-ask", from: lead, to: strand, at: now - 600_000, payload: { kind: "text", text: "Bitte S6 bauen." }, replyTo: null, readAt: now - 300_000 },
+  ];
+  const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("postfach DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  let socket: WebSocket | undefined;
+  try {
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupLog = "";
+    const endpoint = await Promise.race([
+      (async () => { for await (const chunk of browser.stderr) { startupLog += new TextDecoder().decode(chunk); const m = /DevTools listening on (ws:\/\/[^\s]+)/.exec(startupLog); if (m) return m[1]; } throw new Error("browser exited before CDP endpoint: " + startupLog); })(),
+      new Promise<never>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("browser CDP startup timeout: " + startupLog)), 45000); }),
+    ]).finally(() => clearTimeout(startupTimer));
+    socket = new WebSocket(String(endpoint));
+    await new Promise<void>((ok, bad) => { socket!.onopen = () => ok(); socket!.onerror = () => bad(new Error("CDP connection failed")); });
+    let serial = 0, sessionId: string | undefined;
+    let loaded: (() => void) | null = null;
+    const pending = new Map<number, { ok: (v: Record<string, unknown>) => void; bad: (e: Error) => void }>();
+    const send = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((ok, bad) => {
+      const id = ++serial;
+      const timeout = setTimeout(() => { pending.delete(id); bad(new Error("CDP timeout: " + method)); }, 30000);
+      pending.set(id, { ok: (v) => { clearTimeout(timeout); ok(v); }, bad: (e) => { clearTimeout(timeout); bad(e); } });
+      socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+    const reply = (requestId: string, status: number, body: string, type = "application/json") =>
+      send("Fetch.fulfillRequest", { requestId, responseCode: status, responseHeaders: [{ name: "content-type", value: type }],
+        body: Buffer.from(body).toString("base64") }).catch(() => undefined);
+    const json = (requestId: string, value: unknown, status = 200) => reply(requestId, status, JSON.stringify(value));
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: Record<string, unknown>; method?: string; params?: Record<string, unknown> };
+      if (msg.id !== undefined) {
+        const waiting = pending.get(msg.id); if (!waiting) return;
+        pending.delete(msg.id);
+        if (msg.error) waiting.bad(new Error(JSON.stringify(msg.error))); else waiting.ok(msg.result ?? {});
+        return;
+      }
+      if (msg.method === "Page.loadEventFired") { const fire = loaded; loaded = null; fire?.(); return; }
+      if (msg.method === "Page.javascriptDialogOpening") { void send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined); return; }
+      if (msg.method !== "Fetch.requestPaused" || !msg.params) return;
+      const { requestId, request } = msg.params as { requestId: string; request: { url: string; method: string } };
+      const p = new URL(request.url).pathname;
+      if (request.method === "POST") return void json(requestId, { ok: true });
+      if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
+      if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+        slots: [{ id: 1, cwd: "/fixture/leitung", label: "Bauleitung", openedAt: 1000, harness: "claude" },
+          { id: 2, cwd: "/fixture/strang", label: "Strang", openedAt: 2000, harness: "claude" },
+          ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))] });
+      if (p === "/api/messages") return void json(requestId, { entries });
+      return void json(requestId, { error: "fixture: not served" }, 404);
+    };
+    const evaluate = async <T>(expression: string): Promise<T> => {
+      const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error("postfach DOM probe: evaluate failed: " + expression.replace(/\s+/g, " ").slice(0, 120));
+      return (r.result as { value: T }).value;
+    };
+    const settle = (ms = 60) => evaluate(`new Promise(r => setTimeout(r, ${ms}))`);
+    const navigate = async (to: string) => {
+      const done = new Promise<void>((ok) => { loaded = ok; });
+      await send("Page.navigate", { url: to });
+      await Promise.race([done, Bun.sleep(15000)]);
+    };
+    const wait = async (condition: string, ms = 8000) => evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
+      const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 20); }; tick(); })`);
+    const shot = async (name: string) => {
+      if (!artifacts) return;
+      const png = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(resolve(artifacts, `${name}.png`), Buffer.from(String(png.data), "base64"));
+    };
+    // the time as the owner's clock writes it, derived here without the client's formatter
+    const clock = (ms: number) => evaluate<string>(`(() => { const d = new Date(${ms}); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); })()`);
+    const TAB = `document.querySelector('#boardbody .btab[data-tab="postfach"]')`;
+    const READ = `(() => { const tab = ${TAB}; if (!tab) return null; const t = tab.getBoundingClientRect();
+      return [...tab.querySelectorAll('.bgespr .bmsg')].map((r) => { const b = r.getBoundingClientRect(), line = r.querySelector('.bmsgline');
+        return { id: r.dataset.mid, open: r.classList.contains('open'), expanded: line?.getAttribute('aria-expanded') ?? null,
+          who: r.querySelector('.bmsgwho')?.textContent ?? null, at: r.querySelector('.bmsgat')?.textContent ?? null,
+          first: r.querySelector('.bmsgfirst')?.textContent ?? null, firstShown: !!r.querySelector('.bmsgfirst') && getComputedStyle(r.querySelector('.bmsgfirst')).display !== 'none',
+          full: r.querySelector('.bmsgtx')?.textContent ?? null, text: r.innerText, h: Math.round(b.height),
+          inside: b.left >= t.left - 0.5 && b.right <= t.right + 0.5 && !!line && line.scrollWidth <= line.clientWidth + 1 }; }); })()`;
+    type Row = { id: string; open: boolean; expanded: string | null; who: string | null; at: string | null; first: string | null;
+      firstShown: boolean; full: string | null; text: string; h: number; inside: boolean };
+    const results: PostfachDomResult[] = [];
+    let targetId = "";
+    for (const [width, height, phone] of [[1200, 900, false], [390, 844, true]] as const) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
+      targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+      sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
+      await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
+      await send("Page.enable"); await send("Runtime.enable");
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
+      await navigate("http://fleet.fixture/blank");
+      // the phone opens Info by a tap on the island, which toggles the remembered state: start closed there
+      await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }));
+        localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); localStorage.setItem('fleet.board.folds', JSON.stringify(['postfach'])); })()`);
+      await navigate("http://fleet.fixture/");
+      if (phone) {
+        await wait("document.querySelector('#mpill')", 8000); await settle(400);
+        await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200);
+        await evaluate("document.querySelector('#minfo')?.click()");
+      }
+      const booted = await wait(`${TAB}?.querySelector('.bgespr .bmsg')`, 15000);
+      if (!booted) throw new Error(`postfach DOM probe ${width}: no message in the Postfach tab: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      await evaluate(`${TAB}.scrollIntoView({ block: 'start' })`);
+      await settle(200);
+      const closed = await evaluate<Row[]>(READ);
+      const [longAt, askAt] = [await clock(now - 60_000), await clock(now - 600_000)];
+      const byId = (rows: Row[], id: string) => rows.find((r) => r.id === id);
+      const l0 = byId(closed, "m-long"), a0 = byId(closed, "m-ask");
+      facts.closed = closed;
+      // one compact line: who, when, the first line with „…“ for more — and none of the rest, two text lines at most
+      claims["every message first shows as one compact line — sender, time and the first line of its text, not the rest"] =
+        closed.length === 2 && !!l0 && !!a0 && closed.every((r) => !r.open && r.expanded === "false" && r.full === null && r.firstShown && r.h < 60)
+        && l0.who === "Strang" && l0.at === longAt && l0.first === `${long[0]} …` && !l0.text.includes(long[1]!) && !l0.text.includes(long[2]!)
+        && a0.who === "Bauleitung" && a0.at === askAt && a0.first === "Bitte S6 bauen.";
+      claims["the compact lines stay inside the Postfach column, their text cut, not running over"] = closed.every((r) => r.inside)
+        && await evaluate<boolean>("document.documentElement.scrollWidth <= innerWidth");
+      await shot(`postfach-${width}-zu`);
+      // open the long one: its whole text, as written; a second click closes it again
+      await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-long"] .bmsgline').click()`);
+      await settle(150);
+      const opened = await evaluate<Row[]>(READ);
+      const l1 = byId(opened, "m-long"), a1 = byId(opened, "m-ask");
+      await shot(`postfach-${width}-auf`);
+      await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-long"] .bmsgline').click()`);
+      await settle(150);
+      const again = await evaluate<Row[]>(READ);
+      const l2 = byId(again, "m-long");
+      facts.opened = l1; facts.closedAgain = l2;
+      claims["a click on a line opens the whole message as written; the others stay compact; a second click closes it"] =
+        !!l1 && l1.open && l1.expanded === "true" && l1.full === long.join("\n") && !l1.firstShown
+        && !!a1 && !a1.open && a1.full === null
+        && !!l2 && !l2.open && l2.full === null && l2.firstShown;
+      results.push({ width, height, claims, facts });
+    }
+    return results;
+  } finally {
+    socket?.close(); browser.kill(); await browser.exited; rmSync(scratch, { recursive: true, force: true });
   }
 }

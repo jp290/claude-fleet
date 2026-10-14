@@ -206,8 +206,8 @@ import { createTranscriptPush } from "./server/transcript-push";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
-  doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
-  writeText } from "./server/branches";
+  doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
+  setOpener, usableCheck, writeText } from "./server/branches";
 import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, ownSetting, settingForSuccessor,
   successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
@@ -7101,7 +7101,7 @@ async function tickGit(): Promise<void> {
       }
       const placeCwd = s.cwd, placeOpenedAt = s.openedAt, placeSessionId = s.sessionId ?? null;
       const placeRepo = repoInfo.get(s.id);
-      const place = placeRepo ? await testinstanzTarget(placeRepo, s.worktree ? placeCwd : placeRepo) : null;
+      const place = placeRepo ? await testinstanzTarget(s.worktree ? placeRepo : primaryCheckoutOf(placeRepo), s.worktree ? placeCwd : placeRepo) : null;
       if (s.cwd === placeCwd && s.openedAt === placeOpenedAt && (s.sessionId ?? null) === placeSessionId) {
         if (place) testinstanzPlaces.set(s.id, { cwd: placeCwd, openedAt: placeOpenedAt, sessionId: placeSessionId,
           path: place.path, repo: place.repo, identity: place.identity, mainCheckout: place.primary, measuredAt: Date.now() });
@@ -10736,7 +10736,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
   "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
   "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
-  "inbox-nudge": "naechster Schritt: lies die ungelesenen Program-Eintraege · Grenze: dein Program",
+  "inbox-nudge": "naechster Schritt: lies die ungelesenen Eintraege, die der Hinweis nennt · Grenze: keine neue Befugnis",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
   "program-event-orphan": "naechster Schritt: pruefe das benannte Ereignis · Grenze: nur bestehende Tueren",
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
@@ -17043,6 +17043,34 @@ function messageViewFor(s: Slot, unreadParam: string | null = null): Response {
     droppedFleetWide: messages.dropped, entries: shown, unknown });
 }
 
+// K13 · {kind:"session", slot} WITHOUT openedAt names whoever sits in that slot now: a branch session
+// knows its opener's slot from its goal, never its openedAt. Only the counterpart rule lets it through.
+function messageTargetOf(value: unknown): MessageAddress | string {
+  const r = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (r?.kind !== "session" || "openedAt" in r || Object.keys(r).length !== 2) return loadMessageAddress(value, "to");
+  const live = slotFrom(r.slot);
+  return live?.cwd ? { kind: "session", slot: live.id, openedAt: live.openedAt }
+    : `to session slot ${String(r.slot)} holds no live session — without openedAt the address names the session in that slot now`;
+}
+// K13 · THE BRANCH PAIR: the session that opened a branch through the door (its seat, slot and folder,
+// so a succession stays the opener) and the session sitting in that branch's worktree now. A slot
+// recycled into another folder is neither, so it drops out of the pair instead of reading its mail.
+async function branchPeers(a: Slot, to: MessageAddress): Promise<boolean> {
+  if (to.kind !== "session") return false;
+  const b = slotFrom(to.slot);
+  if (!a.cwd || !b?.cwd || b.openedAt !== to.openedAt || b === a) return false;
+  for (const [opener, other] of [[a, b], [b, a]]) {
+    for (const r of openedBy(branchBook, { slot: opener.id, cwd: opener.cwd ?? "" })) {
+      const path = (await listWorktrees(r.repo)).find((w) => w.branch === r.branch)?.path;
+      if (path && workplaceSession(path) === other) return true;
+    }
+  }
+  return false;
+}
+const SESSION_COUNTERPART = "an unbound session may address only the Orchestrator or its branch counterpart "
+  + "(the session that opened its branch through POST /api/branches/open, or the session on a branch it opened); "
+  + "a session destination is otherwise only an Orchestrator reply";
+
 // POST /api/self/messages — the send half.
 // GUARD ORDER is STN-1's (401 at the dispatcher → 409 not-a-principal → 400 body → 409 policy):
 // a caller that cannot address anyone is told THAT, before its body is graded on a rail it may not
@@ -17056,7 +17084,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   if (extra.length)
     return json({ error: `body reads only to, payload, idempotencyKey, replyTo, programId — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` }, 400);
   if (!choice.ok) return json({ error: choice.error }, 400);
-  const to = loadMessageAddress(body.to, "to");
+  const to = messageTargetOf(body.to);
   if (typeof to === "string") return json({ error: to }, 400);
   const payload = loadMessagePayload(body.payload, "payload");
   if (typeof payload === "string") return json({ error: payload }, 400);
@@ -17081,10 +17109,14 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     return json({ ok: true, existing: true, message: prior });
   }
 
-  if (sender.from.kind === "session" && !(to.kind === "role" && to.role === "orchestrator"))
-    return json({ error: "an unbound session may address only the Orchestrator" }, 409);
-  if (to.kind === "session" && !(sender.from.kind === "role" && sender.from.role === "orchestrator" && replyTo !== null))
-    return json({ error: "a session destination is only an Orchestrator reply" }, 409);
+  // SESSION ADDRESSES SPEAK ONLY TO THEIR COUNTERPART: an unbound session writes to the Orchestrator,
+  // the Orchestrator answers it, and the two ends of a branch door write to each other (K13).
+  if (sender.from.kind === "session" || to.kind === "session") {
+    const orchestrator = (sender.from.kind === "session" && to.kind === "role" && to.role === "orchestrator")
+      || (sender.from.kind === "role" && sender.from.role === "orchestrator" && to.kind === "session" && replyTo !== null);
+    if (!orchestrator && !(sender.from.kind === "session" && await branchPeers(s, to)))
+      return json({ error: SESSION_COUNTERPART }, 409);
+  }
   if (to.kind === "lane") {
     if (sender.from.kind !== "program")
       return json({ error: "only a bound Program-MAIN may address its own lane" }, 409);
@@ -25764,14 +25796,16 @@ async function tickMessageNudge(): Promise<void> {
       const openedAt = s.openedAt;
       const key = `${session}|${unreadIds.join(",")}`;
       const prior = messageNudgeTried.get(s.id);
-      const lane = !!s.worktree;
-      if (prior?.key === key || (!lane && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
       // A MAIN's addressed lane message is direct traffic, like a report decision: short idle,
-      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle. Every other
-      // session's notice waits in the bundle, as the inbox hint does (tickInboxNudge).
-      const bundled = !lane && DELIVERY_BUNDLE_SEC > 0;
-      const verdict = await canDeliver(s, { now, idleMs: lane ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,
-        ...(lane ? { harness: false, quietHours: false } : { quietHours: !bundled }) });
+      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle. So is a
+      // branch pair's message (K13: only the opener and the session on its branch write session to
+      // session). Every other session's notice waits in the bundle, as the inbox hint does (tickInboxNudge).
+      const direct = !!s.worktree || messages.entries.some((m) => unreadIds.includes(m.id)
+        && m.from.kind === "session" && m.to.kind === "session");
+      if (prior?.key === key || (!direct && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
+      const bundled = !direct && DELIVERY_BUNDLE_SEC > 0;
+      const verdict = await canDeliver(s, { now, idleMs: direct ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,
+        ...(direct ? { harness: false, quietHours: false } : { quietHours: !bundled }) });
       if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
       const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
         .map((m) => m.id).sort();
@@ -25791,7 +25825,7 @@ async function tickMessageNudge(): Promise<void> {
             recipient = current;
           };
           const options = (): Omit<SendTextOptions, "path"> => ({ rollbackOwnPayload: true,
-            ...(lane ? { deliveryClass: "sofort" as const, address: { kind: "slot" as const, id: s.id },
+            ...(direct ? { deliveryClass: "sofort" as const, address: { kind: "slot" as const, id: s.id },
               bypassQueue: true, beforePaste: checkRecipient } : {}),
             bundleGate: { idleMs: BACKLOG_IDLE_MS },
             beforeSend: async (current) => checkRecipient(current) });
@@ -51102,6 +51136,15 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined);
           if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
             throw new Error("slot occupant changed during branch open");
+          // K13: a session that opens with its self token beside the owner bearer becomes the branch's
+          // opener (server/auth.ts#resolvePrincipal), and the two may write each other in the postfach
+          const caller = resolvePrincipal(req);
+          const seat = caller?.kind === "owner" ? caller.session : undefined;
+          const by = seat ? slotFrom(seat.slot) : null;
+          if (seat && by?.cwd && by.openedAt === seat.openedAt && by !== free) {
+            branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: by.id, cwd: by.cwd, at: Date.now() }).book;
+            await saveStateNow();
+          }
           void tickGit().catch(() => {});
           // the goal follows once the pane is ready — the board has its slot at once; a goal that is
           // held or uncertain is a server error the owner sees, never a silent loss
@@ -51223,8 +51266,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const s = slotFrom(tiMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
       if (!s.cwd) return json({ error: `slot ${s.id} has no lane worktree`, state: "unknown", nullSpawn: true }, 409);
-      const repo = s.worktree?.repo ?? repoInfo.get(s.id) ?? s.cwd;
-      const path = s.worktree ? s.cwd : repoInfo.get(s.id) ?? s.cwd;
+      // a session without a lane ref (a branch session, K5) may sit in a LINKED worktree: its repo is the
+      // primary checkout that knownRepos names, its place the worktree's top (Mangel 67)
+      const top = repoInfo.get(s.id) ?? s.cwd;
+      const repo = s.worktree?.repo ?? primaryCheckoutOf(top);
+      const path = s.worktree ? s.cwd : top;
       return await serveTestinstanz(req, repo, path, s);
     }
     if (url.pathname === "/api/worktrees/testinstanz" && (req.method === "GET" || req.method === "POST")) {

@@ -8,6 +8,7 @@
 //   · e2e/lanes-lifecycle.ts  instanceBandDom, snapshotBoardDom (the Testinstanz band and board)
 //   · e2e/drops.ts        runDropChatDom (the chat view's pictures)
 //   · e2e/timeline-ui.ts  runTimelineDom (the session timeline lens)
+//   · e2e/role-address.ts runPostfachDom (a session's Postfach tab, K13)
 // This file only drives them, with the very check lines they had in their old modules — the names
 // are unchanged, only the module that emits them moved (suite-modules.ts#PROBE_HOSTS maps a change
 // in a host file to this module too, so a narrowed preview still runs the probe it touched).
@@ -34,6 +35,7 @@ import {
 import { instanceBandDom, snapshotBoardDom } from "./lanes-lifecycle";
 import { runDropChatDom } from "./drops";
 import { TIMELINE_MUTANTS, runTimelineDom } from "./timeline-ui";
+import { runPostfachDom } from "./role-address";
 
 // THE CUT OF e897fa95 (docs/messungen/2026-10-10-ci-inventur.md, card 5; the verdicts per call site in
 // its .tsv). This unit was the suite's most expensive one (1606 s in the full preview of 2026-10-11),
@@ -81,6 +83,7 @@ export async function run(): Promise<void> {
   await dropsDom(sourceRoot);
   await timelineDom(sourceRoot);
   await activityDom(sourceRoot);
+  await postfachDom(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
 }
@@ -337,6 +340,12 @@ async function bandDom(sourceRoot: string): Promise<void> {
       check(`band DOM ${v.size}: without instance.source (the live fleet) the band is hidden and the app starts at the top`,
         v.live.shown === false && v.live.htmlClass === false && v.live.appTop === 0, JSON.stringify(v.live));
     }
+    // the tab title reads the same at every width: one line, at the first view (K13 S7, Mangel 66; owner 14.10.:
+    // „[Zitat entfernt]“)
+    const first = dom.views[0];
+    if (first) check("band DOM: a test instance's tab is named „<Branch> · :<Port>“, the live fleet's tab keeps „Claude Fleet“",
+      first.real.title === dom.expectedTitle && first.live.title === "Claude Fleet",
+      JSON.stringify({ expected: dom.expectedTitle, real: first.real.title, live: first.live.title }));
   } catch (error) {
     probeFailed("band DOM", error);
   }
@@ -383,6 +392,20 @@ async function snapshotDom(sourceRoot: string): Promise<void> {
 }
 
 // --- from e2e/drops.ts
+// --- from e2e/role-address.ts: the Postfach tab (K13 S10). Owner-Satz: „[Zitat entfernt]“
+// 
+//  One viewport for what reads the same (1200); the column claim at both widths, the
+// phone opening Info from the island. A browser that cannot run is the PROBE line — red, never a skip.
+async function postfachDom(sourceRoot: string): Promise<void> {
+  try {
+    for (const [result, claim, ok] of atOneViewport(await runPostfachDom(sourceRoot), 1200,
+      { alsoAt: (c) => c.startsWith("the compact lines stay inside") }))
+      check(`postfach DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("postfach DOM", error);
+  }
+}
+
 async function dropsDom(sourceRoot: string): Promise<void> {
   // --- the chat view's pictures, in a real browser against fixtures (no slot, no live drop). A
   // browser that cannot run is the PROBE line — red, never a skip.

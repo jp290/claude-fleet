@@ -24,6 +24,12 @@ export interface BranchSeen { at: number; head: string; via: SeenVia }
 // nächste Charge zählt ab `tip` (chargeBase). `points` sind die Punkte, die diese Charge erledigt hat;
 // `passt` sagt, ob der Owner genau diesen Tip gesehen hatte; `checked`, ob ein Merge-Check ihn prüfte.
 export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean }
+// Neuaufbau K13 · wer den Branch über die Tür geöffnet hat: der Sitz (Slot und Ordner) der Session, die
+// /api/branches/open mit ihrem Self-Token neben dem Owner-Bearer rief. Eine Nachfolge behält Slot und
+// Ordner und bleibt Öffner; ein Slot mit einer Session in einem anderen Ordner ist jemand anderes. Der
+// Öffner und die Session auf dem Branch schreiben sich im Postfach (server.ts#sendMessageFor).
+export interface BranchSeat { slot: number; cwd: string }
+export interface BranchOpener extends BranchSeat { at: number }
 export interface BranchRecord {
   repo: string; branch: string;
   name: string | null; // Board-Name; null = ein Branch mit Punkten, den das Board nicht benannt hat
@@ -31,6 +37,7 @@ export interface BranchRecord {
   text: string; rev: number;
   seen: BranchSeen | null;
   lands: BranchLand[];
+  opener?: BranchOpener; // fehlt: vom Board oder ohne Self-Token geöffnet, oder vor K13
   createdAt: number; updatedAt: number;
 }
 export type BranchBook = readonly BranchRecord[];
@@ -98,6 +105,17 @@ export function markSeen(book: BranchBook, repo: string, branch: string, head: s
   if (!SHA_RE.test(head)) return { ok: false, status: 400, error: "head muss eine volle Commit-SHA sein" };
   const prev = findBranch(book, repo, branch) ?? blank(repo, branch, at);
   return put(book, { ...prev, seen: { at, head, via }, updatedAt: at });
+}
+
+// Eine Session öffnet den Branch: Sie wird sein Öffner, auch anstelle einer früheren. Ein Öffnen ohne
+// Session (Board, Owner-Token allein) ruft das nicht und lässt den Öffner stehen.
+export function setOpener(book: BranchBook, repo: string, branch: string, opener: BranchOpener): BranchChange {
+  const prev = findBranch(book, repo, branch) ?? blank(repo, branch, opener.at);
+  return put(book, { ...prev, opener: { slot: opener.slot, cwd: opener.cwd, at: opener.at }, updatedAt: opener.at });
+}
+// die Branches, die dieser Sitz geöffnet hat
+export function openedBy(book: BranchBook, seat: BranchSeat): BranchRecord[] {
+  return book.filter((r) => r.opener?.slot === seat.slot && r.opener.cwd === seat.cwd);
 }
 
 // Was GET /api/branches je Repo zeigt, aus den Refs und Worktrees, die server.ts gelesen hat: die
@@ -217,6 +235,13 @@ function landsOf(v: unknown): BranchLand[] {
       ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked }] : [];
   });
 }
+// ein Öffner kommt ganz oder gar nicht; ein kaputter nimmt den Datensatz nicht mit
+function openerOf(v: unknown): BranchOpener | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  return typeof o.slot === "number" && Number.isInteger(o.slot) && o.slot >= 1 && str(o.cwd) && o.cwd !== "" && num(o.at)
+    ? { slot: o.slot, cwd: o.cwd, at: o.at } : undefined;
+}
 // fleet.json → Stand. Was nicht die Form eines Datensatzes hat, fällt heraus; doppelte Einträge für
 // denselben Branch: der erste gilt.
 export function restoreBook(raw: unknown): BranchBook {
@@ -230,8 +255,9 @@ export function restoreBook(raw: unknown): BranchBook {
     if (!str(r.repo) || !str(r.branch) || !(r.name === null || str(r.name)) || !(r.base === null || str(r.base))
       || !str(r.text) || !num(r.rev) || !Number.isInteger(r.rev) || seen === undefined || !num(r.createdAt) || !num(r.updatedAt)) continue;
     if (findBranch(out, r.repo, r.branch)) continue;
+    const opener = openerOf(r.opener);
     out.push({ repo: r.repo, branch: r.branch, name: r.name, base: r.base, text: r.text, rev: r.rev, seen, lands,
-      createdAt: r.createdAt, updatedAt: r.updatedAt });
+      ...(opener ? { opener } : {}), createdAt: r.createdAt, updatedAt: r.updatedAt });
   }
   return out;
 }

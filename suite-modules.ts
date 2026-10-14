@@ -224,6 +224,7 @@ export const PROBE_HOSTS: Readonly<Record<string, readonly string[]>> = {
   "e2e/lanes-lifecycle.ts": ["dom"],
   "e2e/drops.ts": ["dom"],
   "e2e/timeline-ui.ts": ["dom"],
+  "e2e/role-address.ts": ["dom"],
 };
 
 /** The modules a changed file belongs to — its own and those running its probes; empty when none. */

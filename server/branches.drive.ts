@@ -5,7 +5,8 @@
 // hier legte FLEET_STATE_DIR für server/load.test.ts mit fest.
 import { join } from "node:path";
 
-interface Step { method: "GET" | "POST"; path: string; body?: unknown; token?: string | null }
+// `self`: der Self-Token einer Session, als x-fleet-self-token neben (oder mit token: null statt) dem Owner-Bearer
+interface Step { method: "GET" | "POST"; path: string; body?: unknown; token?: string | null; self?: string }
 
 const stateDir = process.env.FLEET_STATE_DIR;
 const port = process.env.FLEET_PORT;
@@ -29,6 +30,7 @@ for (const step of steps) {
   if (step === "save") { await saveStateNow(); continue; }
   const auth = step.token === undefined ? token : step.token;
   const headers: Record<string, string> = { host: `127.0.0.1:${port}`, ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+    ...(step.self ? { "x-fleet-self-token": step.self } : {}),
     ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
   const res = await fetch.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,
     { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(step.body) }) }), server);

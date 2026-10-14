@@ -1914,8 +1914,11 @@ interface MemoryGrantOccupant { slot: number; openedAt: number }
 // docs/messungen/2026-10-07-cache-lebensdauer-nachfolge.md; server/succession.ts#warmDecision).
 // `keepCache: null` is the fleet's value for the kind of session (server.ts#keepCacheFleetOn: on for a
 // bound Program-MAIN and the Orchestratorin, off otherwise) and stores no record.
+// `keepCacheText` is what that turn types (K9 S2b, owner 13.10.: „[Zitat entfernt]“
+// ); null = the fleet's own text, server.ts#KEEP_CACHE_TEXT. A record written before
+// the field existed reads null.
 interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
-  setAt: number; occupant: MemoryGrantOccupant }
+  keepCacheText: string | null; setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;
 const HANDOVER_PCT_MAX = 95;
 const HANDOVER_PCT_STEP = 5;
@@ -1930,6 +1933,12 @@ const KEEP_CACHE_IDLE_MIN_STEP = 5;
 const KEEP_CACHE_IDLE_MIN_DEFAULT = 50;
 const keepCacheIdleMinOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n)
   && n >= KEEP_CACHE_IDLE_MIN_MIN && n <= KEEP_CACHE_IDLE_MIN_MAX && n % KEEP_CACHE_IDLE_MIN_STEP === 0;
+// the warm turn's own text: ONLY TEXT — trimmed, at most KEEP_CACHE_TEXT_MAX characters, no control
+// character but the line break (a paste goes to a terminal), and no leading „/“ or „!“, which Claude
+// Code reads as a command or a shell line
+const KEEP_CACHE_TEXT_MAX = 500;
+const keepCacheTextOk = (t: unknown): t is string => typeof t === "string" && t.length > 0
+  && t.length <= KEEP_CACHE_TEXT_MAX && t === t.trim() && !/[\u0000-\u0009\u000b-\u001f\u007f]/.test(t) && !/^[/!]/.test(t);
 // fails CLOSED: any key outside the record or a malformed field → null (the occupant then runs on the fleet's values).
 // A record written before the keepCache pair existed reads at the fleet's values. One written with the
 // two switches of 11.–13.10. (`keepCache` for the owner's warm-or-succeed, `warmBound` for the bound
@@ -1938,17 +1947,19 @@ const keepCacheIdleMinOk = (n: unknown): n is number => typeof n === "number" &&
 function loadHandoverSetting(v: unknown): HandoverSetting | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const g = v as Record<string, unknown>;
-  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "warmBound", "setAt", "occupant"].includes(k))) return null;
+  if (Object.keys(g).some((k) => !["thresholdPct", "nudge", "keepCache", "keepCacheIdleMin", "keepCacheText", "warmBound", "setAt", "occupant"].includes(k))) return null;
   const o = g.occupant as Record<string, unknown> | null;
   const twoSwitches = g.warmBound !== undefined;
   if (twoSwitches && (typeof g.warmBound !== "boolean" || typeof g.keepCache !== "boolean")) return null;
   const keepCache = twoSwitches ? (g.keepCache ? true : g.warmBound ? null : false) : g.keepCache ?? null;
   const keepCacheIdleMin = g.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
+  const keepCacheText = g.keepCacheText ?? null;
   if (!(g.thresholdPct === null || handoverPctOk(g.thresholdPct)) || typeof g.nudge !== "boolean"
     || !(keepCache === null || typeof keepCache === "boolean") || !keepCacheIdleMinOk(keepCacheIdleMin)
+    || !(keepCacheText === null || keepCacheTextOk(keepCacheText))
     || typeof g.setAt !== "number" || !o || typeof o !== "object" || !Number.isSafeInteger(o.slot)
     || typeof o.openedAt !== "number") return null;
-  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, setAt: g.setAt,
+  return { thresholdPct: g.thresholdPct as number | null, nudge: g.nudge, keepCache, keepCacheIdleMin, keepCacheText, setAt: g.setAt,
     occupant: { slot: o.slot as number, openedAt: o.openedAt as number } };
 }
 type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
@@ -3529,7 +3540,7 @@ export {
   CODEX_PERMISSIONS_DEFAULT, codexPermissionsFrom,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
-  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk,
+  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX, keepCacheTextOk,
   loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   MAX_SLOTS, BAND_SLOTS, SEPARATE_LANE_SLOTS, FLEET_MAX_SESSIONS, watchKind, watchFrom, FLEET_EVENT_TERMINAL,
   ATTENTION_KINDS, fleetEventRecoveryFrom, fleetEventFrom, clarificationFrom, fleetReportFrom,

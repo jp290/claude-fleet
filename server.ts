@@ -178,7 +178,7 @@ import {
   helperReposFrom, remoteControlName,
   HANDOVER_PCT_MIN, HANDOVER_PCT_MAX, HANDOVER_PCT_STEP, handoverPctOk, loadHandoverSetting, type HandoverSetting,
   KEEP_CACHE_LIFETIME_MIN, KEEP_CACHE_IDLE_MIN_MIN, KEEP_CACHE_IDLE_MIN_MAX, KEEP_CACHE_IDLE_MIN_STEP,
-  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk,
+  KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheIdleMinOk, KEEP_CACHE_TEXT_MAX,
 } from "./server/types";
 import { ERROR_KEEP, SERVER_BOOT_AT, serverErrors, errorTotal, logError, errorsView } from "./server/errors";
 import { appendEvent, appendEventStrict, coalescedSaver, foreignStateOwner, readLedger, readEventLog,
@@ -207,7 +207,7 @@ import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./serv
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
-import { cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, type CacheView,
+import { cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, warmTextInput, type CacheView,
   type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -23207,6 +23207,12 @@ function timelineSource(r: TimelineReceipt): TimelineSource | null {
   }
   return found.length === 1 ? found[0]! : null;
 }
+// every credential value this server knows: the owner token, each slot's self token and the env's
+// secret-named values — what a trace redacts and what an owner-typed text may not carry (patchHandover)
+function knownCredentials(): string[] {
+  return [TOKEN, ...slots.map((s) => s.selfToken ?? ""),
+    ...Object.entries(process.env).filter(([k]) => /TOKEN|SECRET|PASSWORD|API_KEY/.test(k)).map(([, v]) => v ?? "")].filter(Boolean);
+}
 const timelineIndex = new TimelineIndex({
   host: timelineHost,
   carriers: [{ file: PROMPT_LOG, kind: "prompts" }, { file: STATE_SNAPSHOT_FILE, kind: "snapshots" },
@@ -23221,8 +23227,7 @@ const timelineIndex = new TimelineIndex({
   })],
   tasks: () => tasks.map((t) => ({ id: t.id, repo: t.repo ?? null, branch: null, program: t.programId ?? null })),
   resolve: timelineSource, worktreeOf: worktreePathFor, projectOf: projectKeyOf,
-  redactions: () => [TOKEN, ...slots.map((s) => s.selfToken ?? ""),
-    ...Object.entries(process.env).filter(([k]) => /TOKEN|SECRET|PASSWORD|API_KEY/.test(k)).map(([, v]) => v ?? "")].filter(Boolean),
+  redactions: knownCredentials,
   traceVersion: () => JSON.stringify([Object.values(timelineFiles).flatMap((file) =>
     [".archive", ".1", ""].map((g) => timelineStamp(file + g)?.key ?? null)),
     tasks.map((t) => [t.id, t.status, t.programId]), slots.filter((s) => s.cwd).map((s) =>
@@ -25889,8 +25894,8 @@ function successionFacts(s: Slot): SuccessionFacts {
 // THE OWNER'S HANDOVER SETTING — GET/PATCH /api/slots/:id/handover, owner-only by POSITION (a self
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
 // {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean | null,
-// keepCacheIdleMin?: 5..55 in 5-steps}; null returns the threshold to the rail's env value and the
-// switch to the fleet's value for the kind of session. The setting belongs to the line on the slot
+// keepCacheIdleMin?: 5..55 in 5-steps, keepCacheText?: string | null}; null returns the threshold to the
+// rail's env value, the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
 // (server/succession.ts).
 // The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
 function handoverView(s: Slot): Response {
@@ -25909,8 +25914,9 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   const hasNudge = has("nudge");
   const hasKeep = has("keepCache");
   const hasIdle = has("keepCacheIdleMin");
-  if (!hasPct && !hasNudge && !hasKeep && !hasIdle)
-    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache and/or keepCacheIdleMin" }, 400);
+  const hasText = has("keepCacheText");
+  if (!hasPct && !hasNudge && !hasKeep && !hasIdle && !hasText)
+    return json({ refusal: "nothing-to-set", error: "send thresholdPct, nudge, keepCache, keepCacheIdleMin and/or keepCacheText" }, 400);
   if (hasPct && !(body.thresholdPct === null || handoverPctOk(body.thresholdPct)))
     return json({ refusal: "bad-threshold", error: `thresholdPct must be null or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` }, 400);
   if (hasNudge && typeof body.nudge !== "boolean") return json({ refusal: "bad-nudge", error: "nudge must be true or false" }, 400);
@@ -25918,6 +25924,10 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
     return json({ refusal: "bad-keep-cache", error: "keepCache must be true, false or null (the fleet's value for this kind of session)" }, 400);
   if (hasIdle && !keepCacheIdleMinOk(body.keepCacheIdleMin))
     return json({ refusal: "bad-keep-cache-idle", error: `keepCacheIdleMin must be a multiple of ${KEEP_CACHE_IDLE_MIN_STEP} from ${KEEP_CACHE_IDLE_MIN_MIN} to ${KEEP_CACHE_IDLE_MIN_MAX} — the prompt cache measured on this host lives ${KEEP_CACHE_LIFETIME_MIN} min, and the act must come before that` }, 400);
+  const text = hasText ? warmTextInput(body.keepCacheText, KEEP_CACHE_TEXT, knownCredentials()) : null;
+  if (text && !text.ok) return json({ refusal: text.refusal, error: text.refusal === "keep-cache-secret"
+    ? "keepCacheText holds a credential of this Fleet — the text is stored in fleet.json and typed into the pane"
+    : `keepCacheText must be null or text of at most ${KEEP_CACHE_TEXT_MAX} characters: no control character but the line break, no leading / or !` }, 400);
   // the band is claude's (tickMigrate skips every other harness before it reads the fill): a setting
   // there would name a gate that cannot fire, so it is refused rather than stored
   if (harnessOf(s.harness) !== CLAUDE_HARNESS)
@@ -25928,6 +25938,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
     nudge: hasNudge ? body.nudge as boolean : cur?.nudge ?? true,
     keepCache: hasKeep ? body.keepCache as boolean | null : cur?.keepCache ?? null,
     keepCacheIdleMin: hasIdle ? body.keepCacheIdleMin as number : cur?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
+    keepCacheText: text?.ok ? text.text : cur?.keepCacheText ?? null,
     setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
   };
   // the switch is refused ON where no warm turn can happen: the steward is exempt by the owner's card,
@@ -25938,7 +25949,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   }
   // the fleet's own values are no setting: storing them would keep a record that says nothing
   s.handover = next.thresholdPct === null && next.nudge && next.keepCache === null
-    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT ? null : next;
+    && next.keepCacheIdleMin === KEEP_CACHE_IDLE_MIN_DEFAULT && next.keepCacheText === null ? null : next;
   // a CHANGED switch or duration is a new start for the tick's bookkeeping of this occupant (warm
   // turns, retry window); a save with the same values is none, or saving again and again would
   // reset the warm cap and keep a session warm without end
@@ -25999,8 +26010,10 @@ interface KeepCacheRun { openedAt: number; sessionId: string | null; warmTurns: 
   last: KeepCacheLast | null; warmAts: number[]; warmTotal: number }
 // the popover's facts: the decision, the switch in force and where it comes from, and what was done
 interface KeepCacheFacts extends WarmDecision { on: boolean; from: "session" | "fleet"; fleetOn: boolean;
-  exempt: KeepCacheExempt | null; idleMin: number; lifetimeMin: number; warmTurns: number; warmMax: number;
-  last: KeepCacheLast | null; hourCap: number; warmLastHour: number }
+  exempt: KeepCacheExempt | null; idleMin: number; fleetIdleMin: number; lifetimeMin: number; warmTurns: number; warmMax: number;
+  last: KeepCacheLast | null; hourCap: number; warmLastHour: number;
+  // the session's own warm text (null = the fleet's, `fleetText`) and its cap
+  text: string | null; fleetText: string; textMax: number }
 // process-local like migrateTried: a restart forgets the warm count rather than carrying automation
 // intent into a new process, and the next decision reads the transcript afresh
 const keepCacheRuns = new Map<number, KeepCacheRun>();
@@ -26025,12 +26038,13 @@ function keepCacheOn(s: Slot): boolean {
   return ownHandover(s)?.keepCache ?? keepCacheFleetOn(s);
 }
 const keepCacheIdleMinOf = (s: Slot): number => ownHandover(s)?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT;
+const keepCacheTextOf = (s: Slot): string => ownHandover(s)?.keepCacheText ?? KEEP_CACHE_TEXT;
 // what the warm budget is counted under: the switch and the duration, nothing else of the setting
 const keepCacheRunKey = (h: HandoverSetting | null): string =>
   `${h?.keepCache ?? null}:${h?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT}`;
 // the version a decision was made under; null = nothing may be typed any more. A warm turn in flight
-// is typed only while the switch still reads exactly this.
-const keepCacheVersionOf = (s: Slot): string | null => keepCacheOn(s) ? `on:${keepCacheIdleMinOf(s)}` : null;
+// is typed only while the switch, the duration and the text still read exactly this.
+const keepCacheVersionOf = (s: Slot): string | null => keepCacheOn(s) ? `on:${keepCacheIdleMinOf(s)}:${keepCacheTextOf(s)}` : null;
 const warmLastHour = (run: KeepCacheRun, now: number): number => run.warmAts.filter((t) => now - t < 3_600_000).length;
 function keepCacheDecision(s: Slot, now: number): WarmDecision {
   const on = keepCacheOn(s);
@@ -26046,9 +26060,10 @@ function keepCacheFacts(s: Slot, now: number): KeepCacheFacts {
   const run = keepCacheRuns.get(s.id);
   const mine = run && run.openedAt === s.openedAt && run.sessionId === s.sessionId ? run : null;
   return { ...keepCacheDecision(s, now), on: keepCacheOn(s), from: ownHandover(s)?.keepCache != null ? "session" : "fleet",
-    fleetOn: keepCacheFleetOn(s), exempt: keepCacheExempt(s), idleMin: keepCacheIdleMinOf(s),
+    fleetOn: keepCacheFleetOn(s), exempt: keepCacheExempt(s), idleMin: keepCacheIdleMinOf(s), fleetIdleMin: KEEP_CACHE_IDLE_MIN_DEFAULT,
     lifetimeMin: KEEP_CACHE_LIFETIME_MIN, warmTurns: mine?.warmTurns ?? 0, warmMax: KEEP_CACHE_WARM_MAX,
-    last: mine?.last ?? null, hourCap: KEEP_CACHE_PER_HOUR, warmLastHour: mine ? warmLastHour(mine, now) : 0 };
+    last: mine?.last ?? null, hourCap: KEEP_CACHE_PER_HOUR, warmLastHour: mine ? warmLastHour(mine, now) : 0,
+    text: ownHandover(s)?.keepCacheText ?? null, fleetText: KEEP_CACHE_TEXT, textMax: KEEP_CACHE_TEXT_MAX };
 }
 // THE SESSIONS ROW'S HALF (letzter Zug und Zaehler): the last warm act this occupant got and how many
 // warm turns since boot — omitted while there is none, the 2 s poll's data-saver rule
@@ -26057,7 +26072,8 @@ function keepCacheRowView(s: Slot): { at: number; act: "warm"; outcome: string; 
   if (!run || run.openedAt !== s.openedAt || !run.last) return null;
   return { at: run.last.at, act: run.last.act, outcome: run.last.outcome.slice(0, 80), n: run.warmTotal };
 }
-// what the session is told: that this is a warm turn and what to answer — nothing about its state
+// what the session is told: that this is a warm turn and what to answer — nothing about its state.
+// The fleet's text; a session's own (HandoverSetting.keepCacheText) replaces it whole.
 const KEEP_CACHE_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
 
 // e2e only: parks at the point the latch file names, so a probe can change the setting in between —
@@ -26114,7 +26130,7 @@ async function tickKeepCache(): Promise<void> {
           run.last = { at: now, act: "warm", outcome: `held: ${verdict.gate}${verdict.detail ? ` (${verdict.detail})` : ""}` };
         continue;
       }
-      const text = KEEP_CACHE_TEXT;
+      const text = keepCacheTextOf(s);
       keepCacheInflight.add(s.id);
       void (async () => {
         try {

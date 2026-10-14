@@ -2,21 +2,22 @@
 // was die Nachfolgerin bekommt („[Zitat entfernt]“ oder „[Zitat entfernt]“
 // ). Bauleitung 13.10.: Die Einstellung gilt für die ganze Linie im Slot (Frage 2).
 // S2, Owner 13.10.: „[Zitat entfernt]“ — ein Schalter, eine
-// Entscheidung, warm/kalt aus dem Transkript.
+// Entscheidung, warm/kalt aus dem Transkript. S2b, Owner 13.10.: „[Zitat entfernt]“
+//  — der eigene Text des Warm-Turns, nur Text, ohne Zugangsdaten.
 import { describe, expect, test } from "bun:test";
-import { agoText, cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, type SucceedPreviewFacts,
-  type WarmFacts } from "./succession";
-import type { HandoverSetting } from "./types";
+import { agoText, cacheView, ownSetting, settingForSuccessor, successorSentence, warmDecision, warmTextInput,
+  type SucceedPreviewFacts, type WarmFacts } from "./succession";
+import { loadHandoverSetting, type HandoverSetting } from "./types";
 
 const setting = (slot: number, openedAt: number): HandoverSetting => ({ thresholdPct: 55, nudge: false, keepCache: true,
-  keepCacheIdleMin: 45, setAt: 1, occupant: { slot, openedAt } });
+  keepCacheIdleMin: 45, keepCacheText: "Lies den Stand und antworte mit einem Satz.", setAt: 1, occupant: { slot, openedAt } });
 
 describe("die Einstellung der Linie", () => {
   test("die eigene Einstellung der gehenden Besetzung geht unverändert auf die Nachfolgerin über", () => {
     const own = ownSetting(setting(3, 100), { slot: 3, openedAt: 100 });
     const next = settingForSuccessor(own, { slot: 3, openedAt: 200 }, 999);
     expect(next).toEqual({ thresholdPct: 55, nudge: false, keepCache: true, keepCacheIdleMin: 45,
-      setAt: 999, occupant: { slot: 3, openedAt: 200 } });
+      keepCacheText: "Lies den Stand und antworte mit einem Satz.", setAt: 999, occupant: { slot: 3, openedAt: 200 } });
   });
   test("eine Einstellung, die eine andere Besetzung nennt, geht nicht mit", () => {
     expect(ownSetting(setting(3, 100), { slot: 3, openedAt: 101 })).toBeNull();
@@ -106,5 +107,36 @@ describe("die Warm-Entscheidung", () => {
     expect(warmDecision(on({ warmTurns: 24 }), 51 * MIN).reason).toBe("warm-cap");
     expect(warmDecision(on({ warmLastHour: 2 }), 51 * MIN).reason).toBe("hour-cap");
     expect(warmDecision(on({ warmLastHour: 1 }), 51 * MIN).act).toBe("warm");
+  });
+});
+
+describe("der Text des Warm-Turns", () => {
+  const FLEET = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const TOKEN = "f1e2d3c4b5a6978877665544";
+  const input = (v: unknown) => warmTextInput(v, FLEET, [TOKEN, "1"]);
+  test("ein eigener Text wird gespeichert, getrimmt, auch mit Zeilenumbruch", () => {
+    expect(input("  Lies HANDOVER.md und nenne den nächsten Schritt.\nNichts bauen.  "))
+      .toEqual({ ok: true, text: "Lies HANDOVER.md und nenne den nächsten Schritt.\nNichts bauen." });
+  });
+  test("null, leer oder der Fleet-Text selbst heißt Fleet-Standard und speichert nichts", () => {
+    expect(input(null)).toEqual({ ok: true, text: null });
+    expect(input("   ")).toEqual({ ok: true, text: null });
+    expect(input(FLEET)).toEqual({ ok: true, text: null });
+  });
+  test("nur Text: kein anderer Typ, kein Steuerzeichen, kein Befehl, nicht über dem Deckel", () => {
+    for (const v of [42, true, ["ok"], "a\u001b[2Jb", "a\tb", "a\rb", "/clear", "!rm -rf .", "x".repeat(501)])
+      expect(input(v)).toEqual({ ok: false, refusal: "bad-keep-cache-text" });
+    expect(input("x".repeat(500))).toEqual({ ok: true, text: "x".repeat(500) });
+  });
+  test("keine Zugangsdaten dieser Fleet; ein kurzer Env-Wert zählt nicht", () => {
+    expect(input(`bitte ${TOKEN} benutzen`)).toEqual({ ok: false, refusal: "keep-cache-secret" });
+    expect(input("Version 1 lesen")).toEqual({ ok: true, text: "Version 1 lesen" });
+  });
+  test("fleet.json: ein Datensatz ohne Feld liest null, ein kaputter Text verwirft den Datensatz", () => {
+    const rec = { thresholdPct: null, nudge: true, keepCache: true, keepCacheIdleMin: 50, setAt: 1, occupant: { slot: 3, openedAt: 100 } };
+    expect(loadHandoverSetting(rec)?.keepCacheText).toBeNull();
+    expect(loadHandoverSetting({ ...rec, keepCacheText: "Stand lesen." })?.keepCacheText).toBe("Stand lesen.");
+    expect(loadHandoverSetting({ ...rec, keepCacheText: "/clear" })).toBeNull();
+    expect(loadHandoverSetting({ ...rec, keepCacheText: 7 })).toBeNull();
   });
 });

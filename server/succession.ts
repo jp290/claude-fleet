@@ -6,7 +6,7 @@
 // Funktionen dort, wo eine Besetzung geht und die nächste im selben Slot kommt (respawnInPlace für die
 // generische und die Program-Schiene beider Türen, restartLaneSession für die Lane), und dort, wo die
 // Owner-Tür ihre Vorschau liest (ownerSucceedPreview).
-import type { HandoverSetting } from "./types";
+import { keepCacheTextOk, type HandoverSetting } from "./types";
 
 export interface Occupation { slot: number; openedAt: number }
 
@@ -115,4 +115,22 @@ export function warmDecision(f: WarmFacts, now: number): WarmDecision {
   if (f.warmTurns >= f.warmMax) return no("warm-cap", last, dueAt);
   if (f.warmLastHour >= f.hourCap) return no("hour-cap", last, dueAt);
   return { act: "warm", reason: "due", lastUsageAt: last, dueAt };
+}
+
+// DER TEXT DES WARM-TURNS (S2b, Owner 13.10.: „[Zitat entfernt]“
+// ). Was PATCH …/handover `keepCacheText` speichert: null, leer oder der Fleet-Text selbst
+// heißt Fleet-Standard und speichert nichts. Sonst nur Text (types.ts#keepCacheTextOk) und keine
+// Zugangsdaten dieser Fleet: Der Text steht in fleet.json und wird in die Pane getippt. `credentials`
+// sind die Werte, die der Server kennt (server.ts#knownCredentials); kürzere als
+// CREDENTIAL_MIN_CHARS zählen nicht, ein Env-Wert wie „1“ stünde sonst in jedem Text.
+const CREDENTIAL_MIN_CHARS = 12;
+export type WarmTextInput = { ok: true; text: string | null } | { ok: false; refusal: "bad-keep-cache-text" | "keep-cache-secret" };
+export function warmTextInput(v: unknown, fleetText: string, credentials: readonly string[]): WarmTextInput {
+  if (v === null) return { ok: true, text: null };
+  if (typeof v !== "string") return { ok: false, refusal: "bad-keep-cache-text" };
+  const text = v.trim();
+  if (!text || text === fleetText) return { ok: true, text: null };
+  if (!keepCacheTextOk(text)) return { ok: false, refusal: "bad-keep-cache-text" };
+  if (credentials.some((c) => c.length >= CREDENTIAL_MIN_CHARS && text.includes(c))) return { ok: false, refusal: "keep-cache-secret" };
+  return { ok: true, text };
 }

@@ -9,6 +9,9 @@
 // S2 (owner 13.10.: „[Zitat entfernt]“): the cache warm or
 // cold with its minutes, Claude's compaction, the warm switch, and at a cold cache the button names
 // what the successor continues from — the session's own handover or the raw transcript.
+// S2b (owner 13.10.: „[Zitat entfernt]“
+// ): while the switch is on, the minutes as one click
+// and the text the warm turn types, with the fleet's own text as the way back.
 import { api, el } from "./client";
 import { serverClock } from "./composer";
 import type { BriefSuccession } from "./board";
@@ -38,6 +41,8 @@ const WARM_OFF_WHY: Record<NonNullable<NonNullable<BriefSuccession["keepCache"]>
 };
 // the values one click away; a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
 const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60];
+// the warm turn's minutes the same way (5..55 in 5-steps, PATCH); eight values fit the popover's line
+const MINUTES = [20, 25, 30, 35, 40, 45, 50, 55];
 // the answer of the last write, shown at once while the brief is read again (the board's tick)
 const FRESH_MS = 15_000;
 // how old the door's preview may be while the popover stays open: it reads the transcript, so it is
@@ -51,31 +56,40 @@ const errs = new Map<number, { text: string; title: string }>();
 const previews = new Map<number, { openedAt: number | undefined; at: number; ready: boolean; says: string;
   source: "handover" | "transcript" | null }>();
 const previewLoading = new Set<number>();
+// the warm text being written, per slot — it survives every repaint until it is saved
+const drafts = new Map<number, { openedAt: number | undefined; text: string }>();
 // the newest render's repaint per slot: an answer that arrives after the board rebuilt the column
 // redraws the line that stands now, not the one its click was drawn on
 const repaints = new Map<number, () => boolean>();
-const repaint = (slot: number): void => { repaints.get(slot)?.(); };
+// never under the caret (renderBoard's rule for the board's textareas): an answer that arrives while
+// the warm text is being written is drawn by the next repaint after it
+const typing = (): boolean => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest(".ubpop");
+const repaint = (slot: number): void => { if (!typing()) repaints.get(slot)?.(); };
 
 export function freshSuccession(slot: number, openedAt: number | undefined): BriefSuccession | null {
   const f = fresh.get(slot);
   return f && f.openedAt === openedAt && Date.now() - f.at < FRESH_MS ? f.sc : null;
 }
 
-type HandoverWrite = { thresholdPct?: number | null; nudge?: boolean; keepCache?: boolean | null };
+type HandoverWrite = { thresholdPct?: number | null; nudge?: boolean; keepCache?: boolean | null; keepCacheIdleMin?: number;
+  keepCacheText?: string | null };
 // what the server will answer, drawn before it answers: the threshold, the hint, the warm switch, and
 // the gate a threshold of 0 turns on or off; the PATCH answer replaces it a moment later
 function expected(sc: BriefSuccession, body: HandoverWrite): BriefSuccession {
   if (body.nudge !== undefined) return { ...sc, nudgeOn: body.nudge };
   if (body.keepCache !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache,
     on: body.keepCache ?? sc.keepCache.fleetOn, from: body.keepCache === null ? "fleet" : "session" } } : sc;
+  if (body.keepCacheIdleMin !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, idleMin: body.keepCacheIdleMin } } : sc;
+  if (body.keepCacheText !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, text: body.keepCacheText } } : sc;
   const own = body.thresholdPct ?? null;
   const eff = own ?? sc.defaultPct;
   const gate = sc.thresholdOff && sc.thresholdOff !== "rail" ? sc.thresholdOff : eff > 0 ? null : "rail";
   return { ...sc, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff };
 }
 
-async function write(v: HandoverView, body: HandoverWrite): Promise<void> {
-  if (writing.has(v.slot)) return;
+// true = the server took it
+async function write(v: HandoverView, body: HandoverWrite): Promise<boolean> {
+  if (writing.has(v.slot)) return false;
   writing.add(v.slot);
   errs.delete(v.slot);
   const before = fresh.get(v.slot);
@@ -87,11 +101,13 @@ async function write(v: HandoverView, body: HandoverWrite): Promise<void> {
     const j = (await r.json().catch(() => ({}))) as { error?: string; succession?: BriefSuccession | null };
     if (!r.ok || !j.succession) throw new Error(j.error ?? `HTTP ${r.status}`);
     fresh.set(v.slot, { openedAt: v.openedAt, sc: j.succession, at: Date.now() });
+    return true;
   } catch (error) {
     if (before) fresh.set(v.slot, before);
     else fresh.delete(v.slot);
     const why = error instanceof Error ? error.message : String(error);
     errs.set(v.slot, { text: `Nicht gespeichert — ${why}`, title: why });
+    return false;
   } finally {
     writing.delete(v.slot);
     repaint(v.slot);
@@ -257,6 +273,7 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
     rows.push(row("Warmhalten", [warmSeg], kc.exempt ? `Aus: ${WARM_OFF_WHY[kc.exempt]}.`
       : kc.on ? `Nach ${kc.idleMin} min Ruhe ein kurzer Turn, höchstens ${kc.hourCap}-mal pro Stunde. ${kc.warmTurns ? `Bisher ${kc.warmTurns}.` : "Bisher keiner."}`
       : `Der Cache verfällt ${kc.lifetimeMin} min nach dem letzten Modellaufruf.`));
+    if (kc.on && !kc.exempt) rows.push(...warmRows(v, kc));
   }
 
   const p = previewOf(v);
@@ -279,4 +296,53 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
     rows.push(e);
   }
   return rows;
+}
+
+// THE WARM TURN'S MINUTES AND TEXT (S2b): the minutes one click away like the threshold, the fleet's
+// value marked; the text in a field whose draft outlives every repaint, „Sichern“ while it differs
+// from the saved one, „Fleet-Standard“ while the session has its own
+function warmRows(v: HandoverView, kc: NonNullable<BriefSuccession["keepCache"]>): HTMLElement[] {
+  const fleetMin = kc.fleetIdleMin ?? 50;
+  const values = MINUTES.includes(kc.idleMin) ? MINUTES : [...MINUTES, kc.idleMin].sort((a, b) => a - b);
+  const mins = el("span", "seg mins");
+  for (const m of values) {
+    const on = m === kc.idleMin;
+    const b = button(String(m), `${on ? "on" : ""}${m === fleetMin ? " dflt" : ""}`.trim(), `idle-${m}`,
+      m === fleetMin ? `${m} min — der Wert der Fleet` : `Nach ${m} min Ruhe warm halten — nur diese Session`,
+      () => { if (!on) void write(v, { keepCacheIdleMin: m }); });
+    b.setAttribute("aria-pressed", String(on));
+    b.setAttribute("aria-label", `${m} min`);
+    mins.appendChild(b);
+  }
+  const minRow = row("Nach", [mins, el("span", "unit", "min")],
+    kc.idleMin === fleetMin ? "" : `Eigener Wert dieser Session; die Fleet steht auf ${fleetMin} min.`, "wide");
+
+  const saved = kc.text ?? "";
+  const d = drafts.get(v.slot);
+  const ta = document.createElement("textarea");
+  ta.className = "pta";
+  ta.dataset.uk = "wtext";
+  ta.rows = 3;
+  ta.maxLength = kc.textMax ?? 500;
+  ta.placeholder = kc.fleetText ?? "";
+  ta.value = d && d.openedAt === v.openedAt ? d.text : saved;
+  ta.setAttribute("aria-label", "Text des Warm-Turns");
+  const save = button("Sichern", "bbtn quiet", "wtext-save", "Diesen Text tippt Fleet bei jedem Warm-Turn dieser Session", () => {
+    const text = ta.value;
+    drafts.delete(v.slot);
+    void write(v, { keepCacheText: text.trim() || null }).then((ok) => {
+      if (!ok) { drafts.set(v.slot, { openedAt: v.openedAt, text }); repaint(v.slot); }
+    });
+  });
+  const fleet = button("Fleet-Standard", "bbtn quiet", "wtext-fleet", "Zurück auf den Text der Fleet", () => {
+    drafts.delete(v.slot);
+    void write(v, { keepCacheText: null });
+  });
+  fleet.hidden = !saved;
+  const sync = (): void => { save.hidden = ta.value.trim() === saved; };
+  ta.addEventListener("input", () => { drafts.set(v.slot, { openedAt: v.openedAt, text: ta.value }); sync(); });
+  sync();
+  const textRow = row("Text", [ta, save, fleet],
+    saved ? "Eigener Text dieser Session, bei jedem Warm-Turn." : "Leer: der Text der Fleet, die Session antwortet nur „ok“.", "wide");
+  return [minRow, textRow];
 }

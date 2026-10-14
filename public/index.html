@@ -3302,7 +3302,13 @@
   #board .ubpop .pr.wide > .pv, #board .ubpop .pr.wide > .h { grid-column: 1 / -1; }
   #board .ubpop .pr.wide + .pr { margin-top: 2px; }
   #board .ubpop .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #board .seg.pcts button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+  #board .seg:is(.pcts, .mins) button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+  /* the warm turn's own text (K9 S2b): the notepad's field, the full width of its row */
+  #board .ubpop .pta { flex: 1 1 100%; box-sizing: border-box; min-height: 40px; resize: vertical; padding: 5px 7px;
+    background: var(--chat-surface); color: var(--chat-prose); border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    font: 12px/1.4 var(--chat-sans); }
+  #board .ubpop .pta:focus { outline: none; border-color: var(--chat-mute); }
+  #board .ubpop .bbtn[hidden] { display: none; }
   /* the fleet's own value: marked, so a session's own threshold reads as a choice beside it */
   #board .seg button.dflt { text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .seg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
@@ -3367,7 +3373,10 @@
     #board .bpopscrim { display: block; position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--chat-void) 55%, transparent); }
     #board .bpop .bmenuitem { min-height: 44px; font-size: 14px; }
     #board .ubpop .pr { grid-template-columns: 110px minmax(0, 1fr); font-size: 13px; }
-    #board .seg.pcts button { min-width: 36px; padding: 0 4px; }
+    #board .seg:is(.pcts, .mins) button { min-width: 36px; padding: 0 4px; }
+    /* eight minutes and their unit on one line of Info's 335-px sheet */
+    #board .seg.mins button { min-width: 32px; }
+    #board .ubpop .pta { font-size: 16px; }
     #board .seg button { min-height: 40px; padding: 0 14px; }
   }
 

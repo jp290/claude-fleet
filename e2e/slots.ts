@@ -5007,6 +5007,10 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 //   W  bound to nothing, switched on: at 55 min nothing (before-duration), at 50 min ONE warm turn and the
 //      occupant stays; fleet.json keeps the switch; a save with UNCHANGED values neither resets the warm
 //      count nor the hour cap. Mutations: drop the before-duration gate; clear keepCacheRuns on every PATCH.
+//      S2b (owner 13.10.: „[Zitat entfernt]“): W's turn types W's OWN text,
+//      set with the duration, while G's stays the fleet's; null returns W to the fleet's text without a
+//      new warm budget. A text that is no plain text or carries the owner token is refused by name.
+//      Mutations: type KEEP_CACHE_TEXT in the tick; drop the credential check; put the text in the run key.
 //   X  a warm turn held at sendText's before-paste latch while the owner switches it off types nothing
 //      (mutation: drop the version check in beforePaste); switched on again, parked right AFTER the
 //      decision and its duration re-set — the turn decided under the old version types nothing
@@ -5640,9 +5644,9 @@ async function runKeepCache(): Promise<void> {
 
   type KeepFacts = { act: string | null; reason: string; lastUsageAt: number | null; dueAt: number | null; on: boolean;
     from: string; fleetOn: boolean; exempt: string | null; idleMin: number; warmTurns: number; last: { act: string; outcome: string } | null;
-    hourCap: number; warmLastHour: number };
+    hourCap: number; warmLastHour: number; text?: string | null; fleetText?: string };
   type CacheFacts = { state: string; lastCallAt: number | null; ttlSec: number; coldAt: number | null };
-  type Setting = { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
+  type Setting = { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number; keepCacheText?: string | null;
     occupant?: { slot?: number; openedAt?: number } };
   type View = { setting: Setting | null; openedAt: number | null; keepCacheIdle?: { min: number; max: number; step: number; lifetimeMin: number };
     succession: { fill: { pct: number } | null; keepCache: KeepFacts | null; cache?: CacheFacts } | null };
@@ -5701,6 +5705,11 @@ async function runKeepCache(): Promise<void> {
     ["33 is not a 5-step", S.slot, { expectedOpenedAt: S.openedAt, keepCache: true, keepCacheIdleMin: 33 }, 400, "bad-keep-cache-idle"],
     ["a string is no duration", S.slot, { expectedOpenedAt: S.openedAt, keepCacheIdleMin: "50" }, 400, "bad-keep-cache-idle"],
     ["the retired warmBound sets nothing", S.slot, { expectedOpenedAt: S.openedAt, warmBound: false }, 400, "nothing-to-set"],
+    ["a text is a string", S.slot, { expectedOpenedAt: S.openedAt, keepCacheText: 7 }, 400, "bad-keep-cache-text"],
+    ["a text carries no control character", S.slot, { expectedOpenedAt: S.openedAt, keepCacheText: "ok\u001b[2J" }, 400, "bad-keep-cache-text"],
+    ["a text is no slash command", S.slot, { expectedOpenedAt: S.openedAt, keepCacheText: "/clear" }, 400, "bad-keep-cache-text"],
+    ["a text stays under 500 characters", S.slot, { expectedOpenedAt: S.openedAt, keepCacheText: "x".repeat(501) }, 400, "bad-keep-cache-text"],
+    ["a text carries no credential of this Fleet", S.slot, { expectedOpenedAt: S.openedAt, keepCacheText: `Nutze ${TOKEN}` }, 400, "keep-cache-secret"],
     ["the ⚙ steward is exempt", T.slot, { expectedOpenedAt: T.openedAt, keepCache: true }, 409, "steward"],
   ];
   const seen: string[] = [];
@@ -5711,8 +5720,9 @@ async function runKeepCache(): Promise<void> {
     if (r.status !== status || r.body.refusal !== refusal) allRefused = false;
   }
   const [sAfter, tAfter] = await Promise.all([hv(S.slot), hv(T.slot)]);
-  check("keepCache refusals: a switch other than true/false/null and a duration off 5..55 in 5-steps are 400, warmBound alone sets nothing, the steward 409 — no setting moved",
-    allRefused && sAfter.setting?.keepCache === null && sAfter.setting.keepCacheIdleMin === 50 && tAfter.setting === null,
+  check("keepCache refusals: a switch other than true/false/null, a duration off 5..55 in 5-steps and a text that is no plain text or carries the owner token are 400, warmBound alone sets nothing, the steward 409 — no setting moved",
+    allRefused && sAfter.setting?.keepCache === null && sAfter.setting.keepCacheIdleMin === 50 && sAfter.setting.keepCacheText === null
+      && tAfter.setting === null,
     `${seen.join(" ")} · S=${JSON.stringify(sAfter.setting)} T=${JSON.stringify(tAfter.setting)}`);
 
   // G, THE FLEET'S VALUE FOR A BOUND MAIN (owner 10.10.: „[Zitat entfernt]“
@@ -5720,8 +5730,10 @@ async function runKeepCache(): Promise<void> {
   // short text once, and the hour cap (1 in this run, FLEET_KEEP_WARM_PER_HOUR) holds the next; C, bound
   // to nothing, gets none.
   const WARM = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  // W's own warm text (S2b): plain text, set with the duration below
+  const OWN = "KEEP-OWN-TEXT: read the handover and answer in one sentence what comes next.";
   const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
-    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Cache warmhalten"));
+    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && (e.text.startsWith("[fleet] Cache warmhalten") || e.text === OWN));
   let gWarm: PromptLogEntry[] = [];
   for (let i = 0; i < 100 && !gWarm.length; i++) {
     gWarm = await warmRows(G);
@@ -5754,8 +5766,8 @@ async function runKeepCache(): Promise<void> {
       && k55.dueAt === (k55.lastUsageAt ?? 0) + 55 * 60_000 && (await warmRows(W)).length === 0,
     JSON.stringify({ status: w55.status, setting: w55.body.setting, keep: k55 }));
 
-  // W, WARM: the same session at 50 min — one short turn, the occupant stays
-  const w50 = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCacheIdleMin: 50 });
+  // W, WARM: the same session at 50 min with its own text — one short turn that types THAT text, the occupant stays
+  const w50 = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCacheIdleMin: 50, keepCacheText: `  ${OWN}\n` });
   let warmed: PromptLogEntry[] = [];
   for (let i = 0; i < 100 && !warmed.length; i++) {
     await Bun.sleep(100);
@@ -5764,9 +5776,11 @@ async function runKeepCache(): Promise<void> {
   await Bun.sleep(1500); // six more ticks: the retry window and the hour cap hold a second turn back
   const wView = await hv(W.slot);
   const wRec = existsSync(rec(W)) ? readFileSync(rec(W), "utf8") : "";
-  check("keepCache W: at 50 min the decision is warm, ONE turn reaches the pane, and the occupant stays",
+  const wRows = await warmRows(W);
+  check("keepCache W: at 50 min with its own text the decision is warm, ONE turn types THAT text (stored trimmed) and not the fleet's, and the occupant stays",
     w50.status === 200 && w50.body.succession?.keepCache?.act === "warm" && w50.body.succession.keepCache.reason === "due"
-      && (await warmRows(W)).length === 1 && wRec.includes("Cache warmhalten") && wRec.includes("Antworte nur mit")
+      && w50.body.setting?.keepCacheText === OWN && w50.body.succession.keepCache.text === OWN
+      && wRows.length === 1 && wRows[0]!.text === OWN && wRec.includes(OWN) && !wRec.includes("Cache warmhalten")
       && wView.openedAt === W.openedAt && wView.succession?.keepCache?.warmTurns === 1
       && wView.succession.keepCache.last?.act === "warm" && wView.succession.keepCache.last.outcome.startsWith("sent"),
     JSON.stringify({ decision: w50.body.succession?.keepCache, rows: warmed.length, recorder: wRec.slice(0, 200), after: wView.succession?.keepCache }));
@@ -5777,8 +5791,8 @@ async function runKeepCache(): Promise<void> {
     if (persisted?.keepCacheIdleMin === 50) break;
     await Bun.sleep(100);
   }
-  check("keepCache: fleet.json keeps the switch and the duration with the occupant, and no retired warmBound",
-    persisted?.keepCache === true && persisted.keepCacheIdleMin === 50 && persisted.occupant?.openedAt === W.openedAt
+  check("keepCache: fleet.json keeps the switch, the duration and the text with the occupant, and no retired warmBound",
+    persisted?.keepCache === true && persisted.keepCacheIdleMin === 50 && persisted.keepCacheText === OWN && persisted.occupant?.openedAt === W.openedAt
       && !("warmBound" in (persisted as object)), JSON.stringify(persisted));
 
   // W, AN UNCHANGED SAVE: the same switch and duration again — the warm count and the hour cap stand,
@@ -5790,6 +5804,16 @@ async function runKeepCache(): Promise<void> {
     wSame.status === 200 && (await warmRows(W)).length === 1 && wSameView.succession?.keepCache?.warmTurns === 1
       && wSameView.succession.keepCache.last?.act === "warm",
     JSON.stringify({ status: wSame.status, rows: (await warmRows(W)).length, keep: wSameView.succession?.keepCache }));
+
+  // W, BACK TO THE FLEET'S TEXT: null stores no text of its own, and a changed text is no new warm budget
+  const wBack = await hp(W.slot, { expectedOpenedAt: W.openedAt, keepCacheText: null });
+  await Bun.sleep(1500);
+  const wBackView = await hv(W.slot);
+  check("keepCache W: keepCacheText null returns W to the fleet's text — the warm count and the hour cap stand, no second turn",
+    wBack.status === 200 && wBack.body.setting?.keepCacheText === null && wBack.body.succession?.keepCache?.text === null
+      && wBack.body.succession.keepCache.fleetText === WARM && wBackView.succession?.keepCache?.warmTurns === 1
+      && (await warmRows(W)).length === 1,
+    JSON.stringify({ status: wBack.status, setting: wBack.body.setting, keep: wBackView.succession?.keepCache, rows: (await warmRows(W)).length }));
 
   // X, SWITCHED OFF IN FLIGHT: its warm turn is parked before the paste, the owner switches it off,
   // the latch opens — nothing is typed
@@ -11780,7 +11804,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     with: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  if (WAY.some(({ key }) => w.checks?.[key]?.state === \"green\" || w.checks?.[key]?.state === \"red\")) { const f = el(\"span\", \"lflag ok\"); f.appendChild(icon(\"flag\")); rt.appendChild(f); }\n  row.appendChild(rt);" })),
   // K9 S1 (owner 13.10.: „[Zitat entfernt]“): the handover popover opens in place, without a column render and its /brief
   { name: "the handover popover opens through the column render again", state: "uebergabe",
-    claim: "the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Nachfolge, nothing else",
+    claim: "the switch opens the handover settings without reading the brief",
     needle: "popScroll = !open; if (!paint?.()) void renderBoard(); };", with: "popScroll = !open; void renderBoard(); };" },
   { name: "a tap on a lane jumps to its session", state: "tippen", claim: "a tap on 3B opens it in place",
     needle: "rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });",
@@ -12217,8 +12241,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
   const noteOf = (st: State) => st === "land" || st === "mehr" || st === "alarm" ? NOTE : null;
   const UNDO_BRANCH = "fleet/261005-insel-am-telefon-1b2c";
   const handover = { slot9: null as null | { thresholdPct: number | null; nudge: boolean },
-    // K9 S2: slot 3's own warm switch (null = the fleet's value, on for this bound main) and whether its cache is cold
-    slot3: null as boolean | null, cold: false };
+    // K9 S2: slot 3's own warm switch (null = the fleet's value, on for this bound main) and whether its cache is cold;
+    // S2b: its minutes and its own warm text (null = the fleet's)
+    slot3: null as boolean | null, cold: false, idle3: 50, text3: null as string | null };
+  const WARM_FLEET_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
   const COMPACTED_AT = new Date(2026, 9, 13, 12, 40).getTime();
   const SUCC_READY = "Die Nachfolgerin bekommt die stehende Übergabe von vor 12 min und 9 Einträge Transkript-Rest.";
   const SUCC_LANE = "Geht gerade nicht: eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht.";
@@ -12226,7 +12252,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     ? { rail: "standard-main", fill: { usedTokens: 520_000, windowTokens: 1_000_000, pct: 52 }, thresholdPct: null, thresholdOff: "fleet",
       nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true,
       keepCache: { on: handover.slot3 ?? true, from: handover.slot3 === null ? "fleet" : "session", fleetOn: true, exempt: null,
-        idleMin: 50, lifetimeMin: 60, hourCap: 2, warmTurns: 1 },
+        idleMin: handover.idle3, fleetIdleMin: 50, lifetimeMin: 60, hourCap: 2, warmTurns: 1,
+        text: handover.text3, fleetText: WARM_FLEET_TEXT, textMax: 500 },
       cache: handover.cold ? { state: "kalt", lastCallAt: fx.now - 75 * 60_000, ttlSec: 3600, coldAt: fx.now - 15 * 60_000 }
         : { state: "warm", lastCallAt: fx.now - 20 * 60_000, ttlSec: 3600, coldAt: fx.now + 40 * 60_000 },
       compaction: { at: COMPACTED_AT, trigger: "auto", preTokens: 487_000, postTokens: 9_000, idle: true } }
@@ -12296,8 +12323,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           return void json(requestId, { slot: 9, openedAt: openedAt(9), setting: handover.slot9, step: 5, min: 5, max: 95, succession: succession(9) });
         }
         if (p === "/api/slots/3/handover") {
-          const b = body as { keepCache?: boolean | null };
+          const b = body as { keepCache?: boolean | null; keepCacheIdleMin?: number; keepCacheText?: string | null };
           if ("keepCache" in b) handover.slot3 = b.keepCache ?? null;
+          if (typeof b.keepCacheIdleMin === "number") handover.idle3 = b.keepCacheIdleMin;
+          if ("keepCacheText" in b) handover.text3 = b.keepCacheText ?? null;
           return void json(requestId, { slot: 3, openedAt: openedAt(3), setting: null, step: 5, min: 5, max: 95, succession: succession(3) });
         }
         if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") {
@@ -12536,6 +12565,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         handover.slot9 = null;
         handover.slot3 = null;
         handover.cold = false;
+        handover.idle3 = 50;
+        handover.text3 = null;
         await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${focus ?? 0}], focused: 0 })); localStorage.setItem('fleet.board', '${phone ? "0" : "1"}');
           ${st === "mehr" ? "localStorage.setItem('fleet.board.folds', JSON.stringify(['setup', 'rechte']));" : ""} })()`);
         await navigate("http://fleet.fixture/");
@@ -13437,6 +13468,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                 seps: pop.querySelectorAll('.sep').length, rows: [...pop.querySelectorAll('.pr')].map((r) => ({ k: txt(r.querySelector(':scope > .k')), v: txt(r.querySelector(':scope > .pv')), h: txt(r.querySelector(':scope > .h')) })),
                 pcts: [...pop.querySelectorAll('.pcts button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
                 warm: [...pop.querySelectorAll('button[data-uk^="warm-"]')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt'), d: b.disabled })),
+                mins: [...pop.querySelectorAll('.mins button')].map((b) => ({ t: b.textContent.trim(), on: b.classList.contains('on'), dflt: b.classList.contains('dflt') })),
+                wtext: (() => { const t = pop.querySelector('textarea[data-uk="wtext"]'); if (!t) return null; const sv = pop.querySelector('[data-uk="wtext-save"]'), fl = pop.querySelector('[data-uk="wtext-fleet"]');
+                  return { value: t.value, ph: t.placeholder, save: !!sv && sv.getClientRects().length > 0, fleet: !!fl && fl.getClientRects().length > 0 }; })(),
                 go: (() => { const b = pop.querySelector('button[data-uk="succeed"]'); return b ? { t: b.textContent.trim(), d: b.disabled } : null; })(), box: box(pop) } : null,
               focusPop: document.activeElement?.dataset?.pop ?? null,
               note: (() => { const n = body.querySelector('.bnotesec'); if (!n) return null; const ta = n.querySelector('textarea'), save = n.querySelector('.bnotesave'), foot = n.querySelector('.bnotefoot');
@@ -13467,6 +13501,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             work: { text: string | null; state: string | null; files: number; landnote: string | null; buttons: { text: string; label: string | null; primary: boolean; disabled: boolean }[] } | null;
             pop: { kind: string; items: { t: string | null; danger: boolean; color: string }[]; seps: number; rows: { k: string | null; v: string | null; h: string | null }[];
               pcts: { t: string; on: boolean; dflt: boolean; d: boolean }[]; warm: { t: string; on: boolean; dflt: boolean; d: boolean }[];
+              mins: { t: string; on: boolean; dflt: boolean }[]; wtext: { value: string; ph: string; save: boolean; fleet: boolean } | null;
               go: { t: string; d: boolean } | null;
               box: { x: number; y: number; r: number; b: number; w: number; h: number } } | null; focusPop: string | null;
             note: { rows: number; h: number; value: string; save: boolean; foot: string | null } | null;
@@ -13699,15 +13734,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             n = await info();
             facts.ueb = { pop: n.pop, openBriefs, openMs };
             const rows = n.pop?.rows ?? [], pcts = n.pop?.pcts ?? [];
-            claims[`${it}the switch opens the handover settings without reading the brief: Übergabe bei · Hinweis · Cache · Warmhalten · Nachfolge, nothing else`] = n.pop?.kind === "ueb"
+            // S2b: a session kept warm adds its minutes and its text under the switch
+            const uebRows = isLane ? ["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nachfolge"]
+              : ["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nach", "Text", "Nachfolge"];
+            claims[`${it}the switch opens the handover settings without reading the brief: ${uebRows.join(" · ")}, nothing else`] = n.pop?.kind === "ueb"
               && openBriefs === 0 && openMs < 2500
-              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(["Übergabe bei", "Hinweis", "Cache", "Warmhalten", "Nachfolge"])
+              && JSON.stringify(rows.map((x) => x.k)) === JSON.stringify(uebRows)
               && JSON.stringify(pcts.map((x) => x.t)) === JSON.stringify(["25", "30", "35", "40", "45", "50", "55", "60"])
               && (isLane ? pcts.find((x) => x.on)?.t === "40" && pcts.find((x) => x.dflt)?.t === "40" && pcts.every((x) => !x.d)
                   && /die Fleet steht auf 40 %/.test(rows[0]?.h ?? "") && /höchstens 3-mal\. Bisher keiner\./.test(rows[1]?.h ?? "")
-                  && n.pop?.go?.d === true && rows[4]?.h === SUCC_LANE
+                  && n.pop?.go?.d === true && rows.at(-1)?.h === SUCC_LANE
                 : pcts.every((x) => x.d && !x.on) && /Aus: auf dieser Fleet nicht eingeschaltet/.test(rows[0]?.h ?? "")
-                  && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows[4]?.h === SUCC_READY)
+                  && n.pop?.go?.d === false && n.pop.go.t === "Neue Session jetzt" && rows.at(-1)?.h === SUCC_READY)
               && sheetOk(n.pop?.box);
             // K9 S2 (owner 13.10.: „[Zitat entfernt]“): the cache
             // warm with its minutes and Claude's compaction, the warm switch with the fleet's value marked —
@@ -13719,6 +13757,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               : rows[2]?.v === "warm · noch 40 min" && rows[2]?.h === "Von Claude kompaktiert 12:40, 487k → 9k."
                 && JSON.stringify(warm) === JSON.stringify([{ t: "An", on: true, dflt: true, d: false }, { t: "Aus", on: false, dflt: false, d: false }])
                 && rows[3]?.h === "Nach 50 min Ruhe ein kurzer Turn, höchstens 2-mal pro Stunde. Bisher 1.";
+            // S2b (owner 13.10.: „[Zitat entfernt]“):
+            // the minutes one click away with the fleet's 50 marked, the text field empty over the fleet's text
+            if (!isLane) claims[`${it}a session kept warm shows its minutes 20–55 with the fleet's 50 marked and on, and an empty text field over the fleet's own text`] =
+              JSON.stringify(n.pop?.mins?.map((x) => x.t)) === JSON.stringify(["20", "25", "30", "35", "40", "45", "50", "55"])
+              && n.pop?.mins.find((x) => x.on)?.t === "50" && n.pop.mins.find((x) => x.dflt)?.t === "50" && rows[4]?.h === null
+              && n.pop.wtext?.value === "" && n.pop.wtext.ph === WARM_FLEET_TEXT && !n.pop.wtext.save && !n.pop.wtext.fleet
+              && rows[5]?.h === "Leer: der Text der Fleet, die Session antwortet nur „ok“.";
             await shot(`info-${st}-${width}`);
             if (st === "uebergabe") {
               const line = `document.querySelector('#boardbody .bhead .bkv.ctx > .v')?.innerText ?? ''`;
@@ -13767,7 +13812,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               facts.cold = n.pop;
               claims[`${it}at a cold cache the button reads „In neuer Session fortsetzen“ and names its source, the cache row says since when`] =
                 n.pop?.rows?.[2]?.v === "kalt seit 15 min" && n.pop.go?.t === "In neuer Session fortsetzen" && n.pop.go.d === false
-                && n.pop.rows[4]?.h === `Quelle: Fleet-Übergabe. ${SUCC_READY}`;
+                && n.pop.rows.at(-1)?.h === `Quelle: Fleet-Übergabe. ${SUCC_READY}`;
               await shot(`info-${st}-kalt-${width}`);
               await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
               await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
@@ -13792,6 +13837,50 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                 warmBriefs === 0 && offHint === "Der Cache verfällt 60 min nach dem letzten Modellaufruf."
                 && JSON.stringify(fx.writes.filter((w) => w.path === "/api/slots/3/handover").map((w) => w.body))
                   === JSON.stringify([{ expectedOpenedAt: openedAt(3), keepCache: false }, { expectedOpenedAt: openedAt(3), keepCache: null }]);
+              await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+              await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
+              // S2b, THE MINUTES AND THE TEXT (owner 13.10.: „[Zitat entfernt]“
+              // ): 30 min is one click for THIS occupant; a text written and left
+              // outlives the board's next tick; „Sichern“ writes it, „Fleet-Standard“ takes it back — over the
+              // handover route, and no /brief in either click window
+              fx.writes = [];
+              await afterTick();
+              t0 = Date.now();
+              await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="idle-30"]')`, 3000);
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="idle-30"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="idle-30"]')?.classList.contains('on')`, 2000);
+              const minBriefs = briefsSince(t0);
+              await settle(100);
+              n = await info();
+              const minHint = n.pop?.rows?.[4]?.h ?? "";
+              const OWN_TEXT = "Lies HANDOVER.md und nenne den nächsten Schritt in einem Satz.";
+              await evaluate(`(() => { const t = document.querySelector('#boardbody .bpop textarea[data-uk="wtext"]'); t.focus();
+                t.value = ${JSON.stringify(OWN_TEXT)}; t.dispatchEvent(new Event('input', { bubbles: true })); t.blur(); })()`);
+              await afterTick();
+              await settle(100);
+              n = await info();
+              const drafted = n.pop?.wtext;
+              await afterTick();
+              const t1 = Date.now();
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="wtext-save"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop button[data-uk="wtext-fleet"]')?.getClientRects().length > 0`, 2000);
+              await settle(100);
+              n = await info();
+              const savedText = n.pop?.wtext, savedHint = n.pop?.rows?.[5]?.h ?? "";
+              await shot(`info-${st}-warmtext-${width}`);
+              await evaluate(`document.querySelector('#boardbody .bpop button[data-uk="wtext-fleet"]')?.click()`);
+              await wait(`document.querySelector('#boardbody .bpop textarea[data-uk="wtext"]')?.value === ''`, 2000);
+              await settle(100);
+              const textBriefs = briefsSince(t1);
+              facts.s2bWrites = { writes: fx.writes, minBriefs, textBriefs, minHint, drafted, savedText, savedHint };
+              claims[`${it}Warmhalten nach 30 min is one click, a written text outlives a board tick, Sichern writes it and Fleet-Standard takes it back — for THIS occupant, no /brief`] =
+                minBriefs === 0 && textBriefs === 0 && minHint === "Eigener Wert dieser Session; die Fleet steht auf 50 min."
+                && drafted?.value === OWN_TEXT && drafted.save && !drafted.fleet
+                && savedText?.value === OWN_TEXT && !savedText.save && savedText.fleet && savedHint === "Eigener Text dieser Session, bei jedem Warm-Turn."
+                && JSON.stringify(fx.writes.filter((w) => w.path === "/api/slots/3/handover").map((w) => w.body))
+                  === JSON.stringify([{ expectedOpenedAt: openedAt(3), keepCacheIdleMin: 30 }, { expectedOpenedAt: openedAt(3), keepCacheText: OWN_TEXT },
+                    { expectedOpenedAt: openedAt(3), keepCacheText: null }]);
               await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
               await wait(`!document.querySelector('#boardbody .bpop')`, 3000);
               // „Neue Session jetzt“ on a resting main: ONE post to the owner door, naming the occupant the

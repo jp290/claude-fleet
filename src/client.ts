@@ -4,6 +4,7 @@ import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } fro
 import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initFieldPerf } from "./fieldperf";
+import { pasteText } from "./paste";
 import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
@@ -1819,7 +1820,7 @@ class Pane {
     if (focused === this.index) renderIsland(); // the island's view word follows
     clearTimeout(this.chatTimer);
     if (v === "chat") { this.applyChatMemo(); void this.pollChat(); this.ensureLive(); }
-    else { this.refit(); this.term.focus(); }
+    else { this.refit(); if (!booting) this.term.focus(); }
   }
 
   // 💬 only where a conversation can actually be read. A harness that writes no claude transcript
@@ -2792,7 +2793,7 @@ class Pane {
     // this size, and connecting at a stale default (e.g. 80x24) would seed scrollback
     // at the wrong width and force an immediate second reseed once refit() catches up
     if (slot) { this.fit.fit(); this.pinPending = true; this.connect(); }
-    this.focus();
+    if (!booting) this.focus();
     // the terminal always lands on its end (it was re-seeded); the chat only on a first open
     this.scrollToEnd(!restored);
     renderSlots(); // focusPane skips no-op renders, but an assignment always changes the sidebar
@@ -11476,6 +11477,10 @@ addEventListener("pagehide", keepDraftsNow);
 // whether the composer or the focused pane's terminal had them; the boot gives them back (restoreFocus). The field's
 // text comes back on its own (restoreDrafts). sessionStorage: one tab's state, it must not reach another tab
 const FOCUS_KEY = "fleet.focus";
+// WHILE THE BOOT LAYS OUT THE PANES, NOTHING MOVES THE KEYS (owner 14.10. 21:1x, Mangel 64): assign() focused a pane
+// while it still stood in the terminal view, the boot turned it into the chat view only afterwards — for up to 0.2 s
+// the terminal of a chat pane had the keys, and a Cmd+V then went to the session. The boot's end gives the keys once.
+let booting = true;
 addEventListener("pagehide", () => {
   const at = document.activeElement === ta ? "composer" : document.activeElement === panes[focused]?.term.textarea ? "term" : null;
   try {
@@ -11483,13 +11488,17 @@ addEventListener("pagehide", () => {
     else sessionStorage.removeItem(FOCUS_KEY);
   } catch { /* storage refused — the reload comes back with the keys on <body>, as before */ }
 });
-function restoreFocus(): void {
-  let at: string | null = null;
+// Read at load, not at the boot's end (owner 14.10. 21:1x: „[Zitat entfernt]“):
+// the chat field gets its keys back before the first data arrives; the terminal needs its pane and waits for the boot
+const keysWere: string | null = (() => {
   try {
-    at = sessionStorage.getItem(FOCUS_KEY);
+    const at = sessionStorage.getItem(FOCUS_KEY);
     sessionStorage.removeItem(FOCUS_KEY);
-  } catch { return; }
-  if (!at || isMobile()) return; // the phone has no Cmd+V, and a focused field there would raise the keyboard
+    return at;
+  } catch { return null; }
+})();
+function restoreFocus(at: "composer" | "term"): void {
+  if (keysWere !== at || isMobile()) return; // the phone has no Cmd+V, and a focused field there would raise the keyboard
   const put = () => {
     if (document.activeElement && document.activeElement !== document.body) return; // the owner put the keys somewhere already
     const pane = panes[focused];
@@ -11502,16 +11511,34 @@ function restoreFocus(): void {
   if (document.hidden) document.addEventListener("visibilitychange", put, { once: true });
   else put();
 }
+restoreFocus("composer");
+// …and a Cmd/Ctrl+V whose keys sit on <body> — before the boot, after a click on nothing — goes to the chat field: the
+// field takes the keys before the paste runs (owner: „[Zitat entfernt]“
+// ). Keys in the terminal, in another field or in an open dialog or popover stay where they are, and so does a tab
+// whose terminal had the keys before the reload.
+window.addEventListener("keydown", (e) => {
+  if (!(APPLE ? e.metaKey : e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "v" || keysWere === "term" || isMobile()) return;
+  if (document.activeElement && document.activeElement !== document.body) return;
+  if (ta.disabled || !ta.getClientRects().length) return;
+  if ([...document.querySelectorAll<HTMLElement>('.overlay, [aria-modal="true"], .optpop.open')].some((d) => d.getClientRects().length)) return;
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+}, true);
+// what went into the field before the boot named its first slot — a Cmd+V right after a reload (Mangel 64) — belongs
+// to that slot: it follows the slot's kept draft instead of parking under no slot, where the swap used to drop it
+let draftBound = false;
 function switchDraft(slot: number): void {
   if (slot === draftSlot) return;
-  const next = drafts.swap(draftSlot, parkedAt(), { text: ta.value, attached },
+  const early = !draftBound && draftSlot === 0 && boxHolds() ? { text: ta.value, attached: [...attached] } : null;
+  if (slot) draftBound = true;
+  const next = drafts.swap(draftSlot, parkedAt(), early ? { text: "", attached: [] } : { text: ta.value, attached },
     slot, fleet[slot - 1]?.openedAt);
   for (const a of next.dropped) if (a.thumb) URL.revokeObjectURL(a.thumb);
   draftSlot = slot;
   box.reset(occupation(slot));
-  ta.value = next.text;
+  ta.value = next.text + (early?.text ?? "");
   attached.length = 0; // no revoke: the parked entries still own their thumbnails
-  attached.push(...next.attached);
+  attached.push(...next.attached, ...(early?.attached ?? []));
   cyc = null;
   renderAttachments();
   growComposer();
@@ -11713,12 +11740,18 @@ mainEl.addEventListener("drop", (e) => {
   e.preventDefault();
   void uploadDrops(Array.from(e.dataTransfer?.files ?? []));
 });
-// a paste with no files is an ordinary text paste and must fall through untouched
+// a paste with files uploads them; a text paste the field inserts itself (src/paste.ts, Mangel 64)
 ta.addEventListener("paste", (e) => {
   const files = Array.from(e.clipboardData?.files ?? []);
-  if (!files.length) return;
+  if (files.length) {
+    e.preventDefault();
+    void uploadDrops(files);
+    return;
+  }
+  const text = e.clipboardData?.getData("text/plain") ?? "";
+  if (!text) return;
   e.preventDefault();
-  void uploadDrops(files);
+  pasteText(ta, text, (t) => { document.execCommand("insertText", false, t); });
 });
 dropBtn.onclick = () => dropFile.click();
 dropFile.addEventListener("change", () => {
@@ -11754,5 +11787,8 @@ void (async () => {
   panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
   setCollapsed(prefBool("fleet.sidecollapsed"));
-  restoreFocus();
+  booting = false;
+  restoreFocus("term");
+  // no kept place: the focused pane takes them its own way — the chat view's field, or the terminal
+  if (!keysWere && (!document.activeElement || document.activeElement === document.body)) panes[focused]?.focus();
 })();

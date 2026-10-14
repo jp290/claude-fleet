@@ -2069,7 +2069,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     "Pane.appendEntry / addFleetLine in src/client.ts, .msys in public/index.html");
   check("client: a composer reshape does not refit a terminal the chat view hides; the way back refits it",
     /for \(const p of panes\) if \(!p\.isChat\) p\.refit\(\);/.test(cliSrc)
-    && /else \{ this\.refit\(\); this\.term\.focus\(\); \}/.test(cliSrc),
+    && /else \{ this\.refit\(\); if \(!booting\) this\.term\.focus\(\); \}/.test(cliSrc),
     "reshapeSurface settle / Pane.setView in src/client.ts");
 
   // --- G0.5 OWNER VOCABULARY (owner 2026-09-22, card K9): the four surfaces this lane re-worded
@@ -10901,6 +10901,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[],
     recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[],
     reads: [] as number[],
+    // scenario 17: the slot rows held back, so a reload's Cmd+V comes before the board knows its slots
+    holdSessions: false, heldSessions: [] as (() => void)[],
     // the bundle's stand as /api/sessions says it (server/transport.ts#bundleV); scenario 17 raises it like a deploy
     v: 1,
     // the transcript's raw lines as far as the model/effort facts go (scenario 15): the route folds them with
@@ -10961,8 +10963,12 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
-      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), v: fx.v, chips: [], tasks: [],
-        slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+      if (p === "/api/sessions") {
+        const answer = () => void json(requestId, { now: Date.now(), v: fx.v, chips: [], tasks: [],
+          slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+        if (fx.holdSessions) fx.heldSessions.push(answer); else answer();
+        return;
+      }
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
         fx.reads.push(Date.now());
@@ -11406,10 +11412,87 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         await send("Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", modifiers: 4, windowsVirtualKeyCode: 86 });
         await settle(200);
         const pasted = await evaluate<Back>(BACK);
-        facts.reloadPaste = { armed, reloaded, hiddenWhileReloading: hidden, back, pasted, word };
+        // the field inserts a text paste itself since S-i (src/paste.ts): Cmd+Z still takes exactly that paste back
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "z", code: "KeyZ", modifiers: 4, windowsVirtualKeyCode: 90, commands: ["undo"] });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", modifiers: 4, windowsVirtualKeyCode: 90 });
+        await settle(200);
+        const undone = await evaluate<Back>(BACK);
+        facts.reloadPaste = { armed, reloaded, hiddenWhileReloading: hidden, back, pasted, undone, word };
         claims["Mangel 64: Fleet reloads the hidden tab for a newer bundle; back in the tab the field has the keys and the draft, and Cmd+V lands in it"] =
           armed && reloaded && hidden && back.visible && back.focused && back.value === draft && pasted.value === draft + word;
+        claims["Mangel 64 S-i: Cmd+Z right after the paste takes exactly the pasted text back out"] =
+          pasted.value === draft + word && undone.value === draft;
         await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+        // owner 14.10. 21:1x: „[Zitat entfernt]“ — owner
+        // sentence: „[Zitat entfernt]“ A reload with the keys nowhere
+        // (no field had them), and the very first Cmd+V
+        const cmdV = async (modifiers = 4) => {
+          await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", modifiers, windowsVirtualKeyCode: 86, commands: ["paste"] });
+          await send("Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", modifiers, windowsVirtualKeyCode: 86 });
+          await settle(200);
+        };
+        await evaluate(`document.activeElement?.blur()`);
+        await navigate("http://fleet.fixture/");
+        await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+        await settle(300);
+        // the boot's end gives the field its keys since S-i part 4; a click on nothing takes them away again
+        await evaluate(`document.activeElement?.blur()`);
+        const onBody = await evaluate<boolean>(`document.activeElement === document.body || document.activeElement === null`);
+        // keys on <body>: only the client's own Cmd/Ctrl+V route (src/client.ts, APPLE) takes them to the field, so the
+        // probe presses the platform's chord — Ctrl on the Linux runner (Meta there left the paste on <body>, 14.10.)
+        await cmdV(await evaluate<boolean>(`/Mac|iPhone|iPad|iPod/.test(navigator.platform)`) ? 4 : 2);
+        const first = await evaluate<string>(`document.querySelector('#input').value`);
+        facts.reloadFirstPaste = { onBody, first };
+        claims["Mangel 64: after a reload with the keys nowhere, the first Cmd+V puts the text into the chat field"] = onBody && first === word;
+        // …and before the board has its slots: the owner was in the field with a draft, reloads, and pastes at once. The
+        // slot rows are held back until the paste is done; once the board is up, draft and paste stand in the field
+        const early = "Entwurf vor dem Neuladen ";
+        await evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); ta.value = ${JSON.stringify(early)};
+          ta.dispatchEvent(new Event('input', { bubbles: true })); ta.selectionStart = ta.selectionEnd = ta.value.length; })()`);
+        fx.holdSessions = true;
+        await navigate("http://fleet.fixture/");
+        const preBootKeys = await wait(`document.activeElement === document.querySelector('#input')`, 3000);
+        await cmdV();
+        const preBoot = await evaluate<string>(`document.querySelector('#input').value`);
+        fx.holdSessions = false;
+        for (const answer of fx.heldSessions.splice(0)) answer();
+        await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+        await settle(400);
+        const afterBoot = await evaluate<string>(`document.querySelector('#input').value`);
+        facts.preBootPaste = { preBootKeys, preBoot, afterBoot };
+        claims["Mangel 64: a Cmd+V right after a reload, before the board has its sessions, stays — behind the kept draft — once the board is up"] =
+          preBootKeys && afterBoot === early + word;
+        // …and while the board boots, the terminal of a chat pane never has the keys: a Cmd+V there went to the session
+        await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__termKeys = 0; addEventListener('focusin', (e) => {
+          if (e.target && e.target.classList && e.target.classList.contains('xterm-helper-textarea')) window.__termKeys++; }, true);` });
+        await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur(); })()`);
+        await navigate("http://fleet.fixture/");
+        await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
+        await settle(400);
+        const chatBoot = await evaluate<{ termKeys: number; fieldKeys: boolean }>(`({ termKeys: window.__termKeys,
+          fieldKeys: document.activeElement === document.querySelector('#input') })`);
+        facts.chatBoot = chatBoot;
+        claims["Mangel 64: while the board boots, the terminal of a chat pane never has the keys, and the chat field has them at the end"] =
+          chatBoot.termKeys === 0 && chatBoot.fieldKeys;
+        // …and the terminal keeps its own paste: the same Cmd+V with the keys in the terminal goes to the session, not the field
+        await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur();
+          localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [false] })); })()`);
+        await navigate("http://fleet.fixture/");
+        const termUp = await wait(`document.querySelector('.pane:not(.chat) .xterm-screen') && document.querySelector('.pane .xterm-helper-textarea')`, 15000);
+        await settle(300);
+        // the counter-check: a terminal pane still has the keys in its terminal once the board is up
+        const termKeysAtEnd = await evaluate<boolean>(`document.activeElement === document.querySelector('.pane .xterm-helper-textarea')`);
+        claims["Mangel 64: a terminal-view pane has the keys in its terminal once the board is up"] = !!termUp && termKeysAtEnd;
+        await evaluate(`(() => { window.WebSocket.OPEN = 1; window.__sent = [];
+          for (const w of window.__ws) { w.readyState = 1; w.send = (b) => window.__sent.push(typeof b === 'string' ? b : new TextDecoder().decode(b)); }
+          document.querySelector('.pane .xterm-helper-textarea').focus(); })()`);
+        await cmdV();
+        type Term = { sent: string; field: string; keysInTerm: boolean };
+        const term = await evaluate<Term>(`({ sent: window.__sent.join(''), field: document.querySelector('#input').value,
+          keysInTerm: document.activeElement === document.querySelector('.pane .xterm-helper-textarea') })`);
+        facts.termPaste = { termUp: !!termUp, ...term };
+        claims["Mangel 64: Cmd+V with the keys in the terminal still goes to the terminal, never into the chat field"] =
+          !!termUp && term.sent.includes(word) && !term.field.includes(word) && term.keysInTerm;
       }
       results.push({ width, height, claims, facts });
     }

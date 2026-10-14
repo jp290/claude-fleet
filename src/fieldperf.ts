@@ -141,4 +141,6 @@ export function initFieldPerf(src: { v: () => number; sha: () => string | null }
   };
   setInterval(flush, 60_000);
   document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+  // a reload in a visible tab fires no visibilitychange: its last minute — a paste right after the reload — goes here
+  addEventListener("pagehide", flush);
 }

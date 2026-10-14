@@ -3355,17 +3355,31 @@
   #board .btab[data-tab="rechte"] .btabbody { padding-left: 0; }
   #board .btabbody .bsrow .bskey { width: 86px; }
   #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
-  /* the postfach (K13 S6/S9/S10, src/postfach.ts): one conversation per counterpart, the newest message on
-     top. Each message is first ONE line — who, the first line of its text, when — and a click opens it.
-     Each speaker has a hue (--who-h, set per row): this session the accent blue, every other address a
-     fixed hue without blue; this session's lines stand right, the other side's left. Name, time and state
-     are not selectable: a copy of an opened message takes its text. */
+  /* the postfach (K13 S6/S9/S10/S11, src/postfach.ts): one conversation per counterpart, the newest message
+     on top. Each message is first ONE line — who, the first line of its text, when — and a click opens it.
+     BLACK AND WHITE (owner 14.10. 12:1x: „[Zitat entfernt]“
+     ): this session's lines stand right on the lighter gray, the other side's left on the darker;
+     a speaker's hue (--who-h, set per row: this session the accent blue, every other address a fixed hue
+     without blue) is only the small dot before the name. Name, time and state are not selectable: a copy
+     of an opened message takes its text. */
   #board .bgespr + .bgespr { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--chat-edge-soft); }
   #board .bgesprhd { margin-bottom: 2px; font-size: 11.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
-  #board .bgesprwho { color: hsl(var(--who-h, 222) 70% 74%); }
-  #board .bmsg { margin-top: 3px; border: 1px solid hsl(var(--who-h, 222) 38% 28%); border-radius: 8px;
-    background: hsl(var(--who-h, 222) 32% 14%); transition: border-color 0.3s; }
-  #board .bmsg.mine { margin-left: 10%; }
+  #board .bgesprwho { color: var(--b-ink2); }
+  /* S12/S12b: with two and more counterparts the head's name is a list of them (src/postfach.ts#fillConversation):
+     the column's own switch and menu (.optsw, .bpop, .bmenuitem), so it is the black and white of the rest */
+  #board .bgesprhd { position: relative; }
+  #board .bgesprsel { max-width: calc(100% - 90px); min-width: 0; vertical-align: middle; font-size: 11.5px; }
+  #board .bgesprsel .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bgesprsel:focus-visible, #board .bgesprpop .bmenuitem:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -1px; }
+  #board .bpop.bgesprpop { left: 0; right: auto; min-width: 200px; max-width: 100%; }
+  #board .bgesprpop .bmenuitem .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bgesprpop .bmenuitem[aria-selected="true"] { color: var(--chat-ink); font-weight: 500; }
+  #board .bgesprdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: hsl(var(--who-h, 222) 60% 62%); }
+  #board .bgesprwho::before, #board .bmsgwho::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px;
+    border-radius: 50%; vertical-align: 1px; background: hsl(var(--who-h, 222) 60% 62%); }
+  #board .bmsg { margin-top: 3px; border: 1px solid var(--chat-edge-soft); border-radius: 8px;
+    background: var(--chat-surface); transition: border-color 0.3s; }
+  #board .bmsg.mine { margin-left: 10%; border-color: var(--chat-edge); background: var(--chat-raised); }
   #board .bmsg.theirs { margin-right: 10%; }
   #board .bmsg.first { margin-top: 9px; }
   #board .bmsg.flash { border-color: var(--chat-ink); }
@@ -3374,9 +3388,9 @@
     min-width: 0; padding: 4px 8px; border: 0;
     border-radius: 8px; background: transparent; color: var(--b-ink2); font: 400 12px var(--chat-sans); text-align: left; cursor: pointer;
     user-select: none; -webkit-user-select: none; }
-  #board .bmsgline:hover { background: hsl(var(--who-h, 222) 32% 18%); }
+  #board .bmsgline:hover { background: var(--c-hover); }
   #board .bmsgwho { grid-row: 1; grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 11px; font-weight: 500; color: hsl(var(--who-h, 222) 70% 74%); }
+    font-size: 11px; font-weight: 500; color: var(--b-ink); }
   #board .bmsgat { grid-row: 1; grid-column: 2; font-size: 10.5px; color: var(--b-ink3); }
   #board .bmsgdot { grid-row: 1; grid-column: 3; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
   #board .bmsgfirst { grid-row: 2; grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3388,7 +3402,7 @@
   #board div.bmsgre { cursor: default; }
   #board .bmsgre:hover { color: var(--b-ink2); }
   #board .bmsgmeta { margin: 0 8px 6px; font-size: 10.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
-  #board .bmsgmeta.open { color: var(--amber); }
+  #board .bmsgmeta.open { color: var(--b-ink2); }
   #board .bmsgmore { margin: 6px 0 0 -6px; padding: 2px 6px; color: var(--chat-mute); background: transparent; border-color: transparent; }
   #board .bmsgmore:hover { color: var(--chat-ink); background: var(--c-hover); }
   #board .bnopane { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b); border-top: 1px solid var(--chat-edge-soft); }
@@ -3397,8 +3411,10 @@
   @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
     /* the rest of the column at the phone's floor: a target 40 px, a reading row 32 px (§3b) */
     #board { --b-row: 40px; --b-hit: 40px; --b-fold: 40px; --b-grp: 12px; }
-    /* a postfach line is a target (src/postfach.ts, S10) */
+    /* a postfach line is a target (src/postfach.ts, S10), and so is the list of conversations (S12) */
     #board .bmsgline { min-height: var(--b-hit); align-items: center; }
+    #board .bgesprsel { min-height: var(--b-hit); }
+    #board .bpop.bgesprpop { right: 0; min-width: 0; max-width: none; }
     #board .bsec h3 { font-size: 12px; min-height: 28px; }
     #board .ranke h3 { min-height: 40px; flex-wrap: wrap; }
     #board .bkv { min-height: 32px; font-size: 13px; }

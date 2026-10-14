@@ -283,12 +283,15 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const now = Date.now();
   const lead = { kind: "session", slot: 1, openedAt: 1000 }, strand = { kind: "session", slot: 2, openedAt: 2000 };
+  // a second counterpart, older than the strand's last word: the list in the head (S12) chooses between them
+  const pruefer = { kind: "session", slot: 3, openedAt: 3000 };
   const long = ["S6 fertig: das Postfach liest sich als Gespräch, Merge-Check grün.",
     "Nur Client: src/postfach.ts und das Postfach-CSS.", "Nicht geprüft: Kopfzeile in einer echten claude-Pane."];
   // newest first, as the route answers
   const entries = [
     { id: "m-long", from: strand, to: lead, at: now - 60_000, payload: { kind: "text", text: long.join("\n") }, replyTo: "m-ask", readAt: null },
     { id: "m-ask", from: lead, to: strand, at: now - 600_000, payload: { kind: "text", text: "Bitte S6 bauen." }, replyTo: null, readAt: now - 300_000 },
+    { id: "m-pruef", from: pruefer, to: lead, at: now - 3_600_000, payload: { kind: "text", text: "dom grün auf dem Kandidaten." }, replyTo: null, readAt: null },
   ];
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("postfach DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
@@ -335,7 +338,8 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
         slots: [{ id: 1, cwd: "/fixture/leitung", label: "Bauleitung", openedAt: 1000, harness: "claude" },
           { id: 2, cwd: "/fixture/strang", label: "Strang", openedAt: 2000, harness: "claude" },
-          ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))] });
+          { id: 3, cwd: "/fixture/pruefer", label: "Prüfer", openedAt: 3000, harness: "claude" },
+          ...Array.from({ length: 13 }, (_, i) => ({ id: i + 4, cwd: null }))] });
       if (p === "/api/messages") return void json(requestId, { entries });
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -414,6 +418,32 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       const opened = await evaluate<Row[]>(READ);
       const l1 = byId(opened, "m-long"), a1 = byId(opened, "m-ask");
       await shot(`postfach-${width}-auf`);
+      // S11 · Owner 14.10. 12:1x: „[Zitat entfernt]“
+      // . Every text, fill and edge of a conversation is one
+      // of the board's grays (their channels lie within 10 of each other: --chat-mute #8b8b94 is the widest), and a colour
+      // stands only on a mark of at most 8 px: the speaker's dot before the name, the unread dot. Read with one message open.
+      const tones = await evaluate<{ big: string[]; marks: { who: string; bg: string; w: number; h: number; hued: boolean }[] } | null>(`(() => {
+        const tab = ${TAB}; if (!tab) return null;
+        const hued = (s) => { const m = s.match(/rgba?\\(([^)]+)\\)/); if (!m) return false; const p = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+          return (p.length < 4 || p[3] > 0) && Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]) > 10; };
+        const big = [];
+        for (const e of tab.querySelectorAll('.bgespr, .bgespr *')) {
+          const cs = getComputedStyle(e), b = e.getBoundingClientRect();
+          if (b.width <= 8 && b.height <= 8) continue;
+          const own = [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+          for (const [k, v] of [['color', own ? cs.color : ''], ['background', cs.backgroundColor], ['border', parseFloat(cs.borderTopWidth) > 0 ? cs.borderTopColor : '']])
+            if (v && hued(v)) big.push(e.className + ' ' + k + ' ' + v);
+        }
+        const marks = [...tab.querySelectorAll('.bgespr .bmsgwho, .bgespr .bgesprwho')].map((e) => { const cs = getComputedStyle(e, '::before');
+          return { who: e.textContent, bg: cs.backgroundColor, w: parseFloat(cs.width), h: parseFloat(cs.height), hued: hued(cs.backgroundColor) }; });
+        return { big, marks };
+      })()`);
+      facts.tones = tones;
+      claims["the conversation is black and white — grays for every text, fill and edge; a speaker's colour only as a small mark before the name"] =
+        !!tones && tones.big.length === 0 && tones.marks.length >= 3 && tones.marks.every((m) => m.hued && m.w <= 8 && m.h <= 8)
+        && new Set(tones.marks.filter((m) => m.who === "Strang").map((m) => m.bg)).size === 1
+        && new Set(tones.marks.filter((m) => m.who === "Bauleitung").map((m) => m.bg)).size === 1
+        && tones.marks.find((m) => m.who === "Strang")?.bg !== tones.marks.find((m) => m.who === "Bauleitung")?.bg;
       await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-long"] .bmsgline').click()`);
       await settle(150);
       const again = await evaluate<Row[]>(READ);
@@ -423,6 +453,80 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
         !!l1 && l1.open && l1.expanded === "true" && l1.full === long.join("\n") && !l1.firstShown
         && !!a1 && !a1.open && a1.full === null
         && !!l2 && !l2.open && l2.full === null && l2.firstShown;
+      // S12 · Owner 14.10. 13:2x: „[Zitat entfernt]“
+      //  The list names every counterpart, the newest conversation first and chosen;
+      // a choice shows that conversation alone and holds over a repaint of the board (a tab's fold redraws it).
+      // S12b · Owner 20:3x: „[Zitat entfernt]“ The list
+      // is the column's switch and menu, not a <select> whose open list the system paints: open, hovered and focused
+      // it is the board's grays (a colour only on a mark ≤ 8 px), the same under a light and a dark system scheme;
+      // Escape hands the focus back to the switch, a press beside it closes it. No list is this claim's red, never a
+      // probe that could not go on: the other claims of this width stand.
+      const PICK = `(() => { const tab = ${TAB}; const sw = tab?.querySelector('.bgespr .bgesprhd button.bgesprsel');
+        const pop = tab?.querySelector('.bgespr .bgesprpop');
+        return { convs: tab ? tab.querySelectorAll('.bgespr').length : -1, select: !!tab?.querySelector('.bgespr select'),
+          shown: sw?.querySelector('.t')?.textContent ?? null, expanded: sw?.getAttribute('aria-expanded') ?? null, open: !!pop,
+          opts: pop ? [...pop.querySelectorAll('[role="option"]')].map((o) => [o.querySelector('.t')?.textContent ?? '', o.querySelector('.kk')?.textContent ?? '', o.getAttribute('aria-selected')]) : null,
+          focus: document.activeElement === sw ? 'switch' : document.activeElement?.closest?.('.bgesprpop') ? 'list:' + (document.activeElement.querySelector('.t')?.textContent ?? '') : 'elsewhere',
+          ids: tab ? [...tab.querySelectorAll('.bgespr .bmsg')].map((r) => r.dataset.mid) : [], stale: !!tab?.querySelector('.bgespr')?.__before }; })()`;
+      type Pick = { convs: number; select: boolean; shown: string | null; expanded: string | null; open: boolean; opts: string[][] | null;
+        focus: string; ids: string[]; stale: boolean };
+      // every text, fill, edge and outline of the head with its list open: [hued ones beyond a mark, the list's tones]
+      const HEADTONES = `(() => { const hd = ${TAB}?.querySelector('.bgespr .bgesprhd'); if (!hd) return null;
+        const hued = (s) => { const m = s.match(/rgba?\\(([^)]+)\\)/); if (!m) return false; const p = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+          return (p.length < 4 || p[3] > 0) && Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]) > 10; };
+        const big = [], tones = [];
+        for (const e of [hd, ...hd.querySelectorAll('*')]) {
+          const cs = getComputedStyle(e), b = e.getBoundingClientRect();
+          const own = [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+          const vals = [['color', own ? cs.color : ''], ['background', cs.backgroundColor], ['border', parseFloat(cs.borderTopWidth) > 0 ? cs.borderTopColor : ''],
+            ['outline', cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0 ? cs.outlineColor : '']];
+          for (const [k, v] of vals) { if (!v) continue; tones.push(k + '=' + v); if (!(b.width <= 8 && b.height <= 8) && hued(v)) big.push(e.className + ' ' + k + ' ' + v); }
+        }
+        return { big, tones: tones.join(' ') }; })()`;
+      const press = (sel: string) => evaluate(`(() => { ${TAB}?.querySelector(${JSON.stringify(sel)})?.click(); })()`);
+      const p0 = await evaluate<Pick>(PICK);
+      await press(".bgesprhd button.bgesprsel");
+      await settle(150);
+      const p1 = await evaluate<Pick>(PICK);
+      const dark = await evaluate<{ big: string[]; tones: string } | null>(HEADTONES);
+      // the pointer over the second row: its hover is a gray too
+      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const r = ${TAB}?.querySelectorAll('.bgesprpop [role="option"]')[1]?.getBoundingClientRect();
+        return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`);
+      if (at) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
+      await settle(100);
+      const hover = await evaluate<{ big: string[]; tones: string } | null>(HEADTONES);
+      if (at) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+      await settle(100);
+      const light = await evaluate<{ big: string[]; tones: string } | null>(HEADTONES);
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+      await shot(`postfach-${width}-liste`);
+      await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      await settle(150);
+      const p2 = await evaluate<Pick>(PICK);
+      await press(".bgesprhd button.bgesprsel");
+      await settle(150);
+      await evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+      await settle(150);
+      const p3 = await evaluate<Pick>(PICK);
+      await press(".bgesprhd button.bgesprsel");
+      await settle(150);
+      await press('.bgesprpop [role="option"]:nth-child(2)');
+      await settle(150);
+      const p4 = await evaluate<Pick>(PICK);
+      await evaluate(`(() => { const b = ${TAB}?.querySelector('.bgespr'); if (b) b.__before = true; })()`);
+      for (let i = 0; i < 2; i++) { await evaluate(`document.querySelector('#boardbody .btab[data-tab="setup"] .btabbtn')?.click()`); await settle(250); }
+      const p5 = await evaluate<Pick>(PICK);
+      facts.pick = { p0, p1, p2, p3, p4, p5, dark: dark?.big, hover: hover?.big, light: light?.big };
+      claims["with two counterparts a list in the head chooses the conversation — the newest first and chosen — and only that one stands below, also after the board redraws"] =
+        p0.convs === 1 && !p0.select && p0.shown === "Strang · 1 ungelesen" && p0.expanded === "false" && !p0.open && JSON.stringify(p0.ids) === JSON.stringify(["m-long", "m-ask"])
+        && p1.open && p1.expanded === "true" && JSON.stringify(p1.opts) === JSON.stringify([["Strang", "1 ungelesen", "true"], ["Prüfer", "1 ungelesen", "false"]])
+        && p1.focus === "list:Strang"
+        && p4.convs === 1 && !p4.open && p4.shown === "Prüfer · 1 ungelesen" && JSON.stringify(p4.ids) === JSON.stringify(["m-pruef"])
+        && p5.convs === 1 && !p5.stale && p5.shown === "Prüfer · 1 ungelesen" && JSON.stringify(p5.ids) === JSON.stringify(["m-pruef"]);
+      claims["the list is the column's own switch and menu in black and white — open, hovered and focused only grays, the same under a light and a dark system scheme; Escape gives the focus back, a press beside it closes it"] =
+        !!dark && !!hover && !!light && dark.big.length === 0 && hover.big.length === 0 && light.big.length === 0 && light.tones === dark.tones
+        && !p2.open && p2.focus === "switch" && !p3.open;
       results.push({ width, height, claims, facts });
     }
     return results;

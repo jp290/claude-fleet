@@ -8,6 +8,8 @@
 // Darum je Gegenstelle ein Gespräch, wer spricht steht über seinen Nachrichten, diese Session rechts, Zeit
 // deutsch. S9 (unten an fillConversation): Farbe je Sprecher, die neueste Nachricht oben.
 import { api, el, fleet } from "./client";
+import { icon } from "./icons";
+import { popover } from "./popover";
 
 interface Address { kind: string; slot?: number; openedAt?: number; id?: string; role?: string }
 interface Message { id: string; from: Address; to: Address; at: number; payload: { text?: string };
@@ -103,6 +105,8 @@ function conversations(list: Message[], slot: number, openedAt: number): Convers
 // S9 · Owner 14.10.: „[Zitat entfernt]“
 // . Diese Session spricht immer im Akzent-Blau; jede andere Adresse hat einen festen Ton
 // ohne Blau, aus ihrem Schlüssel gerechnet: sie behält ihn über das Neuzeichnen und in jedem Gespräch.
+// S11 · Owner 14.10. 12:1x „[Zitat entfernt]“: der Ton steht nur am Punkt vor dem
+// Namen, Blase und Schrift sind grau (public/index.html, .bmsgwho::before).
 const OWN_HUE = 222;
 const OTHER_HUES = [160, 35, 290, 345];
 function hueOf(a: Address, slot: number, openedAt: number): number {
@@ -125,20 +129,87 @@ function firstLine(text: string): string {
   return `${lines[0] ?? ""}${lines.length > 1 ? " …" : ""}`;
 }
 
+// S12 · Owner 14.10. 13:2x: „[Zitat entfernt]“
+//  Mit zwei und mehr
+// Gegenstellen steht im Kopf statt des Namens eine Liste; darunter steht nur das gewählte Gespräch. Vorgewählt ist
+// das mit der jüngsten Nachricht; die Wahl hält je Besetzung über das Neuzeichnen.
+const chosen = new Map<string, string>();
+const unreadIn = (c: Conversation, slot: number, openedAt: number): number =>
+  c.msgs.filter((m) => own(m.to, slot, openedAt) && m.readAt === null).length;
+// S12b · Owner 14.10. 20:3x: „[Zitat entfernt]“
+//  Die Liste ist kein <select> mehr — dessen offene Liste malt das
+// System (am Mac und am Telefon in dessen Hell/Dunkel und Akzentfarbe) —, sondern Knopf und Menü der Spalte
+// (.optsw, .bpop, .bmenuitem: dieselben Tokens, am Telefon das Blatt von unten). Offen ist höchstens eine Liste
+// (pickOpen, Schlüssel Slot:openedAt); eine Wahl schließt sie, Escape, ein Klick daneben und die Pfeiltasten
+// gehen über die eine Popover-Registrierung der Seite (src/popover.ts, K5).
+let pickOpen: string | null = null;
+let pickClose: ((refocus: boolean) => void) | null = null;
+popover({
+  panel: () => document.querySelector<HTMLElement>("#board .bgesprpop"),
+  trigger: () => document.querySelector<HTMLElement>("#board .bgesprsel.on"),
+  isOpen: () => pickOpen !== null,
+  close: (refocus) => pickClose?.(refocus),
+  rows: () => [...document.querySelectorAll<HTMLElement>("#board .bgesprpop .bmenuitem")],
+});
+
 // S9 · „[Zitat entfernt]“: die neueste Nachricht oben, die
 // früheren klappen unten auf. Ein Zitat steht, wo das Original nicht direkt unter der Antwort steht.
-function fillConversation(box: HTMLElement, c: Conversation, slot: number, openedAt: number): void {
+function fillConversation(box: HTMLElement, c: Conversation, slot: number, openedAt: number, all: Conversation[]): void {
   box.replaceChildren();
   const partner = who(c.with);
   const hd = el("div", "bgesprhd");
-  const name = el("span", "bgesprwho", partner.name);
+  const name = el("span", "bgesprwho", all.length > 1 ? "" : partner.name);
   name.title = partner.hint;
   name.style.setProperty("--who-h", String(hueOf(c.with, slot, openedAt)));
-  hd.append("Gespräch mit ", name);
+  const seat = `${slot}:${openedAt}`;
+  const listOpen = all.length > 1 && pickOpen === seat;
+  if (all.length > 1) {
+    const unread = unreadIn(c, slot, openedAt);
+    const sw = el("button", `optsw bgesprsel${listOpen ? " on" : ""}`) as HTMLButtonElement;
+    sw.type = "button";
+    sw.setAttribute("aria-haspopup", "listbox");
+    sw.setAttribute("aria-expanded", String(listOpen));
+    sw.title = "Gespräch wählen";
+    sw.append(el("span", "t", `${partner.name}${unread ? ` · ${unread} ungelesen` : ""}`), icon("chevron"));
+    const redraw = (next: Conversation, focus: "button" | "list" | null) => {
+      fillConversation(box, next, slot, openedAt, all);
+      const target = focus === "button" ? box.querySelector<HTMLElement>(".bgesprsel")
+        : focus === "list" ? box.querySelector<HTMLElement>(".bgesprpop [aria-selected=\"true\"]") : null;
+      target?.focus();
+    };
+    const close = (refocus: boolean) => { pickOpen = null; pickClose = null; redraw(c, refocus ? "button" : null); };
+    sw.onclick = () => { if (listOpen) close(true); else { pickOpen = seat; redraw(c, "list"); } };
+    name.appendChild(sw);
+    if (listOpen) {
+      pickClose = close;
+      const pop = el("div", "bpop bgesprpop");
+      pop.setAttribute("role", "listbox");
+      pop.setAttribute("aria-label", "Gespräche dieser Session");
+      pop.append(...all.map((o) => {
+        const n = unreadIn(o, slot, openedAt);
+        const b = el("button", "bmenuitem") as HTMLButtonElement;
+        b.type = "button";
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-selected", String(o.key === c.key));
+        b.dataset.key = o.key;
+        const dot = el("span", "bgesprdot");
+        dot.style.setProperty("--who-h", String(hueOf(o.with, slot, openedAt)));
+        b.append(dot, el("span", "t", who(o.with).name));
+        if (n) b.append(el("span", "kk", `${n} ungelesen`));
+        b.title = who(o.with).hint;
+        b.onclick = () => { chosen.set(seat, o.key); pickOpen = null; pickClose = null; redraw(o, "button"); };
+        return b;
+      }));
+      const scrim = el("div", "bpopscrim");
+      scrim.onclick = () => close(true);
+      hd.append("Gespräch mit ", name, scrim, pop);
+    }
+  }
+  if (!listOpen) hd.append("Gespräch mit ", name);
   box.appendChild(hd);
   const newest = [...c.msgs].reverse();
   const shown = unfolded.has(c.key) ? newest : newest.slice(0, SHOWN);
-  const refill = () => fillConversation(box, c, slot, openedAt);
+  const refill = () => fillConversation(box, c, slot, openedAt, all);
   shown.forEach((m, i) => {
     const mine = own(m.from, slot, openedAt), open = expanded.has(m.id);
     const row = el("div", `bmsg ${mine ? "mine" : "theirs"}${open ? " open" : ""}`);
@@ -201,9 +272,10 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
 
 export function postfachBody(body: HTMLElement, list: Message[], slot: number, openedAt: number): void {
   if (stand?.failed) body.appendChild(el("div", "bstate", "Das Postfach war beim letzten Lesen nicht erreichbar; gezeigt ist der Stand davor."));
-  for (const c of conversations(list, slot, openedAt)) {
-    const box = el("div", "bgespr");
-    fillConversation(box, c, slot, openedAt);
-    body.appendChild(box);
-  }
+  const all = conversations(list, slot, openedAt);
+  const c = all.find((x) => x.key === chosen.get(`${slot}:${openedAt}`)) ?? all[0];
+  if (!c) return;
+  const box = el("div", "bgespr");
+  fillConversation(box, c, slot, openedAt, all);
+  body.appendChild(box);
 }

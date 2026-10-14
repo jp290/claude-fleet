@@ -65,7 +65,7 @@ const ROLE_DEFAULTS = {
   merge: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
   repair: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
   cleanReview: { harness: "claude", id: "claude-sonnet-5-5[1m]", effort: null },
-  card: { harness: "claude", id: "claude-haiku-4-5-20251001", effort: null },
+  card: { harness: "claude", id: "claude-haiku-5-5", effort: null },
   summaryExec: OPUS_WORKER,
   commitMsgExec: OPUS_WORKER,
   enhanceExec: OPUS_WORKER,
@@ -94,7 +94,10 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "claude", id: "claude-sonnet-5-5", status: "current", displayWindow: 1_000_000 },
   { harness: "claude", id: "claude-sonnet-5[1m]", status: "superseded", supersededBy: "claude-sonnet-5-5[1m]", displayWindow: 1_000_000 },
   { harness: "claude", id: "claude-sonnet-5", status: "superseded", supersededBy: "claude-sonnet-5-5[1m]", displayWindow: 1_000_000 },
-  { harness: "claude", id: "claude-haiku-4-5-20251001", status: "current", displayWindow: 200_000 },
+  // Haiku 5.5: Claude Code's own result line names contextWindow 1000000 for the bare id (measured 2026-10-14, `claude -p
+  // --output-format stream-json --model claude-haiku-5-5` → result.modelUsage); owner 14.10.: „[Zitat entfernt]“
+  { harness: "claude", id: "claude-haiku-5-5", status: "current", displayWindow: 1_000_000 },
+  { harness: "claude", id: "claude-haiku-4-5-20251001", status: "superseded", supersededBy: "claude-haiku-5-5", displayWindow: 200_000 },
   { harness: "codex", id: "gpt-6.1-sol", status: "current", displayWindow: 258_400 },
   { harness: "codex", id: "gpt-6-sol", status: "superseded", supersededBy: "gpt-6.1-sol", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-6-astra", status: "current", displayWindow: 272_000 },
@@ -113,6 +116,7 @@ export const MODEL_ALIASES: Readonly<Record<string, string>> = {
   "opus 5": "claude-opus-5[1m]", "claude opus 5": "claude-opus-5[1m]",
   "opus 5.5": MODEL_DEFAULTS.main.id, "claude opus 5.5": MODEL_DEFAULTS.main.id,
   sonnet: "claude-sonnet-5-5", "sonnet 5.5": "claude-sonnet-5-5", "claude sonnet 5.5": "claude-sonnet-5-5",
+  haiku: "claude-haiku-5-5", "haiku 5.5": "claude-haiku-5-5", "claude haiku 5.5": "claude-haiku-5-5",
   "sonnet 5": "claude-sonnet-5", "claude sonnet 5": "claude-sonnet-5",
   fable: "claude-fable-5-1[1m]", "fable 5.1": "claude-fable-5-1[1m]", "claude fable 5.1": "claude-fable-5-1[1m]",
   // the Codex names point at their models, never at a role: a role can move off Codex, the name cannot

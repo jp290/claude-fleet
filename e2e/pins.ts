@@ -10743,6 +10743,16 @@ export default function (pi) {
       && modelLabel("claude-sonnet-5") === "Sonnet 5 · 1M",
     JSON.stringify([modelEntry("claude", "claude-sonnet-5-5[1m]"), modelEntry("claude", "claude-sonnet-5"), MODEL_DEFAULTS.summary,
       MODEL_ALIASES.sonnet, MODEL_ALIASES["sonnet 5.5"], modelLabel("claude-sonnet-5-5[1m]")]));
+  // owner 14.10.: the model choice showed „[Zitat entfernt]“ — „[Zitat entfernt]“, whose window is 1M
+  pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, the card role and the short forms point at 5.5",
+    modelEntry("claude", "claude-haiku-5-5")?.status === "current"
+      && modelEntry("claude", "claude-haiku-4-5-20251001")?.status === "superseded"
+      && modelEntry("claude", "claude-haiku-4-5-20251001")?.supersededBy === "claude-haiku-5-5"
+      && MODEL_DEFAULTS.card.id === "claude-haiku-5-5"
+      && ["haiku", "haiku 5.5", "claude haiku 5.5"].every((k) => MODEL_ALIASES[k] === "claude-haiku-5-5")
+      && modelLabel("claude-haiku-5-5") === "Haiku 5.5 · 1M" && modelLabel("claude-haiku-4-5-20251001") === "Haiku 4.5 · 200K",
+    JSON.stringify([modelEntry("claude", "claude-haiku-5-5"), modelEntry("claude", "claude-haiku-4-5-20251001"), MODEL_DEFAULTS.card,
+      MODEL_ALIASES.haiku, modelLabel("claude-haiku-5-5"), modelLabel("claude-haiku-4-5-20251001")]));
   pin("model register: Codex availability distinguishes listed, absent, and missing or malformed cache",
     codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-sol") === "available"
       && codexAvailability({ models: [{ slug: "gpt-6-sol" }] }, "gpt-6-astra") === "unavailable"

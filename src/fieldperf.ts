@@ -55,7 +55,7 @@ export class PasteLog {
   private add(el: FieldPasteEl | null, at: number, sel: boolean): FieldPaste | null {
     if (this.list.length >= FIELD_PASTES_MAX) return null;
     const p: FieldPaste = { el, keyOff: false, ev: false, off: false, files: false, landed: false, sel,
-      sinceFrontMs: this.frontAt === null ? null : Math.round(Math.max(0, at - this.frontAt)) };
+      sinceFrontMs: this.frontAt === null ? null : Math.round(Math.max(0, at - this.frontAt)), len: null, types: null };
     this.list.push(p);
     return p;
   }
@@ -118,6 +118,8 @@ export function initFieldPerf(src: { v: () => number; sha: () => string | null }
     if (!p) return;
     const before = field.value.length;
     p.files = (ev.clipboardData?.files.length ?? 0) > 0;
+    p.len = ev.clipboardData ? ev.clipboardData.getData("text/plain").length : null;
+    p.types = ev.clipboardData ? ev.clipboardData.types.length : null;
     setTimeout(() => { p.off = ev.defaultPrevented; }, 0);
     setTimeout(() => { p.landed = field.value.length > before; }, 100);
   }), true);

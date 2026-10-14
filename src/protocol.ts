@@ -986,14 +986,16 @@ export type FieldArea = typeof FIELD_AREAS[number];
 // and per paste into the chat field — where the keys stood (`el`: the chat field, the terminal, body, anything else;
 // null for a paste without the keys, from a menu), whether a handler cancelled the keys (`keyOff`), whether a paste
 // event reached the chat field (`ev`), cancelled (`off`) or carrying files, whether the field grew within 100 ms
-// (`landed`), whether text on the page stood selected at the keys (`sel`: copied from the board itself), and how long
-// after the window last came to the front. Flags and numbers only, never the text; a row
+// (`landed`), whether text on the page stood selected at the keys (`sel`: copied from the board itself), how long
+// after the window last came to the front, and what the paste event carried: the length of its plain text (`len`)
+// and how many types (`types`) — null for keys no paste followed. Measured 14.10. 13:5x: the paste reaches the field
+// uncancelled and still lands nothing the first time; `len` tells an empty clipboard from text the board lost. Flags and numbers only, never the text; a row
 // without a paste leaves the field out, so the rows before it stay valid.
 export const FIELD_PASTE_ELS = ["ta", "term", "body", "other"] as const;
 export type FieldPasteEl = typeof FIELD_PASTE_ELS[number];
 export interface FieldPaste {
   el: FieldPasteEl | null; keyOff: boolean; ev: boolean; off: boolean; files: boolean; landed: boolean; sel: boolean;
-  sinceFrontMs: number | null;
+  sinceFrontMs: number | null; len: number | null; types: number | null;
 }
 export interface FieldRow {
   v: number; sha: string | null;
@@ -1010,9 +1012,11 @@ const PASTE_FLAGS = ["keyOff", "ev", "off", "files", "landed", "sel"] as const;
 function validPaste(p: unknown): boolean {
   if (!p || typeof p !== "object" || Array.isArray(p)) return false;
   const x = p as Record<string, unknown>;
-  return Object.keys(x).length === 8 && (x.el === null || (FIELD_PASTE_ELS as readonly unknown[]).includes(x.el))
+  return Object.keys(x).length === 10 && (x.el === null || (FIELD_PASTE_ELS as readonly unknown[]).includes(x.el))
     && PASTE_FLAGS.every((k) => typeof x[k] === "boolean")
-    && (x.sinceFrontMs === null || (typeof x.sinceFrontMs === "number" && Number.isFinite(x.sinceFrontMs) && x.sinceFrontMs >= 0 && x.sinceFrontMs <= 86_400_000));
+    && (x.sinceFrontMs === null || (typeof x.sinceFrontMs === "number" && Number.isFinite(x.sinceFrontMs) && x.sinceFrontMs >= 0 && x.sinceFrontMs <= 86_400_000))
+    && (x.len === null || (Number.isSafeInteger(x.len) && Number(x.len) >= 0 && Number(x.len) <= 10_000_000))
+    && (x.types === null || (Number.isSafeInteger(x.types) && Number(x.types) >= 0 && Number(x.types) <= 100));
 }
 export function validFieldRow(raw: unknown): raw is FieldRow {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;

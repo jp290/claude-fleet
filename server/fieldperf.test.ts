@@ -8,7 +8,8 @@ import { FIELD_PASTES_MAX, validFieldRow, type FieldPaste, type FieldRow } from 
 
 const ROW: FieldRow = { v: 7, sha: "0123abc", dev: { w: 1440, h: 900, touch: false, ua: "chrome-mac" }, pageMs: 61_000,
   windowMs: 60_000, firstSlotMs: null, clicks: [], routes: { "/api/sessions": { n: 30, bytes: 2_000 } }, selfMs: 0.4 };
-const PASTE: FieldPaste = { el: "ta", keyOff: false, ev: true, off: false, files: false, landed: true, sel: false, sinceFrontMs: 1200 };
+const PASTE: FieldPaste = { el: "ta", keyOff: false, ev: true, off: false, files: false, landed: true, sel: false, sinceFrontMs: 1200,
+  len: 42, types: 2 };
 
 describe("the field row with pastes", () => {
   test("a row without pastes, as the board wrote it before, stays valid", () => {
@@ -20,7 +21,7 @@ describe("the field row with pastes", () => {
     const k = log.keys("body", 350, true);
     if (k) k.keyOff = true;
     const p = log.paste(900, null);
-    if (p) { p.off = true; p.files = true; p.landed = false; }
+    if (p) { p.off = true; p.files = true; p.landed = false; p.len = 0; p.types = 1; }
     expect(validFieldRow({ ...ROW, pastes: log.take() })).toBe(true);
   });
   test("refused: an empty list, more than the cap, a foreign key, an unknown place, a flag that is not one, a negative time", () => {
@@ -30,6 +31,9 @@ describe("the field row with pastes", () => {
     expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, el: "composer" }] })).toBe(false);
     expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, landed: 1 }] })).toBe(false);
     expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, sinceFrontMs: -1 }] })).toBe(false);
+    expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, len: 1.5 }] })).toBe(false);
+    expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, len: "42" }] })).toBe(false);
+    expect(validFieldRow({ ...ROW, pastes: [{ ...PASTE, types: -1 }] })).toBe(false);
     const { sel: _, ...noSel } = PASTE;
     expect(validFieldRow({ ...ROW, pastes: [noSel] })).toBe(false);
   });
@@ -41,12 +45,14 @@ describe("PasteLog: one entry per Cmd+V and per paste into the chat field", () =
     log.front(1000);
     const k = log.keys("ta", 1250, false);
     expect(log.paste(1251, k)).toBe(k);
-    expect(log.take()).toEqual([{ el: "ta", keyOff: false, ev: true, off: false, files: false, landed: false, sel: false, sinceFrontMs: 250 }]);
+    expect(log.take()).toEqual([{ el: "ta", keyOff: false, ev: true, off: false, files: false, landed: false, sel: false, sinceFrontMs: 250,
+      len: null, types: null }]);
   });
   test("keys with no paste after them stay an entry without an event: the Cmd+V that went nowhere", () => {
     const log = new PasteLog();
     log.keys("body", 10, true);
-    expect(log.take()).toEqual([{ el: "body", keyOff: false, ev: false, off: false, files: false, landed: false, sel: true, sinceFrontMs: null }]);
+    expect(log.take()).toEqual([{ el: "body", keyOff: false, ev: false, off: false, files: false, landed: false, sel: true, sinceFrontMs: null,
+      len: null, types: null }]);
   });
   test("a paste without pending keys (a menu), or after keys that already had theirs, is an entry of its own", () => {
     const log = new PasteLog();

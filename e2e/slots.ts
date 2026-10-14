@@ -11208,6 +11208,60 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       claims["↑ brings a text of three paragraphs back at its full height: as high as typing it, the caret at its end"] =
         upAll && afterUp.h === typed.h && afterUp.client === typed.client && afterUp.h > oneLine.h && afterUp.focused && afterUp.caret;
       await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      // --- 12c. Mangel 69, owner 14.10.: „[Zitat entfernt]“
+      // 
+      //  Native keys, so the browser moves the caret itself; a dictated paragraph that wraps over several
+      // rows, then two short lines of equal length, so one row up from the last one is a known position
+      const press = async (k: "ArrowUp" | "ArrowDown" | "ArrowLeft") => {
+        const vk = { ArrowLeft: 37, ArrowUp: 38, ArrowDown: 40 }[k];
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: k, code: k, windowsVirtualKeyCode: vk });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code: k, windowsVirtualKeyCode: vk });
+        await settle(60);
+      };
+      type Caret = { value: string; at: number };
+      const CARET = `(() => { const ta = document.querySelector('#input'); return { value: ta.value, at: ta.selectionStart }; })()`;
+      const placeCaret = (pos: number) => evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); ta.setSelectionRange(${pos}, ${pos}); })()`);
+      const earlier = "die frühere Nachricht";
+      const dictated = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erfundener Satz ohne "
+        + "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erfundener Satz ohne ec "
+        + "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erfundener Sat.";
+      const big = `${dictated}\nZeile B kurz\nZeile C kurz`;
+      fx.history = [{ text: earlier, ts: Date.parse(at(57)), source: "owner" }, { text: big, ts: Date.parse(at(58)), source: "owner" }];
+      await evaluate(`document.querySelector('#input').focus()`);
+      await press("ArrowUp");
+      const fetched = await wait(`document.querySelector('#input').value === ${JSON.stringify(big)}`);
+      await press("ArrowLeft");
+      await press("ArrowUp");
+      const oneUp = await evaluate<Caret>(CARET);
+      claims["↑ after ← in a recalled message: the caret one row higher, the text unchanged"] =
+        fetched && oneUp.value === big && oneUp.at === big.length - 1 - "\nZeile C kurz".length;
+      const walk: number[] = [];
+      for (let i = 0; i < 60; i++) {
+        await press("ArrowUp");
+        const c = await evaluate<Caret>(CARET);
+        if (c.value !== big) break;
+        walk.push(c.at);
+      }
+      const walked = await evaluate<Caret>(CARET);
+      const inParagraph = walk.filter((p) => p <= dictated.length);
+      claims["↑ walks the wrapped paragraph row by row, and only from its first row fetches the earlier message"] =
+        inParagraph.length >= 2 && walk.every((p, i) => i === 0 ? p < oneUp.at : p < walk[i - 1]) && walked.value === earlier;
+      await press("ArrowDown");
+      const back = await evaluate<Caret>(CARET);
+      await placeCaret(3);
+      await press("ArrowDown");
+      const rowDown = await evaluate<Caret>(CARET);
+      await placeCaret(big.length - 2);
+      await press("ArrowDown");
+      const draft = await evaluate<Caret>(CARET);
+      claims["↓ mirrors it: inside the text a row down, in the last row the draft"] =
+        back.value === big && rowDown.value === big && rowDown.at > 3 && rowDown.at <= dictated.length && draft.value === "";
+      await press("ArrowUp");
+      await placeCaret(3);
+      await press("ArrowUp");
+      claims["a caret placed in the first row (a click): ↑ fetches the earlier message"] = (await evaluate<Caret>(CARET)).value === earlier;
+      facts.navRows = { oneUp: oneUp.at, length: big.length, paragraph: dictated.length, walk, back: back.at, rowDown: rowDown.at, draft: draft.value };
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       // --- 13. "jetzt senden" on a waiting bubble
       const nowQ = "bitte sofort";
       fx.queued = [{ text: nowQ, at: at(59) }];

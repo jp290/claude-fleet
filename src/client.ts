@@ -11202,6 +11202,29 @@ async function cycleHist(dir: number) {
   // input event: that would end the cycle
   growComposer();
 }
+// ↑/↓ inside a recalled message move the caret a row, the field's own way (owner 14.10., Mangel 69: „[Zitat entfernt]“
+// ); they fetch the next message only from its edge — ↑ from the first row or from the end,
+// where a recall leaves the caret, ↓ from the last row. Rows as the field wraps them, so a long dictated
+// paragraph counts as many: the text up to the caret, with the rest of its word that wraps along, measured in
+// the field itself (its scrollbar kept, so the rows wrap at the same width) is as high as one row, or as the
+// whole text. Nothing was typed since the recall (typing ends the cycle), so swapping the value for the
+// measurement costs no undo step.
+function caretOnEdgeRow(dir: number): boolean {
+  const { value, selectionStart: at, selectionEnd, scrollTop } = ta;
+  if (at !== selectionEnd) return false;
+  if (dir < 0 && at === value.length) return true;
+  const { height, minHeight, overflowY } = ta.style;
+  const scrolls = ta.scrollHeight > ta.clientHeight;
+  Object.assign(ta.style, { height: "0", minHeight: "0", overflowY: scrolls ? "scroll" : "hidden" });
+  const tall = (text: string) => { ta.value = text; return ta.scrollHeight; };
+  const toCaret = tall(value.slice(0, at) + (/^\S*/.exec(value.slice(at))?.[0] ?? ""));
+  const edge = toCaret === tall(dir < 0 ? "x" : value);
+  ta.value = value;
+  Object.assign(ta.style, { height, minHeight, overflowY });
+  ta.setSelectionRange(at, at);
+  ta.scrollTop = scrollTop;
+  return edge;
+}
 
 // shared one-line failure notice for the non-destructive mutation handlers (task/auto/share/
 // dispatch toggles) — their views re-derive from refresh(), so a failed POST otherwise no-ops
@@ -11319,14 +11342,15 @@ ta.addEventListener("keydown", (e) => {
     e.stopPropagation();
     return;
   }
-  // only hijack ArrowUp when the box is empty or already cycling — mid-text it must
-  // keep its native "move the caret up a line" meaning. A waiting message comes back first.
+  // only hijack ArrowUp when the box is empty or already cycling, and then only on the recalled
+  // message's edge — mid-text it must keep its native "move the caret up a line" meaning. A waiting
+  // message comes back first.
   if (e.key === "ArrowUp" && !cyc && ta.value === "" && panes[focused]?.upKey()) {
     e.preventDefault();
-  } else if (e.key === "ArrowUp" && (cyc || ta.value === "")) {
+  } else if (e.key === "ArrowUp" && (ta.value === "" || (cyc && caretOnEdgeRow(-1)))) {
     e.preventDefault();
     void cycleHist(-1);
-  } else if (e.key === "ArrowDown" && cyc) {
+  } else if (e.key === "ArrowDown" && cyc && caretOnEdgeRow(1)) {
     e.preventDefault();
     void cycleHist(1);
   }

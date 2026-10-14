@@ -119,14 +119,26 @@ export function composerRows(form: ComposerForm, frame: string): string[] | null
       const known = (line: string): boolean => line === "no matches"
         || line === "Press enter to insert or esc to close"
         || /^\S+ (?:minimal|low|medium|high|xhigh|max|ultra) · \S/.test(line);
-      if (!chrome.every(known)) return null;
-      break;
+      if (chrome.every(known)) break;
+      // A BLANK INPUT ROW between two paragraphs (Mangel 62, measured 14.10. on Claude Code 2.1.296: an owner message
+      // of two paragraphs that Esc put back): every row up to the composer's bottom rule is a "  " continuation
+      // row, at least one — the blank belongs to the input, not to the end of it
+      if (paragraphBreak(plain, j)) { rows.push(""); continue; }
+      return null;
     }
     const row = rendered(raw[j]);
     if (!row.startsWith("  ")) return null;
     rows.push(row.slice(2));
   }
   return rows;
+}
+
+function paragraphBreak(plain: readonly string[], blank: number): boolean {
+  const below = plain.slice(blank + 1);
+  const rule = below.findIndex((l) => RULE_RE.test(l.trim()));
+  if (rule < 0) return false;
+  const rows = below.slice(0, rule).filter((l) => l.trim() !== "");
+  return rows.length > 0 && rows.every((l) => l.startsWith("  "));
 }
 
 // The TUI can omit exactly one payload separator (a space or a newline) where it lays one logical

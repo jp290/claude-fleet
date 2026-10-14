@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TEntry } from "./conversation-read";
 import { appendEvent } from "./persist";
 
 const ROOT = join(import.meta.dir, "..");
@@ -258,5 +259,39 @@ describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden ü
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Mangel 53 S-c (befunde/12 §7): Claude Code schreibt einen ausgeführten Befehl in zwei Formen, und der Chat bekommt
+// beide als denselben user-Text-Eintrag (src/slashcommand.ts macht daraus eine Zeile). Die Zeilen sind die der
+// Owner-Pane: Form (b) aus fa9e6a3c (14.10., Zeilen 51–53), Form (a) wie im Beweis „[Zitat entfernt]“ vom 13.10.
+describe("viewEntry: ein Befehl aus Claude Code kommt in beiden Formen als derselbe Chat-Eintrag", () => {
+  const ts = "2026-10-14T05:07:07.916Z";
+  const record = "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-fable-5-1[1m]</command-args>";
+  const output = "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>";
+  const entry = (n: number, text: string): TEntry => ({ n, role: "user", ts, blocks: [{ t: "text", text }] });
+
+  test("Form (a), system/local_command: Befehl und Ausgabe werden user-Text-Einträge", async () => {
+    const { viewEntry } = await load();
+    expect(viewEntry({ type: "system", subtype: "local_command", content: record, level: "info", isMeta: false, timestamp: ts }, 52))
+      .toEqual(entry(52, record));
+    expect(viewEntry({ type: "system", subtype: "local_command", content: output, level: "info", isMeta: false, timestamp: ts,
+      commandRun: { command: "model", args: "claude-fable-5-1[1m]" } }, 53)).toEqual(entry(53, output));
+  });
+  test("Form (b), user-Zeilen: dieselben Einträge, der Caveat bleibt draußen", async () => {
+    const { viewEntry } = await load();
+    const user = (content: string, isMeta?: boolean) => ({ type: "user", isMeta, timestamp: ts, message: { role: "user", content } });
+    expect(viewEntry(user("<local-command-caveat>The command below was run directly in Claude Code …</local-command-caveat>", true), 51)).toBeNull();
+    expect(viewEntry(user(record), 52)).toEqual(entry(52, record));
+    expect(viewEntry(user(output), 53)).toEqual(entry(53, output));
+  });
+  test("jede andere system-Zeile bleibt draußen, auch ein local_command ohne Text oder aus einem Subagenten", async () => {
+    const { viewEntry } = await load();
+    for (const line of [{ type: "system", subtype: "turn_duration", isMeta: false, timestamp: ts },
+      { type: "system", subtype: "stop_hook_summary", timestamp: ts },
+      { type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: ts },
+      { type: "system", subtype: "local_command", content: "", timestamp: ts },
+      { type: "system", subtype: "local_command", content: record, isSidechain: true, timestamp: ts }])
+      expect(viewEntry(line, 9)).toBeNull();
   });
 });

@@ -32,6 +32,7 @@ import { INSTANCE_LINKS_MAX_BYTES, INSTANCE_URL_RE, instanceLinksFrom,
 import { OPS_POLL_PAYLOAD_KEYS, opsPollVisible, type OpsPollSource } from "../src/opsevents";
 import { FLEET_DEFAULT_MODEL } from "../src/protocol";
 import { readCodexFirstTurn } from "../server/conversation-read";
+import { deliveredInField } from "../server/recall";
 import { CONTEXT_PACKS } from "../context-packs";
 import { sectionAt } from "../context-sections";
 import type { Ctx } from "./ctx";
@@ -2414,7 +2415,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // sensor, as it does live (a no-op here). `earlier` names how the earlier sends ended.
     const exerciseSend = async (source: string, before: string, afterResidue: string,
       readiness: { state: "ready" | "blocked"; why?: string } | null = { state: "ready" },
-      plan: { reads?: string[]; composer?: string[]; sends?: number; transcript?: string; notAccepted?: true } = {}): Promise<SendTrace> => {
+      plan: { reads?: string[]; composer?: string[]; sends?: number; transcript?: string; notAccepted?: true;
+        last?: { n: number; text: string }; field?: string[] } = {}): Promise<SendTrace> => {
       const events: string[] = [];
       const audits: string[] = [];
       const earlier: string[] = [];
@@ -2458,6 +2460,9 @@ export async function run(ctx: Ctx): Promise<void> {
         stuckDeliveryProbes: new Map<number, string>(), stuckDeliveries: new Map<number, unknown>(),
         observeStuckDelivery: () => { if (!plan.notAccepted) throw new Error("observed fixture must not start the residue sensor"); },
         createHash, transcriptFile: () => plan.transcript ?? null, openSync, fstatSync, readSync, closeSync,
+        // Mangel 62: the transcript's newest prompt and the field's exact rows, for the delivered-prompt question
+        liveReader: { count: async () => null, tailOf: () => (plan.last ? { last: plan.last } : null) },
+        readExactComposer: async () => (plan.field ? { kind: "rows", rows: plan.field } : { kind: "unobservable" }), deliveredInField,
       };
       const bindings = Object.keys(deps).map((name) => `const ${name} = d[${JSON.stringify(name)}];`).join("\n");
       const send = new Function("d", `${bindings}\n${new Bun.Transpiler({ loader: "ts" }).transformSync(source)}\nreturn sendText;`)(deps) as
@@ -2524,6 +2529,20 @@ export async function run(ctx: Ctx): Promise<void> {
     const foldedFresh = sendSource ? await exerciseSend(sendSource, folded, "") : { events: [], audits: [], earlier: [] };
     check("(2b-1) a folded rest with no record of it is still submitted AND followed by the new paste — no message is lost",
       recovers(foldedFresh) && foldedFresh.audits.includes("send_residue"), JSON.stringify(foldedFresh));
+    // MANGEL 62, owner (über die Bauleitung) 14.10.: „[Zitat entfernt]“
+    //  The rest IS the transcript's newest prompt — delivered
+    // once, put back by Esc (measured on :8982: the next send submitted it, the session got it twice)
+    const owner = "[fleet-zustellung · Owner-Credential · Slot 1] Das ist ein erfundener Sa.";
+    const putBack = sendSource ? await exerciseSend(sendSource, owner, "", { state: "ready" },
+      { last: { n: 5, text: `${owner}\n\nDas ist ein erfunde.` }, field: [owner, "", "Das ist ein erfunde."] }) : { events: [], audits: [], earlier: [] };
+    check("(Mangel 62) a delivered prompt Esc put back is never submitted again: no Enter, no paste, the send says the field is occupied",
+      putBack.events.length === 0 && /composer occupied/.test(putBack.error ?? "") && !putBack.audits.includes("send_residue"),
+      JSON.stringify(putBack));
+    const foldedBack = sendSource ? await exerciseSend(sendSource, folded, "", { state: "ready" },
+      { last: { n: 5, text: `[fleet-zustellung · probe] \n\n<pasted_content id="ba78">\nA\nB\nC\n</pasted_content id="ba78">\n` },
+        field: [folded] }) : { events: [], audits: [], earlier: [] };
+    check("(Mangel 62) a folded paste Esc put back, stored with its closing newline, is never submitted again either",
+      foldedBack.events.length === 0 && /composer occupied/.test(foldedBack.error ?? ""), JSON.stringify(foldedBack));
     // CHARGE 2b (2): the transcript speaks before "not accepted" — a user turn with the typed text since
     // the Enter turns a field that still shows text into a stale frame; an older turn does not
     const turnFile = (at: number): string => {

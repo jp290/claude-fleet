@@ -10,6 +10,7 @@ import { Shell, openShell } from "./shell";
 import { PostLandAuditInfo, PostLandAuditLiveInfo, SuiteOfferRow, instanceBandText, type InstanceSource, type WorkplaceCheck, type WorkplaceChecks, type WorkplaceRepo, type WorkplaceRow, type WorkplaceStand, type Workplaces } from "./protocol";
 import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
+import { isSlashLine } from "./slashcommand";
 import { MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, mmss, shortTitle, suiteMeter } from "./suitemeter";
 import { PLA_ACK_KEY, postLandAlarm, plaHolder, plaNeedsOwner, type PlaHolder } from "./plaudit";
 import { porcelainPath } from "./gitpath";
@@ -775,7 +776,8 @@ export async function pollOutline(slot: number): Promise<{ prompts: string[]; er
       // one outline row per user text block — exactly mirrors the .msg.user elements
       // appendEntry creates, so row index i maps to showPromptAt(i)
       for (const b of e.blocks) {
-        if (b.t !== "text") continue;
+        // a slash command and its output are one quiet line there, not a bubble (Pane#addSlashLine)
+        if (b.t !== "text" || isSlashLine(b.text)) continue;
         const first = b.text.split("\n").find((l) => l.trim()) ?? "";
         c.prompts.push(first.trim().slice(0, 100) || "(empty)");
       }

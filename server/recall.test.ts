@@ -1,7 +1,8 @@
 // server/recall.ts against Claude Code 2.1.296 as measured on 2026-10-13 (Haiku, tmux, Fleet's own
 // delivery): the field forms and BSpace counts below are the measured ones (befunde/08, S3).
 import { describe, expect, test } from "bun:test";
-import { eraseCount, fieldHolds, ownerPrompt, recall, type RecallPane } from "./recall";
+import { deliveredInField, eraseCount, fieldHolds, ownerPrompt, recall, type RecallPane } from "./recall";
+import { composerHoldsExactly, composerRows } from "../composer";
 import type { Turn } from "./live-state";
 
 const H = "[fleet-zustellung · Owner-Credential · Slot 1] ";
@@ -21,6 +22,12 @@ describe("the field Claude Code shows for recalled prompts", () => {
     expect(fieldHolds([`[fleet-zustellung · Owner-Credential · Slot 1] ${FOLD}`], [p])).toBe(true);
     expect(eraseCount([p])).toBe(48);
   });
+  test("a prompt ending in a paste is stored with one more \\n, which the field does not show (measured 14.10., Mangel 62)", () => {
+    const stored = `${PASTED("ba78", "Das ist ein erfundener Sa.\n\nDas ist ein erfunde.\n\nAntworte in drei Sätzen.")}\n`;
+    const field = [`${H}[Pasted text #2 +4 lines]`];
+    expect(fieldHolds(field, [stored])).toBe(true);
+    expect(eraseCount([stored])).toBe(eraseCount([stored.slice(0, -1)]));
+  });
   test("↑ joins every waiting prompt with a newline, one row each (measured 117)", () => {
     const q = [`${H}Q2 antworte nur OK-Q2`, PASTED("9bf6", LONG)];
     expect(fieldHolds([`${H}Q2 antworte nur OK-Q2`, `[fleet-zustellung · Owner-Credential · Slot 1] ${FOLD}`], q)).toBe(true);
@@ -30,6 +37,24 @@ describe("the field Claude Code shows for recalled prompts", () => {
     const p = `${H}Q1 antworte nur OK-Q1`;
     expect(fieldHolds([`${p} und mehr`], [p])).toBe(false);
     expect(fieldHolds([`x${p}`], [p])).toBe(false);
+  });
+});
+
+// Mangel 62: Esc put the delivered prompt back, and the next send submitted it as a rest — the session got it twice
+// (measured 14.10. on :8982, both forms; the field rows are composerRows' reading of the captured frame)
+describe("a delivered prompt back in Claude's field", () => {
+  const head = `${H}Das ist ein erfundener Sa.`;
+  test("two paragraphs as typed, the blank row read as input: it is the transcript's newest prompt", () => {
+    expect(deliveredInField([head, "", "Das ist ein erfunde."], { text: `${head}\n\nDas ist ein erfunde.` })).toBe(true);
+  });
+  test("a folded paste, stored with its closing \\n: it is the transcript's newest prompt", () => {
+    const stored = `${PASTED("ba78", "Das ist ein erfundener Sa.\n\nDas ist ein erfunde.\n\nAntworte in drei Sätzen.")}\n`;
+    expect(deliveredInField([`${H}[Pasted text #2 +4 lines]`], { text: stored })).toBe(true);
+  });
+  test("another prompt, an unreadable field or no prompt: not a delivered one", () => {
+    expect(deliveredInField([head], { text: `${H}Eine andere Nachricht.` })).toBe(false);
+    expect(deliveredInField(null, { text: head })).toBe(false);
+    expect(deliveredInField([head], null)).toBe(false);
   });
 });
 
@@ -161,5 +186,37 @@ describe("jetzt senden", () => {
     const pane = fakePane({ turn: "working", queued: [`${H}Q1`] });
     expect(await recall("send-now", pane, QUICK)).toEqual({ result: "sent-now" });
     expect(pane.pressed).toEqual(["C-x C-s"]);
+  });
+});
+
+// composer.ts#composerRows against Claude Code 2.1.296 as captured on 14.10. (Mangel 62, measuring instance :8982): an
+// owner message of two paragraphs that Esc put back into Claude's field. The blank row between them is input.
+const CLAUDE = { kind: "glyph" as const, re: /^❯/ };
+const CODEX = { kind: "glyph" as const, re: /^›/ };
+const RULE = "─".repeat(200);
+const HEAD = "[fleet-zustellung · Owner-Credential · Slot 1] Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erfundener Satzx?";
+const SECOND = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erfund.";
+// the captured frame: the composer between two rules, Claude's status rows below
+const frame = (field: string[]) => [RULE, ...field, RULE, "  ctx [#---------] 18%  |  Haiku 4.5", "  ⏸ manual mode on", "", ""].join("\n");
+
+describe("composerRows: a blank row inside Claude's input", () => {
+  test("two paragraphs Esc put back: three rows, the blank one empty, and they hold the message exactly", () => {
+    const rows = composerRows(CLAUDE, frame([`❯ ${HEAD}`, "", `  ${SECOND}`]));
+    expect(rows).toEqual([HEAD, "", SECOND]);
+    expect(composerHoldsExactly(rows ?? [], `${HEAD}\n\n${SECOND}`)).toBe(true);
+  });
+  test("three paragraphs: every blank row between them is input", () => {
+    expect(composerRows(CLAUDE, frame([`❯ ${HEAD}`, "", `  ${SECOND}`, "", "  Antworte in drei Sätzen."])))
+      .toEqual([HEAD, "", SECOND, "", "Antworte in drei Sätzen."]);
+  });
+  test("a blank row with only the rule below it ends nothing new: unreadable, as before", () => {
+    expect(composerRows(CLAUDE, frame([`❯ ${HEAD}`, ""]))).toBeNull();
+  });
+  test("a blank row, then a row that is no continuation: unreadable, as before", () => {
+    expect(composerRows(CLAUDE, frame([`❯ ${HEAD}`, "", SECOND]))).toBeNull();
+  });
+  test("Codex: the measured overlays below a blank row stay chrome", () => {
+    expect(composerRows(CODEX, ["› Hallo", "", "  no matches"].join("\n"))).toEqual(["Hallo"]);
+    expect(composerRows(CODEX, ["› Hallo", "", "  gpt-5.3-codex high · 100% left"].join("\n"))).toEqual(["Hallo"]);
   });
 });

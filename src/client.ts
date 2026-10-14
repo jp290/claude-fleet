@@ -35,6 +35,7 @@ import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton
 import { isInterruptMark, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
+import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
@@ -2122,6 +2123,9 @@ class Pane {
         this.toolGroup = null; // a message ends the current work block
         if (e.role !== "user") { this.addMessage(e, b.text, null, null, false); continue; }
         const raw = unwrapPasted(b.text);
+        // a slash command Claude Code ran, and its output: one quiet line, not two bubbles of yours (src/slashcommand.ts)
+        const cmd = slashCommand(raw), out = cmd ? null : slashOutput(raw);
+        if (cmd || out) { this.settlePending(raw); this.addSlashLine(e, cmd, out); continue; }
         // Fleet's typed delivery head is transport provenance, not something the owner wrote: it rides
         // in the meta row beside the bubble, and the bubble and its copy carry only the body.
         const { header, body } = splitDeliveryHeader(raw);
@@ -2184,6 +2188,31 @@ class Pane {
     const more = rest.join("\n").trim();
     if (more) line.appendChild(el("div", "msysbody", more));
     this.chatAdd(line);
+  }
+
+  // A slash command Claude Code ran (src/slashcommand.ts): ONE quiet line, as the terminal shows "❯ /model …" with its
+  // "⎿ Set model to …" under it. The command opens the line with what was typed, its output makes it the sentence. The
+  // line still waiting is the last one the transcript drew, read off the DOM so a shelved chat carries it along; a
+  // click opens Claude Code's own words.
+  private addSlashLine(e: TEntry, cmd: SlashCommand | null, out: SlashOutput | null) {
+    let last = this.chatEl.lastElementChild;
+    while (last?.matches(".mlive, .mheld, .msg.pending")) last = last.previousElementSibling;
+    const waiting = out && last instanceof HTMLElement && last.matches(".mcmd[data-wait]") ? last : null;
+    const line = waiting ?? document.createElement("details");
+    if (!waiting) {
+      line.className = "msys mcmd";
+      const sum = document.createElement("summary");
+      sum.append(el("span", "msyswho", cmd?.name ?? "befehl"), el("span", "msystext", ""));
+      line.append(sum, el("div", "msysbody", ""));
+      this.chatAdd(line);
+    }
+    if (cmd) { line.dataset.wait = ""; line.dataset.name = cmd.name; line.dataset.args = cmd.args; }
+    if (out) delete line.dataset.wait;
+    const ran = line.dataset.name !== undefined ? { name: line.dataset.name, args: line.dataset.args ?? "" } : null;
+    const [sum, text, body] = [line.querySelector("summary"), line.querySelector(".msystext"), line.querySelector(".msysbody")];
+    if (sum) sum.title = `Claude Code hat diesen Befehl selbst ausgeführt${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`;
+    if (text) text.textContent = slashSentence(ran, out);
+    if (body) body.textContent = [ran && `${ran.name} ${ran.args}`.trim(), out?.text].filter(Boolean).join("\n");
   }
 
   // Esc mid-turn (src/pendingsend.ts#isInterruptMark): the terminal shows "Interrupted" as a line under
@@ -2524,7 +2553,9 @@ class Pane {
           // every entry reset the counter up to 3× per tool turn)
           // (codex/pi name their reference themselves, below — `cache` in the payload)
           if (data.cache !== undefined) continue;
-          const startsRequest = e.role === "user" || e.blocks.some((b) => b.t === "tool_result");
+          // (a slash command and its output run locally in Claude Code — no request)
+          const startsRequest = (e.role === "user" && !e.blocks.every((b) => b.t === "text" && isSlashLine(b.text)))
+            || e.blocks.some((b) => b.t === "tool_result");
           const at = startsRequest && e.ts ? Date.parse(e.ts) : NaN;
           if (at > this.lastTurnAt) this.lastTurnAt = at;
         }
@@ -11098,6 +11129,7 @@ function histRow(text: string, meta: string, source: string | undefined): HTMLEl
     cyc = null;
     ta.value = text;
     updateChips();
+    growComposer();
     closeHist();
     ta.focus();
   };
@@ -11163,6 +11195,9 @@ async function cycleHist(dir: number) {
   ta.value = next === cyc.items.length ? cyc.draft : cyc.items[next];
   ta.selectionStart = ta.selectionEnd = ta.value.length;
   updateChips();
+  // the field takes the text's own height at once, every paragraph in view (owner 14.10., Mangel 61) — not an
+  // input event: that would end the cycle
+  growComposer();
 }
 
 // shared one-line failure notice for the non-destructive mutation handlers (task/auto/share/
@@ -11408,6 +11443,38 @@ function restoreDrafts(): void {
   keepDraftsNow();
 }
 addEventListener("pagehide", keepDraftsNow);
+// WHERE THE KEYS WERE, ACROSS A RELOAD (owner 14.10., Mangel 64: „[Zitat entfernt]“
+// ): a newer bundle reloads a hidden tab (armReload) — the owner
+// copying in another app — and the page came back with the keys on <body>, so the Cmd+V went nowhere. The tab keeps
+// whether the composer or the focused pane's terminal had them; the boot gives them back (restoreFocus). The field's
+// text comes back on its own (restoreDrafts). sessionStorage: one tab's state, it must not reach another tab
+const FOCUS_KEY = "fleet.focus";
+addEventListener("pagehide", () => {
+  const at = document.activeElement === ta ? "composer" : document.activeElement === panes[focused]?.term.textarea ? "term" : null;
+  try {
+    if (at) sessionStorage.setItem(FOCUS_KEY, at);
+    else sessionStorage.removeItem(FOCUS_KEY);
+  } catch { /* storage refused — the reload comes back with the keys on <body>, as before */ }
+});
+function restoreFocus(): void {
+  let at: string | null = null;
+  try {
+    at = sessionStorage.getItem(FOCUS_KEY);
+    sessionStorage.removeItem(FOCUS_KEY);
+  } catch { return; }
+  if (!at || isMobile()) return; // the phone has no Cmd+V, and a focused field there would raise the keyboard
+  const put = () => {
+    if (document.activeElement && document.activeElement !== document.body) return; // the owner put the keys somewhere already
+    const pane = panes[focused];
+    if (at === "composer" && !ta.disabled) {
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+    } else if (at === "term" && pane?.slot) pane.term.focus();
+  };
+  // a tab reloaded while hidden gets the keys back when it is seen again
+  if (document.hidden) document.addEventListener("visibilitychange", put, { once: true });
+  else put();
+}
 function switchDraft(slot: number): void {
   if (slot === draftSlot) return;
   const next = drafts.swap(draftSlot, parkedAt(), { text: ta.value, attached },
@@ -11660,4 +11727,5 @@ void (async () => {
   panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
   setCollapsed(prefBool("fleet.sidecollapsed"));
+  restoreFocus();
 })();

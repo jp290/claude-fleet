@@ -35,13 +35,21 @@ const PASTE_IN_TRANSCRIPT = /\n\n<pasted_content id="([^"]+)">\n?[\s\S]*?\n?<\/p
 const PASTE_IN_FIELD = /\[Pasted text #\d+(?: \+\d+ lines)?\]/g;
 // one code point for one token: the field erases a folded paste with one BSpace
 const TOKEN = "\uE000";
+const TRAILING_AFTER_TOKEN = new RegExp(`${TOKEN}\n$`);
 
-// what Claude's field shows for these prompts, a folded paste as TOKEN
+// what Claude's field shows for these prompts, a folded paste as TOKEN. A prompt that ENDS in a paste is stored with one
+// more \n after the closing tag, which the field does not show (measured 14.10. on 2.1.296, :8982 — Esc came back
+// "kept" for exactly that byte, Mangel 62)
 export function fieldOf(prompts: readonly string[]): string {
-  return prompts.map((p) => p.replace(PASTE_IN_TRANSCRIPT, TOKEN)).join("\n");
+  return prompts.map((p) => p.replace(PASTE_IN_TRANSCRIPT, TOKEN).replace(TRAILING_AFTER_TOKEN, TOKEN)).join("\n");
 }
 export function fieldHolds(rows: readonly string[], prompts: readonly string[]): boolean {
   return prompts.length > 0 && composerHoldsExactly(rows.map((r) => r.replace(PASTE_IN_FIELD, TOKEN)), fieldOf(prompts));
+}
+// A DELIVERED PROMPT BACK IN CLAUDE'S FIELD (Mangel 62): Esc before any answer put it there and its transcript line
+// stays — the session got it once. A send that finds it must not submit it as a rest of its own (server.ts#sendText)
+export function deliveredInField(rows: readonly string[] | null, last: { text: string } | null): boolean {
+  return rows !== null && last !== null && fieldHolds(rows, [last.text]);
 }
 export function eraseCount(prompts: readonly string[]): number {
   return [...fieldOf(prompts)].length;

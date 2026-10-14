@@ -5,6 +5,7 @@
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
 import { deliveryParts } from "./delivery-format";
+import { slashCommand } from "./slashcommand";
 
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
 const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
@@ -29,11 +30,10 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
 }
 // A slash command never reaches the transcript as typed: Claude Code records it as
 // `<command-name>/effort</command-name> <command-message>…</command-message> <command-args>xhigh</command-args>`
-// (2.1.288, every command line of 2026-10-01..04 in this shape). This is the text that was typed, or null.
-const COMMAND_RECORD = /^<command-name>(\/[^<\s]+)<\/command-name>\s*<command-message>[^<]*<\/command-message>\s*<command-args>([^<]*)<\/command-args>$/;
+// (2.1.288, every command line of 2026-10-01..04 in this shape; src/slashcommand.ts). This is the text that was typed, or null.
 function typedCommand(entry: string): string | null {
-  const m = COMMAND_RECORD.exec(entry.trim());
-  return m ? `${m[1]} ${m[2]}` : null;
+  const c = slashCommand(entry);
+  return c ? `${c.name} ${c.args}` : null;
 }
 // A bundle (src/delivery-format.ts) retires the bubble through its OWNER parts only: a Fleet part that
 // happens to repeat the sent text is not the send arriving.

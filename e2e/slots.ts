@@ -10775,11 +10775,11 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   const fx = { entries: [] as Record<string, unknown>[], sends: [] as string[], queued: [] as { text: string; at: string | null }[],
     recalls: [] as string[], recallReply: null as unknown, history: [] as { text: string; ts: number; source: string }[],
     reads: [] as number[],
+    // the bundle's stand as /api/sessions says it (server/transport.ts#bundleV); scenario 17 raises it like a deploy
+    v: 1,
     // the transcript's raw lines as far as the model/effort facts go (scenario 15): the route folds them with
-    // server/live-state.ts#viewFolder, the way server.ts#transcriptPayload does; `sys` counts the lines that
-    // carry no chat entry, so `total` grows with them as the real line count does
-    raw: [JSON.stringify({ type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } })],
-    sys: 0 };
+    // server/live-state.ts#viewFolder, the way server.ts#transcriptPayload does
+    raw: [JSON.stringify({ type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } })] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
   const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -10835,7 +10835,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
-      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), chips: [], tasks: [],
+      if (p === "/api/sessions") return void json(requestId, { now: Date.now(), v: fx.v, chips: [], tasks: [],
         slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
@@ -10843,7 +10843,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         const folded = viewFolder();
         for (const line of fx.raw) folded.add(line);
         const { model, effort } = folded.facts();
-        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length + fx.sys,
+        return void json(requestId, { entries: fx.entries.slice(after).map((e, i) => ({ n: after + i, ...e })), total: fx.entries.length,
           source: "/fixture/orch.jsonl", ttlSec: 300, model, effort });
       }
       // the composer's model and effort switches (scenario 15) need the slot's adapter entry
@@ -10906,12 +10906,12 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const facts: Record<string, unknown> = {};
       fx.entries = [text("user", "Wie weit ist die Messung?", 50), text("assistant", "Die erste Messung ist da.", 51)];
       fx.raw = fx.raw.slice(0, 1);
-      fx.sys = 0;
       fx.sends = [];
       fx.queued = [];
       fx.recalls = [];
       fx.recallReply = null;
       fx.history = [];
+      fx.v = 1;
       if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
       targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
       sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -11077,6 +11077,26 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const prev = await wait(`document.querySelector('#input').value === 'die vorherige Eingabe'`);
       claims["↑ with nothing waiting: the previous input comes into the composer, and no recall is sent"] = prev && fx.recalls.length === 0;
       await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      // --- 12b. Mangel 61, owner 14.10.: „[Zitat entfernt]“
+      //  The field takes the height typing the same text gives it (up to its ceiling, which the phone reaches
+      // at five lines), the caret at the end
+      type Field = { h: number; scroll: number; client: number; focused: boolean; caret: boolean };
+      const FIELD = `(() => { const ta = document.querySelector('#input'); return { h: Math.round(ta.getBoundingClientRect().height),
+        scroll: ta.scrollHeight, client: ta.clientHeight, focused: document.activeElement === ta, caret: ta.selectionStart === ta.value.length }; })()`;
+      const paragraphs = "Erster Absatz.\n\nZweiter Absatz.\n\nDritter Absatz.";
+      fx.history = [{ text: paragraphs, ts: Date.parse(at(58)), source: "owner" }];
+      const oneLine = await evaluate<Field>(FIELD);
+      await key("ArrowUp");
+      const upAll = await wait(`document.querySelector('#input').value === ${JSON.stringify(paragraphs)}`);
+      await settle(250);
+      const afterUp = await evaluate<Field>(FIELD);
+      await evaluate(`document.querySelector('#input').dispatchEvent(new Event('input', { bubbles: true }))`);
+      await settle(250);
+      const typed = await evaluate<Field>(FIELD);
+      facts.upHeight = { oneLine: oneLine.h, afterUp, typed };
+      claims["↑ brings a text of three paragraphs back at its full height: as high as typing it, the caret at its end"] =
+        upAll && afterUp.h === typed.h && afterUp.client === typed.client && afterUp.h > oneLine.h && afterUp.focused && afterUp.caret;
+      await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       // --- 13. "jetzt senden" on a waiting bubble
       const nowQ = "bitte sofort";
       fx.queued = [{ text: nowQ, at: at(59) }];
@@ -11119,14 +11139,98 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const answers = () => evaluate<number>("document.querySelectorAll('.pane .panechat .msg.assistant').length");
       const fableName = modelLabel("claude-fable-5-1[1m]").split(" · ")[0];
       const before = { val: await evaluate<string>(MODEL_VAL), answers: await answers() };
+      // your ARRIVED bubbles: a "wartet" bubble of scenario 14 leaves on its own clock meanwhile
+      const own = () => evaluate<number>("document.querySelectorAll('.pane .panechat .msg.user:not(.pending)').length");
+      const ownBefore = await own();
+      const record = (name: string, args: string) =>
+        `<command-name>${name}</command-name>\n            <command-message>${name.slice(1)}</command-message>\n            <command-args>${args}</command-args>`;
+      const stdout = (said: string) => `<local-command-stdout>${said}</local-command-stdout>`;
+      const fableSet = stdout("Set model to `Fable 5.1` and saved as your default for new sessions");
       fx.raw = [...fx.raw,
-        JSON.stringify({ type: "system", subtype: "local_command", content: "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-fable-5-1[1m]</command-args>", level: "info", isMeta: false }),
-        JSON.stringify({ type: "system", subtype: "local_command", content: "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>", level: "info", isMeta: false, commandRun: { command: "model", args: "claude-fable-5-1[1m]" } })];
-      fx.sys += 2;
+        JSON.stringify({ type: "system", subtype: "local_command", content: record("/model", "claude-fable-5-1[1m]"), level: "info", isMeta: false }),
+        JSON.stringify({ type: "system", subtype: "local_command", content: fableSet, level: "info", isMeta: false, commandRun: { command: "model", args: "claude-fable-5-1[1m]" } })];
+      // what server.ts#viewEntry serves for the two lines (since S-c): the user texts Claude Code's other form writes
+      fx.entries = [...fx.entries, text("user", record("/model", "claude-fable-5-1[1m]"), 62), text("user", fableSet, 62)];
       const switched = await wait(`(${MODEL_VAL}).startsWith(${JSON.stringify(fableName)})`, 2500);
       facts.modelSwitch = { before, after: { val: await evaluate<string>(MODEL_VAL), answers: await answers() }, fableName };
       claims["model switch: after Claude Code's „Set model to Fable 5.1“ line the switch under the field shows Fable, with no new answer"] =
         before.val.startsWith(modelLabel("claude-opus-5-5").split(" · ")[0]) && switched && (await answers()) === before.answers;
+      // --- 16. Mangel 53 S-c, owner 14.10.: „[Zitat entfernt]“
+      //  First the switch of scenario 15, then one whose
+      // output arrives a read later, then /effort, a kept model and another command, in Claude Code's own words
+      type CmdLine = { who: string; text: string; inBubble: boolean };
+      const CMD_LINES = `[...document.querySelectorAll('.pane .panechat .mcmd')].map((d) => ({ who: d.querySelector('.msyswho')?.textContent ?? '',
+        text: d.querySelector('.msystext')?.textContent ?? '', inBubble: !!d.closest('.msg') }))`;
+      const cmdLines = () => evaluate<CmdLine[]>(CMD_LINES);
+      const count = (n: number) => `(${CMD_LINES}).length === ${n}`;
+      const lineIs = (i: number, who: string, said: string) =>
+        `(${CMD_LINES})[${i}]?.who === ${JSON.stringify(who)} && (${CMD_LINES})[${i}]?.text === ${JSON.stringify(said)}`;
+      const tagged = () => evaluate<boolean>("[...document.querySelectorAll('.pane .panechat .msg')].some((m) => /<\\/?(command-|local-command)/.test(m.innerText))");
+      const fableLine = await wait(`${count(1)} && ${lineIs(0, "/model", "Modell: Fable 5.1 · 1M, gespeichert als Standard")}`, 2500);
+      const afterSwitch = await cmdLines();
+      claims["S-c: after the switch the chat shows ONE line „Modell: Fable 5.1 · 1M, gespeichert als Standard“, outside every bubble, and no bubble with Claude Code's tags"] =
+        fableLine && !afterSwitch[0]?.inBubble && !(await tagged()) && (await own()) === ownBefore;
+      fx.entries = [...fx.entries, text("user", record("/model", "claude-opus-5-5[1m]"), 63)];
+      const typedFirst = await wait(`${count(2)} && ${lineIs(1, "/model", "claude-opus-5-5[1m]")}`, 2500);
+      fx.entries = [...fx.entries, text("user", stdout("Set model to `Opus 5.5 (1M context)` and saved as your default for new sessions"), 63)];
+      const sameLine = await wait(`${count(2)} && ${lineIs(1, "/model", "Modell: Opus 5.5 · 1M, gespeichert als Standard")}`, 2500);
+      claims["S-c: a switch whose output comes a read later stays one line — first what was typed, then the sentence"] = typedFirst && sameLine;
+      fx.entries = [...fx.entries,
+        text("user", record("/effort", "xhigh"), 64), text("user", stdout("Set effort level to xhigh (saved as your default for new sessions): Deeper reasoning than high, just below max"), 64),
+        text("user", record("/model", "claude-fable-5-1[1m]"), 65), text("user", stdout("Kept model as `Haiku 4.5`"), 65),
+        text("user", record("/usage", ""), 66), text("user", stdout("Settings dialog dismissed"), 66)];
+      const rest = await wait(`${count(5)} && ${lineIs(2, "/effort", "Effort: xhigh, gespeichert als Standard")}
+        && ${lineIs(3, "/model", "Modell bleibt Haiku 4.5")} && ${lineIs(4, "/usage", "Settings dialog dismissed")}`, 2500);
+      facts.slashLines = { afterSwitch, end: await cmdLines(), own: [ownBefore, await own()], tagged: await tagged() };
+      claims["S-c: /effort, a kept model and another command are one quiet line each, in German where they set something, and none is a bubble"] =
+        rest && (await cmdLines()).every((l) => !l.inBubble) && !(await tagged()) && (await own()) === ownBefore && (await answers()) === before.answers;
+      // --- 17. Mangel 64, owner 14.10. (desktop): „[Zitat entfernt]“
+      //  The owner copies in another app with a
+      // draft in the field; meanwhile a deploy makes the bundle newer, and Fleet reloads the hidden tab (armReload). Back
+      // in the tab, Cmd+V. The phone has no Cmd+V and keeps its keyboard down: desktop only
+      if (width === 1200) {
+        const draft = "Mein Entwurf, erste Zeile";
+        const word = `EINGEFUEGT-${Date.now() % 100000}`;
+        // the clipboard: a helper outside the composer copies (headless Chrome keeps its own clipboard)
+        await send("Runtime.evaluate", { userGesture: true, returnByValue: true, expression: `(() => { const h = document.createElement('textarea');
+          h.value = ${JSON.stringify(word)}; document.body.appendChild(h); h.select(); const ok = document.execCommand('copy'); h.remove(); return ok; })()` });
+        await evaluate(`(() => { const ta = document.querySelector('#input'); ta.focus(); ta.value = ${JSON.stringify(draft)};
+          ta.dispatchEvent(new Event('input', { bubbles: true })); ta.selectionStart = ta.selectionEnd = ta.value.length; })()`);
+        const origin = await evaluate<number>("performance.timeOrigin");
+        fx.v = 2;
+        const armed = await wait(`!!document.getElementById('newver')`, 10000);
+        // another app in front: a second tab takes the window and this one is hidden
+        const fleetTab = targetId, fleetSession = sessionId;
+        sessionId = undefined;
+        const other = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
+        await send("Target.activateTarget", { targetId: other });
+        sessionId = fleetSession;
+        let reloaded = false, hidden = false;
+        for (let i = 0; i < 75 && !reloaded; i++) {
+          await Bun.sleep(200);
+          const r = await send("Runtime.evaluate", { returnByValue: true, expression: `({ origin: performance.timeOrigin, hidden: document.hidden,
+            booted: !!document.querySelector('.pane .panechat .msg.assistant') })` }).catch(() => null);
+          const v = (r?.result as { value?: { origin: number; hidden: boolean; booted: boolean } } | undefined)?.value;
+          if (v && v.origin !== origin && v.booted) { reloaded = true; hidden = v.hidden; }
+        }
+        sessionId = undefined;
+        await send("Target.activateTarget", { targetId: fleetTab });
+        await send("Target.closeTarget", { targetId: other }).catch(() => undefined);
+        sessionId = fleetSession;
+        await settle(300);
+        type Back = { focused: boolean; value: string; visible: boolean };
+        const BACK = `({ focused: document.activeElement === document.querySelector('#input'), value: document.querySelector('#input').value,
+          visible: document.visibilityState === 'visible' })`;
+        const back = await evaluate<Back>(BACK);
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", modifiers: 4, windowsVirtualKeyCode: 86, commands: ["paste"] });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", modifiers: 4, windowsVirtualKeyCode: 86 });
+        await settle(200);
+        const pasted = await evaluate<Back>(BACK);
+        facts.reloadPaste = { armed, reloaded, hiddenWhileReloading: hidden, back, pasted, word };
+        claims["Mangel 64: Fleet reloads the hidden tab for a newer bundle; back in the tab the field has the keys and the draft, and Cmd+V lands in it"] =
+          armed && reloaded && hidden && back.visible && back.focused && back.value === draft && pasted.value === draft + word;
+        await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      }
       results.push({ width, height, claims, facts });
     }
     return results;

@@ -203,7 +203,7 @@ import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KO
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
-import { RECALL_KINDS, recall, type RecallKind, type RecallResult } from "./server/recall";
+import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
@@ -11718,6 +11718,12 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       const kept = unsentFleetPayloads.get(s.id);
       unsentFleetPayloads.delete(s.id);
       if (before?.startsWith(DELIVERY_HEADER_PREFIX)) {
+        // A DELIVERED PROMPT ESC PUT BACK is no rest (Mangel 62, server/recall.ts#deliveredInField): submitted again,
+        // the session got it twice. It stays in the field like an owner draft
+        await liveReader.count(s.id);
+        const field = await readExactComposer(s, bound);
+        if (deliveredInField(field.kind === "rows" ? field.rows : null, liveReader.tailOf(s.id)?.last ?? null))
+          throw new SendComposerOccupied(before.length);
         // IS THE REST THIS MESSAGE? Equal by hash — the visible field when it shows the whole text,
         // else the record of what the not-accepted send typed — and an equal rest is submitted
         // INSTEAD of a second copy. Every rest submission is a ledger row, equal or not.
@@ -23093,13 +23099,19 @@ interface AskRead { calls: ReadonlyMap<string, unknown>; answered: ReadonlySet<s
 function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry | null {
   const cap = (t: string, max: number) => (full ? t : trim(t, max));
   const d = raw as {
-    type?: unknown; isMeta?: unknown; isSidechain?: unknown; isCompactSummary?: unknown; timestamp?: unknown;
+    type?: unknown; subtype?: unknown; content?: unknown; isMeta?: unknown; isSidechain?: unknown; isCompactSummary?: unknown; timestamp?: unknown;
     message?: { content?: unknown }; toolUseResult?: unknown;
     attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; timestamp?: unknown };
   };
-  if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment") return null;
+  if (d.type !== "user" && d.type !== "assistant" && d.type !== "attachment" && d.type !== "system") return null;
   if (d.isMeta === true || d.isSidechain === true) return null;
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
+  // A slash command Claude Code ran comes in two forms (docs/neuaufbau/befunde/12-modellwechsel.md §7): (a) as
+  // system/local_command lines, (b) as user lines with the same text. Form (a) is served as the user text line form
+  // (b) writes, so the chat shows both the same way (src/slashcommand.ts); every other system line stays out.
+  if (d.type === "system")
+    return d.subtype === "local_command" && typeof d.content === "string" && d.content
+      ? { n, role: "user", ts, blocks: [{ t: "text", text: cap(d.content, 20_000) }] } : null;
   // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
   // server/live-state.ts#foldLine) and reaches the conversation in one of two measured forms
   // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
@@ -53577,4 +53589,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry };

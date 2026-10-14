@@ -680,15 +680,21 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Orchestratorin, `FLEET_LANE_MIGRATE_PCT` die der Lane; ein eigener Wert der Session ist ihre Basis; die
   Obergrenze liegt immer 5 darüber. An der Basis kommt der Hinweis, auch mitten in der Arbeit (kein Ruhe-Tor:
   Claude Code reiht einen Prompt während eines Turns ein). Zwischen Basis und Obergrenze kommt bei warmem
-  Cache nur dieser eine; an der Obergrenze oder bei kaltem Cache über der Basis ist die Handlung fällig, ab
-  Werk ein weiterer Hinweis, höchstens drei je Gespräch, 15 min auseinander. Die succession facts tragen
+  Cache nur dieser eine; an der Obergrenze oder bei kaltem Cache über der Basis ist die Handlung fällig (ab
+  Werk eine neue Session, unten), und bei „nur Hinweis“ kommt ein weiterer Hinweis, höchstens drei je Gespräch,
+  15 min auseinander. Die succession facts tragen
   `kind`, `capPct` und `thresholdFrom` (`session` | `env` | `fleet`). **`GET /api/self` → `context`**
   nennt dasselbe für die Session selbst: `{fill: {pct, usedTokens, windowTokens} | null, kind, basePct,
   capPct, from, off, hint, choice, cache}` (`basePct`/`capPct` sind `null`, solange `off` einen Grund nennt).
 - **Die Wahl an der Schwelle (K9 S3b, `server/succession.ts#actDecision`):** `PATCH /api/slots/:id/handover`
-  nimmt `atThreshold`: `hint` (Fleet-Wert für jede Art, wird nicht gespeichert, ebenso `null`), `compact` oder
-  `succeed`; eine Lane nimmt nur `hint` oder `compact` (`succeed` = 409 `lane-succeed`, sie gibt mit ihrem
-  handoff-Report weiter), anderes = 400 `bad-at-threshold`. Ist die Handlung fällig (Obergrenze, kalter
+  nimmt `atThreshold`: `null` (der Fleet-Wert, wird nicht gespeichert), `hint`, `compact` oder `succeed`; eine
+  Lane nimmt nur `hint` oder `compact` (`succeed` = 409 `lane-succeed`, sie gibt mit ihrem handoff-Report
+  weiter), anderes = 400 `bad-at-threshold`. **Der Fleet-Wert ist seit K9 S3b-2 `succeed`** für jede Art außer
+  der Lane (`hint`) und einer Game-Maker-Program-MAIN (`hint`, die Owner-Tür verweigert sie namentlich):
+  `server/succession.ts#fleetChoiceOf`, Bauleitung 14.10. für den Owner (Owner 07.08.: „[Zitat entfernt]“
+  ; „[Zitat entfernt]“
+  ). Die neue Session nimmt die stehende Übergabe, wenn eine steht, sonst den
+  Fleet-Nachfolge-Brief mit dem Ende der Unterhaltung (`freshSuccessionAppendix`). Ist die Handlung fällig (Obergrenze, kalter
   Cache, oder „kurz vor kalt“: ab 10 min vor dem Ende der Cache-Stufe, `cacheCooling`, vor Claudes eigener
   Leerlauf-Kompaktierung nach 53 min; nicht, solange der Warmhalte-Schalter der Session an ist — dann kommt
   der Warm-Turn), handelt Fleet nur an einer RUHENDEN Session
@@ -697,7 +703,8 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   `compact` tippt `/compact` ohne Zustell-Kopf (Pfad `threshold-compact`), `succeed` geht durch die Owner-Tür
   ohne Turn an die Vorgängerin (`handleOwnerSucceed` mit `stillWanted`; Audit `main_succession`
   „threshold-triggered“). Je Gespräch eine Handlung je 15 min, Audit `threshold_act`. Die succession facts
-  tragen `atThreshold`, `choices` und `act {at, act, outcome}`.
+  tragen `atThreshold` (die wirksame Wahl), `fleetChoice` (der Fleet-Wert dieser Session), `choices` und
+  `act {at, act, outcome}`.
 - **Schwelle und Hinweis je Session setzt der Owner** (Owner-Route, seit 2026-10-06, die Übergabe-Zeile
   der rechten Spalte): `GET /api/slots/:id/handover` antwortet `{slot, openedAt, setting, step, min, max,
   succession}`; `PATCH` mit `{expectedOpenedAt, thresholdPct?, nudge?}` setzt für GENAU diese Belegung eine

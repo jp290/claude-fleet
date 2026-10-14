@@ -174,17 +174,23 @@ export function cacheCooling(v: CacheView, now: number): boolean {
 }
 
 // DIE WAHL AN DER SCHWELLE (S3b, Owner 13.10.: „[Zitat entfernt]“):
-// Was Fleet tut, wenn die Handlung fällig ist. „[Zitat entfernt]“ ist der Fleet-Wert für jede Art (Bauleitung 14.10.)
-// und wird nicht gespeichert; eine Lane wählt nur Hinweis oder Compact, denn sie gibt mit ihrem eigenen
-// handoff-Report weiter, und die Owner-Tür verweigert sie.
+// Was Fleet tut, wenn die Handlung fällig ist. Eine Lane wählt nur Hinweis oder Compact, denn sie gibt mit
+// ihrem eigenen handoff-Report weiter, und die Owner-Tür verweigert sie.
 export type ThresholdChoice = "hint" | "compact" | "succeed";
 export function choicesFor(kind: SessionKind): readonly ThresholdChoice[] {
   return kind === "lane" ? ["hint", "compact"] : ["hint", "compact", "succeed"];
 }
+// DER FLEET-WERT (S3b-2, Bauleitung 14.10. für den Owner; Owner 07.08.: „[Zitat entfernt]“
+// , 14.10.: „[Zitat entfernt]“): an der Obergrenze eine neue Session
+// für jede Art außer der Lane, die beim Hinweis bleibt. „[Zitat entfernt]“ und Compact wählt eine Session selbst.
+export function fleetChoiceOf(kind: SessionKind): ThresholdChoice {
+  return kind === "lane" ? "hint" : "succeed";
+}
+// null = der Fleet-Wert, er wird nicht gespeichert; jede andere Wahl, auch „hint“, gilt nur für diese Session
 export type ChoiceInput = { ok: true; choice: ThresholdChoice | null } | { ok: false; refusal: "bad-at-threshold" | "lane-succeed" };
 export function choiceInput(v: unknown, kind: SessionKind): ChoiceInput {
-  if (v === null || v === "hint") return { ok: true, choice: null };
-  if (v !== "compact" && v !== "succeed") return { ok: false, refusal: "bad-at-threshold" };
+  if (v === null) return { ok: true, choice: null };
+  if (v !== "hint" && v !== "compact" && v !== "succeed") return { ok: false, refusal: "bad-at-threshold" };
   if (!choicesFor(kind).includes(v)) return { ok: false, refusal: "lane-succeed" };
   return { ok: true, choice: v };
 }
@@ -262,7 +268,7 @@ export class HintLedger {
   }
 }
 
-// DER HINWEIS, ein Text je Wahl (S3; Bauleitung 14.10.: „[Zitat entfernt]“ ab Werk für jede Art). Er nennt
+// DER HINWEIS, ein Text je Wahl (S3; Fleet-Wert seit S3b-2: neue Session, die Lane nur Hinweis). Er nennt
 // Füllstand, Schwelle und Obergrenze und was dann geschieht, und bittet um die stehende Übergabe — statt drei
 // Texten je Schiene. Bei „nur Hinweis“ unterscheidet sich nur der Ausgang, weil die Türen verschieden sind:
 // Eine Lane gibt mit ihrem handoff-Report weiter (server.ts#succeedLane), jede andere Session mit der

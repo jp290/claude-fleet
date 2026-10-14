@@ -5002,10 +5002,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
 // ; §4: „[Zitat entfernt]“, und vorher kommt der Hinweis, der die Handlung
 // nennt. Three plain sessions at 50 % — the wrapper's FLEET_MIGRATE_PCT 44 puts their cap at 49, so the act
 // is due — PLANTED like the keepCache fixture above (FLEET_CMD=true pins no conversation):
-//   P chose a new session: the hint, then, resting, a new occupant on the same slot; the old pane got only the hint.
+//   P chose nothing — the fleet's value since S3b-2 is a new session (Owner 07.08.: „[Zitat entfernt]“
+//     ) — and carries a fresh standing handover: the hint, then, resting, a new occupant
+//     on the same slot whose brief hands over that standing handover; the old pane got only the hint, no second.
 //   Q chose Compact: the hint, then `/compact` once, typed bare, and Q stays the same occupant.
-//   R chose a new session but its pane prints every 200 ms: the hint comes mid-work, the act does not; once
-//     the pane rests, the new occupant comes.
+//   R chose nothing either, wrote no standing handover, and its pane prints every 200 ms: the hint comes mid-work,
+//     the act does not; once the pane rests, the new occupant comes with the fleet's succession brief.
 // PATCH: an unknown choice is 400; a lane cannot choose a new session (the unit test of choiceInput).
 async function runThresholdAct(): Promise<void> {
   const repos: string[] = [];
@@ -5058,16 +5060,21 @@ async function runThresholdAct(): Promise<void> {
   }
   await tmuxOut("send-keys", "-t", `=s${R.slot}:`, "while :; do echo busy; sleep 0.2; done", "Enter");
   await stopSrv();
-  const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown }> };
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown;
+    standingHandover?: unknown }> };
   const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000004${String(i).padStart(2, "0")}`;
   const plantAt = Date.now();
-  const choice = new Map([[P, "succeed"], [Q, "compact"], [R, "succeed"]]);
+  // only Q chose; P and R take the fleet's value (null)
+  const choice = new Map([[Q, "compact"]]);
+  const STANDING = "ACT-STANDING-MARK Absicht: den Schnitt zu Ende bringen, dann landen.";
   for (const [i, x] of all.entries()) {
     const row = state.slots?.[String(x.slot)];
     if (!row) continue;
     row.sessionId = sid(i);
-    row.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: choice.get(x),
+    row.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: choice.get(x) ?? null,
       setAt: plantAt, occupant: { slot: x.slot, openedAt: x.openedAt } };
+    // P's standing handover, written after its last transcript line (60 s before the plant): nothing after it is lost
+    if (x === P) row.standingHandover = { at: plantAt - 30_000, openedAt: x.openedAt, intent: STANDING, pointer: null, ahead: null };
     // 500 000 of 1 000 000 (50 %), the last call a minute ago on a 1 h cache: warm, not cooling — only the cap makes it due
     const dir = `${process.env.HOME}/.claude/projects/${x.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
     mkdirSync(dir, { recursive: true });
@@ -5083,30 +5090,45 @@ async function runThresholdAct(): Promise<void> {
   await restartSrv();
 
   type Succ = { fill: { pct: number } | null; thresholdPct: number | null; capPct: number | null; atThreshold: string;
-    choices: string[]; act: { act: string; outcome: string } | null };
+    choices: string[]; fleetChoice: string; act: { act: string; outcome: string } | null };
   const facts = async (slot: number): Promise<Succ | null> =>
     ((await (await get(`/api/slots/${slot}/handover`)).json()) as { succession?: Succ }).succession ?? null;
   const f0 = await Promise.all(all.map((x) => facts(x.slot)));
-  check("threshold act setup: P, Q and R stand at 50 % against 44/49 with their own choice — new session, Compact, new session",
-    f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49)
+  check("threshold act setup: P, Q and R stand at 50 % against 44/49 — P and R on the fleet's value, a new session, Q on its own Compact",
+    f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49 && f.fleetChoice === "succeed")
       && f0.map((f) => f?.atThreshold).join(",") === "succeed,compact,succeed"
       && JSON.stringify(f0[0]?.choices) === JSON.stringify(["hint", "compact", "succeed"]),
     JSON.stringify(f0));
+  // the successor's founding brief, read by OCCUPANT from the prompt log (the owner door's appendix names the source)
+  const briefOf = async (slot: number, openedAt: number | undefined): Promise<string> => {
+    for (let i = 0; i < 100; i++) {
+      const b = (await plogRead()).find((e) => e.slot === slot && e.openedAt === openedAt && e.text.startsWith("[fleet succession]"));
+      if (b) return b.text;
+      await Bun.sleep(100);
+    }
+    return "";
+  };
 
   const HINT = "[fleet] Dein Kontext ist bei ";
   const typed = async (x: typeof P): Promise<PromptLogEntry[]> =>
     (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt);
   const openedAtOf = async (x: typeof P): Promise<number | undefined> => (await sessions()).slots.find((y) => y.id === x.slot)?.openedAt;
+  // a real new occupant: the slot reads 0 between the kill and the open
   let pNew: number | undefined = P.openedAt;
-  for (let i = 0; i < 150 && pNew === P.openedAt; i++) { await Bun.sleep(100); pNew = await openedAtOf(P); }
+  for (let i = 0; i < 150 && (pNew === P.openedAt || !pNew); i++) { await Bun.sleep(100); pNew = await openedAtOf(P); }
   const pTyped = await typed(P);
   const pRecorded = existsSync(rec(P)) ? readFileSync(rec(P), "utf8") : "";
-  check("new session at the threshold: P gets the hint naming the act, then — resting — a new occupant on the same slot, and its old pane got nothing but that hint",
-    pNew !== undefined && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
+  const pBrief = await briefOf(P.slot, pNew);
+  // K9 S3b-2, the owner's sentence via the Bauleitung: „[Zitat entfernt]“
+  //  — and the act hands over the standing handover where one stands
+  check("new session at the threshold, the fleet's value: P without a choice of its own gets the hint naming the act, then — resting — a new occupant on the same slot whose brief hands over P's standing handover; the old pane got nothing but that one hint",
+    !!pNew && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
       && pTyped[0]!.text.includes("öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst")
       && pRecorded.includes("öffnet Fleet in diesem Slot eine neue Session") && !pRecorded.includes("/compact")
-      && pRecorded.split(HINT).length === 2,
-    JSON.stringify({ old: P.openedAt, now: pNew, typed: pTyped.map((e) => e.text.slice(0, 80)), recorded: pRecorded.length }));
+      && pRecorded.split(HINT).length === 2
+      && pBrief.includes("Stehende Übergabe: `intent` im Linien-Record") && !pBrief.includes("Keine stehende Übergabe"),
+    JSON.stringify({ old: P.openedAt, now: pNew, typed: pTyped.map((e) => e.text.slice(0, 80)), recorded: pRecorded.length,
+      brief: pBrief.split("\n").filter((l) => /tehende Übergabe/.test(l)).map((l) => l.slice(0, 90)) }));
 
   let qTyped = await typed(Q);
   for (let i = 0; i < 150 && !qTyped.some((e) => e.text === "/compact"); i++) { await Bun.sleep(100); qTyped = await typed(Q); }
@@ -5131,10 +5153,13 @@ async function runThresholdAct(): Promise<void> {
     JSON.stringify({ hint: rTyped.length, openedAt: rWorking, idleMs: rIdle, act: rFacts?.act }));
   await tmuxOut("send-keys", "-t", `=s${R.slot}:`, "C-c");
   let rNew: number | undefined = R.openedAt;
-  for (let i = 0; i < 150 && rNew === R.openedAt; i++) { await Bun.sleep(100); rNew = await openedAtOf(R); }
+  for (let i = 0; i < 150 && (rNew === R.openedAt || !rNew); i++) { await Bun.sleep(100); rNew = await openedAtOf(R); }
+  const rBrief = await briefOf(R.slot, rNew);
   // only after R held while it worked: in core run 1014083939 R was replaced before the C-c, and this passed on that
-  check("…and once R rests, the new occupant comes",
-    rWorking === R.openedAt && rNew !== undefined && rNew !== R.openedAt, JSON.stringify({ old: R.openedAt, working: rWorking, now: rNew }));
+  check("…and once R rests, the new occupant comes — without a standing handover, on the fleet's succession brief",
+    rWorking === R.openedAt && !!rNew && rNew !== R.openedAt
+      && rBrief.includes("Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben."),
+    JSON.stringify({ old: R.openedAt, working: rWorking, now: rNew, brief: rBrief.split("\n").filter((l) => /tehende Übergabe/.test(l)).map((l) => l.slice(0, 90)) }));
 
   const bad = await fetch(`${BASE}/api/slots/${Q.slot}/handover`, { method: "PATCH",
     headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -5670,7 +5695,9 @@ async function runKeepCache(): Promise<void> {
 
   // PLANTED, not driven (watch.ts's migrate fixture, for its reason): FLEET_CMD=true pins no session,
   // and the fill and the newest model call are read off the pinned conversation. W, S, G and X carry
-  // the hint OFF as their setting, so the armed migrate tick types nothing into them; C keeps none.
+  // the hint OFF as their setting, so the armed migrate tick types nothing into them; C keeps the hint on.
+  // ALL FIVE CHOSE „nur Hinweis“ at the threshold (K9 S3b-2): the fleet's value is a new session, and at 50 %
+  // against 44/49, warm-cooling or cold, Fleet would hand them over before the warm turns this measures.
   await stopSrv();
   const state = JSON.parse(readFileSync(statePath, "utf8")) as { slots?: Record<string, { sessionId?: string | null; handover?: unknown }>;
     programs?: Record<string, unknown>[] };
@@ -5680,7 +5707,7 @@ async function runKeepCache(): Promise<void> {
     const row = state.slots?.[String(x.slot)];
     if (!row) continue;
     row.sessionId = sid(i);
-    if (x !== C) row.handover = { thresholdPct: null, nudge: false, keepCache: null, keepCacheIdleMin: 50, setAt: plantAt,
+    row.handover = { thresholdPct: null, nudge: x === C, keepCache: null, keepCacheIdleMin: 50, atThreshold: "hint", setAt: plantAt,
       occupant: { slot: x.slot, openedAt: x.openedAt } };
   }
   state.programs = [...(state.programs ?? []), {
@@ -5758,7 +5785,7 @@ async function runKeepCache(): Promise<void> {
   check("keepCache cache: the sessions row carries the last call and the tier's lifetime — the field a client counts down from",
     wRow?.lastCallAt === wCache?.lastCallAt && wRow?.ttlSec === 3600, JSON.stringify(wRow));
 
-  // C has no setting, so the armed migrate tick nudges it once (unchanged behaviour, cooldown 15 min):
+  // C keeps the hint on, so the armed migrate tick nudges it once (unchanged behaviour, cooldown 15 min):
   // that paste is awaited first, or it could land in the shell line that starts C's recorder
   let cNudged = false;
   for (let i = 0; i < 50 && !cNudged; i++) {
@@ -5941,7 +5968,7 @@ async function runKeepCache(): Promise<void> {
   const cView = await hv(C.slot);
   const cRec = existsSync(rec(C)) ? readFileSync(rec(C), "utf8") : "";
   check("keepCache C: a session bound to nothing without a switch of its own gets no warm turn at the same fill and age",
-    cView.openedAt === C.openedAt && cView.setting === null && cView.succession?.keepCache?.on === false
+    cView.openedAt === C.openedAt && (cView.setting?.keepCache ?? null) === null && cView.succession?.keepCache?.on === false
       && (await warmRows(C)).length === 0 && !cRec.includes("warmhalten"),
     JSON.stringify({ openedAt: cView.openedAt, expected: C.openedAt, setting: cView.setting, recorder: cRec.slice(0, 120) }));
 

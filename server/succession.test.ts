@@ -8,7 +8,7 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, HintLedger, hintText, ownSetting,
+import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, ownSetting,
   settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts,
   type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
 import { loadHandoverSetting, type HandoverSetting } from "./types";
@@ -144,9 +144,10 @@ describe("der Text des Warm-Turns", () => {
     expect(loadHandoverSetting({ ...rec, keepCacheText: "/clear" })).toBeNull();
     expect(loadHandoverSetting({ ...rec, keepCacheText: 7 })).toBeNull();
   });
-  test("fleet.json: die Wahl an der Schwelle — ohne Feld nur Hinweis, eine unbekannte Wahl verwirft den Datensatz", () => {
+  test("fleet.json: die Wahl an der Schwelle — ohne Feld der Fleet-Wert, eine unbekannte Wahl verwirft den Datensatz", () => {
     const rec = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, setAt: 1, occupant: { slot: 3, openedAt: 100 } };
     expect(loadHandoverSetting(rec)?.atThreshold).toBeNull();
+    expect(loadHandoverSetting({ ...rec, atThreshold: "hint" })?.atThreshold).toBe("hint");
     expect(loadHandoverSetting({ ...rec, atThreshold: "compact" })?.atThreshold).toBe("compact");
     expect(loadHandoverSetting({ ...rec, atThreshold: "succeed" })?.atThreshold).toBe("succeed");
     expect(loadHandoverSetting({ ...rec, atThreshold: "clear" })).toBeNull();
@@ -331,6 +332,10 @@ describe("kurz vor kalt", () => {
 });
 
 describe("die Wahl an der Schwelle", () => {
+  test("Owner 07.08.: „[Zitat entfernt]“ — ab Werk eine neue Session, die Lane bleibt beim Hinweis", () => {
+    for (const kind of ["orchestrator", "program-main", "bau", "session"] as const) expect(fleetChoiceOf(kind)).toBe("succeed");
+    expect(fleetChoiceOf("lane")).toBe("hint");
+  });
   test("ab Werk nur Hinweis; eine Lane wählt Hinweis oder Compact, jede andere Art auch neue Session", () => {
     expect(choicesFor("lane")).toEqual(["hint", "compact"]);
     expect(choicesFor("orchestrator")).toEqual(["hint", "compact", "succeed"]);
@@ -338,7 +343,7 @@ describe("die Wahl an der Schwelle", () => {
   });
   test("„hint“ und null speichern nichts, eine Lane bekommt keine neue Session, anderes ist kein Wert", () => {
     expect(choiceInput(null, "session")).toEqual({ ok: true, choice: null });
-    expect(choiceInput("hint", "session")).toEqual({ ok: true, choice: null });
+    expect(choiceInput("hint", "session")).toEqual({ ok: true, choice: "hint" });
     expect(choiceInput("succeed", "session")).toEqual({ ok: true, choice: "succeed" });
     expect(choiceInput("compact", "lane")).toEqual({ ok: true, choice: "compact" });
     expect(choiceInput("succeed", "lane")).toEqual({ ok: false, refusal: "lane-succeed" });

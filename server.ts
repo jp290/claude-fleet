@@ -208,7 +208,7 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook, usableCheck,
   writeText } from "./server/branches";
-import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, HintLedger, hintText, ownSetting, settingForSuccessor,
+import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, ownSetting, settingForSuccessor,
   successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
@@ -25868,7 +25868,8 @@ interface SuccessionFacts {
   kind: SessionKind; capPct: number | null; thresholdFrom: Threshold["from"];
   // THE CHOICE AT THE THRESHOLD (K9 S3b): what Fleet does once the action is due, the choices this kind
   // has, and the newest act on this conversation — null while there is none
-  atThreshold: ThresholdChoice; choices: readonly ThresholdChoice[];
+  // `fleetChoice` is the fleet's value for this session (K9 S3b-2), the one a null setting stands for
+  atThreshold: ThresholdChoice; choices: readonly ThresholdChoice[]; fleetChoice: ThresholdChoice;
   act: { at: number; act: "compact" | "succeed"; outcome: string } | null;
   // the measurement the threshold is compared against — contextFill, the one the nudge quotes.
   // null = it could not answer (no pinned conversation, no usage record, no nameable window), and
@@ -25922,11 +25923,16 @@ function thresholdFor(s: Slot): Threshold {
   const kind = sessionKindOf(s);
   return thresholdOf(kind, railEnvPct(kind), ownThresholdPct(s));
 }
-// what Fleet does once the action is due (K9 S3b): the session's own choice, else only the hint — the
-// fleet's value for every kind; a choice this kind cannot take reads as the hint (choicesFor)
+// what Fleet does once the action is due (K9 S3b): the session's own choice, else the fleet's value for its kind
+// (S3b-2: a new session, a lane the hint); a choice this kind cannot take reads as the fleet's value (choicesFor)
 function thresholdChoiceOf(s: Slot, kind: SessionKind): ThresholdChoice {
   const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.atThreshold : null;
-  return own && choicesFor(kind).includes(own) ? own : "hint";
+  return own && choicesFor(kind).includes(own) ? own : fleetThresholdChoice(s, kind);
+}
+// a game-maker Program-MAIN keeps the hint: the owner door refuses it by name (ownerSucceedRailRefusal), it hands
+// over a checkpoint only it can write
+function fleetThresholdChoice(s: Slot, kind: SessionKind): ThresholdChoice {
+  return kind === "program-main" && boundProgramsForMain(s).some(isGameMaker) ? "hint" : fleetChoiceOf(kind);
 }
 // warm or cold as the transcript says it (server/succession.ts#cacheView): the newest model call, its
 // cache tier, and a compaction after it
@@ -25991,6 +25997,7 @@ function successionFacts(s: Slot): SuccessionFacts {
     thresholdFrom: threshold.from,
     atThreshold: thresholdChoiceOf(s, threshold.kind),
     choices: choicesFor(threshold.kind),
+    fleetChoice: fleetThresholdChoice(s, threshold.kind),
     act: acted ? { at: acted.at, act: acted.act, outcome: acted.outcome } : null,
     fill: contextFill(s),
     thresholdPct: off ? null : threshold.basePct,
@@ -26017,7 +26024,7 @@ function successionFacts(s: Slot): SuccessionFacts {
 // credential is 401 here like on every owner route: a session never moves its own threshold). PATCH
 // {expectedOpenedAt, thresholdPct?: 5..95 in 5-steps | null, nudge?: boolean, keepCache?: boolean | null,
 // keepCacheIdleMin?: 5..55 in 5-steps, keepCacheText?: string | null, atThreshold?: "hint" | "compact" | "succeed" | null};
-// null returns the threshold to the base of its kind (thresholdFor), the choice at the threshold to the hint, the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
+// null returns the threshold to the base of its kind (thresholdFor), the choice at the threshold to the fleet's value (S3b-2), the switch to the fleet's value for the kind of session and the text to the fleet's. The setting belongs to the line on the slot
 // (server/succession.ts).
 // The answer is the session's succession facts, so the column redraws from the same shape the brief carries.
 function handoverView(s: Slot): Response {
@@ -26068,7 +26075,7 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
     keepCache: hasKeep ? body.keepCache as boolean | null : cur?.keepCache ?? null,
     keepCacheIdleMin: hasIdle ? body.keepCacheIdleMin as number : cur?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
     keepCacheText: text?.ok ? text.text : cur?.keepCacheText ?? null,
-    atThreshold: at?.ok ? (at.choice === "hint" ? null : at.choice) : cur?.atThreshold ?? null,
+    atThreshold: at?.ok ? at.choice : cur?.atThreshold ?? null,
     setAt: Date.now(), occupant: { slot: s.id, openedAt: s.openedAt },
   };
   // the switch is refused ON where no warm turn can happen: the steward is exempt by the owner's card,

@@ -1918,10 +1918,10 @@ interface MemoryGrantOccupant { slot: number; openedAt: number }
 // ); null = the fleet's own text, server.ts#KEEP_CACHE_TEXT. A record written before
 // the field existed reads null.
 // `atThreshold` is what Fleet does once the threshold's action is due (K9 S3b, server/succession.ts#actDecision):
-// `compact` or `succeed`; null = only the hint, the fleet's value for every kind. A record written before the
-// field existed reads null.
-type ThresholdAct = "compact" | "succeed";
-const thresholdActOk = (v: unknown): v is ThresholdAct => v === "compact" || v === "succeed";
+// `hint`, `compact` or `succeed`; null = the fleet's value for the kind (server/succession.ts#fleetChoiceOf: a
+// new session, a lane the hint; K9 S3b-2). A record written before the field existed reads null.
+type ThresholdAct = "hint" | "compact" | "succeed";
+const thresholdActOk = (v: unknown): v is ThresholdAct => v === "hint" || v === "compact" || v === "succeed";
 interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
   keepCacheText: string | null; atThreshold: ThresholdAct | null; setAt: number; occupant: MemoryGrantOccupant }
 const HANDOVER_PCT_MIN = 5;

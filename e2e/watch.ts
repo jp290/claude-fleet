@@ -7722,7 +7722,7 @@ export async function run(): Promise<void> {
     await stopSrv();
     const statePath = `${ROOT}/fleet.json`;
     type MigrateState = { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string; openedAt?: number;
-      standingHandover?: unknown }>; programs?: Record<string, unknown>[] };
+      standingHandover?: unknown; handover?: unknown }>; programs?: Record<string, unknown>[] };
     const state = JSON.parse(readFileSync(statePath, "utf8")) as MigrateState;
     const ids = new Map<number, string>([
       [mainId, "e2e0feed-0000-4000-8000-000000000101"],
@@ -7742,6 +7742,13 @@ export async function run(): Promise<void> {
     const mainRow = state?.slots?.[String(mainId)];
     if (mainRow) mainRow.standingHandover = { at: Date.now() - 60_000, openedAt: mainRow.openedAt,
       intent: "MAIN-STANDING-MARK alles steht im Record", pointer: null, ahead: null };
+    // K9 S3b-2: the fleet's value at the cap is a new session now; the three sessions this fixture hints at their cap
+    // (main, bound MAIN, Orchestratorin) chose „nur Hinweis“, so they stay what the checks below read
+    for (const id of [mainId, boundId, orchId]) {
+      const row = state?.slots?.[String(id)];
+      if (row) row.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: "hint",
+        setAt: Date.now(), occupant: { slot: id, openedAt: row.openedAt } };
+    }
     // Planted, not driven, for the hold block's reason further down: the tick reads only an ACTIVE
     // Program whose main names this living occupant (boundProgramForMain), and minting one through
     // the founding routes would measure those routes.
@@ -7893,6 +7900,13 @@ export async function run(): Promise<void> {
       orchId > 0 && orchNudges.length === 1
         && orchNudges[0]!.text.includes("Die Schwelle dieser Session ist 45 %, die Obergrenze 50 %. Die Obergrenze ist erreicht."),
       `${orchNudges.length}: ${orchNudges[0]?.text.slice(0, 260) ?? ""}`);
+    // K9 S3b-2: „nur Hinweis“ chosen per session holds against the fleet's new session — the three panes rest (cat),
+    // and an act would come within a second of the hint. Negative proof, so a window: two seconds past the last hint.
+    await Bun.sleep(2_000);
+    const heldRows = ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt?: number }[] }).slots;
+    check("a session that chose „nur Hinweis“ keeps its occupant at the cap — main, bound MAIN and Orchestratorin got the hint, no new session",
+      [mainId, boundId, orchId].every((id) => id > 0 && heldRows.find((r) => r.id === id)?.openedAt === migrateOccupant.get(id)),
+      JSON.stringify([mainId, boundId, orchId].map((id) => ({ id, was: migrateOccupant.get(id), now: heldRows.find((r) => r.id === id)?.openedAt }))));
     // THE HEADER'S SENTENCE FOLLOWS THE SAME ROLE (Sinnpruefung Buendel 5a). Until then every
     // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
     // The pane is the only place the typed header exists — the prompt journal records the body.

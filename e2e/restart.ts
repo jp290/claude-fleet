@@ -1023,10 +1023,10 @@ export async function run(ctx: Ctx): Promise<void> {
   const PLANTED_MODEL = "claude-haiku-4-5"; // a 200k window, unlike the fleet default (bare claude-sonnet-5 is 1M since 2026-09-19)
   {
     const stFile = `${ROOT}/fleet.json`;
-    let st: { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> } | null = null;
+    type PlantSlot = { cwd?: string; sessionId?: string; model?: string; openedAt?: number; handover?: unknown };
+    let st: { slots?: Record<string, PlantSlot> } | null = null;
     let stError = "";
-    try { st = JSON.parse(readFileSync(stFile, "utf8")) as
-      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> }; }
+    try { st = JSON.parse(readFileSync(stFile, "utf8")) as { slots?: Record<string, PlantSlot> }; }
     catch (e) { stError = e instanceof Error ? e.message : String(e); }
     check("precondition: fleet state is readable before context fixture mutation", st !== null, stError);
     const rec = st?.slots?.["2"];
@@ -1036,6 +1036,11 @@ export async function run(ctx: Ctx): Promise<void> {
     // pass against it by accident; pinning the 200k twin here is what makes the live pct assertion
     // able to fail. Restored from the state file like every other slot field (server.ts, SLOT_MODEL_RE).
     if (rec) rec.model = PLANTED_MODEL;
+    // K9 S3b-2: steward-core plants 150 349 of this 200k window (75 %) — over the cap, where the fleet's value
+    // is now a new session. Slot 2 chose „nur Hinweis“, or Fleet hands it over under the api-error checks
+    // that read its transcript (core run 1014094103: five reds, the slot at session 2).
+    if (rec) rec.handover = { thresholdPct: null, nudge: true, keepCache: null, keepCacheIdleMin: 50, atThreshold: "hint",
+      setAt: Date.now(), occupant: { slot: 2, openedAt: rec.openedAt } };
     if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
   // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in

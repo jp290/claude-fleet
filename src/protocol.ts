@@ -35,11 +35,26 @@ export interface SubscriptionRefresh {
   finishedAt: number | null;
   reason: string | null;
 }
+// THE CLAUDE ACCOUNT'S QUOTA (K16 E1, docs/neuaufbau/befunde/18-einstellungen.md §2): the two windows Claude Code
+// reports in its rate_limit_event, `utilization` 0..1, `resetsAt` in epoch SECONDS. server/usage.ts reads it.
+export interface ClaudeQuotaWindow { utilization: number; resetsAt: number }
+export interface ClaudeQuota {
+  status: "measured" | "unknown" | "error";
+  fiveHour: ClaudeQuotaWindow | null;
+  sevenDay: ClaudeQuotaWindow | null;
+  limitStatus: string | null; // rate_limit_info.status, e.g. "allowed"
+  overageStatus: string | null;
+  measuredAt: number | null;
+  ageMs: number | null;
+  maxAgeMs: number;
+  reason: string | null;
+}
 export interface SubscriptionUsage {
   schema: "fleet.subscription-usage/v1";
   generatedAt: number;
   codex: SubscriptionSnapshot & { refresh: SubscriptionRefresh;
     provider: { status: "unsupported"; reason: string } };
+  claude: ClaudeQuota;
   otherSubscriptions: { status: "unknown"; reason: string };
   model: {
     ownerPreference: { status: "unknown"; reason: string };

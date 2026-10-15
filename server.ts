@@ -6,6 +6,7 @@ import { modelLabel } from "./src/modelname";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
+import { createClaudeQuotaReader } from "./server/usage";
 import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
@@ -39862,9 +39863,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
 // from server/auth.ts above.
 let TOKEN = "";
 const subscriptionReader = createSubscriptionReader();
+// the Claude account this fleet's panes run on — measured only where FLEET_CMD starts claude, as agentCmd decides it
+const claudeQuota = createClaudeQuotaReader(/^claude(\s|$)/.test(BASE_CMD) ? "claude" : null);
 async function subscriptionUsage(target?: "local" | "provider"): Promise<SubscriptionUsage> {
   const codex = target ? await subscriptionReader.refresh(target) : await subscriptionReader.get();
-  return { schema: "fleet.subscription-usage/v1", generatedAt: Date.now(), codex,
+  return { schema: "fleet.subscription-usage/v1", generatedAt: Date.now(), codex, claude: await claudeQuota.get(),
     otherSubscriptions: { status: "unknown", reason: "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract" },
     model: { ownerPreference: { status: "unknown", reason: "no dated owner preference source with scope and validity" },
       registerDefaults: MODEL_DEFAULTS,

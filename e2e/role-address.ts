@@ -430,7 +430,7 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
   // red on the helper, green on this Mac). Blink HoverType 2 and PointerType 4 give every run the desktop's hover and
   // fine pointer; the PROBE claim below checks it took.
   const pointer = "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4";
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;

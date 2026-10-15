@@ -6430,7 +6430,7 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
   // (hover: none), the window then rightly puts every detail in the flow, and the desktop claims below
   // measured a phone (preview a5394323f32d). Pinned: a mouse — hover, fine pointer (blink HoverType 2,
   // PointerType 4) — so both hosts measure the same device; the PROBE line below checks it took.
-  const browser = Bun.spawn([executable, '--headless', '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
+  const browser = Bun.spawn([executable, '--headless', '--password-store=basic', '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${scratch}/profile`, 'about:blank'], { stdout: 'ignore', stderr: 'pipe' });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -7043,7 +7043,10 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
   ] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("settings DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  // --password-store=basic at every rig (15.10.): on the headless Linux helper the locked login keyring makes Chromium wait
+  // ~25 s per start on an unlock prompt that cannot appear, and gnome-keyring-daemon leaks a descriptor each time until at
+  // 1024 every http navigation hangs („CDP timeout: Page.navigate“). The rigs keep no secrets, so the plain store is enough.
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -7963,7 +7966,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
   })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("target DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -8432,7 +8435,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
     window.WebSocket = FakeWS; })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("keep DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -8696,7 +8699,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
   })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -9670,7 +9673,7 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
       text: (e) => e && window.__fx.shown(e) ? e.innerText : '' }; })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("strip DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -9975,7 +9978,7 @@ const GLASS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWe
 async function glassChromium(serve: GlassServe, init: string, scratch: string): Promise<GlassDriver> {
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) throw new Error("glass island DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable);
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/chromium`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/chromium`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   // a start that fails (no endpoint, a timeout, a refused socket) takes its browser down before it
   // throws: a headless Chromium left behind would sit on the machine every suite shares
   let socket: WebSocket | undefined;
@@ -10623,7 +10626,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
   };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("rights DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -10978,7 +10981,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
     raw: [JSON.stringify({ type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } })] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("bundle DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -11667,7 +11670,7 @@ export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: strin
   const fx = { entries: [] as Record<string, unknown>[], held: null as Held | null };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("held DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -11850,7 +11853,7 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
     window.WebSocket = FakeWS; })()`;
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("terminal search DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -12597,7 +12600,7 @@ export async function startArbeitsorteBrowser(profile: string): Promise<Arbeitso
   // both diamond notes of `land` red, green on this Mac). The blink settings give every run the
   // desktop's fine pointer and hover — measured both ways: 1/2 → "false,false,false", 2/4 → "true,true,true"
   const pointer = "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4";
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${profile}`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${profile}`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   const close = async () => { browser.kill(); await browser.exited; };
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
   let startupLog = "";

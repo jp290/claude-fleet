@@ -208,7 +208,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
   const fx = { route404: false, timelineHits: 0, delayMs: 0, narrow: false, foreign: null as unknown, exceptions: [] as string[] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("timeline DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  const browser = Bun.spawn([executable, "--headless", "--password-store=basic", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;

@@ -15,7 +15,9 @@ import { askRisk } from "./dialog";
 // row. Fifth cut (owner: „[Zitat entfernt]“): the
 // composer has ONE place — #bar, centred at the transcript's column width — in both views. A view
 // switch only toggles the size class; #bar is the last item of the main column, so the extra
-// height pushes the panes up and the bottom edge stays where it is.
+// height pushes the panes up and the bottom edge stays where it is. Mangel 72 (owner 2026-10-14:
+// „[Zitat entfernt]“): the
+// desktop draws `tall` under both views; `bar` is left to the phone's terminal.
 export let compEl: HTMLElement, compOpts: HTMLElement, compTray: HTMLElement, compFiles: HTMLElement;
 
 export function setComposerSize(size: "bar" | "tall"): void {
@@ -80,7 +82,7 @@ export function mountComposer(): void {
   const pastN = pane?.pastN ?? null;
   ta.disabled = pastN !== null;
   ta.placeholder = promptPlaceholder();
-  setComposerSize(pane?.isChat ? "tall" : "bar");
+  setComposerSize(pane?.isChat || !isMobile() ? "tall" : "bar");
   renderComposerOpts(false);
   renderParkHint();
   renderHeldHint();

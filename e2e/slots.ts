@@ -8949,6 +8949,32 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         facts.keyboard = { open: await evaluate<boolean>("document.body.classList.contains('keyboard-open')"), app: await box("#app"), where: await evaluate<string>("window.__fx.where()") };
         claims[`${tag}the simulated keyboard is up: keyboard-open, the app 508 px tall, the field focused`] =
           (facts.keyboard as { open: boolean }).open && (facts.keyboard as { app: Box }).app?.h === H - 336 && (facts.keyboard as { where: string }).where === "#input";
+        // Mangel 72 A (owner 14.10. 22:2x): „[Zitat entfernt]“
+        //  — the rows the client reports (POST /resize) against the same screen with the
+        // foot line drawn again
+        const rowsAfter = async (seen: number) => {
+          const resizes = () => fx.posts.filter((p) => p.path === "/resize");
+          const until = Date.now() + 3000;
+          while (resizes().length <= seen && Date.now() < until) await Bun.sleep(50);
+          const last = resizes().at(-1);
+          return last ? (JSON.parse(last.body) as { rows: number }).rows : 0;
+        };
+        await settle(900);
+        const rowsNow = await rowsAfter(fx.posts.filter((p) => p.path === "/resize").length - 1);
+        let seen = fx.posts.filter((p) => p.path === "/resize").length;
+        await evaluate(`(() => { const s = document.createElement('style'); s.id = 'withfoot';
+          s.textContent = 'body.keyboard-open #main #comp #compfoot:not(:empty) { display: flex !important; }';
+          document.head.append(s); dispatchEvent(new Event('resize')); })()`);
+        const rowsWithFoot = await rowsAfter(seen);
+        seen = fx.posts.filter((p) => p.path === "/resize").length;
+        await evaluate(`(() => { document.querySelector('#withfoot').remove(); dispatchEvent(new Event('resize')); })()`);
+        const rowsWithout = await rowsAfter(seen);
+        const once = await evaluate<{ pill: string; foot: boolean; inIsland: number }>(`({ pill: document.querySelector('#mpill').textContent,
+          foot: window.__fx.shown(document.querySelector('#compfoot')),
+          inIsland: [...document.querySelectorAll('#bar *')].filter((e) => !e.children.length && e.textContent.trim() === 'Alpha' && window.__fx.shown(e)).length })`);
+        const nameOnce = `${tag}Mangel 72: with the keyboard up the name stands once, in the pill, and the terminal shows more rows than with the foot line`;
+        claims[nameOnce] = once.pill === "Alpha" && !once.foot && once.inIsland === 0 && rowsWithout > rowsWithFoot && rowsWithout === rowsNow;
+        detail[nameOnce] = { ...once, rowsNow, rowsWithFoot, rowsWithout };
       }
       const bottom = keyboard ? H - 336 : H;
       await shot(`${W}${keyboard ? "-tastatur" : ""}-zu`);
@@ -11494,6 +11520,22 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         claims["Mangel 64: Cmd+V with the keys in the terminal still goes to the terminal, never into the chat field"] =
           !!termUp && term.sent.includes(word) && !term.field.includes(word) && term.keysInTerm;
       }
+      // Mangel 72 (owner 14.10.: „[Zitat entfernt]“):
+      // under a terminal the desktop draws the chat view's form — the field above its control row; the phone keeps the strip
+      await evaluate(`localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [false] }))`);
+      await navigate("http://fleet.fixture/");
+      const termView = await wait(`document.querySelector('.pane:not(.chat) .xterm-screen')`, 15000);
+      await settle(300);
+      type Form = { cls: string; rowShown: boolean; fieldAboveRow: boolean };
+      const form = await evaluate<Form>(`(() => { const row = document.querySelector('#comprow'), f = document.querySelector('#input').getBoundingClientRect();
+        const shown = getComputedStyle(row).display !== 'contents';
+        return { cls: document.querySelector('#comp').className, rowShown: shown, fieldAboveRow: shown && f.bottom <= row.getBoundingClientRect().top + 1 }; })()`);
+      facts.termForm = { termView: !!termView, ...form };
+      await shot(`${width}-terminal-form`);
+      const sizes = form.cls.split(/\s+/);
+      if (width === 1200) claims["Mangel 72: under a terminal the desktop composer has the chat view's tall form, the field above its control row"] =
+        !!termView && sizes.includes("tall") && !sizes.includes("bar") && form.fieldAboveRow;
+      else claims["Mangel 72: under a terminal the phone keeps the one-line strip"] = !!termView && sizes.includes("bar") && !sizes.includes("tall");
       results.push({ width, height, claims, facts });
     }
     return results;

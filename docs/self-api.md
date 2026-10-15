@@ -3299,12 +3299,19 @@ nennt und keinen Rumpf trägt; eine Nachricht hat zwei Enden, einen Text und ein
 Darum ein **eigener Record**, kein Feld an `Program.inbox` (der Pin `RULE_INBOX` §I1 hält den
 Eintrag ausdrücklich empfängerlos).
 
-**Program- und Rollenadressen folgen der Bindung; Occupant-Adressen gelten nur für ein Paar.**
+**Program- und Rollenadressen folgen der Bindung; Occupant-Adressen folgen der eigenen Linie.**
 
 - `{kind:"program",id}` und `{kind:"role",role}` bleiben über einen Halterwechsel lesbar.
-- `{kind:"session",slot,openedAt}` und `{kind:"lane",slot,openedAt}` gehören genau dieser
-  Occupation. Recycle oder Nachfolge mit neuem `openedAt` erbt weder Eingang noch Ausgang.
-- Die Quittung nennt weiterhin `{slot, openedAt, sessionId}` des ersten Lesers.
+- `{kind:"session",slot,openedAt}` und `{kind:"lane",slot,openedAt}` gehören dieser Occupation
+  und ihren Nachfolgerinnen auf demselben Slot (Mangel 79, 15.10.: „[Zitat entfernt]“
+  ). Die Nachfolgerin erbt Eingang und Ausgang:
+  - eine Session über die Nachfolge (`POST /api/self/succeed`), also jede Vorgängerin, die ein
+    Linien-Record mit ihrer eigenen `lineageId` nennt. Der Record hält je Linie die letzten fünf
+    Übergaben; was an eine ältere Besetzung ging, erreicht die Nachfolgerin nicht mehr;
+  - eine Lane über die Stabübergabe, also jede Vorgängerin aus ihren `laneSeats`.
+- Ein Recycle (neue Belegung ohne diese Linie) erbt weder Eingang noch Ausgang.
+- Die Quittung nennt weiterhin `{slot, openedAt, sessionId}` des ersten Lesers, also bei einer
+  geerbten Nachricht die Nachfolgerin.
 
 ```
 curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://<fleet-host>:<port>/api/self/messages
@@ -3361,7 +3368,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   - Wer nicht im Paar steht, bekommt 409, und nichts wird gespeichert.
 - **Lesegrenze (`server.ts#messageAddressesFor`, `#resolveMessageAddress`):** Eine ungebundene
   Session liest nur ihre Session-Adresse, eine Lane nur ihre Lane-Adresse, jeweils solange
-  `slot` und `openedAt` passen. Die Zustellung setzt dieselbe aktuelle Leseberechtigung voraus:
+  `slot` und `openedAt` passen, und dazu die Adressen ihrer Vorgängerinnen in derselben Linie
+  (oben). Gesendet wird immer unter der eigenen, aktuellen Adresse. Die Zustellung setzt
+  dieselbe aktuelle Leseberechtigung voraus:
   Wird eine Session in derselben Occupation zur gebundenen MAIN, hält sie während der Bindung keine Session-Adresse.
   Ein später gestorbener Empfänger oder eine nicht mehr gelesene Adresse bleibt im Record adressiert;
   `holder:null` und `note` sagen wörtlich, dass gespeichert, aber nicht zugestellt und nicht
@@ -3371,7 +3380,8 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 
 **Antwort GET:** `{addresses, unread, droppedFleetWide, entries: [{id, from, to, at, payload,
 idempotencyKey, replyTo, readBy, readAt}], unknown: []}`, **neueste zuerst**. `addresses` sind die
-Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen.
+Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen. Die eigene steht
+zuerst, dahinter die geerbten ihrer Linie.
 
 **Du siehst BEIDE Enden deiner eigenen Fäden**, nicht nur den Eingang: eine Zeile ist dabei, wenn
 `to` **oder** `from` eine deiner Adressen ist. Das ist keine Bequemlichkeit — eine Antwort nennt ihre

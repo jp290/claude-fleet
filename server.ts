@@ -16928,9 +16928,16 @@ function messageSenderFor(s: Slot, programId?: string): MessageSender {
 // read what is addressed to a principal you ARE. Ambiguity is NOT refused here, and that asymmetry
 // is deliberate: sending under two identities would forge an attribution, reading under both only
 // shows a session what was addressed to it either way.
+// MANGEL 79 · A SUCCESSOR IS THE SAME PRINCIPAL: behind the own address (first, always) come the
+// predecessors of this occupant's own line — a lane's baton seats (Slot.laneSeats), a session's
+// generic succession records (lineageHandovers on its lineageId). openSlot clears both, so a
+// recycled slot reads nothing addressed to whoever held it before.
 function messageAddressesFor(s: Slot): MessageAddress[] {
   if (!s.cwd || s.openedAt <= 0 || s.label === STEWARD_LABEL) return [];
-  if (s.worktree) return [{ kind: "lane", slot: s.id, openedAt: s.openedAt }];
+  const before = (kind: "session" | "lane", openings: number[]): MessageAddress[] => openings
+    .filter((openedAt) => openedAt !== s.openedAt).map((openedAt) => ({ kind, slot: s.id, openedAt }));
+  if (s.worktree) return [{ kind: "lane", slot: s.id, openedAt: s.openedAt },
+    ...before("lane", s.laneSeats.map((seat) => seat.openedAt))];
   const out: MessageAddress[] = [];
   const bound = boundProgramsForMain(s);
   for (const p of bound) out.push({ kind: "program", id: p.id });
@@ -16938,7 +16945,8 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
     out.push({ kind: "role", role: "orchestrator" });
   if (!out.length && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
     && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
-    out.push({ kind: "session", slot: s.id, openedAt: s.openedAt });
+    out.push({ kind: "session", slot: s.id, openedAt: s.openedAt }, ...before("session", !s.lineageId ? []
+      : lineageHandovers.filter((r) => r.lineageId === s.lineageId && r.from.slot === s.id).map((r) => r.from.openedAt)));
   return out;
 }
 

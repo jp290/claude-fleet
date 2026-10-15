@@ -12,9 +12,10 @@
 //
 // Every slot is one this module opened itself, on vacant slots, and killed again at the end.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { BASE, ROOT, check, get, post } from "./harness";
+import { BASE, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 
 const NO_MESSAGE_ADDRESS = "not a principal with an address";
 
@@ -45,7 +46,8 @@ const sameSet = (got: number[] | undefined, want: number[]): boolean =>
 
 export async function messageDeliveryChecks(): Promise<void> {
   type Occupant = { id: number; cwd: string; openedAt: number; sessionId: string;
-    worktree: object | null; lastOutput: number; label: string; history: unknown[] };
+    worktree: object | null; lastOutput: number; label: string; history: unknown[];
+    laneSeats: { openedAt: number }[]; lineageId?: string };
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
   type MessageRow = { id: string; to: Address; from: { kind: "program"; id: string } | Address; readBy: object | null };
   type Options = { deliveryClass?: string; address?: { kind: string; id: number };
@@ -66,7 +68,8 @@ export async function messageDeliveryChecks(): Promise<void> {
   const now = Date.now();
   const make = (lane = true) => {
     const slot: Occupant = { id: 29, cwd: "/fixture/lane", openedAt: 100, sessionId: "old",
-      worktree: lane ? {} : null, lastOutput: now - 400_000, label: "fixture", history: [] };
+      worktree: lane ? {} : null, lastOutput: now - 400_000, label: "fixture", history: [], laneSeats: [] };
+    const lineage: { lineageId: string; from: { slot: number; openedAt: number } }[] = [];
     const rows: MessageRow[] = [{ id: "old-message", to: { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
       from: { kind: "program", id: "main" }, readBy: null }];
     const sent: { openedAt: number; options: Options }[] = [];
@@ -74,7 +77,7 @@ export async function messageDeliveryChecks(): Promise<void> {
     let autosOn = true;
     const cancelled: unknown[] = [];
     class Cancelled extends Error {}
-    const deps = { slots: [slot], messages: { entries: rows }, STEWARD_LABEL: "steward",
+    const deps = { slots: [slot], messages: { entries: rows }, STEWARD_LABEL: "steward", lineageHandovers: lineage,
       boundProgramsForMain: () => [], programs: [], deliveryRecipient: () => null,
       isOrchestratorLabel: () => false, slotFrom: () => slot,
       pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
@@ -104,7 +107,7 @@ export async function messageDeliveryChecks(): Promise<void> {
       messageAddressesFor: (s: Occupant) => Address[];
     };
     const tick = async () => { await api.tickMessageNudge(); await Bun.sleep(0); };
-    return { slot, rows, sent, api, tick, cancelled,
+    return { slot, rows, sent, api, tick, cancelled, lineage,
       policy: (p: { quiet?: boolean; automatable?: boolean; alive?: boolean; autosOn?: boolean;
         rotateAtProbe?: boolean; rotateAtSend?: boolean }) => {
         quiet = p.quiet ?? quiet; automatable = p.automatable ?? automatable; alive = p.alive ?? alive;
@@ -153,6 +156,32 @@ export async function messageDeliveryChecks(): Promise<void> {
   await recycled.tick();
   check("lane message: old unread traffic never wakes a recycled slot", recycled.sent.length === 0);
 
+  // MANGEL 79 (15.10.): „[Zitat entfernt]“
+  // The successor's own line is its predecessor's address: a lane's baton seat, a session's line record.
+  // The notice is the same tick as above, so it is typed into the successor, never held for the predecessor.
+  const baton = make(); baton.slot.openedAt = 101; baton.slot.sessionId = "successor";
+  baton.slot.laneSeats = [{ openedAt: 100 }]; baton.slot.lastOutput = now - 10_000;
+  await baton.tick();
+  check("lane message: the baton successor holds its own address first, then its predecessor's, and reads the unread message",
+    JSON.stringify(baton.api.messageAddressesFor(baton.slot))
+      === JSON.stringify([{ kind: "lane", slot: 29, openedAt: 101 }, { kind: "lane", slot: 29, openedAt: 100 }])
+      && baton.api.messageInboundFor(baton.slot, baton.rows[0]!),
+    JSON.stringify(baton.api.messageAddressesFor(baton.slot)));
+  check("lane message: the baton successor is nudged for its predecessor's unread message",
+    baton.sent.length === 1 && baton.sent[0]?.openedAt === 101, `sent=${JSON.stringify(baton.sent.map((x) => x.openedAt))}`);
+  const heir = make(false); heir.slot.openedAt = 101; heir.slot.sessionId = "successor";
+  heir.slot.lineageId = "a".repeat(24);
+  heir.lineage.push({ lineageId: "a".repeat(24), from: { slot: 29, openedAt: 100 } },
+    { lineageId: "b".repeat(24), from: { slot: 29, openedAt: 90 } }, { lineageId: "a".repeat(24), from: { slot: 30, openedAt: 80 } });
+  await heir.tick();
+  check("session message: a successor on the same line holds its own address first, then only its own line's predecessor on this slot",
+    JSON.stringify(heir.api.messageAddressesFor(heir.slot))
+      === JSON.stringify([{ kind: "session", slot: 29, openedAt: 101 }, { kind: "session", slot: 29, openedAt: 100 }])
+      && heir.api.messageInboundFor(heir.slot, heir.rows[0]!),
+    JSON.stringify(heir.api.messageAddressesFor(heir.slot)));
+  check("session message: the successor is nudged for its predecessor's unread message",
+    heir.sent.length === 1 && heir.sent[0]?.openedAt === 101, `sent=${JSON.stringify(heir.sent.map((x) => x.openedAt))}`);
+
   // K13 · Owner 14.10.: „[Zitat entfernt]“
   //  Eine Nachricht des Branch-Paars (nur Öffner und Branch-Session
   // schreiben Session an Session) kommt wie die einer MAIN an ihre Lane: nach kurzer Ruhe, an genau diesen
@@ -180,8 +209,108 @@ export async function messageDeliveryChecks(): Promise<void> {
   check("session message from a Program or the Orchestrator still waits for the backlog's quiet", ambient.sent.length === 0);
 }
 
+// MANGEL 79 THROUGH THE DOORS. Owner-Satz der Bauleitung (15.10.): „[Zitat entfernt]“
+//  That day two Owner verdicts to the session K15 never arrived: its
+// successor (same slot, same line, new openedAt) could neither see nor receipt what was addressed to the
+// predecessor. A real succession needs a founding turn, so the state is planted in fleet.json: a line record
+// handing slot H from openedAt A to its live occupant, which holds that line, and unread messages to
+// {session, H, A}. The two counter-probes are the two ways a slot is NOT a successor: another line on a slot
+// with history, and a recycle (openSlot clears the line).
+type SelfBody = { addresses?: unknown[]; entries?: { id: string }[]; ok?: boolean; existing?: boolean;
+  message?: { readBy?: { slot?: number; openedAt?: number } | null }; error?: string };
+type PlantState = { slots: Record<string, { openedAt: number; lineageId?: string | null }>;
+  lineageHandovers?: { lineageId: string }[]; messages?: { v: 1; entries: { id: string }[]; dropped: number } };
+async function lineageMessageChecks(): Promise<void> {
+  const vacant = (await sessions()).slots.filter((s) => !s.cwd).map((s) => s.id);
+  check("lineage message SETUP: two vacant slots", vacant.length >= 2, JSON.stringify(vacant));
+  if (vacant.length < 2) return;
+  const [heir = 0, other = 0] = vacant;
+  const self = async (slot: number, path: string, method = "GET"): Promise<{ status: number; body: SelfBody }> => {
+    const r = await fetch(BASE + path, { method, headers: { "x-fleet-self-token": selfTokenOf(slot) } });
+    return { status: r.status, body: (await r.json().catch(() => ({}))) as SelfBody };
+  };
+  const ids = (b: SelfBody): string[] => (b.entries ?? []).map((m) => m.id);
+  const hex = (): string => randomBytes(12).toString("hex");
+  const line = hex(), oldLine = hex(), otherLine = hex();
+  const msg = { heirOne: hex(), heirTwo: hex(), foreign: hex(), own: hex() };
+  const plantedIds = new Set(Object.values(msg));
+  const readState = (): PlantState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
+  try {
+    await post(`/api/slots/${heir}/open`, { cwd: "~", label: "Nachfolgerin · role-address" });
+    await post(`/api/slots/${other}/open`, { cwd: "~", label: "andere Linie · role-address" });
+    await stopSrv();
+    const state = readState();
+    // past the record's cap the loader refuses the whole rail and scars it for good (server/types.ts#loadMessages)
+    const room = 200 - (state.messages?.entries.length ?? 0) >= plantedIds.size;
+    check("lineage message SETUP: the message record has room for the four planted rows", room,
+      `entries=${state.messages?.entries.length ?? 0}`);
+    if (!room) return;
+    const H = state.slots[String(heir)]!, O = state.slots[String(other)]!;
+    const record = (lineageId: string, slot: number, from: number, to: number) => ({ v: 1, lineageId, role: "generic",
+      at: to - 1, from: { slot, openedAt: from }, to: { slot, openedAt: to }, obligations: [], intent: null,
+      pointer: null, supersededBy: null });
+    const message = (id: string, slot: number, openedAt: number) => ({ id, from: { kind: "role", role: "orchestrator" },
+      to: { kind: "session", slot, openedAt }, at: Date.now() - 5000, payload: { kind: "text", text: `Mangel 79 fixture ${id}` },
+      idempotencyKey: `mangel-79-${id}`, replyTo: null, readBy: null, readAt: null });
+    H.lineageId = line;
+    O.lineageId = otherLine;
+    state.lineageHandovers = [...(state.lineageHandovers ?? []),
+      record(line, heir, H.openedAt - 1000, H.openedAt),
+      // the other slot held an older line, was recycled, and its occupant has since founded a line of its own
+      record(oldLine, other, O.openedAt - 3000, O.openedAt - 2000),
+      record(otherLine, other, O.openedAt - 1000, O.openedAt)];
+    state.messages = { v: 1, dropped: state.messages?.dropped ?? 0, entries: [...(state.messages?.entries ?? []),
+      message(msg.heirOne, heir, H.openedAt - 1000), message(msg.heirTwo, heir, H.openedAt - 1000),
+      message(msg.foreign, other, O.openedAt - 3000), message(msg.own, other, O.openedAt - 1000)] };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+    await restartSrv();
+
+    const unread = await self(heir, "/api/self/messages?unread=1");
+    check("successor: GET /api/self/messages?unread=1 shows both messages addressed to its predecessor, its own address first",
+      unread.status === 200 && [msg.heirOne, msg.heirTwo].every((id) => ids(unread.body).includes(id))
+        && JSON.stringify(unread.body.addresses?.[0]) === JSON.stringify({ kind: "session", slot: heir, openedAt: H.openedAt }),
+      `${unread.status} ${JSON.stringify(unread.body).slice(0, 400)}`);
+    const read = await self(heir, `/api/self/messages/${msg.heirOne}/read`, "POST");
+    check("successor: POST /api/self/messages/<id>/read receipts the predecessor's message under the successor's own occupation",
+      read.status === 200 && read.body.ok === true && read.body.existing === false
+        && read.body.message?.readBy?.slot === heir && read.body.message.readBy.openedAt === H.openedAt,
+      `${read.status} ${JSON.stringify(read.body).slice(0, 400)}`);
+    const otherView = await self(other, "/api/self/messages?unread=1");
+    const otherRead = await self(other, `/api/self/messages/${msg.foreign}/read`, "POST");
+    check("another line: a slot reads its own line's predecessor's message, never one addressed to an occupation of the slot's older line (404)",
+      otherView.status === 200 && ids(otherView.body).includes(msg.own) && !ids(otherView.body).includes(msg.foreign)
+        && otherRead.status === 404,
+      `${otherView.status} ${JSON.stringify(ids(otherView.body))} read=${otherRead.status} ${otherRead.body.error ?? ""}`);
+
+    const heirToken = selfTokenOf(heir);
+    await post(`/api/slots/${heir}/kill`, {});
+    await post(`/api/slots/${heir}/open`, { cwd: "~", label: "Neubelegung · role-address" });
+    let fresh = false;
+    for (let k = 0; k < 60 && !fresh; k++) {
+      const t = selfTokenOf(heir);
+      fresh = /^[0-9a-f]{32}$/.test(t) && t !== heirToken;
+      if (!fresh) await Bun.sleep(100);
+    }
+    const recycledView = await self(heir, "/api/self/messages");
+    const recycledRead = await self(heir, `/api/self/messages/${msg.heirTwo}/read`, "POST");
+    check("recycle: a new occupant of the slot sees neither the read nor the unread message of the old line, and its receipt is a 404",
+      fresh && recycledView.status === 200 && !ids(recycledView.body).includes(msg.heirOne)
+        && !ids(recycledView.body).includes(msg.heirTwo) && recycledRead.status === 404,
+      `fresh=${fresh} ${recycledView.status} ${JSON.stringify(ids(recycledView.body))} read=${recycledRead.status} ${recycledRead.body.error ?? ""}`);
+  } finally {
+    for (const id of [heir, other]) await post(`/api/slots/${id}/kill`, {}).catch(() => null);
+    await stopSrv();
+    const state = readState();
+    state.lineageHandovers = (state.lineageHandovers ?? []).filter((r) => ![line, oldLine, otherLine].includes(r.lineageId));
+    if (state.messages) state.messages = { ...state.messages, entries: state.messages.entries.filter((m) => !plantedIds.has(m.id)) };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(state, null, 2));
+    await restartSrv();
+  }
+}
+
 export async function run(): Promise<void> {
   await messageDeliveryChecks();
+  await lineageMessageChecks();
   const before = await sessions();
   const vacant = before.slots.filter((s) => !s.cwd).map((s) => s.id);
   const held = before.slots.filter((s) => s.role === "orchestrator").map((s) => s.id);

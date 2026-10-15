@@ -287,15 +287,21 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
   const pruefer = { kind: "session", slot: 3, openedAt: 3000 };
   const long = ["S6 fertig: das Postfach liest sich als Gespräch, Merge-Check grün.",
     "Nur Client: src/postfach.ts und das Postfach-CSS.", "Nicht geprüft: Kopfzeile in einer echten claude-Pane."];
-  // newest first, as the route answers
+  // newest first, as the route answers; the lead's thanks answers the strand's report and is not read yet (S12c)
   const entries = [
+    { id: "m-dank", from: lead, to: strand, at: now - 30_000, payload: { kind: "text", text: "Danke, passt.\nAls Nächstes S7." }, replyTo: "m-long", readAt: null },
     { id: "m-long", from: strand, to: lead, at: now - 60_000, payload: { kind: "text", text: long.join("\n") }, replyTo: "m-ask", readAt: null },
     { id: "m-ask", from: lead, to: strand, at: now - 600_000, payload: { kind: "text", text: "Bitte S6 bauen." }, replyTo: null, readAt: now - 300_000 },
     { id: "m-pruef", from: pruefer, to: lead, at: now - 3_600_000, payload: { kind: "text", text: "dom grün auf dem Kandidaten." }, replyTo: null, readAt: null },
   ];
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("postfach DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
-  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
+  // A MOUSE, WHATEVER THE MACHINE (as e2e/slots.ts): the Linux helper's headless Chromium reports (hover: none) and
+  // (pointer: none), so the edge under the pointer (S12c, `@media (hover: hover)`) never came there (k13-s12c-coredom:
+  // red on the helper, green on this Mac). Blink HoverType 2 and PointerType 4 give every run the desktop's hover and
+  // fine pointer; the PROBE claim below checks it took.
+  const pointer = "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4";
+  const browser = Bun.spawn([executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", pointer, `--user-data-dir=${scratch}/profile`, "about:blank"], { stdout: "ignore", stderr: "pipe" });
   let socket: WebSocket | undefined;
   try {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -364,15 +370,34 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
     // the time as the owner's clock writes it, derived here without the client's formatter
     const clock = (ms: number) => evaluate<string>(`(() => { const d = new Date(${ms}); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); })()`);
     const TAB = `document.querySelector('#boardbody .btab[data-tab="postfach"]')`;
+    // per row also its place in the conversation (dl/dr: px from the box's left/right edge), its quote, its read sign
+    // and the edge and fill it paints (S12c)
     const READ = `(() => { const tab = ${TAB}; if (!tab) return null; const t = tab.getBoundingClientRect();
+      const g = tab.querySelector('.bgespr')?.getBoundingClientRect();
+      const paint = (e) => { if (!e) return null; const cs = getComputedStyle(e); return { edge: parseFloat(cs.borderTopWidth) > 0 ? cs.borderTopColor : 'none', fill: cs.backgroundColor }; };
       return [...tab.querySelectorAll('.bgespr .bmsg')].map((r) => { const b = r.getBoundingClientRect(), line = r.querySelector('.bmsgline');
-        return { id: r.dataset.mid, open: r.classList.contains('open'), expanded: line?.getAttribute('aria-expanded') ?? null,
+        const re = r.querySelector('.bmsgre'), sign = r.querySelector('.bmsgread'), first = r.querySelector('.bmsgfirst');
+        return { id: r.dataset.mid, mine: r.classList.contains('mine'), open: r.classList.contains('open'), expanded: line?.getAttribute('aria-expanded') ?? null,
           who: r.querySelector('.bmsgwho')?.textContent ?? null, at: r.querySelector('.bmsgat')?.textContent ?? null,
-          first: r.querySelector('.bmsgfirst')?.textContent ?? null, firstShown: !!r.querySelector('.bmsgfirst') && getComputedStyle(r.querySelector('.bmsgfirst')).display !== 'none',
-          full: r.querySelector('.bmsgtx')?.textContent ?? null, text: r.innerText, h: Math.round(b.height),
-          inside: b.left >= t.left - 0.5 && b.right <= t.right + 0.5 && !!line && line.scrollWidth <= line.clientWidth + 1 }; }); })()`;
-    type Row = { id: string; open: boolean; expanded: string | null; who: string | null; at: string | null; first: string | null;
-      firstShown: boolean; full: string | null; text: string; h: number; inside: boolean };
+          first: first?.textContent ?? null, firstShown: !!first && getComputedStyle(first).display !== 'none',
+          full: r.querySelector('.bmsgtx')?.textContent ?? null, text: r.innerText, h: Math.round(b.height), lineH: Math.round(line?.getBoundingClientRect().height ?? 0),
+          inside: b.left >= t.left - 0.5 && b.right <= t.right + 0.5 && !!line && line.scrollWidth <= line.clientWidth + 1,
+          dl: g ? Math.round(b.left - g.left) : null, dr: g ? Math.round(g.right - b.right) : null,
+          quote: re ? { text: re.textContent, above: !!line && re.getBoundingClientRect().bottom <= line.getBoundingClientRect().top + 0.5,
+            fs: parseFloat(getComputedStyle(re).fontSize), color: getComputedStyle(re).color, firstFs: first ? parseFloat(getComputedStyle(first).fontSize) : null,
+            firstColor: first ? getComputedStyle(first).color : null } : null,
+          sign: sign ? { title: sign.title, text: sign.textContent, w: sign.getBoundingClientRect().width, h: sign.getBoundingClientRect().height,
+            besideTime: !!r.querySelector('.bmsgat') && Math.abs(sign.getBoundingClientRect().top + sign.getBoundingClientRect().height / 2
+              - (r.querySelector('.bmsgat').getBoundingClientRect().top + r.querySelector('.bmsgat').getBoundingClientRect().height / 2)) <= 3 } : null,
+          row: paint(r), line: paint(line) }; }); })()`;
+    type Paint = { edge: string; fill: string } | null;
+    type Row = { id: string; mine: boolean; open: boolean; expanded: string | null; who: string | null; at: string | null; first: string | null;
+      firstShown: boolean; full: string | null; text: string; h: number; lineH: number; inside: boolean; dl: number | null; dr: number | null;
+      quote: { text: string; above: boolean; fs: number; color: string; firstFs: number | null; firstColor: string | null } | null;
+      sign: { title: string; text: string; w: number; h: number; besideTime: boolean } | null; row: Paint; line: Paint };
+    // a computed colour paints when it is not fully transparent; its brightness for „quieter than the text“
+    const shows = (c: string | undefined) => !!c && c !== "none" && !/^rgba\([^)]*,\s*0\)$/.test(c) && c !== "transparent";
+    const lum = (c: string | null | undefined) => { const p = (c ?? "").match(/[\d.]+/g)?.map(Number) ?? []; return p.length >= 3 ? (p[0]! + p[1]! + p[2]!) / 3 : NaN; };
     const results: PostfachDomResult[] = [];
     let targetId = "";
     for (const [width, height, phone] of [[1200, 900, false], [390, 844, true]] as const) {
@@ -397,20 +422,53 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       }
       const booted = await wait(`${TAB}?.querySelector('.bgespr .bmsg')`, 15000);
       if (!booted) throw new Error(`postfach DOM probe ${width}: no message in the Postfach tab: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      claims["PROBE: the fixture browser is a mouse — (hover: hover) and (pointer: fine), whatever the host"] =
+        await evaluate<boolean>("matchMedia('(hover: hover)').matches && matchMedia('(pointer: fine)').matches");
       await evaluate(`${TAB}.scrollIntoView({ block: 'start' })`);
       await settle(200);
       const closed = await evaluate<Row[]>(READ);
       const [longAt, askAt] = [await clock(now - 60_000), await clock(now - 600_000)];
       const byId = (rows: Row[], id: string) => rows.find((r) => r.id === id);
-      const l0 = byId(closed, "m-long"), a0 = byId(closed, "m-ask");
+      const l0 = byId(closed, "m-long"), a0 = byId(closed, "m-ask"), d0 = byId(closed, "m-dank");
       facts.closed = closed;
       // one compact line: who, when, the first line with „…“ for more — and none of the rest, two text lines at most
       claims["every message first shows as one compact line — sender, time and the first line of its text, not the rest"] =
-        closed.length === 2 && !!l0 && !!a0 && closed.every((r) => !r.open && r.expanded === "false" && r.full === null && r.firstShown && r.h < 60)
+        closed.length === 3 && !!l0 && !!a0 && !!d0 && closed.every((r) => !r.open && r.expanded === "false" && r.full === null && r.firstShown && r.lineH < 60)
         && l0.who === "Strang" && l0.at === longAt && l0.first === `${long[0]} …` && !l0.text.includes(long[1]!) && !l0.text.includes(long[2]!)
-        && a0.who === "Bauleitung" && a0.at === askAt && a0.first === "Bitte S6 bauen.";
+        && a0.at === askAt && a0.first === "Bitte S6 bauen." && d0.first === "Danke, passt. …";
       claims["the compact lines stay inside the Postfach column, their text cut, not running over"] = closed.every((r) => r.inside)
         && await evaluate<boolean>("document.documentElement.scrollWidth <= innerWidth");
+      // S12c · Owner 14.10. 21:0x on Slot 2's postfach, whose own message carried „[Zitat entfernt]“: „[Zitat entfernt]“
+      //  What this session sent stands right without a name, only with its time; the name is the
+      // other side's, on the left. This session's label is in none of its rows.
+      claims["what this session sent stands right without a name, only its time; only the other side carries a name, on the left"] =
+        !!l0 && !!a0 && !!d0 && [a0, d0].every((r) => r.mine && r.who === null && !r.text.includes("Bauleitung") && r.dr !== null && r.dr <= 1 && (r.dl ?? 0) > 8)
+        && a0.at === askAt && !l0.mine && l0.who === "Strang" && l0.dl !== null && l0.dl <= 1 && (l0.dr ?? 0) > 8;
+      // S12c · Owner: „[Zitat entfernt]“. An answer
+      // carries over its line the beginning of what it answers, closed already and also when the original stands right
+      // under it, smaller and darker than its own text; a message that answers nothing has none.
+      claims["an answer shows what it answers — a quiet quote line with the beginning of the original over it, already closed"] =
+        !!l0?.quote && !!d0?.quote && !!a0 && a0.quote === null
+        && l0.quote.text === "Bitte S6 bauen." && d0.quote.text === `${long[0]} …`
+        && [l0.quote, d0.quote].every((q) => q.above && q.firstFs !== null && q.fs < q.firstFs && lum(q.color) < lum(q.firstColor));
+      // S12c · Owner: „[Zitat entfernt]“. At
+      // rest no row and no line paints an edge or a fill; the pointer over one message gives it a gray edge, the others
+      // none; on the phone no message shows an edge, also under the pointer.
+      const rest = closed.every((r) => !shows(r.row?.edge) && !shows(r.row?.fill) && !shows(r.line?.fill));
+      const over = await evaluate<{ x: number; y: number } | null>(`(() => { const r = ${TAB}?.querySelector('.bmsg[data-mid="m-long"] .bmsgline')?.getBoundingClientRect();
+        return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`);
+      if (over) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: over.x, y: over.y });
+      await settle(450);
+      const hovered = await evaluate<Row[]>(READ);
+      if (over) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+      await settle(450);
+      const h0 = byId(hovered, "m-long");
+      const gray = (c: string | undefined) => { const p = (c ?? "").match(/[\d.]+/g)?.map(Number) ?? []; return p.length >= 3 && Math.max(p[0]!, p[1]!, p[2]!) - Math.min(p[0]!, p[1]!, p[2]!) <= 10; };
+      facts.bubble = { rest: closed.map((r) => [r.id, r.row, r.line]), hovered: hovered.map((r) => [r.id, r.row]) };
+      if (!phone) claims["at rest a message is no bubble — no edge, no fill; a light edge comes only with the pointer"] =
+        rest && !!over && shows(h0?.row?.edge) && gray(h0?.row?.edge) && hovered.filter((r) => r.id !== "m-long").every((r) => !shows(r.row?.edge));
+      else claims["on the phone a message never shows an edge, at rest nor under the pointer"] =
+        rest && !!over && hovered.every((r) => !shows(r.row?.edge) && !shows(r.row?.fill));
       await shot(`postfach-${width}-zu`);
       // open the long one: its whole text, as written; a second click closes it again
       await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-long"] .bmsgline').click()`);
@@ -439,11 +497,10 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
         return { big, marks };
       })()`);
       facts.tones = tones;
+      // (since S12c this session's lines carry no name, so the marks are the other side's: the head and its lines)
       claims["the conversation is black and white — grays for every text, fill and edge; a speaker's colour only as a small mark before the name"] =
-        !!tones && tones.big.length === 0 && tones.marks.length >= 3 && tones.marks.every((m) => m.hued && m.w <= 8 && m.h <= 8)
-        && new Set(tones.marks.filter((m) => m.who === "Strang").map((m) => m.bg)).size === 1
-        && new Set(tones.marks.filter((m) => m.who === "Bauleitung").map((m) => m.bg)).size === 1
-        && tones.marks.find((m) => m.who === "Strang")?.bg !== tones.marks.find((m) => m.who === "Bauleitung")?.bg;
+        !!tones && tones.big.length === 0 && tones.marks.length >= 2 && tones.marks.every((m) => m.hued && m.w <= 8 && m.h <= 8)
+        && new Set(tones.marks.filter((m) => m.who === "Strang").map((m) => m.bg)).size === 1;
       await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-long"] .bmsgline').click()`);
       await settle(150);
       const again = await evaluate<Row[]>(READ);
@@ -453,6 +510,20 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
         !!l1 && l1.open && l1.expanded === "true" && l1.full === long.join("\n") && !l1.firstShown
         && !!a1 && !a1.open && a1.full === null
         && !!l2 && !l2.open && l2.full === null && l2.firstShown;
+      // S12c · the Bauleitung from the owner's screenshot: „[Zitat entfernt]“ becomes quieter. Whether a sent message was
+      // read is a sign of at most 10 px beside its time with its words as title — closed and opened; no row writes it out.
+      await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-dank"] .bmsgline').click()`);
+      await settle(150);
+      const d1 = byId(await evaluate<Row[]>(READ), "m-dank");
+      await evaluate(`${TAB}.querySelector('.bmsg[data-mid="m-dank"] .bmsgline').click()`);
+      await settle(150);
+      const readAt = await clock(now - 300_000);
+      facts.signs = { d0: d0?.sign, a0: a0?.sign, d1: d1?.sign, d1text: d1?.text };
+      claims["whether a sent message was read is a small sign beside its time, its words only in the title"] =
+        !!d0?.sign && !!a0?.sign && !!d1?.sign && d1.open && d1.full === "Danke, passt.\nAls Nächstes S7."
+        && d0.sign.title === "noch nicht gelesen" && d1.sign.title === "noch nicht gelesen" && a0.sign.title === `gelesen ${readAt}`
+        && [d0.sign, a0.sign, d1.sign].every((s) => s.text === "" && s.w <= 10 && s.h <= 10 && s.besideTime)
+        && !!l1 && [d0, a0, d1, l1].every((r) => !/gelesen/.test(r.text));
       // S12 · Owner 14.10. 13:2x: „[Zitat entfernt]“
       //  The list names every counterpart, the newest conversation first and chosen;
       // a choice shows that conversation alone and holds over a repaint of the board (a tab's fold redraws it).
@@ -519,7 +590,7 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       const p5 = await evaluate<Pick>(PICK);
       facts.pick = { p0, p1, p2, p3, p4, p5, dark: dark?.big, hover: hover?.big, light: light?.big };
       claims["with two counterparts a list in the head chooses the conversation — the newest first and chosen — and only that one stands below, also after the board redraws"] =
-        p0.convs === 1 && !p0.select && p0.shown === "Strang · 1 ungelesen" && p0.expanded === "false" && !p0.open && JSON.stringify(p0.ids) === JSON.stringify(["m-long", "m-ask"])
+        p0.convs === 1 && !p0.select && p0.shown === "Strang · 1 ungelesen" && p0.expanded === "false" && !p0.open && JSON.stringify(p0.ids) === JSON.stringify(["m-dank", "m-long", "m-ask"])
         && p1.open && p1.expanded === "true" && JSON.stringify(p1.opts) === JSON.stringify([["Strang", "1 ungelesen", "true"], ["Prüfer", "1 ungelesen", "false"]])
         && p1.focus === "list:Strang"
         && p4.convs === 1 && !p4.open && p4.shown === "Prüfer · 1 ungelesen" && JSON.stringify(p4.ids) === JSON.stringify(["m-pruef"])

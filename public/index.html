@@ -3358,9 +3358,8 @@
   /* the postfach (K13 S6/S9/S10/S11, src/postfach.ts): one conversation per counterpart, the newest message
      on top. Each message is first ONE line — who, the first line of its text, when — and a click opens it.
      BLACK AND WHITE (owner 14.10. 12:1x: „[Zitat entfernt]“
-     ): this session's lines stand right on the lighter gray, the other side's left on the darker;
-     a speaker's hue (--who-h, set per row: this session the accent blue, every other address a fixed hue
-     without blue) is only the small dot before the name. Name, time and state are not selectable: a copy
+     ): a speaker's hue (--who-h, set on the other side's rows: every address a fixed hue without
+     blue) is only the small dot before the name. Name, time and state are not selectable: a copy
      of an opened message takes its text. */
   #board .bgespr + .bgespr { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--chat-edge-soft); }
   #board .bgesprhd { margin-bottom: 2px; font-size: 11.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
@@ -3377,32 +3376,42 @@
   #board .bgesprdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: hsl(var(--who-h, 222) 60% 62%); }
   #board .bgesprwho::before, #board .bmsgwho::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px;
     border-radius: 50%; vertical-align: 1px; background: hsl(var(--who-h, 222) 60% 62%); }
-  #board .bmsg { margin-top: 3px; border: 1px solid var(--chat-edge-soft); border-radius: 8px;
-    background: var(--chat-surface); transition: border-color 0.3s; }
-  #board .bmsg.mine { margin-left: 10%; border-color: var(--chat-edge); background: var(--chat-raised); }
-  #board .bmsg.theirs { margin-right: 10%; }
+  /* S12c (owner 14.10. 21:0x–22:1x: „[Zitat entfernt]“
+     ): at rest a message is name, time and text without edge or fill, as wide as it is; this
+     session's stand right without a name, the other side's left. The light edge comes with the pointer, on the
+     phone never. */
+  #board .bmsg { width: fit-content; max-width: 90%; margin-top: 3px; border: 1px solid transparent; border-radius: 8px;
+    transition: border-color 0.3s; }
+  #board .bmsg.mine { margin-left: auto; }
   #board .bmsg.first { margin-top: 9px; }
+  @media (hover: hover) { #board .bmsg:hover { border-color: var(--chat-edge); } }
   #board .bmsg.flash { border-color: var(--chat-ink); }
-  /* the closed line as an inbox row: who and when on top, the first line of the text under them, full width */
-  #board .bmsgline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1px 6px; width: 100%;
-    min-width: 0; padding: 4px 8px; border: 0;
-    border-radius: 8px; background: transparent; color: var(--b-ink2); font: 400 12px var(--chat-sans); text-align: left; cursor: pointer;
-    user-select: none; -webkit-user-select: none; }
-  #board .bmsgline:hover { background: var(--c-hover); }
-  #board .bmsgwho { grid-row: 1; grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 11px; font-weight: 500; color: var(--b-ink); }
-  #board .bmsgat { grid-row: 1; grid-column: 2; font-size: 10.5px; color: var(--b-ink3); }
-  #board .bmsgdot { grid-row: 1; grid-column: 3; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
-  #board .bmsgfirst { grid-row: 2; grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the closed line as an inbox row: who, when and the read state on top, the first line of the text under them */
+  #board .bmsgline { display: flex; flex-direction: column; justify-content: center; gap: 1px; width: 100%; min-width: 0;
+    padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-prose); font: 400 12px var(--chat-sans);
+    text-align: left; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  #board .bmsg.mine .bmsgline { text-align: right; }
+  #board .bmsghd { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  #board .bmsg.mine .bmsghd { justify-content: flex-end; }
+  #board .bmsgwho { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px; font-weight: 500; color: var(--chat-ink); }
+  #board .bmsgat { flex: none; font-size: 10.5px; color: var(--chat-mute); }
+  #board .bmsgdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+  /* the read state of a sent message: a ring until the other side has read it, then a check; the words are its title */
+  #board .bmsgread { flex: none; box-sizing: border-box; width: 7px; height: 7px; border: 1px solid var(--chat-mute); border-radius: 50%; }
+  #board .bmsgread.seen { display: grid; place-items: center; width: 8px; height: 8px; border: 0; color: var(--chat-mute); }
+  #board .bmsgread svg { width: 10px; height: 10px; }
+  #board .bmsgfirst { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #board .bmsg.open .bmsgfirst { display: none; }
-  #board .bmsgtx { padding: 0 8px 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--b-ink); font-size: 12px; line-height: 1.45; }
-  #board .bmsgre { display: block; max-width: calc(100% - 16px); margin: 0 8px 3px; padding: 0; border: 0; border-radius: 0;
-    background: transparent; color: var(--b-ink3); font: 400 11px var(--chat-sans); text-align: left; cursor: pointer;
+  #board .bmsgtx { padding: 0 8px 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-ink); font-size: 12px; line-height: 1.45; }
+  /* an answer's quote: the beginning of what it answers, over it, quiet and behind a hairline; a press shows the original */
+  #board .bmsgre { display: block; width: fit-content; max-width: calc(100% - 16px); margin: 4px 8px 0; padding: 0 0 0 6px; border: 0;
+    border-left: 2px solid var(--chat-edge); border-radius: 0; background: transparent; color: var(--chat-mute);
+    font: 400 11px var(--chat-sans); text-align: left; cursor: pointer;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none; -webkit-user-select: none; }
+  #board .bmsg.mine .bmsgre { margin-left: auto; }
   #board div.bmsgre { cursor: default; }
-  #board .bmsgre:hover { color: var(--b-ink2); }
-  #board .bmsgmeta { margin: 0 8px 6px; font-size: 10.5px; color: var(--b-ink3); user-select: none; -webkit-user-select: none; }
-  #board .bmsgmeta.open { color: var(--b-ink2); }
+  #board .bmsgre:hover { color: var(--chat-prose); }
   #board .bmsgmore { margin: 6px 0 0 -6px; padding: 2px 6px; color: var(--chat-mute); background: transparent; border-color: transparent; }
   #board .bmsgmore:hover { color: var(--chat-ink); background: var(--c-hover); }
   #board .bnopane { margin-top: var(--b-sec-a); padding-top: var(--b-sec-b); border-top: 1px solid var(--chat-edge-soft); }
@@ -3412,7 +3421,10 @@
     /* the rest of the column at the phone's floor: a target 40 px, a reading row 32 px (§3b) */
     #board { --b-row: 40px; --b-hit: 40px; --b-fold: 40px; --b-grp: 12px; }
     /* a postfach line is a target (src/postfach.ts, S10), and so is the list of conversations (S12) */
-    #board .bmsgline { min-height: var(--b-hit); align-items: center; }
+    #board .bmsgline { min-height: var(--b-hit); }
+    /* S12c: a message never shows its edge here, also not under a finger; a jump to an original lights its fill */
+    #board .bmsg, #board .bmsg:hover { border-color: transparent; }
+    #board .bmsg.flash { border-color: transparent; background: var(--c-hover); }
     #board .bgesprsel { min-height: var(--b-hit); }
     #board .bpop.bgesprpop { right: 0; min-width: 0; max-width: none; }
     #board .bsec h3 { font-size: 12px; min-height: 28px; }

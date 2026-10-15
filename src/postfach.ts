@@ -120,7 +120,7 @@ function hueOf(a: Address, slot: number, openedAt: number): number {
 // S10 · Owner 14.10. 10:3x: „[Zitat entfernt]“
 // 
 //  Jede Nachricht ist zuerst eine Posteingangszeile: wer und
-// wann, darunter die erste Zeile des Textes; ein Klick klappt sie auf (Text ganz, Zitat, Lesestand). Die Kurzfassung ist die
+// wann, darunter die erste Zeile des Textes; ein Klick klappt sie auf (Text ganz). Die Kurzfassung ist die
 // erste Zeile, kein Server-Text; „…“ sagt, dass mehr kommt. Was aufgeklappt ist, bleibt es über das
 // Neuzeichnen (expanded, je Nachricht).
 const expanded = new Set<string>();
@@ -153,7 +153,13 @@ popover({
 });
 
 // S9 · „[Zitat entfernt]“: die neueste Nachricht oben, die
-// früheren klappen unten auf. Ein Zitat steht, wo das Original nicht direkt unter der Antwort steht.
+// früheren klappen unten auf.
+// S12c · Owner 14.10. 21:0x–22:1x zu „[Zitat entfernt]“: beide Richtungen
+// bleiben, aber „[Zitat entfernt]“, und „[Zitat entfernt]“
+// . Was diese Session schrieb, steht
+// rechts ohne Namen, nur mit der Zeit; den Namen trägt nur die Gegenseite links. Jede Antwort trägt über sich eine
+// leise Zitatzeile mit dem Anfang ihres Originals, auch zugeklappt. Der Lesestand ist ein Zeichen neben der Zeit,
+// die Worte stehen im title. Die Blase zeichnet nur noch das CSS beim Drüberfahren (public/index.html, .bmsg).
 function fillConversation(box: HTMLElement, c: Conversation, slot: number, openedAt: number, all: Conversation[]): void {
   box.replaceChildren();
   const partner = who(c.with);
@@ -214,51 +220,56 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
     const mine = own(m.from, slot, openedAt), open = expanded.has(m.id);
     const row = el("div", `bmsg ${mine ? "mine" : "theirs"}${open ? " open" : ""}`);
     row.dataset.mid = m.id;
-    row.style.setProperty("--who-h", String(hueOf(m.from, slot, openedAt)));
-    const above = shown[i - 1], below = shown[i + 1];
+    const above = shown[i - 1];
     if (!above || keyOf(above.from) !== keyOf(m.from)) row.classList.add("first");
     const text = m.payload.text ?? "";
+    if (m.replyTo) {
+      const orig = c.msgs.find((p) => p.id === m.replyTo);
+      if (orig) {
+        const re = el("button", "bmsgre", firstLine(orig.payload.text ?? "")) as HTMLButtonElement;
+        re.type = "button";
+        re.title = `Antwort auf ${own(orig.from, slot, openedAt) ? "diese Session" : who(orig.from).name}, ${when(orig.at)} — zeigen`;
+        re.onclick = () => {
+          unfolded.add(c.key);
+          expanded.add(orig.id);
+          refill();
+          const target = box.querySelector<HTMLElement>(`[data-mid="${CSS.escape(orig.id)}"]`);
+          target?.scrollIntoView({ block: "center" });
+          target?.classList.add("flash");
+          setTimeout(() => target?.classList.remove("flash"), 1200);
+        };
+        row.appendChild(re);
+      } else row.appendChild(el("div", "bmsgre", "Antwort auf eine ältere Nachricht"));
+    }
     const line = el("button", "bmsgline") as HTMLButtonElement;
     line.type = "button";
     line.setAttribute("aria-expanded", String(open));
     line.title = open ? "Zuklappen" : "Ganz lesen";
-    const speaker = who(m.from);
-    const w = el("span", "bmsgwho", speaker.name);
-    w.title = speaker.hint;
+    const hd = el("span", "bmsghd");
+    if (!mine) {
+      const speaker = who(m.from);
+      const w = el("span", "bmsgwho", speaker.name);
+      w.title = speaker.hint;
+      row.style.setProperty("--who-h", String(hueOf(m.from, slot, openedAt)));
+      hd.appendChild(w);
+    }
     const at = el("span", "bmsgat", when(m.at));
     at.title = `${new Date(m.at).toLocaleString("de-DE")} · Nachricht ${m.id}`;
-    line.append(w, at);
-    if (!mine && m.readAt === null) {
+    hd.appendChild(at);
+    if (mine) {
+      const seen = el("span", `bmsgread${m.readAt === null ? "" : " seen"}`);
+      seen.title = m.readAt === null ? "noch nicht gelesen" : `gelesen ${when(m.readAt)}`;
+      if (m.readAt !== null) seen.appendChild(icon("check"));
+      hd.appendChild(seen);
+    } else if (m.readAt === null) {
       const dot = el("span", "bmsgdot");
       dot.title = "ungelesen";
-      line.appendChild(dot);
+      hd.appendChild(dot);
     }
-    line.appendChild(el("span", "bmsgfirst", firstLine(text)));
+    line.append(hd, el("span", "bmsgfirst", firstLine(text)));
     line.onclick = () => { if (open) expanded.delete(m.id); else expanded.add(m.id); refill(); };
     row.appendChild(line);
-    if (open) {
-      if (m.replyTo && below?.id !== m.replyTo) {
-        const orig = c.msgs.find((p) => p.id === m.replyTo);
-        if (orig) {
-          const re = el("button", "bmsgre", `↳ ${firstLine(orig.payload.text ?? "")}`) as HTMLButtonElement;
-          re.type = "button";
-          re.title = `Antwort auf die Nachricht von ${when(orig.at)} — zeigen`;
-          re.onclick = () => {
-            unfolded.add(c.key);
-            expanded.add(orig.id);
-            refill();
-            const target = box.querySelector<HTMLElement>(`[data-mid="${CSS.escape(orig.id)}"]`);
-            target?.scrollIntoView({ block: "center" });
-            target?.classList.add("flash");
-            setTimeout(() => target?.classList.remove("flash"), 1200);
-          };
-          row.appendChild(re);
-        } else row.appendChild(el("div", "bmsgre", "↳ Antwort auf eine ältere Nachricht"));
-      }
-      row.appendChild(el("div", "bmsgtx", text));
-      const state = mine ? (m.readAt === null ? "noch nicht gelesen" : `gelesen ${when(m.readAt)}`) : m.readAt === null ? "ungelesen" : "";
-      if (state) row.appendChild(el("div", `bmsgmeta${!mine && m.readAt === null ? " open" : ""}`, state));
-    }
+    if (open) row.appendChild(el("div", "bmsgtx", text));
     box.appendChild(row);
   });
   const hidden = newest.length - shown.length;

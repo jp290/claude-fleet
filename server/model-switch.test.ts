@@ -18,24 +18,32 @@ const NAME_ONLY = JSON.stringify({ type: "system", subtype: "local_command", con
 
 describe("die Rückfrage im Bild: ein Enter nur für genau das bestellte Modell", () => {
   test("Rückfrage statt Eingabefeld (Session ruht) und über dem leeren Feld (am Ende eines Zugs): bestätigen", () => {
-    expect(switchDialog(F.idleDialog!, FABLE)).toBe("confirm");
-    expect(switchDialog(F.busyDialog!, FABLE)).toBe("confirm");
+    expect(switchDialog(F.idleDialog!, "model", FABLE)).toBe("confirm");
+    expect(switchDialog(F.busyDialog!, "model", FABLE)).toBe("confirm");
   });
   test("Rückfrage für ein anderes Modell, oder „2. No“ markiert: kein Enter", () => {
-    expect(switchDialog(F.foreignDialog!, FABLE)).toBe("foreign");
-    expect(switchDialog(F.foreignDialog!, "claude-sonnet-5-5")).toBe("confirm");
-    expect(switchDialog(F.noSelected!, FABLE)).toBe("foreign");
+    expect(switchDialog(F.foreignDialog!, "model", FABLE)).toBe("foreign");
+    expect(switchDialog(F.foreignDialog!, "model", "claude-sonnet-5-5")).toBe("confirm");
+    expect(switchDialog(F.noSelected!, "model", FABLE)).toBe("foreign");
   });
   test("kein Dialog im Bild, auch nicht mitten im Zug: nichts", () => {
-    expect(switchDialog(F.plain!, FABLE)).toBe("none");
-    expect(switchDialog(F.busyBefore!, FABLE)).toBe("none");
+    expect(switchDialog(F.plain!, "model", FABLE)).toBe("none");
+    expect(switchDialog(F.busyBefore!, "model", FABLE)).toBe("none");
+  });
+  test("Mangel 74 — „Change effort level?“ für genau die bestellte Stufe: bestätigen; für eine andere: kein Enter", () => {
+    expect(switchDialog(F.effortDialog!, "effort", "high")).toBe("confirm");
+    expect(switchDialog(F.effortDialog!, "effort", "xhigh")).toBe("foreign");
+  });
+  test("Mangel 74 — jede Rückfrage gehört nur ihrem Feld: der Modellwechsel bestätigt keine Effort-Frage und umgekehrt", () => {
+    expect(switchDialog(F.effortDialog!, "model", FABLE)).toBe("none");
+    expect(switchDialog(F.idleDialog!, "effort", "high")).toBe("none");
   });
   test("ein zerrissenes Bild: ohne Optionen nichts, mit nur einer Option kein Enter", () => {
     const lines = F.idleDialog!.split("\n");
     const yesAt = lines.findIndex((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").includes("1. Yes, switch to"));
     expect(yesAt).toBeGreaterThan(0);
-    expect(switchDialog(lines.slice(0, yesAt).join("\n"), FABLE)).toBe("none");
-    expect(switchDialog(lines.slice(0, yesAt + 1).join("\n"), FABLE)).toBe("foreign");
+    expect(switchDialog(lines.slice(0, yesAt).join("\n"), "model", FABLE)).toBe("none");
+    expect(switchDialog(lines.slice(0, yesAt + 1).join("\n"), "model", FABLE)).toBe("foreign");
   });
 });
 
@@ -61,6 +69,11 @@ describe("das Urteil steht allein in Claude Codes local_command-Zeile", () => {
   });
   test("/effort: „Set effort level to“ für die Stufe", () => {
     expect(switchVerdict([lc("effort", "xhigh", "Set effort level to xhigh (saved as your default for new sessions): …")], "effort", "xhigh")).toBe("set");
+  });
+  test("/effort nach Esc auf die Rückfrage: „Kept effort level as“ → behalten (2.1.300, zweite Form, Mangel 74)", () => {
+    const cmd = JSON.stringify({ type: "user", message: { content: "<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>high</command-args>" } });
+    const out = JSON.stringify({ type: "user", message: { content: "<local-command-stdout>Kept effort level as low</local-command-stdout>" } });
+    expect(switchVerdict([cmd, out], "effort", "high")).toBe("kept");
   });
 });
 
@@ -131,11 +144,16 @@ describe("der Beobachter: genau ein Enter, Urteil aus dem Transkript, eine Grenz
     expect(await w.done).toBe("stopped");
     expect(p.states).toEqual(["typed"]);
   });
-  test("/effort: kein Blick auf Dialoge, kein Enter, nur die Zeile", async () => {
+  test("/effort: eine Modell-Rückfrage im Bild ist nicht seine — kein Enter, nur die Zeile", async () => {
     const p = fakePane({ frames: [F.idleDialog!], lines: (k) => k >= 3 ? [lc("effort", "xhigh", "Set effort level to xhigh")] : [] });
     expect(await watchSwitch("effort", "xhigh", p.pane, SWITCH_LIMITS, p.now, p.sleep).done).toBe("set");
     expect(p.enters).toBe(0);
-    expect(p.frameReads).toBe(0);
+  });
+  test("/effort: die Rückfrage für genau diese Stufe bekommt ihr eines Enter, dann „Set effort level to“ → umgestellt (Mangel 74)", async () => {
+    const p = fakePane({ frames: [F.plain!, F.effortDialog!, F.effortDialog!, F.effortDialog!],
+      lines: (_k, entered) => entered ? [lc("effort", "high", "Set effort level to high")] : [] });
+    expect(await watchSwitch("effort", "high", p.pane, SWITCH_LIMITS, p.now, p.sleep).done).toBe("set");
+    expect(p.enters).toBe(1);
   });
 });
 

@@ -220,3 +220,76 @@ describe("composerRows: a blank row inside Claude's input", () => {
     expect(composerRows(CODEX, ["› Hallo", "", "  gpt-5.3-codex high · 100% left"].join("\n"))).toEqual(["Hallo"]);
   });
 });
+
+// MANGEL 73. Owner, 15.10.: „[Zitat entfernt]“
+//  The glyph rows are verbatim capture-pane -e rows: Claude Code 2.1.300 in a
+// throwaway tmux at 177×55 (15.10.), Slot 2's replayed stream (15.10. 08:51, the owner's case), and tmux's own
+// serialization of what Claude Code's placeholder renderer writes with the cursor on it (invert(t[0]) + dim(t.slice(1)),
+// painted once whole and once word by word) — that one is no live paint: none of three live tries showed it.
+const RULE37 = `\x1b[37m${"─".repeat(177)}`;
+const STATUS = "\x1b[39m  \x1b[2m\x1b[37mctx [----------] --%  |  Sonnet 5.5\x1b[0m";
+const field73 = (glyphRow: string) => [RULE37, glyphRow, RULE37, STATUS, ""].join("\n");
+const HINTED: Record<string, string> = {
+  "2.1.300 at rest, the placeholder „Try …“":
+    '\x1b[39m❯\xa0\x1b[2mTry\x1b[0m \x1b[2m"how\x1b[0m \x1b[2mdo\x1b[0m \x1b[2mI\x1b[0m \x1b[2mlog\x1b[0m \x1b[2man\x1b[0m \x1b[2merror?"\x1b[0m',
+  "2.1.300 in a turn, glyph dim, „Press up to edit queued messages“":
+    "\x1b[2m❯\xa0\x1b[39mPress\x1b[0m \x1b[2mup\x1b[0m \x1b[2mto\x1b[0m \x1b[2medit\x1b[0m \x1b[2mqueued\x1b[0m \x1b[2mmessages\x1b[0m",
+  "Slot 2, 08:51, „Press up to edit queued messages“":
+    "❯\xa0\x1b[2m\x1b[39mPress\x1b[0m \x1b[2mup\x1b[0m \x1b[2mto\x1b[0m \x1b[2medit\x1b[0m \x1b[2mqueued\x1b[0m \x1b[2mmessages\x1b[0m",
+  "the cursor on the hint, painted whole": "❯\xa0\x1b[7mP\x1b[0;2mress up to edit queued messages\x1b[0m",
+  "the cursor on the hint, painted word by word":
+    "❯\xa0\x1b[7mP\x1b[0;2mress\x1b[0m \x1b[2mup\x1b[0m \x1b[2mto\x1b[0m \x1b[2medit\x1b[0m \x1b[2mqueued\x1b[0m \x1b[2mmessages\x1b[0m",
+  "2.1.300 in a turn, glyph dim, no hint": "\x1b[2m❯\xa0\x1b[0m",
+};
+
+describe("Mangel 73: a field that shows only a grey hint is empty", () => {
+  for (const [form, row] of Object.entries(HINTED))
+    test(`${form}: one empty row`, () => {
+      expect(composerRows(CLAUDE, field73(row))).toEqual([""]);
+    });
+  test("typed text stays text: in a turn behind the dim glyph, and a command Claude Code colours", () => {
+    expect(composerRows(CLAUDE, field73("\x1b[2m❯\xa0\x1b[0mAntworte nur mit OK-Q."))).toEqual(["Antworte nur mit OK-Q."]);
+    expect(composerRows(CLAUDE, field73("\x1b[39m❯\xa0\x1b[94m/effort\x1b[39m high"))).toEqual(["/effort high"]);
+  });
+  test("owner text beside a dim hint stays the owner's text", () => {
+    expect(composerRows(CLAUDE, field73("\x1b[39m❯\xa0/effort \x1b[2m[low|medium|high]\x1b[0m"))).toEqual(["/effort "]);
+  });
+  test("only the one cursor letter right before the hint is the hint's: other reverse text stays text", () => {
+    expect(composerRows(CLAUDE, field73("❯\xa0\x1b[7mP\x1b[0m"))).toEqual(["P"]);
+    expect(composerRows(CLAUDE, field73("❯\xa0\x1b[7mPx\x1b[0;2mress\x1b[0m"))).toEqual(["Px"]);
+  });
+  test("a colour's own arguments are no dim: 38;2;r;g;b text stays text", () => {
+    expect(composerRows(CLAUDE, field73("❯\xa0\x1b[38;2;200;100;50mHallo\x1b[39m"))).toEqual(["Hallo"]);
+  });
+});
+
+// the first read is the real frame with only the hint in Claude's field; after the key the fake field answers
+const painted = (pane: ReturnType<typeof fakePane>, row: string): ReturnType<typeof fakePane> => {
+  let first = true;
+  return { ...pane, rows: async () => {
+    if (!first) return pane.rows();
+    first = false;
+    return composerRows(CLAUDE, field73(row));
+  } };
+};
+const QUEUED_HINT = HINTED["2.1.300 in a turn, glyph dim, „Press up to edit queued messages“"]!;
+
+describe("Mangel 73: with only the hint in the field, the chat's keys go through", () => {
+  test("„jetzt senden“: ctrl+x ctrl+s", async () => {
+    const pane = painted(fakePane({ turn: "working", queued: [`${H}Q1`] }), QUEUED_HINT);
+    expect(await recall("send-now", pane, QUICK)).toEqual({ result: "sent-now" });
+    expect(pane.pressed).toEqual(["C-x C-s"]);
+  });
+  test("↑: the waiting prompt comes back", async () => {
+    const q = [`${H}Q2 antworte nur OK-Q2`];
+    const pane = painted(fakePane({ turn: "working", queued: q }), QUEUED_HINT);
+    expect(await recall("queued", pane, QUICK)).toEqual({ result: "recalled", texts: q, lines: [], interrupted: false });
+    expect(pane.pressed).toEqual(["Up", `BSpace×${eraseCount(q)}`]);
+  });
+  test("Esc in a turn, the field empty behind the dim glyph: the turn stops, the prompt comes back", async () => {
+    const prompt = { n: 41, text: `${H}Zaehle bis 60.` };
+    const pane = painted(fakePane({ turn: "working", last: prompt }), HINTED["2.1.300 in a turn, glyph dim, no hint"]!);
+    expect(await recall("esc", pane, QUICK)).toEqual({ result: "recalled", texts: [prompt.text], lines: [], interrupted: true });
+    expect(pane.pressed).toEqual(["Escape"]);
+  });
+});

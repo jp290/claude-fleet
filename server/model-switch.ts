@@ -9,7 +9,10 @@
 //   "Kept model as …" (or the error Claude Code met).
 // Owner, 13.10.: „[Zitat entfernt]“. So Fleet answers that
 // question with ONE Enter, and only on the dialog that names exactly the model it asked for; what happened is
-// read from the local_command line alone. /effort comes along without any dialog assumption (not measured).
+// read from the local_command line alone.
+// - /effort asks the same way (Mangel 74, measured 15.10. on Claude Code 2.1.300, a Sonnet pane with a conversation):
+//     Change effort level? … ❯ 1. Yes, switch to <level> / 2. No, go back
+//   the level as typed; Esc writes "Kept effort level as …". So Fleet answers it with the same ONE Enter.
 import { open, stat } from "node:fs/promises";
 import { modelLabel } from "../src/modelname";
 
@@ -30,19 +33,22 @@ export function dialogNames(id: string): string[] {
   return id.endsWith("[1m]") ? [name, `${name} (1M context)`] : [name];
 }
 
-// what the frame shows about a model switch to `want`: "confirm" = the question for exactly this model with
-// "1. Yes" marked; "foreign" = the question for another model, or another option marked, or options Fleet cannot
+const DIALOG_TITLE: Record<SwitchField, string> = { model: "Switch model?", effort: "Change effort level?" };
+
+// what the frame shows about a switch of `field` to `want`: "confirm" = the question for exactly this model or level
+// with "1. Yes" marked; "foreign" = the question for another one, or another option marked, or options Fleet cannot
 // read; "none" = no question (or one still painting its options)
-export function switchDialog(frame: string, want: string): "confirm" | "foreign" | "none" {
+export function switchDialog(frame: string, field: SwitchField, want: string): "confirm" | "foreign" | "none" {
   const lines = frame.replace(SGR_RE, "").split("\n").map((l) => l.trim());
-  const at = lines.lastIndexOf("Switch model?");
+  const at = lines.lastIndexOf(DIALOG_TITLE[field]);
   if (at < 0) return "none";
   const rest = lines.slice(at + 1, at + 8);
   const yes = rest.map((l) => YES_RE.exec(l)).find((m) => m !== null);
   const no = rest.map((l) => NO_RE.exec(l)).find((m) => m !== null);
   if (!yes && !no) return "none";
   if (!yes || !no) return "foreign";
-  return yes[1] && !no[1] && dialogNames(want).includes(yes[2]!) ? "confirm" : "foreign";
+  const names = field === "model" ? dialogNames(want) : [want];
+  return yes[1] && !no[1] && names.includes(yes[2]!) ? "confirm" : "foreign";
 }
 
 // HOW CLAUDE CODE WRITES A COMMAND IT RAN — two shapes, both in every version from 2.1.270 to 2.1.296 (counted in the
@@ -86,7 +92,7 @@ export function switchVerdict(lines: readonly string[], field: SwitchField, want
     pending = read.pending;
     if (!read.run || read.run.command !== field || read.run.args !== want) continue;
     verdict = read.run.out.startsWith(field === "model" ? "Set model to " : "Set effort level to ") ? "set"
-      : read.run.out.startsWith("Kept model as ") ? "kept" : "not-set";
+      : read.run.out.startsWith(field === "model" ? "Kept model as " : "Kept effort level as ") ? "kept" : "not-set";
   }
   return verdict;
 }
@@ -151,10 +157,10 @@ export function watchSwitch(field: SwitchField, want: string, pane: SwitchPane,
       const verdict = switchVerdict(await pane.lines(), field, want);
       if (stopped || !pane.alive()) return "stopped";
       if (verdict) { pane.publish(verdict); return verdict; }
-      if (field === "model" && !entered && !asked) {
+      if (!entered && !asked) {
         const frame = await pane.frame();
         if (stopped || !pane.alive()) return "stopped";
-        const read = frame === null ? "none" : switchDialog(frame, want);
+        const read = frame === null ? "none" : switchDialog(frame, field, want);
         if (read === "confirm") { entered = true; await pane.enter(); }
         else if (read === "foreign") { asked = true; pane.publish("asks"); }
       }

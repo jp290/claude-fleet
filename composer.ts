@@ -10,27 +10,50 @@ const RULE_RE = /^─{8,}$/;
 // dim attribute (param 2 — `\e[2m`, `\e[1;2m`, also `\e[2m\e[39m…`) is on is dropped until a reset
 // (0, 22 or bare `\e[m`). That is the measured placeholder/hint form in Claude ("Try …", "Press up
 // to edit queued messages") and Codex ("Summarize recent commits"); typed or pasted text is never dim.
-const rendered = (raw: string): string => {
-  let out = "";
+type Cell = { ch: string; dim: boolean; reverse: boolean; blankPart: boolean };
+// every printed character of one raw row with the SGR state it was painted in
+const cells = (raw: string): Cell[] => {
+  const out: Cell[] = [];
   let dim = false;
   let reverse = false;
   let i = 0;
   const append = (part: string) => {
-    if (!dim && !(reverse && /^\s*$/.test(part))) out += part;
+    const blankPart = /^\s*$/.test(part);
+    for (const ch of part) out.push({ ch, dim, reverse, blankPart });
   };
   for (const m of raw.matchAll(/\x1b\[([0-9;?]*)([A-Za-z])/g)) {
     append(raw.slice(i, m.index));
     i = (m.index ?? 0) + m[0].length;
     if (m[2] !== "m") continue;
+    // in order: tmux writes a reverse cell followed by a dim one as "\e[7mP\e[0;2mress" (reset, then dim), and the
+    // arguments of an extended colour (38;5;n, 38;2;r;g;b) are no attributes
     const params = m[1] === "" ? ["0"] : m[1].split(";");
-    if (params.includes("2")) dim = true;
-    if (params.includes("7")) reverse = true;
-    if (params.includes("0")) { dim = false; reverse = false; }
-    if (params.includes("22")) dim = false;
-    if (params.includes("27")) reverse = false;
+    for (let k = 0; k < params.length; k++) {
+      const p = params[k];
+      if (p === "38" || p === "48" || p === "58") { k += params[k + 1] === "5" ? 2 : params[k + 1] === "2" ? 4 : 0; continue; }
+      if (p === "0" || p === "") { dim = false; reverse = false; }
+      if (p === "2") dim = true;
+      if (p === "22") dim = false;
+      if (p === "7") reverse = true;
+      if (p === "27") reverse = false;
+    }
   }
   append(raw.slice(i));
   return out;
+};
+const shown = (c: Cell): boolean => !c.dim && !(c.reverse && c.blankPart);
+const text = (row: readonly Cell[]): string => row.filter(shown).map((c) => c.ch).join("");
+const rendered = (raw: string): string => text(cells(raw));
+// A FIELD THAT SHOWS ONLY A HINT IS EMPTY (Mangel 73, measured 15.10. on Claude Code 2.1.300 in throwaway tmux panes and
+// in Slot 2's replayed stream): Claude Code paints its placeholder ("Try …", "Press up to edit queued messages") word by
+// word and jumps over the gaps, so the cells between the dim words stay plain blanks — the row read "     ". With the
+// cursor on the hint its first letter is reverse and not dim (Claude Code's placeholder renderer: invert(t[0]) +
+// dim(t.slice(1))). So a row whose dim cells hold text and whose shown cells are blanks, or that one reverse letter right
+// before the dim text, holds nothing.
+const content = (row: readonly Cell[]): string => {
+  const hint = row.some((c) => c.dim && c.ch.trim() !== "");
+  const onlyHint = row.every((c, k) => !shown(c) || c.ch.trim() === "" || (c.reverse && row[k + 1]?.dim === true));
+  return hint && onlyHint ? "" : text(row);
 };
 // ACP-25's residue reader predates exact rollback and intentionally normalizes the prompt's NBSP.
 // ACP-26 uses rendered() directly so an owner NBSP can never compare equal to Fleet's ordinary space.
@@ -102,11 +125,15 @@ export function composerRows(form: ComposerForm, frame: string): string[] | null
   let i = plain.length - 1;
   while (i >= 0 && !form.re.test(plain[i])) i--;
   if (i < 0) return null;
-  const first = rendered(raw[i]).replace(form.re, "");
   // The measured glyph forms always own exactly one separator cell (Claude paints NBSP, Codex a
   // normal space). Refusing an unknown rendering is safer than guessing where owner content starts.
-  if (!(first.startsWith(" ") || first.startsWith("\u00a0"))) return null;
-  const rows = [first.slice(1)];
+  // Glyph and separator are found among the cells, whatever their SGR: Claude Code 2.1.300 paints both dim while a
+  // turn runs (measured 15.10.), 2.1.296 did not
+  const row = cells(raw[i]);
+  const glyph = [...(form.re.exec(plain[i])?.[0] ?? "")].length;
+  const separator = row[glyph]?.ch;
+  if (!(separator === " " || separator === "\u00a0")) return null;
+  const rows = [content(row.slice(glyph + 1))];
   for (let j = i + 1; j < raw.length; j++) {
     const t = plain[j].trim();
     if (RULE_RE.test(t)) break;

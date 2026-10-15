@@ -19,7 +19,7 @@ import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./dev
 import { compTray, serverClock } from "./composer";
 import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
-import { OFF_WHY, freshSuccession, handoverAt, handoverRows } from "./handover";
+import { OFF_WHY, freshSuccession, handoverAt, handoverDoesNothing, handoverRows } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
@@ -1915,12 +1915,16 @@ function contextRow(c: BoardCtx): HTMLElement {
   const fill = sc.fill ? `${Math.round(sc.fill.pct)} %` : "nicht messbar";
   const sw = el("button", "optsw") as HTMLButtonElement;
   sw.type = "button";
-  // the threshold in force now (§4): the cap while the cache is warm, the base once it is cold
+  // the value the owner clicked, and the cap it may wait for while the cache is warm (Mangel 76); „[Zitat entfernt]“ where
+  // none comes (76b: „[Zitat entfernt]“ at the threshold with the hint off)
   const at = handoverAt(sc);
-  sw.append(document.createTextNode(at ? `Übergabe bei ${at.pct} %${at.cache ? ` (${at.cache})` : ""}` : "Übergabe aus"), icon("chevron"));
+  sw.append(document.createTextNode(at ? `Übergabe ab ${at.pct} %${at.cap !== null ? ` (bis ${at.cap})` : at.cache ? ` (${at.cache})` : ""}`
+    : "Übergabe aus"), icon("chevron"));
   sw.title = `Übergabe-Einstellungen dieser Session — ${sc.thresholdPct === null ? `aus: ${OFF_WHY[sc.thresholdOff ?? "rail"]}`
     : sc.pctFrom === "session" ? `eigene Schwelle dieser Session (Fleet: ${sc.defaultPct} %)` : "die Schwelle der Fleet"}`
-    + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`;
+    + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`
+    + (at?.cap != null ? ` · solange der Cache warm ist, wartet die Übergabe bis ${at.cap} %` : "")
+    + (handoverDoesNothing(sc) ? " · an der Schwelle steht „Hinweis“, und der ist aus: dort geschieht nichts" : "");
   popTrigger("ueb", c.slot, sw, () => paintContextRow(c));
   const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
   // the hint is only news where a threshold can fire — "Übergabe aus" already says the rest

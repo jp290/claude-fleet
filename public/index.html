@@ -3274,6 +3274,8 @@
     background: transparent; color: var(--chat-ink); font: 400 12px var(--chat-sans); cursor: pointer; }
   #board .optsw .ico { width: 12px; height: 12px; color: var(--chat-mute); }
   #board .optsw:hover, #board .optsw.on { background: var(--c-hover); }
+  /* the threshold stays whole; „Hinweis aus“ behind it takes the ellipsis (Mangel 76) */
+  #board .bkv.ctx .optsw { flex: none; }
   #board .steps { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: var(--chat-ui-fs); }
   #board .steps .st { display: inline-flex; align-items: center; gap: 3px; color: var(--chat-faint); }
   #board .steps .st.done { color: var(--chat-mute); } #board .steps .st.now { color: var(--chat-ink); }

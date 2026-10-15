@@ -23235,6 +23235,21 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks, ...(meta && { meta: true }) };
 }
+// A MESSAGE ANOTHER CLAUDE SESSION SENT reaches a resting session as a meta user line, "Another Claude session sent a
+// message:\n<cross-session-message …>" (measured 15.10.: 348 of 540 such messages in three days of this host's
+// transcripts; the other 192 came mid-turn as queued commands, which viewEntry serves as a prompt). viewEntry drops every
+// meta line, so the chat view never showed it; the conversation readers get it as meta — share, export and the fresh tail
+// skip meta, the chat view draws it as a quiet line (Mangel 78). Not inside viewEntry: tickHarvest takes each user entry
+// that returns as a typed prompt.
+const CROSS_SESSION_LEAD = "Another Claude session sent a message:\n<cross-session-message ";
+function crossSessionEntry(raw: unknown, n: number, full: boolean): TEntry | null {
+  const d = raw as { type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown; message?: { content?: unknown } };
+  const content = d.message?.content;
+  if (d.type !== "user" || d.isMeta !== true || d.isSidechain === true || typeof content !== "string"
+    || !content.startsWith(CROSS_SESSION_LEAD)) return null;
+  return { n, role: "user", ts: typeof d.timestamp === "string" ? d.timestamp : null,
+    blocks: [{ t: "text", text: full ? content : trim(content, 20_000) }], meta: true };
+}
 
 const timelineHost = hostname();
 const timelineFiles = { audit: AUDIT_FILE, outcomes: LANE_OUTCOME_FILE, postLandAudits: POSTLAND_AUDIT_FILE,
@@ -23374,7 +23389,7 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
       const parsed: unknown = JSON.parse(read.lines[k]);
       const u = parsed as { type?: unknown; source_uuid?: unknown };
       if (queued.size && u.type === "user" && typeof u.source_uuid === "string" && queued.has(u.source_uuid)) continue;
-      const e = viewEntry(parsed, i + 1, full, ask);
+      const e = viewEntry(parsed, i + 1, full, ask) ?? crossSessionEntry(parsed, i + 1, full);
       if (e) entries.push(e);
     } catch {
       // only the FINAL line may be a partial mid-append (cap total so the next poll
@@ -53760,4 +53775,4 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry, crossSessionEntry };

@@ -295,3 +295,28 @@ describe("viewEntry: ein Befehl aus Claude Code kommt in beiden Formen als derse
       expect(viewEntry(line, 9)).toBeNull();
   });
 });
+
+// Mangel 78 (Owner 15.10.: „[Zitat entfernt]“
+// ): Eine Nachricht einer anderen Claude-Session erreicht eine ruhende Session als meta-Zeile (gemessen 15.10.: 348
+// von 540). viewEntry lässt sie draußen, denn tickHarvest liest jeden user-Eintrag von dort als getippten Prompt; die
+// Gesprächsleser bekommen sie über crossSessionEntry als meta.
+describe("crossSessionEntry: die Nachricht einer anderen Session in Ruhe", () => {
+  const ts = "2026-10-15T09:42:30.648Z";
+  const said = "Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/1.sock\" from-name=\"bau-neuaufbau-77\" from-mode=\"bypass\">\nBauleitung an K10: nächste Phase.\n</cross-session-message>";
+  const line = (content: unknown, extra: Record<string, unknown> = {}) => ({ type: "user", isMeta: true, timestamp: ts, message: { role: "user", content }, ...extra });
+
+  test("kommt als meta-Eintrag mit ihrem Text, und viewEntry lässt sie weiter draußen", async () => {
+    const { viewEntry, crossSessionEntry } = await load();
+    expect(crossSessionEntry(line(said), 7, false)).toEqual({ n: 7, role: "user", ts, blocks: [{ t: "text", text: said }], meta: true });
+    expect(viewEntry(line(said), 7)).toBeNull();
+  });
+  test("jede andere meta-Zeile, eine Subagenten-Zeile und eine nicht-meta Zeile bleiben draußen", async () => {
+    const { crossSessionEntry } = await load();
+    expect(crossSessionEntry(line("<local-command-caveat>The command below was run directly in Claude Code …</local-command-caveat>"), 7, false)).toBeNull();
+    expect(crossSessionEntry(line("You are a prompt compiler."), 7, false)).toBeNull();
+    expect(crossSessionEntry(line(said, { isSidechain: true }), 7, false)).toBeNull();
+    expect(crossSessionEntry(line(said, { isMeta: false }), 7, false)).toBeNull();
+    expect(crossSessionEntry(line([{ type: "text", text: said }]), 7, false)).toBeNull();
+    expect(crossSessionEntry({ type: "assistant", isMeta: true, message: { content: said } }, 7, false)).toBeNull();
+  });
+});

@@ -33,7 +33,7 @@ import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
-import { isInterruptMark, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
+import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
@@ -2120,6 +2120,10 @@ class Pane {
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
   private appendEntry(e: TEntry) {
     if (e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text" && isInterruptMark(b.text))) { this.addInterrupt(e); return; }
+    // a message another session sent reaches a RESTING session as meta (server.ts#crossSessionEntry): its quiet line, not
+    // a task notification
+    const said = e.meta && e.blocks.length === 1 && e.blocks[0]!.t === "text" ? otherSender(e.blocks[0]!.text) : null;
+    if (said) { this.toolGroup = null; this.notifGroup = null; this.addFleetLine({ owner: false, mark: null, text: said.text }, null, said.who, e.ts); return; }
     if (e.meta) { this.addNotif(e); return; }
     this.notifGroup = null; // a real entry ends the notification run
     for (const b of e.blocks) {
@@ -2139,10 +2143,17 @@ class Pane {
         // Esc took this prompt back before any answer (server/live-state.ts#foldLine): the terminal shows
         // no such turn, so neither does this view — a bubble of ours waiting for it retires with it
         if (this.live?.withdrawn.includes(e.n)) { this.settlePending(raw); continue; }
-        if (!parts) { this.addMessage(e, body, header, null, this.settlePending(raw)); continue; }
+        if (!parts) {
+          // one delivery: a bubble only for YOUR words — every other path, and another session's message, is a quiet
+          // line (Mangel 78) that retires no pending bubble of yours
+          const other = otherSender(raw);
+          if (other) this.addFleetLine({ owner: false, mark: null, text: other.text }, header, other.who, e.ts);
+          else this.addMessage(e, body, header, null, this.settlePending(raw));
+          continue;
+        }
         for (const part of parts) {
           if (part.owner) this.addMessage(e, part.text, header, part.mark, this.settlePending(part.text));
-          else this.addFleetLine(part, header);
+          else this.addFleetLine(part, header, "fleet", e.ts);
         }
       } else {
         this.addStep(b);
@@ -2174,20 +2185,21 @@ class Pane {
     this.chatAdd(msg);
     return msg;
   }
-  // A bundle part Fleet wrote (a nudge, an event, the bundle's closing line): one quiet line, not a
-  // bubble — you did not say it, and ↑/↓ and the outline jump between YOUR messages. Its first line
-  // shows; a click opens the rest. Mark and head ride in the tooltip.
-  private addFleetLine(part: DeliveryPart, header: string | null) {
+  // A message you did not write (a bundle part, a single Fleet delivery, another session's message — Mangel 78): one
+  // quiet line, not a bubble — ↑/↓ and the outline jump between YOUR messages. `who` labels it: Fleet, or the session by
+  // its name. Its first line shows; a click opens the rest. Time, mark and head ride in the tooltip.
+  private addFleetLine(part: DeliveryPart, header: string | null, who: string, ts: string | null) {
     const line = document.createElement("details");
     line.className = "msys";
     const sum = document.createElement("summary");
     const [lead = "", ...rest] = part.text.replace(/^\s*\n/, "").split("\n");
-    // ONE label: a part that opens with its own "[fleet]" / "[fleet message]" shows that as the label
-    // instead of "fleet [fleet] …" (Abnahme 6936ed0b, owner picture nachher-1200-3-ereignisse)
-    const own = /^\[(fleet(?: [a-z][a-z-]*)?)\] /.exec(lead);
+    // ONE label: Fleet's text that opens with its own "[fleet]" / "[fleet message]" / "[fleet report orphan]" shows that
+    // as the label instead of "fleet [fleet] …" (Abnahme 6936ed0b, owner picture nachher-1200-3-ereignisse)
+    const own = who === "fleet" ? /^\[(fleet(?: [A-Za-z][\w-]*){0,3})\] /.exec(lead) : null;
     const first = own ? lead.slice(own[0].length) : lead;
-    sum.append(el("span", "msyswho", own?.[1] ?? "fleet"), el("span", "msystext", first));
-    sum.title = [header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
+    sum.append(el("span", "msyswho", own?.[1] ?? who), el("span", "msystext", first));
+    sum.title = [ts && fmtClock(ts), who === "fleet" ? null : `Nachricht der Claude-Session „${who}“`,
+      header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
     if (more) line.appendChild(el("div", "msysbody", more));
@@ -2263,13 +2275,15 @@ class Pane {
   // THE SESSION'S QUEUE, READ BACK (server.ts#sessionQueue): every owner text the session still holds
   // stands as a "wartet" bubble at the end of the view — whoever sent it, and after a reload. The
   // composer's own bubble for the same send becomes the queue's; the transcript turn retires either
-  // through settlePending ("durch"). A bundle in the queue waits as its owner parts.
+  // through settlePending ("durch"). A bundle in the queue waits as its owner parts; a single delivery you did not write
+  // waits as nothing and arrives as its quiet line (Mangel 78).
   private syncQueue(queued: readonly { text: string; at: string | null }[]): void {
     const now = Date.now();
     const listed = new Set<string>();
     for (const q of queued) {
-      const { header, body } = splitDeliveryHeader(unwrapPasted(q.text));
-      const parts = deliveryParts(body)?.filter((p) => p.owner) ?? [{ owner: true, mark: null, text: body }];
+      const raw = unwrapPasted(q.text);
+      const { header, body } = splitDeliveryHeader(raw);
+      const parts = deliveryParts(body)?.filter((p) => p.owner) ?? (otherSender(raw) ? [] : [{ owner: true, mark: null, text: body }]);
       parts.forEach((part, i) => {
         const key = `${q.at ?? ""}#${i}\n${part.text}`;
         listed.add(key);

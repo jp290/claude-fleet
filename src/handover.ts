@@ -52,6 +52,15 @@ const KIND_WORDS: Record<NonNullable<BriefSuccession["kind"]>, string> = {
 // what Fleet does at the threshold (server/succession.ts#choicesFor)
 type Choice = NonNullable<BriefSuccession["atThreshold"]>;
 const CHOICE_WORDS: Record<Choice, string> = { hint: "Hinweis", compact: "Compact", succeed: "Neue Session" };
+// WHAT FLEET DOES AT THE THRESHOLD (Mangel 76b, owner 15.10.: „[Zitat entfernt]“
+// ), read the way server.ts#tickMigrate acts: the hint from the base while it is on, the chosen act at
+// the cap or at a cold cache. The hint switched off does not stop the act, which then comes unannounced
+// (server/succession.ts#actDecision); „Hinweis“ at the threshold with the hint off leaves Fleet nothing to do at all
+const choiceOf = (sc: BriefSuccession): Choice => sc.atThreshold ?? sc.fleetChoice ?? "hint";
+export const handoverDoesNothing = (sc: BriefSuccession): boolean => sc.thresholdPct !== null && !sc.nudgeOn && choiceOf(sc) === "hint";
+// what the switched-off hint leaves at the threshold, in the words of the hint row and its „Aus“
+const withoutHint = (sc: BriefSuccession): string => choiceOf(sc) === "hint" ? "an der Schwelle geschieht dann nichts"
+  : `${CHOICE_WORDS[choiceOf(sc)]} kommt dann ohne Vorwarnung`;
 // the values one click away, up to 70 (K9 S3c, owner 14.10.: „[Zitat entfernt]“
 // , no 100); a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
 const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
@@ -187,14 +196,16 @@ function cacheNow(c: NonNullable<BriefSuccession["cache"]>): CacheNow {
   const left = c.coldAt - serverClock();
   return left > 0 ? { state: "warm", min: Math.ceil(left / 60_000) } : { state: "kalt", min: Math.floor(-left / 60_000) };
 }
-// THE THRESHOLD IN FORCE NOW (§4: „52 % · Übergabe bei 50 % (warm)“): the cap while the cache is warm, the
-// base once it is cold; without a cache reading, or from a server that sends no cap, the base alone
+// THE THRESHOLD AS CLICKED, AND HOW FAR IT REACHES NOW (Mangel 76, owner 15.10.: „[Zitat entfernt]“
+// ): `pct` is the base; while the cache is warm the handover
+// waits up to the cap, once it is cold it comes at the base; without a cache reading, or from a server that sends
+// no cap, the base alone. null = no handover comes: no threshold, or „Hinweis“ at it with the hint off (Mangel 76b)
 const CAP_GAP_PCT = 5;
-export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null } | null {
-  if (sc.thresholdPct === null) return null;
+export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null; cap: number | null } | null {
+  if (sc.thresholdPct === null || handoverDoesNothing(sc)) return null;
   const cache = sc.cache ? cacheNow(sc.cache).state : null;
-  if (cache === "warm" && sc.capPct != null) return { pct: sc.capPct, cache: "warm" };
-  return { pct: sc.thresholdPct, cache: cache === "kalt" ? "kalt" : null };
+  if (cache === "warm" && sc.capPct != null) return { pct: sc.thresholdPct, cache: "warm", cap: sc.capPct };
+  return { pct: sc.thresholdPct, cache: cache === "kalt" ? "kalt" : null, cap: null };
 }
 const minText = (min: number): string => min < 1 ? "eben" : min < 90 ? `${min} min` : `${Math.round(min / 60)} h`;
 const kTokens = (n: number): string => `${Math.round(n / 1000)}k`;
@@ -265,9 +276,14 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
   ob.disabled = locked;
   offSeg.appendChild(ob);
   // the base and the cap in one sentence, and whose value it is (§4: „Fleet-Wert für eine Orchestratorin: 45 %,
-  // solange der Cache warm ist 50 %“)
-  const band = sc.thresholdPct !== null && sc.capPct != null
-    ? `Hinweis ab ${sc.thresholdPct} %, Übergabe bei ${sc.capPct} %, solange der Cache warm ist` : null;
+  // solange der Cache warm ist 50 %“) — as Fleet acts on them (76b): the hint where it is on, the act where one is chosen
+  const choice = choiceOf(sc);
+  const band = sc.thresholdPct === null ? null
+    : choice === "hint" ? sc.nudgeOn ? `Hinweis ab ${sc.thresholdPct} %, die Session übergibt selbst`
+      : `bei ${sc.thresholdPct} % geschieht nichts, denn der Hinweis ist aus`
+    : sc.capPct == null ? null
+    : `${sc.nudgeOn ? `Hinweis ab ${sc.thresholdPct} %, ` : ""}${choice === "compact" ? "Compact" : "Übergabe"} bei ${sc.capPct} %, `
+      + `solange der Cache warm ist${sc.nudgeOn ? "" : ", ohne Hinweis vorher"}`;
   rows.push(row("Schwelle", [pcts, el("span", "unit", "%"), offSeg],
     sc.thresholdOff && sc.thresholdOff !== "rail" ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
       : sc.defaultPct <= 0 && sc.pctFrom === "fleet" ? "Für diese Art Session steht keine Schwelle. Eine Wahl gilt nur hier."
@@ -279,14 +295,15 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
   const seg = el("span", "seg");
   for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
     const b = button(word, sc.nudgeOn === on ? "on" : "", `nudge-${on ? "an" : "aus"}`,
-      on ? "Fleet schreibt dieser Session an der Schwelle einen Hinweis" : "Fleet schreibt dieser Session keinen Hinweis — sie gibt nur weiter, wenn sie selbst entscheidet",
+      on ? "Fleet schreibt dieser Session an der Schwelle einen Hinweis"
+        : `Fleet schreibt dieser Session keinen Hinweis — ${withoutHint(sc)}${choice === "hint" ? "; sie gibt nur weiter, wenn sie selbst entscheidet" : ""}`,
       () => { if (sc.nudgeOn !== on) void write(v, { nudge: on }); });
     b.setAttribute("aria-pressed", String(sc.nudgeOn === on));
     b.disabled = locked;
     seg.appendChild(b);
   }
   const given = sc.gaveUp ? `Aufgehört nach ${sc.nudges}.` : sc.nudges ? `Bisher ${sc.nudges}.` : "Bisher keiner.";
-  rows.push(row("Hinweis", [seg], `An der Schwelle, höchstens ${sc.maxNudges}-mal. ${given}`));
+  rows.push(row("Hinweis", [seg], sc.nudgeOn ? `An der Schwelle, höchstens ${sc.maxNudges}-mal. ${given}` : `Aus: ${withoutHint(sc)}. ${given}`));
 
   const cache = sc.cache ? cacheNow(sc.cache) : null;
   if (cache) {
@@ -338,9 +355,11 @@ export function handoverRows(v: HandoverView): HTMLElement[] {
       cseg.appendChild(b);
     }
     const when = sc.capPct != null ? `Ab ${sc.capPct} % oder kurz vor kaltem Cache` : "Wenn es so weit ist";
-    const what = now === "compact" ? `${when} tippt Fleet /compact, sobald sie ruht.`
-      : now === "succeed" ? `${when} öffnet Fleet eine neue Session, sobald sie ruht.`
-      : "Nur der Hinweis; die Session wählt den Punkt selbst.";
+    const unannounced = sc.nudgeOn ? "" : ", ohne Hinweis vorher";
+    const what = now === "compact" ? `${when} tippt Fleet /compact, sobald sie ruht${unannounced}.`
+      : now === "succeed" ? `${when} öffnet Fleet eine neue Session, sobald sie ruht${unannounced}.`
+      : sc.nudgeOn ? "Nur der Hinweis; die Session wählt den Punkt selbst."
+      : "Nur der Hinweis, und der ist aus: an der Schwelle geschieht nichts.";
     const last = sc.act ? ` Zuletzt ${new Date(sc.act.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}: ${CHOICE_WORDS[sc.act.act]}, ${sc.act.outcome}.` : "";
     rows.push(row("An der Schwelle", [cseg], locked ? "Hier wirkt keine Schwelle."
       : sc.thresholdOff === "session" ? `Die Übergabe ist für diese Session aus.${last}` : `${what}${last}`, "wide"));

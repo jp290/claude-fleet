@@ -28,6 +28,23 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
   if (end < 0) return { header: null, body: entry };
   return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2).replace(/^\s*\n/, "") };
 }
+// A MESSAGE THE OWNER DID NOT WRITE (Mangel 78, owner 15.10.: „[Zitat entfernt]“
+// ), read off one turn's text after unwrapPasted: a Fleet delivery on any
+// path but the owner door's (server.ts#deliveryHeader types the short „[Zitat entfernt]“ head there and a long
+// one with its path everywhere else), Fleet's own "[fleet…" words where no head is typed, and a message another Claude
+// session sent — Claude Code wraps it in <cross-session-message from-name="…">, in a resting session behind its own
+// "Another Claude session sent a message:" line (both forms measured 15.10.). `who` labels the chat's quiet line, `text`
+// is the message without head or wrapper. null = the owner's own words: typed in the terminal or sent through the owner
+// door. A bundle says whose each part is itself (src/delivery-format.ts#deliveryParts).
+const OWNER_HEADER = /^Owner-Credential · Slot \d+$/;
+const CROSS_SESSION = /^(?:Another Claude session sent a message:\n)?<cross-session-message((?: [a-z-]+="[^"]*")*)>\n?([\s\S]*?)\n?(?:<\/cross-session-message>\s*)?$/;
+export function otherSender(entry: string): { who: string; text: string } | null {
+  const session = CROSS_SESSION.exec(entry);
+  if (session) return { who: / from-name="([^"]+)"/.exec(session[1] ?? "")?.[1] ?? "session", text: session[2] ?? "" };
+  const { header, body } = splitDeliveryHeader(entry);
+  if (header === null) return body.startsWith("[fleet") ? { who: "fleet", text: body } : null;
+  return OWNER_HEADER.test(header) ? null : { who: "fleet", text: body };
+}
 // A slash command never reaches the transcript as typed: Claude Code records it as
 // `<command-name>/effort</command-name> <command-message>…</command-message> <command-args>xhigh</command-args>`
 // (2.1.288, every command line of 2026-10-01..04 in this shape; src/slashcommand.ts). This is the text that was typed, or null.

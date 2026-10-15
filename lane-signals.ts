@@ -623,7 +623,9 @@ export function laneSuiteWatchMessage(jobId: string, event: LaneSuiteWatchEventV
 
 export function harnessBlockMessage(slot: number, branch: string, event: HarnessBlockEventView): string {
   const p = event.payload;
-  const what = p.signal === "denied"
+  const what = p.signal === "denied" && p.tool?.startsWith("auto-mode:")
+    ? `the auto-mode classifier DENIED a ${p.tool.slice("auto-mode:".length)} call; the lane was told the reason and should rephrase or skip, so it should carry on by itself — if the task needs that very action, it needs a person or a Fleet-environment entry.`
+    : p.signal === "denied"
     ? `Claude Code asked a human to approve a ${p.tool ?? "tool"} call; the fleet hook DENIED it and the lane was told to rephrase or skip, so it should carry on by itself.`
     : `its pane shows a dialog no hook answered, so it will NOT continue on its own. Read the pane before typing anything — a paste+Enter picks the preselected option.`;
   const loud = p.escalated

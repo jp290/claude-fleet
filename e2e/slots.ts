@@ -15175,6 +15175,12 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
       restartArgv.split('"autoMemoryEnabled":false').length === 2 && openArgv.includes('"autoMemoryEnabled":false')
         && healArgv.includes('"autoMemoryEnabled":false'),
       restartArgv.slice(-400) || "no claude argv");
+    // K16 E10a (server/session-start.ts), owner 15.10.: „[Zitat entfernt]“
+    //  — a lane's handover is on by default (37 %), so Claude Code's own compaction is off on every cause
+    check("auto-compact: a lane's claude, whose handover is on, starts with autoCompactEnabled false in its --settings, once",
+      restartArgv.split('"autoCompactEnabled":false').length === 2 && openArgv.includes('"autoCompactEnabled":false')
+        && healArgv.includes('"autoCompactEnabled":false'),
+      restartArgv.slice(-400) || "no claude argv");
     // THE ROLE'S BUILT-IN TOOLS (server.ts#SESSION_TOOLS): an allowlist takes the schemas out, a deny rule does not
     check("session tools: a lane's claude starts with exactly the lane allowlist on --tools, once",
       restartArgv.includes("--tools Bash,Read,Edit,Write,ToolSearch,Agent,WebFetch,Skill,TaskStop,WebSearch,ScheduleWakeup,Artifact,Monitor,SendFeedback")

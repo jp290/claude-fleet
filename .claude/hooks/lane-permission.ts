@@ -25,6 +25,8 @@
 
 export const HARNESS_BLOCK_ROUTE = "/api/self/harness-block";
 export const HOOK_DETAIL_MAX = 300;
+// a classifier deny rides the same row shape as a dialog deny, told apart by this prefix on `tool`
+export const AUTO_MODE_TOOL_PREFIX = "auto-mode:";
 const REASON_REQUEST_MAX = 1000;
 const REPORT_TIMEOUT_MS = 5000;
 // the notifications that mean "this session is waiting for a person". idle_prompt is NOT one: an
@@ -85,13 +87,24 @@ export function decide(raw: string, env: Env): HookOutcome {
     return { kind: "deny", reason: denyReason(tool, request),
       report: { signal: "denied", tool, detail: redact(request).slice(0, HOOK_DETAIL_MAX) } };
   }
+  // AUTO MODE (K16 E6, docs/neuaufbau/befunde/18-einstellungen.md §3.2): the classifier's deny reaches the
+  // model as the tool error and the session carries on, but nobody outside heard of it. PermissionDenied
+  // fires for exactly that deny (code.claude.com/docs/en/hooks#permissiondenied) with tool_name, tool_input
+  // and reason; the hook only reports — it cannot reverse the deny and asks for no retry.
+  if (input.hook_event_name === "PermissionDenied") {
+    // the server keeps 64 characters of `tool` (HARNESS_BLOCK_TOOL_MAX); the prefix must survive them
+    const tool = typeof input.tool_name === "string" ? input.tool_name.slice(0, 64 - AUTO_MODE_TOOL_PREFIX.length) : null;
+    const reason = typeof input.reason === "string" ? input.reason : "";
+    return { kind: "report", report: { signal: "denied", tool: `${AUTO_MODE_TOOL_PREFIX}${tool ?? "tool"}`,
+      detail: redact(`${reason} ${requestText(input.tool_input)}`.trim()).slice(0, HOOK_DETAIL_MAX) } };
+  }
   if (input.hook_event_name === "Notification" && typeof input.notification_type === "string"
     && WAITING_NOTIFICATIONS.includes(input.notification_type)) {
     const message = typeof input.message === "string" ? input.message : "";
     return { kind: "report", report: { signal: "waiting", tool: null,
       detail: redact(`${input.notification_type}: ${message}`).slice(0, HOOK_DETAIL_MAX) } };
   }
-  return { kind: "pass", why: "not a permission request or waiting notification" };
+  return { kind: "pass", why: "not a permission request, auto-mode deny or waiting notification" };
 }
 
 export function denyOutput(reason: string): string {

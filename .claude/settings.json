@@ -18,6 +18,19 @@
         ]
       }
     ],
+    "PermissionDenied": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR/.claude/hooks/lane-permission.ts\" report",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt|elicitation_dialog|agent_needs_input",

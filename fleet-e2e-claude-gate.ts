@@ -222,6 +222,20 @@ const claudeArgv = await paneArgv("s9", "claude");
 check("the live claude stand-in receives --prompt-suggestions false in its argv",
   claudeArgv.some((argv) => /(?:^|\s)--prompt-suggestions\s+false(?:\s|$)/.test(argv)),
   claudeArgv.join(" | ") || "no claude argv observed");
+// K16 E6 + E10a (server/session-start.ts), owner 15.10.: „[Zitat entfernt]“
+//  and „[Zitat entfernt]“ — read off the
+// argv the resident stand-in received, not off the line Fleet rendered.
+check("the live claude stand-in starts in auto mode, with Fleet's classifier environment and the auto-mode brief line",
+  claudeArgv.some((argv) => /(?:^|\s)--permission-mode\s+auto(?:\s|$)/.test(argv)
+    && argv.includes('"autoMode":{"environment":["$defaults"') && argv.includes(`${BASE}/api/deploy`)
+    && argv.includes("AUTO-MODE: Du läufst im Auto-Mode.") && !argv.includes("--dangerously-skip-permissions")),
+  claudeArgv.join(" | ") || "no claude argv observed");
+// …and the other half: this instance leaves FLEET_MIGRATE_PCT unset, which reads as 0 (server.ts#MIGRATE_PCT),
+// so a non-lane session has its handover OFF — Claude Code's compaction stays the last hold (owner 10:4x
+// „[Zitat entfernt]“). The lane half, handover on, is in e2e/slots.ts (auto-compact).
+check("the live claude stand-in, whose handover is off, keeps Claude Code's own compaction — no autoCompactEnabled on its line",
+  claudeArgv.length > 0 && claudeArgv.every((argv) => !argv.includes("autoCompactEnabled")),
+  claudeArgv.join(" | ") || "no claude argv observed");
 
 const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });

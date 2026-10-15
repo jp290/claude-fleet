@@ -7,6 +7,7 @@ import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
+import { hubHostOf, startAspects, withoutSkipPermissions } from "./server/session-start";
 import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
@@ -440,19 +441,26 @@ function sessionListCut(role: SessionListRole): { skillOverrides: Record<string,
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName)}; exec ${SHELL}`;
+  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
+  remoteName: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
-  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null): string {
+  packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
+  handoverOn = false): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
+  // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
+  // the brief line, for every claude session whose role the spawn knows; null role = the line of before
+  const aspects = claude && listRole ? startAspects({ role: listRole, handoverOn, fleetUrl: `http://${HOST}:${PORT}`,
+    tmuxSocket: SOCK, hub: hubFacts() }) : null;
+  const base = aspects ? withoutSkipPermissions(BASE_CMD) : BASE_CMD;
   let cmd = sessionId && claude
-    ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
-    : BASE_CMD;
+    ? `${base} ${resume ? "--resume" : "--session-id"} ${sessionId}`
+    : base;
   // pin the fleet's base model whenever the slot has none of its own — otherwise claude inherits
   // the owner's ambient /model default. Single-quoted: `claude-opus-5[1m]` is an unmatched glob
   // and zsh (tmux default-shell) aborts the pane on it; MODEL_RE forbids `'`, so the wrap is closed.
@@ -464,6 +472,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
     if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
+    if (aspects) cmd += ` --permission-mode '${aspects.mode}'`;
     // REMOTE CONTROL (Slot.remote): the owner reaches this very session from the Claude app. Only
     // here, on the claude branch — the flag is claude's spelling and a foreign binary would die on
     // it. Single-quoted like the model; the value is remoteControlName's, whose charset holds no `'`.
@@ -490,14 +499,14 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // worker) = nothing added, the line of before.
     const cut = listRole ? sessionListCut(listRole === "generic" ? "main" : listRole) : null;
     if (cut?.disallowed) cmd += ` --disallowedTools ${shellSingleQuote(cut.disallowed)}`;
-    if (cut) cmd += ` --append-system-prompt ${shellSingleQuote(cut.line)}`;
+    if (cut) cmd += ` --append-system-prompt ${shellSingleQuote(aspects ? `${cut.line}\n${aspects.briefLine}` : cut.line)}`;
     if (listRole && listRole !== "generic") cmd += ` --tools ${shellSingleQuote(SESSION_TOOLS[listRole].join(","))}`;
     // A LANE STARTS WITHOUT AUTO-MEMORY (Z3, docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md
     // M1): the shared project index stays MAIN's and the Orchestratorin's; a lane reads its state through
     // memoryPointer("lane"). Per launch in the same --settings, never settings.local.json — the lane
     // scaffold copies that file, and a switch there would reach MAIN and Orchestratorin too.
     const cutSettings = { ...(cut ? { skillOverrides: cut.skillOverrides } : {}),
-      ...(listRole === "lane" ? { autoMemoryEnabled: false } : {}) };
+      ...(listRole === "lane" ? { autoMemoryEnabled: false } : {}), ...aspects?.settings };
     const rulebook = sessionId && rulebookRole ? rulebookRenderForSession(sessionId, rulebookRole) : null;
     if (rulebook) {
       const render = rulebook.render;
@@ -649,7 +658,9 @@ interface Harness {
     // adapter whose CONTEXT_PACK_MCP_ANSCHLUSS row is `apply` reads it — today claude alone.
     packMcp?: readonly ContextPackMcpServer[];
     // the role whose SESSION_LIST_CUT the line carries; claude alone reads it, null = no cut
-    listRole?: SessionSpawnRole | null }): string;
+    listRole?: SessionSpawnRole | null;
+    // the session's handover is on at this spawn (thresholdFor); claude alone reads it (server/session-start.ts)
+    handoverOn?: boolean }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -886,7 +897,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.remoteName),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -9697,7 +9708,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
             : boundProgramsForMain(s).length ? "main" : "generic",
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
-            ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null })}`);
+            ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
+          // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base
+          handoverOn: h.id === "claude" && occupant.label !== STEWARD_LABEL && thresholdFor(s).basePct > 0 })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -28029,6 +28042,17 @@ const LAND_WAIT_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_LAND_W
 // saying "no hub configured" would put a measurement of nothing on every commit of every
 // single-host fleet, and this note is read by eye.
 const HUB_REMOTE = (process.env.FLEET_HUB_REMOTE ?? "").trim();
+// the hub as a spawn reads it for the classifier environment (server/session-start.ts): read once from
+// this checkout's own remote, never from a tracked file; null = no hub remote or not an ssh one
+let hubFactsCache: { remote: string; url: string; host: string } | null | undefined;
+function hubFacts(): { remote: string; url: string; host: string } | null {
+  if (hubFactsCache !== undefined) return hubFactsCache;
+  const r = HUB_REMOTE ? Bun.spawnSync(["git", "-C", import.meta.dir, "remote", "get-url", HUB_REMOTE]) : null;
+  const url = r?.exitCode === 0 ? r.stdout.toString().trim() : "";
+  const host = url ? hubHostOf(url) : null;
+  hubFactsCache = host ? { remote: HUB_REMOTE, url, host } : null;
+  return hubFactsCache;
+}
 // Its own budget, deliberately NOT GIT_TIMEOUT_MS (30s): every other git call here is local, this
 // one talks to another machine over ssh, where 30s of silence is a slow link and not yet a verdict.
 // A timeout is a red `hubPush` on the note, never a failed land — the commit is already on main

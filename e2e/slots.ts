@@ -2902,7 +2902,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // --- THE FOUR STATES, lifted the same way. What the bar could say before was "hot" or "not",
     // and the not held three different facts. Order is part of the rule: a broken session that
     // happens to be on screen is broken, not working.
-    const stSrc = cut("const SLEEP_MS =", "// \"how long since this session");
+    const stSrc = cut("const SLEEP_MS =", "// \"how long since this session").replace(/^export /gm, "");
     type StateFn = (s: object, now: number, awake: boolean) => string;
     let slotState: StateFn | null = null;
     try {
@@ -3544,7 +3544,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const rows = ["toolrow1", "toolrow2"].map(rowIds);
       const headHtml = /<div id="sidetools">[\s\S]*?<div id="slots">/.exec(indexSrc)?.[0] ?? "";
       check("client: the head's functions are one right-aligned block — came in and happened · setup, the queue in the corner",
-        JSON.stringify(rows) === JSON.stringify([["attnbtn", "opsbtn", "auditbtn", "outcomebtn"], ["devbtn", "saverbtn"]])
+        JSON.stringify(rows) === JSON.stringify([["attnbtn", "opsbtn", "auditbtn", "outcomebtn", "konstbtn"], ["devbtn", "saverbtn"]])
           && !headHtml.includes('id="toolrow3"')
           && /<\/span>\s*<\/span>\s*<button id="queuebtn"[^>]*>[^<]*<\/button>\s*<\/div>/.test(headHtml)
           && /justify-content: flex-end/.test(cssBody(".toolrow")) && /margin-left: auto/.test(cssBody("#toolrows"))
@@ -9151,7 +9151,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
       const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
       const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Für dich, Eingang, Geräte hidden here), Datensparen off`;
-      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Aufträge", "Lands", "Protokoll", "Datensparen"]);
+      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Aufträge", "Lands", "Protokoll", "Konstellation", "Datensparen"]);
       detail[trayClaim] = { tray: sess.tray, drawerHidden };
       const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "Neue Session" last`;
       const sr = sess.rows;
@@ -10960,6 +10960,10 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
+  // xterm's own sheet stacks its canvas layers; without it the text layer paints below the link layer's
+  // default 150 px, so a picture of a terminal shows its rows lower than xterm hit-tests them
+  const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
+  const xtermCss = existsSync(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
   const ownerA = "Das ist ein erfundener Satz ohne echten Inhalt und dient nur als Platzhalter im Test Das ist ein erf.";
   const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
   const termQ = "im Terminal getippt, waehrend der Schritt laeuft";
@@ -11034,6 +11038,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
+      if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") {
         const answer = () => void json(requestId, { now: Date.now(), v: fx.v, chips: [], tasks: [],
           slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
@@ -11121,7 +11126,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
       await send("Page.enable"); await send("Runtime.enable");
       // the pane socket never opens here; scenario 14 speaks through it (window.__ws) the way the server pushes
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__ws = []; window.WebSocket = class { constructor() { this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__ws = []; window.WebSocket = class { constructor(u) { this.url = String(u); this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
@@ -11642,6 +11647,84 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       if (width === 1200) claims["Mangel 72: under a terminal the desktop composer has the chat view's tall form, the field above its control row"] =
         !!termView && sizes.includes("tall") && !sizes.includes("bar") && form.fieldAboveRow;
       else claims["Mangel 72: under a terminal the phone keeps the one-line strip"] = !!termView && sizes.includes("bar") && !sizes.includes("tall");
+      // Mangel 63, owner 15.10.: „[Zitat entfernt]“
+      //  Claude Code's login screen as it writes
+      // it: a 400-char url, every row its own OSC 8 link to the whole address, no soft wrap — in its two modes, rows
+      // (the Mac) and fullscreen (`"tui": "fullscreen"` on the Workhorse: alt screen, the mouse taken by Claude Code).
+      // Opening and copying are watched at window.open and at the copy the page asks for (copyText's execCommand path).
+      const loginUrl = (() => { const head = "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+        + "&response_type=code&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key"
+        + "+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code&code_challenge_method=S256&state=";
+        return head + "B".repeat(400 - head.length); })();
+      type Geo = { cols: number; rows: number; x: number; y: number; w: number; h: number };
+      const geo = await evaluate<Geo | null>(`(() => { const w = window.__ws.filter((w) => /\\/ws\\/1\\?/.test(w.url)).at(-1); const s = document.querySelector('.pane:not(.chat) .xterm-screen');
+        if (!w || !s) return null; const u = new URL(w.url); const r = s.getBoundingClientRect();
+        window.__opened = []; window.open = (to) => { window.__opened.push(String(to)); return null; };
+        window.__copied = []; const exec = document.execCommand.bind(document);
+        document.execCommand = (c, ...rest) => { if (c !== 'copy') return exec(c, ...rest); window.__copied.push(document.activeElement && 'value' in document.activeElement ? document.activeElement.value : String(getSelection())); return true; };
+        return { cols: +u.searchParams.get('cols'), rows: +u.searchParams.get('rows'), x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+      const LINK = `({ opened: window.__opened.splice(0), copied: window.__copied.splice(0) })`;
+      type Link = { opened: string[]; copied: string[] };
+      const cellAt = (g: Geo, col: number, row: number) => ({ x: g.x + (col + 0.5) * g.w / g.cols, y: g.y + (row + 0.5) * g.h / g.rows });
+      const pointer = (type: string, p: { x: number; y: number }) =>
+        send("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+      const finger = (type: string, p?: { x: number; y: number }) => send("Input.dispatchTouchEvent", { type, touchPoints: p ? [{ x: p.x, y: p.y }] : [] });
+      const cardButton = (label: string) => evaluate<{ x: number; y: number } | null>(`(() => { const c = document.querySelector('.entcard');
+        const b = c && getComputedStyle(c).display !== 'none' ? [...c.querySelectorAll('button')].find((b) => b.textContent === ${JSON.stringify(label)}) : null;
+        if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (width === 390) await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      const loginFacts: Record<string, unknown> = { geo };
+      for (const mode of ["rows", "fullscreen"] as const) {
+        if (!geo?.cols) break;
+        const rowsOfUrl: string[] = [];
+        for (let i = 0; i < loginUrl.length; i += geo.cols) rowsOfUrl.push(loginUrl.slice(i, i + geo.cols));
+        const screen = (mode === "fullscreen" ? "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h" : "")
+          + "\x1b[2J\x1b[H Browser didn't open? Use the url below to sign in\r\n\r\n"
+          + rowsOfUrl.map((r) => `\x1b[2m\x1b]8;;${loginUrl}\x1b\\${r}\x1b]8;;\x1b\\\x1b[22m\r\n`).join("") + "\r\n Paste code here if prompted > ";
+        await evaluate(`window.__ws.filter((w) => /\\/ws\\/1\\?/.test(w.url)).at(-1).onmessage({ data: new TextEncoder().encode(${JSON.stringify(screen)}).buffer })`);
+        await settle(300);
+        // the url's second row (screen row 3), mid-row; away = the bottom right corner, no link there
+        const onUrl = cellAt(geo, Math.floor(geo.cols / 2), 3), away = cellAt(geo, geo.cols - 2, geo.rows - 2);
+        if (width === 1200) {
+          // a hand on a mouse: onto the url, wait for the card, then across onto the card's button and click it
+          const viaCard = async (label: string): Promise<Link & { card: boolean }> => {
+            await pointer("mouseMoved", away); await settle(300); await evaluate(LINK);
+            await pointer("mouseMoved", onUrl); await settle(500);
+            const at = await cardButton(label);
+            if (at) for (let k = 1; k <= 5; k++) await pointer("mouseMoved", { x: onUrl.x + (at.x - onUrl.x) * k / 5, y: onUrl.y + (at.y - onUrl.y) * k / 5 });
+            if (at) { await settle(60); await pointer("mousePressed", at); await pointer("mouseReleased", at); await settle(150); }
+            return { card: !!at, ...await evaluate<Link>(LINK) };
+          };
+          const open = await viaCard("Öffnen");
+          await shot(`${width}-63-${mode}-karte`);
+          const copy = await viaCard("Kopieren");
+          await pointer("mouseMoved", away); await settle(300);
+          loginFacts[mode] = { rows: rowsOfUrl.length, open: { card: open.card, opened: open.opened.map((u) => u.length), copied: open.copied.length },
+            copy: { card: copy.card, opened: copy.opened.length, copied: copy.copied.map((t) => [t.length, (t.match(/\n/g) ?? []).length]) } };
+          claims[`Mangel 63 · ${mode}: over a row of the wrapped 400-char login url the card's Öffnen opens the whole url, once`] =
+            rowsOfUrl.length >= 3 && open.card && open.opened.length === 1 && open.opened[0] === loginUrl && open.copied.length === 0;
+          claims[`Mangel 63 · ${mode}: the card's Kopieren copies the whole url in one piece, without a line break`] =
+            copy.card && copy.copied.length === 1 && copy.copied[0] === loginUrl && copy.opened.length === 0;
+        } else {
+          await finger("touchStart", onUrl); await settle(60); await finger("touchEnd"); await settle(300);
+          const tap = await evaluate<Link>(LINK);
+          await finger("touchStart", onUrl); await settle(700); await finger("touchEnd"); await settle(200);
+          const pop = await evaluate<{ text: string; x: number; y: number } | null>(`(() => { const b = document.querySelector('.pane:not(.chat) .termcopy');
+            if (!b || getComputedStyle(b).display === 'none') return null; const r = b.getBoundingClientRect(); return { text: b.textContent, x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          await shot(`${width}-63-${mode}-lang-druecken`);
+          const pressed = await evaluate<Link>(LINK);
+          if (pop) { await finger("touchStart", pop); await settle(40); await finger("touchEnd"); await settle(200); }
+          const copied = await evaluate<Link>(LINK);
+          loginFacts[mode] = { rows: rowsOfUrl.length, tap: { opened: tap.opened.map((u) => u.length), copied: tap.copied.length }, pop: pop?.text ?? null,
+            pressed: { opened: pressed.opened.length, copied: pressed.copied.length }, copied: copied.copied.map((t) => [t.length, (t.match(/\n/g) ?? []).length]) };
+          claims[`Mangel 63 · ${mode}: on the phone a tap on a row of the wrapped 400-char login url opens the whole url, once`] =
+            rowsOfUrl.length >= 3 && tap.opened.length === 1 && tap.opened[0] === loginUrl && tap.copied.length === 0;
+          claims[`Mangel 63 · ${mode}: on the phone a long press on it offers the link and copies the whole url, without a line break`] =
+            pop?.text === "Link kopieren" && pressed.opened.length === 0 && copied.copied.length === 1 && copied.copied[0] === loginUrl && copied.opened.length === 0;
+        }
+      }
+      if (width === 390) await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      facts.login63 = loginFacts;
       results.push({ width, height, claims, facts });
     }
     return results;

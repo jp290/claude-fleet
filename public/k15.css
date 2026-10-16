@@ -224,6 +224,18 @@
 .k15 .k15tag.alt { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
 .k15 .k15tag.an { color: var(--chat-ink); }
 .k15 .k15tag.aus { border-style: dashed; color: var(--chat-faint); }
+/* WER BESTIMMT (src/k15-wer.ts): „änderbar“ leise, „Fleet-Standard“ in der Farbe des Fleet-Kennzeichens, „Claude-Code-Standard“ grau */
+.k15 .k15tag.wer { font-weight: 500; }
+.k15 .k15tag.wer.du { color: var(--chat-mute); }
+.k15 .k15tag.wer.fleet { border-color: transparent; background: color-mix(in srgb, var(--accent) 12%, transparent); color: color-mix(in srgb, var(--accent) 72%, var(--chat-ink)); }
+.k15 .k15tag.wer.claude-code { border-color: transparent; background: color-mix(in srgb, var(--chat-ink) 9%, transparent); color: var(--chat-mute); }
+.k15 .k15subw:has(> .k15tag.wer) { display: flex; align-items: center; gap: 8px; }
+.k15 .k15bsttags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+/* der Grund eines „fest“ in „Wo es landet“: mit „Alles zeigen“ (beim Darüberfahren steht er am Kennzeichen) */
+.k15 .k15lkw { display: none; }
+.k15.k15alles .k15lkw { display: block; }
+/* am Handy gibt es kein Darüberfahren: neben dem Kennzeichen hält die Größe dort nur mit „Alles zeigen“ ihren Platz, und eine zu lange Zeile bricht um */
+@media (max-width: 600px) { .k15 .k15lkz { flex-wrap: wrap; } .k15:not(.k15alles) .k15lkz .k15n { display: none; } }
 .k15 .k15ks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .k15 .k15kname:has(+ .k15kmeta) { padding-bottom: 6px; }
 .k15 .k15kmeta { display: flex; align-items: center; gap: 6px; padding: 0 4px 14px; }
@@ -631,3 +643,18 @@
   .k15 .k15go { flex: 1 1 100%; }
   .k15 .k15toast { bottom: 132px; }
 }
+/* „Systemprompt und Werkzeuge“ aufgeschlüsselt (src/k15-anatomie-ui.ts): Gruppen mit Pfeil, Teile darunter, ihr Text aufgeklappt */
+.k15 .k15ccg > .k15lkz > svg { flex: none; width: 12px; height: 12px; align-self: center; margin-left: -2px; color: var(--chat-faint);
+  transform: rotate(-90deg); transition: transform .14s; }
+.k15 .k15ccg.open > .k15lkz > svg { transform: none; color: var(--chat-mute); }
+.k15 .k15ccg > .k15lkz .k15lkn { font-weight: 600; }
+.k15 .k15cct.aus > .k15lkz .k15lkn { color: var(--chat-faint); text-decoration: line-through; text-decoration-color: var(--chat-edge); }
+.k15 .k15cct > .k15lkz .k15lkn { flex: 0 1 auto; min-width: 0; font: 12.5px/1.35 var(--chat-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k15 .k15cct.prosa > .k15lkz .k15lkn { font: 12.5px/1.35 inherit; font-family: inherit; }
+.k15 .k15cct > .k15lkz .k15lkg { flex: 1 0 auto; text-align: right; }
+.k15 .k15ccpre { max-height: 260px; overflow: auto; margin: 0 0 10px; font-size: 11.5px; }
+.k15 .k15ccrechte { padding-left: 0; margin-top: 6px; }
+.k15 .k15ccz { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 0 6px 18px; font-size: 11px; color: var(--chat-faint); }
+.k15 .k15ccg > .k15lkz .k15lkn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k15 .k15ccg > .k15lkz { flex-wrap: nowrap; align-items: center; }
+.k15 .k15ccg > .k15lkz .k15lkn { flex: 0 1 auto; min-width: 0; }

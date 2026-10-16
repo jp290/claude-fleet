@@ -181,6 +181,80 @@ describe("Route-Handler ohne Port, mit Owner-Token", () => {
   });
 });
 
+// K15 (Owner 16.10. 09:1x: „[Zitat entfernt]“): eigene Profile, Fassungen und Packs des
+// Fensters „Neue Session“ über die echte Route (server/k15-speicher.ts hinter dem Owner-Tor), die Datei im Zustandsverzeichnis
+describe("K15-Speicher über die Route", () => {
+  const owner = `k15-${process.pid}-${Date.now()}`;
+  const datei = join(STATE_DIR, "k15-eigenes.json");
+  const gut = { fassungen: [{ abschnitt: "lane|regeln", text: "Meine Regeln", version: 2 }],
+    packs: [{ id: "pk1", name: "Wissen", text: "Was die Lane wissen soll", orte: { lane: "text" } }],
+    profile: [{ id: "p1", rolle: "lane", schiene: "lane", name: "Mein Agent", datei: { titel: "agent.md", abschnitte: [] } }] };
+  async function call(method: string, o: { body?: string; token?: string | null; type?: string } = {}): Promise<{ status: number; body: unknown }> {
+    const { serveOptions, adoptTokens } = await load();
+    process.env.FLEET_TOKEN = owner;
+    adoptTokens();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const token = o.token === undefined ? owner : o.token;
+    const headers: Record<string, string> = { host: `127.0.0.1:${isolation.FLEET_PORT}`, "content-type": o.type ?? "application/json",
+      ...(token === null ? {} : { authorization: `Bearer ${token}` }) };
+    const res = await fetch.call(server, new Request(`http://127.0.0.1:${isolation.FLEET_PORT}/api/k15/eigenes`, { method, headers, body: o.body }), server);
+    if (!res) throw new Error("/api/k15/eigenes: der Handler gab keine Antwort");
+    return { status: res.status, body: await res.json() };
+  }
+
+  test("speichern, neu laden, gleiche Daten; die Datei liegt im Zustandsverzeichnis, nur für den Owner lesbar, und wird ganz ersetzt", async () => {
+    rmSync(datei, { force: true });
+    expect(await call("GET")).toEqual({ status: 200, body: { eigenes: null } });
+    // eine offene umask: 0600 muss beim Anlegen gesetzt sein, nicht von der umask dieses Rechners kommen
+    const umask = process.umask(0o022);
+    try {
+      expect(await call("PUT", { body: JSON.stringify(gut) })).toEqual({ status: 200, body: { ok: true } });
+    } finally { process.umask(umask); }
+    expect(statSync(datei).mode & 0o777).toBe(0o600);
+    expect(await call("GET")).toEqual({ status: 200, body: { eigenes: gut } });
+    // ersetzt, nicht überschrieben: eine neue Datei an derselben Stelle (rename), sonst läse ein Absturz mitten im Schreiben eine halbe
+    const ino = statSync(datei).ino;
+    const zweit = { ...gut, packs: [] };
+    expect(await call("PUT", { body: JSON.stringify(zweit) })).toEqual({ status: 200, body: { ok: true } });
+    expect(statSync(datei).ino).not.toBe(ino);
+    expect(await call("GET")).toEqual({ status: 200, body: { eigenes: zweit } });
+    expect(JSON.parse(readFileSync(datei, "utf8"))).toEqual(zweit);
+    expect(readdirSync(STATE_DIR).filter((f) => f.startsWith("k15-eigenes"))).toEqual(["k15-eigenes.json"]);
+    expect(existsSync(join(ROOT, "k15-eigenes.json"))).toBe(false);
+  });
+  test("ein schiefer Body wird mit seinem Grund abgelehnt, und die Datei bleibt, wie sie war", async () => {
+    await call("PUT", { body: JSON.stringify(gut) });
+    const vorher = readFileSync(datei, "utf8");
+    const schief: [string, number, string][] = [
+      ["{ kaputt", 400, "kein gültiges JSON"],
+      [JSON.stringify([gut]), 400, "erwartet ist ein Objekt mit fassungen, packs und profile"],
+      [JSON.stringify({ ...gut, token: "x" }), 400, "unbekanntes Feld „token“"],
+      [JSON.stringify({ ...gut, packs: "pk1" }), 400, "„packs“ fehlt oder ist keine Liste"],
+      [JSON.stringify({ ...gut, profile: [{ id: 1, rolle: "lane", schiene: "lane" }] }), 400, "Eintrag 1 in „profile“ braucht id, rolle, schiene als Text"],
+      [JSON.stringify({ ...gut, fassungen: [{ abschnitt: "lane|x", text: "x".repeat(10_000_001) }] }), 413, "größer als 10 MB"],
+    ];
+    for (const [body, status, error] of schief) {
+      expect(await call("PUT", { body })).toEqual({ status, body: { error } });
+      expect(readFileSync(datei, "utf8")).toBe(vorher);
+    }
+    expect(await call("PUT", { body: JSON.stringify(gut), type: "text/plain" })).toEqual({ status: 415, body: { error: "erwartet ist JSON" } });
+    expect(await call("DELETE")).toEqual({ status: 405, body: { error: "nur GET und PUT" } });
+    expect(readFileSync(datei, "utf8")).toBe(vorher);
+    expect(readdirSync(STATE_DIR).filter((f) => f.startsWith("k15-eigenes"))).toEqual(["k15-eigenes.json"]);
+  });
+  test("ohne Credential oder mit falschem gibt es 401, und nichts wird gelesen oder geschrieben", async () => {
+    await call("PUT", { body: JSON.stringify(gut) });
+    const vorher = readFileSync(datei, "utf8");
+    const fremd = JSON.stringify({ fassungen: [], packs: [], profile: [] });
+    expect(await call("GET", { token: null })).toEqual({ status: 401, body: { error: "unauthorized" } });
+    expect(await call("PUT", { body: fremd, token: null })).toEqual({ status: 401, body: { error: "unauthorized" } });
+    expect(await call("PUT", { body: fremd, token: "falsch" })).toEqual({ status: 401, body: { error: "unauthorized" } });
+    expect(readFileSync(datei, "utf8")).toBe(vorher);
+  });
+});
+
 describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden über die Routen zurück", () => {
   const plantedAt = 1_790_000_000_000;
   const programId = "4b5c".padEnd(24, "0");

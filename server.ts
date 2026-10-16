@@ -7,7 +7,9 @@ import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
-import { hubHostOf, startAspects, withoutSkipPermissions } from "./server/session-start";
+import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn } from "./server/session-start";
+import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
+import type { CcAnatomie } from "./src/k15-anatomie";
 import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
@@ -215,6 +217,8 @@ import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetCho
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
+import { k15Speicher } from "./server/k15-speicher";
+import { SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
@@ -2722,6 +2726,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   sleeping: null,
   standingHandover: null,
   compaction: null,
+  spawn: null,
   laneStandNudged: null,
   plan: null,
   history: [],
@@ -5889,11 +5894,11 @@ function stateSnapshot(): string {
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
     handover?: HandoverSetting;
-    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; compaction?: SlotCompaction; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
+    browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; compaction?: SlotCompaction; spawn?: SlotSpawn; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9689,6 +9694,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         return;
       }
 
+      // a foreign harness reads none of the role facts, as before the spawn record (fleet-e2e-harness.ts drives a codex ensureSlot)
+      const listRole = h.id !== "claude" ? null : spawnListRole({ claude: true, lane: !!s.worktree,
+        orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -9704,8 +9712,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // the role's skill/agent list cut (SESSION_LIST_CUT), read at every spawn like the label
           // and the role's built-in tools (SESSION_TOOLS) only where the spawn knows the role: a MAIN bound
           // at this spawn — a fresh founding binds after it and gets the list at its next spawn
-          listRole: h.id !== "claude" ? null : s.worktree ? "lane" : positionRole(s) === "orchestrator" ? "orchestrator"
-            : boundProgramsForMain(s).length ? "main" : "generic",
+          listRole,
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
@@ -9734,6 +9741,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
       s.cols = 200;
       s.rows = 50;
+      // which role this spawn knew, for the board (persisted below by saveState); a foreign harness records none
+      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, at: Date.now() } : null;
       // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
@@ -9989,6 +9998,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.sleeping = null; // a new occupant is awake; the old one's sleep named a conversation that is not this one
   s.standingHandover = null; // ...and has written no handover of its own yet
   s.compaction = null; // ...and has been compacted never
+  s.spawn = null; // ...and has not been spawned yet
   s.laneStandNudged = null; // ...and has been reminded of no stand
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
@@ -10219,6 +10229,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.sleeping = null;
   s.standingHandover = null;
   s.compaction = null;
+  s.spawn = null;
   s.laneStandNudged = null;
   s.plan = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
@@ -40594,9 +40605,12 @@ function sealedPlanHash(decision: string, plan: ContextPlan, selection?: Readonl
 // Fleet can read, and the measured first answer of a probe start with the same line. The spawn role is
 // ensureSlot's listRole: a MAIN founded in the window is bound only after its spawn, so it starts
 // "generic" and gets the MAIN list at its next spawn (`danach`). Only Claude: null for any other harness.
-function claudeCodeStart(rolle: SessionRole, harness: string): Record<string, unknown> | null {
+// `ziel` (the plan's repo and model) adds the breakdown of the same start (claudeCodeAnatomie).
+function claudeCodeStart(rolle: SessionRole, harness: string, ziel: { repo: string; modell: string } | null = null): Record<string, unknown> | null {
   if (harnessFamilie(harness) !== "claude") return null;
   const spawn: ClaudeCodeRolle = rolle === "lane" ? "lane" : rolle === "orchestratorin" ? "orchestrator" : "generic";
+  const anatomie = ziel ? claudeCodeAnatomie(spawn, ziel.repo, ziel.modell) : null;
+  const abschnitte = anatomie?.quelle ? anatomie.gruppen.find((g) => g.id === "systemprompt")?.teile.length ?? 0 : 0;
   const cut = sessionListCut(spawn === "generic" ? "main" : spawn);
   const tools = spawn === "generic" ? null : SESSION_TOOLS[spawn];
   const messung = (role: ClaudeCodeRolle) => {
@@ -40616,7 +40630,7 @@ function claudeCodeStart(rolle: SessionRole, harness: string): Record<string, un
   return {
     rolle: spawn,
     zeilen: [
-      zeile("systemprompt", "Claude Code", "unknown", "nur in der Summe gemessen"),
+      zeile("systemprompt", "Claude Code", "unknown", abschnitte ? `${abschnitte} Abschnitte, einzeln gemessen` : "nur in der Summe gemessen"),
       zeile("werkzeuge", tools ? "--tools" : "kein --tools", "unknown",
         tools ? `${tools.length} Werkzeuge` : "alle eingebauten", tools ? { namen: tools } : undefined),
       zeile("listen", "--settings · --disallowedTools", "unknown",
@@ -40631,7 +40645,42 @@ function claudeCodeStart(rolle: SessionRole, harness: string): Record<string, un
     ],
     messung: messung(spawn),
     ...(rolle === "main" ? { danach: messung("main") } : {}),
+    ...(anatomie ? { anatomie } : {}),
   };
+}
+
+// THE BREAKDOWN OF „SYSTEMPROMPT UND WERKZEUGE“ (K15, owner 16.10. 11:3x; Bauleitung 80917044, source B): Claude Code's own part as the
+// newest session in Fleet's own repo measured it at its start (server/claude-code-anatomie.ts — never a session of another repo), Fleet's
+// part from the very values agentCmd puts on this role's line, and what depends on the folder from the chosen repo's files.
+function claudeCodeAnatomie(spawn: ClaudeCodeRolle, repoRoot: string, modell: string): CcAnatomie {
+  const listRole: SessionListRole = spawn === "generic" ? "main" : spawn;
+  const cut = sessionListCut(listRole);
+  const brief = startAspects({ role: spawn, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null }).briefLine;
+  const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
+  const live = new Map<string, { slot: number; rolle: string; cwd: string }>();
+  for (const s of slots) {
+    const datei = s.cwd ? transcriptFile(s) : null;
+    if (datei && s.cwd) live.set(datei, { slot: s.id, cwd: s.cwd, rolle: s.worktree ? "Lane" : positionRole(s) === "orchestrator" ? "Orchestratorin"
+      : boundProgramsForMain(s).length ? "MAIN" : "Session ohne Rolle" });
+  }
+  const projekte = dirname(projDir("x"));
+  // Fleet's repo is the primary checkout of its object store; a checkout without git (a test instance's copy) is its own repo
+  const wahl = waehleQuelle(kandidatenAus(projekte, FLEET_GIT_COMMON ? dirname(FLEET_GIT_COMMON) : import.meta.dir, live), modell);
+  const quelle = "quelle" in wahl ? wahl.quelle : null;
+  return anatomieFuerRolle(quelle ? { kandidat: quelle, a: quelle.kopf.anatomie } : null, "grund" in wahl ? wahl.grund : null, {
+    anhang: [
+      { name: "Listenschnitt", weg: "--append-system-prompt", text: cut?.line ?? null,
+        satz: cut ? "nennt, was Fleet dieser Rolle aus den Listen nimmt, und wie es zurückkommt" : "kein Schnitt bei dieser Rolle" },
+      { name: "Auto-Mode", weg: "--append-system-prompt", text: cut ? brief : null, satz: "sagt, was die Session tut, wenn der Klassifizierer des Auto-Mode sperrt" },
+      { name: "Gepflogenheiten", weg: "--append-system-prompt-file", text: habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null,
+        satz: HABITS_PROMPT_ENABLED ? "Fleets Gepflogenheiten aus fleet-gepflogenheiten.md" : "aus: der Server läuft ohne FLEET_HABITS_PROMPT" },
+    ],
+    werkzeuge: spawn === "generic" ? null : SESSION_TOOLS[spawn],
+    schnitt: SESSION_LIST_CUT.map((e) => ({ name: e.name, von: e.from, aus: !e.keep?.includes(listRole), zurueck: SESSION_LIST_RELOAD[e.from] })),
+    ohneMemory: spawn === "lane", ohneMcp: spawn === "lane",
+  }, { konfig: claudeNamen(dirname(projekte)), repo: claudeNamen(`${repoRoot}/.claude`),
+    quelleRepo: quelle?.kopf.cwd ? claudeNamen(`${quelle.kopf.cwd}/.claude`) : null,
+    repoMcp: repoMcp(repoRoot), quelleMcp: quelle?.kopf.cwd ? repoMcp(quelle.kopf.cwd) : [] });
 }
 
 // THE START IN ONE NUMBER: Claude Code's measured tokens plus Fleet's delivered bytes at the measured
@@ -40754,7 +40803,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // what really reaches THIS role's start, row by row with its way: the start door's verdict, except a
   // MAIN, which the window founds over bootstrap-main ("main", display only) and not over /open
   const lieferung = rolle === "main" ? planDoorVerdict(resolved.plan, fp.value, "main", false, false) : verdict;
-  const claudeCode = claudeCodeStart(rolle, resolveContextHarness(ho.harness));
+  const claudeCode = claudeCodeStart(rolle, resolveContextHarness(ho.harness), { repo: fp.value.repoRoot, modell: mo.model ?? DEFAULT_MODEL });
   return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
     lieferung: { tuer: rolle === "main" ? "main" : tuer, geliefert: lieferung.geliefert, ausgelassen: lieferung.ausgelassen },
     claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode) },
@@ -44074,6 +44123,7 @@ if (existsSync(file)) {
         // the standing handover comes back only for the occupation that wrote it (standingHandoverFrom)
         s.standingHandover = standingHandoverFrom((v as { standingHandover?: unknown }).standingHandover, s.openedAt);
         s.compaction = compactionFrom((v as { compaction?: unknown }).compaction, s.openedAt);
+        s.spawn = slotSpawnFrom((v as { spawn?: unknown }).spawn, s.openedAt);
         s.plan = slotPlanFrom((v as { plan?: unknown }).plan);
         s.laneStandNudged = laneStandNudgedFrom((v as { laneStandNudged?: unknown }).laneStandNudged, s.openedAt);
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
@@ -49566,6 +49616,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
+    // K15: eigene Profile, Fassungen und Packs des Fensters „Neue Session“, eine Datei im Zustandsverzeichnis (server/k15-speicher.ts)
+    if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req);
+
     if (url.pathname === "/api/worktrees" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
       return json(await workplaces());
@@ -49837,6 +49890,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // the permission mode a claude session RUNS in, off the same tail read (readClaudeTail): the
             // spawn line only says what Fleet asked for, a session from before a deploy keeps its old mode
             ...(reading.permissionMode ? { permissionMode: reading.permissionMode } : {}),
+            // the role its last claude spawn knew, and so the built-in tools on its line (null = no --tools, all of them)
+            ...(s.spawn && s.spawn.openedAt === s.openedAt
+              ? { spawn: { role: s.spawn.role, tools: s.spawn.role === "generic" ? null : SESSION_TOOLS[s.spawn.role].length } } : {}),
             // the ROLE the server actually gives this session (positionRole), beside the label the
             // owner typed: an „[Zitat entfernt]“ label on a bound Program-MAIN is a MAIN. Only the two
             // roles a label cannot show — a lane is `worktree`, generic is absent; spelled

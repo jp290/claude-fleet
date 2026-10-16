@@ -4,15 +4,17 @@
 import { api, flotte, baseName, OMIT_SAY, bausteinName, validAnswer } from "./k15-haupt";
 import type { DirInfoResp } from "./client";
 import type { Answer, Baustein } from "./founding";
+import { nativVon, type WerPlan } from "./k15-wer";
 import type { Shell } from "./shell";
 import { modelLabel } from "./modelname";
 import {
-  EFFORT_WORT, GRUPPEN, alle, hatRegler, reglerVon, schalterVon, schwelleVon, stufenSchalter, umfangVon, wirksam,
+  EFFORT_WORT, GRUPPEN, alle, hatRegler, reglerVon, schalterVon, schwelleVon, stufenSchalter, traegerVon, umfangVon, wirksam,
   type Ebene, type Env, type GruppeId, type Konst, type PlanRolle, type Position, type Profil, type Regler, type Schalter, type Stufe,
 } from "./k15-entwurf-modell";
 import { fassungenImport, type TextFassung } from "./k15-wortlaut";
 import { packsImport, type PackEntwurf } from "./k15-kontextpack";
 import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, profilAus } from "./k15-import";
+import { SPEICHER_ROUTE } from "./k15-speicher";
 import type { Ablauf } from "./k15-agentmd";
 
 export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
@@ -34,12 +36,12 @@ export interface St {
   repo: string | null; env: Env | null | undefined; fleetModell: string | null; plaene: Map<string, PlanStand>;
   // die gepinnten Ordner (null = wird gelesen), was /api/dirinfo je Repo sagt, die offene Auswahl „Neue Session in“ und ihre Ordnerwahl
   pins: string[] | null; infos: Map<string, InfoStand>; repoMenu: boolean; ordner: Ordner | null;
-  // eigene Fassungen je Abschnitt und Kontextpacks als Entwurf (im Browser, EIGENES_KEY); welcher Abschnitt im Editor offen ist und
-  // welcher Pack gerade bearbeitet wird
+  // eigene Fassungen je Abschnitt und Kontextpacks als Entwurf (auf dem Server, src/k15-speicher.ts; `speicher` sagt, ob er gelesen
+  // ist); welcher Abschnitt im Editor offen ist und welcher Pack gerade bearbeitet wird
   // `bearbeiteText` ist der Text im offenen Editor, solange er nicht gesichert ist: so übersteht er ein Neuzeichnen
   fassungen: Map<string, TextFassung>; bearbeite: string | null; bearbeiteText: string | null; packs: PackEntwurf[]; packEdit: PackEntwurf | null;
   // der Ablauf „Deine Agent-MD“ (src/k15-agentmd.ts), null = zu; wann zuletzt vor ungesichertem Text gewarnt wurde (k15-repo.ts#menueZu)
-  ablauf: Ablauf | null; warnAm: number;
+  ablauf: Ablauf | null; warnAm: number; speicher: "laedt" | "da" | { fehler: string };
 }
 export let S: St | null = null;
 export const setzeS = (s: St | null): void => { S = s; };
@@ -105,43 +107,109 @@ export function verwirft(s: St, wo: string): boolean {
   return false;
 }
 
-// EIGENE FASSUNGEN, PACK-ENTWÜRFE UND PROFILE MIT EIGENER AGENT-MD im Browser, damit sie ein Neuladen überstehen; zu Fleet speichern
-// gibt es noch nicht. Die zurückgebauten Merkstellen (Z34) lagen unter einem eigenen Schlüssel; ihre eigenen Fassungen kommen einmal
-// mit herüber, der Rest fällt weg. Eine Fassung mit dem Schlüssel von vor dem 16.10. (ohne Profil, k15-wortlaut.ts#schluessel) passt
-// keinem Profil eindeutig: Sie zählt `alteFassungen` und wird nicht übernommen.
+// EIGENE FASSUNGEN, PACK-ENTWÜRFE UND PROFILE MIT EIGENER AGENT-MD liegen auf dem Server (src/k15-speicher.ts; Owner 16.10. 09:1x:
+// „[Zitat entfernt]“). Was davor im Browser lag (EIGENES_KEY, davor ALT_KEY), kommt beim
+// ersten Öffnen einmal herüber, und ein Satz sagt es; aus dem Browser verschwindet es erst, wenn der Server es bestätigt hat. Eine
+// Fassung mit dem Schlüssel von vor dem 16.10. (ohne Profil, k15-wortlaut.ts#schluessel) passt keinem Profil eindeutig: Sie zählt
+// `alteFassungen` und wird nicht übernommen.
 const EIGENES_KEY = "fleet.k15.eigenes";
 const ALT_KEY = "fleet.k15.merkstellen";
-export interface Eigenes { fassungen: Map<string, TextFassung>; packs: PackEntwurf[]; eigeneProfile: Profil[]; alteFassungen: number }
-export function ladeEigenes(): Eigenes {
-  try {
-    const alt = localStorage.getItem(ALT_KEY);
-    const t = localStorage.getItem(EIGENES_KEY) ?? alt;
-    const o: unknown = t ? JSON.parse(t) : null;
-    const r: Record<string, unknown> = o && typeof o === "object" ? { ...o } : {};
-    const alle = fassungenImport(r.fassungen, Date.now()).fassungen;
-    const f = alle.filter((x) => x.abschnitt.includes("|")).slice(0, MAX_FASSUNGEN);
-    const packs = packsImport(r.packs, Date.now()).packs.slice(0, MAX_PACKS);
-    const eigeneProfile = (Array.isArray(r.profile) ? r.profile : []).map(profilAus).filter((p): p is Profil => p !== null && !!p.datei).slice(0, MAX_PROFILE);
-    if (alt !== null) {
-      localStorage.removeItem(ALT_KEY);
-      localStorage.setItem(EIGENES_KEY, speicherForm(f, packs, eigeneProfile));
-    }
-    return { fassungen: new Map(f.map((x) => [x.abschnitt, x])), packs, eigeneProfile, alteFassungen: alle.length - f.length };
-  } catch { return { fassungen: new Map(), packs: [], eigeneProfile: [], alteFassungen: 0 }; }
+interface Eigenes { fassungen: TextFassung[]; packs: PackEntwurf[]; eigeneProfile: Profil[]; alteFassungen: number }
+// liest die gespeicherte Form, vom Server oder aus dem Browser; was nicht passt, fällt einzeln heraus
+function eigenesAus(o: unknown): Eigenes {
+  const r: Record<string, unknown> = o && typeof o === "object" ? { ...o } : {};
+  const alle = fassungenImport(r.fassungen, Date.now()).fassungen;
+  const fassungen = alle.filter((x) => x.abschnitt.includes("|")).slice(0, MAX_FASSUNGEN);
+  const packs = packsImport(r.packs, Date.now()).packs.slice(0, MAX_PACKS);
+  const eigeneProfile = (Array.isArray(r.profile) ? r.profile : []).map(profilAus).filter((p): p is Profil => p !== null && !!p.datei).slice(0, MAX_PROFILE);
+  return { fassungen, packs, eigeneProfile, alteFassungen: alle.length - fassungen.length };
 }
-// die Form, die fassungenImport, packsImport und profilAus lesen: die Version heißt dort `version`
+function ausDemBrowser(): Eigenes | null {
+  try {
+    const t = localStorage.getItem(EIGENES_KEY) ?? localStorage.getItem(ALT_KEY);
+    return t === null ? null : eigenesAus(JSON.parse(t));
+  } catch { return null; }
+}
+function ausDemBrowserWeg(): void {
+  try { localStorage.removeItem(EIGENES_KEY); localStorage.removeItem(ALT_KEY); } catch { /* ohne Speicher liegt dort nichts */ }
+}
+// die Form, die eigenesAus liest: die Version heißt dort `version`
 const speicherForm = (f: readonly TextFassung[], packs: readonly PackEntwurf[], profile: readonly Profil[]): string =>
   JSON.stringify({ fassungen: f.map((x) => ({ ...x, version: x.v })), packs: packs.map((p) => ({ ...p, version: p.v })),
     profile: profile.map((p) => ({ ...p, version: p.v })) });
-// gespeichert werden die Profile mit eigener Agent-MD; schlägt der Speicher fehl (voll, gesperrt), sagt das ein Satz
-export function speichereEigenes(s: St): boolean {
+// der Stand von jetzt, nicht der beim Aufruf: so trägt jedes Senden alles, was bis dahin geändert ist
+async function sende(s: St): Promise<void> {
+  const res = await api(SPEICHER_ROUTE, { method: "PUT", headers: { "content-type": "application/json" },
+    body: speicherForm([...s.fassungen.values()], s.packs, s.profile.filter((p) => !!p.datei)) });
+  if (res.ok) return;
+  const j: unknown = await res.json().catch(() => null);
+  throw new Error(j && typeof j === "object" && "error" in j && typeof j.error === "string" ? j.error : `Antwort ${res.status}`);
+}
+const grundVon = (e: unknown): string => e instanceof Error ? e.message : "Server nicht erreichbar";
+// alles geht der Reihe nach: erst das Lesen beim Öffnen, dann jedes Sichern; ein späterer Stand wird nie von einem früheren überholt
+let reihe: Promise<unknown> = Promise.resolve();
+
+// BEIM ÖFFNEN: was der Server hat, dazu was nur im Browser liegt (bei gleichem Schlüssel gilt der Server); was du währenddessen schon
+// geändert hast, gilt vor beidem. Ließ sich der Server nicht lesen, sichert das Fenster nichts, damit es nichts Gespeichertes überschreibt
+export function ladeEigenes(s: St): void {
+  reihe = reihe.then(() => lade(s));
+}
+async function lade(s: St): Promise<void> {
+  let server: Eigenes;
   try {
-    localStorage.setItem(EIGENES_KEY, speicherForm([...s.fassungen.values()], s.packs, s.profile.filter((p) => !!p.datei)));
-    return true;
-  } catch {
-    toast("Der Speicher dieses Browsers nimmt nichts mehr an: Deine Änderung gilt nur, bis du das Fenster schließt.");
-    return false;
+    const res = await api(SPEICHER_ROUTE);
+    const j: unknown = await res.json().catch(() => null);
+    const o: Record<string, unknown> = j && typeof j === "object" ? { ...j } : {};
+    if (!res.ok) throw new Error(typeof o.error === "string" ? o.error : `Antwort ${res.status}`);
+    server = eigenesAus(o.eigenes);
+  } catch (e) {
+    s.speicher = { fehler: grundVon(e) };
+    if (S !== s) return;
+    toast(`Deine eigenen Profile, Fassungen und Packs ließen sich nicht vom Server lesen (${grundVon(e)}). Bis zum nächsten Öffnen sichert dieses Fenster nichts.`);
+    render();
+    return;
   }
+  const lokal = ausDemBrowser();
+  const fKeys = new Set(server.fassungen.map((x) => x.abschnitt)), pkIds = new Set(server.packs.map((x) => x.id)), pIds = new Set(server.eigeneProfile.map((x) => x.id));
+  const neuF = (lokal?.fassungen ?? []).filter((x) => !fKeys.has(x.abschnitt));
+  const neuPk = (lokal?.packs ?? []).filter((x) => !pkIds.has(x.id));
+  const neuP = (lokal?.eigeneProfile ?? []).filter((x) => !pIds.has(x.id));
+  const jetztP = s.profile.filter((p) => !!p.datei);
+  const jetztIds = new Set(jetztP.map((p) => p.id)), jetztPk = new Set(s.packs.map((x) => x.id));
+  s.fassungen = new Map([...[...server.fassungen, ...neuF].map((x): [string, TextFassung] => [x.abschnitt, x]), ...s.fassungen]);
+  s.packs = [...[...server.packs, ...neuPk].filter((x) => !jetztPk.has(x.id)), ...s.packs];
+  s.profile = [...s.profile.filter((p) => !p.datei), ...[...server.eigeneProfile, ...neuP].filter((p) => !jetztIds.has(p.id)), ...jetztP];
+  s.speicher = "da";
+  if (S === s) render();
+  const teile = [neuP.length ? plural(neuP.length, "Profil", "Profile") : "", neuF.length ? plural(neuF.length, "eigene Fassung", "eigene Fassungen") : "",
+    neuPk.length ? plural(neuPk.length, "Pack", "Packs") : ""].filter(Boolean);
+  const alte = lokal?.alteFassungen ? ` ${lokal.alteFassungen === 1 ? "Eine eigene Fassung" : `${lokal.alteFassungen} eigene Fassungen`} von vor dem 16.10. galt für jedes Profil gleich und ist nicht übernommen; Fassungen gehören jetzt einem Profil.` : "";
+  if (lokal && teile.length) {
+    try { await sende(s); } catch (e) {
+      if (S === s) toast(`${teile.join(", ")} aus diesem Browser ließen sich nicht auf den Server legen (${grundVon(e)}); sie bleiben im Browser, bis es beim nächsten Öffnen klappt.`);
+      return;
+    }
+    ausDemBrowserWeg();
+    if (S === s) toast(`Aus diesem Browser übernommen: ${teile.join(", ")}. Sie liegen jetzt auf dem Server.${alte}`);
+    return;
+  }
+  if (lokal) ausDemBrowserWeg();
+  if (alte && S === s) toast(alte.trim());
+}
+
+// SICHERN: true erst, wenn der Server bestätigt hat; erst dann sagt der Aufrufer „gesichert“. Schlägt es fehl, sagt das ein Satz, und
+// die Änderung gilt nur in diesem Fenster
+export function speichereEigenes(s: St): Promise<boolean> {
+  const p = reihe.then(async () => {
+    if (s.speicher !== "da") throw new Error(s.speicher === "laedt" ? "das Lesen läuft noch" : `beim Öffnen nicht lesbar: ${s.speicher.fehler}`);
+    await sende(s);
+    return true;
+  }).catch((e: unknown) => {
+    if (S === s) toast(`Der Server hat deine Änderung nicht gespeichert (${grundVon(e)}): Sie gilt nur, bis du das Fenster schließt.`);
+    return false;
+  });
+  reihe = p;
+  return p;
 }
 
 // DIE REPOS (Z32): die mit laufender Session wie im Startfenster (src/founding.ts#repoList), claude-fleet zuerst, dahinter die
@@ -260,6 +328,13 @@ export function hole(s: St, url: string): PlanStand {
   return "laedt";
 }
 export const antwort = (st: PlanStand): Answer | null => typeof st === "object" && "a" in st ? st.a : null;
+// was „wer bestimmt“ (src/k15-wer.ts) außer dem Baustein braucht; der Plan von „Nur Ordner“ sagt, was Claude Code selbst lädt
+export function werPlan(s: St, a: Answer): WerPlan {
+  const nur = s.repo ? antwort(hole(s, planUrl(s.repo, "nur-ordner", {}))) : null;
+  return { traeger: traegerVon(a.plan.bausteine), nativ: nur ? nativVon(nur.plan.bausteine) : null,
+    ohneQuelle: new Map(a.omitted.map((o) => [`pack:${o.id}`, OMIT_SAY[o.reason] ?? o.reason])),
+    fehlt: new Map(a.plan.bausteine.flatMap((b) => { const f = fehltWeil(a, b); return f === null ? [] : [[b.id, f] as [string, string]]; })), name: bausteinName };
+}
 
 // was für eine Position (oder ein Profil) gilt: der volle Plan der Rolle, der Umfang auf dem Regler, die Schalter darunter und darauf.
 // Der Regler steht nur an einer Gruppe mit mindestens zwei freien Bausteinen (Begründung: src/k15-entwurf-modell.ts#hatRegler).

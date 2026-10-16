@@ -1,17 +1,16 @@
 // K15 · WAS VON AUSSEN KOMMT, GEPRÜFT (Prüfung der Bauleitung 16.10., k15-pruefung-16-10.md Punkte 1, 6, 8, 9): eine gezogene oder
-// eingefügte Datei, ein Export und der eigene Speicher im Browser. Jede Form wird ganz geprüft, bevor sie den Zustand berührt; was nicht
+// eingefügte Datei, ein Export und der eigene Speicher (auf dem Server, vorher im Browser). Jede Form wird ganz geprüft, bevor sie den Zustand berührt; was nicht
 // passt, wird mit einem Satz abgelehnt, und das Fenster bleibt, wie es war. Dieses Modul hat kein DOM.
 import {
   PROFILE0, pos, type Abschnitt, type AutoArt, type Glyph, type Konst, type PlanRolle, type Position, type Profil, type Punkt, type Quelle,
   type Schalter, type Schiene, type Wert, type Werte,
 } from "./k15-entwurf-modell";
+import { MAX_PROFILE } from "./k15-speicher";
+export { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE } from "./k15-speicher";
 
 // DIE GRENZEN: was größer ist, liest das Fenster nicht erst ein (eine gezogene Videodatei fror den Tab ein)
 export const MAX_DATEI_BYTES = 1_000_000;
 export const MAX_POSITIONEN = 24;
-export const MAX_FASSUNGEN = 200;
-export const MAX_PACKS = 50;
-export const MAX_PROFILE = 40;
 // welche Dateien das Fenster annimmt, und warum eine andere nicht
 export function dateiPasst(name: string, bytes: number): string | null {
   if (!/\.(md|json)$/i.test(name)) return `${name}: Nur eine .md (Agent-MD) oder eine exportierte .json lässt sich hineinziehen.`;

@@ -25,7 +25,7 @@ import { modelLabel } from "./modelname";
 import type { ModelEntry, ModelAvailability } from "../model-register";
 import { BoxDraft, DraftBook, historySource, keepDrafts, readKeptDrafts, type HistoryEntry } from "./drafts";
 import { attachEntityCards, type EntFacts } from "./entcard";
-import { closeEntityCard, hideEntityCard, showEntityCard } from "./entcard";
+import { closeEntityCard, entityCardOpen, hideEntityCard, showEntityCard } from "./entcard";
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
@@ -38,6 +38,7 @@ import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { sendFailureMessage } from "./pendingsend";
 import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
 import { askRisk, onDialogWillOpen } from "./dialog";
+import { openKonstellation, renderKonstellation } from "./konstellation";
 import { gitUnquote, porcelainPath } from "./gitpath";
 import { matchTree, treeOf, type TreeNode } from "./filetree";
 import { PLA_ACK_KEY, postLandAlarm } from "./plaudit";
@@ -103,12 +104,38 @@ const LANDSCAPE_MQ = matchMedia("(pointer: coarse) and (max-height: 500px) and (
 // the same link (Linkifier._handleMouseUp), so a drag that selects the url to copy it would also
 // open it. A touch screen has no modifier and xterm there does no drag-selection, so a tap opens.
 // http(s) only — the same bar xterm's own OSC 8 path applies — in a new tab without an opener.
-function openTermLink(e: MouseEvent, uri: string): void {
-  if (!(e.metaKey || e.ctrlKey || isMobile())) return;
+// No event = the link card's Öffnen, itself the click.
+function openTermLink(e: MouseEvent | null, uri: string): void {
+  if (e && !(e.metaKey || e.ctrlKey || isMobile())) return;
   let proto = "";
   try { proto = new URL(uri).protocol; } catch { return; }
   if (proto !== "http:" && proto !== "https:") return;
   window.open(uri, "_blank", "noopener,noreferrer");
+}
+
+// Mangel 63 (owner 15.10.: „[Zitat entfernt]“): the plain
+// click on a url stays a selection gesture (above), so at the desk the hover card carries the click — Öffnen opens
+// the whole address, Kopieren copies it in one piece. Claude Code writes a wrapped url row by row, each row an
+// OSC 8 link to the full address, so whichever row the pointer is on hands over all of it.
+let linkCardTimer: ReturnType<typeof setTimeout> | undefined;
+function linkFacts(uri: string): EntFacts | null {
+  let url: URL;
+  try { url = new URL(uri); } catch { return null; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return { title: url.host, meta: `Link · ${uri.length} Zeichen · ${APPLE ? "⌘" : "Strg"}-Klick öffnet direkt`,
+    lines: [uri.length > 160 ? `${uri.slice(0, 160)}…` : uri],
+    openLabel: "Öffnen", open: () => openTermLink(null, uri), copy: () => copyText(uri) };
+}
+function termLinkHover(e: MouseEvent, uri: string): void {
+  clearTimeout(linkCardTimer);
+  if (isMobile()) return;
+  const { clientX: x, clientY: y } = e;
+  // from one row of a wrapped url to the next the card follows at once, as entcard's own enter does
+  linkCardTimer = setTimeout(() => showEntityCard("link", uri, x, y + 8, (_kind, id) => linkFacts(id)), entityCardOpen() ? 0 : 350);
+}
+function termLinkLeave(): void {
+  clearTimeout(linkCardTimer);
+  hideEntityCard();
 }
 
 let dataSaver = prefBool("fleet.datasaver");
@@ -510,6 +537,14 @@ export interface SlotInfo {
   // widened, none of them read by the board before. `model` is the spawn-time model the server
   // already puts on the row; `browser`/`context` are omitted unless chosen.
   model?: string | null; browser?: true; context?: { window: number; compactAt: number };
+  // the pane FOOTER's model (rank 2 of src/running.ts#runningModel), omitted until the capture tick read one
+  paneModel?: string;
+  // the occupant's measured workplace (server.ts /api/sessions), omitted while there is none; read by the
+  // constellation window (src/konstellation.ts)
+  workplace?: { path: string; mainCheckout: boolean; measuredAt: number } | null;
+  // the role of its last claude spawn and the built-in tools on that line (null = no --tools, all of them);
+  // absent for another harness and for a session started before the server recorded it (server.ts#ensureSlot)
+  spawn?: { role: "lane" | "main" | "orchestrator" | "generic"; tools: number | null };
   modelSuperseded?: { id: string; supersededBy?: string };
   // the permission mode Claude Code wrote last into this session's transcript (auto, bypassPermissions, …);
   // absent = not a claude session, or no such line in the tail yet
@@ -1424,6 +1459,10 @@ class Pane {
   private pressAt: { x: number; y: number } | null = null;
   private pressFired = false;
   private pressText = "";
+  // the link xterm last reported under the pointer (its hover), until its leave — what a long press asks for
+  private pointedLink: string | null = null;
+  private readonly linkHover = (e: MouseEvent, uri: string) => { this.pointedLink = uri; termLinkHover(e, uri); };
+  private readonly linkLeave = () => { this.pointedLink = null; termLinkLeave(); };
 
   constructor(readonly index: number) {
     this.hoverOn = prefJSON<{ hovers?: boolean[] }>("fleet.view").hovers?.[index] ?? false;
@@ -1636,11 +1675,11 @@ class Pane {
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
       allowProposedApi: true, // the search addon marks its hits with decorations (a proposed API)
       theme: { background: "#000000", foreground: "#d8d8d8" }, // the chat view's black (index.html #main)
-      linkHandler: { activate: openTermLink },
+      linkHandler: { activate: openTermLink, hover: this.linkHover, leave: this.linkLeave },
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
-    this.term.loadAddon(new WebLinksAddon(openTermLink));
+    this.term.loadAddon(new WebLinksAddon(openTermLink, { hover: this.linkHover, leave: this.linkLeave }));
     this.term.loadAddon(this.search);
     this.search.onDidChangeResults(({ resultIndex, resultCount }) => this.paintFindCount(resultIndex, resultCount));
     this.term.open(termEl);
@@ -3020,7 +3059,19 @@ class Pane {
     if (e.touches.length !== 1 || !t) { this.pressAt = null; return; }
     const at = { x: t.clientX, y: t.clientY };
     this.pressAt = at;
+    this.pointNear(at.x, at.y);
     this.pressTimer = setTimeout(() => this.selectLineAt(at.x, at.y), PRESS_MS);
+  }
+
+  // xterm asks its link providers only when the pointer enters another cell (Linkifier), and a finger lands on
+  // its cell without a move — after a redraw, a tap on the cell of the last tap found no link and opened
+  // nothing. Showing xterm the neighbouring row first makes the tap's own move, and a press's, always ask
+  private pointNear(x: number, y: number): void {
+    const screen = this.term.element?.querySelector(".xterm-screen");
+    if (!screen) return;
+    const r = screen.getBoundingClientRect();
+    const rowHeight = r.height / this.term.rows;
+    screen.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y - r.top >= rowHeight ? y - rowHeight : y + rowHeight, bubbles: true }));
   }
 
   private selectLineAt(x: number, y: number) {
@@ -3029,21 +3080,31 @@ class Pane {
     const r = screen.getBoundingClientRect();
     const row = Math.floor((y - r.top) / (r.height / this.term.rows));
     if (row < 0 || row >= this.term.rows) return;
-    const b = this.term.buffer.active;
-    let start = b.viewportY + row, end = start;
-    while (start > 0 && b.getLine(start)?.isWrapped) start--;
-    while (b.getLine(end + 1)?.isWrapped) end++;
-    this.term.selectLines(start, end);
-    const text = this.term.getSelection().trimEnd();
-    if (!text) { this.term.clearSelection(); return; }
+    // a link under the finger is copied whole (Mangel 63) — the rows of a wrapped url are no logical line. xterm
+    // finds links only for a pointer, so the press shows it one, from the neighbouring row onto the pressed cell;
+    // the hover that answers names the address. No leave after it: xterm keeps that link as a tap leaves it
+    this.pointNear(x, y);
+    this.pointedLink = null;
+    screen.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, bubbles: true }));
+    const link = this.pointedLink;
+    let text = link ?? "";
+    if (!link) {
+      const b = this.term.buffer.active;
+      let start = b.viewportY + row, end = start;
+      while (start > 0 && b.getLine(start)?.isWrapped) start--;
+      while (b.getLine(end + 1)?.isWrapped) end++;
+      this.term.selectLines(start, end);
+      text = this.term.getSelection().trimEnd();
+      if (!text) { this.term.clearSelection(); return; }
+    }
     this.pressText = text;
     this.pressFired = true;
     const box = this.root.getBoundingClientRect();
-    const w = 96;
-    this.copyPop.textContent = "Kopieren";
+    this.copyPop.textContent = link ? "Link kopieren" : "Kopieren";
+    this.copyPop.style.display = "block";
+    const w = this.copyPop.offsetWidth;
     this.copyPop.style.left = `${Math.max(4, Math.min(box.width - w - 4, x - box.left - w / 2))}px`;
     this.copyPop.style.top = `${Math.max(4, y - box.top - 56)}px`;
-    this.copyPop.style.display = "block";
   }
 
   private hideCopy() {
@@ -5952,6 +6013,7 @@ const SHEET_TOOLS: ReadonlyArray<{ id: string; icon: IconName; word: string }> =
   { id: "opsbtn", icon: "inbox", word: "Eingang" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
   { id: "auditbtn", icon: "shield", word: "Protokoll" },
+  { id: "konstbtn", icon: "tree", word: "Konstellation" },
   { id: "devbtn", icon: "laptop", word: "Geräte" },
   { id: "saverbtn", icon: "saver", word: "Datensparen" },
 ];
@@ -6582,15 +6644,15 @@ function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
 // output's freshness: a waiting session on screen still waits. The value is the glyph's class list —
 // the owner's case is the same shape plus the one colour that means „[Zitat entfernt]“ (grammatik
 // G0.2), so every reader of slotState/STATE_WORD gets both without a second branch.
-type SlotState = OutputState | "wait" | "wait owner";
-function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
+export type SlotState = OutputState | "wait" | "wait owner";
+export function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
   const out = outputState(s, now, awake);
   if (out === "bad" || !s.awaiting) return out;
   return s.awaiting === "owner" ? "wait owner" : "wait";
 }
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
 // has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
-const STATE_WORD: Record<SlotState, string> = {
+export const STATE_WORD: Record<SlotState, string> = {
   work: "arbeitet", rest: "ruht", sleep: "schläft — seit einer halben Stunde oder länger nichts",
   bad: "kaputt — hängt, oder eine Pane ohne Agent dahinter",
   wait: "wartet auf MAIN", "wait owner": "wartet auf dich" };
@@ -7922,6 +7984,7 @@ export async function refresh() {
       renderSlots();
     }
     renderQueue(); // no-op unless the queue overlay is open; keeps it live
+    renderKonstellation(); // the same for the constellation window
     // keep an open task DETAIL honest the same way (2026-08-05): a clarify lane's criterion
     // proposal arrived on this poll, but the detail only ever repainted on reselect — the
     // owner sat in front of a stale pane while the lane waited on them. Keyed on the fields
@@ -9973,6 +10036,7 @@ export async function openAkte(branch: string) {
   ocShell?.showDetail(true);
 }
 $("outcomebtn").onclick = () => void openActivity("lands");
+$("konstbtn").onclick = () => openKonstellation();
 
 // --- the session timeline lens (Program ae1f4279, part 5 — the operating draft) ---------------------
 //
@@ -10741,6 +10805,7 @@ const HEAD_BTNS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
   { id: "queuebtn", icon: "list", word: "Queue" },
   { id: "auditbtn", icon: "shield", word: "Audit" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
+  { id: "konstbtn", icon: "tree", word: "Konstellation" },
   { id: "devbtn", icon: "laptop", word: "Devices" },
   { id: "saverbtn", icon: "saver", word: "Saver" },
   { id: "morebtn", icon: "dots", word: "Mehr" },

@@ -77,3 +77,25 @@ export function hubHostOf(url: string): string | null {
   const scp = /^([^/@:\s]+@[^/:\s]+):/.exec(url);
   return scp?.[1] ?? null;
 }
+
+// WHICH ROLE A CLAUDE SPAWN KNOWS (server.ts#ensureSlot), and with it the tools and list cut on its line
+// (server.ts#agentCmd): a lane by its worktree, the Orchestratorin by her position, a MAIN only when a Program
+// is bound to her at this spawn — a MAIN founded in the window is bound after her first spawn and starts
+// "generic". Any other harness: null, Fleet puts none of this on its line.
+export function spawnListRole(f: { claude: boolean; lane: boolean; orchestrator: boolean; boundMain: boolean }): ClaudeStartRole | null {
+  if (!f.claude) return null;
+  return f.lane ? "lane" : f.orchestrator ? "orchestrator" : f.boundMain ? "main" : "generic";
+}
+
+// THE OCCUPATION'S LAST CLAUDE SPAWN as the board reads it (K16 R3, Bauleitung 16.10.: which tools a running MAIN
+// really has). Bound to the occupation like a standing handover: persisted with the slot, so a server restart keeps
+// it, and a record of another occupation, or a malformed one, loads as none.
+export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; at: number }
+const START_ROLES: readonly string[] = ["lane", "main", "orchestrator", "generic"];
+export function slotSpawnFrom(raw: unknown, openedAt: number): SlotSpawn | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.role !== "string" || !START_ROLES.includes(r.role) || r.openedAt !== openedAt
+    || typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0) return null;
+  return { role: r.role as ClaudeStartRole, openedAt, at: r.at };
+}

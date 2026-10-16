@@ -103,17 +103,15 @@ function nimmRoh(s: St, name: string, text: string): void {
     const r: Record<string, unknown> = obj && typeof obj === "object" ? { ...obj } : {};
     const neuF = fassungenImport(r.fassungen, Date.now()).fassungen.filter((f) => !s.fassungen.has(f.abschnitt)).slice(0, Math.max(0, MAX_FASSUNGEN - s.fassungen.size));
     const neuP = packsImport(r.kontextpacks, Date.now()).packs.filter((pk) => !s.packs.some((x) => x.id === pk.id)).slice(0, Math.max(0, MAX_PACKS - s.packs.length));
-    // schlägt der Speicher fehl, bleibt sein Satz stehen, statt dass ein „übernommen“ ihn überschreibt
-    let sicher = true;
+    // „übernommen“ erst, wenn der Server bestätigt hat; schlägt es fehl, bleibt sein Satz stehen
     if (neuF.length || neuP.length) {
       s.fassungen = new Map([...s.fassungen, ...neuF.map((f) => [f.abschnitt, f] as const)]);
       s.packs = [...s.packs, ...neuP];
-      sicher = speichereEigenes(s);
     }
     const dazu = [neuF.length ? plural(neuF.length, "eigene Fassung", "eigene Fassungen") : "", neuP.length ? plural(neuP.length, "Pack-Entwurf", "Pack-Entwürfe") : ""].filter(Boolean).join(" und ");
     if (typeof r0 === "string") {
       if (!dazu) { toast(`${name}: ${r0}.`); return; }
-      if (sicher) toast(`${name}: ${dazu} übernommen.`);
+      void speichereEigenes(s).then((ok) => { if (ok) toast(`${name}: ${dazu} übernommen.`); });
       s.quelle = neuP.length ? "packs" : "brief";
       gehe(3, 3);
       return;
@@ -123,8 +121,9 @@ function nimmRoh(s: St, name: string, text: string): void {
     s.konst = [...s.konst, k];
     s.k = k;
     s.sel = { art: "pos", id: alle(k.wurzeln)[0]?.id ?? "" };
-    if (r0.neueProfile.some((p) => p.datei)) sicher = speichereEigenes(s) && sicher;
-    if (sicher) toast(`${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene.${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`);
+    const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene.${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
+    if (dazu || r0.neueProfile.some((p) => p.datei)) void speichereEigenes(s).then((ok) => { if (ok) toast(satz); });
+    else toast(satz);
     gehe(1, 1);
     return;
   }

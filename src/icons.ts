@@ -79,6 +79,7 @@ const PATHS = {
   // the flag at a closed lane (src/board.ts#laneFlag): the pole, then the cloth — its fill is the state
   flag: ["M6.5 20.5V4", "M6.5 4.5h11l-2.75 4.25 2.75 4.25h-11z"],
   label: ["M4 12V5h7l8.5 8.5-6.5 6.5z", "M8 9h.01"],
+  tree: ["M9 3h6v5H9z", "M12 8v4", "M6 16v-4h12v4", "M3 16h6v5H3z", "M15 16h6v5h-6z"],
   branch: ["M7 4v16", "M17 7v2a4 4 0 0 1-4 4H7", "M7 4h.01", "M17 7h.01", "M7 20h.01"],
   commit: ["M3.5 12h5", "M15.5 12h5", "M12 15.5a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z"],
 } as const;

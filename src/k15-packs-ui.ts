@@ -1,6 +1,6 @@
 // K15 · SPALTE 4, DIE CONTEXT PACKS: was der Plan dieser Rolle an Packs wählt, deine Entwürfe und der Editor für einen neuen Pack
 // (Modell: src/k15-kontextpack.ts). Ein Entwurf hat Name, Text und je Rolle einen Ort: als Text, auf Abruf oder nicht. Wo er dann
-// landet, sagt der Plan jeder Rolle im gewählten Repo. Fleet legt heute keinen Pack an; der Entwurf bleibt im Browser.
+// landet, sagt der Plan jeder Rolle im gewählten Repo. Fleet legt heute keinen Pack an; der Entwurf liegt im Speicher des Fensters (src/k15-speicher.ts).
 import { el, OMIT_SAY, PACK_WORDS } from "./k15-haupt";
 import { icon } from "./icons";
 import type { Answer } from "./founding";
@@ -24,10 +24,9 @@ function sichere(s: St, pk: PackEntwurf): void {
   s.packs = da ? s.packs.map((x) => x.id === pk.id ? neu : x) : [...s.packs, neu];
   s.packEdit = null;
   if (s.ablauf && !s.ablauf.packs.includes(neu.id)) s.ablauf.packs = [...s.ablauf.packs, neu.id];
-  // schlägt der Speicher fehl, bleibt sein Satz stehen und kein „gesichert“ überschreibt ihn
-  const sicher = speichereEigenes(s);
+  // „gesichert“ erst, wenn der Server bestätigt hat; schlägt es fehl, bleibt sein Satz stehen
   const wer = PACK_ROLLEN.filter((r) => neu.orte[r.id] !== "nicht").map((r) => r.wort);
-  if (sicher) toast(`„${neu.name}“ v${neu.v} ist als Entwurf gesichert und steht bei ${undListe(wer)} unter Wissen. Fleet gibt ihn heute noch nicht mit.`);
+  void speichereEigenes(s).then((ok) => { if (ok) toast(`„${neu.name}“ v${neu.v} ist als Entwurf gesichert und steht bei ${undListe(wer)} unter Wissen. Fleet gibt ihn heute noch nicht mit.`); });
   render();
 }
 
@@ -87,7 +86,7 @@ export function packEditor(s: St, pk: PackEntwurf): HTMLElement {
     z.append(el("span", "k15packrw", r.wort), seg, el("span", `k15packrl${la.art === "nicht" ? " nicht" : ""}`, la.art === "mit" ? `→ ${landungSatz(la)}` : pk.orte[r.id] === "nicht" ? "" : la.grund));
     box.append(z);
   }
-  box.append(el("div", "k15hinweis", "Fleet legt heute keinen Pack an: Dafür fehlt eine Route, die ihn ins Repo schreibt. Bis dahin bleibt er ein Entwurf in diesem Browser, zeigt dir, wo er landete, und reist im vollständigen Export mit."));
+  box.append(el("div", "k15hinweis", "Fleet legt heute keinen Pack an: Dafür fehlt eine Route, die ihn ins Repo schreibt. Bis dahin bleibt er ein gespeicherter Entwurf, zeigt dir, wo er landete, und reist im vollständigen Export mit."));
   const knoepfe = el("div", "k15row2");
   const ok = el("button", "k15ghost k15editok", pk.v ? `Als v${pk.v + 1} sichern` : "Als Entwurf sichern");
   ok.onclick = () => sichere(s, pk);
@@ -101,7 +100,7 @@ export function packEditor(s: St, pk: PackEntwurf): HTMLElement {
       if (!sicher) { sicher = true; weg.textContent = "Wirklich löschen?"; setTimeout(() => { sicher = false; if (weg.isConnected) weg.textContent = "Löschen"; }, 4000); return; }
       s.packs = s.packs.filter((x) => x.id !== pk.id);
       s.packEdit = null;
-      if (speichereEigenes(s)) toast(`„${pk.name}“ ist gelöscht.`);
+      void speichereEigenes(s).then((ok) => { if (ok) toast(`„${pk.name}“ ist gelöscht.`); });
       render();
     };
     knoepfe.append(weg);

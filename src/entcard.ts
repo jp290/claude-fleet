@@ -13,6 +13,8 @@ export interface EntFacts {
   lines: string[];
   later?: Promise<unknown>;
   open?: () => void;
+  openLabel?: string;
+  copy?: () => void;
 }
 
 const OPEN_MS = 350;
@@ -59,8 +61,16 @@ function paint(target: HTMLElement, describe: (kind: string, id: string) => EntF
   if (facts.open) {
     const button = document.createElement("button");
     button.className = "entopen";
-    button.textContent = "Open file";
+    button.textContent = facts.openLabel ?? "Open file";
     button.onclick = facts.open;
+    c.appendChild(button);
+  }
+  const copy = facts.copy;
+  if (copy) {
+    const button = document.createElement("button");
+    button.className = "entopen";
+    button.textContent = "Kopieren";
+    button.onclick = () => { copy(); button.textContent = "Kopiert"; };
     c.appendChild(button);
   }
   // measure hidden-but-laid-out, then place: below the span, flipped above when it would clip
@@ -87,7 +97,9 @@ function close(): void {
 
 function scheduleClose(): void {
   clearTimeout(closeTimer);
-  closeTimer = setTimeout(close, CLOSE_MS);
+  // a card under the pointer stays: a terminal link's leave comes after the card's pointerenter (mouse
+  // events follow pointer events), so the pointer moving from the link onto the card would close it
+  closeTimer = setTimeout(() => { if (!card?.matches(":hover")) close(); }, CLOSE_MS);
 }
 
 // Delegated on the scroll container, so entries appended later need no wiring of their own.
@@ -134,6 +146,7 @@ export function showEntityCard(kind: string, id: string, x: number, y: number,
 }
 
 export function hideEntityCard(): void { scheduleClose(); }
+export function entityCardOpen(): boolean { return current !== null; }
 export function closeEntityCard(): void { close(); }
 
 document.addEventListener("pointerdown", (e) => {

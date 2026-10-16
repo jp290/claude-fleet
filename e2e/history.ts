@@ -686,7 +686,8 @@ function runLinks(): void {
     client.length > 0, clientError);
   if (!client) return;
   check("terminal: bare urls are linkified by WebLinksAddon, through the same handler as OSC 8 links",
-    /loadAddon\(new WebLinksAddon\(openTermLink\)\)/.test(client) && /linkHandler: \{ activate: openTermLink \}/.test(client));
+    /loadAddon\(new WebLinksAddon\(openTermLink, \{ hover: this\.linkHover, leave: this\.linkLeave \}\)\)/.test(client)
+      && /linkHandler: \{ activate: openTermLink, hover: this\.linkHover, leave: this\.linkLeave \}/.test(client));
   const reconnect = /  reconnect\(\) \{[\s\S]*?\n  \}/.exec(client)?.[0] ?? "";
   check("terminal: explicit reload retries WebGL after a context loss and marks canvas visibly",
     reconnect.includes("this.loadRenderer();")

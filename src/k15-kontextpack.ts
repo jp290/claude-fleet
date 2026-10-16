@@ -4,7 +4,7 @@
 // (context-packs.ts#ContextPartPositions: box, ausleihe), je Lane, MAIN und Orchestratorin. Ein Pack kommt wie jeder andere in den
 // Lesehinweisen (context-anchors, server.ts#renderContextAnchorBlock) an; wohin die bei einer Rolle gehen, sagt ihr Plan.
 // Eine Route, die einen Pack anlegt, gibt es nicht (POST /api/self/program-context-packs schreibt nur die MAIN eines Programs, und nur
-// Verweise auf Dateien im Repo). Der Pack bleibt deshalb ein Entwurf im Browser und reist im Export mit. Dieses Modul hat kein DOM.
+// Verweise auf Dateien im Repo). Der Pack bleibt deshalb ein gespeicherter Entwurf und reist im Export mit. Dieses Modul hat kein DOM.
 import type { Answer } from "./founding";
 import type { PlanRolle } from "./k15-entwurf-modell";
 import { bytesVon } from "./k15-wortlaut";

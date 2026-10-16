@@ -14,6 +14,7 @@ import { LANE_SUITE_EVENT_FAILS_MAX, LANE_SUITE_EVENT_FAIL_NAME_MAX, LANE_SUITE_
   type HarnessBlockEventPayload, LANE_REVIEW_FINDINGS_MAX, LANE_REVIEW_TITLE_MAX, LANE_REVIEW_FILE_MAX,
   LANE_REVIEW_NOTES_MAX, type LaneReviewEventPayload } from "../lane-signals";
 import type { TitleCarry } from "../titlebytes";
+import type { SlotSpawn } from "./session-start";
 import { FLEET_REPORT_STATUSES, INSTANCE_NAME_RE, HELPER_ARTIFACT_PATH_MAX, helperArtifactPathOk, type FleetReportEventPayload,
   type FleetReportStatus, type LaneAnchor } from "../src/protocol";
 import type { TaskCluster, TaskFilesOrigin, TaskSurface } from "../task-metadata";
@@ -2177,6 +2178,8 @@ interface Slot {
   standingHandover: StandingHandover | null;
   // the occupant's newest Claude compaction (SlotCompaction above); null = none seen
   compaction: SlotCompaction | null;
+  // the role of the occupation's last claude spawn (session-start.ts#SlotSpawn); null = none recorded
+  spawn: SlotSpawn | null;
   // the stand reminder's once-per-stand memory (LaneStandNudged above); null = nothing fired yet
   laneStandNudged: LaneStandNudged | null;
   // the plan this occupation was started with (SlotPlan above); null = started without one

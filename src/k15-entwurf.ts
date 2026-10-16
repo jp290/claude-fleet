@@ -25,6 +25,7 @@ import { gemerktesDetail, spalteSession } from "./k15-spalte3";
 import { ANSICHTEN, spalteQuelle } from "./k15-spalte4";
 import { exportPanel, nimm } from "./k15-export";
 import { ablaufNimmt, ablaufPanel } from "./k15-agentmd";
+import { anatomieKurz, anatomieVon } from "./k15-anatomie-ui";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -49,10 +50,9 @@ export function openK15Entwurf(): void {
   const h = location.hash.match(/^#k15(?:-(eine|export|profil|minimal))?(?:-t([0-3]))?(?:@(\/[^#]+))?/);
   const konst = structuredClone(KONST0);
   const k = konst.find((x) => x.id === (h?.[1] === "eine" ? "eine" : h?.[1] === "minimal" ? "main-eigen" : "orch")) ?? konst[0];
-  const eigenes = ladeEigenes();
   let repo: string | null = null;
   try { repo = h?.[3] ? decodeURIComponent(h[3]) : null; } catch { repo = null; }
-  const s: St = { shell, konst, profile: [...structuredClone(PROFILE0), ...eigenes.eigeneProfile], k,
+  const s: St = { shell, konst, profile: structuredClone(PROFILE0), k,
     sel: h?.[1] === "eine" ? { art: "pos", id: "s" } : h?.[1] === "profil" ? { art: "profil", id: "lane" } : h?.[1] === "minimal" ? { art: "pos", id: "e" } : { art: "pos", id: "l2" },
     quelle: h?.[1] === "profil" ? "einst" : "landet",
     offen: new Set<string>(),
@@ -60,8 +60,9 @@ export function openK15Entwurf(): void {
     aktiv: h?.[1] ? 2 : 0, bst: null, tour: rundgangGesehen() ? null : 0, detail: gemerktesDetail(), alles: gemerktesAlles(),
     repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(),
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
-    fassungen: eigenes.fassungen, packs: eigenes.packs, bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0 };
+    fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt" };
   setzeS(s);
+  ladeEigenes(s);
   beimZeichnen(render);
   void liesPins(s);
   void api("/api/machine-settings").then((r) => r.ok ? r.json() : null).then((j: unknown) => {
@@ -81,7 +82,6 @@ export function openK15Entwurf(): void {
   menueZu(s, zu.signal);
   SCHMAL.addEventListener("change", render, { signal: zu.signal });
   render();
-  if (eigenes.alteFassungen) toast(`${eigenes.alteFassungen === 1 ? "Eine eigene Fassung" : `${eigenes.alteFassungen} eigene Fassungen`} von vor dem 16.10. galt für jedes Profil gleich und ist nicht übernommen; Fassungen gehören jetzt einem Profil.`);
 }
 
 function kopf(s: St): void {
@@ -230,7 +230,8 @@ function tokenSumme(s: St): HTMLElement {
   const box = el("div", "k15tok");
   const je = alle(s.k.wurzeln).map((q) => {
     const l = lage(s, profilVon(s, q.profil), q);
-    return { q, sum: l ? antwort(l.plan)?.startSumme : undefined };
+    const a = l ? antwort(l.plan) : null;
+    return { q, sum: a?.startSumme, cca: a ? anatomieVon(a.claudeCode) : null };
   });
   const offen = je.filter((x) => typeof x.sum?.tokens !== "number").length;
   const summe = je.reduce((n, x) => n + (typeof x.sum?.tokens === "number" ? x.sum.tokens : 0), 0);
@@ -238,7 +239,8 @@ function tokenSumme(s: St): HTMLElement {
   box.append(el("span", "k15tokw", offen ? "Start: wird gelesen …" : `Start ${fmt(summe)}`),
     el("span", "k15toks", offen ? plural(offen, "Session fehlt", "Sessions fehlen") : `davon Fleet ${fmt(fleetTeil)}`));
   box.title = [`Was alle ${plural(je.length, "Session", "Sessions")} beim Start mitladen, je aus ihrem Gründungsplan: Fleets Teil geschätzt, Claude Codes Teil gemessen.`,
-    ...je.map((x) => `${x.q.name}: ${typeof x.sum?.tokens === "number" ? fmt(x.sum.tokens) : "wird gelesen"}`)].join("\n");
+    // je Session dieselbe Aufschlüsselung wie in „Wo es landet“: was Claude Code selbst mitbringt, Gruppe für Gruppe
+    ...je.map((x) => `${x.q.name}: ${typeof x.sum?.tokens === "number" ? fmt(x.sum.tokens) : "wird gelesen"}${x.cca ? `\n  Claude Code: ${anatomieKurz(x.cca)}` : ""}`)].join("\n");
   return box;
 }
 

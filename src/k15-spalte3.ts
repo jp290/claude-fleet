@@ -10,15 +10,18 @@ import {
   tokVon, traegerVon, umfangId, umfangVon, verbindungen, type Feld, type GruppeId, type Position, type Profil, type Stufe,
 } from "./k15-entwurf-modell";
 import {
-  S, antwort, bausteineVon, eigeneBytes, fehltWeil, gehe, gewaehlt, kommtAn, lage, lies, planUrl, plural, render, schwelleWahl, toast, wahlVon, wegVon, zeige,
+  S, antwort, bausteineVon, eigeneBytes, fehltWeil, gehe, gewaehlt, kommtAn, lage, lies, planUrl, plural, render, schwelleWahl, toast, wahlVon, wegVon, werPlan, zeige,
   type Detail, type Lage, type QuelleId, type St,
 } from "./k15-zustand";
 import { chip, istSchalter, kennzeichen, kopfzeile, nachZahl, schalt, waehle } from "./k15-teile";
+import { werBestimmt } from "./k15-wer";
 import { autonomieBlock } from "./k15-autonomie";
 import { entferne } from "./k15-spalte2";
 import { eigeneVon } from "./k15-wortlaut-ui";
 import { istPackRolle, packBytes, packLandung, neuerPack, type PackEntwurf } from "./k15-kontextpack";
 import { oeffneAblauf } from "./k15-agentmd";
+import { anatomieVon, quelleSatz, tokCc, zaehlung } from "./k15-anatomie-ui";
+import { gruppenBytes, zaehltMit } from "./k15-anatomie";
 
 const DETAILS: readonly { id: Detail; wort: string }[] = [{ id: "gruppen", wort: "Gruppen" }, { id: "bausteine", wort: "Bausteine" }];
 const DETAIL_KEY = "fleet.k15.detail";
@@ -203,6 +206,7 @@ export function spalteSession(): HTMLElement {
   // ein Baustein mit einer eigenen Fassung eines seiner Abschnitte trägt dasselbe Kennzeichen wie ein eigenes Profil
   const eigeneV = a ? eigeneVon(s, p, q, a) : new Map<string, number>();
   const traeger = a ? traegerVon(a.plan.bausteine) : new Map<string, Baustein>();
+  const wp = a ? werPlan(s, a) : null;
   // EIN BAUSTEIN des Plans: Name, wo er landet, Schalter; seine Größe, was er tut, was ohne ihn bricht und warum er Pflicht ist erst bei
   // Info, Hover, Fokus oder mit „Alles zeigen“. An im Plan, aber diese Tür liefert es nicht: blass, ohne Schalter, mit dem Grund.
   const bausteinZeile = (b: Baustein, lg: Lage, an0: Answer): HTMLElement => {
@@ -211,7 +215,10 @@ export function spalteSession(): HTMLElement {
     const fehlt = fehltWeil(an0, b);
     const pflicht = b.grenze.art === "noetig" && an;
     const traegt = an ? traeger.get(b.id) : undefined;
-    const frei = b.schaltbar.ja && b.harness.gueltig && !pflicht && !traegt;
+    // einen Schalter gibt es genau dann, wenn rechts „änderbar“ steht (src/k15-wer.ts); dazu zählt auch eine unerfüllte Bedingung und ein
+    // Pack ohne Quelle als fest: beides lehnt der Plan ab
+    const wer = wp ? werBestimmt(b, wp) : null;
+    const frei = wer?.art === "du";
     const eigen = lg.eigen[b.id] !== undefined;
     const std = voll?.plan.bausteine.find((x) => x.id === b.id)?.zustand ?? "aus";
     const r = el("div", `k15tz${an && fehlt === null ? "" : " aus"}${fehlt === null ? "" : " fehlt"}${s.offen.has(key) ? " zeig" : ""}${s.quelle === "bst" && s.bst === b.id ? " on" : ""}`);
@@ -236,7 +243,7 @@ export function spalteSession(): HTMLElement {
     x.append(...[
       `Tut: ${b.satz}`, b.breaksWithout ? `Ohne: ${b.breaksWithout}` : "",
       b.grenze.art === "noetig" ? `${b.grenze.gesperrt ? "Gesperrt" : "Pflicht"}, weil: ${b.grenze.grund}` : "",
-      traegt ? `Fest, weil: ${bausteinName(traegt)} steckt darin und ist Pflicht; ohne dies käme es bei diesem Start nicht an.` : "",
+      traegt ? `Nicht einstellbar, weil: ${bausteinName(traegt)} steckt darin und ist Pflicht; ohne dies käme es bei diesem Start nicht an.` : "",
       !b.harness.gueltig && b.harness.grund ? `Gilt nicht für diesen Agenten: ${b.harness.grund}` : "",
       !b.schaltbar.ja ? `Nicht schaltbar: ${b.schaltbar.grund}` : "",
       b.bedingung ? `Nur wenn: ${b.bedingung.grund} (${b.bedingung.erfuellt === "unknown" ? "erst beim Start bekannt" : b.bedingung.erfuellt ? "trifft zu" : "trifft nicht zu"})` : "",
@@ -254,7 +261,8 @@ export function spalteSession(): HTMLElement {
     r.setAttribute("role", "button");
     r.onclick = (e) => { if (!(e.target instanceof Element && e.target.closest("button"))) springe(b.id); };
     r.onkeydown = (e) => { if (e.target === r && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); springe(b.id); } };
-    const grund = pflicht ? "Pflicht" : traegt ? `trägt ${bausteinName(traegt)}` : !b.harness.gueltig ? "gilt nicht für diesen Agenten" : !b.schaltbar.ja ? "nicht schaltbar" : "";
+    const grund = pflicht ? "Pflicht" : traegt ? `trägt ${bausteinName(traegt)}` : !b.harness.gueltig ? "gilt nicht für diesen Agenten" : !b.schaltbar.ja ? "nicht schaltbar"
+      : wer && wer.art !== "du" ? wer.grund : "";
     if (fehlt !== null) { r.append(tt, info, el("span", "k15togleer")); return r; }
     const sw = schalt(an, frei ? `${bausteinName(b)} ${an ? "an" : "aus"}` : `${bausteinName(b)}: ${grund}`, () => { if (frei) void setzeBaustein(s, q, p, b, !an); });
     if (!frei) sw.classList.add("fest");
@@ -449,16 +457,27 @@ export function spalteSession(): HTMLElement {
       wahl: { optionen: WAHL.effort.map((x) => ({ wert: x, wort: EFFORT_WORT[x] ?? x })), jetzt: e.wert, nimmt: (neu) => setze(s, q, p, "effort", neu) } }),
     zeile({ k: "Übergabe ab", v: pct(sw.pct), erkl: [sw.herkunft], innen: sw.quelle, abw: abwVon("schwelle"),
       wahl: { optionen: SCHWELLEN.map((x) => ({ wert: String(x), wort: pct(x) })), jetzt: String(sw.pct ?? ""), nimmt: (neu) => setze(s, q, p, "schwelle", Number(neu)) } }),
-    zeile({ k: "Permission-Mode", v: String(aspekt("permission-mode")?.standard ?? ""), sub: "für alle Sessions gleich · Stand 15.10.",
-      erkl: ["Fleet startet heute jede Claude-Session mit demselben Modus; am 15.10. war das bypassPermissions, also ohne Rückfragen.",
+    zeile({ k: "Permission-Mode", v: String(aspekt("permission-mode")?.standard ?? ""), sub: "für alle Sessions gleich",
+      erkl: ["Fleet startet jede Claude-Session im Auto-Mode: ein Klassifizierer prüft jede Aktion, statt nachzufragen; was er sperrt, meldet die Session ihrer Leitung.",
         "Je Rolle einstellbar wird er erst, wenn jede Session ihre eigene Startzeile bekommt."], innen: aspekt("permission-mode")?.heute }),
   ]);
 
-  // RECHTE · was Claude Code an Werkzeugen, Listen und MCP-Servern bekommt (claudeCode im Plan)
+  // SYSTEMPROMPT UND RECHTE · was Claude Code selbst in den Start legt, aufgeschlüsselt (src/k15-anatomie-ui.ts) wie in Spalte 4; ein älterer
+  // Server liefert nur die Zeilen von Claude Code (claudeCode.zeilen)
+  const cca = a ? anatomieVon(a.claudeCode) : null;
+  const ccZeile = (id: string) => {
+    const g = cca?.gruppen.find((x) => x.id === id);
+    if (!cca || !g?.teile.length) return [];
+    const { bytes, offen } = gruppenBytes(g);
+    return [zeile({ k: g.wort, v: zaehlung(g), quelle: "rechte", innen: quelleSatz(cca),
+      erkl: [g.satz, ...(zaehltMit(g) ? [`Beim Start ${tokCc(bytes, cca) || "0 Tok"}${offen ? `, ${offen} nicht gemessen` : ""}`] : [])] })];
+  };
+  if (cca) gruppe("Systemprompt", null, "rechte", [...ccZeile("systemprompt"), ...ccZeile("fleet")]);
   const cc = a?.claudeCode?.zeilen ?? [];
-  const rechte = (["werkzeuge", "listen", "mcp"] as const).map((id) => cc.find((z) => z.id === id)).filter((z): z is NonNullable<typeof z> => !!z)
-    .map((z) => zeile({ k: z.wort, v: z.wert, ...(istSchalter(z.weg) ? {} : { sub: z.weg }), quelle: "rechte", erkl: [z.satz],
-      innen: istSchalter(z.weg) ? `Claude Code: ${z.weg} · ${z.quelle}` : z.quelle }));
+  const rechte = cca ? ["werkzeuge", "skills", "agenten", "plugins", "mcp"].flatMap(ccZeile)
+    : (["werkzeuge", "listen", "mcp"] as const).map((id) => cc.find((z) => z.id === id)).filter((z): z is NonNullable<typeof z> => !!z)
+      .map((z) => zeile({ k: z.wort, v: z.wert, ...(istSchalter(z.weg) ? {} : { sub: z.weg }), quelle: "rechte", erkl: [z.satz],
+        innen: istSchalter(z.weg) ? `Claude Code: ${z.weg} · ${z.quelle}` : z.quelle }));
   gruppe("Rechte", p.rechteV, null, rechte.length ? rechte : [el("div", "k15leer", a ? "Der Plan nennt für diesen Agenten keine Claude-Code-Zeilen." : "wird mit dem Plan gelesen")]);
 
   // VERBINDUNGEN IM LAUF · was das Register nicht abdeckt: Postfach, Rückweg, Nachfolge, Hinweise, Ausweis

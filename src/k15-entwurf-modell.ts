@@ -238,9 +238,9 @@ export const ASPEKTE: Aspekt[] = [
   { id: "schwelle", name: "Übergabe ab", bedeutung: "ab welchem Kontext-Füllstand sie übergibt", art: "prozent", standard: "Fleet-Wert der Schiene",
     wirkung: { wo: "fleet", regel: "server/succession.ts#thresholdOf: Basis; Obergrenze Basis + 5, solange der Cache warm ist" }, bindung: "erzwungen", gruppe: "einstellungen",
     heute: "je Session änderbar über PATCH /api/slots/:id/handover" },
-  { id: "permission-mode", name: "Permission-Mode", bedeutung: "ob und wie sie vor Aktionen fragt", art: "wahl", standard: "bypassPermissions",
+  { id: "permission-mode", name: "Permission-Mode", bedeutung: "ob und wie sie vor Aktionen fragt", art: "wahl", standard: "auto",
     optionen: ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"], wirkung: { wo: "start", flag: "--permission-mode" }, bindung: "erzwungen", gruppe: "rechte",
-    heute: "ein Modus für alle claude-Sessions über die Env FLEET_CMD (server.ts#BASE_CMD); live steht dort --dangerously-skip-permissions, also bypassPermissions; ohne FLEET_CMD fragt Claude Code nach" },
+    heute: "Fleet setzt auf der Startzeile jeder Claude-Session --permission-mode auto, gleich für Lane, MAIN, Orchestratorin und Sessions ohne Rolle (server/session-start.ts#PERMISSION_MODE, server.ts#agentCmd), und nimmt --dangerously-skip-permissions aus FLEET_CMD ab (withoutSkipPermissions); seit main 6fcb4387" },
   { id: "zustellung", name: "Zustellung", bedeutung: "wie Nachrichten sie erreichen", art: "wahl", standard: "in die Pane", optionen: ["in die Pane", "nur ins Postfach"],
     wirkung: { wo: "fleet", regel: "Postfach: in die Pane tippen oder nur ablegen" }, bindung: "erzwungen", gruppe: "posteingang", heute: "Fleet tippt jede Zustellung in die Pane; ein Schalter fehlt (Schritt 9)" },
   { id: "selbst-bis", name: "selbst bauen bis", bedeutung: "bis zu welcher Größe sie selbst baut, statt eine Lane zu öffnen", art: "zahl", standard: 50, einheit: "Zeilen Diff",
@@ -399,7 +399,7 @@ export function schalte(unten: Schalter, eigen: Schalter | undefined, id: string
 export type OrtId = "system" | "datei" | "session" | "prompt" | "start" | "lauf";
 export interface OrtArt { id: OrtId; weg: string | null; wort: string; satz: string }
 export const ORTE: readonly OrtArt[] = [
-  { id: "system", weg: null, wort: "Systemprompt und Werkzeuge", satz: "schreibt Claude Code selbst; Fleet hängt etwas an und kürzt bei manchen Rollen Werkzeuge und Listen, wie darunter steht" },
+  { id: "system", weg: null, wort: "Systemprompt und Werkzeuge", satz: "Claude Codes Systemprompt, Werkzeuge, Skills, Agenten und MCP-Server; was Fleet anhängt oder abschaltet, steht je Teil dabei" },
   { id: "datei", weg: "native Datei", wort: "Dateien, die Claude Code lädt", satz: "liest Claude Code beim Start selbst, aus dem Ordner und aus deinem Konfig-Ordner" },
   { id: "session", weg: "Session-Datei", wort: "Session-Datei", satz: "schreibt Fleet nur einer Lane, als AGENTS.override.md in ihren Worktree; Claude Code lädt sie über CLAUDE.local.md wie eine Agent-MD" },
   { id: "prompt", weg: "Prompt", wort: "Erste Nachricht", satz: "tippt Fleet nach dem Start in die Pane" },

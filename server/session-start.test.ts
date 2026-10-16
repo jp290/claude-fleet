@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  AUTO_MODE_BRIEF, PERMISSION_MODE, fillEnvironment, hubHostOf, startAspects,
+  AUTO_MODE_BRIEF, PERMISSION_MODE, fillEnvironment, hubHostOf, slotSpawnFrom, spawnListRole, startAspects,
   withoutSkipPermissions, type ClaudeStartRole, type StartFacts,
 } from "./session-start";
 import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
@@ -79,5 +79,43 @@ describe("hubHostOf", () => {
     expect(hubHostOf("/srv/git/fleet.git")).toBe(null);
     expect(hubHostOf("https://github.com/x/fleet.git")).toBe(null);
     expect(hubHostOf("")).toBe(null);
+  });
+});
+
+describe("Bauleitung 16.10.: welche Werkzeuge eine laufende MAIN wirklich hat — die Rolle ihres letzten Starts", () => {
+  const spawn = (over: Partial<Parameters<typeof spawnListRole>[0]> = {}) =>
+    spawnListRole({ claude: true, lane: false, orchestrator: false, boundMain: false, ...over });
+
+  test("a MAIN bound at her spawn starts as main, a MAIN founded unbound as generic", () => {
+    expect(spawn({ boundMain: true })).toBe("main");
+    expect(spawn()).toBe("generic");
+  });
+
+  test("a lane starts as lane and the Orchestratorin as orchestrator, whatever else holds", () => {
+    expect(spawn({ lane: true, orchestrator: true, boundMain: true })).toBe("lane");
+    expect(spawn({ orchestrator: true, boundMain: true })).toBe("orchestrator");
+  });
+
+  test("a foreign harness records no role", () => {
+    expect(spawnListRole({ claude: false, lane: true, orchestrator: false, boundMain: false })).toBeNull();
+    expect(spawnListRole({ claude: false, lane: false, orchestrator: false, boundMain: true })).toBeNull();
+  });
+
+  test("the record survives the state file for its own occupation and for no other", () => {
+    for (const role of ROLES) {
+      const saved = JSON.parse(JSON.stringify({ role, openedAt: 4711, at: 1_792_000_000_000 }));
+      expect(slotSpawnFrom(saved, 4711)).toEqual({ role, openedAt: 4711, at: 1_792_000_000_000 });
+      expect(slotSpawnFrom(saved, 4712)).toBeNull();
+    }
+  });
+
+  test("a malformed record loads as none", () => {
+    expect(slotSpawnFrom(undefined, 1)).toBeNull();
+    expect(slotSpawnFrom(null, 1)).toBeNull();
+    expect(slotSpawnFrom("main", 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "bau", openedAt: 1, at: 5 }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "main", openedAt: 1, at: 0 }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "main", openedAt: 1, at: Number.NaN }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "main", openedAt: 1 }, 1)).toBeNull();
   });
 });

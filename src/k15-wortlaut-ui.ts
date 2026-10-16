@@ -51,16 +51,14 @@ function sichereFassung(s: St, b: TextBlock, text: string): void {
   s.bearbeiteText = null;
   if (text === (alt?.text ?? b.fleet)) { toast("Unverändert: Es gibt keine neue Fassung."); render(); return; }
   const neu = new Map(s.fassungen);
-  if (text === b.fleet) {
-    neu.delete(b.fkey);
-    toast(`„${b.titel}“ ist wieder wie Fleets Text; deine eigene Fassung ist verworfen.`);
-  } else {
-    const v = (alt?.v ?? 0) + 1;
-    neu.set(b.fkey, { abschnitt: b.fkey, teil: b.teil, v, text, basis: b.basis, am: Date.now(), autor: DU });
-    toast(`Eigene Fassung v${v} von „${b.titel}“ gesichert. Fleets Text bleibt, wie er ist.`);
-  }
+  const v = (alt?.v ?? 0) + 1;
+  if (text === b.fleet) neu.delete(b.fkey);
+  else neu.set(b.fkey, { abschnitt: b.fkey, teil: b.teil, v, text, basis: b.basis, am: Date.now(), autor: DU });
   s.fassungen = neu;
-  speichereEigenes(s);
+  // der Satz erst, wenn der Server bestätigt hat
+  void speichereEigenes(s).then((ok) => {
+    if (ok) toast(text === b.fleet ? `„${b.titel}“ ist wieder wie Fleets Text; deine eigene Fassung ist verworfen.` : `Eigene Fassung v${v} von „${b.titel}“ gesichert. Fleets Text bleibt, wie er ist.`);
+  });
   render();
 }
 // der Editor bekommt den Fokus einmal, wenn er aufgeht; danach hält ihn das Neuzeichnen, wo er ist (k15-entwurf.ts#render)

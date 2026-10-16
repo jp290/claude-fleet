@@ -715,6 +715,7 @@
   .entline { color: #a1a1aa; white-space: pre; overflow-x: auto; font-family: var(--chat-mono); font-size: var(--chat-code-fs); }
   .entopen { margin-top: 8px; padding: 5px 9px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     background: var(--chat-surface); color: var(--chat-ink); cursor: pointer; }
+  .entopen + .entopen { margin-left: 6px; }
   /* everything the agent did between two messages: ONE quiet expandable line */
   .toolgroup { margin: 0 0 16px; border: 1px solid var(--chat-edge-soft); border-radius: 10px; background: #0a0a0bcc; }
   .toolgroup > summary { cursor: pointer; padding: 6px 12px; font-size: var(--chat-ui-fs); color: var(--chat-mute);
@@ -781,7 +782,7 @@
   .panedown .downnow:hover { color: var(--chat-ink); }
   .pane.down:not(.chat) .jump { bottom: 44px; }
   /* long-press copy (Pane#selectLineAt): one button above the finger, shown inline by the script */
-  .termcopy { display: none; position: absolute; z-index: 6; width: 96px; height: 40px; border-radius: var(--r1);
+  .termcopy { display: none; position: absolute; z-index: 6; min-width: 96px; height: 40px; padding: 0 14px; border-radius: var(--r1);
     border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
     font: 500 14px var(--chat-sans); cursor: pointer; }
   /* the scrollback search (Pane#openSearch, card K8): one bar, the past bar's material, terminal view
@@ -4333,6 +4334,109 @@
       .shell.solo .shellwin { width: min(520px, calc(100vw - 32px)); height: auto; max-height: min(78vh, 620px); }
     }
   }
+
+  /* THE CONSTELLATION WINDOW (src/konstellation.ts, K16 E2b): a solo window with the running sessions as a tree.
+     Step one is the build: one line per session (state, name, role, slot) on a thin line to its parent. Step two
+     are the details: a small card under the pointer, the full properties under the line after a click, or all of
+     them with „Detailgrad: Alles“. Grays only (G0.2); a line shows its fill only under the pointer. */
+  #shell-konstellation { font-family: var(--chat-sans); }
+  @media not all and (max-width: 700px) {
+    @media not all and ((pointer: coarse) and (max-height: 500px)) {
+      /* a fixed height: a window that grew with an opened sheet would centre anew and move the line just clicked */
+      #shell-konstellation .shellwin { width: min(760px, calc(100vw - 32px)); height: min(86vh, 860px); max-height: min(86vh, 860px); }
+    }
+  }
+  .kbaum { display: flex; flex-direction: column; gap: 14px; }
+  .kdetail { display: flex; align-items: center; gap: 10px; }
+  .kdk { color: var(--chat-faint); font-size: var(--chat-ui-fs); }
+  .kseg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--chat-edge); border-radius: 9px; }
+  .kseg button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent;
+    font: inherit; font-size: 12.5px; color: var(--chat-mute); cursor: pointer; }
+  .kseg button.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  .kgrp { display: flex; flex-direction: column; gap: 2px; }
+  .kgrph { margin-bottom: 2px; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-mute); letter-spacing: .04em; }
+  .kline { position: relative; }
+  .krow { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 34px; padding: 4px 10px;
+    text-align: left; background: transparent; border: 0; border-radius: var(--r2); color: var(--chat-prose);
+    font: inherit; cursor: pointer; }
+  @media (hover: hover) { .krow:hover { background: var(--chat-raised); } }
+  .krow[aria-expanded="true"] { background: var(--chat-raised); }
+  .krow:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 1px; }
+  #shell-konstellation .act { flex: none; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: var(--q-live); }
+  #shell-konstellation .act.rest { background: none; box-shadow: inset 0 0 0 1.5px var(--chat-mute); }
+  #shell-konstellation .act.sleep { border-radius: 0;
+    background: linear-gradient(var(--chat-faint), var(--chat-faint)) center / 8px 2px no-repeat; }
+  #shell-konstellation .act.bad { border-radius: 1px; background: var(--danger);
+    clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%,
+      50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+  #shell-konstellation .act.wait { border-radius: 0; background: var(--chat-mute);
+    clip-path: polygon(0 0, 100% 0, 62% 50%, 100% 100%, 0 100%, 38% 50%); }
+  #shell-konstellation .act.wait.owner { background: var(--q-wait); }
+  .kname { flex: 0 1 auto; min-width: 0; color: var(--chat-ink); font-size: var(--chat-fs); font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the kind stands whole; a long name gives way with … */
+  .krole { flex: none; color: var(--chat-mute); font-size: var(--chat-ui-fs); white-space: nowrap; }
+  .kslot { flex: none; min-width: 7ch; text-align: right; color: var(--chat-faint); font: var(--chat-ui-fs) var(--chat-mono); }
+  .kkids { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 0 13px; padding-left: 12px;
+    border-left: 1px solid var(--chat-edge); }
+  .kpeek { position: absolute; z-index: 3; top: calc(100% + 4px); left: 28px; display: flex; flex-direction: column; gap: 2px;
+    width: max-content; max-width: min(360px, calc(100% - 36px)); padding: 8px 12px; background: var(--chat-raised);
+    border: 1px solid var(--chat-edge); border-radius: var(--r2); font-size: 12.5px; line-height: 1.5;
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--chat-void) 60%, transparent); pointer-events: none; }
+  .kpeek.up { top: auto; bottom: calc(100% + 4px); }
+  /* „Alles“: the card's values as a second, quiet line under the session's line */
+  .kwerte { display: flex; flex-wrap: wrap; gap: 0 14px; padding: 0 10px 4px; font-size: 12px; line-height: 1.5; }
+  .kwerte .kv { display: inline-flex; gap: 5px; min-width: 0; max-width: 100%; }
+  .kwerte .kk { color: var(--chat-faint); }
+  .kwerte .kx { color: var(--chat-mute); }
+  /* on the desktop the card hangs at the right, over the slot column, so the names below it stay readable */
+  @media (hover: hover) and (min-width: 701px) { .kpeek { left: auto; right: 84px; } }
+  .kpeekh { margin-top: 4px; color: var(--chat-faint); font-size: 11.5px; }
+  /* THE PROPERTIES after a click, read like K15's Autonomie: one column of sections; per row word, value and who decides
+     (K15's tag, src/k15-wer.ts); a tap on a tag writes its reason under the row */
+  .kprops { display: flex; flex-direction: column; gap: 16px; margin: 4px 0 8px 28px;
+    padding: 10px 12px 12px; border-left: 1px solid var(--chat-edge); font-size: 12.5px; line-height: 1.45; }
+  .kps { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .kpsk { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+  .kpsh { margin: 0; color: var(--chat-mute); font-size: var(--chat-ui-fs); font-weight: 500; }
+  .kpeek .kv { display: flex; gap: 8px; min-width: 0; }
+  .kprops .kv { display: grid; grid-template-columns: 9.5em minmax(0, 1fr) auto; column-gap: 12px; align-items: baseline; min-width: 0; min-height: 24px; }
+  .kprops .kv > .kwer { grid-column: 3; grid-row: 1; justify-self: end; }
+  .kprops .kmore { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
+  .kprops .kgrund { grid-column: 2 / -1; color: var(--chat-mute); font-size: 12px; overflow-wrap: anywhere; }
+  .kps > .kgrund { color: var(--chat-mute); font-size: 12px; }
+  .kmehr { color: var(--chat-faint); }
+  .klink { color: var(--chat-mute); text-decoration: underline; text-decoration-color: var(--chat-edge); text-underline-offset: 2px; }
+  /* what is not active stands gray, without a switch */
+  .kprops .kv[data-k="isolation"] .kx { color: var(--chat-faint); }
+  .kleer { color: var(--chat-mute); }
+  .kwer { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--chat-edge);
+    background: transparent; font: 500 10.5px/1 var(--chat-sans, inherit); letter-spacing: .01em; color: var(--chat-mute); white-space: nowrap; cursor: pointer; }
+  .kwer.fleet { border-color: transparent; background: color-mix(in srgb, var(--accent) 12%, transparent); color: color-mix(in srgb, var(--accent) 72%, var(--chat-ink)); }
+  .kwer.claude-code { border-color: transparent; background: color-mix(in srgb, var(--chat-ink) 9%, transparent); color: var(--chat-mute); }
+  .kwer[aria-expanded="true"] { box-shadow: inset 0 0 0 1px currentColor; }
+  .kwer:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: 1px; }
+  .kag { padding: 6px 0 2px; }
+  .kag + .kag { border-top: 1px solid var(--chat-edge-soft); }
+  .kagh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+  .kagn { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
+  .kagz { font: 11px/1 var(--chat-mono); color: var(--chat-faint); }
+  .kags { font-size: 11.5px; color: var(--chat-faint); }
+  .kagl { margin: 2px 0 0; padding: 0; list-style: none; }
+  .kagp { position: relative; padding: 2px 0 2px 14px; color: var(--chat-prose); overflow-wrap: anywhere; }
+  .kagp::before { content: ""; position: absolute; left: 3px; top: calc(2px + .725em - 2px); width: 4px; height: 4px; border-radius: 50%; background: var(--chat-faint); }
+  .kag.nie .kagp { color: var(--chat-mute); }
+  /* on the phone the tag keeps its place right of the value, so a row with a short value stays one line */
+  @media (max-width: 700px) { .kkids { margin-left: 8px; padding-left: 8px; } .kprops { margin-left: 10px; padding-right: 4px; }
+    .kprops .kv { grid-template-columns: 7.5em minmax(0, 1fr) auto; column-gap: 8px; }
+    .kprops .kv > .kwer { height: 22px; }
+    /* the widest tag, „Claude-Code-Standard“, breaks after its hyphen rather than squeezing a short value into two pieces */
+    .kprops .kv > .kwer.claude-code { height: auto; min-height: 22px; max-width: 94px; padding: 3px 6px; line-height: 1.2; white-space: normal; text-align: right; } }
+  .kk { flex: none; color: var(--chat-faint); }
+  .kx { min-width: 0; color: var(--chat-prose); overflow-wrap: anywhere; }
+  .kgo { align-self: flex-start; min-height: 30px; padding: 0 12px; border: 1px solid var(--chat-edge);
+    border-radius: 7px; background: transparent; color: var(--chat-ink); font: inherit; font-size: 12.5px; cursor: pointer; }
+  @media (hover: hover) { .kgo:hover { background: var(--c-hover); } }
   .setdiscard { padding: 12px; margin-bottom: 12px; border: 1px solid var(--chat-edge);
     border-radius: var(--r2); background: var(--chat-surface); color: var(--chat-ink);
     font: 400 var(--chat-ui-fs) var(--chat-sans); }
@@ -4471,6 +4575,7 @@
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
       <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
+      <button id="konstbtn" title="Konstellation — alle laufenden Sessions als Baum; Einzelheiten beim Darüberfahren und per Klick"></button>
       </span>
       <span id="toolrow2" class="toolrow">
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>

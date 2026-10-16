@@ -3,6 +3,7 @@ import { el } from "./k15-haupt";
 import { icon } from "./icons";
 import { DU, FLEET, type Herkunft, type Profil } from "./k15-entwurf-modell";
 import { S, render } from "./k15-zustand";
+import { WER_WORT, type Wer } from "./k15-wer";
 
 export const SPALTEN = ["Konstellation", "Aufbau", "Session", "Quelle"] as const;
 
@@ -43,9 +44,14 @@ export function unterkopf(word: string, say?: string): HTMLElement {
 // eine Zahl, die erst beim Darüberfahren erscheint, oder überall mit „Alles zeigen“ (Owner 16.10.: „[Zitat entfernt]“
 // ); sie hält ihren Platz, damit beim Darüberfahren nichts springt
 export const nachZahl = (cls: string, text: string): HTMLElement => el("span", `${cls} k15n`, text);
-// ein Claude-Code-Schalter (`--tools`, `--strict-mcp-config` …) steht nur im Title; sichtbar bleibt, was er bewirkt (Prüfung Punkt 12)
-// (auch „kein --tools“ bei der MAIN: der Wert daneben sagt es in Worten, „alle eingebauten“)
-export const istSchalter = (weg: string): boolean => /(^|\s)--[a-z]/.test(weg);
+export { istSchalter } from "./k15-wer";
+// WER BESTIMMT (src/k15-wer.ts) als Kennzeichen: das Wort sichtbar, Grund und Herleitung beim Darüberfahren. „änderbar“ bleibt leise,
+// was fest ist, trägt die Farbe dessen, der es festlegt (Fleet wie das Fleet-Kennzeichen, Claude Code grau)
+export function werTag(w: Wer): HTMLElement {
+  const t = el("span", `k15tag wer ${w.art}`, WER_WORT[w.art]);
+  t.title = w.art === "du" ? "Du stellst es hier ein." : `${w.grund}\n${w.herleitung}`;
+  return t;
+}
 // ein Knopf, der sich abschalten lässt (el() gibt ein HTMLElement)
 export function knopf(cls: string): HTMLButtonElement {
   const b = document.createElement("button");

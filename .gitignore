@@ -4,6 +4,8 @@ fleet.json
 fleet.json.bak
 fleet.json.corrupt
 fleet.json.*.tmp
+k15-eigenes.json
+k15-eigenes.json.*.tmp
 fleet.pid
 audit.jsonl
 audit.jsonl.1

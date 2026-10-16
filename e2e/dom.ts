@@ -9,6 +9,7 @@
 //   · e2e/drops.ts        runDropChatDom (the chat view's pictures)
 //   · e2e/timeline-ui.ts  runTimelineDom (the session timeline lens)
 //   · e2e/role-address.ts runPostfachDom (a session's Postfach tab, K13)
+//   · e2e/konstellation.ts runKonstellationDom (the constellation window, K16 E2b)
 // This file only drives them, with the very check lines they had in their old modules — the names
 // are unchanged, only the module that emits them moved (suite-modules.ts#PROBE_HOSTS maps a change
 // in a host file to this module too, so a narrowed preview still runs the probe it touched).
@@ -36,6 +37,7 @@ import { instanceBandDom, snapshotBoardDom } from "./lanes-lifecycle";
 import { runDropChatDom } from "./drops";
 import { TIMELINE_MUTANTS, runTimelineDom } from "./timeline-ui";
 import { runPostfachDom } from "./role-address";
+import { KONST_CLAIM, KONST_MUTANTS, runKonstellationDom } from "./konstellation";
 
 // THE CUT OF e897fa95 (docs/messungen/2026-10-10-ci-inventur.md, card 5; the verdicts per call site in
 // its .tsv). This unit was the suite's most expensive one (1606 s in the full preview of 2026-10-11),
@@ -84,6 +86,7 @@ export async function run(): Promise<void> {
   await timelineDom(sourceRoot);
   await activityDom(sourceRoot);
   await postfachDom(sourceRoot);
+  await konstellationDom(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
 }
@@ -403,6 +406,28 @@ async function postfachDom(sourceRoot: string): Promise<void> {
       check(`postfach DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
   } catch (error) {
     probeFailed("postfach DOM", error);
+  }
+}
+
+// --- from e2e/konstellation.ts: the constellation window (K16 E2b) and its mutants. One viewport for what reads
+// the same (1200); the build, the fit, the click and a tag's reason at both widths; the calm line and the small card under the pointer
+// are desktop claims, the two taps a phone claim.
+async function konstellationDom(sourceRoot: string): Promise<void> {
+  try {
+    for (const [result, claim, ok] of atOneViewport(await runKonstellationDom(sourceRoot), 1200,
+      { alsoAt: (c) => c === KONST_CLAIM.aufbau || c === KONST_CLAIM.fit || c === KONST_CLAIM.click || c === KONST_CLAIM.grund || c === KONST_CLAIM.phone }))
+      check(`konstellation DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("konstellation DOM", error);
+  }
+  for (const m of DOM_MUTANTS ? KONST_MUTANTS : []) {
+    try {
+      const hit = (await runKonstellationDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`konstellation DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`konstellation DOM mutant — ${m.name}`, error);
+    }
   }
 }
 

@@ -2,7 +2,7 @@
 // ). Jeder
 // Schritt zeigt eine Sache: 1 die Datei (wählen, hineinziehen, neu beginnen), 2 ihre Abschnitte (lesen, ändern, anfügen), 3 was Fleet
 // darum herum mitgibt (aus dem Gründungsplan der gewählten Anbindung, dazu Kontextpacks), 4 als Profil speichern. Das Profil lebt wie
-// alles hier nur im Browser (gespeichert wie Fassungen und Packs, k15-zustand.ts#speichereEigenes); deine Datei und Packs gibt Fleet beim
+// gespeichert wie Fassungen und Packs auf dem Server (k15-zustand.ts#speichereEigenes); deine Datei und Packs gibt Fleet beim
 // Start noch nicht mit (Schnittplan Schritt 4).
 import { el, baseName, bausteinName } from "./k15-haupt";
 import { icon } from "./icons";
@@ -284,7 +284,7 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
     reihe(feld("Modell", auswahl(WAHL.modell, a.modell, modelLabel, (v) => { a.modell = v; })),
       feld("Effort", auswahl(WAHL.effort, a.effort, (v) => EFFORT_WORT[v] ?? v, (v) => { a.effort = v; }))),
     dl,
-    el("div", "k15hinweis", "Noch ein Entwurf: Beim Start gibt Fleet deine Datei und die Packs heute nicht mit, dafür fehlt noch ein Schritt am Server. Das Profil bleibt in diesem Browser."),
+    el("div", "k15hinweis", "Noch ein Entwurf: Beim Start gibt Fleet deine Datei und die Packs heute nicht mit, dafür fehlt noch ein Schritt am Server. Gespeichert wird das Profil schon."),
     ...(fehler ? [el("div", "k15abf", fehler)] : [])];
 }
 
@@ -302,8 +302,7 @@ function speichere(s: St, a: Ablauf): void {
   s.packs = s.packs.map((pk) => a.packs.includes(pk.id) && istPackRolle(a.anbindung) && pk.orte[a.anbindung] === "nicht" ? { ...pk, orte: { ...pk.orte, [a.anbindung]: "text" } } : pk);
   s.ablauf = null;
   s.sel = q ? { art: "pos", id: q.id } : { art: "profil", id: p.id };
-  const sicher = speichereEigenes(s);
-  if (sicher) toast(`Profil „${p.name}“ v1 ist in diesem Browser gespeichert und steht links unter Rollen.${q ? ` ${q.name} trägt es jetzt; das gilt bis zum Neuladen, wie jede Änderung am Aufbau.` : ""}`);
+  void speichereEigenes(s).then((ok) => { if (ok) toast(`Profil „${p.name}“ v1 ist gespeichert und steht links unter Rollen.${q ? ` ${q.name} trägt es jetzt; das gilt bis zum Neuladen, wie jede Änderung am Aufbau.` : ""}`); });
   gehe(2, 0);
 }
 

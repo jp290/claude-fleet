@@ -849,6 +849,14 @@ done
 # unique-per-run socket: without this trap an interrupted run would leak its tmux
 # server forever (no later run reuses the socket to kill it)
 trap 'reap_socket_panes "$SOCK"; tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+# ...and a SIGNAL ends the run through that trap too: sh runs an EXIT trap on `exit`, not on a fatal
+# signal, and `timeout` (ci/band-run.sh, the helper daemon) ends a run with TERM — so a timed-out run
+# left its fleettest server and the test instance in it standing until some later run's start reap
+# (Mangel 86, ueb-b-big 16.10.). The handler runs once the foreground child has exited; timeout
+# signals the whole group, so that is at once, and the reap's own `sleep 1` fits its -k grace.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_STEWARD_JOURNAL_PER_HOUR RAISES the hourly journal cap (prod default 6) above what this

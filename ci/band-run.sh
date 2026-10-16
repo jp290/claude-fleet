@@ -11,7 +11,9 @@
 # Der Mac schiebt den Commit nach ~/ci/repo.git und ruft dieses Skript auf dem Helfer auf
 # (--on-helper). Dort: Klon und bun install, dann die Sperre ~/ci/band-<n>.lock (flock), dann
 # ./e2e-isolated.sh mit FLEET_E2E_BAND=<n> und TMPDIR=/var/tmp/<lauf>, nie unter $HOME (Befund A).
-# Lauf = <MMTThhmmss>-<laufname>; Log unter ~/ci/hand/<lauf>/. Ein SSH-Abbruch beendet den Lauf.
+# Lauf = <MMTThhmmss>-<laufname>; Log unter ~/ci/hand/<lauf>/. Ein SSH-Abbruch beendet den Lauf NICHT
+# (ohne Terminal kommt kein HUP an, Mängel 71/87): er wartet, läuft bis zum Ende oder zur Zeitgrenze
+# und hält so lange sein Band; rc und run.log liest danach, wer will.
 # Ausgabe: Zeitstempel (start, wartet, band frei, ende), eine Zeile
 # `<laufname> rc= s= PASS= FAIL= QUAR=`, die FAIL/QUAR-Zeilen und `path <laufpfad>`.
 # Exit: rc der Suite · 2 falsche Eingabe · 3 der Lauf kam nicht bis zur Suite.
@@ -99,6 +101,8 @@ rc=$?
 echo "$rc" > "$R/rc"
 echo "$(ts) ende"
 echo "$NAME rc=$rc s=$(( $(date +%s) - s )) PASS=$(grep -c '^PASS' "$R/run.log") FAIL=$(grep -c '^FAIL' "$R/run.log") QUAR=$(grep -c '^QUAR' "$R/run.log")"
+# die Suite schreibt ihre Zeilen erst am Ende: nach der Zeitgrenze sagen PASS=0 FAIL=0 nichts (Mangel 86)
+[ "$rc" = 124 ] && echo "$NAME Zeitgrenze ${BAND_RUN_TIMEOUT_S:-2400} s erreicht: Ergebnis unbekannt, nicht grün"
 grep -E '^(FAIL|QUAR) ' "$R/run.log" | cut -c1-600
 grep -E '^(module|shard-unit) ' "$R/run.log"
 echo "path $R/run.log (TMPDIR $T)"

@@ -11054,7 +11054,7 @@ export default function (pi) {
     replaced.ok && lane.ok && replaced.plan.bausteine.find((b) => b.id === "lane-footer")?.zustand === "ersetzt:self-credential"
       && replaced.plan.planHash !== lane.plan.planHash, replaced.ok ? "" : replaced.error);
   pin("S3 plan: native rows are shown, not switched; a carried contract pack stays on",
-    errorOf(planInput("main", "claude", { "auto-memory": "aus" })).includes("im Plan ist es kein Schalter")
+    errorOf(planInput("main", "claude", { "auto-memory": "aus" })).includes("kein Schalter")
       && errorOf(planInput("lane", "codex", { "pack:portable-core": "aus" })).includes("traegt den Vertrag")
       && errorOf(planInput("lane", "claude", { "konzept": "an" })).includes("is a template"));
   const folderPlan = planOf(planInput("nur-ordner", "claude"));

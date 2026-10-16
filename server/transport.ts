@@ -14,6 +14,8 @@ export const STATIC: Record<string, { path: string; type: string }> = {
   "/hub.js": { path: `${PUB}/public/hub.js`, type: "text/javascript" },
   "/share.js": { path: `${PUB}/public/share.js`, type: "text/javascript" },
   "/helper.js": { path: `${PUB}/public/helper.js`, type: "text/javascript" },
+  "/k15.js": { path: `${PUB}/public/k15.js`, type: "text/javascript" },
+  "/k15.css": { path: `${PUB}/public/k15.css`, type: "text/css" },
   "/xterm.css": { path: `${PUB}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
   "/manifest.webmanifest": { path: `${PUB}/public/manifest.webmanifest`, type: "application/manifest+json" },
   "/icon.svg": { path: `${PUB}/public/icon.svg`, type: "image/svg+xml" },
@@ -219,7 +221,7 @@ export async function staticResponse(req: Request, url: URL, st: { path: string;
     const html = (await Bun.file(st.path).text()).replace('src="/app.js"', `src="/app.js?v=${bundleV()}"`);
     return new Response(html, { headers: { "content-type": st.type, "cache-control": "no-store" } });
   }
-  if (url.pathname === "/app.js" || url.pathname === "/share.js" || url.pathname === "/helper.js") {
+  if (url.pathname === "/app.js" || url.pathname === "/share.js" || url.pathname === "/helper.js" || url.pathname === "/k15.js") {
     const b = await bundleBytes(st.path);
     if (!b) return new Response("bundle not built", { status: 404 });
     // only app.js gets the immutable cache: index.html is the only page whose script URL we

@@ -70,8 +70,8 @@ type Entry = { kind: "slot"; slot: number } | { kind: "lane"; repo: string; pare
 interface Repo { repo: string; name: string; slots: SlotInfo[] }
 // one Baustein of the plan (session-blocks.ts#SessionPlanBaustein), read as the server sent it
 type Zustand = string; // "an" | "aus" | "ersetzt:<id>"
-interface Baustein {
-  id: string; wort: string; satz: string; funktion: string[];
+export interface Baustein {
+  id: string; wort: string; satz: string; breaksWithout?: string; funktion: string[];
   grenze: { art: "noetig"; grund: string; gesperrt?: true } | { art: "frei" };
   schicht: string; zustand: Zustand; quelle: "default" | "schalter";
   rollenDefault: "an" | "aus" | { zustand: "bedingt"; grund: string };
@@ -93,7 +93,7 @@ interface Plan {
   head?: string; branch?: string | null; harness?: string; plannedAt?: number; selected: FoundingPlanPack[]; omitted: FoundingPlanOmission[];
   sessionAgents?: FoundingSessionAgents | null; // null: the role writes no session file (Nur Ordner)
 }
-interface Answer extends Plan {
+export interface Answer extends Plan {
   plan: SessionPlan; rollen: RolleRow[]; start: { tuer: "lane" | "open"; startbar: boolean; refusals: string[] };
   // what reaches the start row by row (the role's own door), what Claude Code brings itself, and the
   // sum in tokens — optional: an older server omits them and the window then shows no start block
@@ -922,10 +922,14 @@ const tok = (n: number): string => `${n.toLocaleString("de-DE")} Tok`;
 const dayOf = (iso: string): string => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("de-DE"); };
 // the two native rows share the register word "Laedt nativ", which says their way, not what they are
 // (and three more share a word with a neighbour they are listed beside)
+// (and the register writes umlauts as ae/oe/ue, which a name on screen does not)
 const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordners", "auto-memory": "Auto-Memory",
-  "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort" };
+  "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort",
+  "lane-footer": "Rückweg und Ende", "memory-pointer": "Gedächtnis-Hinweis",
+  // three rows share the register word "Auftrag", which is their function, not what each one is
+  "task-brief": "Karte", "main-rail": "Program-Auftrag", "orchestrator-card": "Rollenkarte der Orchestratorin" };
 const packWord = (id: string): string => PACK_WORDS[id]?.name ?? id;
-const bausteinName = (b: Baustein): string => b.id.startsWith("pack:") ? `Pack · ${packWord(b.id.slice(5))}` : START_WORT[b.id] ?? b.wort;
+export const bausteinName = (b: Baustein): string => b.id.startsWith("pack:") ? `Pack · ${packWord(b.id.slice(5))}` : START_WORT[b.id] ?? b.wort;
 // below this a pack is its pointer only (lesen statt kopieren): several of them are one line
 const POINTER_PACK_BYTES = 1000;
 
@@ -1805,7 +1809,7 @@ function validBaustein(v: unknown): v is Baustein {
     && !!sb && typeof sb === "object" && (sb.ja === true || (sb.ja === false && isStr(sb.grund)))
     && (isNum(r.bytes) || r.bytes === "unknown") && strs(r.ersatzKandidaten) && optional(r, "enthaltenIn", isStr);
 }
-function validAnswer(j: unknown): j is Answer {
+export function validAnswer(j: unknown): j is Answer {
   if (!validPlan(j)) return false;
   const r = j as unknown as Record<string, unknown>;
   const p = r.plan as Record<string, unknown> | null;
@@ -1842,7 +1846,7 @@ function validStartSumme(v: unknown): boolean {
 
 // the plan's omission reasons are a closed vocabulary (context-plan.ts CONTEXT_PLAN_OMISSION_REASONS);
 // the window says each in owner words — an unknown future reason is shown raw rather than hidden
-const OMIT_SAY: Record<string, string> = {
+export const OMIT_SAY: Record<string, string> = {
   "manifest-invalid": "Pack-Verzeichnis nicht lesbar",
   "source-unavailable": "Quelle nicht im Repo",
   "status-not-active": "abgeschaltet",
@@ -1855,7 +1859,7 @@ const OMIT_SAY: Record<string, string> = {
 
 // the words of the view for the packs (design v3 §0, "Wörter der Ansicht"); a pack without words here
 // is named by its own id, never by a guess
-const PACK_WORDS: Record<string, { name: string; say: string }> = {
+export const PACK_WORDS: Record<string, { name: string; say: string }> = {
   "portable-core": { name: "Grundregeln", say: "Begriffe und feste Regeln, die jede Session bindet." },
   "konzept-claude-fleet": { name: "Was Claude Fleet ist", say: "Das Konzept und seine Prinzipien." },
   "verify-e2e": { name: "Prüfen", say: "Wann eine Änderung als bewiesen gilt." },

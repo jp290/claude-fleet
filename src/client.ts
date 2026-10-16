@@ -69,6 +69,7 @@ import {
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
 import { openLaneFounding, openPicker } from "./founding";
+import { openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
 
 if (/Chrome\/|Chromium\//.test(navigator.userAgent) && !/CriOS\//.test(navigator.userAgent)) {
@@ -11808,4 +11809,5 @@ void (async () => {
   restoreFocus("term");
   // no kept place: the focused pane takes them its own way — the chat view's field, or the terminal
   if (!keysWere && (!document.activeElement || document.activeElement === document.body)) panes[focused]?.focus();
+  if (location.hash.startsWith("#k15")) openK15Entwurf();
 })();

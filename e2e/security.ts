@@ -468,7 +468,10 @@ const PRE_AUTH_ROUTES = [
 // login cookie (server/auth.ts#cookieToken; legacy bare `fleet=` still read) over three routes that are NOT in the pre-auth set above and are
 // therefore owner-gated. Serving the shell and its bundle without a token hands an anonymous caller
 // an empty page: exactly the split `/` + `/app.js` already have.
-const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
+// `/k15.js` and `/k15.css` joined it 2026-10-16: the window „Neue Session“ split out of app.js and index.html so it loads on first
+// open (src/k15-lader.ts). Same class as `/app.js`: a bundle and a stylesheet, no secret; every byte the window shows arrives over
+// owner-gated /api routes.
+const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/k15.js", "/k15.css", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
 // The steward token bypasses the owner gate entirely (server.ts ~4499), so its route set is a
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [

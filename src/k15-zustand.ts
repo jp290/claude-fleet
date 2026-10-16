@@ -1,0 +1,391 @@
+// K15 ENTWURF D · der Zustand des Fensters und was alle Spalten aus dem Gründungsplan ableiten (src/k15-entwurf.ts zeichnet, die
+// Spalten liegen in src/k15-spalte1.ts … src/k15-spalte4.ts). Der Plan kommt vom Server (GET /api/founding-plan), je Rolle, Repo
+// und Schalter einmal gelesen.
+import { api, flotte, baseName, OMIT_SAY, bausteinName, validAnswer } from "./k15-haupt";
+import type { DirInfoResp } from "./client";
+import type { Answer, Baustein } from "./founding";
+import type { Shell } from "./shell";
+import { modelLabel } from "./modelname";
+import {
+  EFFORT_WORT, GRUPPEN, alle, hatRegler, reglerVon, schalterVon, schwelleVon, stufenSchalter, umfangVon, wirksam,
+  type Ebene, type Env, type GruppeId, type Konst, type PlanRolle, type Position, type Profil, type Regler, type Schalter, type Stufe,
+} from "./k15-entwurf-modell";
+import { fassungenImport, type TextFassung } from "./k15-wortlaut";
+import { packsImport, type PackEntwurf } from "./k15-kontextpack";
+import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, profilAus } from "./k15-import";
+import type { Ablauf } from "./k15-agentmd";
+
+export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
+// DER DETAILGRAD (Owner 12:3x) zeigt die Gruppen zu oder auf; was sonst erst beim Darüberfahren erscheint, zeigt „[Zitat entfernt]“
+// (Owner 16.10.: „[Zitat entfernt]“). Die frühere Stufe „[Zitat entfernt]“ ist darin
+// aufgegangen: Sie tat für die Erklärungen dasselbe, was der Knopf jetzt überall tut.
+export type Detail = "gruppen" | "bausteine";
+export type Sel = { art: "pos"; id: string } | { art: "profil"; id: string };
+export type PlanStand = { a: Answer } | { fehler: string } | "laedt";
+export type InfoStand = DirInfoResp | { fehler: string } | "laedt";
+export interface Ordner { pfad: string; liste: { path: string; parent: string | null; dirs: string[]; repos: string[]; git: boolean } | null; fehler: string | null; seq: number }
+
+export interface St {
+  shell: Shell; konst: Konst[]; profile: Profil[]; k: Konst; sel: Sel; quelle: QuelleId; offen: Set<string>;
+  exp: boolean; ebene: Ebene; voll: boolean; tief: number; neuAb: number; profilNeu: Set<string>; konstNeu: Set<string>; toastT: number;
+  // die Spalte, an der man gerade arbeitet, der Baustein, den Spalte 4 zeigt, der Schritt des Rundgangs (null = aus)
+  aktiv: number; bst: string | null; tour: number | null; detail: Detail; alles: boolean;
+  // das Repo, dessen Gründungsplan gelesen wird; die Env der Instanz (undefined = wird gelesen, null = nicht lesbar)
+  repo: string | null; env: Env | null | undefined; fleetModell: string | null; plaene: Map<string, PlanStand>;
+  // die gepinnten Ordner (null = wird gelesen), was /api/dirinfo je Repo sagt, die offene Auswahl „Neue Session in“ und ihre Ordnerwahl
+  pins: string[] | null; infos: Map<string, InfoStand>; repoMenu: boolean; ordner: Ordner | null;
+  // eigene Fassungen je Abschnitt und Kontextpacks als Entwurf (im Browser, EIGENES_KEY); welcher Abschnitt im Editor offen ist und
+  // welcher Pack gerade bearbeitet wird
+  // `bearbeiteText` ist der Text im offenen Editor, solange er nicht gesichert ist: so übersteht er ein Neuzeichnen
+  fassungen: Map<string, TextFassung>; bearbeite: string | null; bearbeiteText: string | null; packs: PackEntwurf[]; packEdit: PackEntwurf | null;
+  // der Ablauf „Deine Agent-MD“ (src/k15-agentmd.ts), null = zu; wann zuletzt vor ungesichertem Text gewarnt wurde (k15-repo.ts#menueZu)
+  ablauf: Ablauf | null; warnAm: number;
+}
+export let S: St | null = null;
+export const setzeS = (s: St | null): void => { S = s; };
+let zeichner: () => void = () => undefined;
+export const beimZeichnen = (f: () => void): void => { zeichner = f; };
+export const render = (): void => zeichner();
+
+export const SCHMAL = matchMedia("(max-width: 1200px), ((pointer: coarse) and (max-height: 500px))");
+export const plural = (n: number, eins: string, mehr: string): string => `${n} ${n === 1 ? eins : mehr}`;
+export const tilde = (p: string): string => p.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
+export const profilVon = (s: St, id: string): Profil => s.profile.find((p) => p.id === id) ?? s.profile[0];
+export function gewaehlt(s: St): { q: Position | null; p: Profil } {
+  const q = s.sel.art === "pos" ? (alle(s.k.wurzeln).find((x) => x.id === s.sel.id) ?? null) : null;
+  return { q, p: profilVon(s, q ? q.profil : s.sel.id) };
+}
+
+// eine Auswahl wechselt: Spalte `tief` zeigt sich am Handy, die Spalten ab `neuAb` blenden weich neu ein
+export function gehe(tief: number, neuAb: number): void {
+  const s = S;
+  if (!s) return;
+  s.tief = tief;
+  s.aktiv = tief;
+  s.neuAb = neuAb;
+  render();
+}
+// Erklärung einer Zeile auf- und zuklappen (Info-Knopf, Antippen am Handy); Hover und Fokus zeigen sie ohnehin
+export function zeige(key: string): void {
+  const s = S;
+  if (!s) return;
+  if (s.offen.has(key)) s.offen.delete(key); else s.offen.add(key);
+  render();
+}
+// ein Satz unten im Fenster; mit `aktion` steht ein Knopf dahinter (Rückgängig) und der Satz bleibt länger
+export function toast(text: string, aktion?: { wort: string; tu: () => void }): void {
+  const s = S;
+  const win = s?.shell.root.querySelector<HTMLElement>(".shellwin");
+  if (!s || !win) return;
+  win.querySelector(".k15toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "k15toast";
+  t.textContent = text;
+  t.setAttribute("role", "status");
+  if (aktion) {
+    const b = document.createElement("button");
+    b.className = "k15toastb";
+    b.textContent = aktion.wort;
+    b.onclick = () => { t.remove(); aktion.tu(); };
+    t.append(" ", b);
+  }
+  win.append(t);
+  clearTimeout(s.toastT);
+  s.toastT = window.setTimeout(() => t.remove(), aktion ? 9000 : 4200);
+}
+
+// UNGESICHERTER TEXT (Prüfung Punkt 2): Wer schließt, während irgendwo getippter Text ungesichert ist, bekommt einen Satz und schließt
+// erst beim zweiten Mal; danach ist der Text verworfen. So geht nichts mit einem einzigen Esc oder Klick daneben verloren, und das Fenster
+// lässt sich trotzdem immer schließen (src/shell.ts#setCloseGuard: „The guard must always offer a way out“).
+const WARN_MS = 6000;
+export function verwirft(s: St, wo: string): boolean {
+  if (s.warnAm && Date.now() - s.warnAm < WARN_MS) { s.warnAm = 0; return true; }
+  s.warnAm = Date.now();
+  toast(`Ungesicherter Text ${wo}. Sichere ihn, oder schließ noch einmal, dann ist er verworfen.`);
+  return false;
+}
+
+// EIGENE FASSUNGEN, PACK-ENTWÜRFE UND PROFILE MIT EIGENER AGENT-MD im Browser, damit sie ein Neuladen überstehen; zu Fleet speichern
+// gibt es noch nicht. Die zurückgebauten Merkstellen (Z34) lagen unter einem eigenen Schlüssel; ihre eigenen Fassungen kommen einmal
+// mit herüber, der Rest fällt weg. Eine Fassung mit dem Schlüssel von vor dem 16.10. (ohne Profil, k15-wortlaut.ts#schluessel) passt
+// keinem Profil eindeutig: Sie zählt `alteFassungen` und wird nicht übernommen.
+const EIGENES_KEY = "fleet.k15.eigenes";
+const ALT_KEY = "fleet.k15.merkstellen";
+export interface Eigenes { fassungen: Map<string, TextFassung>; packs: PackEntwurf[]; eigeneProfile: Profil[]; alteFassungen: number }
+export function ladeEigenes(): Eigenes {
+  try {
+    const alt = localStorage.getItem(ALT_KEY);
+    const t = localStorage.getItem(EIGENES_KEY) ?? alt;
+    const o: unknown = t ? JSON.parse(t) : null;
+    const r: Record<string, unknown> = o && typeof o === "object" ? { ...o } : {};
+    const alle = fassungenImport(r.fassungen, Date.now()).fassungen;
+    const f = alle.filter((x) => x.abschnitt.includes("|")).slice(0, MAX_FASSUNGEN);
+    const packs = packsImport(r.packs, Date.now()).packs.slice(0, MAX_PACKS);
+    const eigeneProfile = (Array.isArray(r.profile) ? r.profile : []).map(profilAus).filter((p): p is Profil => p !== null && !!p.datei).slice(0, MAX_PROFILE);
+    if (alt !== null) {
+      localStorage.removeItem(ALT_KEY);
+      localStorage.setItem(EIGENES_KEY, speicherForm(f, packs, eigeneProfile));
+    }
+    return { fassungen: new Map(f.map((x) => [x.abschnitt, x])), packs, eigeneProfile, alteFassungen: alle.length - f.length };
+  } catch { return { fassungen: new Map(), packs: [], eigeneProfile: [], alteFassungen: 0 }; }
+}
+// die Form, die fassungenImport, packsImport und profilAus lesen: die Version heißt dort `version`
+const speicherForm = (f: readonly TextFassung[], packs: readonly PackEntwurf[], profile: readonly Profil[]): string =>
+  JSON.stringify({ fassungen: f.map((x) => ({ ...x, version: x.v })), packs: packs.map((p) => ({ ...p, version: p.v })),
+    profile: profile.map((p) => ({ ...p, version: p.v })) });
+// gespeichert werden die Profile mit eigener Agent-MD; schlägt der Speicher fehl (voll, gesperrt), sagt das ein Satz
+export function speichereEigenes(s: St): boolean {
+  try {
+    localStorage.setItem(EIGENES_KEY, speicherForm([...s.fassungen.values()], s.packs, s.profile.filter((p) => !!p.datei)));
+    return true;
+  } catch {
+    toast("Der Speicher dieses Browsers nimmt nichts mehr an: Deine Änderung gilt nur, bis du das Fenster schließt.");
+    return false;
+  }
+}
+
+// DIE REPOS (Z32): die mit laufender Session wie im Startfenster (src/founding.ts#repoList), claude-fleet zuerst, dahinter die
+// gepinnten ohne Session (GET /api/dirs → pins). Ein gepinnter Ordner, den /api/dirinfo nicht als Git-Repo kennt, steht nicht darin;
+// das gewählte Repo steht immer darin.
+export interface RepoZeile { repo: string; sessions: number; gepinnt: boolean }
+export function repoZeilen(s: St | null): RepoZeile[] {
+  const zahl = new Map<string, number>();
+  for (const x of flotte()) if (x.cwd) zahl.set(x.repo ?? x.cwd, (zahl.get(x.repo ?? x.cwd) ?? 0) + 1);
+  const pins = s?.pins ?? [];
+  const laufend = [...zahl].sort((a, b) => Number(baseName(b[0]) === "claude-fleet") - Number(baseName(a[0]) === "claude-fleet") || b[1] - a[1])
+    .map(([repo, n]) => ({ repo, sessions: n, gepinnt: pins.includes(repo) }));
+  const keinGit = (p: string) => { const i = s?.infos.get(p); return typeof i === "object" && "git" in i && !i.git; };
+  const ohne = pins.filter((p) => !zahl.has(p) && (p === s?.repo || !keinGit(p))).map((repo) => ({ repo, sessions: 0, gepinnt: true }));
+  const gewaehlt = s?.repo && !zahl.has(s.repo) && !pins.includes(s.repo) ? [{ repo: s.repo, sessions: 0, gepinnt: false }] : [];
+  return [...laufend, ...ohne, ...gewaehlt];
+}
+export const repos = (): string[] => repoZeilen(S).map((r) => r.repo);
+// was /api/dirinfo über ein Repo sagt, einmal je Öffnen gelesen
+export function info(s: St, repo: string): InfoStand {
+  const da = s.infos.get(repo);
+  if (da) return da;
+  s.infos.set(repo, "laedt");
+  void api(`/api/dirinfo?path=${encodeURIComponent(repo)}`).then(async (res) => {
+    const j = (await res.json().catch(() => null)) as DirInfoResp | null;
+    return res.ok && j ? j : { fehler: j?.error ?? `Antwort ${res.status}` };
+  }).catch((e: unknown) => ({ fehler: e instanceof Error ? e.message : "Server nicht erreichbar" })).then((st) => {
+    if (S !== s) return;
+    s.infos.set(repo, st);
+    render();
+  });
+  return "laedt";
+}
+const pinsAus = (j: unknown): string[] | null => j && typeof j === "object" && "pins" in j && Array.isArray(j.pins) ? j.pins.filter((x): x is string => typeof x === "string") : null;
+// die gepinnten Ordner stehen in jeder Antwort von /api/dirs (server.ts#listDirs)
+export async function liesPins(s: St): Promise<void> {
+  const res = await api("/api/dirs?path=~").catch(() => null);
+  const j: unknown = res?.ok ? await res.json().catch(() => null) : null;
+  if (S !== s) return;
+  s.pins = pinsAus(j) ?? [];
+  render();
+}
+// pinnen und entpinnen (Prüfung Punkt 7): Entpinnen gilt auf allen Geräten, darum steht Rückgängig im Satz; das holt den Pin und das
+// gewählte Repo zurück (`zurueck`). Der Server hält höchstens 20 Pins und lässt beim 21. den ältesten fallen (server.ts MAX_PINS): Wer
+// so herausfällt, steht im Satz.
+export async function pinne(s: St, pfad: string, an: boolean, zurueck?: string | null): Promise<void> {
+  const vorher = s.pins ?? [];
+  const repoVorher = s.repo;
+  const res = await api("/api/pins", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: pfad, on: an }) }).catch(() => null);
+  const j: unknown = res ? await res.json().catch(() => null) : null;
+  if (S !== s) return;
+  const pins = pinsAus(j);
+  if (!res?.ok || !pins) { toast(`${baseName(pfad)}: ${j && typeof j === "object" && "error" in j ? String(j.error) : "Fleet hat das nicht gespeichert"}.`); return; }
+  s.pins = pins;
+  const raus = vorher.filter((x) => x !== pfad && !pins.includes(x));
+  const verdraengt = raus.length ? ` Die Auswahl hält ${pins.length} Repos: ${raus.map(baseName).join(", ")} ist dafür herausgefallen.` : "";
+  if (an) {
+    s.ordner = null;
+    s.repoMenu = false;
+    s.repo = zurueck === undefined ? pfad : zurueck;
+    toast(zurueck === undefined
+      ? `Neue Sessions starten jetzt in ${baseName(pfad)}. Es steht in der Auswahl, auch ohne Session und auf deinen anderen Geräten.${verdraengt}`
+      : `${baseName(pfad)} steht wieder in der Auswahl.${verdraengt}`);
+  } else {
+    if (s.repo === pfad && !flotte().some((x) => x.cwd && (x.repo ?? x.cwd) === pfad)) s.repo = null;
+    toast(`${baseName(pfad)} ist aus der Auswahl genommen, auch auf deinen anderen Geräten. Der Ordner selbst bleibt, wie er ist.`,
+      { wort: "Rückgängig", tu: () => { void pinne(s, pfad, true, repoVorher); } });
+  }
+  gehe(s.tief, 2);
+}
+// die Ordnerwahl von „Repo hinzufügen“: eine Ebene je Schritt über /api/dirs; wählbar ist ein Git-Repo
+export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
+  const seq = (s.ordner?.seq ?? 0) + 1;
+  s.ordner = { pfad, liste: null, fehler: null, seq };
+  render();
+  const res = await api(`/api/dirs?path=${encodeURIComponent(pfad)}`).catch(() => null);
+  const j = (res ? await res.json().catch(() => null) : null) as { path?: string; parent?: string | null; dirs?: string[]; repos?: string[]; git?: boolean; error?: string } | null;
+  if (S !== s || s.ordner?.seq !== seq) return;
+  s.ordner = res?.ok && j && typeof j.path === "string" && Array.isArray(j.dirs)
+    ? { ...s.ordner, pfad: j.path, liste: { path: j.path, parent: j.parent ?? null, dirs: j.dirs, repos: j.repos ?? [], git: j.git === true } }
+    : { ...s.ordner, fehler: j?.error ?? `Der Server antwortete ${res?.status ?? "nicht"} für diesen Ordner.` };
+  render();
+}
+
+// DER GRÜNDUNGSPLAN je Rolle und Schalter, einmal gelesen und gemerkt; ein abgelehnter Schalter kommt als `fehler`
+export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter): string => {
+  const q = new URLSearchParams({ repo, role: rolle });
+  const b = Object.entries(sch).map(([id, v]) => `${id}=${v}`).sort().join(",");
+  if (b) q.set("bausteine", b);
+  return `/api/founding-plan?${q}`;
+};
+export async function lies(url: string): Promise<{ a: Answer } | { fehler: string }> {
+  try {
+    const res = await api(url);
+    const j: unknown = await res.json().catch(() => null);
+    if (res.ok && validAnswer(j)) return { a: j };
+    return { fehler: j && typeof j === "object" && "error" in j ? String(j.error) : `Antwort ${res.status}` };
+  } catch (e) {
+    return { fehler: e instanceof Error ? e.message : "Server nicht erreichbar" };
+  }
+}
+// ein Fehler bleibt nicht für immer (Prüfung Punkt 10): Nach FEHLER_MS liest das nächste Zeichnen den Plan neu, früher nicht, damit ein
+// dauerhafter Fehler keine Schleife aus Zeichnen und Lesen wird
+const FEHLER_MS = 8000;
+const fehlerAm = new WeakMap<object, number>();
+export function hole(s: St, url: string): PlanStand {
+  const da = s.plaene.get(url);
+  if (da && !(typeof da === "object" && "fehler" in da && Date.now() - (fehlerAm.get(da) ?? 0) > FEHLER_MS)) return da;
+  s.plaene.set(url, "laedt");
+  void lies(url).then((st) => {
+    if (S !== s) return;
+    if ("fehler" in st) fehlerAm.set(st, Date.now());
+    s.plaene.set(url, st);
+    render();
+  });
+  return "laedt";
+}
+export const antwort = (st: PlanStand): Answer | null => typeof st === "object" && "a" in st ? st.a : null;
+
+// was für eine Position (oder ein Profil) gilt: der volle Plan der Rolle, der Umfang auf dem Regler, die Schalter darunter und darauf.
+// Der Regler steht nur an einer Gruppe mit mindestens zwei freien Bausteinen (Begründung: src/k15-entwurf-modell.ts#hatRegler).
+export interface Lage { voll: PlanStand; plan: PlanStand; umfang: Partial<Record<GruppeId, Stufe>>; regler: Partial<Record<GruppeId, Regler>>; unten: Schalter;
+  eigen: Schalter; sch: Schalter }
+export function lage(s: St, p: Profil, q: Position | null): Lage | null {
+  if (!s.repo) return null;
+  const voll = hole(s, planUrl(s.repo, p.rolle, {}));
+  const va = antwort(voll);
+  const umfang: Partial<Record<GruppeId, Stufe>> = {}, regler: Partial<Record<GruppeId, Regler>> = {};
+  let vs: Schalter = {};
+  if (va && p.rolle !== "nur-ordner") for (const g of GRUPPEN) {
+    const r = reglerVon(va, g.id);
+    if (!hatRegler(r)) continue;
+    const u = umfangVon(p, q, g.id);
+    regler[g.id] = r;
+    umfang[g.id] = u;
+    vs = { ...vs, ...stufenSchalter(u, r) };
+  }
+  const sch = schalterVon(vs, p, q);
+  const wartet = !va && p.rolle !== "nur-ordner" && GRUPPEN.some((g) => umfangVon(p, q, g.id) !== "standard");
+  const plan = wartet ? voll : hole(s, planUrl(s.repo, p.rolle, sch));
+  return { voll, plan, umfang, regler, unten: q ? { ...vs, ...p.schalter } : vs, eigen: (q ? q.schalter : p.schalter) ?? {}, sch };
+}
+// die Bausteine, die Spalte 3 und 4 für diese Rolle zeigen; die übrigen schaltet der Plan nur für andere Rollen an. Dazu, was sich in
+// einer Gruppe dazuschalten lässt (es steht blass in ihr, auch wenn der Plan der Rolle es nicht anschaltet).
+export function bausteineVon(a: Answer, l: Lage): Baustein[] {
+  const va = antwort(l.voll);
+  const dazu = new Set(va ? GRUPPEN.flatMap((g) => reglerVon(va, g.id).dazu.map((b) => b.id)) : []);
+  return a.plan.bausteine.filter((b) => !b.id.startsWith("pack:")
+    && (b.rollenDefault !== "aus" || b.zustand !== "aus" || l.sch[b.id] !== undefined || dazu.has(b.id)));
+}
+
+// WARUM ETWAS BEI DIESEM START FEHLT, in Menschenworten: die Gründe der Tür (server.ts#planDoorRow, PLAN_NUR_DISPATCH) schreiben
+// ae/oe/ue und Fleet-Begriffe; ein Grund, den diese Liste nicht kennt, kommt wörtlich, nur mit Umlauten. Jeder Schlüssel steht so im
+// Server (am 16.10. per grep geprüft).
+const GRUND_WORT: Record<string, string> = {
+  "nur die Dispatch-Gruendung einer Karte liefert das": "kommt nur, wenn Fleet eine Lane für eine Karte gründet; dieser Start hat keine Karte",
+  "kein Pack ist an": "kein Pack ist an, also gibt es keine Lesehinweise",
+  "die Leiter hat das Pack ausgelassen": "der Plan hat dieses Pack nicht gewählt",
+  "es steht im lane-footer, und der ist nicht an": "es steht im Rückweg der Lane, und der ist aus",
+  "die Lane-Tuer liefert das nicht": "der Start einer Lane liefert das nicht",
+  "der MAIN-Brief traegt das nicht": "die erste Nachricht der MAIN enthält das nicht",
+  "/open schreibt keine Session-Datei und sendet das nicht": "dieser Start schreibt keine Session-Datei und schickt es auch nicht",
+  "/open sendet das nur mit der Orchestratorin-Karte (Label)": "dieser Start schickt es nur, wenn die Session als Orchestratorin startet",
+  "nur Claude laedt CLAUDE.md; die Kopie im Worktree liest dieser Harness nicht": "nur Claude lädt CLAUDE.md; dieser Agent liest die Kopie im Worktree nicht",
+  "nur der Claude-Adapter traegt den Zustellkopf": "nur der Claude-Weg setzt den Zustell-Kopf",
+  "nur eine Claude-Session im Fleet-Checkout laedt das private Regelbuch": "nur eine Claude-Session im Checkout, aus dem Fleet selbst läuft, lädt das private Regelbuch",
+  "der Quell-Checkout hat kein lesbares rulebook/": "im Repo gibt es kein lesbares Regelbuch",
+  "das Pack portable-core ist aus, und nur mit ihm steht der Vertrag in der Lane-Datei": "der Vertrag steht nur mit dem Pack Portable Core in der Session-Datei, und das ist aus",
+  "das Pack portable-core ist aus, und Claude laedt AGENTS.md hier nicht nativ (server.ts#agentCmd)": "der Vertrag kommt nur mit dem Pack Portable Core, und das ist aus",
+  "nur Claude laedt ein Auto-Memory": "nur Claude lädt ein Auto-Memory",
+  "eine Claude-Lane startet ohne Auto-Memory (server.ts#agentCmd)": "eine Lane startet ohne Auto-Memory",
+  "kein Claude-Auto-Memory unter diesem Checkout": "in diesem Repo gibt es kein Auto-Memory von Claude",
+};
+export function grundWort(g: string): string {
+  const bekannt = GRUND_WORT[g];
+  if (bekannt) return bekannt;
+  const aus = /^Plan: aus(?: \(([^)]+)\))?$/.exec(g);
+  if (aus) return aus[1] ? `ist aus: ${OMIT_SAY[aus[1]] ?? aus[1]}` : "ist in diesem Plan aus";
+  return g.replace(/\bTuer\b/g, "Tür").replace(/\blaedt\b/g, "lädt").replace(/\btraegt\b/g, "trägt").replace(/\bfuer\b/g, "für").replace(/\bnoetig\b/g, "nötig");
+}
+// an im Plan, aber diese Tür liefert es beim Start nicht: der Grund steht in lieferung.ausgelassen, bei einem von Hand angeschalteten
+// Baustein in start.refusals (server.ts#planDoorVerdict); null = kommt an oder ist aus
+export function fehltWeil(a: Answer, b: Baustein): string | null {
+  if (b.zustand !== "an" || !a.lieferung || a.lieferung.geliefert.some((x) => x.id === b.id)) return null;
+  const g = a.lieferung.ausgelassen.find((x) => x.id === b.id)?.grund
+    ?? a.start.refusals.map((x) => new RegExp(`^${b.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} ist angeschaltet, diese Tuer liefert es nicht: (.+)$`).exec(x)?.[1]).find(Boolean);
+  return g ? grundWort(g) : "dieser Start liefert es nicht";
+}
+export const kommtAn = (a: Answer, b: Baustein): boolean => b.zustand === "an" && fehltWeil(a, b) === null;
+// wo ein Baustein landet, in einem Wort (die Orte aus src/k15-entwurf-modell.ts#ORTE); was in einem anderen steckt, sagt worin
+const WEG_WORT: Record<string, string> = { "native Datei": "lädt Claude Code", "Session-Datei": "Session-Datei", Prompt: "erste Nachricht",
+  plan: "Startzeile", Zustellung: "im Lauf" };
+export function wegVon(a: Answer, b: Baustein): string {
+  if (b.zustand !== "an") return "";
+  const da = a.lieferung?.geliefert.find((x) => x.id === b.id);
+  if (!da) return a.lieferung ? "fehlt bei diesem Start" : "";
+  const worin = b.enthaltenIn ? a.plan.bausteine.find((x) => x.id === b.enthaltenIn) : undefined;
+  return worin && worin.zustand === "an" ? `in ${bausteinName(worin)}` : WEG_WORT[da.weg] ?? da.weg;
+}
+// die Bytes eines Bausteins, die keinem Baustein in ihm gehören: so zählt jedes Byte einmal, beim innersten, der es nennt, und die
+// Gruppen ergeben zusammen Fleets Teil des Starts (startSumme.fleetBytes)
+export const zahl = (b: Baustein): number | null => typeof b.bytes === "number" ? b.bytes : null;
+export function eigeneBytes(a: Answer): Map<string, number> {
+  const an = a.plan.bausteine.filter((b) => b.zustand === "an");
+  const out = new Map<string, number>();
+  for (const b of an) {
+    const n = zahl(b);
+    if (n === null) continue;
+    out.set(b.id, Math.max(0, n - an.filter((k) => k.enthaltenIn === b.id).reduce((m, k) => m + (zahl(k) ?? 0), 0)));
+  }
+  return out;
+}
+
+// MODELL UND EFFORT: gesetzt, sonst der Standard der Rolle aus dem Plan (model-register.ts#MODEL_DEFAULTS); eine Session ohne Rolle
+// startet mit FLEET_MODEL und ohne --effort (server.ts#agentCmd). Rangfolge aus dem Modell (`wirksam`): Session vor Profil vor Standard.
+// `herkunft` steht vorne in Menschenworten, `quelle` (Datei und Funktion) nur im Title.
+export interface Wahl { wert: string; wort: string; herkunft: string; quelle: string; gesetzt: boolean }
+export function wahlVon(s: St, p: Profil, q: Position | null, feld: "modell" | "effort"): Wahl {
+  const wort = (v: string | null) => v === null ? "Claude-Standard" : feld === "modell" ? modelLabel(v) : EFFORT_WORT[v] ?? v;
+  const qa = q?.abw?.[feld], pa = p[feld];
+  const std = antwort(lage(s, p, null)?.voll ?? "laedt")?.rollen.find((r) => r.id === p.rolle)?.standard ?? null;
+  const ohneRolle = feld === "modell"
+    ? { wert: s.fleetModell, herkunft: "ohne Rolle: das Modell, mit dem Fleet jede Session startet", quelle: "FLEET_MODEL · server.ts#agentCmd" }
+    : { wert: null, herkunft: "ohne Rolle: Claude Code nimmt seinen eigenen Standard", quelle: "kein --effort · server.ts#agentCmd" };
+  const w = wirksam<{ v: string | null; quelle: string }>({
+    ...(typeof qa === "string" ? { position: { wert: { v: qa, quelle: "" }, herkunft: "für diese Session gesetzt" } } : {}),
+    ...(typeof pa === "string" ? { profil: { wert: { v: pa, quelle: "" }, herkunft: `im Profil ${p.name} gesetzt` } } : {}),
+    standard: std ? { wert: { v: feld === "modell" ? std.modell : std.effort, quelle: "model-register.ts#MODEL_DEFAULTS" }, herkunft: "Fleets Standard für diese Rolle" }
+      : { wert: { v: ohneRolle.wert, quelle: ohneRolle.quelle }, herkunft: ohneRolle.herkunft },
+  });
+  const v = w?.wert.v ?? null;
+  return { wert: v ?? "", wort: !std && feld === "modell" && v === null ? "unbekannt" : wort(v), herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "",
+    gesetzt: w?.rang === "position" || w?.rang === "profil" };
+}
+// DIE ÜBERGABE-SCHWELLE: ist die Übergabe auf der ganzen Instanz aus (FLEET_MIGRATE_PCT 0), wirkt kein eigener Wert; der Server prüft
+// den Hauptschalter vor dem Wert der Session (server.ts#succeedAtThreshold)
+export function schwelleWahl(s: St, p: Profil, q: Position | null): { pct: number | null; herkunft: string; quelle: string; gesetzt: boolean } {
+  const std = schwelleVon(p.schiene, s.env ?? null);
+  if (s.env && s.env.migratePct <= 0) return { pct: 0, herkunft: std.herkunft, quelle: std.quelle, gesetzt: false };
+  const qa = q?.abw?.schwelle, pa = p.schwelle;
+  const w = wirksam<number | null>({
+    ...(typeof qa === "number" ? { position: { wert: qa, herkunft: "für diese Session gesetzt" } } : {}),
+    ...(typeof pa === "number" ? { profil: { wert: pa, herkunft: `im Profil ${p.name} gesetzt` } } : {}),
+    standard: { wert: std.pct, herkunft: std.herkunft },
+  });
+  return { pct: w?.wert ?? null, herkunft: w?.herkunft ?? std.herkunft, quelle: w?.rang === "standard" ? std.quelle : "", gesetzt: w?.rang === "position" || w?.rang === "profil" };
+}

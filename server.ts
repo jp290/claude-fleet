@@ -9742,7 +9742,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       s.cols = 200;
       s.rows = 50;
       // which role this spawn knew, for the board (persisted below by saveState); a foreign harness records none
-      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, at: Date.now() } : null;
+      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt } : null;
       // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;

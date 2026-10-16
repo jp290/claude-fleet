@@ -89,13 +89,13 @@ export function spawnListRole(f: { claude: boolean; lane: boolean; orchestrator:
 
 // THE OCCUPATION'S LAST CLAUDE SPAWN as the board reads it (K16 R3, Bauleitung 16.10.: which tools a running MAIN
 // really has). Bound to the occupation like a standing handover: persisted with the slot, so a server restart keeps
-// it, and a record of another occupation, or a malformed one, loads as none.
-export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; at: number }
+// it, and a record of another occupation, or a malformed one, loads as none. No timestamp: a restart that re-runs the
+// spawn must leave the persisted record as it was (e2e/lanes-lifecycle.ts), and nothing read one.
+export interface SlotSpawn { role: ClaudeStartRole; openedAt: number }
 const START_ROLES: readonly string[] = ["lane", "main", "orchestrator", "generic"];
 export function slotSpawnFrom(raw: unknown, openedAt: number): SlotSpawn | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.role !== "string" || !START_ROLES.includes(r.role) || r.openedAt !== openedAt
-    || typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0) return null;
-  return { role: r.role as ClaudeStartRole, openedAt, at: r.at };
+  if (typeof r.role !== "string" || !START_ROLES.includes(r.role) || r.openedAt !== openedAt) return null;
+  return { role: r.role as ClaudeStartRole, openedAt };
 }

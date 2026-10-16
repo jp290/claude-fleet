@@ -103,9 +103,11 @@ describe("Bauleitung 16.10.: welche Werkzeuge eine laufende MAIN wirklich hat â€
 
   test("the record survives the state file for its own occupation and for no other", () => {
     for (const role of ROLES) {
-      const saved = JSON.parse(JSON.stringify({ role, openedAt: 4711, at: 1_792_000_000_000 }));
-      expect(slotSpawnFrom(saved, 4711)).toEqual({ role, openedAt: 4711, at: 1_792_000_000_000 });
+      const saved = JSON.parse(JSON.stringify({ role, openedAt: 4711 }));
+      expect(slotSpawnFrom(saved, 4711)).toEqual({ role, openedAt: 4711 });
       expect(slotSpawnFrom(saved, 4712)).toBeNull();
+      // a record written while it still carried `at` (8bdd80b7) loads, without it
+      expect(slotSpawnFrom({ role, openedAt: 4711, at: 1_792_000_000_000 }, 4711)).toEqual({ role, openedAt: 4711 });
     }
   });
 
@@ -113,9 +115,9 @@ describe("Bauleitung 16.10.: welche Werkzeuge eine laufende MAIN wirklich hat â€
     expect(slotSpawnFrom(undefined, 1)).toBeNull();
     expect(slotSpawnFrom(null, 1)).toBeNull();
     expect(slotSpawnFrom("main", 1)).toBeNull();
-    expect(slotSpawnFrom({ role: "bau", openedAt: 1, at: 5 }, 1)).toBeNull();
-    expect(slotSpawnFrom({ role: "main", openedAt: 1, at: 0 }, 1)).toBeNull();
-    expect(slotSpawnFrom({ role: "main", openedAt: 1, at: Number.NaN }, 1)).toBeNull();
-    expect(slotSpawnFrom({ role: "main", openedAt: 1 }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "bau", openedAt: 1 }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "main", openedAt: "1" }, 1)).toBeNull();
+    expect(slotSpawnFrom({ role: "main" }, 1)).toBeNull();
+    expect(slotSpawnFrom({ openedAt: 1 }, 1)).toBeNull();
   });
 });

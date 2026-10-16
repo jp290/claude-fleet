@@ -40,6 +40,7 @@ import { modelLabel } from "./modelname";
 import { packIdFassung, standSincePreview, type BranchesView, type BranchOtherView, type FoundingPlanOmission, type FoundingPlanPack,
   type FoundingPlanPart, type FoundingSessionAgents, type LaneAnchor, type PackAnchors, type PackStand } from "./protocol";
 import { openShell, type Shell } from "./shell";
+import { startZahl } from "./k15-startzahl";
 
 // the four roles of the register (session-blocks.ts#SessionRole); the server's own word for each
 // comes with the plan (`rollen[].wort`), the sentence is the window's (Konzept 3, Blatt 20)
@@ -100,7 +101,7 @@ export interface Answer extends Plan {
   lieferung?: Lieferung; claudeCode?: ClaudeCode | null; startSumme?: StartSumme;
 }
 interface Lieferung { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] }
-interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string }
+interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string; details?: unknown }
 interface CcMessung { rolle: string; tokens: number; am: string; claude: string; modell: string; quelle: string; gilt: boolean; grund?: string }
 interface ClaudeCode { rolle: string; zeilen: CcZeile[]; messung: CcMessung; danach?: CcMessung }
 interface StartSumme { fleetBytes: number; fleetUnbekannt: string[]; fleetTokens: number; bytesJeToken: { wert: number; quelle: string };
@@ -955,11 +956,17 @@ function sumRow(a: StartAnswer): HTMLElement {
   words.append(el("span", "fdsumn", sum.tokens === "unknown" ? `≈ ${tok(sum.fleetTokens)} von Fleet` : `≈ ${tok(sum.tokens)}`),
     el("span", "fdsay2", sum.tokens === "unknown" ? "beim Start · Claude Code selbst nicht gemessen" : "beim Start, ohne den Auftrag"));
   t.append(words, icon("chevron"));
-  t.title = [
-    sum.claudeCodeTokens !== null ? `Claude Code selbst: ${tok(sum.claudeCodeTokens)}, gemessen.` : "Claude Code selbst: nicht gemessen für diesen Agenten.",
-    `Fleet: ${kb(sum.fleetBytes)}, ≈ ${tok(sum.fleetTokens)} geschätzt (Bytes ÷ ${String(sum.bytesJeToken.wert).replace(".", ",")}, ${sum.bytesJeToken.quelle}).`,
-    "Ohne den Text des Auftrags. Ein Klick zeigt, woraus die Summe besteht.",
-  ].join("\n");
+  // the parts of the number, by the rule that makes it (src/k15-startzahl.ts, as server.ts#startSumme): they add up to what the row shows
+  const z = sum.tokens === "unknown" ? null : startZahl(a);
+  const ratio = `Bytes ÷ ${String(sum.bytesJeToken.wert).replace(".", ",")}, ${sum.bytesJeToken.quelle}`;
+  t.title = (z ? [
+    z.claudeCode ? `Claude Code selbst: ≈ ${tok(z.claudeCode.tokens)}, ${z.claudeCode.wie}.` : "Claude Code selbst: nicht gemessen für diesen Agenten.",
+    `Fleet: ≈ ${tok(z.fleet)} geschätzt (${ratio}).`,
+    ...(z.repo === null ? ["Die Dateien des Repos: nicht gemessen."] : z.repo ? [`Die Dateien des Repos: ≈ ${tok(z.repo)}.`] : []),
+  ] : [
+    "Claude Code selbst: nicht gemessen für diesen Agenten.",
+    `Fleet: ${kb(sum.fleetBytes)}, ≈ ${tok(sum.fleetTokens)} geschätzt (${ratio}).`,
+  ]).concat("Ohne den Text des Auftrags. Ein Klick zeigt, woraus die Summe besteht.").join("\n");
   t.onclick = () => { s.startShown = !s.startShown; s.startOpen = null; renderAll(); };
   const p = btn("fdopt fdgets fdsuma");
   p.dataset.act = "anpassen";

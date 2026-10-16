@@ -3779,10 +3779,10 @@ export async function run(lc: LaneCtx): Promise<void> {
 }
 
 // THE LIVE CLIENT FOLLOWS A CLIENT LAND (server.ts#rebuildBundleAfterLand). The fixture repo IS the
-// server's live checkout (FLEET_REPO_DIR), with src/, a tracked public/index.html and four gitignored
+// server's live checkout (FLEET_REPO_DIR), with src/, a tracked public/index.html and five gitignored
 // bundles made old on purpose — the 2026-10-08 shape, where ab6c00d5 landed src/client.ts and
 // public/app.js stayed on the build before it. The build is a stub that records where it ran and
-// touches the four bundles, so the check measures the land's decision and its note, not bun build.
+// touches the five bundles (server.ts#BUNDLES), so the check measures the land's decision and its note, not bun build.
 // Three lands in a fixed order: a docs land over a stale bundle (never builds), a client land
 // (builds, note says ok), a client land whose build exits 3 (lands anyway, note carries the error).
 async function rebuildBundleAfterClientLand(): Promise<void> {
@@ -3790,7 +3790,7 @@ async function rebuildBundleAfterClientLand(): Promise<void> {
   const verify = `${ROOT}/bundle-build-verify`;
   const runs = `${ROOT}/bundle-build-runs`;
   const failMode = `${ROOT}/bundle-build-fail`;
-  const bundles = ["app.js", "share.js", "helper.js", "hub.js"].map((f) => `${repo}/public/${f}`);
+  const bundles = ["app.js", "share.js", "helper.js", "hub.js", "k15.js"].map((f) => `${repo}/public/${f}`);
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync("git", ["-C", cwd, ...args]);
     if (r.status !== 0) throw new Error(`bundle build fixture ${args.join(" ")}: ${r.stderr.toString()}`);
@@ -3849,7 +3849,7 @@ async function rebuildBundleAfterClientLand(): Promise<void> {
     await restartSrv({
       FLEET_REPO_DIR: repo, FLEET_VERIFY_CMD: verify, FLEET_VERIFY_CMD_REPOS: JSON.stringify({ [repo]: verify }),
       FLEET_DEPLOY_BUILD_CMD: `if [ -f '${failMode}' ]; then echo 'fixture build broke' >&2; exit 3; fi; `
-        + `pwd -P >> '${runs}' && touch public/app.js public/share.js public/helper.js public/hub.js`,
+        + `pwd -P >> '${runs}' && touch public/app.js public/share.js public/helper.js public/hub.js public/k15.js`,
     });
     await setMergeMode("blocked");
 

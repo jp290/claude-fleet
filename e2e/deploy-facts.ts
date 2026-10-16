@@ -24,7 +24,7 @@ const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 
 interface Bundle {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
-  hubJsMtime: number | null;
+  hubJsMtime: number | null; k15JsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
 }
 interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null; deployFactsAt?: number | null }
@@ -79,6 +79,7 @@ export async function run(): Promise<void> {
   writeFileSync(`${FIX}/public/share.js`, "// bundle");
   writeFileSync(`${FIX}/public/helper.js`, "// bundle");
   writeFileSync(`${FIX}/public/hub.js`, "// bundle");
+  writeFileSync(`${FIX}/public/k15.js`, "// bundle");
   // The fixture carries a real IMPORT GRAPH, not just file names, because that is what the roles
   // are read off since 2026-09-07 (server/deploy-classify.ts). package.json#scripts.build names the
   // bundle entries — the same derivation the real repo uses, so a check here fails for the reason
@@ -240,12 +241,12 @@ export async function run(): Promise<void> {
       for (const file of files) utimesSync(`${FIX}/public/${file}`, when, when);
     };
     const old = new Date(Date.now() - 60 * 60_000);
-    stamp(old, "app.js", "share.js", "helper.js", "hub.js");
+    stamp(old, "app.js", "share.js", "helper.js", "hub.js", "k15.js");
     const f = await settle((x) => x.bundleStale?.stale === true);
     check("§3 a bundle older than src/ is stale — landed client code invisible in the browser",
       f.bundleStale?.stale === true, JSON.stringify(f.bundleStale));
     const now = new Date();
-    stamp(now, "app.js", "share.js", "helper.js", "hub.js");
+    stamp(now, "app.js", "share.js", "helper.js", "hub.js", "k15.js");
     const g = await settle((x) => x.bundleStale?.stale === false);
     check("§3 rebuilding clears it — the fact follows the filesystem, it is not sticky",
       g.bundleStale?.stale === false, JSON.stringify(g.bundleStale));
@@ -260,6 +261,14 @@ export async function run(): Promise<void> {
       hb?.stale === true && hb.helperJsMtime !== null && hb.appJsMtime !== null
       && hb.helperJsMtime < hb.appJsMtime, JSON.stringify(hb));
     stamp(now, "helper.js");
+    // k15.js (the K15 window, package.json#scripts.build) is the fifth bundle; aged alone like helper.js
+    await settle((x) => x.bundleStale?.stale === false);
+    stamp(old, "k15.js");
+    const k = await settle((x) => x.bundleStale?.stale === true);
+    const kb = k.bundleStale;
+    check("§3 k15.js alone, older than src/, is stale too — the K15 window is not exempt",
+      kb?.stale === true && kb.k15JsMtime !== null && kb.appJsMtime !== null && kb.k15JsMtime < kb.appJsMtime, JSON.stringify(kb));
+    stamp(now, "k15.js");
   }
 
   // ===== §4 what it does NOT know is null, never false =====

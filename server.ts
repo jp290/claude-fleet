@@ -10,6 +10,7 @@ import { createClaudeQuotaReader } from "./server/usage";
 import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn } from "./server/session-start";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
 import type { CcAnatomie } from "./src/k15-anatomie";
+import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
 import type { SubscriptionUsage } from "./src/protocol";
 import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
@@ -40726,8 +40727,8 @@ function claudeCodeAnatomie(spawn: ClaudeCodeRolle, repoRoot: string, modell: st
     repoMcp: repoMcp(repoRoot), quelleMcp: quelle?.kopf.cwd ? repoMcp(quelle.kopf.cwd) : [] });
 }
 
-// THE START IN ONE NUMBER: Claude Code's measured tokens plus Fleet's delivered bytes at the measured
-// ratio (session-blocks.ts#FLEET_BYTES_JE_TOKEN). Fleet's part is what this role's door delivers, each
+// THE START IN ONE NUMBER (`tokens`, src/k15-startzahl.ts) and its raw parts: Fleet's delivered bytes at the measured
+// ratio (session-blocks.ts#FLEET_BYTES_JE_TOKEN), Claude Code's fixed measurement. Fleet's part is what this role's door delivers, each
 // row once (a row inside a delivered container is counted there); an unmeasured row is named, never 0.
 function startSumme(plan: SessionPlan, lieferung: PlanDoorVerdict, claudeCode: Record<string, unknown> | null): Record<string, unknown> {
   const geliefert = new Set(lieferung.geliefert.map((row) => row.id));
@@ -40735,9 +40736,15 @@ function startSumme(plan: SessionPlan, lieferung: PlanDoorVerdict, claudeCode: R
   const fleetBytes = rows.reduce((sum, b) => sum + (typeof b.bytes === "number" ? b.bytes : 0), 0);
   const fleetTokens = Math.round(fleetBytes / FLEET_BYTES_JE_TOKEN.wert);
   const gemessen = claudeCode ? (claudeCode.messung as { tokens: number }).tokens : null;
+  // `tokens` is the K15 window's start number, ONE rule for both (src/k15-startzahl.ts): Claude Code from its breakdown plus the
+  // global rules (the fixed measurement only without a measured source), Fleet without the repo's own files, those apart and
+  // without the global rules nativeLoaderBytes reads along. `claudeCodeTokens` stays the fixed measurement. A harness without
+  // Claude Code has no number for its own part: "unknown".
+  const zahl = claudeCode === null ? null : startZahlVon({ bausteine: plan.bausteine, geliefert: lieferung.geliefert,
+    claudeCode: claudeCode as StartZahlEingang["claudeCode"], fleetBytes, bytesJeToken: FLEET_BYTES_JE_TOKEN.wert });
   return { fleetBytes, fleetUnbekannt: rows.filter((b) => b.bytes === "unknown").map((b) => b.id),
     fleetTokens, bytesJeToken: FLEET_BYTES_JE_TOKEN, claudeCodeTokens: gemessen,
-    tokens: gemessen === null ? "unknown" : gemessen + fleetTokens };
+    tokens: zahl === null ? "unknown" : zahl.tokens };
 }
 
 // THE ONE PLAN ANSWER: GET /api/founding-plan reads its query into this, and a spawn door that is
@@ -46712,10 +46719,11 @@ async function deployGap(): Promise<DeployGap> {
 // own accounting a false fresh is the expensive direction (a false stale costs one rebuild; the
 // 2026-07-25 false fresh cost an invisible hour). A new bundle belongs in this list and in the
 // named mtimes below, so a `stale:null` can still say WHICH side could not be stat'd.
-const BUNDLES = ["app.js", "share.js", "helper.js", "hub.js"] as const;
+// k15.js (src/k15-entwurf.ts, the K15 window, its own bundle since ae9ab968) is the fifth and was missing here the same way.
+const BUNDLES = ["app.js", "share.js", "helper.js", "hub.js", "k15.js"] as const;
 interface BundleStale {
   appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
-  hubJsMtime: number | null;
+  hubJsMtime: number | null; k15JsMtime: number | null;
   srcNewestMtime: number | null; stale: boolean | null;
 }
 function newestMtime(dir: string): number | null {
@@ -46790,13 +46798,14 @@ function bundleStale(): BundleStale {
   const shareJsMtime = bundleMtime(BUNDLES[1]);
   const helperJsMtime = bundleMtime(BUNDLES[2]);
   const hubJsMtime = bundleMtime(BUNDLES[3]);
+  const k15JsMtime = bundleMtime(BUNDLES[4]);
   const srcRaw = newestMtime(`${REPO_DIR}/src`);
   const srcNewestMtime = srcRaw === null ? null : Math.round(srcRaw);
-  const bundles = [appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime].filter((m): m is number => m !== null);
+  const bundles = [appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime, k15JsMtime].filter((m): m is number => m !== null);
   const stale = srcNewestMtime === null || bundles.length !== BUNDLES.length
     ? null
     : !bundles.every((m) => m >= srcNewestMtime);
-  return { appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime, srcNewestMtime, stale };
+  return { appJsMtime, shareJsMtime, helperJsMtime, hubJsMtime, k15JsMtime, srcNewestMtime, stale };
 }
 
 // --- VERB 2, DEPLOY: the two facts above, given a hand ------------------------------------------

@@ -368,7 +368,7 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   //     on 2026-07-25). Exercised against ctx.gapRepo (FLEET_REPO_DIR), which starts with neither a
   //     public/ nor a src/ — i.e. in the cannot-tell state. ---
   type Bundle = { appJsMtime: number | null; shareJsMtime: number | null; helperJsMtime: number | null;
-    hubJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null };
+    hubJsMtime: number | null; k15JsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null };
   const readBundle = async (path: string) =>
     ((await (await stewGet(path)).json()) as { bundleStale?: Bundle }).bundleStale;
   const bSet = (rel: string, secs: number) => utimesSync(`${ctx.gapRepo}/${rel}`, secs, secs);
@@ -384,11 +384,13 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   writeFileSync(`${ctx.gapRepo}/public/share.js`, "// bundle\n");
   writeFileSync(`${ctx.gapRepo}/public/helper.js`, "// bundle\n");
   writeFileSync(`${ctx.gapRepo}/public/hub.js`, "// bundle\n");
+  writeFileSync(`${ctx.gapRepo}/public/k15.js`, "// bundle\n");
   bSet("src/client.ts", T - 100);
   bSet("public/app.js", T - 50);
   bSet("public/share.js", T - 50);
   bSet("public/helper.js", T - 50);
   bSet("public/hub.js", T - 50);
+  bSet("public/k15.js", T - 50);
   const bs1 = await readBundle("/api/steward/sessions");
   check("bundle-staleness: bundles built AFTER the newest source read fresh (stale=false)",
     bs1?.stale === false && bs1.appJsMtime === (T - 50) * 1000 && bs1.shareJsMtime === (T - 50) * 1000

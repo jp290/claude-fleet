@@ -9,14 +9,12 @@ import { fmt } from "./k15-entwurf-modell";
 import { S, render } from "./k15-zustand";
 import { nachZahl, werTag } from "./k15-teile";
 import { werBeiTeil, type Wer } from "./k15-wer";
-import { anatomieVon, gruppenBytes, zaehltMit, type AnatomieGruppe, type AnatomieStand, type AnatomieTeil, type CcAnatomie } from "./k15-anatomie";
+import { anatomieVon, gruppenBytes, jeToken, zaehltMit, type AnatomieGruppe, type AnatomieStand, type AnatomieTeil, type CcAnatomie } from "./k15-anatomie";
 
 export { anatomieVon };
 const STAND_WORT: Readonly<Record<AnatomieStand, string>> = { an: "an", abruf: "auf Abruf", name: "nur der Name", aus: "aus" };
 const STAENDE: readonly AnatomieStand[] = ["an", "abruf", "name", "aus"];
-// Bytes in Tokens mit dem Verhältnis, das an der Quelle gemessen ist (ihre erste Anfrage durch die Tokens ihrer ersten Antwort); ohne
-// Quelle Fleets eigenes (session-blocks.ts#FLEET_BYTES_JE_TOKEN)
-const jeToken = (an: CcAnatomie): number => an.quelle?.bytesJeToken ?? 2.1;
+// Bytes in Tokens mit dem Verhältnis, das an der Quelle gemessen ist (k15-anatomie.ts#jeToken)
 export const tokCc = (bytes: number, an: CcAnatomie): string => {
   const t = bytes / jeToken(an);
   return bytes <= 0 ? "" : t < 10 ? "< 10 Tok" : fmt(Math.round(t / 10) * 10);

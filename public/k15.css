@@ -580,7 +580,26 @@
 .k15 .k15abat { font-size: 14px; font-weight: 600; color: var(--chat-ink); }
 .k15 .k15abab { margin-left: auto; font-size: 11.5px; color: var(--chat-faint); white-space: nowrap; }
 .k15 .k15abax { font-size: 12.5px; line-height: 1.5; color: var(--chat-mute); white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.k15 .k15abseg { align-self: flex-start; }
+/* TEIL 3 · WIE VIEL FLEET MITKOMMT (src/k15-anbindung-ui.ts): die Vorschau-Rolle, darunter vier Stufen in Graustufen von hell nach dunkel,
+   gefüllt bis zur gewählten; je Stufe Wort und was Fleet dazugibt */
+.k15 .k15abvz { display: flex; align-items: center; gap: 10px; }
+.k15 .k15abvk { font-size: 12px; color: var(--chat-mute); }
+.k15 .k15abvs button { min-height: 28px; padding: 0 12px; font-size: 12.5px; }
+.k15 .k15abreg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; max-width: calc(var(--n, 4) * 160px); padding: 4px; border: 1px solid var(--chat-edge); border-radius: 12px; }
+.k15 .k15abreg button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; min-width: 0; min-height: 56px; padding: 8px 12px;
+  border-radius: 9px; text-align: left; color: var(--chat-mute); background: color-mix(in srgb, var(--chat-ink) var(--g0), transparent); transition: background .15s, color .15s, box-shadow .15s; }
+.k15 .k15abreg button.voll { background: color-mix(in srgb, var(--chat-ink) var(--g), transparent); color: var(--chat-ink); }
+.k15 .k15abreg button.on { box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
+.k15 .k15abreg button:not(.on):not(:disabled):hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-ink) 40%, transparent); }
+.k15 .k15abrw { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.k15 .k15abrt { font: 11.5px/1.25 var(--chat-mono); color: var(--chat-mute); }
+.k15 .k15abreg button.voll .k15abrt { color: color-mix(in srgb, var(--chat-ink) 72%, transparent); }
+.k15 .k15abrs { color: var(--chat-prose); }
+.k15 .k15abrc { margin-top: -8px; font-size: 11.5px; line-height: 1.45; color: var(--chat-faint); max-width: 68ch; }
+.k15 .k15abneu { color: var(--chat-ink); font-weight: 600; }
+.k15 .k15abdl { display: flex; flex-direction: column; gap: 6px; padding: 0 14px; }
+.k15 .k15abd { display: grid; grid-template-columns: minmax(136px, 196px) minmax(0, 1fr); gap: 14px; font-size: 12.5px; line-height: 1.45; color: var(--chat-mute); }
+.k15 .k15abdk { color: var(--chat-faint); }
 .k15 .k15abg { display: flex; flex-direction: column; border: 1px solid var(--chat-edge-soft); border-radius: 12px; overflow: hidden; }
 .k15 .k15abgz { display: grid; grid-template-columns: minmax(150px, 210px) minmax(0, 1fr); gap: 14px; padding: 10px 14px; border-top: 1px solid var(--chat-edge-soft); }
 .k15 .k15abgz:first-child { border-top: 0; }
@@ -615,6 +634,11 @@
   .k15 .k15abtg { margin: 0; }
   .k15 .k15abts { flex: 1 1 100%; }
   .k15 .k15abgz { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .k15 .k15abreg button { padding: 8px; min-height: 52px; }
+  .k15 .k15abrw { font-size: 12.5px; }
+  .k15 .k15abru { display: none; }
+  .k15 .k15abdl { padding: 0; }
+  .k15 .k15abd { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .k15 .k15abfuss { padding: 10px; }
   .k15 .k15abwo { display: none; }
   .k15 .k15abfuss .k15go { flex: 1 1 auto; padding: 0 14px; } }

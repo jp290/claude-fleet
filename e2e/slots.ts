@@ -5347,17 +5347,36 @@ async function runFoundingPlanProbe(scratch: string): Promise<void> {
   // BEIM START (server.ts#claudeCodeStart, #startSumme, Charge 5): per role the way each delivered row
   // takes, what Claude Code brings itself, and the sum — Fleet's part counts every delivered row once
   type Start = { plan?: Plan; lieferung?: { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] };
-    claudeCode?: { rolle: string; zeilen: { id: string; weg: string; bytes: number | "unknown" }[]; messung: { tokens: number; gilt: boolean }; danach?: { tokens: number } } | null;
+    claudeCode?: { rolle: string; zeilen: { id: string; weg: string; bytes: number | "unknown"; details?: { dateien?: { pfad: string; bytes: number }[] } }[];
+      messung: { tokens: number; gilt: boolean }; danach?: { tokens: number };
+      anatomie?: { quelle: { bytesJeToken: number | null } | null; gruppen: { id: string; teile: { stand: string; bytes: number | null }[] }[] } } | null;
     startSumme?: { fleetBytes: number; fleetTokens: number; bytesJeToken: { wert: number }; claudeCodeTokens: number | null; tokens: number | "unknown" } };
   const startOf = async (query: string, harness = "claude"): Promise<Start> =>
     await (await get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&harness=${harness}&${query}`)).json() as Start;
+  // THE START NUMBER is the K15 window's (src/k15-startzahl.ts, Bauleitung 2a2ec0d0: one rule for startSumme and the window), said
+  // again here in this claim's own words: Claude Code from its breakdown plus the global rules where a source is measured, else the
+  // fixed measurement; Fleet's delivered rows without the repo's own files; those apart, without the global rules the folder's
+  // measurement reads along (nativeLoaderBytes visits the config CLAUDE.md first) — the global rules count once, at Claude Code
+  const startNumber = (b: Start): number => {
+    const s = b.startSumme!, w = s.bytesJeToken.wert, cc = b.claudeCode;
+    const ruleRows = (cc?.zeilen ?? []).filter((z) => z.weg === "native Datei");
+    const rules = ruleRows.reduce((n, z) => n + (typeof z.bytes === "number" ? z.bytes : 0), 0);
+    const an = cc?.anatomie?.quelle ? cc.anatomie : null;
+    const own = an ? Math.round(an.gruppen.filter((g) => g.id !== "plugins").flatMap((g) => g.teile).filter((x) => x.stand !== "aus")
+      .reduce((n, x) => n + (x.bytes ?? 0), 0) / (an.quelle?.bytesJeToken ?? 2.1) + rules / w) : cc?.messung.gilt ? cc.messung.tokens : 0;
+    const nat = b.plan?.bausteine.find((x) => x.id === "native-agents");
+    const natBytes = nat && b.lieferung?.geliefert.some((x) => x.id === "native-agents") && typeof nat.bytes === "number" ? nat.bytes : null;
+    const globalFiles = new Set(ruleRows.flatMap((z) => (z.details?.dateien ?? []).map((f) => f.pfad)));
+    const twice = (nat?.details?.dateien ?? []).filter((f) => globalFiles.has(f.pfad)).reduce((n, f) => n + f.bytes, 0);
+    return own + Math.round((s.fleetBytes - (natBytes ?? 0)) / w) + (natBytes === null ? 0 : Math.round((natBytes - twice) / w));
+  };
   const sumHolds = (b: Start): boolean => {
     if (!b.plan || !b.lieferung || !b.startSumme) return false;
     const on = new Set(b.lieferung.geliefert.map((r) => r.id));
     const rows = b.plan.bausteine.filter((x) => on.has(x.id) && !(x.enthaltenIn !== undefined && on.has(x.enthaltenIn)));
     const bytes = rows.reduce((n, x) => n + (typeof x.bytes === "number" ? x.bytes : 0), 0);
     return b.startSumme.fleetBytes === bytes && b.startSumme.fleetTokens === Math.round(bytes / b.startSumme.bytesJeToken.wert)
-      && b.startSumme.tokens === (b.startSumme.claudeCodeTokens ?? Number.NaN) + b.startSumme.fleetTokens;
+      && b.startSumme.tokens === startNumber(b);
   };
   const [laneStart, mainStart, orchStart, codexStart] = [await startOf("role=lane"), await startOf("role=main"),
     await startOf("role=orchestratorin"), await startOf("role=lane", "codex")];
@@ -5379,6 +5398,23 @@ async function runFoundingPlanProbe(scratch: string): Promise<void> {
       && typeof zeile(laneStart, "listenschnitt")?.bytes === "number" && (zeile(laneStart, "listenschnitt")!.bytes as number) > 0
       && codexStart.claudeCode === null && codexStart.startSumme?.tokens === "unknown",
     JSON.stringify([laneStart.claudeCode, mainStart.claudeCode?.rolle, orchStart.claudeCode?.rolle, codexStart.claudeCode]).slice(0, 500));
+  // A GLOBAL RULES FILE makes the two measurements overlap: Claude Code reads the config CLAUDE.md, and Nur Ordner's own-files row
+  // measures it along. Planted in a config dir of this check's own (srv's config dir is the parent of its projects dir), then back.
+  const cfg = resolve(scratch, "founding-config");
+  mkdirSync(`${cfg}/projects`, { recursive: true });
+  const RULES = `# Global rules (e2e)\n${"- a rule Claude Code reads from its config dir\n".repeat(40)}`;
+  writeFileSync(`${cfg}/CLAUDE.md`, RULES);
+  // two restarts with no pane open end the suite's tmux server: snapshot and restore its env like every such section (top of file)
+  const cfgEnvBefore = await tmuxEnvSnapshot();
+  await restartSrv({ FLEET_CLAUDE_PROJECTS_DIR: `${cfg}/projects` });
+  const folderStart = await startOf("role=nur-ordner");
+  await restartSrv();
+  await restoreTmuxEnv(cfgEnvBefore);
+  const globalRow = zeile(folderStart, "globale-regeln");
+  const folderFiles = folderStart.plan?.bausteine.find((x) => x.id === "native-agents")?.details?.dateien ?? [];
+  check("founding plan: Beim Start — the global rules count once: Claude Code's part has them, Nur Ordner's own files not again",
+    globalRow?.bytes === Buffer.byteLength(RULES) && folderFiles.some((f) => f.pfad === `${cfg}/CLAUDE.md`) && sumHolds(folderStart),
+    JSON.stringify({ globalRow, folderFiles, summe: folderStart.startSumme }).slice(0, 500));
   const replaced = await plan("role=lane&bausteine=lane-footer=ersetzt:self-credential");
   const [required, locked] = [await plan("role=lane&bausteine=lane-footer=aus"), await plan("role=lane&bausteine=owner-heft=ersetzt:portable-contract")];
   check("founding plan: a replaced footer leaves the file, a required row refuses aus, a locked one refuses replacement",
@@ -6293,8 +6329,12 @@ export async function runFoundingFocusDom(sourceRoot: string, artifacts?: string
             ausgelassen: [{ id: 'source-code', grund: 'Plan: aus' }] },
           claudeCode: { rolle: 'lane', messung: { rolle: 'lane', tokens: 31000, am: '2026-10-11T22:10Z', claude: '2.1.296', modell: 'fixture', quelle: 'session-blocks.ts#CLAUDE_CODE_MESSUNG', gilt: true },
             zeilen: [{ id: 'werkzeuge', wort: 'Werkzeuge', satz: 'Jedes Werkzeug bringt sein Schema mit.', quelle: 'server.ts#SESSION_TOOLS', weg: '--tools', bytes: 'unknown', wert: '14 Werkzeuge' },
-              { id: 'mcp', wort: 'MCP', satz: 'Eine Text-Lane startet ohne MCP-Server.', quelle: 'server.ts#agentCmd', weg: '--strict-mcp-config', bytes: 0, wert: 'kein Server' }] },
-          startSumme: { fleetBytes: 476, fleetUnbekannt: [], fleetTokens: 227, bytesJeToken: { wert: 2.1, quelle: 'fixture' }, claudeCodeTokens: 31000, tokens: 31227 },
+              { id: 'mcp', wort: 'MCP', satz: 'Eine Text-Lane startet ohne MCP-Server.', quelle: 'server.ts#agentCmd', weg: '--strict-mcp-config', bytes: 0, wert: 'kein Server' }],
+            // Claude Code's part from its breakdown (src/k15-startzahl.ts): 60.000 B at 2 B/Tok = 30.000, not the fixed 31.000
+            ...(window.fixtureStart === 'aufgeschluesselt' ? { anatomie: { grund: null, quelle: { slot: null, rolle: 'lane', ort: 'fixture', claude: '2.1.296', modell: null, seit: 0, tokens: null, bytesJeToken: 2 },
+              gruppen: [{ id: 'systemprompt', wort: 'Systemprompt', satz: 'fixture', teile: [{ name: 'Systemprompt', bytes: 60000, stand: 'an', weg: 'mitgeliefert', satz: 'fixture' }] }] } } : {}) },
+          startSumme: { fleetBytes: 476, fleetUnbekannt: [], fleetTokens: 227, bytesJeToken: { wert: 2.1, quelle: 'fixture' }, claudeCodeTokens: 31000,
+            tokens: window.fixtureStart === 'aufgeschluesselt' ? 30227 : 31227 },
         } : {}) };
     };
     export const api = async path => {
@@ -6579,6 +6619,13 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
       // --- BEIM START (Charge 5, MAIN 4f7c331c): ONE summary — the start sum in tokens beside Anpassen; its groups
       // on a click on the sum, across both columns, one line each (name, tokens); the rows of one group on a click
       g['Beim Start stays away while the server sends no start sum'] = await evaluate<boolean>(`!document.querySelector('#shell-found .fdstart, #shell-found [data-start="sum"]')`);
+      // ONE RULE for the number of a start (Bauleitung 7b68303e): the sum's title names the parts the server added, so they add up to it
+      await reset(`window.fixtureStart = 'aufgeschluesselt'`);
+      g['the sum\'s title tells the sum\'s own calculation: Claude Code from its breakdown, its parts in Tok add up to the number shown'] = await evaluate<boolean>(`(() => {
+        const sum = document.querySelector('#shell-found [data-start="sum"]'), n = (s) => Number(s.replace(/\\D/g, ''));
+        const parts = (sum?.title.match(/[\\d.]+ Tok/g) ?? []).map(n);
+        return !!sum && n(sum.querySelector('.fdsumn').textContent) === 30227 && parts.length >= 2 && parts.reduce((x, y) => x + y, 0) === 30227
+          && /aufgeschlüsselt/.test(sum.title); })()`);
       await reset('window.fixtureStart = true');
       g['with a start sum, Was die Session bekommt is one row: the sum in tokens beside Anpassen, no kB, no groups until the sum is clicked'] = await evaluate<boolean>(`(() => {
         const row = document.querySelector('#shell-found .fdsum'), sum = row?.querySelector('[data-start="sum"]');

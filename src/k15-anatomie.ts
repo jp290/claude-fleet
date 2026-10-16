@@ -73,3 +73,6 @@ export function gruppenBytes(g: AnatomieGruppe): { bytes: number; offen: number 
 }
 // die Plugins sind eine Zuordnung der Teile anderer Gruppen und zählen nicht noch einmal
 export const zaehltMit = (g: AnatomieGruppe): boolean => g.id !== "plugins";
+// Bytes je Token, wie an der Quelle gemessen (ihre erste Anfrage durch die Tokens ihrer ersten Antwort); ohne Quelle Fleets eigenes
+// (session-blocks.ts#FLEET_BYTES_JE_TOKEN)
+export const jeToken = (an: CcAnatomie): number => an.quelle?.bytesJeToken ?? 2.1;

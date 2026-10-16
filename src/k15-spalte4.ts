@@ -13,6 +13,7 @@ import { landungSatz, packsAnsicht } from "./k15-packs-ui";
 import { rollenkarteAnsicht } from "./k15-autonomie";
 import { LESEHINWEISE, istPackRolle, packBytes, packLandung } from "./k15-kontextpack";
 import { anatomieBytes, anatomieGruppen, anatomieVon, quelleSatz, quelleTitel, tokCc } from "./k15-anatomie-ui";
+import { startZahl } from "./k15-startzahl";
 
 // die vier Ansichten, die man direkt wählt; die übrigen öffnet ein Abschnitt in Spalte 3
 export const ANSICHTEN: readonly { id: QuelleId; wort: string }[] = [{ id: "landet", wort: "Wo es landet" }, { id: "brief", wort: "Wortlaut" },
@@ -55,7 +56,11 @@ export function spalteQuelle(): HTMLElement {
   col.append(ansicht);
   const ohnePlan = () => el("div", "k15leer", !l ? "Kein Repo gewählt: ohne Repo gibt es keinen Plan." : l.plan === "laedt" ? "Der Gründungsplan wird gelesen …"
     : `Der Plan lehnt ab: ${typeof l.plan === "object" && "fehler" in l.plan ? l.plan.fehler : "unbekannt"}`);
-  const startSatz = (x: Answer): string => !x.startSumme ? "" : `Start ${fmt(typeof x.startSumme.tokens === "number" ? x.startSumme.tokens : 0)}: Fleet ${fmt(x.startSumme.fleetTokens)} geschätzt, Claude Code ${x.startSumme.claudeCodeTokens === null ? "nicht gemessen" : `${fmt(x.startSumme.claudeCodeTokens)} gemessen`}`;
+  // eine Rechnung mit der Summe unten (src/k15-startzahl.ts): Claude Code aus der Aufschlüsselung, die feste Messung nur ohne Quelle
+  const startSatz = (x: Answer): string => {
+    const z = startZahl(x);
+    return !z ? "" : `Start ${fmt(z.tokens)}: Claude Code ${z.claudeCode ? `${fmt(z.claudeCode.tokens)} ${z.claudeCode.wie}` : "nicht gemessen"}, Fleet ${fmt(z.fleet)} geschätzt${z.repo === null ? ", die Dateien des Repos nicht gemessen" : z.repo ? `, die Dateien des Repos ${fmt(z.repo)}` : ""}`;
+  };
   const wer = q ? q.name : `eine Session mit Profil ${p.name}`;
 
   if (s.quelle === "landet") {

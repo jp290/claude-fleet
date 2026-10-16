@@ -1,31 +1,29 @@
 // K15 · DEINE AGENT-MD IN VIER SCHRITTEN (Owner 16.10. 00:5x: „[Zitat entfernt]“
 // ). Jeder
 // Schritt zeigt eine Sache: 1 die Datei (wählen, hineinziehen, neu beginnen), 2 ihre Abschnitte (lesen, ändern, anfügen), 3 was Fleet
-// darum herum mitgibt (aus dem Gründungsplan der gewählten Anbindung, dazu Kontextpacks), 4 als Profil speichern. Das Profil lebt wie
+// darum herum mitgibt (wie viel davon, regelt ein Regler in Graustufen: src/k15-anbindung-ui.ts; dazu Kontextpacks), 4 als Profil speichern. Das Profil lebt wie
 // gespeichert wie Fassungen und Packs auf dem Server (k15-zustand.ts#speichereEigenes); deine Datei und Packs gibt Fleet beim
 // Start noch nicht mit (Schnittplan Schritt 4).
 import { el, baseName, bausteinName } from "./k15-haupt";
 import { icon } from "./icons";
 import { modelLabel } from "./modelname";
-import { DU, EFFORT_WORT, EINSTELLUNGEN_ID, GRUPPEN, REVIEW_MD, WAHL, alle, fmt, gruppeVon, tokVon, type Abschnitt, type PlanRolle, type Profil, type Quelle, type Schiene } from "./k15-entwurf-modell";
+import { DU, EFFORT_WORT, GRUPPEN, REVIEW_MD, WAHL, alle, fmt, gruppeVon, tokVon, type Abschnitt, type Profil, type Quelle, type Schiene } from "./k15-entwurf-modell";
+import { ANBINDUNGEN, anbindungRolle, ankommend, fleetTeil, type Anbindung } from "./k15-anbindung";
+import { startZahl } from "./k15-startzahl";
+import { VORSCHAU, aenderung, regler, stufenPlan, vorschauWahl, type StufenPlan, type Vorschau } from "./k15-anbindung-ui";
 import { abschnitte, dateiPasst } from "./k15-import";
 import { istPackRolle, neuerPack, packBytes, packLandung } from "./k15-kontextpack";
 import { packEditor } from "./k15-packs-ui";
 import { knopf } from "./k15-teile";
-import { S, antwort, gehe, gewaehlt, hole, kommtAn, planUrl, plural, render, speichereEigenes, toast, verwirft, type St } from "./k15-zustand";
+import { S, gehe, gewaehlt, plural, render, speichereEigenes, toast, verwirft, type St } from "./k15-zustand";
 
 // `entwurf` ist der offene Abschnitt, wie er gerade getippt ist: Er lebt im Zustand, so übersteht er jedes Neuzeichnen (Prüfung Punkt 3)
 export interface Ablauf {
   schritt: number; datei: Quelle | null; vorher: Abschnitt[]; offen: number | null; entwurf: { titel: string; text: string } | null;
-  anbindung: PlanRolle; packs: string[]; name: string; modell: string; effort: string;
+  // wie viel Fleet mitkommt und als welche Rolle die Vorschau rechnet (Bauleitung f6edd1e7: die Rolle gehört zur Position, hier nur Vorschau)
+  stufe: Anbindung; rolle: Vorschau; packs: string[]; name: string; modell: string; effort: string;
 }
 const SCHRITTE = ["Datei", "Abschnitte", "Was Fleet dazugibt", "Speichern"] as const;
-// was die Anbindung heißt, in einem Satz je Wahl; die Rolle bestimmt den Gründungsplan, den Fleet um die Datei legt
-const ANBINDUNG: readonly { rolle: PlanRolle; wort: string; satz: string }[] = [
-  { rolle: "nur-ordner", wort: "Nur Ordner", satz: "Fleet startet die Session im Repo, ohne Rolle. Mit kommt nur, was jeder Start trägt (unten); das AGENTS.md des Repos lädt Claude Code selbst." },
-  { rolle: "lane", wort: "Wie eine Lane", satz: "Dazu kommen die Regeln einer Lane, ihr Rückweg zu Fleet und die Lesehinweise. Kontextpacks kannst du dazunehmen." },
-  { rolle: "main", wort: "Wie eine MAIN", satz: "Dazu kommen die Rollenkarte der MAIN, ihr Program-Ablauf und die Lesehinweise. Kontextpacks kannst du dazunehmen." },
-];
 const NEU: Abschnitt[] = [
   { titel: "# Rolle", text: "Wer du bist und wofür du da bist, in zwei Sätzen." },
   { titel: "## Wie du arbeitest", text: "- Was du zuerst liest\n- Was du nie tust" },
@@ -62,7 +60,8 @@ export function oeffneAblauf(s: St): void {
   const { q, p } = gewaehlt(s);
   const datei = q?.datei ? structuredClone(q.datei) : null;
   s.ablauf = { schritt: datei ? 1 : 0, datei, vorher: datei ? structuredClone(datei.abschnitte) : [], offen: null, entwurf: null,
-    anbindung: p.id === "eigen" || !istPackRolle(p.rolle) ? "nur-ordner" : p.rolle, packs: [], name: "", modell: WAHL.modell[0], effort: "high" };
+    stufe: p.id === "eigen" || !istPackRolle(p.rolle) ? "ordner" : "standard", rolle: p.rolle === "main" ? "main" : "lane",
+    packs: [], name: "", modell: WAHL.modell[0], effort: "high" };
   s.exp = false;
   render();
 }
@@ -183,48 +182,52 @@ function schrittAbschnitte(_s: St, a: Ablauf): HTMLElement[] {
     liste, plus];
 }
 
-// SCHRITT 3 · WAS FLEET DAZUGIBT: je Gruppe, was der Gründungsplan der gewählten Anbindung bei diesem Start liefert; dazu die Packs
+// SCHRITT 3 · WAS FLEET DAZUGIBT: als welche Rolle, wie viel davon (der Regler), je Gruppe, was der Plan dieser Stufe bei diesem Start liefert,
+// was gegenüber der Stufe darunter dazukommt; dazu die Packs
+const plaeneVon = (s: St, a: Ablauf): StufenPlan[] | null => s.repo ? ANBINDUNGEN.map((x) => stufenPlan(s, s.repo as string, a.rolle, x.id)) : null;
 function schrittFleet(s: St, a: Ablauf): HTMLElement[] {
-  const seg = el("div", "k15seg k15abseg");
-  seg.setAttribute("role", "radiogroup");
-  seg.setAttribute("aria-label", "Anbindung an Fleet");
-  for (const x of ANBINDUNG) {
-    const b = el("button", a.anbindung === x.rolle ? "on" : "", x.wort);
-    b.setAttribute("role", "radio");
-    b.setAttribute("aria-checked", String(a.anbindung === x.rolle));
-    b.onclick = () => { a.anbindung = x.rolle; render(); };
-    seg.append(b);
-  }
-  const wahl = ANBINDUNG.find((x) => x.rolle === a.anbindung) ?? ANBINDUNG[0];
-  const out = [el("div", "k15abh", "Was Fleet um deine Datei herum mitgibt"), seg, el("div", "k15abs2", wahl.satz)];
-  const plan = s.repo ? antwort(hole(s, planUrl(s.repo, a.anbindung, {}))) : null;
+  const plaene = plaeneVon(s, a);
+  const i0 = ANBINDUNGEN.findIndex((x) => x.id === a.stufe);
+  const wahl = plaene?.[i0] ?? null;
+  const offen = wahl?.a ? fleetTeil(wahl.a)?.offen ?? [] : [];
+  const out = [el("div", "k15abh", "Was Fleet um deine Datei herum mitgibt"), vorschauWahl(a)];
+  if (plaene) out.push(regler(a, plaene));
+  out.push(el("div", "k15abs2 k15abrs", ANBINDUNGEN[i0].satz),
+    el("div", "k15abrc", `Die Zahl je Stufe ist, was Fleet dazugibt, ohne Claude Code und die Dateien deines Repos.${offen.length && wahl?.a ? ` Nicht gemessen: ${offen.map((id) => { const b = wahl.a?.plan.bausteine.find((x) => x.id === id); return b ? bausteinName(b) : id; }).join(", ")}.` : ""}`));
+  const plan = wahl?.a ?? null;
+  const { dazu, zeilen } = plaene ? aenderung(plaene, i0) : { dazu: new Set<string>(), zeilen: [] };
   const tab = el("div", "k15abg");
-  const zeile = (wort: string, satz: string, was: string, eigen = false) => {
+  const zeile = (wort: string, satz: string, was: string | HTMLElement, eigen = false) => {
     const r = el("div", `k15abgz${eigen ? " eigen" : ""}`);
     const t = el("span", "k15kt");
     t.append(el("span", "k15abgw", wort), el("span", "k15abgs", satz));
-    r.append(t, el("span", "k15abgv", was));
+    const v = el("span", "k15abgv");
+    v.append(was);
+    r.append(t, v);
     tab.append(r);
   };
   zeile("Deine Datei", a.datei ? `${a.datei.titel} · ${plural(a.datei.abschnitte.length, "Abschnitt", "Abschnitte")}` : "noch keine",
-    `${a.anbindung === "nur-ordner" ? "käme als eigene Datei dazu" : "stünde vor dem, was Fleet schreibt"}; heute gibt Fleet sie noch nicht mit`, true);
-  if (!plan) tab.append(el("div", "k15leer", s.repo ? "Der Gründungsplan wird gelesen …" : "Kein Repo gewählt."));
+    `${a.stufe === "ordner" ? "käme als eigene Datei dazu" : "stünde vor dem, was Fleet schreibt"}; heute gibt Fleet sie noch nicht mit`, true);
+  if (!plan) tab.append(el("div", "k15leer", !s.repo ? "Kein Repo gewählt." : wahl?.fehler ? `Der Plan lehnt ab: ${wahl.fehler}` : "Der Gründungsplan wird gelesen …"));
   else {
-    // was ankommt: an und geliefert, dazu was die Tür trotz „aus“ im Plan liefert (server.ts#planDoorVerdict, wie in Spalte 3)
-    const trotzdem = new Set(plan.start.refusals.map((x) => /^(\S+) ist im Plan \S+, diese Tuer liefert es trotzdem/.exec(x)?.[1]).filter(Boolean));
+    // was ankommt (src/k15-anbindung.ts#ankommend, wie Spalte 3); was gegenüber der Stufe darunter dazukommt, steht hervorgehoben
+    const an = ankommend(plan);
     for (const g of GRUPPEN) {
-      const an = plan.plan.bausteine.filter((b) => gruppeVon(b) === g.id && b.id !== EINSTELLUNGEN_ID && !b.id.startsWith("pack:") && (kommtAn(plan, b) || trotzdem.has(b.id)));
-      zeile(g.wort, g.satz, an.length ? an.map(bausteinName).join(" · ") : "nichts");
+      const bs = plan.plan.bausteine.filter((b) => gruppeVon(b) === g.id && an.has(b.id));
+      const v = el("span", "");
+      bs.forEach((b, i) => { const n = el("span", dazu.has(b.id) ? "k15abneu" : "", bausteinName(b)); n.dataset.id = b.id; v.append(...(i ? [", "] : []), n); });
+      zeile(g.wort, g.satz, bs.length ? v : "nichts");
     }
   }
   out.push(tab);
+  if (zeilen.length) { const d = el("div", "k15abdl"); d.append(...zeilen); out.push(d); }
   // DIE PACKS: nur mit Lesehinweisen, also nur mit einer Rolle (src/k15-kontextpack.ts#packLandung)
   out.push(el("div", "k15abl", "Kontextpacks"));
-  if (!istPackRolle(a.anbindung)) {
-    out.push(el("div", "k15hinweis", "Ohne Rolle bekommt die Session keine Lesehinweise, also auch keinen Pack. „Wie eine Lane“ oder „Wie eine MAIN“ nimmt einen mit."));
+  const rolle = anbindungRolle(a.stufe, a.rolle);
+  if (!istPackRolle(rolle)) {
+    out.push(el("div", "k15hinweis", "Ohne Rolle bekommt die Session keine Lesehinweise, also auch keinen Pack; ab „Standard“ nimmt sie einen mit."));
     return out;
   }
-  const rolle = a.anbindung;
   if (s.packEdit) { out.push(packEditor(s, s.packEdit)); return out; }
   for (const pk of s.packs) {
     const la = packLandung({ ...pk, orte: { ...pk.orte, [rolle]: pk.orte[rolle] === "nicht" ? "text" : pk.orte[rolle] } }, rolle, plan);
@@ -265,7 +268,8 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
     sel.onchange = () => nimm(sel.value);
     return sel;
   };
-  const plan = s.repo ? antwort(hole(s, planUrl(s.repo, a.anbindung, {}))) : null;
+  const plan = plaeneVon(s, a)?.[ANBINDUNGEN.findIndex((x) => x.id === a.stufe)]?.a ?? null;
+  const rolle = anbindungRolle(a.stufe, a.rolle);
   const packs = s.packs.filter((pk) => a.packs.includes(pk.id));
   const dateiB = a.datei ? a.datei.abschnitte.reduce((n, x) => n + bytes(x), 0) : 0;
   const packB = packs.reduce((n, pk) => n + packBytes(pk, "text"), 0);
@@ -273,10 +277,11 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
   const dl = el("div", "k15bstz k15absum");
   const z = (k: string, v: string) => dl.append(el("span", "k15bstzk", k), el("span", "k15bstzv", v));
   z("Datei", a.datei ? `${a.datei.titel} · ${plural(a.datei.abschnitte.length, "Abschnitt", "Abschnitte")}${geaendert ? `, ${geaendert} geändert` : ""}` : "keine");
-  z("Anbindung", ANBINDUNG.find((x) => x.rolle === a.anbindung)?.wort ?? a.anbindung);
-  z("Packs", packs.length ? packs.map((pk) => pk.name).join(" · ") : istPackRolle(a.anbindung) ? "keiner" : "ohne Rolle keiner");
-  if (plan?.startSumme && typeof plan.startSumme.tokens === "number")
-    z("Beim Start", `${fmt(Math.round(plan.startSumme.tokens + (dateiB + packB) / 2.1))}, davon deine Datei ${tokVon(dateiB) || "0 Tok"}`);
+  z("Wie viel Fleet", `${ANBINDUNGEN.find((x) => x.id === a.stufe)?.wort ?? a.stufe}${a.stufe === "ordner" ? "" : ` · als ${VORSCHAU.find((x) => x.id === a.rolle)?.wort ?? a.rolle}`}`);
+  z("Packs", packs.length ? packs.map((pk) => pk.name).join(" · ") : istPackRolle(rolle) ? "keiner" : "ohne Rolle keiner");
+  // gerechnet wie die Summe unten (src/k15-startzahl.ts); die Dateien des Repos misst der Server nur ohne Rolle, fehlen sie, sagt die Zeile es
+  const start = plan ? startZahl(plan) : null;
+  if (start) z("Beim Start", `${fmt(Math.round(start.tokens + (dateiB + packB) / 2.1))}, davon deine Datei ${tokVon(dateiB) || "0 Tok"}${start.repo === null ? "; ohne die Dateien des Repos (nicht gemessen)" : ""}`);
   const fehler = !a.name.trim() ? "Gib dem Profil einen Namen." : !a.datei ? "Wähl in Schritt 1 eine Datei." : null;
   return [el("div", "k15abh", "Als Profil speichern"),
     el("div", "k15abs2", "Das Profil steht danach links unter Rollen. Du ziehst es auf eine Session oder startest es allein."),
@@ -290,16 +295,20 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
 
 function speichere(s: St, a: Ablauf): void {
   if (!a.name.trim() || !a.datei) { toast(!a.datei ? "Wähl in Schritt 1 eine Datei." : "Gib dem Profil einen Namen."); a.schritt = a.datei ? 3 : 0; render(); return; }
-  const schiene: Schiene = a.anbindung === "lane" ? "lane" : a.anbindung === "main" ? "program-main" : "session";
+  // die Schalter der Stufe, wie der Plan sie annimmt (stufenPlan); solange er gelesen wird, speichert nichts
+  const schalter = a.stufe === "ordner" || a.stufe === "standard" ? {} : s.repo ? stufenPlan(s, s.repo, a.rolle, a.stufe).schalter : null;
+  if (!schalter) { toast("Der Plan dieser Stufe wird noch gelesen; speichere gleich noch einmal."); return; }
+  const rolle = anbindungRolle(a.stufe, a.rolle);
+  const schiene: Schiene = rolle === "lane" ? "lane" : rolle === "main" ? "program-main" : "session";
   // das Profil trägt seine Datei: so bekommt jede neue Session mit ihm sie mit, und es übersteht ein Neuladen (Prüfung Punkt 4)
   const datei: Quelle = { ...structuredClone(a.datei), id: a.datei.id ?? neueId(), v: 1 };
   const p: Profil = { id: neueId(), name: a.name.trim(), glyph: "file", v: 1, kurz: "deine Agent-MD", satz: `arbeitet nach ${a.datei.titel}`, autor: DU,
-    rolle: a.anbindung, schiene, modell: a.modell, effort: a.effort, schwelle: null, schalter: {}, nativ: null, einV: 1, rechteV: 1, werte: {}, autonomie: null, datei };
+    rolle, schiene, modell: a.modell, effort: a.effort, schwelle: null, schalter, nativ: null, einV: 1, rechteV: 1, werte: {}, autonomie: null, datei };
   s.profile = [...s.profile, p];
   s.profilNeu.add(p.id);
   const { q } = gewaehlt(s);
   if (q) { q.profil = p.id; q.datei = structuredClone(datei); s.konstNeu.add(s.k.id); }
-  s.packs = s.packs.map((pk) => a.packs.includes(pk.id) && istPackRolle(a.anbindung) && pk.orte[a.anbindung] === "nicht" ? { ...pk, orte: { ...pk.orte, [a.anbindung]: "text" } } : pk);
+  s.packs = s.packs.map((pk) => a.packs.includes(pk.id) && istPackRolle(rolle) && pk.orte[rolle] === "nicht" ? { ...pk, orte: { ...pk.orte, [rolle]: "text" } } : pk);
   s.ablauf = null;
   s.sel = q ? { art: "pos", id: q.id } : { art: "profil", id: p.id };
   void speichereEigenes(s).then((ok) => { if (ok) toast(`Profil „${p.name}“ v1 ist gespeichert und steht links unter Rollen.${q ? ` ${q.name} trägt es jetzt; das gilt bis zum Neuladen, wie jede Änderung am Aufbau.` : ""}`); });

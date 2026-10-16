@@ -548,15 +548,15 @@ export async function run(): Promise<void> {
         seeded.code === 0 && cloned.status === 0 && existsSync(`${fol}/fleet-sync.sh`),
         `seed=${seeded.code} clone=${cloned.status} ${(cloned.stderr ?? "").trim()}`);
 
-      // The stand-in. It writes the four bundles server.ts calls the client and appends ONE line
+      // The stand-in. It writes the five bundles server.ts calls the client and appends ONE line
       // to a marker OUTSIDE the repo — outside because a marker inside would be an untracked file,
       // and the script refuses a dirty tree before it does anything else.
-      const BUILD_OK = `mkdir -p public && for f in app.js share.js helper.js hub.js; do echo "// stand-in $f" > public/$f; done && echo ran >> ${MARK}`;
+      const BUILD_OK = `mkdir -p public && for f in app.js share.js helper.js hub.js k15.js; do echo "// stand-in $f" > public/$f; done && echo ran >> ${MARK}`;
       const builds = (): number => {
         try { return readFileSync(MARK, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
       };
       const bundlesHere = (): string[] =>
-        ["app.js", "share.js", "helper.js", "hub.js"].filter((f) => existsSync(`${fol}/public/${f}`));
+        ["app.js", "share.js", "helper.js", "hub.js", "k15.js"].filter((f) => existsSync(`${fol}/public/${f}`));
       // The INSTALL stand-in, and the dependency it is the only source of. `bun install` here would
       // prove bun works on a repo with no package.json, which is not the question; the question is
       // whether the script reaches for the install BEFORE the build and what it does when that comes
@@ -612,7 +612,7 @@ export async function run(): Promise<void> {
         `bundles=[${bundlesHere()}]`);
       const a = await runSync(BUILD_OK);
       check("a follower that is CURRENT but has no client bundle builds one, and still exits 0",
-        a.code === 0 && bundlesHere().length === 4 && builds() === 1,
+        a.code === 0 && bundlesHere().length === 5 && builds() === 1,
         `exit=${a.code} bundles=[${bundlesHere()}] builds=${builds()} :: ${a.out}`);
 
       // THE STATUS LINE. Every run ends in one JSON line in the follower checkout — the OTHER
@@ -646,11 +646,11 @@ export async function run(): Promise<void> {
         `exit=${d.code} builds=${beforeD}->${builds()} :: ${d.out}`);
 
       // --- B: the fast-forward case. main moved, so `src/` moved, so the bundle is stale even
-      // though all four files are sitting right there — presence is not currency.
+      // though all five files are sitting right there — presence is not currency.
       const headB = moveCanonical("moved-b.txt");
       const beforeB = builds();
       const b = await runSync(BUILD_OK);
-      check("a fast-forward is followed by a build even when all four bundles already exist",
+      check("a fast-forward is followed by a build even when all five bundles already exist",
         b.code === 0 && g(fol, "rev-parse", "HEAD").out === headB && builds() === beforeB + 1,
         `exit=${b.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headB.slice(0, 8)} builds=${beforeB}->${builds()} :: ${b.out}`);
 
@@ -681,7 +681,7 @@ export async function run(): Promise<void> {
       const e = await runSync(BUILD_NEEDS_DEP);
       check("a fast-forward that brings a new dependency installs it and THEN builds — the bundle is current, not red",
         e.code === 0 && g(fol, "rev-parse", "HEAD").out === headE && installs() === beforeIE + 1
-          && builds() === beforeE + 1 && bundlesHere().length === 4,
+          && builds() === beforeE + 1 && bundlesHere().length === 5,
         `exit=${e.code} head=${g(fol, "rev-parse", "HEAD").out.slice(0, 8)} want=${headE.slice(0, 8)} installs=${beforeIE}->${installs()} builds=${beforeE}->${builds()} :: ${e.out}`);
 
       // --- F: and the install has an exit of its OWN. 5 already means "the tree moved, the bundle

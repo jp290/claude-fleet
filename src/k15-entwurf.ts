@@ -26,6 +26,7 @@ import { ANSICHTEN, spalteQuelle } from "./k15-spalte4";
 import { exportPanel, nimm } from "./k15-export";
 import { ablaufNimmt, ablaufPanel } from "./k15-agentmd";
 import { anatomieKurz, anatomieVon } from "./k15-anatomie-ui";
+import { startZahl } from "./k15-startzahl";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -225,22 +226,23 @@ function render(): void {
 }
 
 // DIE TOKEN-SUMME UNTEN (Owner 11:1x: „[Zitat entfernt]“): je Session die Start-Summe ihres
-// Gründungsplans, Fleets Teil geschätzt, Claude Codes Teil gemessen
+// Gründungsplans, gerechnet wie der Satz oben in „[Zitat entfernt]“ (src/k15-startzahl.ts): Claude Codes Teil aus der Aufschlüsselung, Fleets
+// Teil ohne die Dateien des Repos, wie der Regler in „Deine Agent-MD“ (sonst hieße das CLAUDE.md eines Ordners ohne Rolle „Fleet“)
 function tokenSumme(s: St): HTMLElement {
   const box = el("div", "k15tok");
   const je = alle(s.k.wurzeln).map((q) => {
     const l = lage(s, profilVon(s, q.profil), q);
     const a = l ? antwort(l.plan) : null;
-    return { q, sum: a?.startSumme, cca: a ? anatomieVon(a.claudeCode) : null };
+    return { q, z: a ? startZahl(a) : null, cca: a ? anatomieVon(a.claudeCode) : null };
   });
-  const offen = je.filter((x) => typeof x.sum?.tokens !== "number").length;
-  const summe = je.reduce((n, x) => n + (typeof x.sum?.tokens === "number" ? x.sum.tokens : 0), 0);
-  const fleetTeil = je.reduce((n, x) => n + (x.sum?.fleetTokens ?? 0), 0);
+  const offen = je.filter((x) => !x.z).length;
+  const summe = je.reduce((n, x) => n + (x.z?.tokens ?? 0), 0);
+  const fleet = je.reduce((n, x) => n + (x.z?.fleet ?? 0), 0);
   box.append(el("span", "k15tokw", offen ? "Start: wird gelesen …" : `Start ${fmt(summe)}`),
-    el("span", "k15toks", offen ? plural(offen, "Session fehlt", "Sessions fehlen") : `davon Fleet ${fmt(fleetTeil)}`));
+    el("span", "k15toks", offen ? plural(offen, "Session fehlt", "Sessions fehlen") : `davon Fleet ${fmt(fleet)}`));
   box.title = [`Was alle ${plural(je.length, "Session", "Sessions")} beim Start mitladen, je aus ihrem Gründungsplan: Fleets Teil geschätzt, Claude Codes Teil gemessen.`,
     // je Session dieselbe Aufschlüsselung wie in „Wo es landet“: was Claude Code selbst mitbringt, Gruppe für Gruppe
-    ...je.map((x) => `${x.q.name}: ${typeof x.sum?.tokens === "number" ? fmt(x.sum.tokens) : "wird gelesen"}${x.cca ? `\n  Claude Code: ${anatomieKurz(x.cca)}` : ""}`)].join("\n");
+    ...je.map((x) => `${x.q.name}: ${x.z ? fmt(x.z.tokens) : "wird gelesen"}${x.cca ? `\n  Claude Code: ${anatomieKurz(x.cca)}` : ""}`)].join("\n");
   return box;
 }
 

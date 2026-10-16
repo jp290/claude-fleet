@@ -194,7 +194,8 @@ import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/aud
 import { STATE_DIR } from "./server/state-dir";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
-import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
+import type { PiZaiFenceInput } from "./server/pi-zai-fence";
+import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
 import { STATIC, bundleV, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
@@ -1040,6 +1041,17 @@ const PI_ZAI_SANDBOX_EXEC = (() => {
     throw new Error("FLEET_PI_ZAI_SANDBOX_EXEC must be a safe absolute path without ..");
   return path;
 })();
+// Linux (the Workhorse) has no seatbelt: pi-zai runs behind bubblewrap there (server/pi-zai-fence.ts#
+// piZaiBwrapArgs; owner 2026-10-16). The platform decides, with one exception: an explicit
+// FLEET_PI_ZAI_SANDBOX_EXEC names the sandbox-exec-shaped pass-through stand-in of the Linux helper's
+// suites (e2e-isolated.sh), and keeps the SBPL line they measure. The macOS line is not touched.
+const PI_ZAI_BWRAP = (() => {
+  if (process.platform !== "linux" || process.env.FLEET_PI_ZAI_SANDBOX_EXEC !== undefined) return null;
+  const path = process.env.FLEET_PI_ZAI_BWRAP ?? "/usr/bin/bwrap";
+  if (!SPAWN_PATH_RE.test(path) || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_ZAI_BWRAP must be a safe absolute path without ..");
+  return path;
+})();
 // The owner's private deny roots (server/pi-zai-fence.ts#parsePiZaiDenyRoots), set only in the
 // host's gitignored .env. Unlike the three paths above, a missing or invalid value does NOT refuse
 // the boot: every other harness stays usable, and pi-zai alone starts no pi (piZaiFenceFor → null).
@@ -1110,10 +1122,10 @@ function piZaiDevPath(): string {
   return piZaiDevPathMemo;
 }
 // null = the fence cannot be BUILT for this cwd; the spawn line then starts no pi (PI_ZAI_FENCE_FAILED).
-function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
+function piZaiFenceInput(cwd: string, laneBranch: string | null): PiZaiFenceInput {
   const home = realpathLoose(HOME);
   const realCwd = realpathLoose(cwd);
-  return piZaiFenceProfile({
+  return {
     home, fleetDir: realpathLoose(import.meta.dir),
     agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realCwd,
     tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
@@ -1121,7 +1133,10 @@ function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
     tmpRoots: piZaiTmpRoots(), ownTmp: piZaiTmpFor(realpathLoose("/tmp"), realCwd),
     suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd, laneBranch),
     userTemp: piZaiUserTemp(), darwin: process.platform === "darwin",
-  });
+  };
+}
+function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
+  return piZaiFenceProfile(piZaiFenceInput(cwd, laneBranch));
 }
 // The pane's one line when pi is NOT started because its fence failed — unbuildable, or the self-test
 // at /usr/bin/true refused it (sandbox-exec missing: not found; invalid profile: exit 65, f18c1ec).
@@ -1269,6 +1284,34 @@ const PI_HARNESS: Harness = {
 // BOTH entries through PI_CODING_AGENT_DIR. The directory relocation is the isolation boundary: Pi's
 // entire agent state (including sessions and any auth file it may create) stays Fleet-local, while
 // the API key remains an environment value expanded only inside the pane shell.
+// The Linux spawn line (PI_ZAI_BWRAP): the same shape as the SBPL one - guard and key out here, a
+// self-test of the fence at /usr/bin/true, pi alone inside - with the bwrap arguments held in a shell
+// function instead of one profile word, because an argument list has no single-quoted-string form
+// that survives word splitting and the charset admits a space. HOME, TMPDIR and the caches point at
+// the pane's own temp home like on macOS (the darwin-only CLANG/CFFIXED variables are left out).
+// A fence that cannot be built, or whose arguments would need escaping, starts no pi.
+// Liveness: pi sits two levels below the pane shell here (bwrap -> bwrap as the namespace's init -> pi,
+// measured 2026-10-16: paneAgentAt read `no-agent` for a pane that showed the 1.0M gauge), so the
+// adapter's `comms` also counts `bwrap` - the sandbox ends the moment pi does, and its self-test at
+// /usr/bin/true lives for milliseconds.
+const PI_ZAI_COMMS = PI_ZAI_BWRAP ? ["pi", "bwrap"] : ["pi"];
+function piZaiBwrapLine(guard: string, o: { cwd: string; laneBranch?: string | null }, cmd: string): string {
+  const bw = PI_ZAI_BWRAP ? piZaiBwrapArgs(piZaiFenceInput(o.cwd, o.laneBranch ?? null)) : null;
+  if (!PI_ZAI_BWRAP || !bw || [PI_ZAI_BWRAP, ...bw.args, ...bw.mkdirs].some((x) => x.includes("'") || x.includes("\n"))) {
+    console.error(`pi-zai: no bwrap fence buildable for ${o.cwd} - pi not started`);
+    return `${guard}printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}`;
+  }
+  const own = piZaiTmpFor(realpathLoose("/tmp"), realpathLoose(o.cwd));
+  const auth = `${PI_ZAI_AGENT_DIR}/auth.json`;
+  const q = (x: string): string => `'${x}'`;
+  return `${guard}fleet_pz() { ${q(PI_ZAI_BWRAP)} ${bw.args.map(q).join(" ")} "$@"; }; `
+    + `{ mkdir -p '${PI_ZAI_AGENT_DIR}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' ${bw.mkdirs.map(q).join(" ")} `
+    + `&& (umask 077; mkdir -p '${own}/home' '${own}/tmp') && { [ -e '${auth}' ] || printf '{}' > '${auth}'; } && fleet_pz /usr/bin/true; } `
+    + `|| { printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `
+    + `HOME='${own}/home' TMPDIR='${own}/tmp' BUN_INSTALL_CACHE_DIR='${own}/home/.bun/install/cache' `
+    + `GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=gc.auto GIT_CONFIG_VALUE_0=0 GIT_CONFIG_KEY_1=maintenance.auto GIT_CONFIG_VALUE_1=false `
+    + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" fleet_pz ${cmd}; exec ${SHELL}`;
+}
 const PI_ZAI_HARNESS: Harness = {
   id: "pi-zai",
   spawnCmd: (o) => {
@@ -1295,6 +1338,7 @@ const PI_ZAI_HARNESS: Harness = {
     // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
     // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
     // session dir is created out here because the fence denies creating it under sessions/.
+    if (PI_ZAI_BWRAP) return piZaiBwrapLine(guard, o, cmd);
     const profile = piZaiFenceFor(o.cwd, o.laneBranch ?? null);
     if (!profile) {
       console.error(`pi-zai: no read fence buildable for ${o.cwd} — pi not started`);
@@ -1326,8 +1370,7 @@ const PI_ZAI_HARNESS: Harness = {
   context: { file: piZaiContextFile, used: readPiUsedTokens },
   conversation: { file: piZaiContextFile, read: readPiSession },
   pinsSession: true,
-  // The process is Pi itself; depth-one liveness has the same measured basis as PI_HARNESS.
-  comms: ["pi"],
+  comms: PI_ZAI_COMMS, // depth one, as PI_HARNESS (see piZaiBwrapLine for bwrap)
   composer: PI_COMPOSER,
   // MEASURED 2026-09-18 (Pi 0.85.0, this exact spawn line, fresh agent home, 140×44 pane): in a
   // project with local `.pi` resources Pi opens `Trust project folder?` before any composer. An

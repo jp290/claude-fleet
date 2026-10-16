@@ -18,7 +18,7 @@
 // only when this server drives it: a test or scratch server's pi-zai pane must not reach the live
 // panes either.
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export const LIVE_TMUX_SOCK = "claudefleet";
@@ -247,4 +247,188 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     + `(deny sysctl-read (sysctl-name-regex #"^kern[.]procargs"))`
     + `(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.security.agent"))`
     + (emptyAuth ? "" : '(error "pi-zai: credential store is not an empty regular JSON object or is unreadable; auth.json remains blocked")');
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The LINUX fence: the same meaning as the profile above, as a bubblewrap argument list (Workhorse;
+// owner 2026-10-16: „[Zitat entfernt]“). The two differ in SHAPE, not in what they allow:
+// SBPL starts from `allow default` and closes, bwrap starts from an EMPTY root and opens — so the
+// allowlist of (A)/(B) is how the mount table is built, and (C) are the masks laid over an opening
+// that happens to contain a secret. Measured on Debian 13 / bwrap 0.12.0 / kernel 6.12, user
+// namespaces unprivileged (docs/messungen/2026-10-16-pi-zai-linux-zaun.md).
+//
+//   (A) closed        everything not mounted: home, /tmp, other worktrees, the main checkout, ~/.ssh,
+//                     the key file, fleet.json/.env, other sessions' transcripts, the live tmux socket
+//                     (/tmp is a fresh tmpfs, so /tmp/tmux-<uid> does not exist inside)
+//   (B) opened        the cwd and the pane's own temp home (rw), the pi agent dir (rw, but its sessions/
+//                     replaced by an empty tmpfs with only the OWN session dir bound back), the PATH
+//                     tools under home and the targets their symlinks name (ro), /usr and a short /etc
+//                     list (ro), the worktree's git dirs (ro; objects/, the admin dir and the one
+//                     branch's directory rw)
+//   (C) masked        a path of the (C) list of piZaiFenceProfile that lies INSIDE an opening
+//                     (a pi-zai main in a checkout with fleet.json; a lane with a leftover .env):
+//                     /dev/null over a file, an empty read-only tmpfs over a directory
+//   (E) process env   a fresh PID namespace and its own /proc: no foreign process exists, so no
+//                     foreign environment — the Linux counterpart of the process-info/sysctl PAIR
+//
+// What the Linux fence does NOT carry over, each decided as `unsupported` and named in
+// docs/harness-adapter.md: the suite mutex (/tmp/fleet-e2e.lock proves its holder by PID and start time
+// and a PID namespace makes every PID in it meaningless outside — a shared mutex would let a foreign
+// waiter steal it, a private one only excludes nobody), the shared tmux dir (the pane's tmux runs on its
+// own /tmp), and the per-ref file rules inside refs/heads/<dir>/ (a bind mount cannot hold lock+rename
+// of one file; see gitWrite below).
+// ---------------------------------------------------------------------------------------------------
+
+export interface PiZaiBwrap {
+  args: string[];    // bwrap's arguments up to (not including) the command
+  mkdirs: string[];  // directories the OUTER shell must make before bwrap runs (a bind needs its source)
+}
+
+// TIOCSTI lets a process push keystrokes into its controlling terminal; the pane's outer shell
+// (`; exec $SHELL`) reads that terminal after pi ends and runs with the owner's full reach. bwrap's
+// --new-session cuts the controlling terminal and shuts it, at the price of SIGWINCH (pi would not
+// redraw on a pane resize). With the kernel switch dev.tty.legacy_tiocsti=0 the ioctl is refused for
+// everyone without CAP_SYS_ADMIN in the initial namespace, so the session can stay.
+export function piZaiTiocstiClosed(read: () => string = () => readFileSync("/proc/sys/dev/tty/legacy_tiocsti", "utf8")): boolean {
+  try { return read().trim() === "0"; } catch { return false; }
+}
+
+// The system trees mounted read-only. /usr is the whole userland of a merged-/usr Debian; /bin, /lib,
+// /lib64 and /sbin are its symlinks (recreated, not bound). The /etc entries are what a dynamic
+// binary, DNS, TLS, user lookup and terminal programs read; /etc as a whole stays closed.
+const BWRAP_SYSTEM_DIRS = ["/bin", "/lib", "/lib32", "/lib64", "/sbin"] as const;
+const BWRAP_SYSTEM_RO = ["/usr", "/opt", "/etc/alternatives", "/etc/ssl", "/etc/ca-certificates", "/etc/ld.so.cache",
+  "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/resolv.conf", "/etc/hosts", "/etc/host.conf", "/etc/nsswitch.conf",
+  "/etc/gai.conf", "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/timezone", "/etc/terminfo", "/etc/os-release",
+  "/etc/shells", "/etc/mime.types", "/etc/protocols", "/etc/services"] as const;
+
+export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } = {}): PiZaiBwrap | null {
+  const exists = (p: string): boolean => { try { lstatSync(p); return true; } catch { return false; } };
+  if (!i.denyRoots || i.denyRoots.length === 0) return null;
+  const g = i.git;
+  const paths = [i.home, i.fleetDir, i.agentDir, i.keyFile, i.cwd, i.ownTmp, ...i.denyRoots, ...i.toolRoots, ...(g ? [g.common, g.admin] : [])];
+  if (!paths.every((p) => FENCE_PATH_RE.test(p) && !p.split("/").includes(".."))) return null;
+  if (g?.ref && !/^refs\/heads\/[A-Za-z0-9_.@+\-/]+$/.test(g.ref)) return null;
+  if (i.toolRoots.some((p) => p === "/" || i.home === p || i.home.startsWith(`${p}/`))) return null;
+  // a populated or uninspectable credential store never enters the fence (Darwin: the profile's
+  // (error …) clause); an absent one is made empty by the outer shell and bound read-only below
+  const auth = `${i.agentDir}/auth.json`;
+  try {
+    if (exists(auth)) {
+      if (!lstatSync(auth).isFile()) return null;
+      const text = readFileSync(auth, "utf8").trim();
+      const store: unknown = text === "" ? {} : JSON.parse(text);
+      if (store === null || typeof store !== "object" || Array.isArray(store) || Object.keys(store).length !== 0) return null;
+    }
+  } catch { return null; }
+
+  const a: string[] = ["--unshare-all", "--share-net", "--die-with-parent"];
+  if (o.newSession ?? !piZaiTiocstiClosed()) a.push("--new-session");
+  const mkdirs: string[] = [];
+  const opened: string[] = [];
+  const under = (p: string, root: string): boolean => p === root || p.startsWith(`${root}/`);
+  const open = (p: string): void => { opened.push(p); };
+
+  for (const d of BWRAP_SYSTEM_DIRS) {
+    try {
+      const st = lstatSync(d);
+      if (st.isSymbolicLink()) a.push("--symlink", readlinkSync(d), d);
+      else if (st.isDirectory()) { a.push("--ro-bind", d, d); open(d); }
+    } catch { /* absent on this system */ }
+  }
+  for (const p of BWRAP_SYSTEM_RO) if (exists(p)) { a.push("--ro-bind", p, p); open(p); }
+  a.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
+
+  // (B) read-only tools: the PATH dirs under home and pi's package root come from the caller; the
+  // targets their symlinks name are opened too (~/.local/bin/node → ~/.local/node-vX/bin/node needs
+  // the whole node tree, npm being a script next to it), unless a root already covers them.
+  const toolDests: string[] = [];
+  const addTool = (p: string): void => { if (!toolDests.some((r) => under(p, r))) toolDests.push(p); };
+  for (const r of i.toolRoots) addTool(r);
+  for (const r of i.toolRoots) {
+    let names: string[] = [];
+    try { names = readdirSync(r); } catch { continue; }
+    for (const n of names) {
+      let t: string;
+      try { t = realpathSync(`${r}/${n}`); } catch { continue; }
+      if (!under(t, i.home) || t === i.home) continue; // outside home: the system trees or nothing
+      if (!FENCE_PATH_RE.test(t) || toolDests.some((d) => under(t, d)) || under(t, i.cwd)) continue;
+      addTool(basename(dirname(t)) === "bin" && dirname(dirname(t)) !== i.home ? dirname(dirname(t)) : t);
+    }
+  }
+  for (const p of toolDests.filter((p) => !toolDests.some((r) => r !== p && under(p, r)))) if (exists(p)) { a.push("--ro-bind", p, p); open(p); }
+
+  // (B) read-write: the lane, the pane's temp home, the pi agent dir
+  a.push("--bind", i.cwd, i.cwd); open(i.cwd);
+  a.push("--bind", i.ownTmp, i.ownTmp); open(i.ownTmp);
+  a.push("--bind", i.agentDir, i.agentDir); open(i.agentDir);
+  a.push("--tmpfs", `${i.agentDir}/sessions`);
+  const ownSession = `${i.agentDir}/sessions/${piSessionSlug(i.cwd)}`;
+  a.push("--bind", ownSession, ownSession);
+  a.push("--ro-bind-try", auth, auth);
+
+  // (B) git. The common dir is read-only; objects/, this worktree's admin dir and the one branch's
+  // directory are the writes git needs for a commit. Every file that makes the NEXT, unfenced git run
+  // somewhere execute code stays read-only inside them (hooks, config, commondir, gitdir, the `.git`
+  // pointer): the server runs git in this tree outside the fence.
+  const gitDirs = g ? [g.common, g.admin] : [`${i.cwd}/.git`];
+  if (g) {
+    a.push("--ro-bind", g.common, g.common); open(g.common);
+    a.push("--bind", `${g.common}/objects`, `${g.common}/objects`);
+    a.push("--bind", g.admin, g.admin); open(g.admin);
+    // The branch. SBPL names the ref file, its .lock and its reflog; a bind mount cannot: git writes
+    // `<ref>.lock` and renames it over `<ref>`, which needs the DIRECTORY, not the file. So the
+    // directory `refs/heads/<ns>/` and `logs/refs/heads/<ns>/` are opened — for a namespaced lane
+    // branch (`fleet/…`, `bau/…`) that exposes the other branches of the same namespace, never `main`.
+    // A branch directly under refs/heads has no such directory to give: it gets NO branch write, the
+    // same answer the profile gives a pane without a lane record.
+    if (g.ref) {
+      const rel = g.ref;                                  // refs/heads/<ns>/<name>
+      const refDir = dirname(`${g.common}/${rel}`);
+      const logDir = dirname(`${g.common}/logs/${rel}`);
+      if (dirname(rel) !== "refs/heads") {
+        mkdirs.push(refDir, logDir);
+        a.push("--bind", refDir, refDir, "--bind", logDir, logDir);
+        // ...and the siblings that EXIST are bound read-only over themselves: a bind mount point can
+        // neither be written nor renamed over (EBUSY), so another lane's loose ref stays put. A
+        // sibling that is only packed, or created later, is not covered (named in the docs).
+        for (const dir of [refDir, logDir]) {
+          let names: string[] = [];
+          try { names = readdirSync(dir); } catch { /* the outer shell makes it */ }
+          for (const n of names) {
+            const f = `${dir}/${n}`;
+            if (f !== `${g.common}/${rel}` && f !== `${g.common}/logs/${rel}` && FENCE_PATH_RE.test(f) && !n.endsWith(".lock")) a.push("--ro-bind", f, f);
+          }
+        }
+      }
+    }
+  }
+  for (const d of gitDirs) {
+    for (const f of ["hooks", "config", "config.worktree", "commondir", "gitdir"]) if (exists(`${d}/${f}`)) a.push("--ro-bind", `${d}/${f}`, `${d}/${f}`);
+  }
+  if (g && exists(`${i.cwd}/.git`)) a.push("--ro-bind", `${i.cwd}/.git`, `${i.cwd}/.git`);
+
+  // (C) masks inside the openings, AFTER every opening. Only paths that exist and lie in a mount: a
+  // path outside them is already closed, and a mount over a missing path would create it on the host.
+  const masked = new Set<string>();
+  const mask = (p: string): void => {
+    let real: string;
+    try { real = realpathSync(p); } catch { return; }
+    if (masked.has(real) || !FENCE_PATH_RE.test(real) || !opened.some((r) => under(real, r))) return;
+    masked.add(real);
+    if (lstatSync(real).isDirectory()) a.push("--tmpfs", real, "--remount-ro", real);
+    else a.push("--ro-bind", "/dev/null", real);
+  };
+  try { for (const n of readdirSync(i.fleetDir)) if (/^(fleet\.json|\.env)/.test(n)) mask(`${i.fleetDir}/${n}`); } catch { /* no such dir */ }
+  const h = i.home;
+  for (const p of [`${h}/.ssh`, `${h}/.config/claude-fleet/secrets`, i.keyFile, `${h}/.codex/auth.json`, `${h}/.claude/.credentials.json`,
+    `${h}/.claude.json`, `${h}/.config/gh`, `${h}/.cloudflared`, `${h}/.pi/agent/auth.json`, `${h}/.claude/projects`, `${h}/.codex/sessions`,
+    `${h}/.pi/agent/sessions`, ...i.denyRoots]) mask(p);
+  for (const f of PRIVATE_SCAFFOLD) mask(`${i.cwd}/${f}`);
+
+  // The root is a tmpfs bwrap builds: without this a stray write to a path under home (a parent of some
+  // opening, so it exists) would succeed into memory and read like an opening that is not one. Mounts
+  // above keep their own flags, so the rw ones stay rw.
+  a.push("--remount-ro", "/");
+  return { args: a, mkdirs };
 }

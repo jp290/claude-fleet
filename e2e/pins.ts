@@ -56,6 +56,7 @@ import { HELPER_CMD_ALLOW, HELPER_CMD_FORBIDDEN, helperCmdCheck, REMOTE_NAME_MAX
 import { auditScopeEnv, modulesEnv } from "../helper-daemon/daemon";
 import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
+import { ALLOWED as BW_ALLOWED, PROTECTED as BW_PROTECTED, probeBwrapFence } from "./pi-zai-bwrap-probe";
 import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
 import { readJsonl } from "../briefstats";
 import { laneStandNudge, laneStandNudgeText, type LaneStandView } from "../lane-signals";
@@ -4317,7 +4318,7 @@ export default function (pi) {
     // granted on its next spawn. Fixture: a worktree whose HEAD names main, handed Fleet's record
     // branch — the ref is the record's, null without one, and main appears in no generated rule.
     // Mutation: read HEAD again in piZaiGitOf, or drop laneBranch at the spawn — red.
-    const pzForSrc = server.slice(server.indexOf("function piZaiFenceFor("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceFor(")));
+    const pzForSrc = server.slice(server.indexOf("function piZaiFenceInput("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceInput(")));
     {
       const pzFenceSrc = readFileSync(new URL("../server/pi-zai-fence.ts", import.meta.url), "utf8");
       const wt = realpathSync(mkdtempSync(`${tmpdir()}/pi-zai-head-`));
@@ -4381,11 +4382,11 @@ export default function (pi) {
       piZaiFenceProfile({ ...fx, denyRoots: null }) === null && piZaiFenceProfile({ ...fx, denyRoots: [] }) === null,
       "a profile was built without deny roots");
     // ...and the server feeds the builder from exactly that env var, never from a tracked list
-    const pzFor = server.slice(server.indexOf("function piZaiFenceFor("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceFor(")));
-    pin("server.ts#piZaiFenceFor passes the parsed FLEET_PI_ZAI_DENY_ROOTS as denyRoots",
+    const pzFor = server.slice(server.indexOf("function piZaiFenceInput("), server.indexOf("\n}\n", server.indexOf("function piZaiFenceInput(")));
+    pin("server.ts#piZaiFenceInput passes the parsed FLEET_PI_ZAI_DENY_ROOTS as denyRoots",
       /\nconst PI_ZAI_DENY_ROOTS = parsePiZaiDenyRoots\(process\.env\.FLEET_PI_ZAI_DENY_ROOTS\);/.test(server)
         && /\bdenyRoots: PI_ZAI_DENY_ROOTS,/.test(pzFor),
-      pzFor.match(/denyRoots:[^\n]*/)?.[0] ?? "no denyRoots in piZaiFenceFor");
+      pzFor.match(/denyRoots:[^\n]*/)?.[0] ?? "no denyRoots in piZaiFenceInput");
     // HOST-NEUTRAL, the row above only on a host where /Users exists: a root whose FIRST missing
     // ancestor sits at `/` must still yield single-slash subpaths. The resolver joined `/` + `/`
     // + name into `//Users/fx/…`, which the Mac never showed and the workhorse's pins did (4 roots).
@@ -4416,6 +4417,53 @@ export default function (pi) {
         && pzCode.includes(`ZAI_API_KEY="$(cat '\${PI_ZAI_KEY_FILE}')" \${sbx} \${cmd}`)
         && /\n\s*const PI_ZAI_SANDBOX_EXEC = \(\(\) => \{\n\s*const path = process\.env\.FLEET_PI_ZAI_SANDBOX_EXEC \?\? "\/usr\/bin\/sandbox-exec";/.test(server),
       pzCode.match(/return `\$\{guard\}FLEET_PZ_SB[^\n]*/)?.[0]?.slice(0, 120) ?? "fenced return absent");
+  }
+  // THE LINUX FENCE (bwrap; owner 2026-10-16). The macOS rows above stay as they are; these hold the Linux
+  // line beside them. A BEHAVIOUR test: a shell behind the generated argument list tries the T1-T3 reads
+  // (owner secrets, another session, a foreign process's environment, the live tmux socket) and the
+  // writes the profile refuses; every protected probe is READ by the unfenced control, REFUSED behind the
+  // fence, and the pane's work (a file in the worktree, a tool, a git commit on its own branch) still goes
+  // through. MUTANTS: no fence, the home added to the allowlist, the tmux dir added - each must show leaks,
+  // else the detector measures nothing. Skipped by name where bwrap cannot run.
+  {
+    const RULE_BW = "pi-zai's Linux fence (bwrap)";
+    const bw = await probeBwrapFence();
+    if (bw.unavailable) {
+      skip(`${RULE_BW} behaviour and mutants`, bw.unavailable);
+    } else {
+      const leaks = (m: Record<string, boolean>): string[] => BW_PROTECTED.filter((k) => m[k] !== false);
+      const broken = (m: Record<string, boolean>): string[] => BW_ALLOWED.filter((k) => m[k] !== true);
+      const fmt = (a: string[]): string => (a.length ? a.join(",") : "none");
+      pin(`${RULE_BW} control: the unfenced script reaches every probe, so a refusal behind the fence means something`,
+        BW_PROTECTED.every((k) => bw.control[k] === true) && BW_ALLOWED.every((k) => bw.control[k] === true),
+        `unreached: ${fmt([...BW_PROTECTED, ...BW_ALLOWED].filter((k) => bw.control[k] !== true))}`);
+      pin(`${RULE_BW} refuses T1-T3 and the writes: owner secrets, key, fleet.json/.env, home, other worktree, deny root, foreign session, scaffold .env, foreign environ, live tmux socket, main ref, git hook`,
+        leaks(bw.fenced).length === 0, `leaks: ${fmt(leaks(bw.fenced))}`);
+      pin(`${RULE_BW} lets the pane work: a file in the worktree, a PATH tool, a write in the worktree, the own session dir, a commit on the own branch`,
+        broken(bw.fenced).length === 0, `refused: ${fmt(broken(bw.fenced))}`);
+      pin(`${RULE_BW} mutant: no fence at all - the probe reports leaks (detector can fail)`,
+        leaks(bw.noFence).length === BW_PROTECTED.length, `leaks: ${fmt(leaks(bw.noFence))}`);
+      pin(`${RULE_BW} mutant: the home added to the allowlist - the probe reports the home, other worktree and secrets`,
+        ["ssh", "zshrc", "otherwt", "fleetjson"].every((k) => leaks(bw.homeOpen).includes(k)), `leaks: ${fmt(leaks(bw.homeOpen))}`);
+      pin(`${RULE_BW} mutant: the tmux dir added to the allowlist - the probe reports the live socket`,
+        leaks(bw.tmuxOpen).includes("tmuxlive"), `leaks: ${fmt(leaks(bw.tmuxOpen))}`);
+      const bad = Object.entries(bw.build).filter(([, ok]) => !ok).map(([k]) => k);
+      pin(`${RULE_BW} builder contract: refuses unbuildable input, masks lie after the openings, pid namespace, net shared, root read-only, no home/root bind`,
+        bad.length === 0, `failed: ${fmt(bad)}`);
+    }
+    // the spawn line takes the bwrap branch only where the seatbelt does not exist AND no stand-in is named, ahead of the SBPL line
+    const bwSrc = server.slice(server.indexOf("const PI_ZAI_BWRAP = (() => {"), server.indexOf("\n})();", server.indexOf("const PI_ZAI_BWRAP = (() => {")));
+    pin(`${RULE_BW} is chosen by platform linux with no FLEET_PI_ZAI_SANDBOX_EXEC stand-in; the SBPL line stays the default behind it`,
+      /process\.platform !== "linux" \|\| process\.env\.FLEET_PI_ZAI_SANDBOX_EXEC !== undefined\) return null;/.test(bwSrc)
+        && pzCode.indexOf("if (PI_ZAI_BWRAP) return piZaiBwrapLine(guard, o, cmd);") > 0
+        && pzCode.indexOf("if (PI_ZAI_BWRAP) return piZaiBwrapLine(guard, o, cmd);") < pzCode.indexOf("const profile = piZaiFenceFor("),
+      bwSrc.slice(0, 120));
+    const lineSrc = server.slice(server.indexOf("function piZaiBwrapLine("), server.indexOf("\n}\n", server.indexOf("function piZaiBwrapLine(")));
+    pin(`${RULE_BW} spawn line: key read outside, fence self-tested at /usr/bin/true, pi alone inside, the named marker on failure`,
+      lineSrc.includes("&& fleet_pz /usr/bin/true; } ") && lineSrc.includes("|| { printf '%s\\\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; ")
+        && lineSrc.includes('ZAI_API_KEY="$(cat \'${PI_ZAI_KEY_FILE}\')" fleet_pz ${cmd}; exec ${SHELL}`')
+        && !/(^|[\s;])pi --provider/.test(lineSrc),
+      lineSrc.slice(0, 100));
   }
   // automation-eligibility FLIPPED 2026-09-18, coupled to its readiness seam the way codex's is:
   // the Trust prompt keeps `pi` alive, so only the rendered pane can refuse it, and on a suite

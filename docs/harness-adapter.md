@@ -1053,8 +1053,51 @@ JEDEM äußeren Profil mit einer Regel (gemessen, das alte Profil eingeschlossen
 §6a sagt dann benannt, dass kein Zaun gemessen wurde. Ein bereits laufender pi-zai-Prozess behält
 sein altes Profil; wirksam wird das neue erst mit Deploy und Neu-Spawn. Ein Symlink aus einem
 geöffneten Baum auf ein Ziel außerhalb bleibt eine Grenze des pfadbasierten Zauns. `sandbox-exec`
-ist von Apple als deprecated markiert; der Selbsttest fängt einen Bruch. Workhorse/Linux ist
-ungemessen (Gegenstück wäre `bwrap`).
+ist von Apple als deprecated markiert; der Selbsttest fängt einen Bruch. Linux: der folgende Absatz.
+
+**Lesezaun am Linux-Workhorse (seit 2026-10-16, bubblewrap).** Auf Linux ohne `FLEET_PI_ZAI_SANDBOX_EXEC`
+(`server.ts#PI_ZAI_BWRAP`) läuft pi hinter `/usr/bin/bwrap` (`FLEET_PI_ZAI_BWRAP` überschreibt den Pfad nur
+für Proben) statt hinter `sandbox-exec`; ein gesetztes `FLEET_PI_ZAI_SANDBOX_EXEC` (der Stand-in der
+Helfer-Suites, `e2e-isolated.sh`) behält die SBPL-Zeile, macOS bleibt unberührt. Dieselbe Bedeutung, andere
+Form: SBPL beginnt bei `allow default` und schließt, bwrap beginnt bei einer LEEREN Wurzel und öffnet —
+die Allowlist von (A)/(B) ist der Mount-Baum (`server/pi-zai-fence.ts#piZaiBwrapArgs`). Die Startzeile
+(`server.ts#piZaiBwrapLine`) hält die Argumente in einer Shell-Funktion `fleet_pz`, testet sie an
+`/usr/bin/true` (scheitert das: dieselbe Marke, kein pi), liest den Key außen und startet pi allein darin.
+Sichtbar: `/usr` und eine kurze `/etc`-Liste (nur lesen), die PATH-Verzeichnisse unter Home samt den Zielen
+ihrer Symlinks (`~/.local/bin/node` → der ganze `node-v…`-Baum), pis Paket-Root (nur lesen), der Worktree
+und das eigene Temp-Home `/tmp/fleet-pi-zai/<hash>` (lesen/schreiben), das Agent-Verzeichnis, dessen
+`sessions/` durch ein leeres tmpfs ersetzt ist, in das nur die EIGENE Session-Ordnung zurückgebunden wird,
+und `auth.json` nur lesend (leerer Store, sonst wie auf macOS kein Zaun; fehlt sie, legt die äußere Shell
+`{}` an). `/tmp` ist ein frisches tmpfs: der Live-tmux-Socket, die Sitzungen und Kopien anderer Panes, der
+Haupt-Checkout samt `fleet.json`/`.env`, `~/.ssh`, der Key und jede andere Home-Datei sind schlicht nicht
+da. (C) wirkt nur dort, wo eine Öffnung ein Geheimnis enthält (ein pi-zai-MAIN im Server-Checkout, ein
+liegengebliebenes `.env` im cwd): `/dev/null` über die Datei, ein leeres Nur-Lese-tmpfs über das
+Verzeichnis, nach allen Öffnungen. (E): eigener PID-Namespace mit eigenem `/proc` — kein fremder Prozess,
+also keine fremde Umgebung (das Gegenstück zum Paar process-info/sysctl). `--unshare-all --share-net`:
+Netz offen wie auf macOS, die Wurzel nach den Mounts nur lesend (`--remount-ro /`, damit ein Schreibversuch
+unter Home nicht in ein flüchtiges tmpfs fällt). `--die-with-parent`; `--new-session` nur, wenn der Kernel
+TIOCSTI nicht selbst sperrt (`/proc/sys/dev/tty/legacy_tiocsti` ≠ 0), sonst fehlte pi das SIGWINCH.
+git: das gemeinsame Verzeichnis nur lesend, `objects/`, das Admin-Verzeichnis und die Ref-Ordnung des
+EIGENEN Branches schreibbar; `hooks`, `config`, `config.worktree`, `commondir`, `gitdir` und der
+`.git`-Zeiger bleiben nur lesend. Gemessen an Debian 13, bwrap 0.12.0, Kernel 6.12, unprivilegierte
+User-Namespaces (`docs/messungen/2026-10-16-pi-zai-linux-zaun.md`): Commit auf dem eigenen Branch grün,
+`main` verschieben, ein Hook, die Repo-Config und der Live-Socket verweigert; `e2e/pi-zai-bwrap-probe.ts`
+führt es als Verhaltenstest samt Gegenprobe und Mutanten aus (`e2e/pins.ts`).
+
+*Entschieden `unsupported`, benannt:* (1) **Der Suite-Mutex.** `/tmp/fleet-e2e.lock` beweist seinen Halter
+über PID und Startzeit; im PID-Namespace ist jede PID außerhalb bedeutungslos, ein geteilter Mutex ließe
+einen fremden Wartenden ihn als verwaist abräumen. Ein lokaler Suite-Lauf in einer gezäunten Linux-Lane
+hält darum einen PRIVATEN Mutex und schließt niemanden aus. (2) **Das Verzeichnis `/tmp/tmux-<uid>`:** die
+Pane bekommt ein eigenes; ein Suite-tmux darin läuft, die Live-Sockets sind weg. (3) **Die Einzel-Ref-Regel.**
+SBPL nennt Ref, Lock und Reflog des eigenen Branches; ein Bind-Mount kann das nicht (git legt `<ref>.lock`
+an und benennt es um). Geöffnet wird die Ordnung `refs/heads/<ns>/` des Lane-Branches (`fleet/…`, `bau/…`),
+vorhandene lose Geschwister-Refs darin sind lesend über sich selbst gebunden (nicht beschreib-, nicht
+überschreibbar); ein nur gepackter oder später angelegter Geschwister-Ref ist es nicht. `main` liegt nie
+darin; ein Branch direkt unter `refs/heads` bekommt gar kein Schreibrecht. (4) `packed-refs.lock` bleibt
+zu: git 2.47 druckt nach jedem Commit eine stderr-Zeile `Konnte …/packed-refs.lock nicht erstellen`, Exit 0. **Offen:** abstrakte Unix-Sockets (Netz-Namespace geteilt), ein nach dem Start angelegtes
+`CLAUDE.md`/`.env` im cwd (die Masken entstehen beim Spawn), und die Liveness: pi liegt hinter bwrap zwei
+Ebenen unter der Pane-Shell, darum zählt `comms` dort auch `bwrap` (gemessen: ohne das `no-agent` trotz
+`0.0%/1.0M`).
 
 **Suite-Mutex hinter dem Zaun.** `/bin/ps` ist setuid, und `sandbox-exec` verweigert dessen `exec`
 unter jedem Profil; ohne eigene Startzeit verweigerte jeder lokale Suite-Lauf mit

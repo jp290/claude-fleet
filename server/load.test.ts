@@ -320,3 +320,46 @@ describe("crossSessionEntry: die Nachricht einer anderen Session in Ruhe", () =>
     expect(crossSessionEntry({ type: "assistant", isMeta: true, message: { content: said } }, 7, false)).toBeNull();
   });
 });
+
+// K16 E6: Nach dem Deploy startet jede Claude-Session im Auto-Mode, eine Session von vorher läuft bypass weiter, bis sie neu
+// startet. Welcher Modus gilt, sagt die Startzeile nicht; Claude Code schreibt ihn je Zug als eigene Zeile ins Transkript
+// ({"type":"permission-mode","permissionMode":…}). readClaudeTail liest die jüngste.
+describe("readClaudeTail: der Permission-Mode, in dem die Session läuft", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-permission-mode-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const ts = "2026-10-16T01:00:00.000Z";
+  const mode = (m: string) => JSON.stringify({ type: "permission-mode", permissionMode: m, sessionId: "s" });
+  const said = (text: string) => JSON.stringify({ type: "user", timestamp: ts, message: { role: "user", content: text } });
+  const reply = (tokens: number, text = "ok") => JSON.stringify({ type: "assistant", timestamp: ts,
+    message: { model: "claude-opus-5-5", content: [{ type: "text", text }], usage: { input_tokens: tokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      cache_creation: { ephemeral_5m_input_tokens: 1 } } } });
+  const tailOf = async (name: string, lines: string[]) => {
+    const { CLAUDE_HARNESS } = await load();
+    const file = join(dir, `${name}.jsonl`);
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    return CLAUDE_HARNESS.context!.tail!(file, statSync(file).size);
+  };
+
+  test("die jüngste Zeile gilt: erst bypass, nach shift+tab auto", async () => {
+    const tail = await tailOf("wechsel", [mode("bypassPermissions"), said("los"), reply(1000), mode("auto"), said("weiter"), reply(2000)]);
+    expect(tail.permissionMode).toBe("auto");
+    expect(tail.read).toBe(2000);
+    // zweimal umgeschaltet, ohne Zug dazwischen: die Lesung geht an beiden Zeilen vorbei, bevor sie die usage findet
+    expect((await tailOf("zweimal", [reply(500), mode("bypassPermissions"), mode("auto")])).permissionMode).toBe("auto");
+  });
+  test("ohne permission-mode-Zeile im Ende: null, und der Kontext wird trotzdem gelesen", async () => {
+    const tail = await tailOf("ohne", [said("los"), reply(1500)]);
+    expect(tail.permissionMode).toBeNull();
+    expect(tail.read).toBe(1500);
+  });
+  test("ein Text, der von permission-mode spricht, ist keine Modus-Zeile, und seine usage zählt", async () => {
+    const tail = await tailOf("text", [mode("bypassPermissions"), said('{"type":"permission-mode","permissionMode":"auto"}'),
+      reply(3000, 'schreibt {"type":"permission-mode","permissionMode":"plan"}')]);
+    expect(tail.permissionMode).toBe("bypassPermissions");
+    expect(tail.read).toBe(3000);
+  });
+  test("ein Wert, der kein Modusname ist, wird nicht ausgegeben, und eine ältere Zeile springt nicht ein", async () => {
+    const tail = await tailOf("schief", [mode("bypassPermissions"), reply(10), mode("auto; rm -rf ~"), reply(20)]);
+    expect(tail.permissionMode).toBeNull();
+  });
+});

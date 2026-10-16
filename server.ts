@@ -45593,7 +45593,10 @@ interface DeliveryCacheFact { at: number | null; ttlSec: number; ttlQuelle: Deli
 // `compactedAt`: the newest compact_boundary in the tail when no real model call followed it (claude
 // only) — the fill is then Claude's own postTokens, and the cache the last call wrote is spent
 interface ContextTail { read: number | ContextRead | null; apiError: ApiErrorLine | null; cache?: DeliveryCacheFact;
-  compactedAt?: number | null }
+  compactedAt?: number | null;
+  // the newest `{"type":"permission-mode"}` line of a claude transcript (Claude Code writes one per turn): the
+  // mode the session RUNS in, read rather than inferred from its spawn line (K16 E6); null = none in the tail
+  permissionMode?: string | null }
 // Positive source resolutions are cached separately: Pi needs one directory read + session-head
 // validation to find its timestamped filename, but after that an unchanged file must cost exactly
 // one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
@@ -45656,7 +45659,7 @@ function contextFill(s: Slot): ContextFill | null {
 // contextFill and the API-error round off ONE cached tail read. The owner poll and the steward
 // view call this once per slot and derive both facts from the answer, so apiStall costs no second
 // stat and no second read; every other caller keeps asking contextFill for the number alone.
-function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorLine | null } {
+function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorLine | null; permissionMode?: string | null } {
   const none = { ctx: null, apiError: null };
   if (!s.cwd || !s.sessionId) return none;
   const h = harnessOf(s.harness);
@@ -45694,16 +45697,16 @@ function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorL
     ctxFiles.delete(s.id);
     return none;
   }
-  const { read, apiError } = tail;
-  if (read === null) return { ctx: null, apiError };
+  const { read, apiError, permissionMode = null } = tail;
+  if (read === null) return { ctx: null, apiError, permissionMode };
   const usedTokens = typeof read === "number" ? read : read.used;
   // Absence 5 again, and it is the same rule for both kinds of reader: a numerator whose
   // denominator this server cannot NAME is not a percentage, so the whole fact goes. A file
   // denominator that the tail did not carry arrives here as null from the reader, never as a
   // fallback to the model — that fallback would answer for a window nobody measured.
   const windowTokens = typeof read === "number" ? modelWindow : read.window;
-  if (windowTokens === null) return { ctx: null, apiError };
-  return { ctx: { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 }, apiError };
+  if (windowTokens === null) return { ctx: null, apiError, permissionMode };
+  return { ctx: { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 }, apiError, permissionMode };
 }
 
 // `refresh: false` when the caller has just run contextReading(s) itself (the sessions poll): one tail read per slot
@@ -45802,8 +45805,23 @@ function readClaudeTail(file: string, size: number): ContextTail {
   let tier: DeliveryTtlSource | null = null;
   let compactedAt: number | null = null;
   let compacted = false;
+  let permissionMode: string | null = null;
+  let modeSeen = false;
   // every assistant line carries message.usage, so this one cheap filter finds both kinds of line
-  for (let i = lines.length - 1; i >= 0 && (read === null || !decided || tier === null); i--) {
+  for (let i = lines.length - 1; i >= 0 && (read === null || !decided || tier === null || !modeSeen); i--) {
+    // the newest permission-mode line decides; an older one may name a mode the session has left (shift+tab)
+    if (!modeSeen && lines[i].includes('"type":"permission-mode"')) {
+      let m: { type?: unknown; permissionMode?: unknown };
+      try { m = JSON.parse(lines[i]) as typeof m; }
+      catch { continue; }
+      if (typeof m === "object" && m !== null && m.type === "permission-mode") {
+        modeSeen = true;
+        if (typeof m.permissionMode === "string" && /^[A-Za-z]{1,32}$/.test(m.permissionMode)) permissionMode = m.permissionMode;
+        continue;
+      }
+    }
+    // only the mode is still missing: the walk back looks for nothing else (it used to stop here)
+    if (read !== null && decided && tier !== null) continue;
     const boundaryLine = lines[i].includes('"compact_boundary"');
     if (!boundaryLine && !lines[i].includes('"usage"')) continue;
     let d: { type?: unknown; timestamp?: unknown; error?: unknown; isApiErrorMessage?: unknown;
@@ -45854,10 +45872,10 @@ function readClaudeTail(file: string, size: number): ContextTail {
     // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
     if (read === null && !compacted) read = num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
     // a compaction without postTokens leaves the numerator unknown; the walk goes on for the rest
-    if (compacted && read === null && decided && tier !== null && lastUsageAt !== null) break;
+    if (compacted && read === null && decided && tier !== null && lastUsageAt !== null && modeSeen) break;
   }
   return { read, apiError, cache: { at: lastUsageAt, ttlSec: tier === "1h" ? 3600 : 300,
-    ttlQuelle: tier ?? "unknown" }, compactedAt };
+    ttlQuelle: tier ?? "unknown" }, compactedAt, permissionMode };
 }
 
 // Pi puts the timestamp in the filename, so the pinned UUID is a suffix rather than the whole
@@ -49816,6 +49834,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // /api/self all along, and the owner poll was the one reader that never got them
             ...(s.mission ? { mission: s.mission } : {}),
             ...(s.awaiting ? { awaiting: s.awaiting } : {}),
+            // the permission mode a claude session RUNS in, off the same tail read (readClaudeTail): the
+            // spawn line only says what Fleet asked for, a session from before a deploy keeps its old mode
+            ...(reading.permissionMode ? { permissionMode: reading.permissionMode } : {}),
             // the ROLE the server actually gives this session (positionRole), beside the label the
             // owner typed: an „[Zitat entfernt]“ label on a bound Program-MAIN is a MAIN. Only the two
             // roles a label cannot show — a lane is `worktree`, generic is absent; spelled

@@ -510,6 +510,9 @@ export interface SlotInfo {
   // already puts on the row; `browser`/`context` are omitted unless chosen.
   model?: string | null; browser?: true; context?: { window: number; compactAt: number };
   modelSuperseded?: { id: string; supersededBy?: string };
+  // the permission mode Claude Code wrote last into this session's transcript (auto, bypassPermissions, …);
+  // absent = not a claude session, or no such line in the tail yet
+  permissionMode?: string;
   // "no-agent" is the one value that matters: a typeable pane with nothing behind it. null/absent
   // = the slow tick has not reached this slot, which is not an answer and must not paint one.
   agent?: "alive" | "no-agent" | "no-pane" | "unprobed" | null;

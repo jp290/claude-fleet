@@ -437,3 +437,47 @@ describe("readClaudeTail: der Permission-Mode, in dem die Session läuft", () =>
     expect(tail.permissionMode).toBeNull();
   });
 });
+
+// K16 Teil 2 (Schnitt 2 der Bauleitung): ob Claude Code selbst kompaktiert, steht in keinem Transkript; der Start setzt es
+// (server/session-start.ts#startAspects: autoCompactEnabled:false, wo Fleet übergibt). Der Server hält fest, was die
+// Startzeile der Besetzung sagte, und die Übergabe-Fakten (/api/slots/:id/brief → succession.autoCompact) geben es aus —
+// nur für die Besetzung, die so gestartet wurde.
+describe("succession.autoCompact: was die Startzeile der Besetzung Claude Codes Kompaktierung sagte", () => {
+  const at = 1_791_000_000_000;
+  const owner = `kompakt-${process.pid}-${Date.now()}`;
+  async function brief(slot: number): Promise<{ status: number; autoCompact: unknown }> {
+    const { serveOptions } = await load();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const res = await fetch.call(server, new Request(`http://127.0.0.1:${isolation.FLEET_PORT}/api/slots/${slot}/brief`,
+      { headers: { host: `127.0.0.1:${isolation.FLEET_PORT}`, authorization: `Bearer ${owner}` } }), server);
+    if (!res) throw new Error(`brief ${slot}: keine Antwort`);
+    const body = (await res.json()) as { succession?: { autoCompact?: unknown } | null };
+    return { status: res.status, autoCompact: body.succession === undefined || body.succession === null ? "keine Fakten" : body.succession.autoCompact };
+  }
+
+  test("aus mit Übergabe, an ohne; eine fremde Besetzung, ein schiefer Wert und ein Slot ohne Eintrag sagen null", async () => {
+    const { loadPersistedState, adoptTokens } = await load();
+    const dir = mkdtempSync(join(tmpdir(), "fleet-kompakt-"));
+    try {
+      const slot = (openedAt: number, startCompact?: unknown) => ({ cwd: dir, label: "Kompakt", openedAt, ...(startCompact === undefined ? {} : { startCompact }) });
+      await Bun.write(join(dir, "fleet.json"), JSON.stringify({ token: owner, slots: {
+        "4": slot(at + 4, { openedAt: at + 4, autoCompact: false }),
+        "5": slot(at + 5, { openedAt: at + 5, autoCompact: true }),
+        // die Vorgängerin auf demselben Slot wurde so gestartet, nicht diese Besetzung
+        "6": slot(at + 6, { openedAt: at, autoCompact: false }),
+        "7": slot(at + 7, { openedAt: at + 7, autoCompact: "false" }),
+        "8": slot(at + 8),
+      } }));
+      delete process.env.FLEET_TOKEN;
+      await loadPersistedState(join(dir, "fleet.json"));
+      adoptTokens();
+      const got: Record<number, unknown> = {};
+      for (const id of [4, 5, 6, 7, 8]) got[id] = (await brief(id)).autoCompact;
+      expect(got).toEqual({ 4: false, 5: true, 6: null, 7: null, 8: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

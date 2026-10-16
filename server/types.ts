@@ -2014,6 +2014,17 @@ const compactionFrom = (raw: unknown, openedAt: number): SlotCompaction | null =
   return { at: r.at, openedAt, sessionId: r.sessionId as string | null, trigger: r.trigger,
     preTokens: r.preTokens as number | null, postTokens: r.postTokens as number | null, idle: r.idle, ledgerId: r.ledgerId };
 };
+// WHAT CLAUDE CODE'S OWN COMPACTION WAS TOLD AT THIS OCCUPATION'S NEWEST SPAWN (server/session-start.ts#startAspects,
+// K16 E10a + Teil 2): `autoCompact` false = the line carried `autoCompactEnabled: false` (the handover is on, so Fleet hands
+// over and Claude Code compacts neither at the window's end nor while idle, befunde/18 §5.1); true = the line carried no such
+// key and Claude Code's own setting applies (on by default). Claude Code writes neither into its transcript, so the spawn is
+// the only witness. Bound to the occupation like a compaction; null = not a Claude line, or spawned before this was recorded.
+interface SlotStartCompact { openedAt: number; autoCompact: boolean }
+const startCompactFrom = (raw: unknown, openedAt: number): SlotStartCompact | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  return r.openedAt === openedAt && typeof r.autoCompact === "boolean" ? { openedAt, autoCompact: r.autoCompact } : null;
+};
 // THE PLAN A SLOT WAS STARTED WITH (faafc637): the window's plan input exactly as the door accepted
 // it — hash and switches — plus where and through which door, so a respawn of the same occupation
 // line (lane succession, harness switch) can ask acceptFoundingPlan the SAME question again instead
@@ -2180,6 +2191,8 @@ interface Slot {
   compaction: SlotCompaction | null;
   // the role of the occupation's last claude spawn (session-start.ts#SlotSpawn); null = none recorded
   spawn: SlotSpawn | null;
+  // what Claude Code's own compaction was told at the newest spawn (SlotStartCompact above); null = not recorded
+  startCompact: SlotStartCompact | null;
   // the stand reminder's once-per-stand memory (LaneStandNudged above); null = nothing fired yet
   laneStandNudged: LaneStandNudged | null;
   // the plan this occupation was started with (SlotPlan above); null = started without one
@@ -3530,7 +3543,7 @@ export type {
   FleetReportDeliveryState, FleetReportDecisionDelivery, FleetReportDecider, FleetReport, AttentionKind, AttentionStatus, AttentionStage, AttentionRequest,
   AttentionNudgeReading, AttentionDelivery, TaskKind, TaskKindChange,
   Task, TaskBrief, TaskCard, TaskVariantDecision, BriefAuthor, TaskComment, TaskNotePin, TaskNoteVerdict, TaskVerdict, TaskTouch, TaskCriterion, TaskCriterionPart, TaskFilesProposal,
-  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, SlotCompaction, LaneStandNudged, SlotPlan, Slot,
+  LaneForm, LaneRef, LaneReviewCandidate, LaneResume, SuccessionRetirement, CodexRecoveryState, SlotSleep, StandingHandover, SlotCompaction, SlotStartCompact, LaneStandNudged, SlotPlan, Slot,
   MainDirectResult, MainDirectPreflight, MainDirectOutcome, ProgramStatus, Program,
   PromotionSelfLand, PromotionPolicy, PromotionRequest, ProgramProfileKind, ProgramProfile, ProgramLineageVia,
   ProgramLineageEndedBy, ProgramLineageEntry, ProgramLineage, ProgramLineageRead,
@@ -3576,7 +3589,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, compactionFrom, laneStandNudgedFrom, slotPlanFrom,
+  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, compactionFrom, startCompactFrom, laneStandNudgedFrom, slotPlanFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,

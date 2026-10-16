@@ -1939,10 +1939,10 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
     { name: "late invalid", harness: "codex", permissions: profiles[0]!, late: { state: "invalid" } },
     { name: "late changed", harness: "codex", permissions: profiles[0]!, late: profiles[5]! },
   ];
-  for (const fixture of cases) {
-    let effects = 0, spawn: unknown = null;
-    const slot: Record<string, unknown> = { id: 1, openedAt: 123, cwd: "/fixture/owner-succession", selfToken: "fixture-token",
-      label: "Fixture", harness: fixture.harness, model: "fixture-model", effort: "high", permissions: fixture.permissions };
+  // the door, built once per call with its dependencies; `cache` and `summary` are Runde C's (K16): a cold cache without a
+  // standing handover reads the summary worker instead of waking the session
+  const doorFor = (slot: Record<string, unknown>, late: unknown, seen: { effects: number; spawn: unknown; appendix: string | null },
+    cache: "warm" | "kalt" = "warm", summary: string | null = null) => {
     const claude = { id: "claude", supports: { transcript: false } };
     const deps = { codexPermissionsFrom, CLAUDE_HARNESS: claude,
       HARNESSES: [claude, { id: "codex", supports: { transcript: false },
@@ -1953,19 +1953,29 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
       json: (body: unknown, status = 200) => Response.json(body, { status }),
       canDeliver: async () => ({ ok: true }), transcriptPayload: async () => ({ source: null, entries: [] }),
       lineagePointerCommitted: async () => true, audit: () => {},
+      cacheStateOf: () => ({ state: cache }), successionSummary: async () => summary,
+      spawnName: (h: string | null, m: string | null, e: string | null) => `${h ?? "claude"}/${m ?? "default"}/${e ?? ""}`,
       // the keepCache latch is a test hook that stands still without FLEET_TEST_KEEP_CACHE_LATCH — so here
       waitForKeepCacheTestLatch: async () => {},
-      succeedGeneric: async (_slot: unknown, options: { spawn: unknown; beforeKill: () => Promise<Response | null> }) => {
-        spawn = options.spawn;
-        if (fixture.late) slot.permissions = fixture.late;
+      succeedGeneric: async (_slot: unknown, options: { spawn: unknown; appendix: string | null; beforeKill: () => Promise<Response | null> }) => {
+        seen.spawn = options.spawn;
+        seen.appendix = options.appendix;
+        if (late) slot.permissions = late;
         const refused = await options.beforeKill();
         if (refused) return refused;
-        effects++;
+        seen.effects++;
         return Response.json({ ok: true });
       } };
-    const succeed = new Function(...Object.keys(deps), `${js}; return handleOwnerSucceed;`)(...Object.values(deps)) as
-      (s: Record<string, unknown>) => Promise<Response>;
-    const response = await succeed(slot);
+    return new Function(...Object.keys(deps), `${js}; return handleOwnerSucceed;`)(...Object.values(deps)) as
+      (s: Record<string, unknown>, stillWanted?: null, pick?: Record<string, unknown> | null) => Promise<Response>;
+  };
+  const fixtureSlot = (harness: string, permissions: unknown): Record<string, unknown> => ({ id: 1, openedAt: 123,
+    cwd: "/fixture/owner-succession", selfToken: "fixture-token", label: "Fixture", harness, model: "fixture-model", effort: "high", permissions });
+  for (const fixture of cases) {
+    const seen = { effects: 0, spawn: null as unknown, appendix: null as string | null };
+    const slot = fixtureSlot(fixture.harness, fixture.permissions);
+    const response = await doorFor(slot, fixture.late, seen)(slot);
+    const effects = seen.effects, spawn = seen.spawn;
     const positive = fixture.name.includes("/");
     const expectedStatus = positive ? 200 : fixture.name === "late changed" ? 409 : 400;
     check(`owner succession permissions: ${fixture.name} ${positive ? "preserved exactly" : "refused before destruction"}`,
@@ -1974,6 +1984,26 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
           : fixture.late !== null || spawn === null),
       `status=${response.status}, effects=${effects}, spawn=${JSON.stringify(spawn)}`);
   }
+  // „New session from summary“ (K16 Runde C, owner 16.10. 21:1x): the agent, model and effort the owner picked reach the
+  // spawn as picked — another agent with its own permissions — and the predecessor's are not read
+  const picked = { effects: 0, spawn: null as unknown, appendix: null as string | null };
+  const claudeSlot = fixtureSlot("claude", null);
+  const pick = { harness: "codex", model: "gpt-6.1-sol", effort: "medium", permissions: profiles[0]! };
+  const pickedRes = await doorFor(claudeSlot, null, picked)(claudeSlot, null, pick);
+  check("owner succession: the picked agent, model and effort are what the new session is spawned as",
+    pickedRes.status === 200 && picked.effects === 1
+      && JSON.stringify(picked.spawn) === JSON.stringify({ model: "gpt-6.1-sol", effort: "medium", permissions: profiles[0], harness: "codex" }),
+    `status=${pickedRes.status}, spawn=${JSON.stringify(picked.spawn)}`);
+  // cold and without a standing handover the brief carries the summary worker's reading; warm it does not
+  const cold = { effects: 0, spawn: null as unknown, appendix: null as string | null };
+  const warm = { effects: 0, spawn: null as unknown, appendix: null as string | null };
+  const coldSlot = fixtureSlot("claude", null), warmSlot = fixtureSlot("claude", null);
+  await doorFor(coldSlot, null, cold, "kalt", "SUMMARY-MARK was getan ist")(coldSlot);
+  await doorFor(warmSlot, null, warm, "warm", "SUMMARY-MARK was getan ist")(warmSlot);
+  check("owner succession: cold without a standing handover the successor's brief carries the summary; warm it does not",
+    cold.effects === 1 && (cold.appendix ?? "").includes("--- ZUSAMMENFASSUNG") && (cold.appendix ?? "").includes("SUMMARY-MARK was getan ist")
+      && warm.effects === 1 && !(warm.appendix ?? "").includes("SUMMARY-MARK"),
+    JSON.stringify({ cold: cold.appendix?.slice(0, 300), warm: warm.appendix?.slice(0, 120) }));
 }
 
 async function laneSessionFilesChecks(check: ContextPlanCheck): Promise<void> {

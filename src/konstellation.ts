@@ -224,7 +224,7 @@ function cardValues(n: KNode): HTMLElement[] {
   const s = n.slot;
   const branch = s.worktree?.branch ?? n.branch?.branch ?? s.git?.branch;
   return [val("modell", "Modell", modelOf(s)), val("effort", "Effort", effortOf(s)), val("kontext", "Kontext", contextOf(s)),
-    val("uebergabe", "Übergabe", handoverOf(s)), ...(branch ? [val("branch", "Branch", branch)] : [])];
+    val("uebergabe", "Succession", handoverOf(s)), ...(branch ? [val("branch", "Branch", branch)] : [])];
 }
 // „Alles“: the same values as one quiet line under the session's line
 function werteEl(n: KNode): HTMLElement {
@@ -263,7 +263,7 @@ function propsEl(n: KNode, parent: KNode | null): HTMLElement {
       row(s, "agent", "Agent", claude ? "Claude Code" : s.harness!, AGENT_WER),
       row(s, "modell", "Modell", modelOf(s), DU),
       row(s, "effort", "Effort", effortOf(s), DU),
-      row(s, "uebergabe", "Übergabe", handoverOf(s), DU),
+      row(s, "uebergabe", "Succession", handoverOf(s), DU),
       row(s, "maschine", "Maschine", instanceName ?? "diese", MASCHINE_WER, otherMachines()),
       row(s, "isolation", "Isolation", "keine", ISOLATION_WER, [el("span", "kmehr", "Sandbox/VM möglich, nicht aktiv")]),
     ]),
@@ -480,8 +480,9 @@ function handoverOf(s: SlotInfo): string {
   if (!b.sc) return `nicht gemeldet${line}`;
   const at = handoverAt(b.sc);
   if (!at) return `aus${line}`;
-  // the cap waits only while the cache is warm; a cold cache leaves nothing to wait for
-  return `ab ${at.pct}${NB}%${at.cap !== null ? `, solange der Cache warm ist bis ${at.cap}${NB}%` : at.cache === "kalt" ? ", ohne Aufschub, der Cache ist kalt" : ""}${line}`;
+  // the cap waits while the cache is warm; into a cold cache Fleet types nothing and acts only at the cap (Runde C)
+  const cold = at.cache === "kalt" ? `, der Cache ist kalt: Fleet tippt nichts${at.cap !== null ? ` und handelt erst bei ${at.cap}${NB}%` : ""}` : "";
+  return `ab ${at.pct}${NB}%${cold || (at.cap !== null ? `, solange der Cache warm ist bis ${at.cap}${NB}%` : "")}${line}`;
 }
 
 // Claude Code's permission modes in words (Bauleitung 16.10.); a mode this list does not know is shown as it is

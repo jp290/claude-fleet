@@ -332,6 +332,17 @@ ti_shims() {
     printf '#!/bin/sh\n# test-instance stand-in for the %s CLI (testinstanz.sh#ti_shims)\nexec "$(dirname "$0")/%s-agent" -e "setInterval(() => {}, 1 << 30)"\n' "$h" "$h" > "$DIR/bin/$h"
     chmod +x "$DIR/bin/$h"
   done
+  # FLEET_TI_CLAUDE_LINE=1 (K16 Teil 2): the panes start the CLAUDE line itself — model, --settings, permission mode,
+  # as server.ts#agentCmd builds it for the live fleet — against a `claude` here that idles like the two above, so the
+  # liveness probe sees its agent and nothing reaches a model. What the server records about that line (e.g.
+  # succession.autoCompact) then shows in the instance. Without the flag the stand-in is removed.
+  if [ "${FLEET_TI_CLAUDE_LINE:-}" = 1 ]; then
+    ln -sf "$(command -v bun)" "$DIR/bin/claude-agent"
+    printf '#!/bin/sh\n# test-instance stand-in for the claude CLI (testinstanz.sh#ti_shims, FLEET_TI_CLAUDE_LINE=1)\nexec "$(dirname "$0")/claude-agent" -e "setInterval(() => {}, 1 << 30)"\n' > "$DIR/bin/claude"
+    chmod +x "$DIR/bin/claude"
+  else
+    rm -f "$DIR/bin/claude" "$DIR/bin/claude-agent"
+  fi
 }
 ti_serve() {
   ti_source_match || { echo 'refused: source removed or replaced; no server started' >&2; return 2; }
@@ -388,6 +399,7 @@ ti_serve() {
     TI_AGENT_CMD='true'
     TI_MIRROR=0
   fi
+  [ "${FLEET_TI_CLAUDE_LINE:-}" = 1 ] && TI_AGENT_CMD='claude'
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
   [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"

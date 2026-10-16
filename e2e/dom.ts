@@ -10,6 +10,7 @@
 //   · e2e/timeline-ui.ts  runTimelineDom (the session timeline lens)
 //   · e2e/role-address.ts runPostfachDom (a session's Postfach tab, K13)
 //   · e2e/konstellation.ts runKonstellationDom (the constellation window, K16 E2b)
+//   · e2e/uebergabe.ts    runUebergabeDom (the session's „Handover“ block, K16 uebergabe-b)
 // This file only drives them, with the very check lines they had in their old modules — the names
 // are unchanged, only the module that emits them moved (suite-modules.ts#PROBE_HOSTS maps a change
 // in a host file to this module too, so a narrowed preview still runs the probe it touched).
@@ -38,6 +39,7 @@ import { runDropChatDom } from "./drops";
 import { TIMELINE_MUTANTS, runTimelineDom } from "./timeline-ui";
 import { runPostfachDom } from "./role-address";
 import { KONST_CLAIM, KONST_MUTANTS, runKonstellationDom } from "./konstellation";
+import { UEB_MUTANTS, runUebergabeDom } from "./uebergabe";
 
 // THE CUT OF e897fa95 (docs/messungen/2026-10-10-ci-inventur.md, card 5; the verdicts per call site in
 // its .tsv). This unit was the suite's most expensive one (1606 s in the full preview of 2026-10-11),
@@ -87,6 +89,7 @@ export async function run(): Promise<void> {
   await activityDom(sourceRoot);
   await postfachDom(sourceRoot);
   await konstellationDom(sourceRoot);
+  await uebergabeDom(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
 }
@@ -406,6 +409,26 @@ async function postfachDom(sourceRoot: string): Promise<void> {
       check(`postfach DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
   } catch (error) {
     probeFailed("postfach DOM", error);
+  }
+}
+
+// --- from e2e/uebergabe.ts: the session's „Handover“ block (K16 uebergabe-b) and its mutants.
+async function uebergabeDom(sourceRoot: string): Promise<void> {
+  // every claim at both widths: the phone is the owner's place
+  try {
+    for (const [result, claim, ok] of atOneViewport(await runUebergabeDom(sourceRoot), 1200, { alsoAt: () => true }))
+      check(`uebergabe DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("uebergabe DOM", error);
+  }
+  for (const m of DOM_MUTANTS ? UEB_MUTANTS : []) {
+    try {
+      const hit = (await runUebergabeDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`uebergabe DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`uebergabe DOM mutant — ${m.name}`, error);
+    }
   }
 }
 

@@ -8,8 +8,8 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText,
-  orchestratorContextLine, ownSetting, settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision,
+import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, MAX_NUDGES,
+  orchestratorContextLine, ownSetting, settingForSuccessor, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision,
   warmTextInput, type ActFacts, type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
 import { loadHandoverSetting, type HandoverSetting } from "./types";
 
@@ -57,6 +57,8 @@ describe("was die Nachfolgerin bekommt", () => {
   });
   test("nichts zu lesen ist nur der Start-Brief, ein unlesbares Transkript wird genannt", () => {
     expect(successorSentence(ready({}))).toBe("Die Nachfolgerin bekommt nur ihren Start-Brief; eine Übergabe hat die Session nicht geschrieben.");
+    expect(successorSentence(ready({ summary: true, tail: { state: "read", entries: 4, omitted: 0 } })))
+      .toBe("Die Nachfolgerin bekommt eine Zusammenfassung des Gesprächs (die Session wird dafür nicht geweckt) und 4 Einträge Transkript-Rest; eine Übergabe hat die Session nicht geschrieben.");
     expect(successorSentence(ready({ standingHandover: { ageMs: 5 * 60_000 }, tail: { state: "none", entries: 0, omitted: 0 } })))
       .toBe("Die Nachfolgerin bekommt die stehende Übergabe von vor 5 min; das Transkript kann Fleet nicht lesen.");
   });
@@ -223,17 +225,17 @@ describe("das Budget der Hinweise", () => {
   const T0 = Date.parse("2026-10-14T08:00:00Z");
   test("zwischen Basis und Obergrenze ein Hinweis; die Session wählt den Punkt", () => {
     const l = new HintLedger(3, 15 * MIN);
-    const c = l.claim(1, "a", "hint", T0);
+    const c = l.claim(1, "a", "hint", T0, "warm");
     expect(c).not.toBeNull();
     l.delivered(c!, T0);
     l.release(c!);
-    expect(l.due(1, "a", "hint", T0 + 60 * MIN)).toBe(false);
+    expect(l.due(1, "a", "hint", T0 + 60 * MIN, "warm")).toBe(false);
   });
   test("ist die Handlung fällig, kommen weitere, im Abstand und höchstens drei", () => {
     const l = new HintLedger(3, 15 * MIN);
     const sent: number[] = [];
     for (let t = T0; t <= T0 + 90 * MIN; t += 5 * MIN) {
-      const c = l.claim(1, "a", "due", t);
+      const c = l.claim(1, "a", "due", t, "warm");
       if (!c) continue;
       const r = l.delivered(c, t);
       l.release(c);
@@ -246,31 +248,67 @@ describe("das Budget der Hinweise", () => {
   test("ein Hinweis, der ankommt, während ein späterer Tick noch wartet, wird nicht ein zweites Mal getippt", () => {
     const l = new HintLedger(3, 15 * MIN);
     // Tick 2 sieht B als fällig, bevor Tick 1 sendet …
-    expect(l.due(2, "b", "due", T0)).toBe(true);
-    const first = l.claim(2, "b", "due", T0);
+    expect(l.due(2, "b", "due", T0, "warm")).toBe(true);
+    const first = l.claim(2, "b", "due", T0, "warm");
     // … während Tick 1s Hinweis unterwegs ist, reserviert Tick 2 nichts …
-    expect(l.claim(2, "b", "due", T0 + 1)).toBeNull();
+    expect(l.claim(2, "b", "due", T0 + 1, "warm")).toBeNull();
     l.delivered(first!, T0 + 2);
     l.release(first!);
     // … und nach dessen Ankunft auch nicht: der Abstand gilt ab der Ankunft
-    expect(l.claim(2, "b", "due", T0 + 3)).toBeNull();
+    expect(l.claim(2, "b", "due", T0 + 3, "warm")).toBeNull();
   });
   test("ein fehlgeschlagener Versuch zählt nicht, wartet aber den Abstand ab", () => {
     const l = new HintLedger(3, 15 * MIN);
-    const c = l.claim(1, "a", "hint", T0)!;
+    const c = l.claim(1, "a", "hint", T0, "warm")!;
     l.failed(c, T0);
     l.release(c);
-    expect(l.claim(1, "a", "hint", T0 + 5 * MIN)).toBeNull();
-    const again = l.claim(1, "a", "hint", T0 + 15 * MIN);
+    expect(l.claim(1, "a", "hint", T0 + 5 * MIN, "warm")).toBeNull();
+    const again = l.claim(1, "a", "hint", T0 + 15 * MIN, "warm");
     expect(again?.attempt.nudges).toBe(0);
+  });
+  test("der Füllstand des letzten angekommenen Hinweises bleibt stehen; ein fehlgeschlagener ändert ihn nicht", () => {
+    const l = new HintLedger(3, 15 * MIN);
+    const c = l.claim(1, "a", "due", T0, "warm")!;
+    expect(c.attempt.pct).toBeUndefined();
+    l.delivered(c, T0, 41);
+    l.release(c);
+    expect(l.of(1, "a")?.pct).toBe(41);
+    const late = l.claim(1, "a", "due", T0 + 15 * MIN, "warm")!;
+    l.failed(late, T0 + 15 * MIN);
+    l.release(late);
+    expect(l.of(1, "a")?.pct).toBe(41);
+    const third = l.claim(1, "a", "due", T0 + 30 * MIN, "warm")!;
+    l.delivered(third, T0 + 30 * MIN, 46);
+    expect(l.of(1, "a")).toMatchObject({ nudges: 2, pct: 46 });
   });
   test("ein neues Gespräch im Slot beginnt bei null", () => {
     const l = new HintLedger(3, 15 * MIN);
-    const c = l.claim(1, "a", "hint", T0)!;
+    const c = l.claim(1, "a", "hint", T0, "warm")!;
     l.delivered(c, T0);
     l.release(c);
     expect(l.of(1, "b")).toBeNull();
-    expect(l.due(1, "b", "hint", T0 + 1)).toBe(true);
+    expect(l.due(1, "b", "hint", T0 + 1, "warm")).toBe(true);
+  });
+  // K16 Runde C, Owner 16.10. 19:3x: „[Zitat entfernt]“
+  test("Fleets Budget: genau ein Stups je Gespräch — auch an der Obergrenze und lange nach dem Abstand kein zweiter", () => {
+    const l = new HintLedger(MAX_NUDGES, 15 * MIN);
+    const c = l.claim(1, "a", "hint", T0, "warm")!;
+    expect(l.delivered(c, T0, 40)).toEqual({ nudges: 1, gaveUp: true });
+    l.release(c);
+    for (const t of [T0 + 15 * MIN, T0 + 60 * MIN, T0 + 240 * MIN]) {
+      expect(l.due(1, "a", "due", t, "warm")).toBe(false);
+      expect(l.claim(1, "a", "due", t, "warm")).toBeNull();
+    }
+  });
+  // Owner 16.10. 21:1x: „[Zitat entfernt]“
+  test("in eine kalte Session wird kein Stups getippt, auch nicht der erste und nicht an der Obergrenze", () => {
+    const l = new HintLedger(MAX_NUDGES, 15 * MIN);
+    expect(l.due(1, "a", "hint", T0, "kalt")).toBe(false);
+    expect(l.claim(1, "a", "due", T0, "kalt")).toBeNull();
+    expect(l.of(1, "a")).toBeNull();
+    expect(l.claim(1, "a", "due", T0, "warm")).not.toBeNull();
+    expect(l.due(2, "b", "hint", T0, "unbekannt")).toBe(true);
+    expect(l.due(3, "c", "hint", T0, "kompaktiert")).toBe(true);
   });
 });
 
@@ -367,8 +405,8 @@ describe("die Wahl an der Schwelle", () => {
 });
 
 describe("die Handlung", () => {
-  const base: ActFacts = { choice: "succeed", step: "due", resting: true, hinted: true, hintOn: true, actedAt: null,
-    retryMs: 15 * 60_000, now: 1_000_000 };
+  const base: ActFacts = { choice: "succeed", step: "due", resting: true, hinted: true, hintOn: true, cold: false, atCap: true,
+    actedAt: null, retryMs: 15 * 60_000, now: 1_000_000 };
   test("fällig, Hinweis angekommen, ruhend: die gewählte Handlung", () => {
     expect(actDecision(base)).toEqual({ act: "succeed", reason: "due" });
     expect(actDecision({ ...base, choice: "compact" })).toEqual({ act: "compact", reason: "due" });
@@ -379,6 +417,20 @@ describe("die Handlung", () => {
   test("erst der Hinweis, der die Handlung nennt — außer der Owner hat ihn abgeschaltet", () => {
     expect(actDecision({ ...base, hinted: false })).toEqual({ act: null, reason: "hint-first" });
     expect(actDecision({ ...base, hinted: false, hintOn: false })).toEqual({ act: "succeed", reason: "due" });
+  });
+  // K16 Runde C, Bauleitung 16.10. für den Owner: kalt unter der Obergrenze nur das Angebot; die Notbremse bleibt, kalt ohne Vorab-Hinweis
+  test("kalt unter der Obergrenze: keine Handlung, das Angebot „New session from summary“ steht in der Ansicht", () => {
+    expect(actDecision({ ...base, cold: true, atCap: false })).toEqual({ act: null, reason: "cold-offer" });
+    expect(actDecision({ ...base, cold: true, atCap: false, hinted: false, hintOn: false })).toEqual({ act: null, reason: "cold-offer" });
+  });
+  test("kalt an der Obergrenze: die Notbremse handelt, ohne auf den Hinweis zu warten, den Fleet nicht mehr tippt", () => {
+    expect(actDecision({ ...base, cold: true, hinted: false })).toEqual({ act: "succeed", reason: "due" });
+    expect(actDecision({ ...base, cold: true, hinted: false, resting: false })).toEqual({ act: null, reason: "working" });
+    expect(actDecision({ ...base, cold: false, hinted: false })).toEqual({ act: null, reason: "hint-first" });
+  });
+  test("warm unter der Obergrenze, kurz vor kalt: wie bisher, nach dem Hinweis", () => {
+    expect(actDecision({ ...base, atCap: false })).toEqual({ act: "succeed", reason: "due" });
+    expect(actDecision({ ...base, atCap: false, hinted: false })).toEqual({ act: null, reason: "hint-first" });
   });
   test("nur Hinweis, nicht fällig, eben gehandelt: nichts", () => {
     expect(actDecision({ ...base, choice: "hint" }).reason).toBe("choice-hint");
@@ -395,5 +447,36 @@ describe("die Rollenkarte der Orchestratorin", () => {
     expect(line).toContain("bis 50 % arbeitest du weiter, solange dein Cache warm ist");
     expect(line).not.toContain("spaetestens bei 45");
     expect(line).not.toContain("FLEET_MIGRATE_PCT");
+  });
+});
+
+// K16 Runde C, Owner 16.10. 21:1x: „[Zitat entfernt]“
+//  — die Vorgabe sind die bisherigen
+describe("Agent, Modell und Effort der neuen Session", () => {
+  const cur = { harness: "claude", model: "claude-opus-5-5[1m]", effort: "xhigh" };
+  test("ohne Angabe: die bisherigen, nichts geändert", () => {
+    expect(successorSpawnOf({ expectedOpenedAt: 5 }, cur)).toEqual({ ok: true, pick: cur, changed: false });
+    expect(successorSpawnOf(null, cur)).toEqual({ ok: true, pick: cur, changed: false });
+    expect(successorSpawnOf({ harness: "claude", model: "claude-opus-5-5[1m]", effort: "xhigh" }, cur)).toEqual({ ok: true, pick: cur, changed: false });
+    expect(successorSpawnOf({ harness: "claude" }, cur)).toEqual({ ok: true, pick: cur, changed: false });
+  });
+  test("ein anderes Modell oder ein anderer Effort beim selben Agenten", () => {
+    expect(successorSpawnOf({ model: "claude-sonnet-5-5[1m]" }, cur))
+      .toEqual({ ok: true, pick: { ...cur, model: "claude-sonnet-5-5[1m]" }, changed: true });
+    expect(successorSpawnOf({ effort: "high" }, cur)).toEqual({ ok: true, pick: { ...cur, effort: "high" }, changed: true });
+    expect(successorSpawnOf({ model: null }, cur)).toEqual({ ok: true, pick: { ...cur, model: null }, changed: true });
+  });
+  test("ein anderer Agent ohne Modell und Effort nimmt dessen Vorgabe, nie das Modell des alten", () => {
+    expect(successorSpawnOf({ harness: "codex" }, cur))
+      .toEqual({ ok: true, pick: { harness: "codex", model: null, effort: null }, changed: true });
+    expect(successorSpawnOf({ harness: "codex", model: "gpt-6.1-sol", effort: "medium" }, cur))
+      .toEqual({ ok: true, pick: { harness: "codex", model: "gpt-6.1-sol", effort: "medium" }, changed: true });
+  });
+  test("leer oder null heißt die Vorgabe; ein Wert, der kein Text ist, wird abgewiesen", () => {
+    expect(successorSpawnOf({ harness: "", model: " " }, cur)).toEqual({ ok: true, pick: { ...cur, model: null }, changed: true });
+    expect(successorSpawnOf({ harness: null }, cur)).toEqual({ ok: true, pick: cur, changed: false });
+    expect(successorSpawnOf({ model: 5 }, cur).ok).toBe(false);
+    expect(successorSpawnOf({ harness: ["codex"] }, cur).ok).toBe(false);
+    expect(successorSpawnOf({ effort: { x: 1 } }, cur).ok).toBe(false);
   });
 });

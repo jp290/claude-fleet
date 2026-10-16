@@ -3296,27 +3296,41 @@
   #board .bpop .bmenuitem .kk { margin-left: auto; font-size: var(--chat-ui-fs); color: var(--chat-mute); font-family: var(--chat-mono); }
   #board .bpop .bmenuitem.danger { color: var(--danger); }
   #board .bpop .sep { height: 1px; margin: 4px 2px; background: var(--chat-edge); }
-  #board .bpop.ubpop { left: 0; right: auto; width: 276px; padding: 8px 10px 6px; }
-  #board .ubpop .pr { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 1px 8px; align-items: center; padding: 4px 0;
-    font-size: 12px; color: var(--chat-prose); }
-  #board .ubpop .pr > .k { align-self: start; padding-top: 2px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
-  #board .ubpop .pr > .pv { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
-  #board .ubpop .pr > .pv b { font-weight: 500; color: var(--chat-ink); }
-  #board .ubpop .pr > .h { grid-column: 2; font-size: 10.5px; line-height: 1.35; color: var(--chat-faint); }
-  #board .ubpop .perr { margin-top: 4px; font-size: var(--chat-ui-fs); color: var(--danger); }
-  /* a wide row (the threshold values, the successor button): its value and sentence under the label */
-  #board .ubpop .pr.wide > .pv, #board .ubpop .pr.wide > .h { grid-column: 1 / -1; }
-  #board .ubpop .pr.wide + .pr { margin-top: 2px; }
-  #board .ubpop .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  /* THE „HANDOVER“ BLOCK under the session's values (K16, uebergabe-b): what happens next, one line each — when · what —
+     and while it is open each line's own control under it (.c). A grey note under a line (.why); ⓘ shows every line's
+     explanation (.x), which is otherwise the hover. */
+  #board .bueb { margin-top: var(--b-grp); }
+  #board .buebh { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+  #board .buebh .t { flex: 1; font-size: var(--chat-ui-fs); font-weight: 500; color: var(--chat-ink); }
+  #board .buebh button { min-height: 20px; padding: 0 7px; border: 1px solid transparent; border-radius: var(--r1); background: none;
+    color: var(--chat-mute); font: 400 var(--chat-ui-fs) var(--chat-sans); cursor: pointer; }
+  #board .buebh button:hover, #board .buebh button.on { color: var(--chat-ink); border-color: var(--chat-edge); }
+  #board .bueb .st { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 1px 8px; padding: 3px 0; font-size: 12px; color: var(--chat-prose); }
+  #board .bueb.open .st { padding: 5px 0; border-top: 1px solid var(--chat-edge); }
+  #board .bueb .st > .k { font-size: var(--chat-ui-fs); color: var(--chat-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #board .bueb .st > .pv { min-width: 0; }
+  #board .bueb .st .stat { margin-left: 6px; font-size: var(--chat-ui-fs); color: var(--chat-mute); white-space: nowrap; }
+  #board .bueb .st > .why, #board .bueb .st > .x { grid-column: 2; font-size: 10.5px; line-height: 1.35; color: var(--chat-faint); }
+  #board .bueb .st > .x { display: none; }
+  #board .bueb.explain .st > .x { display: block; }
+  #board .bueb .st.grey > .pv { color: var(--chat-mute); }
+  #board .bueb .st > .c { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 4px; }
+  #board .bueb .cl { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+  #board .bueb .perr, #board .bueb .pnote { margin-top: 4px; font-size: var(--chat-ui-fs); color: var(--danger); }
+  #board .bueb .pnote { color: var(--chat-mute); }
+  /* a value no longer to pick (at or under the fill once Fleet asked): visible, struck quiet */
+  #board .bueb .seg button:disabled:not(.on) { color: var(--chat-faint); cursor: default; }
+  /* a step that cannot be had: its button reads grey, not like a live one with a shade over it */
+  #board .bueb .st.grey .bbtn:disabled { opacity: 1; background: none; border-style: dashed; color: var(--chat-faint); }
+  #board .bueb .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  /* „New session from summary“ (Runde C): agent, model and effort as three labelled pickers, wrapping on a narrow column */
+  #board .bueb .picks { display: flex; flex-wrap: wrap; gap: 4px 10px; width: 100%; }
+  #board .bueb .pickw { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+  #board .bueb select.pick { min-height: 22px; max-width: 170px; padding: 0 4px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
+    background: var(--chat-surface); color: var(--chat-ink); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   #board .seg:is(.pcts, .mins) button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
   /* ten thresholds 25–70 (K9 S3c), eleven with a lane's 37, and their unit on one line of the 256-px row; „Aus“ below */
   #board .seg.pcts button { min-width: 21px; padding: 0 2px; }
-  /* the warm turn's own text (K9 S2b): the notepad's field, the full width of its row */
-  #board .ubpop .pta { flex: 1 1 100%; box-sizing: border-box; min-height: 40px; resize: vertical; padding: 5px 7px;
-    background: var(--chat-surface); color: var(--chat-prose); border: 1px solid var(--chat-edge); border-radius: var(--r1);
-    font: 12px/1.4 var(--chat-sans); }
-  #board .ubpop .pta:focus { outline: none; border-color: var(--chat-mute); }
-  #board .ubpop .bbtn[hidden] { display: none; }
   /* the fleet's own value: marked, so a session's own threshold reads as a choice beside it */
   #board .seg button.dflt { text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .seg { display: inline-flex; border: 1px solid var(--chat-edge); border-radius: var(--r1); overflow: hidden; }
@@ -3443,16 +3457,15 @@
     #board .btabbtn, #board .brow, #board .bfile, #board .buncf, #board .bprompt { font-size: 12.5px; }
     #board .bpop { position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: auto; min-width: 0; max-height: 76%; overflow: auto;
       border-radius: var(--r3) var(--r3) 0 0; padding: 8px 10px 22px; z-index: 31; }
-    #board .bpop.ubpop { left: 0; right: 0; width: auto; }
     #board .bpopscrim { display: block; position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--chat-void) 55%, transparent); }
     #board .bpop .bmenuitem { min-height: 44px; font-size: 14px; }
-    #board .ubpop .pr { grid-template-columns: 110px minmax(0, 1fr); font-size: 13px; }
+    #board .bueb .st { grid-template-columns: 88px minmax(0, 1fr); font-size: 13px; }
+    #board .buebh button { min-height: 40px; padding: 0 12px; }
     #board .seg:is(.pcts, .mins) button { min-width: 36px; padding: 0 4px; }
     /* eight minutes and their unit on one line of Info's 335-px sheet */
     #board .seg.mins button { min-width: 32px; }
-    /* eleven thresholds and their unit on one line of the same sheet */
-    #board .seg.pcts button { min-width: 26px; padding: 0 2px; }
-    #board .ubpop .pta { font-size: 16px; }
+    /* eleven thresholds and their unit on one line of Info's ~300-px window (K16 Teil 2: the settings stand in it now) */
+    #board .seg.pcts button { min-width: 22px; padding: 0 1px; }
     #board .seg button { min-height: 40px; padding: 0 14px; }
   }
 

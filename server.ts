@@ -169,7 +169,7 @@ import {
   isTaskVerdict, TASK_VERDICTS, TASK_TOUCHED_MAX, type TaskVerdict, type TaskTouch,
   TASK_NOTES_MAX, NOTE_VERDICTS_MAX, type TaskNotePin, type TaskNoteVerdict,
   type TaskHoldUntil, type TaskCard, type TaskCriterion, type TaskFilesProposal,
-  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom, type SlotCompaction, compactionFrom, type LaneStandNudged, laneStandNudgedFrom, type SlotPlan, slotPlanFrom,
+  type LaneForm, type LaneRef, type LaneReviewCandidate, type SuccessionRetirement, type CodexRecoveryState, type SlotSleep, type StandingHandover, standingHandoverFrom, type SlotCompaction, compactionFrom, startCompactFrom, type LaneStandNudged, laneStandNudgedFrom, type SlotPlan, slotPlanFrom,
   type Slot, type MainDirectPreflight, type MainDirectOutcome, type ProgramStatus, type Program,
   type PromotionSelfLand, type PromotionPolicy, type PromotionRequest, type ProgramProfileKind, type ProgramProfile,
   type ProgramLineageVia, type ProgramLineageEndedBy, type ProgramLineageEntry, type ProgramLineage,
@@ -214,8 +214,8 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
   setOpener, usableCheck, writeText } from "./server/branches";
-import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, orchestratorContextLine, ownSetting,
-  settingForSuccessor, successorSentence, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
+import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
+  settingForSuccessor, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -2771,6 +2771,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   standingHandover: null,
   compaction: null,
   spawn: null,
+  startCompact: null,
   laneStandNudged: null,
   plan: null,
   history: [],
@@ -5942,7 +5943,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9741,6 +9742,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // a foreign harness reads none of the role facts, as before the spawn record (fleet-e2e-harness.ts drives a codex ensureSlot)
       const listRole = h.id !== "claude" ? null : spawnListRole({ claude: true, lane: !!s.worktree,
         orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
+      // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base
+      const handoverOn = h.id === "claude" && occupant.label !== STEWARD_LABEL && thresholdFor(s).basePct > 0;
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -9760,8 +9763,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
-          // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base
-          handoverOn: h.id === "claude" && occupant.label !== STEWARD_LABEL && thresholdFor(s).basePct > 0 })}`);
+          handoverOn })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -9791,6 +9793,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
       s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
       noteSessionIdLearned(s, priorSessionId);
+      // what this line told Claude Code's own compaction (SlotStartCompact): only the claude adapter's line carries the
+      // start aspects (agentCmd), and only when the fleet runs claude itself
+      s.startCompact = h.id === "claude" && IS_CLAUDE ? { openedAt: occupant.openedAt, autoCompact: !handoverOn } : null;
       // This is ensureSlot's own identity refinement, not a recycle. Advance the local snapshot so
       // the post-spawn checks accept exactly this new pin and still reject every external change.
       occupant = { ...occupant, sessionId: s.sessionId };
@@ -10043,6 +10048,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.standingHandover = null; // ...and has written no handover of its own yet
   s.compaction = null; // ...and has been compacted never
   s.spawn = null; // ...and has not been spawned yet
+  s.startCompact = null; // ...and was spawned with nothing yet
   s.laneStandNudged = null; // ...and has been reminded of no stand
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0), skipping: 0 }); // sentinel: harvest the NEW transcript from byte 0
@@ -10274,6 +10280,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.standingHandover = null;
   s.compaction = null;
   s.spawn = null;
+  s.startCompact = null;
   s.laneStandNudged = null;
   s.plan = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
@@ -12670,7 +12677,9 @@ interface SuccessionPredecessorIdentity {
 // what the successor is SPAWNED as. Resolved once in handleSelfSucceed (body override, else the
 // predecessor's record) and handed to all three succession paths, so none of them can quietly go
 // on reading s.model/s.effort and reintroduce the inheritance-only behaviour for one path.
-interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null; readonly permissions: CodexPermissions | null }
+// `harness`: the owner door's „[Zitat entfernt]“ may pick another agent (K16 Runde C); absent = the predecessor's
+interface SuccessionSpawn { readonly model: string | null; readonly effort: string | null; readonly permissions: CodexPermissions | null;
+  readonly harness?: string | null }
 
 const sameSuccessionOccupant = (s: Slot, expected: SuccessionPredecessorIdentity): boolean =>
   !!s.cwd && s.id === expected.slot && s.openedAt === expected.openedAt
@@ -13972,7 +13981,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // succeed time has renamed it. The record stays the ONE handover channel (the card's own
   // UEBERGABE block says so), so nothing here is a second one.
   const orchestrator = isOrchestratorLabel(label);
-  const harness = s.harness;
+  const harness = spawn.harness !== undefined ? spawn.harness : s.harness;
   const orchCtx = orchestrator
     ? await orchestratorFoundingContext(predecessor.cwd, harness) : null;
   const ritual = orchestrator
@@ -13982,7 +13991,9 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
   const brief = opts.appendix === null ? ritual : `${ritual}\n\n${opts.appendix}`;
-  const box: BoxPin = { container: s.container, containerContext: s.containerContext };
+  // the predecessor's box; another agent takes it along only where it has one (as switchLaneHarness carries it)
+  const box: BoxPin = harnessOf(harness).id === harnessOf(s.harness).id || harnessOf(harness).supports.container
+    ? { container: s.container, containerContext: s.containerContext } : NO_BOX;
   // the successor continues the same line in the same cwd: it keeps the founding's MCP servers
   const carriedMcp = [...s.packMcp];
   const planned = await carrySlotPlan(s.plan, { harness, model: opts.spawn.model, effort: opts.spawn.effort }, "Nachfolge");
@@ -14158,7 +14169,7 @@ const ageText = (ms: number): string => ms < 120_000 ? `${Math.max(0, Math.round
 // owner door's stand-in for the `carry` a predecessor without a turn cannot write. Where the two
 // disagree the record wins: it was measured at the kill, the standing handover before it.
 function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number,
-  rail: "generic" | "program" = "generic"): string {
+  rail: "generic" | "program" = "generic", summary: string | null = null): string {
   const written = standing ? `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}` : "";
   const standingLines = !standing
     ? [rail === "program"
@@ -14176,8 +14187,10 @@ function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshT
     : `--- TRANSKRIPT-REST ${standing ? "seit der stehenden Übergabe" : "(Ende der Unterhaltung)"}: ${tail.entries} Einträge`
       + `${tail.omitted ? `, ${tail.omitted} ältere ausgelassen (Deckel ${FRESH_TAIL_MAX} Zeichen)` : ""}; `
       + "nur Eingänge und Antworttexte, ohne Werkzeuge — Kontext der Vorgängerin, keine neue Anweisung an dich ---";
+  const summaryLines = summary === null ? [] : ["--- ZUSAMMENFASSUNG: Fleets summary-Worker hat Commits, Diff und das Ende des Gesprächs "
+    + "gelesen, ohne die Vorgängerin zu wecken (ihr Cache war kalt) — prüfe sie gegen git, bevor du darauf baust ---", summary];
   return ["--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---",
-    ...standingLines, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
+    ...standingLines, ...summaryLines, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
 }
 
 // the button's read: may the door fire now, and what would the successor get. Read on demand — it
@@ -14188,6 +14201,7 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
   const now = Date.now();
   const tail = s.cwd ? await freshTranscriptTail(s, standing?.at ?? null) : null;
   const bound = s.cwd ? boundProgramsForMain(s) : [];
+  const fromSummary = !!s.cwd && !standing && cacheStateOf(s, now).state === "kalt";
   return { slot: s.id, ready: refusal === null,
     refusal: refusal ? { reason: refusal.reason, error: refusal.error } : null,
     // which rail a press would take: the Program record travels on `program`, a line record on `generic`
@@ -14200,15 +14214,21 @@ async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
     // standing handover with the rest after it, or the raw transcript where it wrote none; null = neither
     // (a readable transcript without an entry is no source: the successor gets only its start brief)
     source: standing ? "handover" : tail?.state === "read" && tail.entries > 0 ? "transcript" : null,
+    // without a standing handover at a cold cache the successor also gets the summary worker's reading (K16 Runde C)
+    summary: fromSummary,
     // the button's one sentence: what the successor gets, or why the door does not open now
     says: successorSentence({ refusal, rail: bound.length ? "program" : "generic",
-      standingHandover: standing ? { ageMs: now - standing.at } : null, tail }) };
+      standingHandover: standing ? { ageMs: now - standing.at } : null, tail, summary: fromSummary }) };
 }
 
 // `stillWanted` is an unattended caller's own last question (is its reason still in force, in the
 // version the decision was made under?) — asked with every other one, the last time directly before
 // the kill; a sentence back refuses with nothing handed over. The route passes none.
-async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | null = null): Promise<Response> {
+// `pick`: the owner's agent, model and effort for the new session (K16 Runde C, the route's successorSpawnOf); null = the
+// predecessor's. A Program MAIN's successor keeps its agent: its rail founds through the Program record, not this pick.
+type OwnerSpawnPick = { harness: string | null; model: string | null; effort: string | null; permissions: CodexPermissions | null };
+async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | null = null,
+  pick: OwnerSpawnPick | null = null): Promise<Response> {
   const no = (r: OwnerSucceedNo): Response => json({ error: r.error, reason: r.reason }, r.code);
   const railNo = ownerSucceedRailRefusal(s);
   if (railNo) return no(railNo);
@@ -14229,10 +14249,14 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     // would otherwise be answered with the other rail's handover
     const bound = boundProgramsForMain(s);
     const boundKey = bound.map((p) => p.id).join(",");
+    if (bound.length && pick && harnessOf(pick.harness).id !== harnessOf(s.harness).id)
+      return json({ error: "a Program MAIN's successor keeps its agent — only model and effort can change here", reason: "program-harness" }, 409);
     const standing = liveStandingHandover(s);
     if (standing?.pointer && !(await lineagePointerCommitted(predecessorIdentity.cwd, standing.pointer)))
       return no(ownerSucceedNo(409, "pointer-uncommitted", "the standing handover's pointer no longer names a committed, clean file — the session writes it again; nothing was handed over"));
     const tail = await freshTranscriptTail(s, standing?.at ?? null);
+    // NO STANDING HANDOVER AT A COLD CACHE (K16 Runde C): the summary worker reads the conversation instead of waking it
+    const summary = !standing && cacheStateOf(s, Date.now()).state === "kalt" ? await successionSummary(s) : null;
     // the reads above were awaits, and so are the brief's git and context reads inside
     // succeedGeneric: occupant, standing handover and rest are asked here AND once more as its
     // beforeKill, after the brief is built — a delivery landing in either window finds the pane
@@ -14264,7 +14288,8 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
       await waitForKeepCacheTestLatch(`kill:${s.id}`);
       const refused = await lastQuestion();
       if (!refused) audit("main_succession", s.id, `${bound.length ? `program ${boundKey}` : "generic"} ${stillWanted ? "threshold" : "owner"}-triggered (no predecessor turn): standing ${standing ? `${standing.intent !== null ? "intent" : "pointer"} age ${now - standing.at}ms` : "none"}, `
-        + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`);
+        + `tail ${tail.state === "read" ? `${tail.entries} entries ${tail.chars} chars (${tail.omitted} omitted)` : `unknown: ${tail.reason}`}`
+        + `${summary !== null ? `, summary ${summary.length} chars` : ""}${pick ? `, spawn ${spawnName(pick.harness, pick.model, pick.effort)}` : ""}`);
       return refused;
     };
     // THE PROGRAM RAIL: the same succeedProgramMain the self door takes — founding marker, record
@@ -14272,12 +14297,14 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
     // now) and the owner section behind the founding brief. game-maker never gets here (rail refusal).
     const done = bound.length
       ? await succeedProgramMain(bound[0]!, s, s.label, null,
-        { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity, bound.slice(1),
-        { appendix: freshSuccessionAppendix(standing, tail, now, "program"), beforeKill })
+        { model: pick ? pick.model : s.model, effort: pick ? pick.effort : s.effort, permissions: pe.permissions },
+        predecessorIdentity, bound.slice(1),
+        { appendix: freshSuccessionAppendix(standing, tail, now, "program", summary), beforeKill })
       : await succeedGeneric(s, { label: s.label, carry: null,
         channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
-        spawn: { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity,
-        appendix: freshSuccessionAppendix(standing, tail, now), beforeKill });
+        spawn: pick ? { model: pick.model, effort: pick.effort, permissions: pick.permissions, harness: pick.harness }
+          : { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity,
+        appendix: freshSuccessionAppendix(standing, tail, now, "generic", summary), beforeKill });
     return done;
   } finally {
     successionInflight.delete(identity);
@@ -24355,6 +24382,23 @@ async function summaryResponse(s: Slot, run: boolean): Promise<Response> {
   }
 }
 
+// THE SUMMARY FOR A SUCCESSOR (K16 Runde C, owner 16.10. 21:1x: „[Zitat entfernt]“): the ✨
+// summary's own single-flight, HEAD+status-cached run, read for the owner door when the session wrote no standing handover
+// and its cache is cold — the old session gets no turn. null = no summary (no git tree, the worker failed): the rest stays.
+async function successionSummary(s: Slot): Promise<string | null> {
+  try {
+    const r = await summaryResponse(s, true);
+    const j = (await r.json()) as { summary?: unknown; openThreads?: unknown; verification?: unknown };
+    if (!r.ok || typeof j.summary !== "string" || !j.summary.trim()) return null;
+    const threads = Array.isArray(j.openThreads) ? j.openThreads.filter((x): x is string => typeof x === "string") : [];
+    return [j.summary.trim(), ...(threads.length ? ["Offen:", ...threads.map((t) => `- ${t}`)] : []),
+      ...(typeof j.verification === "string" && j.verification.trim() ? [`Geprüft: ${j.verification.trim()}`] : [])].join("\n");
+  } catch (e) {
+    logError("successionSummary", e);
+    return null;
+  }
+}
+
 async function runSummary(s: Slot, head: string | null, dirty: number): Promise<SummaryResult> {
   const cwd = s.cwd!;
   const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
@@ -25953,9 +25997,9 @@ async function tickMessageNudge(): Promise<void> {
 
 // --- THE HINT AT THE THRESHOLD (K9 S3). Its budget per conversation is server/succession.ts#HintLedger:
 // a session id, not a slot id, is the identity — /clear or a non-resumable respawn gets a fresh budget,
-// while the same conversation receives at most three hints, MIGRATE_COOLDOWN_MS apart. Process-local
-// like reviewAutoTried: a restart resets the budget rather than persisting automation intent.
-const MIGRATE_MAX_NUDGES = 3;
+// while the same conversation receives exactly one (K16 Runde C, server/succession.ts#MAX_NUDGES), and none while its cache
+// is cold. Process-local like reviewAutoTried: a restart resets the budget rather than persisting automation intent.
+const MIGRATE_MAX_NUDGES = MAX_NUDGES;
 const hintLedger = new HintLedger(MIGRATE_MAX_NUDGES, MIGRATE_COOLDOWN_MS);
 // WHAT FLEET DID AT THE THRESHOLD of one conversation (K9 S3b): the act, when, and what came of it —
 // process-local like the hint budget; one act per conversation per MIGRATE_COOLDOWN_MS
@@ -26007,7 +26051,8 @@ interface SuccessionFacts {
   // nudges DELIVERED to THIS conversation. hintLedger is keyed by sessionId and process-local, so
   // a restart honestly forgets them instead of carrying automation intent into a new process — which
   // means 0 here reads "none since this server booted", the same bargain successionReasonFor makes.
-  nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
+  // `nudgedPct`: the fill the newest of them was written at, as process-local as the count
+  nudges: number; nudgedAt: number | null; nudgedPct: number | null; gaveUp: boolean; maxNudges: number;
   // which session of this line holds the pane (the founding one is 1), and how much of the lid the
   // line has spent. `taken`/`cap` are null where no lid exists to spend: FLEET_LANE_SUCCEED_MAX is
   // keyed by originId, so a hand-opened lane has no row to count against, and the main rails have
@@ -26027,6 +26072,9 @@ interface SuccessionFacts {
   // compaction of this occupant (noteCompaction) — null while there is none
   cache: CacheView;
   compaction: { at: number; trigger: string; preTokens: number | null; postTokens: number | null; idle: boolean } | null;
+  // whether Claude Code compacts on its own in this occupation, as its newest spawn line told it (SlotStartCompact): false =
+  // off because Fleet hands over, true = its own setting, null = not a Claude line or not recorded (src/handover-now.ts)
+  autoCompact: boolean | null;
 }
 // WHICH KIND OF SESSION this is, for its row in the threshold table (server/succession.ts#thresholdOf):
 // a lane by its worktree; the Orchestratorin as the one slot the role address resolves to (the reading
@@ -26131,6 +26179,7 @@ function successionFacts(s: Slot): SuccessionFacts {
     thresholdOff: off,
     nudges: mine?.nudges ?? 0,
     nudgedAt: mine?.lastAt ? mine.lastAt : null,
+    nudgedPct: mine?.lastAt && mine.pct !== undefined ? mine.pct : null,
     gaveUp: mine?.gaveUp ?? false,
     maxNudges: MIGRATE_MAX_NUDGES,
     session: line + 1,
@@ -26144,6 +26193,8 @@ function successionFacts(s: Slot): SuccessionFacts {
     cache: cacheStateOf(s, now),
     compaction: s.compaction && s.compaction.openedAt === s.openedAt ? { at: s.compaction.at, trigger: s.compaction.trigger,
       preTokens: s.compaction.preTokens, postTokens: s.compaction.postTokens, idle: s.compaction.idle } : null,
+    // bound to the occupation where it is set and loaded (openSlot and teardown clear it, startCompactFrom drops a foreign one)
+    autoCompact: s.startCompact?.autoCompact ?? null,
   };
 }
 
@@ -26652,10 +26703,12 @@ async function tickMigrate(): Promise<void> {
     const facts: HintFacts = { fillPct: fill.pct, usedTokens: fill.usedTokens, windowTokens: fill.windowTokens, threshold, step,
       cache: cache.state, choice };
     // a session the owner switched the hint off for gets none (Slot.handover); its act still comes
-    if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now))
+    if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now, cache.state))
       due.push({ s, sessionId: s.sessionId, lane: threshold.kind === "lane", facts });
     const acted = thresholdActOf(s);
-    if (choice !== "hint" && step === "due" && !(acted && now - acted.at < MIGRATE_COOLDOWN_MS))
+    // cold under the cap is no act but the owner's offer (actDecision „[Zitat entfernt]“): no rest probe for it
+    if (choice !== "hint" && step === "due" && !(cache.state === "kalt" && fill.pct < threshold.capPct)
+      && !(acted && now - acted.at < MIGRATE_COOLDOWN_MS))
       acts.push({ s, sessionId: s.sessionId, facts });
   }
   if (!due.length && !acts.length) return; // common case: no tmux/ps calls
@@ -26683,7 +26736,7 @@ async function tickMigrate(): Promise<void> {
       if (s.sessionId !== sessionId || !s.cwd) continue;
       // ASKED AFTER THE AWAITS, in one step with the reservation: a hint that landed or is still on its
       // way meanwhile (the previous tick's send) is not typed a second time
-      const claim = hintLedger.claim(s.id, sessionId, facts.step, Date.now());
+      const claim = hintLedger.claim(s.id, sessionId, facts.step, Date.now(), facts.cache);
       if (!claim) continue;
       const text = hintText(facts);
       const beforeSend = async (current: Slot): Promise<void> => {
@@ -26693,7 +26746,7 @@ async function tickMigrate(): Promise<void> {
       // a delivered hint, typed at once or out of the parked list: counted, kept, logged
       const migrateDelivered = (current: Slot, acceptance: Acceptance): void => {
         const sentAt = Date.now();
-        const counted = hintLedger.delivered(claim, sentAt);
+        const counted = hintLedger.delivered(claim, sentAt, facts.fillPct);
         if (counted.gaveUp)
           audit("migrate_gave_up", current.id, `gave up session=${sessionId} after ${counted.nudges} delivered nudges`);
         current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
@@ -26726,6 +26779,7 @@ async function tickMigrate(): Promise<void> {
       const resting = s.sessionId === sessionId && await thresholdResting(s);
       const acted = thresholdActOf(s);
       const decision = actDecision({ choice: facts.choice, step: facts.step, resting, hintOn: handoverNudgeOn(s),
+        cold: facts.cache === "kalt", atCap: facts.fillPct >= facts.threshold.capPct,
         hinted: (hintLedger.of(s.id, sessionId)?.nudges ?? 0) > 0, actedAt: acted?.at ?? null,
         retryMs: MIGRATE_COOLDOWN_MS, now: Date.now() });
       if (!decision.act || s.sessionId !== sessionId || !s.cwd || thresholdChoiceOf(s, sessionKindOf(s)) !== decision.act) continue;
@@ -44174,6 +44228,7 @@ if (existsSync(file)) {
         s.standingHandover = standingHandoverFrom((v as { standingHandover?: unknown }).standingHandover, s.openedAt);
         s.compaction = compactionFrom((v as { compaction?: unknown }).compaction, s.openedAt);
         s.spawn = slotSpawnFrom((v as { spawn?: unknown }).spawn, s.openedAt);
+        s.startCompact = startCompactFrom((v as { startCompact?: unknown }).startCompact, s.openedAt);
         s.plan = slotPlanFrom((v as { plan?: unknown }).plan);
         s.laneStandNudged = laneStandNudgedFrom((v as { laneStandNudged?: unknown }).laneStandNudged, s.openedAt);
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
@@ -53535,7 +53590,26 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const body = await readJson(req);
         if (body?.expectedOpenedAt !== undefined && body.expectedOpenedAt !== s.openedAt)
           return json({ error: "the slot holds another session now — nothing was handed over", reason: "occupant-changed" }, 409);
-        return await handleOwnerSucceed(s);
+        // „New session from summary“ (K16 Runde C): agent, model and effort, each defaulting to the predecessor's, judged
+        // by the same checks an open is (harness first, then what it takes)
+        const sp = successorSpawnOf(body, { harness: harnessOf(s.harness).id, model: s.model, effort: s.effort });
+        if (!sp.ok) return json({ error: sp.error }, 400);
+        let pick: OwnerSpawnPick | null = null;
+        if (sp.changed) {
+          const ho = harnessIdOf({ harness: sp.pick.harness });
+          if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+          const hh = harnessOf(ho.harness);
+          const paused = harnessPausedError(hh);
+          if (paused) return json({ error: paused }, 409);
+          const mo = modelOf({ model: sp.pick.model }, hh);
+          if (!mo.ok) return json({ error: mo.error }, 400);
+          const eo = effortOf({ effort: sp.pick.effort }, hh);
+          if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+          const pe = hh.id === harnessOf(s.harness).id ? slotPermissionsOf(s) : permissionsOf(null, hh);
+          if (!pe.ok) return json({ error: pe.error }, 400);
+          pick = { harness: ho.harness, model: mo.model, effort: eo.effort, permissions: pe.permissions };
+        }
+        return await handleOwnerSucceed(s, null, pick);
       }
       if (slotMatch[2] === "wake") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);

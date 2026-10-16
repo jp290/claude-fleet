@@ -29,6 +29,8 @@ export interface SucceedPreviewFacts {
   rail: "program" | "generic";
   standingHandover: { ageMs: number } | null;
   tail: { state: "read" | "none"; entries: number; omitted: number } | null;
+  // ohne stehende Übergabe bei kaltem Cache: Fleets summary-Worker fasst das Gespräch zusammen (server.ts#successionSummary)
+  summary?: boolean;
 }
 const REFUSAL_WORDS: Record<string, string> = {
   "not-active": "hier läuft keine Session",
@@ -58,6 +60,7 @@ export function successorSentence(p: SucceedPreviewFacts): string {
   const parts: string[] = [];
   if (p.rail === "program") parts.push("den Program-Eintrag");
   if (p.standingHandover) parts.push(`die stehende Übergabe von ${agoText(p.standingHandover.ageMs)}`);
+  if (p.summary) parts.push("eine Zusammenfassung des Gesprächs (die Session wird dafür nicht geweckt)");
   const read = p.tail?.state === "read";
   if (read && p.tail && p.tail.entries > 0)
     parts.push(`${entriesText(p.tail.entries)} Transkript-Rest${p.tail.omitted > 0 ? ` (${p.tail.omitted} ältere ausgelassen)` : ""}`);
@@ -67,6 +70,29 @@ export function successorSentence(p: SucceedPreviewFacts): string {
   if (!p.standingHandover) notes.push("eine Übergabe hat die Session nicht geschrieben");
   if (!read) notes.push("das Transkript kann Fleet nicht lesen");
   return `Die Nachfolgerin bekommt ${got}${notes.length ? `; ${notes.join(", ")}` : ""}.`;
+}
+
+// AGENT, MODELL UND EFFORT DER NEUEN SESSION (K16 Runde C, Owner 16.10. 21:1x: „[Zitat entfernt]“
+// ), aus dem Body der
+// Owner-Tür. Vorgabe sind die bisherigen; wer den Agenten wechselt und Modell oder Effort nicht nennt, bekommt die Vorgabe
+// des neuen Agenten (null), nicht das Modell des alten. `current.harness` ist die aufgelöste Kennung (harnessOf(…).id).
+// Ob Agent, Modell und Effort zusammenpassen, prüft server.ts mit den Prüfungen des Öffnens (harnessIdOf, modelOf, effortOf).
+export interface SpawnPick { harness: string; model: string | null; effort: string | null }
+export type SpawnPickInput = { ok: true; pick: SpawnPick; changed: boolean } | { ok: false; error: string };
+export function successorSpawnOf(body: Record<string, unknown> | null, current: SpawnPick): SpawnPickInput {
+  const field = (k: "harness" | "model" | "effort"): { given: boolean; value: string | null } | null => {
+    const v = body?.[k];
+    if (v === undefined) return { given: false, value: null };
+    if (v === null || typeof v === "string") return { given: true, value: v === null || v.trim() === "" ? null : v.trim() };
+    return null;
+  };
+  const h = field("harness"), m = field("model"), e = field("effort");
+  if (!h || !m || !e) return { ok: false, error: "harness, model and effort are strings (or null for the default)" };
+  const harness = h.given && h.value !== null ? h.value : current.harness;
+  const switched = harness !== current.harness;
+  const pick: SpawnPick = { harness, model: m.given ? m.value : switched ? null : current.model,
+    effort: e.given ? e.value : switched ? null : current.effort };
+  return { ok: true, pick, changed: switched || pick.model !== current.model || pick.effort !== current.effort };
 }
 
 // DER CACHE EINER SESSION (S2, Owner 13.10.: „[Zitat entfernt]“
@@ -199,15 +225,19 @@ export function choiceInput(v: unknown, kind: SessionKind): ChoiceInput {
 // DIE HANDLUNG (S3b, §4): Fleet handelt nur an einer RUHENDEN Session, nie mitten im Turn, und erst nachdem
 // der Hinweis angekommen ist, der die Handlung nennt und um die stehende Übergabe bittet — es sei denn, der
 // Owner hat den Hinweis für diese Session abgeschaltet. Je Gespräch höchstens eine Handlung je `retryMs`.
+// KALT (K16 Runde C, Owner 16.10. 21:1x: „[Zitat entfernt]“): Unter der
+// Obergrenze handelt Fleet an einer kalten Session nicht selbst, die Ansicht bietet „[Zitat entfernt]“ an
+// (`cold-offer`). An der Obergrenze bleibt die Notbremse; ist der Cache dort kalt, entfällt nur ihr Vorab-Hinweis.
 export interface ActFacts { choice: ThresholdChoice; step: ThresholdStep; resting: boolean; hinted: boolean; hintOn: boolean;
-  actedAt: number | null; retryMs: number; now: number }
-export type ActReason = "choice-hint" | "not-due" | "hint-first" | "acted" | "working" | "due";
+  cold: boolean; atCap: boolean; actedAt: number | null; retryMs: number; now: number }
+export type ActReason = "choice-hint" | "not-due" | "cold-offer" | "hint-first" | "acted" | "working" | "due";
 export interface ActDecision { act: "compact" | "succeed" | null; reason: ActReason }
 export function actDecision(f: ActFacts): ActDecision {
   const no = (reason: ActReason): ActDecision => ({ act: null, reason });
   if (f.choice === "hint") return no("choice-hint");
   if (f.step !== "due") return no("not-due");
-  if (f.hintOn && !f.hinted) return no("hint-first");
+  if (f.cold && !f.atCap) return no("cold-offer");
+  if (f.hintOn && !f.hinted && !f.cold) return no("hint-first");
   if (f.actedAt !== null && f.now - f.actedAt < f.retryMs) return no("acted");
   if (!f.resting) return no("working");
   return { act: f.choice, reason: "due" };
@@ -220,7 +250,12 @@ export function actDecision(f: ActFacts): ActDecision {
 // `claim` prüft und reserviert in einem Schritt, ohne await: Der Tick fragt es NACH seinen awaits, und
 // ein Hinweis, der inzwischen angekommen oder noch unterwegs ist, wird nicht ein zweites Mal getippt
 // (08.10.: zwei Hinweise 307 ms auseinander bei 900 s Abstand).
-export interface HintAttempt { sessionId: string; nudges: number; lastAt: number; gaveUp: boolean }
+// `pct`: der Füllstand, bei dem der letzte angekommene Hinweis geschrieben wurde (die Übergabe-Ansicht nennt ihn)
+// EINMAL (K16 Runde C, Owner 16.10. 19:3x: „[Zitat entfernt]“; 21:1x: „[Zitat entfernt]“
+// ): ein Hinweis je Gespräch, und keiner in eine kalte
+// Session (`due` mit cache „kalt“), denn der läse den ganzen Kontext neu.
+export const MAX_NUDGES = 1;
+export interface HintAttempt { sessionId: string; nudges: number; lastAt: number; gaveUp: boolean; pct?: number }
 export interface HintClaim { slot: number; attempt: HintAttempt }
 export class HintLedger {
   private readonly tried = new Map<number, HintAttempt>();
@@ -231,25 +266,26 @@ export class HintLedger {
     const a = this.tried.get(slot);
     return a && a.sessionId === sessionId ? a : null;
   }
-  due(slot: number, sessionId: string, step: ThresholdStep, now: number): boolean {
-    if (step === "below" || this.pending.has(`${slot}:${sessionId}`)) return false;
+  due(slot: number, sessionId: string, step: ThresholdStep, now: number, cache: CacheState): boolean {
+    if (step === "below" || cache === "kalt" || this.pending.has(`${slot}:${sessionId}`)) return false;
     const a = this.of(slot, sessionId);
     if (!a) return true;
     if (a.gaveUp || a.nudges >= this.max) return false;
     if (a.lastAt && now - a.lastAt < this.cooldownMs) return false;
     return step === "due" || a.nudges === 0;
   }
-  claim(slot: number, sessionId: string, step: ThresholdStep, now: number): HintClaim | null {
-    if (!this.due(slot, sessionId, step, now)) return null;
+  claim(slot: number, sessionId: string, step: ThresholdStep, now: number, cache: CacheState): HintClaim | null {
+    if (!this.due(slot, sessionId, step, now, cache)) return null;
     this.pending.add(`${slot}:${sessionId}`);
     const a = this.of(slot, sessionId);
     return { slot, attempt: a ? { ...a } : { sessionId, nudges: 0, lastAt: 0, gaveUp: false } };
   }
   // angekommen: gezählt; `gaveUp` sagt, ob damit das Budget dieses Gesprächs erschöpft ist
-  delivered(c: HintClaim, at: number): { nudges: number; gaveUp: boolean } {
+  delivered(c: HintClaim, at: number, pct?: number): { nudges: number; gaveUp: boolean } {
     const a = { ...(this.of(c.slot, c.attempt.sessionId) ?? c.attempt) };
     a.nudges++;
     a.lastAt = at;
+    if (pct !== undefined) a.pct = pct;
     const gaveUp = !a.gaveUp && a.nudges >= this.max;
     if (gaveUp) a.gaveUp = true;
     this.tried.set(c.slot, a);

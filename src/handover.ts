@@ -1,93 +1,57 @@
-// THE HANDOVER POPOVER (Neuaufbau K9 · S1, docs/neuaufbau/befunde/07-nachfolge.md). Owner 13.10.: „[Zitat entfernt]“
-// , „[Zitat entfernt]“
-// . Three controls, each with one sentence: the threshold as ONE click (a row of values
-// instead of the ±5 stepper), the hint on or off, and „Neue Session jetzt“ on the owner door
-// (POST /api/slots/:id/succeed, server.ts#handleOwnerSucceed) with what the successor gets — the door's
-// own preview sentence (GET …/succeed → `says`, server/succession.ts#successorSentence).
-// Every write redraws the line in place from what the client holds and then from the server's answer
-// (HandoverView.repaint → board.ts#paintContextRow): no /brief and no column render per click.
-// S2 (owner 13.10.: „[Zitat entfernt]“): the cache warm or
-// cold with its minutes, Claude's compaction, the warm switch, and at a cold cache the button names
-// what the successor continues from — the session's own handover or the raw transcript.
-// S2b (owner 13.10.: „[Zitat entfernt]“
-// ): while the switch is on, the minutes as one click
-// and the text the warm turn types, with the fleet's own text as the way back.
-// S3 (owner 13.10.: „[Zitat entfernt]“, „[Zitat entfernt]“
-// ): the threshold row says where its base
-// comes from and where the cap lies, a row „An der Schwelle“ picks what Fleet does then — the hint, Compact
-// or a new session — and the Kontext line shows the threshold in force: the cap while the cache is warm.
-import { api, el } from "./client";
+// THE HANDOVER BLOCK (Neuaufbau K16, auftraege/uebergabe-b-englisch.md), drawn from src/handover-now.ts#flowSteps. Owner 16.10.
+// 18:2x: „[Zitat entfernt]“ — so each control stands at the one line it
+// changes, and only while the block is open: the threshold and Nudge · Off at the nudge, the warm switch at the cache, and
+// „Now“ last. Once Fleet nudged, a new threshold is also told to the session (Z50); „[Zitat entfernt]“ nudges the session while
+// its cache is warm, and once it is cold „New session from summary“ (the owner door, by force; Runde C, owner 16.10. 21:1x)
+// starts a fresh one with the agent, model and effort picked here — the old session is not loaded again.
+// Every write redraws the block in place from what the client holds and then from the server's answer
+// (HandoverView.repaint → board.ts#paintHandover): no /brief and no column render per click.
+import { agentHarnesses, api, el, fleet, harnesses, loadHarnesses, post } from "./client";
 import { serverClock } from "./composer";
 import type { BriefSuccession } from "./board";
+import { CAP_GAP_PCT, OFF_WHY, PLAN_WORDS, cacheNow, choiceOf, clockText, flowSteps, handoverDoesNothing, laterText, lockedGate,
+  nowText, planOf, planWrite, type Choice, type Plan, type Step } from "./handover-now";
+export { OFF_WHY, handoverDoesNothing };
 
 export interface HandoverView {
-  slot: number; openedAt: number | undefined; sc: BriefSuccession;
-  // redraws the Kontext line and this popover where they stand; false = the line is not on screen
+  slot: number; openedAt: number | undefined; sc: BriefSuccession; lane: boolean;
+  // when this occupant last wrote its standing handover (the sessions row)
+  handoverAt?: number;
+  // the controls stand at their lines; false = the lines alone
+  open: boolean;
+  // redraws the Context line and this block where they stand; false = they are not on screen
   repaint: () => boolean;
-  // a new session stands on the slot: the board closes the popover and reads the column anew
+  // a new session stands on the slot: the board closes the block and reads the column anew
   succeeded: () => void;
 }
 
-// why a threshold cannot fire, in the owner's words — the switch's hover and the popover say the same
-export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
-  fleet: "auf dieser Fleet nicht eingeschaltet",
-  rail: "für diese Art Session auf 0 gestellt",
-  harness: "dieser Agent hat kein Übergabeband",
-  steward: "die Planungs-Session wird nicht erinnert",
-  waiting: "sie wartet auf dich",
-  unpinned: "kein festgehaltenes Gespräch zum Messen",
-  session: "für diese Session ausgestellt, ohne Hinweis und ohne Übergabe",
-};
-// why no cache is kept warm here (server.ts#keepCacheExempt)
-const WARM_OFF_WHY: Record<NonNullable<NonNullable<BriefSuccession["keepCache"]>["exempt"]>, string> = {
-  steward: "die Planungs-Session wird nicht warm gehalten",
-  lane: "eine Lane gibt mit ihrem Bericht weiter",
-  harness: "dieser Agent hat keinen gemessenen Cache",
-};
-// the kind of session whose row of the threshold table applies (server/succession.ts#thresholdOf)
-const KIND_WORDS: Record<NonNullable<BriefSuccession["kind"]>, string> = {
-  orchestrator: "eine Orchestratorin", "program-main": "eine Program-MAIN", bau: "eine Bau-Session", lane: "eine Lane",
-  session: "eine Session",
-};
-// what Fleet does at the threshold (server/succession.ts#choicesFor)
-type Choice = NonNullable<BriefSuccession["atThreshold"]>;
-const CHOICE_WORDS: Record<Choice, string> = { hint: "Hinweis", compact: "Compact", succeed: "Neue Session" };
-// WHAT FLEET DOES AT THE THRESHOLD (Mangel 76b, owner 15.10.: „[Zitat entfernt]“
-// ), read the way server.ts#tickMigrate acts: the hint from the base while it is on, the chosen act at
-// the cap or at a cold cache. The hint switched off does not stop the act, which then comes unannounced
-// (server/succession.ts#actDecision); „Hinweis“ at the threshold with the hint off leaves Fleet nothing to do at all
-const choiceOf = (sc: BriefSuccession): Choice => sc.atThreshold ?? sc.fleetChoice ?? "hint";
-export const handoverDoesNothing = (sc: BriefSuccession): boolean => sc.thresholdPct !== null && !sc.nudgeOn && choiceOf(sc) === "hint";
-// what the switched-off hint leaves at the threshold, in the words of the hint row and its „Aus“
-const withoutHint = (sc: BriefSuccession): string => choiceOf(sc) === "hint" ? "an der Schwelle geschieht dann nichts"
-  : `${CHOICE_WORDS[choiceOf(sc)]} kommt dann ohne Vorwarnung`;
-// the values one click away, up to 70 (K9 S3c, owner 14.10.: „[Zitat entfernt]“
-// , no 100); a value set elsewhere (5..95 in 5-steps, PATCH) joins the row where it falls
+// the values one click away, up to 70 (K9 S3c, owner 14.10.); a value set elsewhere (5..95 in 5-steps, PATCH) joins the row
 const THRESHOLDS = [25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
-// the warm turn's minutes the same way (5..55 in 5-steps, PATCH); eight values fit the popover's line
+// the warm turn's minutes the same way (5..55 in 5-steps, PATCH)
 const MINUTES = [20, 25, 30, 35, 40, 45, 50, 55];
 // the answer of the last write, shown at once while the brief is read again (the board's tick)
 const FRESH_MS = 15_000;
-// how old the door's preview may be while the popover stays open: it reads the transcript, so it is
-// asked on opening and then at most this often — never on the board's 3 s tick
+// how old the owner door's preview may be while the block stays open: it reads the transcript, so it is asked on
+// opening and then at most this often — never on the board's 3 s tick
 const PREVIEW_MS = 5_000;
 
 const fresh = new Map<number, { openedAt: number | undefined; sc: BriefSuccession; at: number }>();
 const writing = new Set<number>();
 const succeeding = new Set<number>();
-const errs = new Map<number, { text: string; title: string }>();
-const previews = new Map<number, { openedAt: number | undefined; at: number; ready: boolean; says: string;
-  source: "handover" | "transcript" | null }>();
+// the last answer per slot, in a few words: an error, or what was typed into the session and when
+const notes = new Map<number, { openedAt: number | undefined; text: string; title: string; err: boolean }>();
+const previews = new Map<number, { openedAt: number | undefined; at: number; ready: boolean; says: string }>();
+// the agent, model and effort picked for „New session from summary“, per occupant; absent = the session's own
+type SpawnPick = { harness: string; model: string; effort: string };
+const picks = new Map<number, { openedAt: number | undefined; pick: SpawnPick }>();
 const previewLoading = new Set<number>();
-// the warm text being written, per slot — it survives every repaint until it is saved
-const drafts = new Map<number, { openedAt: number | undefined; text: string }>();
-// the newest render's repaint per slot: an answer that arrives after the board rebuilt the column
-// redraws the line that stands now, not the one its click was drawn on
+// the newest render's repaint per slot: an answer that arrives after the board rebuilt the column redraws the block that
+// stands now, not the one its click was drawn on
 const repaints = new Map<number, () => boolean>();
-// never under the caret (renderBoard's rule for the board's textareas): an answer that arrives while
-// the warm text is being written is drawn by the next repaint after it
-const typing = (): boolean => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest(".ubpop");
-const repaint = (slot: number): void => { if (!typing()) repaints.get(slot)?.(); };
+const repaint = (slot: number): void => { repaints.get(slot)?.(); };
+const note = (v: HandoverView, text: string, err = false, title = text): void => {
+  notes.set(v.slot, { openedAt: v.openedAt, text, title, err });
+};
 
 export function freshSuccession(slot: number, openedAt: number | undefined): BriefSuccession | null {
   const f = fresh.get(slot);
@@ -95,30 +59,31 @@ export function freshSuccession(slot: number, openedAt: number | undefined): Bri
 }
 
 type HandoverWrite = { thresholdPct?: number | null; nudge?: boolean; keepCache?: boolean | null; keepCacheIdleMin?: number;
-  keepCacheText?: string | null; atThreshold?: Choice | null };
-// what the server will answer, drawn before it answers: the threshold, the hint, the warm switch, and
-// the gate a threshold of 0 turns on or off — the session's own 0 is its „Aus“, a rail's 0 the rail's;
-// the PATCH answer replaces it a moment later
+  atThreshold?: Choice | null };
+// what the server will answer, drawn before it answers — every field the write carries; the gate a threshold of 0 turns
+// on or off: the session's own 0 is its „Off“, a rail's 0 the rail's. The PATCH answer replaces it a moment later
 function expected(sc: BriefSuccession, body: HandoverWrite): BriefSuccession {
-  if (body.nudge !== undefined) return { ...sc, nudgeOn: body.nudge };
-  if (body.atThreshold !== undefined) return { ...sc, atThreshold: body.atThreshold ?? sc.fleetChoice ?? "hint" };
-  if (body.keepCache !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache,
-    on: body.keepCache ?? sc.keepCache.fleetOn, from: body.keepCache === null ? "fleet" : "session" } } : sc;
-  if (body.keepCacheIdleMin !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, idleMin: body.keepCacheIdleMin } } : sc;
-  if (body.keepCacheText !== undefined) return sc.keepCache ? { ...sc, keepCache: { ...sc.keepCache, text: body.keepCacheText } } : sc;
-  const own = body.thresholdPct ?? null;
-  const eff = own ?? sc.defaultPct;
-  const gate = sc.thresholdOff && sc.thresholdOff !== "rail" && sc.thresholdOff !== "session" ? sc.thresholdOff
-    : eff > 0 ? null : own === 0 ? "session" : "rail";
-  return { ...sc, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff,
-    capPct: gate ? null : eff + CAP_GAP_PCT, thresholdFrom: own === null ? "fleet" : "session" };
+  let s = sc;
+  if (body.nudge !== undefined) s = { ...s, nudgeOn: body.nudge };
+  if (body.atThreshold !== undefined) s = { ...s, atThreshold: body.atThreshold ?? s.fleetChoice ?? "hint" };
+  const kc = s.keepCache;
+  if (kc && body.keepCache !== undefined) s = { ...s, keepCache: { ...kc, on: body.keepCache ?? kc.fleetOn, from: body.keepCache === null ? "fleet" : "session" } };
+  if (s.keepCache && body.keepCacheIdleMin !== undefined) s = { ...s, keepCache: { ...s.keepCache, idleMin: body.keepCacheIdleMin } };
+  if (body.thresholdPct !== undefined) {
+    const own = body.thresholdPct;
+    const eff = own ?? s.defaultPct;
+    const gate = lockedGate(s) ? s.thresholdOff : eff > 0 ? null : own === 0 ? "session" : "rail";
+    s = { ...s, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff,
+      capPct: gate ? null : eff + CAP_GAP_PCT, thresholdFrom: own === null ? "fleet" : "session" };
+  }
+  return s;
 }
 
 // true = the server took it
 async function write(v: HandoverView, body: HandoverWrite): Promise<boolean> {
   if (writing.has(v.slot)) return false;
   writing.add(v.slot);
-  errs.delete(v.slot);
+  notes.delete(v.slot);
   const before = fresh.get(v.slot);
   fresh.set(v.slot, { openedAt: v.openedAt, sc: expected(v.sc, body), at: Date.now() });
   repaint(v.slot);
@@ -132,8 +97,7 @@ async function write(v: HandoverView, body: HandoverWrite): Promise<boolean> {
   } catch (error) {
     if (before) fresh.set(v.slot, before);
     else fresh.delete(v.slot);
-    const why = error instanceof Error ? error.message : String(error);
-    errs.set(v.slot, { text: `Nicht gespeichert — ${why}`, title: why });
+    note(v, "Not saved.", true, error instanceof Error ? error.message : String(error));
     return false;
   } finally {
     writing.delete(v.slot);
@@ -141,23 +105,33 @@ async function write(v: HandoverView, body: HandoverWrite): Promise<boolean> {
   }
 }
 
+// a sentence typed into this occupant once it is free (POST /send whenFree, bound to its openedAt)
+async function tell(v: HandoverView, text: string, said: string): Promise<void> {
+  try {
+    const r = await post("/send", { slot: v.slot, text, whenFree: true, ...(v.openedAt ? { openedAt: v.openedAt } : {}) });
+    const j = (await r.json().catch(() => ({}))) as { error?: string };
+    if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+    note(v, `${said} ${clockText(serverClock(), serverClock())}.`, false, text);
+  } catch (error) {
+    note(v, "Not sent to the session.", true, error instanceof Error ? error.message : String(error));
+  }
+  repaint(v.slot);
+}
+
 async function loadPreview(slot: number, openedAt: number | undefined): Promise<void> {
   previewLoading.add(slot);
   try {
     const r = await api(`/api/slots/${slot}/succeed`);
-    const j = (await r.json().catch(() => null)) as { ready?: boolean; says?: string; error?: string;
-      source?: "handover" | "transcript" | null } | null;
-    previews.set(slot, { openedAt, at: Date.now(), ready: r.ok && j?.ready === true,
-      says: j?.says ?? `Fleet konnte nicht prüfen, ob sie gerade ruht (${j?.error ?? `HTTP ${r.status}`}).`, source: j?.source ?? null });
+    const j = (await r.json().catch(() => null)) as { ready?: boolean; says?: string; error?: string } | null;
+    previews.set(slot, { openedAt, at: Date.now(), ready: r.ok && j?.ready === true, says: j?.says ?? j?.error ?? `HTTP ${r.status}` });
   } catch (error) {
-    previews.set(slot, { openedAt, at: Date.now(), ready: false,
-      says: `Fleet konnte nicht prüfen, ob sie gerade ruht (${error instanceof Error ? error.message : String(error)}).`, source: null });
+    previews.set(slot, { openedAt, at: Date.now(), ready: false, says: error instanceof Error ? error.message : String(error) });
   } finally {
     previewLoading.delete(slot);
     repaint(slot);
   }
 }
-function previewOf(v: HandoverView): { ready: boolean; says: string; source: "handover" | "transcript" | null } | null {
+function previewOf(v: HandoverView): { ready: boolean; says: string } | null {
   const p = previews.get(v.slot);
   const mine = p && p.openedAt === v.openedAt ? p : null;
   if ((!mine || Date.now() - mine.at > PREVIEW_MS) && !previewLoading.has(v.slot) && !succeeding.has(v.slot))
@@ -165,63 +139,85 @@ function previewOf(v: HandoverView): { ready: boolean; says: string; source: "ha
   return mine;
 }
 
-async function succeed(v: HandoverView): Promise<void> {
+async function succeed(v: HandoverView, pick: SpawnPick): Promise<void> {
   if (succeeding.has(v.slot)) return;
   succeeding.add(v.slot);
-  errs.delete(v.slot);
+  notes.delete(v.slot);
   repaint(v.slot);
   let ok = false;
   try {
-    const r = await api(`/api/slots/${v.slot}/succeed`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedOpenedAt: v.openedAt }) });
+    // "" is the agent's own default (server/succession.ts#successorSpawnOf)
+    const r = await post(`/api/slots/${v.slot}/succeed`, { expectedOpenedAt: v.openedAt, harness: pick.harness,
+      model: pick.model || null, effort: pick.effort || null });
     const j = (await r.json().catch(() => ({}))) as { error?: string };
     if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
     ok = true;
   } catch (error) {
-    // the door's preview says why in words once it is read again; the raw answer stays on hover
-    errs.set(v.slot, { text: "Nicht weitergegeben, die laufende Session bleibt.", title: error instanceof Error ? error.message : String(error) });
+    note(v, "No new session; this one keeps running.", true, error instanceof Error ? error.message : String(error));
   } finally {
     succeeding.delete(v.slot);
     previews.delete(v.slot);
     fresh.delete(v.slot);
+    if (ok) picks.delete(v.slot);
   }
   if (ok) v.succeeded();
   else repaint(v.slot);
 }
 
-// the cache now, on the server's clock: the brief says warm or cold when it was read, the minutes run on
-type CacheNow = { state: NonNullable<BriefSuccession["cache"]>["state"]; min: number | null };
-function cacheNow(c: NonNullable<BriefSuccession["cache"]>): CacheNow {
-  if ((c.state !== "warm" && c.state !== "kalt") || c.coldAt === null) return { state: c.state, min: null };
-  const left = c.coldAt - serverClock();
-  return left > 0 ? { state: "warm", min: Math.ceil(left / 60_000) } : { state: "kalt", min: Math.floor(-left / 60_000) };
+// the session's own agent, model and effort, then what the owner picked here for this occupant
+function pickOf(v: HandoverView): SpawnPick {
+  const own = picks.get(v.slot);
+  if (own && own.openedAt === v.openedAt) return own.pick;
+  const s = fleet.find((x) => x.id === v.slot);
+  return { harness: s?.harness ?? harnesses.find((h) => h.default)?.id ?? "claude", model: s?.model ?? "", effort: s?.effort ?? "" };
 }
-// THE THRESHOLD AS CLICKED, AND HOW FAR IT REACHES NOW (Mangel 76, owner 15.10.: „[Zitat entfernt]“
-// ): `pct` is the base; while the cache is warm the handover
-// waits up to the cap, once it is cold it comes at the base; without a cache reading, or from a server that sends
-// no cap, the base alone. null = no handover comes: no threshold, or „Hinweis“ at it with the hint off (Mangel 76b)
-const CAP_GAP_PCT = 5;
-export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null; cap: number | null } | null {
-  if (sc.thresholdPct === null || handoverDoesNothing(sc)) return null;
-  const cache = sc.cache ? cacheNow(sc.cache).state : null;
-  if (cache === "warm" && sc.capPct != null) return { pct: sc.thresholdPct, cache: "warm", cap: sc.capPct };
-  return { pct: sc.thresholdPct, cache: cache === "kalt" ? "kalt" : null, cap: null };
+function choose(label: string, uk: string, options: { value: string; text: string }[], value: string, run: (v: string) => void): HTMLElement {
+  const sel = el("select", "pick") as HTMLSelectElement;
+  sel.dataset.uk = uk;
+  sel.setAttribute("aria-label", label);
+  const list = options.some((o) => o.value === value) ? options : [...options, { value, text: value }];
+  for (const o of list) {
+    const opt = el("option", "", o.text) as HTMLOptionElement;
+    opt.value = o.value;
+    opt.selected = o.value === value;
+    sel.appendChild(opt);
+  }
+  sel.onchange = () => run(sel.value);
+  const w = el("label", "pickw");
+  w.append(el("span", "unit", label), sel);
+  return w;
 }
-const minText = (min: number): string => min < 1 ? "eben" : min < 90 ? `${min} min` : `${Math.round(min / 60)} h`;
-const kTokens = (n: number): string => `${Math.round(n / 1000)}k`;
-function compactionText(c: NonNullable<BriefSuccession["compaction"]>): string {
-  const at = new Date(c.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-  return `Von Claude kompaktiert ${at}${c.preTokens !== null && c.postTokens !== null ? `, ${kTokens(c.preTokens)} → ${kTokens(c.postTokens)}` : ""}.`;
+// „New session from summary“: agent, model and effort — a model or an effort the agent does not list is still offered as it
+// stands, „default“ is the agent's own; switching the agent starts from its defaults (server/succession.ts#successorSpawnOf)
+function spawnPicker(v: HandoverView): HTMLElement {
+  if (!harnesses.length) void loadHarnesses().then(() => repaint(v.slot));
+  const pick = pickOf(v);
+  const set = (next: SpawnPick): void => { picks.set(v.slot, { openedAt: v.openedAt, pick: next }); repaint(v.slot); };
+  const agents = agentHarnesses();
+  const h = harnesses.find((x) => x.id === pick.harness);
+  const line = el("span", "picks");
+  line.append(choose("Agent", "new-agent", (agents.length ? agents : [{ id: pick.harness }]).map((a) => ({ value: a.id, text: a.id })),
+    pick.harness, (id) => set({ harness: id, model: "", effort: "" })));
+  if (!h || h.supports.model)
+    line.append(choose("Model", "new-model", [{ value: "", text: "default" }, ...(h?.models ?? []).map((m) => ({ value: m, text: m }))],
+      pick.model, (m) => set({ ...pick, model: m })));
+  if (!h || h.supports.effort)
+    line.append(choose("Effort", "new-effort", [{ value: "", text: "default" }, ...(h?.effortLevels ?? []).map((e) => ({ value: e, text: e }))],
+      pick.effort, (e) => set({ ...pick, effort: e })));
+  return line;
 }
 
-function row(k: string, v: (Node | string)[], h: string, cls = ""): HTMLElement {
-  const r = el("div", `pr${cls ? ` ${cls}` : ""}`);
-  r.appendChild(el("span", "k", k));
-  const vv = el("span", "pv");
-  vv.append(...v);
-  r.appendChild(vv);
-  if (h) r.appendChild(el("span", "h", h));
-  return r;
+// THE THRESHOLD AS CLICKED, AND HOW FAR IT REACHES NOW (Mangel 76): `pct` is where Fleet nudges; while the cache is warm the
+// session has up to the cap; once it is cold Fleet types nothing and acts itself only at the cap (Runde C,
+// server/succession.ts#actDecision „cold-offer“), so the cap stays where Fleet acts there and is gone where it does not
+// (a lane); without a cache reading, or from a server that sends no cap, the base alone. null = no handover comes: no
+// threshold, or the nudge off with nothing at the cap (Mangel 76b)
+export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null; cap: number | null } | null {
+  if (sc.thresholdPct === null || handoverDoesNothing(sc)) return null;
+  const cache = sc.cache ? cacheNow(sc.cache, serverClock()).state : null;
+  if (cache === "warm" && sc.capPct != null) return { pct: sc.thresholdPct, cache: "warm", cap: sc.capPct };
+  if (cache === "kalt" && sc.capPct != null && choiceOf(sc) !== "hint") return { pct: sc.thresholdPct, cache: "kalt", cap: sc.capPct };
+  return { pct: sc.thresholdPct, cache: cache === "kalt" ? "kalt" : null, cap: null };
 }
 function button(text: string, cls: string, uk: string, title: string, run: () => void): HTMLButtonElement {
   const b = el("button", cls, text) as HTMLButtonElement;
@@ -231,207 +227,135 @@ function button(text: string, cls: string, uk: string, title: string, run: () =>
   b.onclick = run;
   return b;
 }
-
-export function handoverRows(v: HandoverView): HTMLElement[] {
-  repaints.set(v.slot, v.repaint);
-  const { sc } = v;
-  // a gate that cannot fire takes no setting: the band is claude's, and without the fleet's master
-  // switch no tick runs at all — the reason says which, the controls stay visible but quiet
-  const locked = sc.thresholdOff === "fleet" || sc.thresholdOff === "harness" || sc.thresholdOff === "steward";
-  const rows: HTMLElement[] = [];
-
-  // the effective threshold; while a gate keeps it null, the owner's own value, else the rail's
-  const cur = sc.thresholdPct ?? sc.sessionPct ?? sc.defaultPct;
-  const values = cur > 0 && !THRESHOLDS.includes(cur) ? [...THRESHOLDS, cur].sort((a, b) => a - b) : THRESHOLDS;
-  const pcts = el("span", "seg pcts");
-  for (const pct of values) {
-    const on = !locked && pct === cur;
-    const own = on && sc.pctFrom === "session";
-    const b = button(String(pct), `${on ? "on" : ""}${pct === sc.defaultPct ? " dflt" : ""}`.trim(), `pct-${pct}`,
-      locked ? "Hier wirkt keine Schwelle, der Grund steht darunter"
-        : own && pct !== sc.defaultPct ? `Eigene Schwelle dieser Session — noch einmal klicken: zurück auf ${sc.defaultPct > 0 ? `${sc.defaultPct} %` : "den Fleet-Wert"}`
-        : pct === sc.defaultPct ? `${pct} % — der Wert der Fleet für diese Art Session`
-        : `Bei ${pct} % weitergeben — nur diese Session`,
-      () => {
-        // the fleet's own value, or this session's own value pressed again, follows the fleet again
-        const next = pct === sc.defaultPct || own ? null : pct;
-        if (next === null ? sc.pctFrom === "fleet" : on) return;
-        void write(v, { thresholdPct: next });
-      });
-    b.setAttribute("aria-pressed", String(on));
-    b.setAttribute("aria-label", `${pct} %`);
-    b.disabled = locked;
-    pcts.appendChild(b);
+// a row of buttons, one of them on; disabled ones still show which is set
+function seg(cls: string, items: { text: string; uk: string; on: boolean; dflt: boolean; title: string; run: () => void; label?: string; d?: boolean }[],
+  disabled: boolean): HTMLElement {
+  const s = el("span", `seg${cls ? ` ${cls}` : ""}`);
+  for (const it of items) {
+    const b = button(it.text, `${it.on ? "on" : ""}${it.dflt ? " dflt" : ""}`.trim(), it.uk, it.title, it.run);
+    b.setAttribute("aria-pressed", String(it.on));
+    if (it.label) b.setAttribute("aria-label", it.label);
+    b.disabled = disabled || !!it.d;
+    s.appendChild(b);
   }
-  // „AUS“ (K9 S3c, owner 14.10.: „[Zitat entfernt]“): this session's own 0 — no hint, no act;
-  // pressed again it follows the fleet again. Read from the value as set, so a gate above it does not hide it
-  const off = sc.sessionPct === 0;
-  const offSeg = el("span", "seg pctoff");
-  const ob = button("Aus", off && !locked ? "on" : "", "pct-aus",
-    locked ? "Hier wirkt keine Schwelle, der Grund steht darunter"
-      : off ? `Die Übergabe ist für diese Session aus — noch einmal klicken: zurück auf ${sc.defaultPct > 0 ? `${sc.defaultPct} %` : "den Fleet-Wert"}`
-      : "Die Übergabe für diese Session ausstellen: kein Hinweis, keine neue Session — nur diese Session",
-    () => void write(v, { thresholdPct: off ? null : 0 }));
-  ob.setAttribute("aria-pressed", String(off && !locked));
-  ob.disabled = locked;
-  offSeg.appendChild(ob);
-  // the base and the cap in one sentence, and whose value it is (§4: „Fleet-Wert für eine Orchestratorin: 45 %,
-  // solange der Cache warm ist 50 %“) — as Fleet acts on them (76b): the hint where it is on, the act where one is chosen
-  const choice = choiceOf(sc);
-  const band = sc.thresholdPct === null ? null
-    : choice === "hint" ? sc.nudgeOn ? `Hinweis ab ${sc.thresholdPct} %, die Session übergibt selbst`
-      : `bei ${sc.thresholdPct} % geschieht nichts, denn der Hinweis ist aus`
-    : sc.capPct == null ? null
-    : `${sc.nudgeOn ? `Hinweis ab ${sc.thresholdPct} %, ` : ""}${choice === "compact" ? "Compact" : "Übergabe"} bei ${sc.capPct} %, `
-      + `solange der Cache warm ist${sc.nudgeOn ? "" : ", ohne Hinweis vorher"}`;
-  rows.push(row("Schwelle", [pcts, el("span", "unit", "%"), offSeg],
-    sc.thresholdOff && sc.thresholdOff !== "rail" ? `Aus: ${OFF_WHY[sc.thresholdOff]}.`
-      : sc.defaultPct <= 0 && sc.pctFrom === "fleet" ? "Für diese Art Session steht keine Schwelle. Eine Wahl gilt nur hier."
-      : sc.pctFrom === "session" ? `Eigener Wert dieser Session${band ? `: ${band}` : ""}${sc.defaultPct > 0 ? `; die Fleet steht auf ${sc.defaultPct} %` : ""}.`
-      : band ? `Fleet-Wert für ${sc.kind ? KIND_WORDS[sc.kind] : "diese Art Session"}: ${band}.`
-      : `Ab hier gibt sie an eine frische Session weiter; die Fleet steht auf ${sc.defaultPct} %.`,
-    "wide"));
-
-  const seg = el("span", "seg");
-  for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
-    const b = button(word, sc.nudgeOn === on ? "on" : "", `nudge-${on ? "an" : "aus"}`,
-      on ? "Fleet schreibt dieser Session an der Schwelle einen Hinweis"
-        : `Fleet schreibt dieser Session keinen Hinweis — ${withoutHint(sc)}${choice === "hint" ? "; sie gibt nur weiter, wenn sie selbst entscheidet" : ""}`,
-      () => { if (sc.nudgeOn !== on) void write(v, { nudge: on }); });
-    b.setAttribute("aria-pressed", String(sc.nudgeOn === on));
-    b.disabled = locked;
-    seg.appendChild(b);
-  }
-  const given = sc.gaveUp ? `Aufgehört nach ${sc.nudges}.` : sc.nudges ? `Bisher ${sc.nudges}.` : "Bisher keiner.";
-  rows.push(row("Hinweis", [seg], sc.nudgeOn ? `An der Schwelle, höchstens ${sc.maxNudges}-mal. ${given}` : `Aus: ${withoutHint(sc)}. ${given}`));
-
-  const cache = sc.cache ? cacheNow(sc.cache) : null;
-  if (cache) {
-    const word = (w: string): HTMLElement => el("b", "", w);
-    rows.push(row("Cache",
-      cache.state === "warm" ? [word("warm"), ` · noch ${minText(cache.min ?? 0)}`]
-        : cache.state === "kalt" ? [word("kalt"), ` seit ${minText(cache.min ?? 0)}`]
-        : cache.state === "kompaktiert" ? [word("kompaktiert")] : ["unbekannt"],
-      sc.compaction ? compactionText(sc.compaction)
-        : cache.state === "kalt" ? "Der nächste Turn schreibt den ganzen Kontext neu."
-        : cache.state === "unbekannt" ? "Fleet hat noch keinen Modellaufruf gelesen." : ""));
-  }
-
-  const kc = sc.keepCache;
-  if (kc) {
-    const warmSeg = el("span", "seg");
-    for (const [on, word] of [[true, "An"], [false, "Aus"]] as const) {
-      const shown = !kc.exempt && kc.on === on;
-      const b = button(word, `${shown ? "on" : ""}${!kc.exempt && kc.fleetOn === on ? " dflt" : ""}`.trim(), `warm-${on ? "an" : "aus"}`,
-        kc.exempt ? "Hier wird kein Cache warm gehalten, der Grund steht darunter"
-          : kc.fleetOn === on ? `${word} — der Wert der Fleet für diese Art Session`
-          : on ? "Den Cache dieser Session warm halten — nur diese Session" : "Diese Session nicht warm halten — nur diese Session",
-        // the fleet's value takes the session back to the fleet: no own record is kept
-        () => { if (kc.on !== on) void write(v, { keepCache: kc.fleetOn === on ? null : on }); });
-      b.setAttribute("aria-pressed", String(shown));
-      b.disabled = !!kc.exempt;
-      warmSeg.appendChild(b);
-    }
-    rows.push(row("Warmhalten", [warmSeg], kc.exempt ? `Aus: ${WARM_OFF_WHY[kc.exempt]}.`
-      : kc.on ? `Nach ${kc.idleMin} min Ruhe ein kurzer Turn, höchstens ${kc.hourCap}-mal pro Stunde. ${kc.warmTurns ? `Bisher ${kc.warmTurns}.` : "Bisher keiner."}`
-      : `Der Cache verfällt ${kc.lifetimeMin} min nach dem letzten Modellaufruf.`));
-    if (kc.on && !kc.exempt) rows.push(...warmRows(v, kc));
-  }
-
-  // AN DER SCHWELLE (S3b): what Fleet does once the cap is reached or the cache is about to go cold — the hint
-  // only, Compact, or a new session, the fleet's value marked; a lane has no new session
-  const choices = sc.choices ?? [];
-  if (choices.length > 1) {
-    // the fleet's value is marked and written as null (S3b-2: a new session, a lane the hint; an older server: the hint)
-    const fleet = sc.fleetChoice ?? "hint";
-    const now = sc.atThreshold ?? fleet;
-    const cseg = el("span", "seg choices");
-    for (const c of choices) {
-      const b = button(CHOICE_WORDS[c], `${c === now && !locked ? "on" : ""}${c === fleet ? " dflt" : ""}`.trim(), `at-${c}`,
-        c === fleet ? `${CHOICE_WORDS[c]} — der Wert der Fleet` : `${CHOICE_WORDS[c]} an der Schwelle — nur diese Session`,
-        () => { if (c !== now) void write(v, { atThreshold: c === fleet ? null : c }); });
-      b.setAttribute("aria-pressed", String(c === now && !locked));
-      b.disabled = locked;
-      cseg.appendChild(b);
-    }
-    const when = sc.capPct != null ? `Ab ${sc.capPct} % oder kurz vor kaltem Cache` : "Wenn es so weit ist";
-    const unannounced = sc.nudgeOn ? "" : ", ohne Hinweis vorher";
-    const what = now === "compact" ? `${when} tippt Fleet /compact, sobald sie ruht${unannounced}.`
-      : now === "succeed" ? `${when} öffnet Fleet eine neue Session, sobald sie ruht${unannounced}.`
-      : sc.nudgeOn ? "Nur der Hinweis; die Session wählt den Punkt selbst."
-      : "Nur der Hinweis, und der ist aus: an der Schwelle geschieht nichts.";
-    const last = sc.act ? ` Zuletzt ${new Date(sc.act.at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}: ${CHOICE_WORDS[sc.act.act]}, ${sc.act.outcome}.` : "";
-    rows.push(row("An der Schwelle", [cseg], locked ? "Hier wirkt keine Schwelle."
-      : sc.thresholdOff === "session" ? `Die Übergabe ist für diese Session aus.${last}` : `${what}${last}`, "wide"));
-  }
-
-  const p = previewOf(v);
-  const going = succeeding.has(v.slot);
-  // AT A COLD CACHE the button continues the work in a fresh session and names its source; the old
-  // session gets no turn either way (server.ts#handleOwnerSucceed)
-  const cold = cache?.state === "kalt";
-  const go = button(going ? "Wird geöffnet …" : cold ? "In neuer Session fortsetzen" : "Neue Session jetzt", "bbtn", "succeed",
-    `${cold ? "Der Cache ist kalt. " : ""}Eine frische Session im selben Slot. Die laufende bekommt keinen Turn mehr; ihr Gespräch bleibt lesbar.`,
-    () => void succeed(v));
-  go.disabled = going || !p?.ready;
-  const source = cold && p?.ready && p.source ? `Quelle: ${p.source === "handover" ? "Fleet-Übergabe" : "rohes Transkript"}. ` : "";
-  rows.push(row("Nachfolge", [go], going ? "Die laufende Session endet, die neue startet mit ihrem Brief."
-    : p ? `${source}${p.says}` : "Fleet prüft, ob sie gerade ruht …", "wide"));
-
-  const err = errs.get(v.slot);
-  if (err) {
-    const e = el("div", "perr", err.text);
-    e.title = err.title;
-    rows.push(e);
-  }
-  return rows;
+  return s;
+}
+// ONE LINE: when · what (and where the fill stands), the grey note under it, the explanation behind ⓘ and on hover
+function stepEl(st: Step): HTMLElement {
+  const r = el("div", `st${st.grey ? " grey" : ""}`);
+  r.dataset.st = st.id;
+  r.title = st.tip;
+  const what = el("span", "pv", st.what);
+  if (st.status) what.appendChild(el("span", "stat", st.status));
+  r.append(el("span", "k", st.when), what);
+  if (st.why) r.appendChild(el("span", "why", st.why));
+  r.appendChild(el("span", "x", st.tip));
+  return r;
+}
+function controls(...kids: (Node | string)[]): HTMLElement {
+  const c = el("div", "c");
+  c.append(...kids);
+  return c;
+}
+function noteEl(n: { text: string; title: string; err: boolean }): HTMLElement {
+  const e = el("div", n.err ? "perr" : "pnote", n.text);
+  e.title = n.title;
+  return e;
 }
 
-// THE WARM TURN'S MINUTES AND TEXT (S2b): the minutes one click away like the threshold, the fleet's
-// value marked; the text in a field whose draft outlives every repaint, „Sichern“ while it differs
-// from the saved one, „Fleet-Standard“ while the session has its own
-function warmRows(v: HandoverView, kc: NonNullable<BriefSuccession["keepCache"]>): HTMLElement[] {
-  const fleetMin = kc.fleetIdleMin ?? 50;
-  const values = MINUTES.includes(kc.idleMin) ? MINUTES : [...MINUTES, kc.idleMin].sort((a, b) => a - b);
-  const mins = el("span", "seg mins");
-  for (const m of values) {
-    const on = m === kc.idleMin;
-    const b = button(String(m), `${on ? "on" : ""}${m === fleetMin ? " dflt" : ""}`.trim(), `idle-${m}`,
-      m === fleetMin ? `${m} min — der Wert der Fleet` : `Nach ${m} min Ruhe warm halten — nur diese Session`,
-      () => { if (!on) void write(v, { keepCacheIdleMin: m }); });
-    b.setAttribute("aria-pressed", String(on));
-    b.setAttribute("aria-label", `${m} min`);
-    mins.appendChild(b);
+export function handoverFlow(v: HandoverView): HTMLElement[] {
+  repaints.set(v.slot, v.repaint);
+  const { sc } = v;
+  const now = serverClock();
+  const steps = flowSteps(sc, { now, lane: v.lane, handoverAt: v.handoverAt });
+  const out = steps.map(stepEl);
+  const at = (id: Step["id"]): HTMLElement | undefined => out[steps.findIndex((s) => s.id === id)];
+  const mine = notes.get(v.slot);
+  const shown = mine && mine.openedAt === v.openedAt ? mine : null;
+  if (!v.open) {
+    if (shown) out.push(noteEl(shown));
+    return out;
   }
-  const minRow = row("Nach", [mins, el("span", "unit", "min")],
-    kc.idleMin === fleetMin ? "" : `Eigener Wert dieser Session; die Fleet steht auf ${fleetMin} min.`, "wide");
 
-  const saved = kc.text ?? "";
-  const d = drafts.get(v.slot);
-  const ta = document.createElement("textarea");
-  ta.className = "pta";
-  ta.dataset.uk = "wtext";
-  ta.rows = 3;
-  ta.maxLength = kc.textMax ?? 500;
-  ta.placeholder = kc.fleetText ?? "";
-  ta.value = d && d.openedAt === v.openedAt ? d.text : saved;
-  ta.setAttribute("aria-label", "Text des Warm-Turns");
-  const save = button("Sichern", "bbtn quiet", "wtext-save", "Diesen Text tippt Fleet bei jedem Warm-Turn dieser Session", () => {
-    const text = ta.value;
-    drafts.delete(v.slot);
-    void write(v, { keepCacheText: text.trim() || null }).then((ok) => {
-      if (!ok) { drafts.set(v.slot, { openedAt: v.openedAt, text }); repaint(v.slot); }
-    });
-  });
-  const fleet = button("Fleet-Standard", "bbtn quiet", "wtext-fleet", "Zurück auf den Text der Fleet", () => {
-    drafts.delete(v.slot);
-    void write(v, { keepCacheText: null });
-  });
-  fleet.hidden = !saved;
-  const sync = (): void => { save.hidden = ta.value.trim() === saved; };
-  ta.addEventListener("input", () => { drafts.set(v.slot, { openedAt: v.openedAt, text: ta.value }); sync(); });
-  sync();
-  const textRow = row("Text", [ta, save, fleet],
-    saved ? "Eigener Text dieser Session, bei jedem Warm-Turn." : "Leer: der Text der Fleet, die Session antwortet nur „ok“.", "wide");
-  return [minRow, textRow];
+  // THE THRESHOLD: where Fleet nudges, and Nudge · Off. Once Fleet nudged and the fill passed the threshold, a later value is
+  // also typed into the session (owner Z50); a value at or under the fill is no longer one to pick then
+  const locked = lockedGate(sc);
+  const thStep = at("nudge") ?? at("off");
+  if (thStep && sc.thresholdOff !== "harness") {
+    const plan = planOf(sc);
+    const cur = plan === "off" ? null : sc.thresholdPct ?? sc.sessionPct ?? (sc.defaultPct > 0 ? sc.defaultPct : null);
+    const fill = sc.fill?.pct ?? null;
+    const later = !!sc.nudges && fill !== null && cur !== null && fill >= cur;
+    const values = cur !== null && !THRESHOLDS.includes(cur) ? [...THRESHOLDS, cur].sort((a, b) => a - b) : THRESHOLDS;
+    const pcts = seg("pcts", values.map((pct) => {
+      const on = pct === cur;
+      const own = on && sc.pctFrom === "session";
+      return { text: String(pct), uk: `pct-${pct}`, on, dflt: pct === sc.defaultPct, label: `${pct} %`,
+        d: later && fill !== null && pct <= fill,
+        title: locked ? "Nothing to set here, the reason is on the line"
+          : later ? `Nudge at ${pct} % instead — the session is told`
+          : own && pct !== sc.defaultPct ? `This session's own value — click again for the Fleet value (${sc.defaultPct} %)`
+          : pct === sc.defaultPct ? `${pct} % — the Fleet value` : `Nudge at ${pct} % — this session only`,
+        run: () => {
+          // the fleet's own value, or this session's own value pressed again, follows the fleet again
+          const next = pct === sc.defaultPct || own ? null : pct;
+          if (next === null ? sc.pctFrom === "fleet" && sc.sessionPct !== 0 : on) return;
+          void write(v, { thresholdPct: next }).then((ok) => {
+            if (ok && later) void tell(v, laterText(pct, choiceOf(sc), v.lane), `Told the session: ${pct} %, at`);
+          });
+        } };
+    }), locked);
+    const plans = seg("plans", (["nudge", "off"] as Plan[]).map((p) => ({ text: PLAN_WORDS[p], uk: `plan-${p}`, on: p === plan, dflt: p === "nudge",
+      title: p === "nudge" ? "Fleet nudges the session once to succeed (the Fleet value)" : "Fleet won't nudge or step in — this session only",
+      run: () => { if (p !== plan) void write(v, planWrite(sc, p)); } })), locked);
+    const line = el("div", "cl");
+    line.append(pcts, el("span", "unit", "%"), plans);
+    thStep.appendChild(controls(line));
+  }
+
+  // THE CACHE: keep it warm or not, and after how many idle minutes
+  const kc = sc.keepCache;
+  const cacheStep = at("cache");
+  if (kc && !kc.exempt && cacheStep) {
+    const line = el("div", "cl");
+    line.append(el("span", "unit", "Keep warm"), seg("warm", ([[true, "On"], [false, "Off"]] as const).map(([on, word]) => ({
+      text: word, uk: `warm-${on ? "on" : "off"}`, on: kc.on === on, dflt: kc.fleetOn === on,
+      title: kc.fleetOn === on ? `${word} — the Fleet value for this kind of session` : `${word} — this session only`,
+      // the fleet's value takes the session back to the fleet: no own record is kept
+      run: () => { if (kc.on !== on) void write(v, { keepCache: kc.fleetOn === on ? null : on }); } })), false));
+    if (kc.on) {
+      const fleetMin = kc.fleetIdleMin ?? 50;
+      const values = MINUTES.includes(kc.idleMin) ? MINUTES : [...MINUTES, kc.idleMin].sort((a, b) => a - b);
+      line.append(el("span", "unit", "after"), seg("mins", values.map((m) => ({ text: String(m), uk: `idle-${m}`, on: m === kc.idleMin,
+        dflt: m === fleetMin, label: `${m} min`, title: m === fleetMin ? `${m} min — the Fleet value` : `After ${m} min idle — this session only`,
+        run: () => { if (m !== kc.idleMin) void write(v, { keepCacheIdleMin: m }); } })), false), el("span", "unit", "min"));
+    }
+    cacheStep.appendChild(controls(line));
+  }
+
+  // NOW, BY HAND: while the cache is warm, nudge the session to hand over at once; once it is cold, a new session from a
+  // summary (the owner door, server.ts#handleOwnerSucceed: the old session gets no turn and is not loaded again). A lane
+  // hands over with its report, never by force, so it keeps the nudge
+  const cold = sc.cache ? cacheNow(sc.cache, now).state === "kalt" : false;
+  const hand = el("div", "st");
+  hand.dataset.st = "now";
+  const pv = el("span", "pv cl");
+  if (cold && !v.lane) {
+    const p = previewOf(v);
+    const going = succeeding.has(v.slot);
+    const pick = pickOf(v);
+    pv.appendChild(spawnPicker(v));
+    const go = button(going ? "Opening …" : "New session from summary", "bbtn", "new",
+      `The cache is cold, so this session is not loaded again: a fresh one starts in this slot. ${p?.says ?? ""}`.trim(),
+      () => void succeed(v, pick));
+    go.disabled = going || !p?.ready;
+    pv.appendChild(go);
+  } else {
+    pv.appendChild(button("Succeed now", "bbtn", "now", "Nudges the session now: write the handover and start the successor itself",
+      () => void tell(v, nowText(v.lane), "Nudged to succeed at")));
+  }
+  hand.append(el("span", "k", "Now"), pv);
+  out.push(hand);
+  if (shown) out.push(noteEl(shown));
+  return out;
 }

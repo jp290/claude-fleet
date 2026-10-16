@@ -55,17 +55,18 @@ if (!BASE || !TOKEN || !DIR || !SOCK) {
 // the slot numbers are FIXED so the report can say "look at slot N" and mean it:
 //   mains with 0 / 1 / 3 lanes ....... 1 · 3 (lane 12 = 3A) · 2 (lanes 9, 10, 11 = 2A 2B 2C)
 //   working / resting / asleep / broken  1 (+ lane 10 painting) / most / 4 (after 30 min) / 6
-//   ctx low / mid / near a handover .... 12 → 5 %, 1 → 12 %, 10 → 21 %, 3 → 45 %, lane 9 → 37 % (the
-//                                         lane rail hands over at 40), main 2 → 78 %; the rest "ctx ?"
+//   ctx low / mid / near a handover .... 12 → 5 %, 1 → 12 %, 10 → 21 %, lane 9 → 37 % (the lane rail hands over at
+//                                         37: nudged once), main 2 → 78 % cold over its cap (Fleet hands over itself);
+//                                         K16 Runde C: 3 → 42 % cold under its cap 45 („New session from summary“); the rest "ctx ?"
 //   succession ......................... 2 main s4 · 9 lane s3 · 2/5 (capped) · 10 lane s2 (no cap)
 //                                         · 12 lane s1 · 0/5 (a FIRST session — only a capped lane
 //                                         has one to show: the server omits an uncapped s1)
 //   codex .............................. 5 "pick conversation" (owner must act) · 8 healthy: nothing
-const CTX_PCT = { 1: 12, 2: 78, 3: 45, 9: 37, 10: 21, 12: 5 };
+const CTX_PCT = { 1: 12, 2: 78, 3: 42, 9: 37, 10: 21, 12: 5 };
 // K9 S2: how long ago each ctx session made its last model call, on the 1 h cache tier — the popover's
 // „Cache“ row reads warm with its minutes or cold since when (main 2 is past the hour, with a Claude
 // compaction earlier in its conversation); the ages run on from the planting
-const CTX_LAST_CALL_MIN = { 1: 20, 2: 75, 3: 45, 9: 3, 10: 50, 12: 2 };
+const CTX_LAST_CALL_MIN = { 1: 20, 2: 75, 3: 70, 9: 3, 10: 50, 12: 2 };
 // claude's default here is claude-opus-5[1m] (src/protocol.ts#FLEET_DEFAULT_MODEL): one percent of
 // its window is 10 000 input tokens. The API is read back after the restart, never assumed.
 const WINDOW = 1_000_000;

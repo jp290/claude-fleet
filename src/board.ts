@@ -19,7 +19,7 @@ import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./dev
 import { compTray, serverClock } from "./composer";
 import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
-import { OFF_WHY, freshSuccession, handoverAt, handoverDoesNothing, handoverRows } from "./handover";
+import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
@@ -68,6 +68,8 @@ export interface BriefSuccession {
   thresholdPct: number | null;
   thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | null;
   nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
+  // the fill the newest ask was written at (server.ts#successionFacts), an older server sends none
+  nudgedPct?: number | null;
   session: number; taken: number | null; cap: number | null;
   // the owner's per-session setting (server.ts#patchHandover): the rail's env value, whether the
   // threshold above is this session's own, and whether the hint is on. An older server sends none of
@@ -79,9 +81,14 @@ export interface BriefSuccession {
   keepCache?: { on: boolean; from: "session" | "fleet"; fleetOn: boolean; exempt: "steward" | "lane" | "harness" | null;
     idleMin: number; lifetimeMin: number; hourCap: number; warmTurns: number;
     // S2b: the fleet's duration, and the warm turn's own text (null = the fleet's) — an older server sends none
-    fleetIdleMin?: number; text?: string | null; fleetText?: string; textMax?: number };
+    fleetIdleMin?: number; text?: string | null; fleetText?: string; textMax?: number;
+    // the next warm turn and why none comes (server/succession.ts#warmDecision), its lid — an older server sends none
+    dueAt?: number | null; reason?: string; warmMax?: number };
   cache?: { state: "warm" | "kalt" | "kompaktiert" | "unbekannt"; lastCallAt: number | null; ttlSec: number; coldAt: number | null };
-  compaction?: { at: number; preTokens: number | null; postTokens: number | null } | null;
+  compaction?: { at: number; preTokens: number | null; postTokens: number | null; trigger?: string; idle?: boolean } | null;
+  // K16 Teil 2: whether this occupant was started with Claude Code's own auto-compaction (server/session-start.ts
+  // `autoCompactEnabled`); a server that does not record it sends none, and the column says „nicht gemeldet“
+  autoCompact?: boolean | null;
   // K9 S3 (server.ts#successionFacts): the kind of session, the cap where Fleet's action is due, where the
   // base comes from, the choice at the threshold and the newest act — an older server sends none
   kind?: "orchestrator" | "program-main" | "bau" | "lane" | "session"; capPct?: number | null;
@@ -1590,6 +1597,8 @@ export async function renderBoard() {
     // 3 — CHANGES: the uncommitted tree, Commit, and on a lane Land lane with ⋯ beside it
     if (brief) {
       const work = changesSection(c, brief);
+      const ub = handoverUnderChanges(c) ? handoverBlock(c) : null;
+      if (ub) work.appendChild(ub);
       nodes.push(work);
     }
     // 4 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
@@ -1702,32 +1711,29 @@ function glyphBtn(name: IconName, label: string, title: string, run: () => void)
   return b;
 }
 
-// --- THE COLUMN'S THREE POPOVERS (G4.1): the session's ⋯, the ⋯ beside Land lane, and the handover
-// settings at their switch. ONE state, bound to the slot it was opened on (a focus change must not
-// hang one session's actions under another's name), registered with the board's one popover().
-type BoardPopKind = "kopf" | "land" | "ueb";
+// --- THE COLUMN'S TWO POPOVERS (G4.1): the session's ⋯ and the ⋯ beside Land lane (the handover settings left
+// their popover for the session's „Übergabe“ block, K16 Teil 2). ONE state, bound to the slot it was opened on (a
+// focus change must not hang one session's actions under another's name), registered with the board's one popover().
+type BoardPopKind = "kopf" | "land";
 export let boardPop: { kind: BoardPopKind; slot: number } | null = null;
 // a popover just opened: bring it into the column's view once (the draft scrolls to its anchor);
 // one just closed by Escape: its button takes the focus back once the column is repainted
 let popScroll = false;
 let popFocus: BoardPopKind | null = null;
-// `paint` redraws the trigger's own line where it stands (the handover popover, paintContextRow); a
-// line that is not on screen falls back to the column render
-function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement, paint?: () => boolean): HTMLButtonElement {
+function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement): HTMLButtonElement {
   const open = boardPop?.kind === kind && boardPop.slot === slot;
   btn.dataset.pop = kind;
   btn.classList.toggle("on", open);
-  btn.setAttribute("aria-haspopup", kind === "ueb" ? "dialog" : "menu");
+  btn.setAttribute("aria-haspopup", "menu");
   btn.setAttribute("aria-expanded", String(open));
-  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; if (!paint?.()) void renderBoard(); };
+  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; void renderBoard(); };
   return btn;
 }
 // the panel: a menu at its button on the desktop, a sheet from the bottom on the phone (G4.1 mobil)
 function popPanel(kind: BoardPopKind, rows: HTMLElement[], cls = ""): HTMLElement[] {
   const p = el("div", `bpop${cls ? ` ${cls}` : ""}`);
   p.dataset.pop = kind;
-  p.setAttribute("role", kind === "ueb" ? "dialog" : "menu");
-  if (kind === "ueb") p.setAttribute("aria-label", "Übergabe-Einstellungen");
+  p.setAttribute("role", "menu");
   p.append(...rows);
   const scrim = el("div", "bpopscrim");
   return [scrim, p];
@@ -1851,6 +1857,9 @@ function sessionSection(c: BoardCtx): HTMLElement {
   const links = belongsLinks(c);
   if (links.length) kv.appendChild(kvRow("Gehört zu", links, "lks"));
   idsec.appendChild(kv);
+  // a lane's next step is „Land lane“: its handover block stands under Changes instead (Bauleitung 16.10. for K16 uebergabe-b)
+  const ub = handoverUnderChanges(c) ? null : handoverBlock(c);
+  if (ub) idsec.appendChild(ub);
   return idsec;
 }
 
@@ -1899,8 +1908,7 @@ function kopfItems(c: BoardCtx): HTMLElement[] {
 // the land check of this slot on the meter, while a land runs (the Changes block's progress note)
 const landBall = (slot: number): MeterBall | null => meterModel().balls.find((b) => b.slot === slot && b.kind === "land check") ?? null;
 // KONTEXT — one line instead of four (§4): the fill, and the switch that opens the handover settings
-// with the threshold on its face. Whether the hint was given shows only when it was (§3a); the hint
-// switched off is a state of its own and says so.
+// with the threshold on its face. That Fleet nudged the session shows only when it did (§3a); the plan stands on hover.
 const tok = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 function successionOf(c: BoardCtx): BriefSuccession | null {
   const fresh = freshSuccession(c.slot, c.s.openedAt);
@@ -1911,49 +1919,96 @@ function successionOf(c: BoardCtx): BriefSuccession | null {
 }
 function contextRow(c: BoardCtx): HTMLElement {
   const sc = successionOf(c);
-  if (!sc) return kvRow("Kontext", [el("span", "s1", "nicht gemeldet")]);
-  const fill = sc.fill ? `${Math.round(sc.fill.pct)} %` : "nicht messbar";
+  if (!sc) return kvRow("Context", [el("span", "s1", "not reported")]);
+  const fill = sc.fill ? `${Math.round(sc.fill.pct)} %` : "not measurable";
   const sw = el("button", "optsw") as HTMLButtonElement;
   sw.type = "button";
-  // the value the owner clicked, and the cap it may wait for while the cache is warm (Mangel 76); „[Zitat entfernt]“ where
-  // none comes (76b: „[Zitat entfernt]“ at the threshold with the hint off)
+  // where Fleet nudges, and the cap the session has while the cache is warm (Mangel 76; owner 17:5x: „[Zitat entfernt]“);
+  // „[Zitat entfernt]“ where none comes (76b)
   const at = handoverAt(sc);
-  sw.append(document.createTextNode(at ? `Übergabe ab ${at.pct} %${at.cap !== null ? ` (bis ${at.cap})` : at.cache ? ` (${at.cache})` : ""}`
-    : "Übergabe aus"), icon("chevron"));
-  sw.title = `Übergabe-Einstellungen dieser Session — ${sc.thresholdPct === null ? `aus: ${OFF_WHY[sc.thresholdOff ?? "rail"]}`
-    : sc.pctFrom === "session" ? `eigene Schwelle dieser Session (Fleet: ${sc.defaultPct} %)` : "die Schwelle der Fleet"}`
-    + ` · ${!sc.nudgeOn ? "Hinweis aus" : sc.nudges ? `Hinweis ${sc.nudges}× gegeben` : "Hinweis noch nicht gegeben"}`
-    + (at?.cap != null ? ` · solange der Cache warm ist, wartet die Übergabe bis ${at.cap} %` : "")
-    + (handoverDoesNothing(sc) ? " · an der Schwelle steht „Hinweis“, und der ist aus: dort geschieht nichts" : "");
-  popTrigger("ueb", c.slot, sw, () => paintContextRow(c));
+  sw.append(document.createTextNode(at ? `Succession at ${at.pct}${at.cap !== null ? `–${at.cap}` : ""} %` : "Succession off"), icon("chevron"));
+  sw.title = at === null ? `No succession by Fleet: ${OFF_WHY[sc.thresholdOff ?? "session"]}`
+    : `Fleet nudges the session once to succeed at ${at.pct} %${sc.pctFrom === "session" ? ` (this session's own value; Fleet: ${sc.defaultPct} %)` : ""}`
+      + (at.cache === "kalt" ? `; the cache is cold, so Fleet types nothing${at.cap !== null ? ` and acts itself only at ${at.cap} %` : ""}`
+        : at.cap !== null ? `; it has until ${at.cap} % while the cache is warm` : "");
+  // the switch opens and closes the controls in the „Succession“ block below
+  const open = handoverOpenOn(c);
+  sw.dataset.uk = "ueb";
+  sw.classList.toggle("on", open);
+  sw.setAttribute("aria-expanded", String(open));
+  sw.setAttribute("aria-controls", `bueb-${c.slot}`);
+  sw.onclick = () => toggleHandover(c, open);
+  // that and when Fleet nudged stands on the block's first line right below, not twice
   const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
-  // the hint is only news where a threshold can fire — "Übergabe aus" already says the rest
-  if (sc.thresholdPct !== null) {
-    if (!sc.nudgeOn) v.push(el("span", "s1", "Hinweis aus"));
-    else if (sc.gaveUp) v.push(el("span", "s1", `nach ${sc.nudges} Hinweisen aufgehört`));
-    else if (sc.nudges) v.push(el("span", "s1", `Hinweis ${sc.nudgedAt ? clockOf(sc.nudgedAt) : "gegeben"}`));
-  }
-  const r = kvRow("Kontext", v, "ctx");
+  const r = kvRow("Context", v, "ctx");
   const fillEl = r.querySelector<HTMLElement>(".fill");
   if (fillEl) fillEl.title = sc.fill
-    ? `${sc.fill.usedTokens} von ${sc.fill.windowTokens} Tokens im Fenster (${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)}) — gegen diese Zahl misst der Server, wann die Session weitergeben soll.`
-    : "Fleet kann diesen Kontext nicht messen: kein festgehaltenes Gespräch, noch kein Nutzungsrecord oder kein benennbares Fenster — das ist kein leerer Kontext.";
-  if (boardPop?.kind === "ueb" && boardPop.slot === c.slot) r.append(...popPanel("ueb", handoverRows({ slot: c.slot, openedAt: c.s.openedAt, sc,
-    repaint: () => paintContextRow(c), succeeded: () => { boardPop = null; void renderBoard(); } }), "ubpop"));
+    ? `${sc.fill.usedTokens} of ${sc.fill.windowTokens} tokens in the window (${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)}) — the succession is measured against this.`
+    : "Fleet can't measure this context: no pinned conversation, no usage record yet, or no known window — it is not an empty context.";
   return r;
 }
-// THE KONTEXT LINE REDRAWN WHERE IT STANDS (K9 S1, owner 13.10.: „[Zitat entfernt]“): opening the handover popover
-// and every write in it rebuild this one row from what the client holds — no /brief, no column render
-// per click. The board's next tick rebuilds it with the rest. False = the row is not on screen.
-function paintContextRow(c: BoardCtx): boolean {
-  const old = boardBody.querySelector<HTMLElement>(".bkv.ctx");
-  if (!old || panes[focused]?.slot !== c.slot) return false;
+// THE „ÜBERGABE“ BLOCK (K16 Runde 3, owner 16.10. 09:1x: „[Zitat entfernt]“
+// ): the flow from now on (src/handover-now.ts#flowSteps), and while the Kontext switch
+// or „Einstellen“ holds it open, each step with its own control (src/handover.ts#handoverFlow). ⓘ shows every step's
+// explanation — the phone has no hover.
+let handoverOpen: { slot: number; openedAt: number | undefined } | null = null;
+// a lane with its Changes drawn: the block follows Land lane, so Land lane stays on the first screen
+const handoverUnderChanges = (c: BoardCtx): boolean => !!c.s.worktree && !!c.brief;
+let handoverExplain = false;
+const handoverOpenOn = (c: BoardCtx): boolean => handoverOpen?.slot === c.slot && handoverOpen.openedAt === c.s.openedAt;
+const toggleHandover = (c: BoardCtx, open: boolean): void => {
+  handoverOpen = open ? null : { slot: c.slot, openedAt: c.s.openedAt };
+  if (!paintHandover(c)) void renderBoard();
+};
+function handoverBlock(c: BoardCtx): HTMLElement | null {
+  const sc = successionOf(c);
+  if (!sc) return null;
+  const open = handoverOpenOn(c);
+  const b = el("div", `bueb${open ? " open" : ""}${handoverExplain ? " explain" : ""}`);
+  b.id = `bueb-${c.slot}`;
+  if (open) {
+    b.setAttribute("role", "group");
+    b.setAttribute("aria-label", "Succession settings");
+  }
+  const head = el("div", "buebh");
+  const info = el("button", `buebi${handoverExplain ? " on" : ""}`, "ⓘ") as HTMLButtonElement;
+  info.type = "button";
+  info.dataset.uk = "ueb-i";
+  info.title = handoverExplain ? "Hide the explanations" : "Explain each line";
+  info.setAttribute("aria-pressed", String(handoverExplain));
+  info.onclick = () => { handoverExplain = !handoverExplain; if (!paintHandover(c)) void renderBoard(); };
+  const edit = el("button", `buebedit${open ? " on" : ""}`, open ? "Done" : "Change") as HTMLButtonElement;
+  edit.type = "button";
+  edit.dataset.uk = "ueb-edit";
+  edit.setAttribute("aria-expanded", String(open));
+  edit.setAttribute("aria-controls", `bueb-${c.slot}`);
+  edit.onclick = () => toggleHandover(c, open);
+  head.append(el("span", "t", "Succession"), info, edit);
+  b.appendChild(head);
+  const flow = el("div", "buebflow");
+  flow.append(...handoverFlow({ slot: c.slot, openedAt: c.s.openedAt, sc, open, lane: sc.kind === "lane" || sc.rail === "lane", handoverAt: c.s.standingHandover?.at,
+    repaint: () => paintHandover(c), succeeded: () => { handoverOpen = null; void renderBoard(); } }));
+  b.appendChild(flow);
+  return b;
+}
+// THE KONTEXT LINE AND THE „ÜBERGABE“ BLOCK REDRAWN WHERE THEY STAND (K9 S1, owner 13.10.: „[Zitat entfernt]“): opening the
+// settings and every write in them rebuild these two from what the client holds — no /brief, no column render per
+// click. The board's next tick rebuilds them with the rest. False = they are not on screen.
+function paintHandover(c: BoardCtx): boolean {
+  const oldRow = boardBody.querySelector<HTMLElement>(".bkv.ctx");
+  const oldBlock = boardBody.querySelector<HTMLElement>(".bueb");
+  if (!oldRow || !oldBlock || panes[focused]?.slot !== c.slot) return false;
   const a = document.activeElement;
-  const key = a instanceof HTMLElement && old.contains(a) ? a.dataset.uk ?? (a.dataset.pop ? "pop" : null) : null;
-  const next = contextRow(c);
-  old.replaceWith(next);
-  if (key) next.querySelector<HTMLElement>(key === "pop" ? "button[data-pop]" : `[data-uk="${key}"]`)?.focus({ preventScroll: true });
-  if (popScroll && !isMobile()) { popScroll = false; next.querySelector<HTMLElement>(".bpop")?.scrollIntoView({ block: "nearest" }); }
+  const key = a instanceof HTMLElement && (oldRow.contains(a) || oldBlock.contains(a)) ? a.dataset.uk ?? null : null;
+  const wasOpen = oldBlock.classList.contains("open");
+  const row = contextRow(c);
+  oldRow.replaceWith(row);
+  const block = handoverBlock(c);
+  if (block) oldBlock.replaceWith(block);
+  else oldBlock.remove();
+  const root = row.closest(".bhead") ?? boardBody;
+  if (key) root.querySelector<HTMLElement>(`[data-uk="${key}"]`)?.focus({ preventScroll: true });
+  if (!wasOpen && block?.classList.contains("open") && !isMobile()) block.scrollIntoView({ block: "nearest" });
   return true;
 }
 // GEHÖRT ZU — the order, the Program and the lane's file as links (they were chips with a frame)

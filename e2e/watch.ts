@@ -7952,9 +7952,11 @@ export async function run(): Promise<void> {
       // the EFFECTIVE threshold and the nudge that was actually delivered, on one row because the
       // second is only ever news about the first. BREAKS IF: the reader prints the raw env instead
       // of the rail's own armed number, or counts a nudge from another conversation.
-      check("succession facts: an armed lane reports its own 44 and the one nudge it was sent, with its time",
+      // ONE NUDGE per conversation (K16 Runde C, owner 16.10. 19:3x: „[Zitat entfernt]“
+      // ): the one it was sent is the whole budget
+      check("succession facts: an armed lane reports its own 44 and the one nudge it was sent, with its time — and no further one",
         laneSucc?.thresholdPct === 44 && laneSucc.thresholdOff === null && laneSucc.nudges === 1
-          && laneSucc.nudgedAt !== null && laneSucc.gaveUp === false && laneSucc.maxNudges === 3,
+          && laneSucc.nudgedAt !== null && laneSucc.gaveUp === true && laneSucc.maxNudges === 1,
         JSON.stringify(laneSucc));
       // a hand-opened lane holds no queue row, so FLEET_LANE_SUCCEED_MAX (keyed by originId) has
       // nothing to count against it — absence written as the answer it is, never as 0 of 5

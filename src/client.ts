@@ -597,7 +597,9 @@ export interface SlotInfo {
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
-    sessionId: string | null; disconnectSeenAt: number | null } }
+    sessionId: string | null; disconnectSeenAt: number | null };
+  // when this occupant last wrote its standing handover (server.ts sessions row); omitted when none
+  standingHandover?: { at: number } }
 interface CodexCandidateInfo { id: string; timestamp: number }
 interface CodexCandidatesView {
   state: "pending" | "bound" | "ambiguous" | "lost";

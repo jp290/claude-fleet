@@ -24,7 +24,7 @@ export const KONST_CLAIM = {
   tree: "Orchestratorin → MAIN → its lane, a session → the lane opened from it (as the left bar stacks it); the lane without either, the branch session and the plain sessions stand in their own groups",
   aufbau: "at rest the tree is the build only: one line per session with its name, its kind, its state and slot — no value and no branch on it — and all of it in one window height",
   peek: "under the pointer a line shows a small card with model, effort, context, handover and branch; it goes with the pointer and moves no line",
-  values: "the properties name model, effort, handover, rights, agent, binding and place as the wire gives them, in the column's words, and Claude Code's rows as her role's plan names them",
+  values: "the properties name model, effort, succession (labelled „Succession“, Fleet's word), rights, agent, binding and place as the wire gives them, in the column's words, and Claude Code's rows as her role's plan names them",
   unknown: "what Fleet cannot tell stays a sentence: context „nicht messbar“, a brief or a plan that fails „nicht lesbar“, a permission mode the transcript did not name „nicht gemeldet“; a context below 1 % reads „< 1 %“, never 0",
   wer: "every property row says who decides it, by its own tag or its section's, in K15's three words: model, effort and handover „änderbar“, rights, Maschine and Isolation „Fleet-Standard“, the system prompt „Claude-Code-Standard“, a switch of Fleet's start line „Fleet-Standard“",
   autonomie: "the role card's three lists stand as in K15: „Entscheidet selbst“, „Fragt zuerst“ (whom she asks), „Nie“, with their counts and the points in reading words; a free session says she has no role card",
@@ -163,7 +163,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
     5: { status: 200, body: { succession: sc({ thresholdPct: 40 }) } },
     6: { status: 400, body: { error: "not a git repo", git: "none", succession: sc({ thresholdPct: 45 }) } },
     7: { status: 200, body: { succession: sc({ thresholdPct: 45 }) } },
-    8: { status: 200, body: { succession: sc({ rail: "lane", thresholdPct: 37, capPct: 42,
+    8: { status: 200, body: { succession: sc({ rail: "lane", thresholdPct: 37, capPct: 42, atThreshold: "hint",
       cache: { state: "kalt", lastCallAt: now - 4_000_000, ttlSec: 3600, coldAt: now - 400_000 } }) } },
   };
   // the plan per role (GET /api/founding-plan): the role card in the card's own spelling and Claude Code's rows; a free
@@ -294,6 +294,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         wer: Object.fromEntries([...p.querySelectorAll('.kv')].map((v) => [v.dataset.k, wer(v.querySelector(':scope > .kwer'))])),
         secWer: Object.fromEntries([...p.querySelectorAll('.kps')].map((x) => [x.dataset.sec, wer(x.querySelector(':scope > .kpsk > .kwer'))])),
         untagged: [...p.querySelectorAll('.kv')].filter((v) => !v.querySelector(':scope > .kwer') && !v.closest('.kps')?.querySelector(':scope > .kpsk > .kwer')).map((v) => v.dataset.k),
+        labels: Object.fromEntries([...p.querySelectorAll('.kv')].map((v) => [v.dataset.k, v.querySelector(':scope > .kk')?.textContent ?? null])),
         words: [...new Set([...p.querySelectorAll('.kwer')].map((t) => t.className.replace('kwer ', '') + '=' + t.textContent))],
         standards: [...p.querySelectorAll('.kwer:not(.du)')].length,
         unsaid: [...p.querySelectorAll('.kwer:not(.du)')].filter((t) => !/^(Noch nicht (je Session )?einstellbar|Nicht in Fleet einstellbar|Einstellbar beim Öffnen)/.test(t.title)).map((t) => t.dataset.why + ': ' + t.title.split('\\n')[0]),
@@ -330,7 +331,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
     type Line = { slot: number; kind: string; group: string | null; parent: number | null; name: string | null; role: string | null;
       act: boolean; valuesOnLine: boolean; nameCut: boolean; kindWhole: boolean; top: number; bottom: number; fill: string };
     type Props = Record<string, { sections: string[]; vals: Record<string, string | null>; wer: Record<string, string | null>;
-      secWer: Record<string, string | null>; untagged: string[]; words: string[]; standards: number; unsaid: string[]; more: Record<string, string>; links: string[];
+      secWer: Record<string, string | null>; untagged: string[]; labels: Record<string, string | null>; words: string[]; standards: number; unsaid: string[]; more: Record<string, string>; links: string[];
       auto: Record<string, { wort: string | null; n: string | null; satz: string | null; punkte: string[] }>; leer: Record<string, string>;
       gray: boolean; switches: number; hover: Record<string, string>; fass: string | null; autoWhy: string | null; oneLine: boolean; wordWhole: boolean }>;
     type Peek = { slot: number; vals: Record<string, string | null>; hint: string | null } | null;
@@ -426,6 +427,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       const LANE_SELBST = ["wie du das Fertig-Kriterium der Karte erreichst, innerhalb ihrer Fläche und Verbote"];
       claims[KONST_CLAIM.values] =
         p(1).modell === "Opus 5.5 · 1M" && p(1).effort === "high" && p(1).uebergabe === "ab 45 %" && p(1).befehle === "Fleet-Standard"
+        && props["1"]?.labels.uebergabe === "Succession"
         && p(1).modus === "Auto Mode, ein Prüfmodell sieht Shell- und Netzaktionen" && p(3).modus === "ohne Prüfung (bypass)"
         && p(1).art === "Orchestratorin" && p(1).haengt === "keiner, sie führt" && p(1).agent === "Claude Code" && !("program" in p(1)) && !("auftrag" in p(1))
         && p(2).modell?.startsWith("Sonnet 5.5") === true && p(2).effort === "medium" && p(2).uebergabe === "aus · 3. Session der Linie"
@@ -439,7 +441,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         && !("modus" in p(4)) && !props["4"]?.sections.includes("Claude Code")
         && p(5).haengt === "nicht gemeldet" && p(5).branch === "bau/einstellungen"
         && p(6).modell === "Standard des Agenten" && p(6).uebergabe === "ab 45 %" && p(6).ordner === "frei · Haupt-Checkout"
-        && p(8).haengt === "Frei · Slot 6" && p(8).uebergabe === "ab 37 %, ohne Aufschub, der Cache ist kalt"
+        && p(8).haengt === "Frei · Slot 6" && p(8).uebergabe === "ab 37 %, der Cache ist kalt: Fleet tippt nichts"
         && planReads.includes("lane@/fixture/r") && planReads.includes("lane@/fixture/r#codex") && planReads.includes("nur-ordner@/fixture/r.worktrees/bau-einstellungen")
         && planReads.includes("main@/fixture/main") && planReads.includes("orchestratorin@/fixture/orch");
       claims[KONST_CLAIM.unknown] = p(4).uebergabe === "nicht lesbar"

@@ -266,7 +266,10 @@
 .k15 .k15col.aktiv .k15labi { background: var(--chat-ink); border-color: var(--chat-ink); color: var(--chat-void); }
 @media (min-width: 1201px) {
   .k15 .k15d[data-aktiv] > .k15col { transition: opacity .25s; }
-  .k15 .k15d[data-aktiv] > .k15col:not(.aktiv):not(:hover):not(:focus-within) { opacity: .5; }
+  /* Owner 17.10. 00:3x „[Zitat entfernt]“, 09:0x „[Zitat entfernt]“ (Screenshots), 09:3x zu .9
+     „[Zitat entfernt]“, 09:5x nach dem Bild 80/85 „[Zitat entfernt]“: eine ruhende
+     Spalte nur einen Hauch blasser; vorn bleibt die aktive über ihre gefüllte Nummer */
+  .k15 .k15d[data-aktiv] > .k15col:not(.aktiv):not(:hover):not(:focus-within) { opacity: .8; }
 }
 .k15 .k15regler { padding: 8px 0 0; }
 .k15 .k15rkopf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }

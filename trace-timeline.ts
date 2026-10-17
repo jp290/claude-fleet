@@ -206,7 +206,7 @@ export class TimelineIndex {
         if (resolved && timelineStamp(resolved.file)) { n.file = resolved.file; n.source = resolved; r.harness = resolved.harness; n.bindingKey = digest(JSON.stringify([r.session, r.cwd, r.slot, r.openedAt, r.harness, occupations.get(r.session)])); }
         else {
           if (n.snapshot) { this.retire(n, "source-missing"); n.snapshot = undefined; n.offset = 0; n.stamp = null; n.generation++; changed = true; }
-          n.gaps = [{ code: r.harness && !["claude", "codex", "pi", "pi-zai", "pi-ox"].includes(r.harness)
+          n.gaps = [{ code: r.harness && !["claude", "codex", "pi", "pi-zai"].includes(r.harness)
             ? "unsupported-source" : "source-missing" }]; continue;
         }
       }

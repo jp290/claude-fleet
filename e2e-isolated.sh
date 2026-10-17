@@ -338,18 +338,7 @@ static void consume(void) {
 int main(int argc, char **argv) {
   struct termios t;
   int c;
-  int ox = has_arg(argc, argv, "opencode") && has_arg(argc, argv, "x-preview-f-free");
   zai_footer = has_arg(argc, argv, "zai");
-  /* This remains a falsifiable strict-profile stand-in for the pi-ox readiness/security probes. */
-  if (ox && !has_arg(argc, argv, "--no-approve")) {
-    fputs("Trust project folder?\n", stdout);
-  } else if (ox && has_arg(argc, argv, "--no-extensions")
-      && has_arg(argc, argv, "--no-skills")
-      && has_arg(argc, argv, "--no-prompt-templates")
-      && has_arg(argc, argv, "--no-themes")
-      && has_arg(argc, argv, "--verbose")) {
-    fputs("Model scope: x-preview-f-free (Ctrl+P to cycle)\n", stdout);
-  }
   if (tcgetattr(STDIN_FILENO, &t) == 0) {
     t.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &t);
@@ -975,9 +964,7 @@ mkdir -p "$CODEX_HOME"
 export CODEX_HOME
 PI_ZAI_AGENT_DIR="$DIR/pi-zai-agent"
 PI_ZAI_KEY_FILE="$DIR/pi-zai-coding-plan.key"
-PI_OX_AGENT_DIR="$DIR/pi-ox-agent"
 mkdir -p "$PI_ZAI_AGENT_DIR"
-mkdir -p "$PI_OX_AGENT_DIR"
 # Pi reads its credential store at startup, and server/pi-zai-fence.ts#piZaiFenceProfile grants
 # that read only for an EMPTY regular auth.json — without one the profile ends in a named (error),
 # so on darwin every real seatbelt start of a pi-zai pane fails (Mac audit on 88b36885, d41496ef).
@@ -1022,7 +1009,7 @@ export FLEET_PI_ZAI_DENY_ROOTS
 # 60 s, 2026-09-06). This is the SAME hand-down e2e-stage.sh already honours for its own steps, in
 # the same direction: the variable grants nothing on its own — server.ts checks that the lock file
 # on disk names this pid and that the process is alive, exactly as the shell does.
-SRV_ENV="FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HELPER_CMD_FLOOR_SHA=$FLOOR_SHA FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_INSTANCE=e2e-isolated FLEET_HARNESS_AUTOMATION=0 FLEET_HARNESS_RESUME=codex FLEET_LANE_AUTOCLOSE=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_TEST_WATCH_TICK_LATCH='$DIR/watch-tick.latch' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_PI_OX_AGENT_DIR='$PI_OX_AGENT_DIR' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MIGRATE_PCT=44 FLEET_LANE_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_LANE_STAND_COMMITS=0 FLEET_LANE_STAND_IDLE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_DEVICE_ONLINE_MS=20000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_MERGE_IDLE_MS=500 FLEET_GIT_TICK_MS=2000 FLEET_FOUNDING_BOOT_GRACE_MS=2000 FLEET_SEND_BOOT_WAIT_MS=500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_SUITE_LOCK_HELD_BY=$_st_lock_pid FLEET_HELPER_CMD_FLOOR_SHA=$FLOOR_SHA FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_MODEL= FLEET_CMD=true FLEET_INSTANCE=e2e-isolated FLEET_HARNESS_AUTOMATION=0 FLEET_HARNESS_RESUME=codex FLEET_LANE_AUTOCLOSE=0 FLEET_E2E_COMPOSER_MODE='$COMPOSER_MODE' FLEET_E2E_COMPOSER_STATE='$COMPOSER_STATE' FLEET_TEST_WATCH_TICK_LATCH='$DIR/watch-tick.latch' FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_PI_ZAI_AGENT_DIR='$PI_ZAI_AGENT_DIR' FLEET_PI_ZAI_KEY_FILE='$PI_ZAI_KEY_FILE' FLEET_READY_WAIT_MS=3000 FLEET_ACCEPT_WAIT_MS=800 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MIGRATE_PCT=44 FLEET_LANE_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_LANE_STAND_COMMITS=0 FLEET_LANE_STAND_IDLE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_DEVICE_ONLINE_MS=20000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_MERGE_IDLE_MS=500 FLEET_GIT_TICK_MS=2000 FLEET_FOUNDING_BOOT_GRACE_MS=2000 FLEET_SEND_BOOT_WAIT_MS=500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
@@ -1050,8 +1037,7 @@ cd "$DIR" || exit 1
 # .say files and fleet-e2e-fifo-<pid> plus fleet-e2e-fifo-order-<pid> (e2e/verify-queue.ts §2b, §2c),
 # fleet-e2e-gaprepo-<pid> (e2e/restart.ts) and fleet-e2e-ratelimit-<pid> (e2e/steward-core.ts). Nobody removed them: 683 standin dirs on
 # 2026-10-11, and a full TMPDIR killed a gate on 2026-10-07 (fcd441a9). The pid comes from the
-# runner's own shell: `exec` keeps both its pid and its ppid, which e2e/verify-queue.ts reads as
-# this wrapper's lock pid.
+# runner's own shell: `exec` keeps both its pid and its ppid.
 RUNNER_PID_FILE="${TMPDIR:-/tmp}/fleet-e2e-runnerpid-$$"
 eval "PATH='$DIR:$PATH' FLEET_E2E_SUITE=isolated $SRV_ENV sh -c 'echo \$\$ > \"\$0\"; exec bun fleet-e2e.ts' '$RUNNER_PID_FILE'"
 code=$?

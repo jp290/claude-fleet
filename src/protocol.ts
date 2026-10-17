@@ -572,7 +572,6 @@ export function contextWindowFor(model: string | null): number | null {
   if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
   // flash's window is a fact of THIS repo: server.ts#PI_ZAI_HARNESS injects contextWindow 1000000 for it.
   if (model === "glm-5.3-flash") return CONTEXT_WINDOW_GLM_5_3;
-  if (model === "x-preview-f-free") return CONTEXT_WINDOW_1M;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;
   }

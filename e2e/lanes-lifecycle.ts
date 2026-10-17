@@ -8,7 +8,7 @@ import type { WorkplaceCheckObservation } from "../server/types";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { CONTEXT_PACKS } from "../context-packs";
@@ -2801,6 +2801,18 @@ export async function run(lc: LaneCtx): Promise<void> {
     // would leave the two repos reading the same bytes, which is the separation this is for.
     check("a clone lane borrows no objects from the repo (no alternates file)",
       !exists(`${cCwd}/.git/objects/info/alternates`));
+    // …and the inodes say the same: an object file both repositories hold under one name is the
+    // clone's OWN file. A local `git clone` without --no-hardlinks links them (one inode, two names),
+    // which no git answer above can see. BREAKS IF: the clone call site drops --no-hardlinks.
+    const objectFiles = (repo: string): string[] =>
+      readdirSync(`${repo}/.git/objects`, { recursive: true, encoding: "utf8" })
+        .filter((p) => statSync(`${repo}/.git/objects/${p}`).isFile());
+    const commonObjects = objectFiles(cRepo).filter((p) => exists(`${cCwd}/.git/objects/${p}`));
+    const linkedObjects = commonObjects.filter((p) =>
+      statSync(`${cRepo}/.git/objects/${p}`).ino === statSync(`${cCwd}/.git/objects/${p}`).ino);
+    check("a clone lane shares no object file with the repo (no hardlinked inode)",
+      commonObjects.length > 0 && linkedObjects.length === 0,
+      `${commonObjects.length} common object files, ${linkedObjects.length} hardlinked`);
     check("a clone lane is invisible to `git worktree list` — it is not a worktree of the repo",
       !g(cRepo, "worktree", "list", "--porcelain").includes(cCwd), cCwd);
     // ...which is exactly why the lane map has to add it back: that surface answers "every lane

@@ -299,6 +299,7 @@ void makeCodexCliObserver().tick();
     };
     const menu = node(), button = node();
     let open = false;
+    const assigned: string[] = [];
     const headStart = clientSource.indexOf("function renderInstanceHead(");
     const headEnd = clientSource.indexOf("\n}\n", headStart) + 3;
     const deps = { instWrap: node(), instBtn: button, instMenu: menu, el: node, codexCliLabel: label,
@@ -306,13 +307,14 @@ void makeCodexCliObserver().tick();
       // src/board.ts#machineSigns: null = the Arbeitsorte not read yet, the chip keeps its screens
       machineSigns: () => null,
       hostSign: (_icon: string, text: string) => [node("span", "", text)],
-      instOriginOf: (url: string) => new URL(url).origin, location: { origin: "https://mac.example", assign: () => {} },
+      instOriginOf: (url: string) => new URL(url).origin,
+      location: { origin: "https://mac.example", assign: (url: string) => { assigned.push(url); } },
       setInstMenu: (value: boolean) => { open = value; }, instMenuOpen: () => open };
     const render = new Function("d", `${Object.keys(deps).map((key) => `const ${key} = d[${JSON.stringify(key)}];`).join("\n")}
       let instanceName = "mac", instanceLinks = [], instanceCodexCli = null, instanceObservedNow = 0, instRendered = "";
       ${new Bun.Transpiler({ loader: "ts" }).transformSync(clientSource.slice(headStart, headEnd))}
-      return (links, snapshot, now) => { instanceLinks = links; instanceCodexCli = snapshot; instanceObservedNow = now; renderInstanceHead(); };`)(deps) as
-      (links: InstanceLink[], snapshot: CodexCliSnapshot | null, now: number) => void;
+      return (links, snapshot, now, switches) => { instanceLinks = links; instanceCodexCli = snapshot; instanceObservedNow = now; renderInstanceHead(switches); };`)(deps) as
+      (links: InstanceLink[], snapshot: CodexCliSnapshot | null, now: number, switches?: (InstanceLink & { kind: "testinstanz" | "live" })[]) => void;
     const textOf = (n: Node): string => n.text + n.children.map(textOf).join(" ");
     render(supplied.links, local, now);
     check("R3c: the original instance renderer displays drift and local measurement",
@@ -326,6 +328,19 @@ void makeCodexCliObserver().tick();
     const rendered = menu.children;
     render([], local, now + 1);
     check("R3c: unchanged facts within one minute preserve the open instance menu", menu.children === rendered && open);
+    // THE SWITCH ITSELF: a click on another instance's row and on a test-instance switch navigates to
+    // exactly the link's own url, and this board's own row navigates nowhere. Each instance keeps its
+    // own login only because a cookie is per origin. BREAKS IF: go() appends anything to link.url
+    // (a `?token=` so the other board "opens logged in"), or assigns on the own origin.
+    const away = { name: "away", url: "https://away.example:8790" };
+    const ti = { kind: "testinstanz" as const, name: "ti", url: "http://ti.example:8902" };
+    render([{ name: "mac", url: "https://mac.example" }, away], local, now + 120_000, [ti]);
+    const clickable = menu.children.filter((row) => row.onclick);
+    assigned.length = 0;
+    for (const row of clickable) row.onclick?.();
+    check("R3c: the instance switcher navigates to exactly the clicked link's url, and the own row nowhere",
+      clickable.length === 3 && JSON.stringify(assigned) === JSON.stringify([away.url, ti.url]),
+      JSON.stringify({ rows: clickable.length, assigned }));
   } catch (e) { check("R3c: measurement fixtures complete", false, e instanceof Error ? e.message : String(e)); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -1471,8 +1486,10 @@ export async function run(ctx: Ctx): Promise<void> {
         JSON.stringify({ oldSol, previousSol, newSol, worker: modelCat.modelDefaults?.worker }));
       const dflt = cat.find((h) => h.default);
       const codex = cat.find((h) => h.id === "codex");
-      const noEffort = cat.find((h) => (h.role ?? "agent") === "agent" && !h.supports.effort);
-      spPre.need("the catalogue has a default with effort levels, codex with effort, and an agent without effort",
+      // since pi-ox left (17.10.) every agent takes an effort: the container hull is the harness without one,
+      // and client (src/queue.ts#qSpawnProblem) and routes (server.ts#effortErrFor) refuse it by the same rule
+      const noEffort = cat.find((h) => !h.supports.effort);
+      spPre.need("the catalogue has a default with effort levels, codex with effort, and a harness without effort",
         !!dflt && dflt.supports.effort && dflt.effortLevels.length > 0
           && !!codex && codex.supports.effort && codex.effortLevels.length > 0 && !!noEffort,
         cat.map((h) => `${h.id}:${h.role ?? "agent"}:effort=${h.supports.effort}`).join(" "));
@@ -5411,7 +5428,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const tracked = new Set(spawnSync("git", ["-C", ROOT, "ls-files"], { encoding: "utf8" })
       .stdout.split("\n").filter(Boolean));
     const FIXTURE_PATHS = ["server.ts", "AGENTS.md", "HANDOFF.md", "task-metadata.ts",
-      "continuity.ts", "lane-signals.ts", "slotstats.ts", "trailstats.ts", "docs/verify-tiering.md"];
+      "continuity.ts", "lane-signals.ts", "slotstats.ts", "server/tmux.ts", "docs/verify-tiering.md"];
     // Precondition, not a check of the feature: every path below has to BE a tracked file of ROOT,
     // or deriveTaskMetadata drops it and the whole section would pass by measuring nothing.
     const d5Pre = precondition("(d5-live)");
@@ -5603,7 +5620,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.sleep(20);
     const nB = await mkTask("Notiz B: continuity.ts und lane-signals.ts. Rest.", "notiz");
     const nD = await mkTask("Notiz D: nur continuity.ts. Rest.", "notiz");
-    const nE = await mkTask("Notiz E: continuity.ts, lane-signals.ts, slotstats.ts, trailstats.ts und docs/verify-tiering.md. Rest.", "notiz");
+    const nE = await mkTask("Notiz E: continuity.ts, lane-signals.ts, slotstats.ts, server/tmux.ts und docs/verify-tiering.md. Rest.", "notiz");
     const nF = await mkTask("Notiz F: continuity.ts, lane-signals.ts und HANDOFF.md. Rest.", "notiz");
     const nG = await mkTask("Notiz G: continuity.ts und HANDOFF.md. Rest.", "notiz");
     const nHub = await mkTask("Notiz Nabe: server.ts, AGENTS.md und HANDOFF.md sind Naben. Rest.", "notiz");
@@ -5634,7 +5651,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (a) SEVEN CANDIDATES, FIVE LINES, IN THE RANKED ORDER.
     const RANK_BRIEF = "N1-RANK-FIXTURE — seven candidates, five lines";
-    const rankId = await mkTask("Auftrag: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
+    const rankId = await mkTask("Auftrag: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und server/tmux.ts.", "auftrag");
     const rank = await dispatchAndRead(rankId, RANK_BRIEF);
     const rankBlock = rank.prompt.slice(RANK_BRIEF.length,
       rank.prompt.indexOf(NATIVE_RULES_MARK) >= 0
@@ -5787,7 +5804,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // there and only the mode withholds them. Mutation that breaks it: computing the block before
     // the clarify branch, or appending it outside the `clarify ? "" :` guard.
     const CLARIFY_BRIEF_UNUSED = "N1-CLARIFY-FIXTURE";
-    const clarifyId = await mkTask("Auftrag clarify: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und trailstats.ts.", "auftrag");
+    const clarifyId = await mkTask("Auftrag clarify: server.ts, continuity.ts, lane-signals.ts, slotstats.ts und server/tmux.ts.", "auftrag");
     await post(`/api/tasks/${clarifyId}/brief`, { text: CLARIFY_BRIEF_UNUSED });
     const cSince = Date.now();
     const cRes = await post(`/api/tasks/${clarifyId}/dispatch`, { clarify: true });
@@ -5834,7 +5851,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // the shape a writer is most likely to leave behind as `[]` and a reader most likely to read as
     // "assigned nothing on purpose". Re-attaching afterwards proves the detach removed the
     // assignment and NOT the note: the same id has to resolve again.
-    const n3Task = await mkTask("Auftrag N3: continuity.ts und trailstats.ts.", "auftrag");
+    const n3Task = await mkTask("Auftrag N3: continuity.ts und server/tmux.ts.", "auftrag");
     const n3A1 = await n3AssignRes(n3Task, { note: nF, attach: true });
     const n3A2 = await n3AssignRes(n3Task, { note: nG, attach: true });
     const n3AfterAttach = await n3RowOf(n3Task);
@@ -5987,7 +6004,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (h) THE PREVIEW CAP BOUNDS THE PREVIEW, NEVER THE REACH — live. Seven sources on one row:
     // five get a sentence, two are named, and the lane's read door serves all seven in full.
-    const n3Cap = await mkTask("Auftrag N3 Deckel: continuity.ts, lane-signals.ts, slotstats.ts, trailstats.ts und docs/verify-tiering.md.", "auftrag");
+    const n3Cap = await mkTask("Auftrag N3 Deckel: continuity.ts, lane-signals.ts, slotstats.ts, server/tmux.ts und docs/verify-tiering.md.", "auftrag");
     const sevenIds = [nA, nB, nC, nD, nE, nF, nG];
     for (const id of sevenIds) await n3AssignRes(n3Cap, { note: id, attach: true });
     const CAPBRIEF = "N3-CAP-FIXTURE";

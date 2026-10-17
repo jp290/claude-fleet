@@ -10,7 +10,7 @@
       { "path": "docs/haltung-worker.md", "anchor": "## Was wir bevorzugen, und warum" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1810,
     "evidence": "tree-anchor",
@@ -29,7 +29,7 @@
       { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1408,
     "evidence": "tree-anchor",
@@ -47,7 +47,7 @@
       { "path": "docs/messungen/INDEX.md", "anchor": "# Index der Messnotizen" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 162000,
     "evidence": "tree-anchor",
@@ -65,7 +65,7 @@
       { "path": "docs/controller.md", "anchor": "## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1800,
     "evidence": "tree-anchor",
@@ -83,7 +83,7 @@
       { "path": "docs/controller.md", "anchor": "## Ein fremdes Repo als Fleet-Projekt aufnehmen" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 8541,
     "evidence": "tree-anchor",
@@ -119,7 +119,7 @@
       { "path": "docs/haltung-auftraggeber.md", "anchor": "## Wie wir Karten schreiben, und warum" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 3135,
     "evidence": "tree-anchor",
@@ -184,7 +184,7 @@
       }
     },
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1740,
     "evidence": "tree-anchor",
@@ -203,7 +203,7 @@
       { "path": "docs/pruefpraxis.md", "anchor": "## Prüfpraxis — ein Bericht ist eine Behauptung, bis er belegt ist" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-ox", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2016,
     "evidence": "tree-anchor",

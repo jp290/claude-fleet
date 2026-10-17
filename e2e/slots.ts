@@ -215,7 +215,7 @@ export async function run(): Promise<void> {
     const cat = ((await (await get("/api/harnesses")).json()) as { harnesses: CatHarness[] }).harnesses;
     const byId = new Map(cat.map((h) => [h.id, h]));
     check("harness catalogue: every adapter carries a commands list",
-      cat.length >= 7 && cat.every((h) => Array.isArray(h.commands)),
+      cat.length >= 6 && cat.every((h) => Array.isArray(h.commands)),
       JSON.stringify(cat.map((h) => `${h.id}:${h.commands?.length}`)));
     const shape = cat.flatMap((h) => h.commands.map((c) => ({ h: h.id, ...c })));
     check("harness catalogue: every command entry is bare and names one evidence line",
@@ -500,6 +500,39 @@ export async function run(): Promise<void> {
     await restartSrv();
     rmSync(fakeBin, { recursive: true, force: true });
     rmSync(marker, { force: true });
+  }
+
+  // --- …and a new-session that FAILS says only that it failed. Its argv is the pane's whole shell
+  // line, and that line exports the slot's self-credential. A PATH-local fake records the argv,
+  // prints it on stdout and stderr and exits 1 on the first new-session; the open must answer 503
+  // "exited 1" with none of it. BREAKS IF: ensureSlot puts created.err or created.out into its error. ---
+  {
+    const fakeBin = `${ROOT}/tmux-new-session-fail-bin`;
+    const argvFile = `${ROOT}/tmux-new-session-fail.argv`;
+    const realTmux = Bun.which("tmux") ?? "";
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(argvFile, { force: true });
+    mkdirSync(fakeBin, { recursive: true });
+    const fakeTmux = `${fakeBin}/tmux`;
+    writeFileSync(fakeTmux, `#!/bin/sh\ncase " $* " in\n  *" new-session "*)\n    if [ ! -e '${argvFile}' ]; then\n      printf '%s\\n' "$*" > '${argvFile}'\n      printf '%s\\n' "$*"\n      printf '%s\\n' "$*" >&2\n      exit 1\n    fi\n    ;;\nesac\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+    await restartSrv({ PATH: `${fakeBin}:${process.env.PATH ?? ""}` });
+    const failed = await post("/api/slots/3/open", { cwd: "~", label: "tmux-fail-A" });
+    const failedText = await failed.text();
+    const argv = existsSync(argvFile) ? readFileSync(argvFile, "utf8") : "";
+    const paneToken = argv.match(/FLEET_SELF_TOKEN='([^']+)'/)?.[1] ?? "";
+    check("tmux-fail fixture: the failing new-session ran and its argv carries the pane's self-credential",
+      paneToken.length > 0, argv ? `${argv.length} bytes, token ${paneToken ? "present" : "absent"}` : "the fake new-session never ran");
+    check("a failing tmux new-session answers 503 'exited 1' and never its child output (the argv holds the pane credential)",
+      failed.status === 503 && failedText.includes("tmux new-session unavailable (exited 1)")
+        && !failedText.includes("FLEET_SELF_TOKEN") && (paneToken === "" || !failedText.includes(paneToken)),
+      `${failed.status} ${failedText.replaceAll(paneToken || "\u0000", "<token>").slice(0, 200)}`);
+    await post("/api/slots/3/kill", {});
+    const failKillPersisted = await waitForPersistedSlot3((row) => row === null);
+    check("tmux-fail fixture: the failed occupant's kill is durable before restoring PATH",
+      failKillPersisted === null, JSON.stringify(failKillPersisted) ?? "unreadable");
+    await restartSrv();
+    rmSync(fakeBin, { recursive: true, force: true });
+    rmSync(argvFile, { force: true });
   }
 
   // A successful tmux exit can still return an unreadable enumeration. That observation must

@@ -491,7 +491,7 @@ ein Schreibfehler wird durch den bestehenden Persistenz-Logger gemeldet.
 
 ## Harness-Adapter
 
-Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-ox, pi-unfenced,
+Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-unfenced,
 container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLanes:false`,
 `singleton:true` — genau EINE Main-Session, warnt im Picker vor unbeschränkten Rechten).
 
@@ -510,8 +510,7 @@ die Pi-Adapter die `usage.md` des installierten `@earendil-works/pi-coding-agent
 derselben Binary, die die Adapter spawnen. Was nicht belegt ist, kommt nicht hinein; **leer ist die
 ehrliche Antwort** und heißt „nichts belegt", nie „bewiesen, dass es nichts gibt". Stand der
 Belege: claude `/clear`·`/compact` (je confirm) · `/context` · `/usage`; pi, pi-zai und das darüber
-gesprenkelte pi-unfenced `/new`·`/compact` (je confirm) · `/session`; pi-ox (Profil mit
-Discovery-Sperren, nie geprüft), codex (Docs tracken den Release, nicht die gepinnte 0.153.x) und
+gesprenkelte pi-unfenced `/new`·`/compact` (je confirm) · `/session`; codex (Docs tracken den Release, nicht die gepinnte 0.153.x) und
 container (kein Agent) führen leer.
 
 Das Feld reist im **Harness-Katalog** (`GET /api/harnesses`) — derselben einmal geholten
@@ -530,7 +529,7 @@ Baum (Pfad vom neuesten Eintrag zur Wurzel; ein Astwechsel ändert `source`, der
 Datei wird wie beim Kontextfüllstand per IDENTITÄT gefunden (`server.ts#codexContextFile`,
 `#piContextFile`, `#piZaiContextFile`), nie newest-by-mtime; ohne gebundene Session-ID bleibt die
 Ansicht leer. `/api/harnesses` veröffentlicht `supports.chat = transcript || conversation` — daran hängt
-der 💬-Knopf. pi-ox, pi-unfenced und container haben keinen Leser. Die Payload trägt für diese Leser
+der 💬-Knopf. pi-unfenced und container haben keinen Leser. Die Payload trägt für diese Leser
 `cache: {at, provider}` (codex: neueste `token_usage_record`, pi: `message.timestamp` der neuesten
 Assistant-Zeile); der Client misst gegen gemessene Schwellen (`src/client.ts#cacheTtlFor`: z.ai 15 min,
 codex 1 h, Claude unverändert 5 min; unbekannter Provider → kein Zähler). Der Zähler steht nur, solange die Session
@@ -539,51 +538,11 @@ ruht (Pane malt seit ≥ 4 s nicht, `src/client.ts#CACHE_BUSY_MS`). Jede Payload
 der Composer zeigt es nach der Modell-Rangfolge (§ unten): die Datei gewinnt gegen den
 Slot-Datensatz, nicht nur, wo der Datensatz nichts nennt.
 
-### `pi-ox`: festes, derzeit anonym erreichbares Ox-Alpha-Profil in Pi
+### `pi-ox` (entfernt)
 
-`pi-ox` ist bewusst **kein** nativer OpenCode-Harness. Pi besitzt TUI, Session-ID, Resume,
-Liveness, Git und den normalen Lane-Lifecycle; der Adapter pinnt nur den Provider und das eine am
-2026-08-22 live geprüfte kostenlose Modell. Eine Task-Auswahl lautet exakt
-`{"harness":"pi-ox","model":"x-preview-f-free"}`. Der Spawn trägt immer
-`--provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public
---no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose`;
-ein anderer Modellname, irgendein `effort`, `harness:"opencode"` oder Container-Feld wird am
-Request-Rand abgewiesen. Es gibt keinen Provider-/Modell-Fallback.
-
-Der vollständige einknotige Canary-Katalog deklariert Basis-URL, OpenAI-Completions-Wire, derzeitige
-Nullkosten, 1.000.000 Kontext, 131.072 Max-Tokens, Text-/Bild-Eingabe und Compat-Felder. Diese Werte
-sind Katalogbeobachtungen, keine End-to-End-Beweise der Grenzkontexte oder des Bildpfads: der reale
-Canary belegt kleine Text-Turns, einen Read-Tool-Roundtrip, Session-Fortsetzung und die damalige
-Nullkosten-Nutzung; der synthetische JSONL-Proof belegt nur Parser, Reverse-State und den
-1M-Nenner. Jeder Spawn leitet aus der validierten Fleet-Session-UUID einen eigenen
-`PI_CODING_AGENT_DIR` unterhalb der Adapter-Basis ab; parallele `pi-ox`-Prozesse teilen damit weder
-Settings, Extensions, Sessions, Retry-/Proxy- noch Compaction-Zustand. Restart und Resume verwenden
-dieselbe UUID und damit denselben Root. Der Katalog wird dort über eine temporäre Datei und ein
-atomares Rename ersetzt. Eine fehlende oder ungültige Session-UUID sowie jeder Schreibfehler stoppt
-vor Pi statt auf einen geteilten Root oder andere Config auszuweichen. Default-Basis ist
-`~/.config/claude-fleet/pi-ox-agent`; `FLEET_PI_OX_AGENT_DIR` darf sie auf einen anderen sicheren
-absoluten Pfad ohne `..` legen. `~/.pi/agent`, die `pi-zai`-Ablage und globale OpenCode-Konfiguration
-bleiben unberührt. Pi-Lifecycle, OpenAI-Completions-Wire, Session/Resume, exakte Modellwahl, Lanes,
-Automatisierung, Built-in-Tools, das unabhängig geladene `AGENTS.md`, Fleet-Briefzustellung und
-Reverse-State sind `apply`; Clientdarstellung und Task-Wire verwenden unverändert die generischen
-Harness-Felder. Transcript, Effort, Self-Schedule und Container sind `unsupported`. Ebenfalls
-`unsupported` sind für dieses unattended Profil project-local Pi-Settings,
-`.pi/SYSTEM.md`/`.pi/APPEND_SYSTEM.md` sowie project- und adapter-globale Pi-Extensions, Skills,
-Prompt-Templates und Themes; `pi-ox` lädt also keine Pi-Plugins. `--no-approve` verhindert den
-eingabefressenden `Trust project folder?`-Selector, während die vier Discovery-Sperren insbesondere
-verhindern, dass eine Extension Provider oder Modell nachträglich umbiegt. `--verbose` hält den
-Readiness-Marker auch bei einer späteren globalen `quietStartup`-Einstellung sichtbar. Ein
-separater OpenCode-Lifecycle ist `not-applicable`. Provider-Grenzkontext und Bild-Eingabe bleiben
-`unknown`, bis ein eigener realer Canary sie belegt.
-
-Der lokale Katalog verzeichnet die damaligen Providerkosten von null, aber `/models` liefert nur
-Identität und keinen maschinenlesbaren Preis. Es wird daher kein erfundener Live-Kostensensor
-behauptet. Der Owner hat Automatisierung nach dem realen Canary ausdrücklich freigegeben:
-`automatable:true`. Der literale öffentliche Key ist kein Account-/Billing-Credential; zusammen
-mit exaktem Provider, Modell und Cycle-Set gibt es keinen monetären oder modellseitigen Fallback.
-Withdrawal, API-Ausfall oder geänderte Zugangskonditionen müssen am anonymen gepinnten Request
-scheitern. Verfügbarkeit und Providerbedingungen bleiben veränderlich; lokale Rechen- und
-Netzwerkkosten werden nicht als null behauptet.
+Der Adapter `pi-ox` (Pi mit dem anonymen OpenCode-Modell `x-preview-f-free`) ist am 17.10.2026
+entfernt (Löschliste K4a, Owner-Frage 4). Die Session-Homes unter `~/.config/claude-fleet/pi-ox-agent`
+bleiben auf der Platte; sie zu löschen ist ein Owner-Akt.
 
 - **Harness-Adapter (2026-08-07, `a64b681`):** `FLEET_CMD` muss nicht claude sein. Drei Env-Knöpfe, alle
   optional, alle wirkungslos solange `FLEET_CMD` mit `claude` beginnt:
@@ -857,7 +816,7 @@ Netzwerkkosten werden nicht als null behauptet.
     und bleiben unberührt. **Codex apply** (Glyph-Region einschließlich des beobachteten
     `$FLEET_SELF_TOKEN`-Mention-Popup-Falls; nach einer Leerzeile ist nur der gemessene Mention-/
     Modellstatus-Suffix Chrome — jede andere Folgezeile macht den Read unobservable). **Pi apply**,
-    **pi-zai apply** und **pi-ox apply**, weil alle drei denselben Pi-0.84-Rule-Composer und dieselbe
+    **pi-zai apply**, weil beide denselben Pi-0.84-Rule-Composer und dieselbe
     Pi-Prozess-Liveness verwenden; ihre verschiedenen Pre-Send-Readiness-Regeln bleiben unberührt.
     Ein Adapter ohne `composer`-Deklaration ist **not-applicable**. Reiner Vergleich:
     `composerRows` + `composerHoldsExactly`; Lebenszyklus-Falsifizierer: `e2e/watch.ts` und der
@@ -896,7 +855,7 @@ und das einzelne Enter bleiben unverändert.
 Für die Nachlese zählt Claude **apply**: vollständiger Payload oder dieselbe Fleet-Kopfzeile
 mit demselben vor Enter gemessenen Paste-Placeholder. Letzterer heißt `collapsed-paste`,
 niemals byte-exakte Nutzlast; seine verborgenen Bytes bleiben unbekannt und erlauben keinen
-Rollback. Fremde, ergänzte oder geänderte Anzeigen zählen nicht. Codex, Pi, pi-zai und pi-ox
+Rollback. Fremde, ergänzte oder geänderte Anzeigen zählen nicht. Codex, Pi und pi-zai
 sind **apply** für vollständig rekonstruierbare Nutzlast; ihre nicht gemessenen
 Placeholder-Formen sind **unsupported**. Adapter ohne Composer sind **not-applicable**.
 

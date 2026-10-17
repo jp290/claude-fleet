@@ -142,7 +142,7 @@ export async function normalizeNative(input: NativeInput, previous?: NativeSnaps
   const pi = input.format === "pi-session-jsonl";
   const supported = input.format === "claude-jsonl" && input.harness === "claude"
     || input.format === "codex-rollout-jsonl" && input.harness === "codex"
-    || pi && ["pi", "pi-zai", "pi-ox"].includes(input.harness);
+    || pi && ["pi", "pi-zai"].includes(input.harness);
   if (!supported) return stop("unsupported", "unsupported-harness-format");
   if (![input.sourceId, input.sourceHost, input.version].every((s) => token(s, input))
     || (input.byteOffset !== 0 && !prefix) || !Number.isFinite(input.observedAt)) return stop("rejected", "invalid-source-metadata");

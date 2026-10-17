@@ -88,8 +88,7 @@ export async function run(): Promise<void> {
       .filter((l) => l.includes("--model") && !l.includes('"--model",'));
     check("model interpolation: every --model that reaches a shell command string is single-quoted",
       modelLines.length >= 2 && modelLines.every((l) => /--model '\$\{[^}]+\}'/.test(l)
-        || /^\s*let cmd = "pi --provider zai --model 'glm-5\.3'";$/.test(l)
-        || /^\s*let cmd = "pi --provider opencode --model 'x-preview-f-free' /.test(l)),
+        || /^\s*let cmd = "pi --provider zai --model 'glm-5\.3'";$/.test(l)),
       modelLines.map((l) => l.trim().slice(0, 60)).join(" | "));
   }
 
@@ -1117,12 +1116,6 @@ export async function run(): Promise<void> {
     check("context window: an unnamed flash sibling stays null — these rows are exact ids, never a family rule",
       contextWindowFor("glm-5.3-flash-lite") === null && contextWindowFor("glm-5.3-flash-pro") === null,
       JSON.stringify([contextWindowFor("glm-5.3-flash-lite"), contextWindowFor("glm-5.3-flash-pro")]));
-    check("context window: the exact Ox Alpha free id gets its catalog-declared 1M window, never a fuzzy sibling",
-      contextWindowFor("x-preview-f-free") === CONTEXT_WINDOW_1M
-      && contextWindowFor("opencode/x-preview-f-free") === null
-      && contextWindowFor("x-preview-f") === null,
-      JSON.stringify([contextWindowFor("x-preview-f-free"), contextWindowFor("opencode/x-preview-f-free"),
-        contextWindowFor("x-preview-f")]));
     check("context window: an unrelated foreign model stays unknown, never Claude's 200k fallback",
       contextWindowFor("anthropic/claude-haiku-4-5") === null);
     check("context window: no model name is null (the caller has nothing to divide by)",

@@ -34,7 +34,6 @@ import * as modelScan from "./e2e/model-scan";
 import * as apiStall from "./e2e/api-stall";
 import * as tmuxLocale from "./e2e/tmux-locale";
 import * as prompts from "./e2e/prompts";
-import * as briefstats from "./e2e/briefstats";
 import * as bytes from "./e2e/bytes";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
@@ -82,7 +81,6 @@ import * as konzepte from "./e2e/konzepte";
 import * as roleAddress from "./e2e/role-address";
 import * as stuckDelivery from "./e2e/stuck-delivery";
 import * as trail from "./e2e/trail";
-import * as trailstats from "./e2e/trailstats";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
 // hit the live fleet by accident. The isolated wrappers set FLEET_SOCK to their own socket.
@@ -193,11 +191,6 @@ const steps: Step[] = [
   } },
   { unit: "pure", module: "prompts", run: async () => {
     await prompts.run();
-  } },
-  // the brief-quality reader (briefstats.ts): pure over two synthetic ledgers, plus its CLI spawned
-  // as the operator runs it. No server, so it sits with the other pure families.
-  { unit: "pure", module: "briefstats", run: async () => {
-    await briefstats.run();
   } },
 
   { unit: "tmux-locale", module: "tmux-locale", run: async () => {
@@ -325,9 +318,6 @@ const steps: Step[] = [
   { unit: "programs", lane: true, module: "programs", run: async () => {
     await programs.run(ctx);
   } },
-  { unit: "core", lane: true, module: "trailstats", run: async () => {
-    await trailstats.run(ctx);
-  } },
   { unit: "ref-advance", lane: true, module: "ref-advance", run: async () => {
     await refAdvance.run();
   } },
@@ -364,17 +354,15 @@ const steps: Step[] = [
     await restart.run(ctx);
   } },
 
-  // --- the verify gate made visible: the suite mutex projected on /api/sessions, and the phases
-  // lanes report about their own gate runs. Next to restart.run() for the same reason — it too points
-  // the server at a knob for a few checks (its own private lock dir) and restarts srv back to the
-  // wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
+  // --- the suite mutex from the writer's side: e2e-stage.sh against a private lock dir, and every
+  // wrapper's boot probe against a port that never answers. It needs no server.
   { unit: "verify-queue", module: "verify-queue", run: async () => {
     await verifyQueue.run();
   } },
 
-  // --- the deploy facts on the owner's poll. Next to verifyQueue for the same reason: it points the
-  // server at a fixture repo (FLEET_REPO_DIR) for a few checks and restarts srv back to the
-  // wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
+  // --- the deploy facts on the owner's poll. Like restart.run(), it points the server at a fixture
+  // repo (FLEET_REPO_DIR) for a few checks and restarts srv back to the wrapper's env afterwards, so
+  // it must not sit between two sections sharing a live fixture.
   { unit: "deploy-facts", module: "deploy-facts", run: async () => {
     await deployFacts.run();
   } },
@@ -443,9 +431,9 @@ const steps: Step[] = [
 // still going and survives a run that dies in the middle (the plan is what a reader needs most
 // then). Never as PASS/FAIL lines: a skip is not a check, and a counter that read it as one would
 // report a green for work nobody did (server.ts#postLandAuditChecks counts `PASS `/`FAIL ` line
-// prefixes). The skips stay out of the durable trail for the same reason: trailstats.ts counts a
-// row without check/ok as damage, and a filtered run's per-check denominators stay correct
-// precisely because only the checks that RAN wrote rows (docs/verify-tiering.md §16).
+// prefixes). The skips stay out of the durable trail for the same reason: a row without check/ok
+// is damage, and a filtered run's per-check denominators stay correct precisely because only the
+// checks that RAN wrote rows (docs/verify-tiering.md §16).
 if (plan) {
   console.log(`modules: named=[${plan.named.join(" ")}] → running ${plan.run.length} of ${MODULE_FIXTURES.length}: [${plan.run.join(" ")}]`);
   for (const p of plan.pulled) console.log(`modules: +${p.module} — ${p.why}`);

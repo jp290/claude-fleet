@@ -1082,7 +1082,7 @@ async function privatePackHandover(): Promise<void> {
           FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_KONZEPT_ROOT: root, FLEET_FOUNDING_BOOT_GRACE_MS: "2000",
           FLEET_TEST_SEND_BEFORE_PASTE_LATCH: `${FIXH}/heft-before-paste-latch`,
           FLEET_ACCEPT_WAIT_MS: "800", FLEET_PI_ZAI_AGENT_DIR: `${FIXH}/pi-zai-agent`,
-          FLEET_PI_OX_AGENT_DIR: `${FIXH}/pi-ox-agent`, FLEET_PI_ZAI_KEY_FILE: `${FIXH}/zai-fixture.key`,
+          FLEET_PI_ZAI_KEY_FILE: `${FIXH}/zai-fixture.key`,
           FLEET_PI_ZAI_SANDBOX_EXEC: `${bin}/sandbox-fixture`, FLEET_PI_ZAI_DENY_ROOTS: `${FIXH}/deny` },
       });
       i.log = "";
@@ -1176,8 +1176,8 @@ async function privatePackHandover(): Promise<void> {
     }
     await Bun.sleep(500); // a Pi pane that was (wrongly) founded gets the time to hand its reader the paste
     const piRead = readdirSync(reads).filter((f) => readFileSync(`${reads}/${f}`, "utf8").includes('"tag":"pi"'));
-    check("konzepte handover (pi harnesses): pi, pi-zai, pi-ox and pi-unfenced are each refused 409 harness-unsupported before the spawn, no path anywhere",
-      piHarnesses.length === 4 && piRead.length === 0 && piRows.every((r) => r.reason === "harness-unsupported" && r.open === 409
+    check("konzepte handover (pi harnesses): pi, pi-zai and pi-unfenced are each refused 409 harness-unsupported before the spawn, no path anywhere",
+      piHarnesses.length === 3 && piRead.length === 0 && piRows.every((r) => r.reason === "harness-unsupported" && r.open === 409
         && String(r.error).includes(`pack ${SEED_ID} is omitted for this founding: harness-unsupported`) && r.stillFree && !r.leaked),
       `${JSON.stringify(piRows)} piReads=${piRead.length}`);
 

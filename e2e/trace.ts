@@ -368,7 +368,7 @@ function timelineFixtures(dir: string): void {
     if (f.name === "claude") file = `${dir}/native-claude/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}/${sid}.jsonl`;
     else if (f.name === "codex") file = `${dir}/native-codex/2026/01/01/rollout-test-${sid}.jsonl`;
     else {
-      const root = f.name === "pi" ? `${dir}/home/.pi/agent` : f.name === "pi-zai" ? `${dir}/native-pi-zai` : `${dir}/native-pi-ox/${sid}`;
+      const root = f.name === "pi" ? `${dir}/home/.pi/agent` : `${dir}/native-pi-zai`;
       const real = realpathSync(cwd);
       file = `${root}/sessions/--${real.replace(/^\/+/, "").replaceAll("/", "-")}--/test_${sid}.jsonl`;
     }
@@ -395,14 +395,14 @@ async function timelineRouteProbes(base: string, headers: Record<string, string>
   for (let i = 0; i < 20 && result.body.pending; i++) { await Bun.sleep(100); result = await get(); }
   const body = result.body;
   const tool = body.entries.filter((e) => e.event?.kind.startsWith("tool."));
-  check("timeline owner route shows five native harnesses with every retained call and result exactly once",
-    result.status === 200 && body.schema === "fleet.timeline/v1" && tool.length === 20
-      && new Set(tool.map((e) => e.id)).size === 20
+  check("timeline owner route shows every native harness with every retained call and result exactly once",
+    result.status === 200 && body.schema === "fleet.timeline/v1" && tool.length === 4 * NATIVE_FIXTURES.length
+      && new Set(tool.map((e) => e.id)).size === 4 * NATIVE_FIXTURES.length
       && NATIVE_FIXTURES.every((f) => body.sessions.some((s) => s.harness === f.name))
       && tool.every((e) => e.event?.detailRef?.locator.startsWith("native:")),
     `${result.status} tools=${tool.length} harnesses=${body.sessions.map((s) => s.harness).join(",")}`);
   check("timeline window retains parallel sessions and a missing-source session without smoothing clocks or edges",
-    body.sessions.length === 6 && body.sessions.some((s) => s.gaps.some((g) => g.code === "source-missing"))
+    body.sessions.length === NATIVE_FIXTURES.length + 1 && body.sessions.some((s) => s.gaps.some((g) => g.code === "source-missing"))
       && body.sessions.every((s) => s.host === body.host && s.occupation.openedAt === DISPATCHED && s.clockUncertainty === "unknown")
       && body.entries.some((e) => e.event?.kind === "report.filed.complete" && e.sessionKey === null)
       && body.entries.some((e) => e.event?.kind === "audit.green"), JSON.stringify(body.sessions));
@@ -464,7 +464,7 @@ export async function run(): Promise<void> {
     cwd: dir, stdout: "pipe", stderr: "pipe",
     env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(port), FLEET_SOCK: sock, FLEET_TOKEN: TOKEN,
       HOME: `${dir}/home`, FLEET_CLAUDE_PROJECTS_DIR: `${dir}/native-claude`, FLEET_CODEX_SESSIONS_DIR: `${dir}/native-codex`,
-      FLEET_PI_ZAI_AGENT_DIR: `${dir}/native-pi-zai`, FLEET_PI_OX_AGENT_DIR: `${dir}/native-pi-ox`,
+      FLEET_PI_ZAI_AGENT_DIR: `${dir}/native-pi-zai`,
       FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0", FLEET_STATE_SNAPSHOT_MS: "0" },
   });
   const drain = async (s: ReadableStream<Uint8Array>) => { for await (const c of s) out += new TextDecoder().decode(c); };

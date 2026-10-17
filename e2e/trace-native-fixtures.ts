@@ -61,7 +61,6 @@ export const NATIVE_FIXTURES: readonly NativeFixture[] = [
   fixture("codex", "codex", "codex-rollout-jsonl", codexRows, ["exec-1", "patch-1"], ["exec-1", "patch-1"], ["unknown", "unknown", "unknown", "unknown"]),
   fixture("pi", "pi", "pi-session-jsonl", piRows, ["pi-edit", "pi-edit"], ["pi-edit", "pi-edit"], ["ok", "error", "ok", "error"]),
   fixture("pi-zai", "pi-zai", "pi-session-jsonl", piRows, ["pi-edit", "pi-edit"], ["pi-edit", "pi-edit"], ["ok", "error", "ok", "error"]),
-  fixture("pi-ox", "pi-ox", "pi-session-jsonl", piRows, ["pi-edit", "pi-edit"], ["pi-edit", "pi-edit"], ["ok", "error", "ok", "error"]),
 ];
 export interface SyntheticDetail { locator: string; redacted: true; text: string }
 export interface NativeUiFixture { name: string; snapshot: NativeSnapshot; details: SyntheticDetail[];
@@ -185,8 +184,8 @@ export async function runNativeProbes(check: Check): Promise<void> {
   const crossBranch = await normalizeNative(changeRows(pi, (rows) => { rows[4]!.parentId = "p-root"; }));
   check("native Pi: sibling output cannot cross a branch", crossBranch.events.length === 4
     && crossBranch.events.find((e) => e.record.id === "p-ra")?.pair === null && hasGap(crossBranch, "orphan-result"));
-  check("native Pi families: zai/ox have independent source identities", ui[2]!.snapshot.identityKey !== ui[3]!.snapshot.identityKey
-    && ui[3]!.snapshot.identityKey !== ui[4]!.snapshot.identityKey && equal(ui[3]!.snapshot.events.map((e) => e.refs.call), ["pi-edit", "pi-edit", "pi-edit", "pi-edit"]));
+  check("native Pi families: pi and pi-zai have independent source identities", ui[2]!.snapshot.identityKey !== ui[3]!.snapshot.identityKey
+    && equal(ui[3]!.snapshot.events.map((e) => e.refs.call), ["pi-edit", "pi-edit", "pi-edit", "pi-edit"]));
   const sub = await normalizeNative({ ...changeRows(codex, (rows) => {
     const h = rows[0]!.payload as Record<string, unknown>; h.id = CHILD; h.thread_source = "subagent";
     h.source = { subagent: { thread_spawn: { parent_thread_id: SID } } };
@@ -300,12 +299,11 @@ export async function runNativeProbes(check: Check): Promise<void> {
     && !JSON.stringify(ui).includes(CWD) && !JSON.stringify(ui).includes("/private/") && ui.every((f) => f.snapshot.events.length === 4));
   check("native locators: source-controlled hashed generation plus exact byte/block range", x.events.length === 4
     && x.events.every((e) => /^native:[a-f0-9]{64}@\d+\+\d+#\d+$/.test(e.detailRef!.locator) && /^[a-f0-9]{16}$/.test(e.detailRef!.fp!)));
-  check("native bytes: exact measured UTF-8 table for five fixtures", equal(ui.map((f) => ({ name: f.name, ...f.measure })), [
+  check("native bytes: exact measured UTF-8 table for four fixtures", equal(ui.map((f) => ({ name: f.name, ...f.measure })), [
     { name: "claude", inputBytes: 1261, metadataBytes: 5548, detailBytes: 643, events: 4 },
     { name: "codex", inputBytes: 973, metadataBytes: 5587, detailBytes: 647, events: 4 },
     { name: "pi", inputBytes: 1411, metadataBytes: 5559, detailBytes: 650, events: 4 },
     { name: "pi-zai", inputBytes: 1411, metadataBytes: 5603, detailBytes: 650, events: 4 },
-    { name: "pi-ox", inputBytes: 1411, metadataBytes: 5592, detailBytes: 650, events: 4 },
   ]));
 }
 

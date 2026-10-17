@@ -89,7 +89,7 @@ export interface StewardCtx {
 // merely skips units not in the shard.
 //
 // ONE MODULE IN THREE UNITS: self-token. Its only hand-on is ctx.restartSelfTok/restartSelfSlot — a
-// lane it opens and keeps alive. restart.ts and trailstats.ts read it inside `core`; programs.ts and
+// lane it opens and keeps alive. restart.ts reads it inside `core`; programs.ts and
 // tasks.ts read it from outside. So `programs` and `core-tasks` each carry their own self-token run
 // instead of dragging `core` along: a shard holding several of these units runs it once (the runner
 // tags that step with all three), separate shards run it once each, ~67 s and the same check names.
@@ -113,13 +113,13 @@ export interface StewardCtx {
 // (1 586 s with the probes), lanes 617 s (681 s), drops 3 s (11 s); timeline-ui's 114 s are in dom.
 export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
 export const SHARD_UNITS: readonly ShardUnit[] = [
-  { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts", "briefstats"] },
+  { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts"] },
   { unit: "context-packs", seconds: 14, modules: ["context-packs"] },
   { unit: "tmux-locale", seconds: 2, modules: ["tmux-locale"] },
   { unit: "bytes", seconds: 2, modules: ["bytes"] },
   { unit: "auth", seconds: 1, modules: ["auth", "dirs-pins"] },
   { unit: "core", seconds: 701, modules: ["slots", "history", "summary", "transport", "autos", "share",
-    "review", "self-token", "trailstats", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
+    "review", "self-token", "intake", "restart", "steward-core", "steward-outcomes", "security"] },
   { unit: "core-tasks", seconds: 674, modules: ["self-token", "outcomes", "tasks"] },
   { unit: "programs", seconds: 653, modules: ["self-token", "programs"] },
   { unit: "lanes", seconds: 617, modules: ["lanes-basic", "lanes-lifecycle", "merge", "land-provenance"] },
@@ -136,7 +136,7 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "ref-advance", seconds: 1, modules: ["ref-advance"] },
   { unit: "land-durability", seconds: 45, modules: ["land-durability"] },
   { unit: "sweep", seconds: 0, modules: ["sweep"] },
-  { unit: "verify-queue", seconds: 47, modules: ["verify-queue"] },
+  { unit: "verify-queue", seconds: 31, modules: ["verify-queue"] },
   { unit: "deploy-facts", seconds: 36, modules: ["deploy-facts"] },
   { unit: "errors", seconds: 5, modules: ["errors"] },
   { unit: "host-hygiene", seconds: 54, modules: ["host-hygiene"] },

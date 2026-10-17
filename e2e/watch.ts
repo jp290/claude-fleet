@@ -2140,7 +2140,7 @@ export async function run(): Promise<void> {
       && (original.quietHours === null || (typeof original.quietHours?.start === "number"
         && typeof original.quietHours.end === "number"));
     if (!configObserved) throw new Error(`owner send fixture cannot restore unobserved settings: ${JSON.stringify({ autosOn: original.autosOn, quietHours: original.quietHours })}`);
-    const fixtureEnv = { PATH: fixturePath, FLEET_PI_OX_AGENT_DIR: `${ROOT}/owner-send-pi-ox-agent`,
+    const fixtureEnv = { PATH: fixturePath,
       FLEET_E2E_COMPOSER_MODE: modeFile, FLEET_E2E_COMPOSER_STATE: stateFile,
       FLEET_DELIVERY_BUNDLE_SEC: "5", FLEET_HARNESS_AUTOMATION: "1",
       FLEET_TEST_SEND_BEFORE_PASTE_LATCH: latch };
@@ -2152,7 +2152,7 @@ export async function run(): Promise<void> {
       await post("/api/autos/switch", { on: true });
       await post("/api/autos/quiet", { start: null });
       slot = await freeSlot();
-      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi" });
       const stateText = (): string => readFileSync(stateFile, "utf8").split("\n").slice(1).join("\n");
       const turns = (): string => existsSync(turnsFile) ? readFileSync(turnsFile, "utf8") : "";
       const count = (text: string): number => turns().split(text).length - 1;
@@ -2518,7 +2518,7 @@ export async function run(): Promise<void> {
         JSON.stringify({ status: notObserved.status, body: notObservedBody }));
       await post(`/api/slots/${slot}/kill`, {});
       writeFileSync(modeFile, "normal\n");
-      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi" });
       await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`, "exec cat");
       start = auditRows().length;
       const noAgent = await post("/send", { slot, text: "must-not-type-to-no-agent" });
@@ -2539,7 +2539,7 @@ export async function run(): Promise<void> {
           zeroBytes: zeroBytes(start), formatter: sendFailureMessage(noAgent.status, noAgentBody),
           replay: await replay(noAgent, noAgentMessage), legacyReplay: await replay(noAgent, noAgentMessage, legacy) }));
       await post(`/api/slots/${slot}/kill`, {});
-      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi" });
 
       rmSync(latch, { force: true });
       rmSync(`${latch}.reached`, { force: true });
@@ -2598,7 +2598,7 @@ export async function run(): Promise<void> {
       const recycledSend = post("/send", { slot, text: "owner-send-recycle-before-paste" });
       await until(() => existsSync(`${latch}.reached`), { timeoutMs: 5000, what: "owner bound identity before paste" });
       await post(`/api/slots/${slot}/kill`, {});
-      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi" });
       writeFileSync(`${latch}.release`, "release");
       const recycled = await recycledSend;
       const recycledBody = await recycled.clone().json() as { receipt?: { delivery: string } };
@@ -2618,7 +2618,7 @@ export async function run(): Promise<void> {
       const uncertainSend = post("/send", { slot, text: "owner-send-uncertain-once" });
       await until(() => existsSync(`${afterLatch}.reached`), { timeoutMs: 5000, what: "owner paste before uncertain transport failure" });
       await post(`/api/slots/${slot}/kill`, {});
-      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi-ox", model: "x-preview-f-free" });
+      await post(`/api/slots/${slot}/open`, { cwd: REPO, harness: "pi" });
       writeFileSync(`${afterLatch}.release`, "release");
       const uncertain = await uncertainSend;
       const uncertainBody = await uncertain.clone().json() as { receipt?: { delivery: string; acceptance?: string } };
@@ -2665,7 +2665,7 @@ export async function run(): Promise<void> {
           .catch((error: unknown) => { if (error instanceof UntilTimeout) return false; throw error; });
         const pid = graceReady ? await standInPid() : 0;
         // the three grace checks below run only against a found stand-in, so a missing one fails as itself
-        if (pid <= 0) throw new Error(`arrival grace fixture: no live pi-ox stand-in process: ${JSON.stringify({ ready: graceReady, composerBytes: stateText().length })}`);
+        if (pid <= 0) throw new Error(`arrival grace fixture: no live pi stand-in process: ${JSON.stringify({ ready: graceReady, composerBytes: stateText().length })}`);
         // Remove exactly what this fixture left in the composer, as its author, and see it empty.
         // The stand-in rewrites its state file per byte with fopen("w"): a read between the
         // truncate and the write is an empty FILE, which stateText() reports as an empty composer.

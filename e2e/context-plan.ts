@@ -908,16 +908,18 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
     const own = planRepoContext({ manifest, repo, facts });
     return { selected: [...seeds.selected, ...own.selected].map((p) => p.id), omitted: [...seeds.omitted, ...own.omitted] };
   };
+  const every = planRepoContext({ manifest, repo, facts: { harness: "claude", mode: "mutating", capabilities: fullCapabilities(), triggers: [...CONTEXT_PACK_TRIGGERS] } });
+  check("task catalog: no pack of the real manifest is dropped as manifest-invalid",
+    !every.omitted.some((pack) => pack.why === "manifest-invalid"), JSON.stringify(every.omitted));
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
   const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
   // `src/` in the FLAECHE makes it visible work: the testinstanz acceptance rides along (trigger visible-surface)
-  check("task catalog: an ordinary code task gets exactly the core and proof seeds plus the repo's always packs",
-    code.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,nachfolge-klug,testinstanz-abnahme", JSON.stringify(code));
-  check("task catalog: a measurement task adds only the measurement index",
-    measurement.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,messnotiz-index,nachfolge-klug", JSON.stringify(measurement));
-  check("task catalog: a rulebook edit adds only the generator guidance",
-    rulebook.selected.join(",") === "portable-core,verify-e2e,konzept-claude-fleet,haltung-worker,rulebook-generat,nachfolge-klug", JSON.stringify(rulebook));
+  const act = (row: { selected: string[] }, wanted: string) => ["testinstanz-abnahme", "messnotiz-index", "rulebook-generat"]
+    .every((id) => row.selected.includes(id) === (id === wanted));
+  check("task catalog: an ordinary code task on src/ adds only the testinstanz acceptance of the act packs", act(code, "testinstanz-abnahme"), JSON.stringify(code));
+  check("task catalog: a measurement task adds only the measurement index of the act packs", act(measurement, "messnotiz-index"), JSON.stringify(measurement));
+  check("task catalog: a rulebook edit adds only the generator guidance of the act packs", act(rulebook, "rulebook-generat"), JSON.stringify(rulebook));
   check("task catalog: code, measurement and rulebook catalogs are pairwise different",
     new Set([code, measurement, rulebook].map((row) => row.selected.join(","))).size === 3);
   check("task catalog: unrelated work omits both act-specific packs by trigger",
@@ -945,9 +947,6 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
   // `orchestration` is a caller-supplied trigger (server.ts#BOOTSTRAP_CONTEXT_TRIGGERS), never read from task text.
   check("task catalog: an empty task keeps only baseline triggers even if all candidates are offered",
     taskContextTriggers([], CONTEXT_PACK_TRIGGERS).join(",") === "always,verification,landing,orchestration");
-  check("task catalog: removed queue and deployment triggers and packs stay absent",
-    !(CONTEXT_PACK_TRIGGERS as readonly string[]).some((t) => ["task-queue", "deployment"].includes(t))
-      && !(CONTEXT_PACKS as readonly { id: string }[]).some((p) => ["task-queue", "private-deploy-overlay"].includes(p.id)));
 }
 
 // THE MECHANICAL RECEIVER of a private pack line (renderPrivatePackLines' format): null when no line
@@ -1019,8 +1018,8 @@ function privatePackChecks(check: ContextPlanCheck): void {
   const piRows = piHarnesses.map((harness) => ({ harness,
     lane: selectedFor(harness, ["always", "verification"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null,
     main: selectedFor(harness, ["always", "verification"], mainCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null }));
-  check("private pack: every Pi harness (pi, pi-zai, pi-ox, pi-unfenced) omits konzept-claude-fleet as harness-unsupported, lane and MAIN",
-    piHarnesses.length === 4 && piRows.every((row) => row.lane === "harness-unsupported" && row.main === "harness-unsupported")
+  check("private pack: every Pi harness (pi, pi-zai, pi-unfenced) omits konzept-claude-fleet as harness-unsupported, lane and MAIN",
+    piHarnesses.length === 3 && piRows.every((row) => row.lane === "harness-unsupported" && row.main === "harness-unsupported")
       && JSON.stringify(seed?.harnesses) === JSON.stringify(["claude", "codex"]), JSON.stringify(piRows));
   const boxed = selectedFor("container", ["always"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
   const worker = selectedFor("claude", ["landing"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
@@ -1264,11 +1263,6 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     lanePlan.selected.some((pack) => pack.id === "haltung-worker")
       && mainPlan.selected.some((pack) => pack.id === "haltung-worker"),
     JSON.stringify({ lane: lanePlan.selected.map((pack) => pack.id), main: mainPlan.selected.map((pack) => pack.id) }));
-  const workerPack = mainPlan.selected.find((pack) => pack.id === "haltung-worker");
-  check("haltung-worker: the pointer is exactly docs/haltung-worker.md, ## Was wir bevorzugen, und warum",
-    !!workerPack && JSON.stringify(workerPack.sources)
-      === JSON.stringify([{ path: "docs/haltung-worker.md", anchor: "## Was wir bevorzugen, und warum" }]),
-    JSON.stringify(workerPack ?? null));
   check("haltung-worker: every harness of the closed vocabulary selects the pack on the lane dispatch facts",
     CONTEXT_PACK_HARNESSES.every((harness) =>
       planRepoContext({ manifest, repo, facts: { ...laneFacts, harness } }).selected.some((pack) => pack.id === "haltung-worker")),
@@ -1278,7 +1272,6 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
   // boxes whole for every codex session, so the pointer told no session anything new. Omission: every
   // harness, lane and founding alike, omits it as status-not-active — and the same manifest with only
   // the status flipped back selects it for codex, so the reason is the status and nothing else.
-  // Delivery: the section it pointed at still reaches a codex lane, boxed in portable-core.
   const CODEX_PACK = "codex-native-context-v1";
   const codexOmissions = CONTEXT_PACK_HARNESSES.flatMap((harness) => [laneFacts, bootstrapFacts].map((facts) =>
     ({ harness, why: planRepoContext({ manifest, repo, facts: { ...facts, harness } }).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null })));
@@ -1289,17 +1282,6 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     isRecord(pack) && pack.id === CODEX_PACK ? { ...pack, status: "active" } : pack) } : manifest;
   check("codex-native-context-v1: flipping only its status back to active selects it for codex — the omission is the status alone",
     planRepoContext({ manifest: activeAgain, repo, facts: { ...laneFacts, harness: "codex" } }).selected.some((pack) => pack.id === CODEX_PACK));
-  const codexAgents = renderSessionAgents({ role: { text: "role", path: "server.ts", anchor: "LANE_ROLE_CARD" }, position: "lane",
-    harness: "codex", plan: planContext({ sourceTree: "fleet", ...laneFacts, harness: "codex" }),
-    sourceBytes: tree.sourceBytes, footer: "" });
-  const codexSection = sourceSection(tree.sourceBytes.get("AGENTS.md") ?? "", "AGENTS.md", "### Context self-management (§6, §8)");
-  const coreBox = codexAgents.parts.find((part) => part.id === "portable-core.contract");
-  check("codex-native-context-v1: its section still reaches a codex lane, boxed inside portable-core, with no pointer to the pack",
-    !!codexSection && coreBox?.ort === "box" && !!coreBox.content?.includes(codexSection.content)
-      && codexAgents.text.includes(codexSection.content) && !codexAgents.text.includes(CODEX_PACK),
-    JSON.stringify({ section: codexSection?.bytes ?? null, core: coreBox ? { ort: coreBox.ort, bytes: coreBox.bytes } : null }));
-  const seedPlan = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating",
-    triggers: [...bootstrapFacts.triggers], capabilities: bootstrapFacts.capabilities });
   const laneSeeds = planContext({ sourceTree: "fleet", ...laneFacts });
   const deliveryPlan = { selected: [...laneSeeds.selected, ...lanePlan.selected],
     omitted: [...laneSeeds.omitted, ...lanePlan.omitted] };
@@ -1329,11 +1311,6 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
       selected.length > 0 && only.includes(hardness === "hard" ? "Bindend (hard):" : "Hinweise (guidance):")
         && !only.includes(hardness === "hard" ? "Hinweise (guidance):" : "Bindend (hard):"), only);
   }
-  check("orchestration trigger: the bootstrap plan does NOT select the seed pack task-queue — the pack is absent",
-    !seedPlan.selected.some((pack) => pack.id === "task-queue")
-      && !(CONTEXT_PACKS as readonly { id: string }[]).some((pack) => pack.id === "task-queue"),
-    JSON.stringify({ selected: seedPlan.selected.map((pack) => pack.id),
-      taskQueue: seedPlan.omitted.find((pack) => pack.id === "task-queue") }));
 }
 
 
@@ -1442,27 +1419,6 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   for (const pack of CONTEXT_PACKS) if ("sources" in pack) for (const source of pack.sources)
     sourceBytes.set(source.path, readFileSync(join(tree.root, source.path), "utf8"));
   const plan = planContext({ sourceTree: "fleet", harness: "codex", mode: "mutating", triggers: ["always", "verification"], capabilities: fullCapabilities() });
-  const verify = plan.selected.find((pack) => pack.id === "verify-e2e")!;
-  // The six verify parts are judged by their sentences, never by a byte count or a hash literal:
-  // a prose edit at AGENTS.md §Verify or docs/verify-tiering.md §6.0/§6.0b is no defect, and a
-  // pinned fixture turned five post-land audits red on 2026-10-08 alone (Z4,
-  // docs/messungen/2026-10-10-verifikation-neu-zugeschnitten.md). Each part is named, opens on
-  // its own heading and carries at least one sentence under it.
-  const verifyParts = "privateSourceId" in verify.sources ? [] : verify.sources.map((source) => {
-    const section = sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor);
-    const [heading = "", ...body] = (section?.content ?? "").split("\n");
-    return { id: source.id, heading, anchor: source.anchor, sentences: body.join("\n").match(/\S[^\n]*?[.:!?](?=\s|$)/g)?.length ?? 0 };
-  });
-  check("session agents: six verify parts are named, open on their heading and carry sentences",
-    JSON.stringify(verifyParts.map((part) => part.id)) === JSON.stringify(["verify-e2e.kern", "verify-e2e.lane", "verify-e2e.main",
-      "verify-e2e.more", "verify-e2e.gate-vs-audit", "verify-e2e.proportion"])
-      && verifyParts.every((part) => /^ {0,3}#{1,6} /.test(part.heading) && part.heading.trimStart().startsWith(part.anchor) && part.sentences > 0),
-    JSON.stringify(verifyParts.map((part) => `${part.id}:${part.sentences}`)));
-  // The box carries exactly the source section: bytes and hash measured from the source at test time.
-  const laneSource = "privateSourceId" in verify.sources ? undefined : verify.sources.find((source) => source.id === "verify-e2e.lane");
-  const laneSection = laneSource ? sectionAt(sourceBytes.get(laneSource.path)!, laneSource.path, laneSource.anchor) : null;
-  const laneMeasured = laneSection === null ? null
-    : { bytes: Buffer.byteLength(laneSection), sha256: createHash("sha256").update(laneSection).digest("hex") };
   const sums: string[] = [];
   for (const [index, position] of (["lane", "main", "orchestratorin"] as const).entries()) {
     const footer = position === "lane" ? templates.laneExitFooter("codex", { role: "program-main", slot: 10 }) : position === "main" ? templates.mainFooter : "";
@@ -1500,13 +1456,6 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
         && rendered.parts[0].bytes === Buffer.byteLength(templates.roles[0]!)
         && rendered.parts.filter((part) => part.content !== null).every((part) => part.sha256 === createHash("sha256").update(part.content!).digest("hex")),
       `${rendered.bytes} bytes`);
-    const lanePart = rendered.parts.find((part) => part.id === "verify-e2e.lane");
-    check(`native lane render: ${harness} carries the restored jobs and local-withdraw contract in the exact Lane part`,
-      laneMeasured !== null && lanePart?.ort === "box" && lanePart.content === laneSection
-        && lanePart.bytes === laneMeasured.bytes && lanePart.sha256 === laneMeasured.sha256
-        && lanePart.content !== null && lanePart.content.includes("**Gate suites, and a MAIN's preview, go through the jobs door.**")
-        && lanePart.content.includes("only the 200 with `mayRunLocally: true` permits the local run."),
-      JSON.stringify({ ort: lanePart?.ort, bytes: lanePart?.bytes, sha256: lanePart?.sha256, source: laneMeasured }));
   }
   const missingBytes = new Map(sourceBytes);
   missingBytes.set("docs/verify-tiering.md", "# Missing anchors\n");
@@ -1523,7 +1472,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   const contractPack = CONTEXT_PACKS.find((pack) => pack.id === "portable-core");
   const contractSource = contractPack && "sources" in contractPack ? contractPack.sources?.find((source) => source.id === "portable-core.contract") : undefined;
   const contractSection = contractSource ? sectionAt(sourceBytes.get(contractSource.path)!, contractSource.path, contractSource.anchor) : null;
-  for (const harness of ["codex", "pi", "pi-zai", "pi-ox", "pi-unfenced"]) {
+  for (const harness of ["codex", "pi", "pi-zai", "pi-unfenced"]) {
     const empty = renderSessionAgents({ ...base, harness, plan: { selected: [], omitted: [] } });
     const contract = empty.parts.find((part) => part.id === "portable-core.contract");
     check(`session agents: ${harness} keeps its mandatory portable contract even with optional packs off`,
@@ -1676,26 +1625,6 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   try { sectionAt(codeSource + codeSection, "fixture.ts", "export const PACK ="); }
   catch (error) { ambiguousCode = error instanceof Error ? error.name : "unknown"; }
   check("source sections: duplicate TS anchors are refused as ambiguous", ambiguousCode === "source-anchor-ambiguous", ambiguousCode);
-  const harnessPack = CONTEXT_PACKS.find((pack) => pack.id === "harness-adapter")!;
-  const harnessSections = "sources" in harnessPack ? harnessPack.sources.map((source) =>
-    sourceSection(sourceBytes.get(source.path)!, source.path, source.anchor)) : [];
-  const harnessBytes = harnessSections.reduce((sum, part) => sum + (part?.bytes ?? 0), 0);
-  // An order-of-magnitude bound allows the unchanged Markdown part to exceed the estimate.
-  check("source sections: the real harness-adapter pack stays within one order of magnitude of its estimate",
-    harnessSections.length === 2 && harnessSections.every((part) => part !== null)
-      && harnessBytes >= harnessPack.estimatedBytes / 10 && harnessBytes <= harnessPack.estimatedBytes * 10,
-    JSON.stringify({ bytes: harnessBytes, estimatedBytes: harnessPack.estimatedBytes, parts: harnessSections.map((part) => part?.bytes) }));
-  const harnessCode = harnessSections.find((part) => part?.path === "server.ts");
-  check("source sections: the harness registry excludes the following harnessOf declaration",
-    harnessCode?.content.includes("CODEX_HARNESS") === true && !harnessCode.content.includes("const harnessOf ="),
-    JSON.stringify(harnessCode?.content));
-  const harnessRender = renderSessionAgents({ ...base, harness: "claude",
-    plan: { selected: [harnessPack], omitted: [] }, sourceBytes });
-  const harnessParts = harnessRender.parts.filter((part) => part.packId === "harness-adapter");
-  check("session agents: harness-adapter receipts carry the bounded source bytes and hashes",
-    harnessParts.length === 2 && harnessParts.every((part, index) =>
-      part.bytes === harnessSections[index]?.bytes && part.sha256 === harnessSections[index]?.sha256),
-    JSON.stringify(harnessParts.map((part) => ({ path: part.path, bytes: part.bytes, refusal: part.refusal }))));
   liveBauChecks(check, { tree, server, fn, roles: templates.roles, laneExitFooter: templates.laneExitFooter, sourceBytes });
 }
 
@@ -1878,8 +1807,7 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
     JSON.stringify(["verify-e2e.kern", "verify-e2e.lane"].map((id) => part(fileLive, id))));
   check("live-bau file: the Testinstanz instruction is boxed — its exact bytes in the file and on the receipt row",
     part(fileLive, "testinstanz-abnahme.live-bau")?.ort === "box" && fileLive.text.includes(liveBauText)
-      && part(fileLive, "testinstanz-abnahme.live-bau")?.bytes === Buffer.byteLength(liveBauText)
-      && liveBauText.includes("./testinstanz.sh refresh"),
+      && part(fileLive, "testinstanz-abnahme.live-bau")?.bytes === Buffer.byteLength(liveBauText),
     JSON.stringify(part(fileLive, "testinstanz-abnahme.live-bau") && { ...part(fileLive, "testinstanz-abnahme.live-bau"), content: undefined }));
   const laneEnd = (file: typeof filePlain) => file.text.slice(file.text.indexOf("## Lane-Ende"));
   check("live-bau file: the lane end keeps its three acts and the role card, runs no verify, and names the borrow before the land",

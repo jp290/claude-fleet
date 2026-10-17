@@ -353,7 +353,7 @@ document.addEventListener("visibilitychange", () => {
 });
 reduceMotion.addEventListener("change", tickCacheAge);
 
-// the slot the switches address: the conversation view — or, for a harness that HAS none (pi-ox, the
+// the slot the switches address: the conversation view — or, for a harness that HAS none (the
 // container; since the sixteenth cut pi and codex have one), the terminal view, its only one
 function optSlot(): number {
   const pane = panes[focused];

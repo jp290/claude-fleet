@@ -74,7 +74,6 @@ import { composerArrival, composerBuffer, composerCollapsedPaste, composerDelive
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { scanTitleOnly } from "./titlebytes";
-import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 import { buildTrace, type TraceInput, type TraceLiveLane, type TraceRefs } from "./trace-index";
 import { TimelineIndex, timelineStamp, type TimelineReceipt, type TimelineSource } from "./trace-timeline";
 import {
@@ -1145,20 +1144,6 @@ function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
 // No apostrophe by construction: it sits inside a single-quoted shell word.
 const PI_ZAI_FENCE_FAILED = "pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test. "
   + "This pane is a plain shell, not an agent.";
-// `pi-ox` owns one Pi home PER pinned Fleet session, deliberately separate from normal Pi,
-// pi-zai and every other pi-ox process. The operator chooses only this validated base; the child
-// is an already-validated Fleet UUID, so restart/resume returns to the same root without an
-// `unbound` sharing fallback. The catalogue is the exact one-node result of the 2026-08-22 live
-// Canary; it is still atomically replaced so a same-session restart cannot expose partial bytes.
-const PI_OX_AGENT_DIR = (() => {
-  const path = process.env.FLEET_PI_OX_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-ox-agent`;
-  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
-    throw new Error("FLEET_PI_OX_AGENT_DIR must be a safe absolute path without ..");
-  return path.replace(/\/+$/, "");
-})();
-function piOxAgentDirFor(sessionId: string | null): string | null {
-  return sessionId && CODEX_UUID_RE.test(sessionId) ? `${PI_OX_AGENT_DIR}/${sessionId}` : null;
-}
 
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
@@ -1231,7 +1216,7 @@ const PI_HARNESS: Harness = {
   // TRUE by owner decision (2026-08-07, reaffirmed 2026-08-12 for the full-access mode). What it
   // does NOT admit: no tick can land. EVERY mergeJob call site is a route (server.ts, grep
   // `mergeJob(` — two of them since 2026-08-24, the owner merge route and the Program-MAIN
-  // self-land route, and e2e/pins.ts reads the tick bodies to hold it), so the reachable set for
+  // self-land route, and e2e/land-durability.ts holds „[Zitat entfernt]“ by behaviour), so the reachable set for
   // anything unattended is scheduled autos, dispatch, steward sends, done-looking →
   // /api/self/watch and auto-③ — every one of them a PROMPT into a pane, none a write to main.
   automatable: true,
@@ -1421,78 +1406,6 @@ const PI_ZAI_HARNESS: Harness = {
     container: false,
   },
   note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; read fence (sandbox-exec): home and shared temp closed except the lane worktree, its git, the pi runtime, PATH tools and an own temp home; owner secrets, other sessions, other process environments and the live tmux socket denied; no copied CLAUDE.md/OWNER.md/.env in its lanes; network open; process-local agent directory leaves ~/.pi untouched",
-  role: "agent",
-  browserProfile: "not-applicable", // Pi has no MCP layer
-};
-
-// Adapter #2c — Pi pinned to OpenCode Zen's one free Ox Alpha preview model. This is NOT an
-// OpenCode lifecycle adapter: Pi remains the process, session store, composer and liveness fact.
-// `--provider`, `--model`, `--models` and `--api-key` are all literal so neither ambient Pi config
-// nor a provider/model fallback can change which endpoint receives a Fleet task.
-const PI_OX_HARNESS: Harness = {
-  id: "pi-ox",
-  spawnCmd: (o) => {
-    const agentDir = piOxAgentDirFor(o.sessionId);
-    if (!agentDir) {
-      const identityError = "pi-ox: missing or invalid pinned Fleet session UUID";
-      return `${PATH_EXPORT}printf '%s\\n' '${identityError}'; exec ${SHELL}`;
-    }
-    let cmd = "pi --provider opencode --model 'x-preview-f-free' --models opencode/x-preview-f-free --api-key public --no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --verbose";
-    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
-    const catalog = '{"providers":{"opencode":{"baseUrl":"https://opencode.ai/zen/v1","api":"openai-completions","apiKey":"public","models":[{"id":"x-preview-f-free","name":"Ox Alpha Free (Unlimited)","reasoning":true,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000000,"maxTokens":131072,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"},"compat":{"supportsStore":false,"supportsDeveloperRole":false,"maxTokensField":"max_tokens"}}]}}}';
-    const catalogError = `pi-ox: could not atomically prepare session-local catalogue: ${agentDir}/models.json`;
-    return `${PATH_EXPORT}mkdir -p '${agentDir}' || { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
-      + `fleet_pi_ox_catalog_tmp="$(mktemp '${agentDir}/.models.json.XXXXXX')" `
-      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
-      + `printf '%s\\n' '${catalog}' > "$fleet_pi_ox_catalog_tmp" `
-      + `&& mv -f "$fleet_pi_ox_catalog_tmp" '${agentDir}/models.json' `
-      + `|| { rm -f "$fleet_pi_ox_catalog_tmp"; printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
-      + `PI_CODING_AGENT_DIR='${agentDir}' ${cmd}; exec ${SHELL}`;
-  },
-  // Pi has neither Fleet's Claude transcript return channel nor the worker tier's ToolProfile.
-  worker: () => null,
-  context: { file: piOxContextFile, used: readPiUsedTokens },
-  pinsSession: true,
-  comms: ["pi"],
-  composer: PI_COMPOSER,
-  // Pi 0.84 asks a selector question before drawing the composer when an untrusted project has
-  // local `.pi` resources. An unattended Fleet brief would answer that selector and disappear.
-  // `--no-approve` makes the policy mechanical: ignore project-local executable/config resources
-  // and never render the selector. The four `--no-*` discovery flags also close adapter-global
-  // extensions (which could setModel/registerProvider), skills, templates and themes. Built-in
-  // tools and the independently loaded AGENTS.md context remain. `--verbose` makes the accept
-  // marker independent of mutable quietStartup settings in the session-local root. The block
-  // remains defense-in-depth against a CLI regression.
-  readiness: {
-    accept: /Model scope: x-preview-f-free/,
-    blocks: [{ re: /Trust project folder\?/, why: "pi project trust prompt" }],
-  },
-  hostCommits: false,
-  // Owner-authorized for unattended tasks after the 2026-08-22 live Canary proved prompt, a real
-  // read tool call and session continuation. The literal public credential cannot reach an owner
-  // billing account; provider withdrawal or changed terms must fail this exact anonymous request,
-  // never fall through to another credential, provider or model.
-  automatable: true,
-  allowsLanes: true,
-  singleton: false,
-  laneForm: null,
-  modelRe: /^x-preview-f-free$/,
-  // EMPTY deliberately: pi-ox is the minimal unattended profile (--no-extensions --no-skills
-  // --no-prompt-templates --no-themes), and whether its built-in commands survive that profile was
-  // never probed — the pi reference alone does not answer it for THIS spawn line. An evidenced
-  // pane probe puts entries here; a reasoned one does not.
-  commands: [],
-  models: ["x-preview-f-free"],
-  effortLevels: [],
-  supports: {
-    resume: true,
-    transcript: false,
-    model: true,
-    effort: false,
-    selfSchedule: false,
-    container: false,
-  },
-  note: "fixed anonymous opencode/x-preview-f-free via Pi; no billing credential and no model/provider fallback; availability and provider terms may change",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
@@ -2143,7 +2056,7 @@ const CODEX_HARNESS: Harness = {
 // prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_OX_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -18484,7 +18397,7 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     if (serverDownRetry) serverDownRetrySpent.set(t.id, candidate);
     audit("self_land_start", s.id, `${t.id} program=${program.id} lane=${lane.id} candidate=${candidate.slice(0, 8)} policy=${policy.selfLand}${serverDownRetry ? " retry=server-down" : ""}${switches.squash === false ? " no-squash" : " squash"}${switches.keep ? " keep" : ""}`);
     // …and the SAME job the owner route starts, started the same way. Kept as a literal call rather
-    // than behind a shared wrapper on purpose: the pin that matters is that `mergeJob(` has exactly
+    // than behind a shared wrapper on purpose: the property that matters is that `mergeJob(` has exactly
     // two textual call sites and both are routes, and a wrapper would let a third caller — a tick —
     // hide behind one name.
     const job: Promise<void> = mergeJob(lane, cwd, repo, branch, integration, carry.carried, carry.carriedBy, carry.carriedRuns, actor, switches)
@@ -23362,7 +23275,7 @@ function timelineReceipt(s: Slot): TimelineReceipt[] {
     proof: createHash("sha256").update(evidence).digest("hex") }];
 }
 function timelineSource(r: TimelineReceipt): TimelineSource | null {
-  const names = r.harness ? [r.harness] : ["claude", "codex", "pi", "pi-zai", "pi-ox"];
+  const names = r.harness ? [r.harness] : ["claude", "codex", "pi", "pi-zai"];
   const found: TimelineSource[] = [];
   for (const harness of names) {
     let file: string | null = null, cwd = r.cwd;
@@ -23376,8 +23289,7 @@ function timelineSource(r: TimelineReceipt): TimelineSource | null {
       if (candidate && meta?.id === r.session && sameCwd(meta.cwd, r.cwd)) { file = candidate; cwd = meta.cwd; }
     } else {
       const o = { sessionId: r.session, cwd: r.cwd };
-      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
-        : harness === "pi-ox" ? piOxContextFile(o) : null;
+      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o) : null;
       if (file) cwd = realpathLoose(r.cwd);
     }
     if (file) found.push({ file, cwd, harness, format: harness === "claude" ? "claude-jsonl"
@@ -37364,7 +37276,7 @@ async function reportServerRun<T>(key: string, rec: Omit<ServerRun, "at">, fn: (
 // grows, would otherwise turn this warning into the same constant false alarm it replaces.
 const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OVERDUE_MS) || 120 * 60_000);
 // What the lock MEANS, decided here rather than in the renderer — the threshold above is a claim
-// about this machine and belongs where a check can reach it (e2e/verify-queue.ts §2).
+// about this machine and belongs beside its override, not in the board.
 //   held    — a live holder inside the normal window: a suite is running.
 //   overdue — a live holder past it: the one genuine anomaly this surface can see.
 //   stale   — the holder is gone, or the pid file is unreadable. NOTHING IS RUNNING. This is the
@@ -45778,13 +45690,12 @@ const ctxCache = new Map<number, { key: string } & ContextTail>();
 // name off the spawn line and one only the harness knows, and collapsing those two is what made the
 // ledger's null unreadable.
 type ModelOrigin = "spawn" | "default" | "ambient";
-// Only the default adapter and the two fixed Pi profiles have a model Fleet can name when the slot
+// Only the default adapter and the fixed pi-zai profile have a model Fleet can name when the slot
 // has no explicit pin: their spawn lines always pass their respective literal model. Every other
 // foreign harness's ambient model is unknown; borrowing either default would invent.
 function harnessDefaultModel(h: Harness): string | null {
   return h === CLAUDE_HARNESS ? DEFAULT_MODEL
     : h === PI_ZAI_HARNESS ? "glm-5.3"
-    : h === PI_OX_HARNESS ? "x-preview-f-free"
     : null;
 }
 // The model a slot's records name, resolved AT WRITE TIME — a later reader cannot know which
@@ -46084,14 +45995,6 @@ function piContextFile(o: { cwd: string; sessionId: string }): string | null {
 // as before, while this adapter can never observe or mutate that global directory.
 function piZaiContextFile(o: { cwd: string; sessionId: string }): string | null {
   return isolatedPiContextFile(PI_ZAI_AGENT_DIR, o);
-}
-
-// pi-ox uses the same Pi session wire format inside its UUID-derived per-session root. Keeping the
-// resolver shared makes its reverse-state identity rule byte-for-byte the pi-zai rule: cwd slug,
-// filename UUID and session header must all agree, and ambiguity stays unknown.
-function piOxContextFile(o: { cwd: string; sessionId: string }): string | null {
-  const root = piOxAgentDirFor(o.sessionId);
-  return root ? isolatedPiContextFile(root, o) : null;
 }
 
 function isolatedPiContextFile(root: string, o: { cwd: string; sessionId: string }): string | null {
@@ -47717,116 +47620,6 @@ async function slotStatsView(now: number): Promise<SlotStatsSummary> {
   return slotStats(rows, { now, malformed });
 }
 
-// --- the per-check trail, read (trailstats.ts). The rows have been written since 2026-07-27 and
-// nothing read them, so "is this red mine or a known flake?" still cost a ~7-minute same-tree
-// re-run per red (docs/verify-tiering.md §11.7). This is the read half.
-//
-// TWO DIRECTORIES, TWO POPULATIONS, and reading one alone silently drops the other: the main
-// checkout's `e2e-trail/` collects every wrapper run including every lane's (a linked worktree
-// shares the common dir, docs/e2e-trail.md §3), while the post-land audit runs against a `git
-// archive` snapshot that is no repository at all and falls back to the tmpdir. Both are OVERRIDES
-// away from being wrong, hence the env knob; trailStats itself names no path (it is a reader).
-const TRAIL_DIRS: string[] = (process.env.FLEET_TRAIL_DIRS ?? "").trim()
-  ? process.env.FLEET_TRAIL_DIRS!.split(",").map((s) => s.trim()).filter(Boolean)
-  : [`${import.meta.dir}/e2e-trail`, `${tmpdir()}/fleet-e2e-trail`];
-// ~220 KB and ~880 rows per run file (docs/e2e-trail.md §2) — 6386 files on this machine already.
-// Newest-by-mtime first and capped, so the cost of this route is bounded by the cap and not by how
-// long the fleet has been running; `filesOmitted` reports the cut rather than hiding it AND is
-// handed to trailStats, which refuses to answer `never-failed` while any file went unread.
-const TRAIL_MAX_FILES = 400;
-const TRAIL_DEFAULT_DAYS = 14;
-
-// A trail file's name IS its run id (`${suite}-${stamp}-${pid}.jsonl`, e2e/trail-emit.ts#TRAIL_RUN),
-// so a file's suite is readable without opening it. Used for exactly one purpose: keeping the file
-// cap from being spent on suites the caller did not ask about. FAIL-OPEN by construction — a name
-// that does not parse stays a candidate (the fixture runs in e2e/trailstats.ts are named `fx1`),
-// and the row's own `suite` field stays the authoritative filter inside trailStats. If a name ever
-// disagreed with its rows, the reader still discards them and says so in `outOfScope.otherSuite`.
-const TRAIL_NAME_RE = /^(.+)-\d{8}T\d{6}Z-\d+\.jsonl$/;
-const trailFileSuite = (name: string): string | null => TRAIL_NAME_RE.exec(name)?.[1] ?? null;
-
-interface TrailStatsView extends TrailSummary {
-  dirs: string[]; files: number; filesOmitted: number; unreadableFiles: number;
-  /** candidates dropped by NAME before any read, because a `suite` was asked for and theirs differs */
-  filesOtherSuite: number;
-  /** `filesOmitted > 0` — the asked window was NOT covered; see `coveredFrom` for what was */
-  truncated: boolean;
-  /**
-   * The window this answer actually describes: no file with an mtime older than this was opened.
-   * Equals `window.from` exactly when nothing was cut, so `coveredFrom === window.from` is the
-   * machine-readable "this is the register" and anything later is "this is a sample".
-   */
-  coveredFrom: number;
-}
-function trailStatsView(now: number, opts: { days?: number; suite?: string | null; check?: string | null }): TrailStatsView {
-  const days = Number.isFinite(opts.days) && (opts.days as number) > 0
-    ? Math.min(365, opts.days as number) : TRAIL_DEFAULT_DAYS;
-  const windowMs = days * 86_400_000;
-  const cutoff = now - windowMs;
-  const wantSuite = (opts.suite ?? "") || null;
-  const cand: { path: string; mtime: number }[] = [];
-  let unreadableFiles = 0;
-  let filesOtherSuite = 0;
-  for (const d of TRAIL_DIRS) {
-    let names: string[];
-    try { names = readdirSync(d); } catch { continue; } // an absent trail dir is not an error
-    for (const n of names) {
-      if (!n.endsWith(".jsonl")) continue;
-      // THE SUITE FILTER MOVES AHEAD OF THE CAP. It used to sit behind it, inside trailStats, and
-      // that ordering turned a file cap into a SUITE-SKEWED sample. Measured 2026-09-06 against the
-      // real trail dirs, HEAD and this tree side by side: `?suite=isolated&days=7` read 400 files
-      // of which 341 belonged to OTHER suites and reported 59 isolated runs; the same query here
-      // reports 192 over 192 files, which is exactly what a direct scan of the two directories
-      // finds. The skew grew with everything ELSE the machine ran. Name-derived, so it costs no
-      // read; fail-open, so a name it cannot parse is never excluded.
-      const named = trailFileSuite(n);
-      if (wantSuite !== null && named !== null && named !== wantSuite) { filesOtherSuite++; continue; }
-      try {
-        const st = statSync(`${d}/${n}`);
-        // mtime is a PRE-FILTER only, never the window itself: a file is skipped when it cannot
-        // hold an in-window row at all. Every kept row is still scoped by its own `ts` in the reader.
-        if (st.mtimeMs >= cutoff) cand.push({ path: `${d}/${n}`, mtime: st.mtimeMs });
-      } catch { unreadableFiles++; }
-    }
-  }
-  cand.sort((a, b) => b.mtime - a.mtime);
-  const take = cand.slice(0, TRAIL_MAX_FILES);
-  // the cap is a READ-SIDE fact and the reader cannot see it, so it is handed over the same way
-  // `malformed` is — otherwise the summary claims `never-failed` over material nobody opened.
-  const filesOmitted = Math.max(0, cand.length - take.length);
-  // ...and the reader of the ROUTE cannot see it either, which is the half `filesOmitted` alone
-  // never fixed: a caller comparing `?days=7` with `?days=30` got two identical answers and no
-  // field saying so in a word. `truncated` says it in a word; `coveredFrom` says how far back the
-  // answer reaches, by file mtime — the rows inside the oldest file read may be older still, so
-  // this is a floor on coverage and never a claim of completeness below it.
-  const truncated = filesOmitted > 0;
-  const coveredFrom = truncated && take.length > 0 ? take[take.length - 1]!.mtime : cutoff;
-  const records: TrailRecord[] = [];
-  let malformed = 0;
-  for (const f of take) {
-    let text: string;
-    try { text = readFileSync(f.path, "utf8"); } catch { unreadableFiles++; continue; }
-    for (const line of text.split("\n")) {
-      if (!line) continue;
-      try { records.push(JSON.parse(line) as TrailRecord); } catch { malformed++; } // torn mid-append row
-    }
-  }
-  return {
-    ...trailStats(records, { now, windowMs, suite: wantSuite, check: opts.check ?? null, malformed, filesOmitted }),
-    dirs: TRAIL_DIRS, files: take.length, filesOmitted, unreadableFiles,
-    filesOtherSuite, truncated, coveredFrom,
-  };
-}
-// the query-string half, shared verbatim by the owner route and the session route so the two can
-// never drift into answering the same question differently.
-function trailStatsFromQuery(url: URL): TrailStatsView {
-  return trailStatsView(Date.now(), {
-    days: Number(url.searchParams.get("days") ?? TRAIL_DEFAULT_DAYS),
-    suite: (url.searchParams.get("suite") ?? "").trim() || null,
-    check: (url.searchParams.get("check") ?? "").trim() || null,
-  });
-}
-
 // --- the two ledgers the Rundgang was structurally blind to (docs/attic/mining-2026-07-26.md finding 5:
 // the only two RED post-land audits ever recorded were seen by nobody, because the pulse's single
 // gathering call carried no audit result, no outcome row and no shadow verdict). Both trails keep
@@ -48223,16 +48016,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // the handover THIS occupant wrote ahead for the owner's door (null = none written)
         standingHandover: s.standingHandover?.openedAt === s.openedAt ? s.standingHandover : null,
       });
-    }
-
-    // the flake question, asked from inside a session. IT HAS TO BE REACHABLE FROM A LANE OR IT SOLVES
-    // NOTHING: the proof order it replaces is an obligation CLAUDE.md puts on lanes. Read-only,
-    // aggregate payload, no capability granted. Why this tier: server-narrativ-archiv.md#fetch-get-apiselfflakes
-    if (url.pathname === "/api/self/flakes" && req.method === "GET") {
-      const p = resolveSelfPrincipal(req);
-      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
-      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
-      return json(trailStatsFromQuery(url));
     }
 
     // self-scheduling with the scoped FLEET_SELF_TOKEN (see ensureSlot). Sits AFTER the share-host gate.
@@ -50331,12 +50114,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (url.pathname === "/api/slot-stats" && req.method === "GET") {
       return json(await slotStatsView(Date.now()));
     }
-    // the per-check trail, read as the flake question (trailstats.ts): did check X fail on trees that do
-    // not contain my change. Same access model as /api/slot-stats: derived, never stored, owner-only by
-    // POSITION. It gates nothing — a verdict here is EVIDENCE for the lane's own proof order, not a substitute.
-    if (url.pathname === "/api/flakes" && req.method === "GET") {
-      return json(trailStatsFromQuery(url));
-    }
     // owner-only, read-only per-lane outcome trail — EXACT same access model as /api/audit above:
     // token-gated (past the tokenGate at the top of this block) and structurally 404 on SHARE_HOSTS
     // (that gate rejects anything not in its share allowlist). Never writable from a client.
@@ -51893,7 +51670,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             detail: carry.hold.detail });
         // …and the job itself, started at the route the way it always was. Deliberately NOT behind
         // a helper: `mergeJob(` having exactly TWO textual call sites, both of them routes, is the
-        // property e2e/pins.ts holds — a wrapper would hide a third caller (a tick) behind one name.
+        // property e2e/land-durability.ts holds ("no tick lands") — a wrapper would hide a third caller (a tick) behind one name.
         const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carry.carried, carry.carriedBy, carry.carriedRuns, ownerActor, switches)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);

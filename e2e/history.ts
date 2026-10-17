@@ -816,12 +816,12 @@ const freeSlotId = async (): Promise<number | undefined> =>
 const flat = (p: ConvPayload): string[][] => p.entries.map((e) => [e.role, ...e.blocks.map((b) => `${b.t}:${b.text}`)]);
 
 async function runForeignConversations(): Promise<void> {
-  // the catalogue publishes the view per harness: pi-zai and codex have a reader, pi-ox has none
+  // the catalogue publishes the view per harness: pi-zai and codex have a reader, the container has none
   const hs = ((await (await get("/api/harnesses")).json()) as { harnesses: { id: string; supports: { transcript: boolean; chat?: boolean } }[] }).harnesses;
   const sup = (id: string) => hs.find((h) => h.id === id)?.supports;
-  check("harness catalogue: supports.chat is true for claude, pi, pi-zai and codex, false for pi-ox and the container",
+  check("harness catalogue: supports.chat is true for claude, pi, pi-zai and codex, false for the container",
     sup("claude")?.chat === true && sup("pi")?.chat === true && sup("pi-zai")?.chat === true && sup("codex")?.chat === true
-      && sup("pi-ox")?.chat === false && sup("container")?.chat === false,
+      && sup("container")?.chat === false,
     JSON.stringify(hs.map((h) => [h.id, h.supports.chat])));
   check("harness catalogue: supports.transcript stays false for pi, pi-zai and codex (the chat view does not widen it)",
     sup("pi")?.transcript === false && sup("pi-zai")?.transcript === false && sup("codex")?.transcript === false);

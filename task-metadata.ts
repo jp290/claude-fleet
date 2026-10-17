@@ -371,8 +371,7 @@ function processesForPath(path: string): Exclude<TaskProcess, "cross-cutting">[]
   // entirely, not just that one path. The `.md` block above still wins for a future `server/*.md`.
   if (path === "server.ts" || path.startsWith("server/") || path === "task-metadata.ts"
     || path.endsWith("-prompt.ts")
-    || path === "continuity.ts" || path === "lane-signals.ts" || path === "slotstats.ts"
-    || path === "trailstats.ts") return ["server"];
+    || path === "continuity.ts" || path === "lane-signals.ts" || path === "slotstats.ts") return ["server"];
   return null;
 }
 

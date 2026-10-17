@@ -22,6 +22,8 @@ import { BASE, REPO, ROOT, check, get, post, restartSrv, stopSrv, tmuxOut } from
 import { setMergeMode, settleForMerge, waitMerge, type MergeVerdict } from "./lane-helpers";
 import { resolveSourceTree } from "./trail-emit";
 
+// the server's git tick as e2e-isolated.sh hands it over, parsed and floored as server.ts#GIT_TICK_MS
+const GIT_TICK_MS = Math.max(1000, Number(process.env.FLEET_GIT_TICK_MS ?? 10_000) | 0);
 const g = (dir: string, ...a: string[]): { out: string; err: string; code: number } => {
   const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   return { out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim(), code: r.status ?? 1 };
@@ -269,6 +271,25 @@ export async function run(): Promise<void> {
       cB.code === 0 && g(lb.cwd, "status", "--porcelain").out === "", `${cB.code} ${cB.err}`.slice(0, 200));
     const mainBeforeB = g(REPO, "rev-parse", MAIN).out;
     const laneTipB = g(REPO, "rev-parse", lb.branch).out;
+    // NO TICK LANDS. A clean lane one commit ahead is exactly what an auto-land would take, and the
+    // owner's click below is the only thing allowed to take it. Held past two git ticks after the
+    // board has seen the commit (dispatch, autos, watch and auto-review tick many times meanwhile):
+    // main stays and no merge run starts. BREAKS IF: any scheduler reaches mergeJob for a ready lane.
+    const mergeBeforeB = (await (await get(`/api/slots/${lb.slot}/merge`)).json()) as { running?: boolean; last: unknown };
+    type GitRow = { slots: { id: number; git: { ahead: number } | null }[] };
+    let aheadSeen = false;
+    for (let i = 0; i < 80 && !aheadSeen; i++) {
+      aheadSeen = ((await (await get("/api/sessions")).json()) as GitRow).slots.find((x) => x.id === lb.slot)?.git?.ahead === 1;
+      if (!aheadSeen) await Bun.sleep(150);
+    }
+    await Bun.sleep(2 * GIT_TICK_MS + 500);
+    const mergeIdleB = (await (await get(`/api/slots/${lb.slot}/merge`)).json()) as { running?: boolean; last: unknown };
+    const mainIdleB = g(REPO, "rev-parse", MAIN).out;
+    check("no tick lands: a clean lane one commit ahead, left alone past two git ticks, moves neither main nor its merge record",
+      aheadSeen && mainIdleB === mainBeforeB && mergeIdleB.running === false
+        && JSON.stringify(mergeIdleB.last) === JSON.stringify(mergeBeforeB.last),
+      JSON.stringify({ aheadSeen, main: [mainBeforeB.slice(0, 8), mainIdleB.slice(0, 8)], running: mergeIdleB.running,
+        lastSame: JSON.stringify(mergeIdleB.last) === JSON.stringify(mergeBeforeB.last) }));
     await settleForMerge(lb.slot);
     const startedB = (await (await post(`/api/slots/${lb.slot}/merge`, {})).json()) as
       { running?: boolean; status?: string; detail?: string };

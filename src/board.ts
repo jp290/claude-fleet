@@ -2966,7 +2966,7 @@ function liveErrLine(w: WorkplaceRow): HTMLElement | null {
 // THE COLUMN'S STYLE FOR THIS ROUND (lane 60fe7c87, owner 2026-10-09): the live session's field and
 // mark, each lane's way back with the diamond of its running check, the short checks block and the
 // mark of the server this page comes from. Bundled into app.js and hung into <head> once by
-// #initBoard: public/index.html stands at its byte budget (e2e/bytes.ts). Tokens only (grammatik
+// #initBoard: public/index.html stands at its byte baseline (e2e/bytes.ts reports it). Tokens only (grammatik
 // G0.1), and Info keeps its own 12 px — nothing here reads --chat-ui-fs.
 const RANKE_CSS = `
   #board .rk-btn.live-btn { gap: 0; }
